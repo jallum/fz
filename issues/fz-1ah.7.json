@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T16:08:04Z",
+  "description": "Goal\nRemove telemetry ownership from semantic World so World is an owned, lifetime-free authority that synchronous handlers can borrow directly.\n\nCurrent state\nWorld\u003c'a\u003e stores \u0026'a dyn Telemetry. This couples every semantic API to observer lifetime, prevents World from satisfying Any, encourages emit sites to flatten World state into metadata, and prevents a statically owned NullTelemetry specialization at the Compiler2 boundary.\n\nStrategy\n- Make World contain semantic state only.\n- Make Compiler2\u003cT\u003e own World and a telemetry implementation T separately.\n- Introduce a short-lived execution/job context that reborrows \u0026mut World and \u0026T for operations requiring both.\n- Keep state mutations in World; return or expose the already-existing decision result. After the mutable borrow ends, the context lazily emits an immutable \u0026World plus raw decision-local references.\n- Do not introduce Rc into World, global telemetry, unsafe lifetime erasure, a World facade duplicating state, or compatibility forwarding methods.\n\nTDD\nFirst add compile-time/type tests showing World has no lifetime or telemetry field and can be borrowed as an opaque event-scoped value. Preserve existing semantic behavior and telemetry event ordering during this ownership-only move.\n\nAcceptance\n- World is lifetime-free and telemetry-free.\n- Compiler2 can be instantiated with owned NullTelemetry or configured telemetry.\n- Jobs receive telemetry only through the short-lived execution context.\n- Existing tests remain green before payload/API migration.\n- Docs describe observer ownership; clippy passes.",
+  "id": "fz-1ah.7",
+  "labels": [],
+  "parent": "fz-1ah",
+  "priority": 0,
+  "status": "open",
+  "title": "Remove telemetry ownership and lifetime from World",
+  "type": "task",
+  "updated_at": "2026-07-10T16:08:04Z"
+}
