@@ -7,9 +7,15 @@
   "id": "fz-f98.14.11",
   "labels": [],
   "parent": "fz-f98.14",
+  "comments": [
+    {
+      "text": "COORDINATOR SIGNAL 2026-07-10 on integration 9b4bca389: enum_take_drop_split native run still fails in this native callable ABI family. `cargo test --test fz2_cli native_enum_take_drop_split_preserves_tuple_accumulator_lists -- --nocapture` fails with artifact/incomplete-semantic-plan: native callable materialization for CallableId(20) has resolutions with incompatible physical ABI: executable 170 arg_reprs=[ValueRef, ValueRef], return_reprs=[RawAtom, ValueRef, RawAtom], return_tuple_arity=Some(2) vs executable 171 arg_reprs=[RawInt, ValueRef], return_reprs=[RawAtom, ValueRef], return_tuple_arity=Some(2). This is now a concrete blocker for closing fz-f98.14 after the original convergence/lowering fatal was retired.",
+      "timestamp": "2026-07-10T15:42:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Native callable boundary return-lane mismatch flake (opaque_fn_value_join: boundary=[ValueRef] vs body=[RawInt])",
   "type": "bug",
-  "updated_at": "2026-06-26T19:48:00Z"
+  "updated_at": "2026-07-10T15:42:38Z"
 }
