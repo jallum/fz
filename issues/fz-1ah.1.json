@@ -19,6 +19,10 @@
     {
       "text": "RE-AUDIT FAIL on cumulative 155617973. Remaining blocker: tuple-union correlation is lost across sequential field projection. project_domain unions each field independently; branch_state narrows only the child subject, not its parent union, so later fields reproject the original union and invent {:a,:y}/{:b,:x}. Exact total @spec classify({:a,:x}|{:b,:y}) with two exact clauses still warns. Fix must preserve parent/child correlated alternatives through projection and narrowing, with a production regression; then fresh re-audit.",
       "timestamp": "2026-07-10T16:43:09Z"
+    },
+    {
+      "text": "STEP-BACK: three audits disproved the projection-domain approach. Branch commits 7212a7820, 155617973, 2a427e959 are preserved as failed prototypes and must not be folded. The first lossy boundary is ContractArrow Ty -\u003e KnownSubjectDomain; the second is independent per-SubjectId projected state. fz-1ah.8 now blocks this ticket and will build one root-Ty/evidence dispatch reachability calculator shared with semantic analysis. After .8 lands, restart .1 from integration HEAD and implement diagnostics as a thin consumer; do not salvage boundary heuristics.",
+      "timestamp": "2026-07-10T16:54:33Z"
     }
   ],
   "priority": 1,
