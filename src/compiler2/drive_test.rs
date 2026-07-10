@@ -41,6 +41,7 @@ type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
+type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type Diagnostics = Rc<RefCell<Vec<Diagnostic>>>;
 
@@ -6381,6 +6382,62 @@ fn compiler2_interp_honors_typed_entry_dispatch_from_backend_artifacts() {
 }
 
 #[test]
+fn compiler2_runtime_self_send_activations_keep_pid_boundary() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    let modules = ModuleCapture::new();
+    let returns = ReturnTypeCapture::new();
+    let inputs = ActivationInputCapture::new();
+    tel.attach(&[], functions.handler());
+    tel.attach(&[], modules.handler());
+    tel.attach(&[], returns.handler());
+    tel.attach(&[], inputs.handler());
+
+    let mut compiler = Compiler2::new(&tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/backend_interp_self_send.fz".to_string()),
+        text: include_str!("../../fixtures2/00023_backend_interp_self_send.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let halt = compiler
+        .run_root_interp(root_id)
+        .expect("Compiler2 backend interpreter should settle runtime self/send activations");
+    assert_eq!(
+        halt, 1,
+        "the fixture should still exercise self() followed by send(self(), ...)"
+    );
+
+    let self_id = function_id_in_module(&functions, &modules, "Kernel", "self", 0);
+    let send_id = function_id_in_module(&functions, &modules, "Kernel", "send", 2);
+    let fz_send_id = function_id_in_module(&functions, &modules, "Kernel", "fz_send", 2);
+    let types = compiler.types_for_test();
+    let display_inputs =
+        |record: ActivationInputRecord| record.inputs.iter().map(|ty| types.display(ty)).collect::<Vec<_>>();
+
+    assert_eq!(
+        types.display(&returns.last_for_function(root_id, self_id).return_ty),
+        "pid",
+        "Kernel.self/0 should keep the pid returned by the backend runtime intrinsic"
+    );
+    assert_eq!(
+        display_inputs(inputs.last_for_function(root_id, send_id)),
+        vec!["pid".to_string(), "int".to_string()],
+        "Kernel.send/2 param0 should stay pid after applying the declared contract"
+    );
+    assert_eq!(
+        display_inputs(inputs.last_for_function(root_id, fz_send_id)),
+        vec!["pid".to_string(), "int".to_string()],
+        "Kernel.fz_send/2 param0 should stay pid after applying the extern contract"
+    );
+}
+
+#[test]
 fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -10704,6 +10761,12 @@ pub(crate) struct ReturnTypeRecord {
     pub(crate) changed: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ActivationInputRecord {
+    activation: ActivationKey,
+    inputs: Vec<Ty>,
+}
+
 pub(crate) struct FunctionCapture {
     defs: FunctionDefs,
 }
@@ -10718,6 +10781,10 @@ pub(crate) struct CallsiteCapture {
 
 pub(crate) struct ReturnTypeCapture {
     defs: ReturnTypeDefs,
+}
+
+struct ActivationInputCapture {
+    defs: ActivationInputDefs,
 }
 
 struct BackendProgramCapture {
@@ -11034,6 +11101,30 @@ impl ReturnTypeCapture {
     }
 }
 
+impl ActivationInputCapture {
+    fn new() -> Self {
+        Self {
+            defs: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(ActivationInputCaptureHandler {
+            defs: self.defs.clone(),
+        })
+    }
+
+    fn last_for_function(&self, root_id: crate::compiler2::RootId, function_id: FunctionId) -> ActivationInputRecord {
+        self.defs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|record| record.activation.root == root_id && record.activation.function == function_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("activation_inputs.defined for root={root_id:?} function={function_id:?}"))
+    }
+}
+
 impl BackendProgramCapture {
     fn new() -> Self {
         Self {
@@ -11229,6 +11320,10 @@ struct CallsiteCaptureHandler {
 
 struct ReturnTypeCaptureHandler {
     defs: ReturnTypeDefs,
+}
+
+struct ActivationInputCaptureHandler {
+    defs: ActivationInputDefs,
 }
 
 struct BackendProgramCaptureHandler {
@@ -11492,6 +11587,32 @@ impl Handler for ReturnTypeCaptureHandler {
             activation: activation.clone(),
             return_ty,
             changed: *changed != 0,
+        });
+    }
+}
+
+impl Handler for ActivationInputCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        if event.name != ["fz", "compiler2", "activation_inputs", "defined"] || event.kind != EventKind::Event {
+            return;
+        }
+        let Some(activation) = event
+            .metadata
+            .get("activation")
+            .and_then(|value| value.downcast_ref::<ActivationKey>())
+        else {
+            return;
+        };
+        let Some(inputs) = event
+            .metadata
+            .get("inputs")
+            .and_then(|value| value.downcast_ref::<Vec<Ty>>())
+        else {
+            return;
+        };
+        self.defs.borrow_mut().push(ActivationInputRecord {
+            activation: activation.clone(),
+            inputs: inputs.clone(),
         });
     }
 }
