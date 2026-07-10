@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T19:38:36Z",
+  "description": "From the fz-k22.13 audit (2026-07-10). The determinism commit pinned job wake/execution order, but its own adjacent finding admits a stricter in-process double-compile still shows a handful of Ty ids RENUMBERED between compiles (source past the now-identical job-execution trace -- a still-unpinned order-dependence, never observable in diagnostics on the tested corpus). Meanwhile two of that commits own sort keys are DOWNSTREAM CONSUMERS of raw Ty ids: (1) ground_surface_for_template_in_session sorts candidate ExecutableKeys by derived Ord, and after the root+function filter the only differing field is arrow: Ty -- i.e. the raw u32 intern id (types/mod.rs:131-136 assigns by first-intern order); (2) ContributionMap::apply sorts contributors by Job Debug text, and Seed/AnalyzeActivation embed ActivationKey.arrow in that text. If relative Ty order between two types can differ across runs, both tie-breaks reintroduce the nondeterminism they pin. CLOSE THE GAP: either (a) PROVE Ty relative order is invariant given pinned job order (find + pin the residual renumbering source -- likely an unordered iteration past the trace boundary), or (b) replace the tainted tie-breaks with renumbering-immune STRUCTURAL keys (canonical Descr rendering of the arrow). Acceptance: the stricter check (full BackendProgram struct equality across in-process double-compile) passes, not just JIT-outcome equality. Contrast: ModuleId-based sorts are clean (slot order from deterministic parse/scope traversal).",
+  "id": "fz-k22.21",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-k22: Ty id assignment is not proven deterministic past job-order pinning -- and two determinism sort keys consume raw Ty ids (circular tie-break)",
+  "type": "bug",
+  "updated_at": "2026-07-10T19:38:36Z"
+}
