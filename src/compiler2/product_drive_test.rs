@@ -45,6 +45,52 @@ fn some_fact() -> FactUse<FactKey> {
     FactUse::settled(FactKey::BackendProgram(RootId::for_test(7)))
 }
 
+/// fz-k22.13 regression: JIT-compiling one fixed root twice, in two
+/// independent `Compiler2`/`World`/`Types` instances within the same test
+/// process, must reach the exact same outcome -- both the success/failure
+/// shape and, on failure, the byte-identical diagnostic text.
+///
+/// This is not an inert test: `RandomState` reseeds per `HashMap`/`HashSet`
+/// instantiation even within one process, not just across process runs, so
+/// two fresh interners built in one test function genuinely land on
+/// different iteration orders wherever an order-dependence survives -- the
+/// same hazard `enum_predicate_search.fz` exposed run-to-run at the `fz2`
+/// CLI before this fix (a different closure-target ABI diagnostic on almost
+/// every invocation). `compile_root_jit` is the exact API `fz2 run` calls.
+#[test]
+fn compiling_the_same_root_twice_through_the_jit_reaches_the_same_outcome() {
+    fn compile_enum_predicate_search() -> Result<crate::fz_ir::FnId, String> {
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
+            text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.compile_root_jit(root).map(|(_compiled, entry)| entry)
+    }
+
+    let outcome_a = compile_enum_predicate_search();
+    let outcome_b = compile_enum_predicate_search();
+
+    assert_eq!(
+        outcome_a.is_ok(),
+        outcome_b.is_ok(),
+        "compiling the same root twice must succeed or fail identically, got {outcome_a:?} vs {outcome_b:?}"
+    );
+    if let (Err(error_a), Err(error_b)) = (&outcome_a, &outcome_b) {
+        assert_eq!(
+            error_a, error_b,
+            "compiling the same root twice must report a byte-identical diagnostic"
+        );
+    }
+}
+
 /// The `add1` fixture, submitted and rooted at `main/0`: the shared "ordinary,
 /// fully resolvable root" setup the `fact_wait_budget_exceeded`/
 /// `did_not_settle` end-to-end tests drive through the budget seam.
@@ -126,15 +172,18 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
 // --- end-to-end: genuine drive failures reaching each hook ---------------
 
 /// `no_ready_producer`: a root submitted for a function name that is never
-/// defined by any submitted code. `SeedRoot` claims `RootEntry` as an output
-/// on its very first (still-blocked) run -- `World::demand_producer_if_needed`
-/// then treats that fact as already claimed and never re-demands `SeedRoot`,
-/// so `RootEntry`'s own keying wait resolves quickly, but the `Recursive`
-/// keying wait it gates (`jobs::backend::produce_root_backend_product`) has
-/// no other path to `DeriveRecursive` for a function that is never scoped:
-/// the fact-wait's agenda drains and `demand_fact_producer` has nothing left
-/// to poke. This is a real dead end reachable from ordinary (if buggy) input
-/// -- a typo'd entry-point name -- not a fabricated one.
+/// defined by any submitted code. `produce_root_backend_product`'s keying
+/// waits (`RootEntry`, `DispatchMask`, `Recursive`) are all still unsettled
+/// -- `SeedRoot` claims `RootEntry` as an output on its very first
+/// (still-blocked) run, but a blocked publisher's claims stay dirty
+/// (`Scheduler::complete`: "pausing is not recanting"), so `RootEntry`
+/// itself never reads as settled either. Every one of the three keying
+/// waits is an equally genuine dead end here, so which one this hook names
+/// is the order the pull-drive tries them in -- pinned deterministically
+/// (`drive_root_backend_product_with_budgets` sorts a multi-wait
+/// `PullOutcome` before processing it), not an accident of hash iteration.
+/// This is a real dead end reachable from ordinary (if buggy) input -- a
+/// typo'd entry-point name -- not a fabricated one.
 #[test]
 fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let tel = ConfiguredTelemetry::new();
@@ -145,13 +194,12 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let function = compiler.root_function(root);
 
     let error = compiler
         .run_root_interp(root)
         .expect_err("a root naming an entry no code ever defines should never settle");
 
-    let fact = FactUse::settled(FactKey::Recursive(function));
+    let fact = FactUse::settled(FactKey::RootEntry(root));
     assert_eq!(
         error,
         format!(
@@ -162,7 +210,7 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             // hook itself reports, not a separately reconstructed guess.
             compiler.world().work_graph.unresolved()
         ),
-        "the String path should report the undefined entry's Recursive keying wait, got: {error}"
+        "the String path should report the undefined entry's RootEntry keying wait, got: {error}"
     );
 }
 
@@ -173,7 +221,6 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     tel.attach(&[], capture.handler());
     let mut world = World::new(&tel);
     let root = world.submit_root(None, "totally_undefined_entry".to_string(), 0, ExecutableNeed::Value);
-    let function = world.root_function(root);
 
     world.demand(Job::BuildBackendProduct(root));
     let outcome = world.drive_for(None);
@@ -182,7 +229,7 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
         "the backend product job should fail fatally when its entry is never defined, got: {outcome:?}"
     );
 
-    let fact = FactUse::settled(FactKey::Recursive(function));
+    let fact = FactUse::settled(FactKey::RootEntry(root));
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("no-ready-producer should emit an error diagnostic");
@@ -197,7 +244,7 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             root.as_u32(),
             fact
         ),
-        "the FatalError path should report the undefined entry's Recursive keying wait"
+        "the FatalError path should report the undefined entry's RootEntry keying wait"
     );
 }
 
@@ -320,18 +367,20 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
         need: ExecutableNeed::Value,
     });
 
-    let function = compiler.root_function(root);
     let error = compiler
         .run_root_interp(root)
         .expect_err("a runtime root targeting a macro entry must fail, not silently succeed");
 
-    // `produce_root_backend_product`'s keying waits fire in reverse order
-    // (`Recursive`, `DispatchMask`, `RootEntry`), and `SeedRoot` -- the only
+    // `produce_root_backend_product`'s keying waits are all still unsettled
+    // (`RootEntry`, `DispatchMask`, `Recursive`), and `SeedRoot` -- the only
     // producer any of the three names -- is already agenda-queued from the
-    // root's ignition, so it runs while satisfying the *first* wait in that
-    // reversed order: `Recursive`, not `RootEntry`, even though `SeedRoot`
-    // never gets far enough to publish either fact on this rejecting run.
-    let fact = FactUse::settled(FactKey::Recursive(function));
+    // root's own ignition, so it runs while satisfying the *first* wait the
+    // pull-drive tries. That order is pinned deterministically (a
+    // multi-wait `PullOutcome` is sorted before processing), not an
+    // accident of hash iteration: `RootEntry`, not `Recursive`, even though
+    // `SeedRoot` never gets far enough to publish either fact on this
+    // rejecting run.
+    let fact = FactUse::settled(FactKey::RootEntry(root));
     let job = Job::SeedRoot(root);
     assert_eq!(
         error,
@@ -341,7 +390,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
             fact,
             job
         ),
-        "the String path should report the Recursive fact-wait's SeedRoot job failure, got: {error}"
+        "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
     );
 }
 

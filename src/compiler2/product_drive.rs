@@ -94,7 +94,23 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, E: ProductDriveError>(
                 return Ok((*program, driver));
             }
             PullOutcome::Produced(_) => {}
-            PullOutcome::Waiting(waits) => {
+            PullOutcome::Waiting(mut waits) => {
+                // A pull that reports more than one wait built the list from
+                // a `HashSet<PullWait>` upstream (the standing idiom for
+                // wait-accumulator parameters throughout `jobs::runtime_demand`
+                // and `jobs::artifact`), so its arrival order here is a
+                // per-process `RandomState` artifact, not a property of the
+                // program. This loop processes each wait to completion in
+                // order — one poke-and-drain per iteration — so that order
+                // decides which fact's producer job actually runs first,
+                // which can flip a keep-first merge downstream. `PullWait`'s
+                // constituents span too many identity types across the
+                // compiler to give it a cheap structural `Ord`, but its
+                // `Debug` rendering is pure data (ids and enum tags, no
+                // addresses or hashes), so sorting by it is a valid,
+                // deterministic total order — it only pins iteration order,
+                // it does not change which wait is processed to completion.
+                waits.sort_by_cached_key(|wait| format!("{wait:?}"));
                 last_wait = Some((current.clone(), waits.clone()));
                 stack.push(current);
                 for wait in waits.into_iter().rev() {

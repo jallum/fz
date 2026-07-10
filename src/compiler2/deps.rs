@@ -9,12 +9,58 @@ pub struct UnresolvedWait<J, F> {
     pub jobs: Vec<J>,
 }
 
+/// An insertion-ordered membership set: iteration order is registration
+/// order, not the per-process `RandomState` order a bare `HashSet` would
+/// produce. `Scheduler::enqueue_dependents` iterates a fact's subscribers and
+/// waiters to decide which job to enqueue next, so a hash-random order here
+/// would make job execution order — and therefore which job's conclusion
+/// lands "first" at a keep-first merge downstream — vary run to run for the
+/// exact same input. Mirrors the `order: Vec` + membership-set idiom already
+/// used for deterministic dedup elsewhere in compiler2 (`Agenda`,
+/// `quoted_surface`'s `group_order`).
+#[derive(Debug, Clone)]
+struct JobSet<J> {
+    order: Vec<J>,
+    members: HashSet<J>,
+}
+
+impl<J> Default for JobSet<J> {
+    fn default() -> Self {
+        Self {
+            order: Vec::new(),
+            members: HashSet::new(),
+        }
+    }
+}
+
+impl<J: Clone + Eq + Hash> JobSet<J> {
+    fn insert(&mut self, job: J) {
+        if self.members.insert(job.clone()) {
+            self.order.push(job);
+        }
+    }
+
+    fn remove(&mut self, job: &J) {
+        if self.members.remove(job) {
+            self.order.retain(|existing| existing != job);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &J> {
+        self.order.iter()
+    }
+}
+
 #[derive(Debug)]
 pub struct DependencyIndex<J, F> {
     reads: HashMap<J, HashSet<FactUse<F>>>,
-    subscribers: HashMap<FactUse<F>, HashSet<J>>,
+    subscribers: HashMap<FactUse<F>, JobSet<J>>,
     waits: HashMap<J, HashSet<FactUse<F>>>,
-    waiters: HashMap<FactUse<F>, HashSet<J>>,
+    waiters: HashMap<FactUse<F>, JobSet<J>>,
     outputs: HashMap<J, HashSet<F>>,
 }
 

@@ -1814,10 +1814,23 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn protocol_impls_for(&self, protocol: ModuleId) -> Vec<(ProtocolImplKey, ProtocolImpl)> {
-        self.protocol_impls
+        let mut impls: Vec<_> = self
+            .protocol_impls
             .impls_for_protocol(protocol)
             .map(|(key, protocol_impl)| (*key, protocol_impl.clone()))
-            .collect()
+            .collect();
+        // `protocol_impls` is a hash map keyed by `(protocol, target)`; its
+        // iteration order is a per-process `RandomState` artifact. This feeds
+        // `ProtocolDispatch.arms`, a published fact compared by `PartialEq`
+        // (order-sensitive `Vec` equality) to decide whether the fact
+        // changed. An unsorted rebuild can reorder the same arm set between
+        // revisions and look "changed" when nothing moved, and downstream
+        // dispatch-arm consumers (protocol callsite resolution) would pick a
+        // different first match run to run. Sorting by the target module —
+        // unique per arm within one protocol — pins arm order to a stable,
+        // demand-derived key instead of iteration order.
+        impls.sort_by_key(|(key, _)| key.target.as_u32());
+        impls
     }
 
     pub(crate) fn define_generated_function(

@@ -2437,9 +2437,16 @@ fn lowered_unop_ty(world: &mut World<'_>, op: UnOp, input: Ty) -> Ty {
 }
 
 /// One body can demand the same callee activation from several call sites;
-/// those duplicates are the same fact.
+/// those duplicates are the same fact. Dedup preserves first-occurrence
+/// order (a round trip through `HashSet` would scramble it to a per-process
+/// `RandomState` order): this list becomes a job's published reads/waits and
+/// its `changed` outputs, and the scheduler drains `changed` facts off a
+/// stack (`Scheduler::complete`'s `pending_changes.pop()`), so the order
+/// facts appear in here decides the interleaving of the dependent jobs each
+/// one wakes.
 fn dedupe_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
-    facts.into_iter().collect::<HashSet<_>>().into_iter().collect()
+    let mut seen = HashSet::with_capacity(facts.len());
+    facts.into_iter().filter(|fact| seen.insert(fact.clone())).collect()
 }
 
 fn any_ty(world: &mut World<'_>) -> Ty {

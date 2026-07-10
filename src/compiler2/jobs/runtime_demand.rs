@@ -2831,11 +2831,24 @@ fn ground_surface_for_template_in_session(
     if !world.types().key_is_value_template(template_surface) {
         return None;
     }
-    let candidates = session
+    // `demanded_executables` and `sibling_candidates` are hash sets: their
+    // iteration order is a per-process `RandomState` artifact, not a property
+    // of the program being compiled. Picking the first candidate over that
+    // order would make which sibling grounds the template vary run to run for
+    // the exact same input. `ExecutableKey`'s derived `Ord` (root, function,
+    // arrow) is a stable, demand-derived total order, so sorting the
+    // candidate keys before picking pins the choice to a pure function of
+    // demand instead of iteration order.
+    let mut candidate_keys = session
         .demanded_executables()
         .iter()
         .chain(sibling_candidates.iter())
         .filter(|key| key.activation.root == root && key.activation.function == function)
+        .collect::<Vec<_>>();
+    candidate_keys.sort();
+    candidate_keys.dedup();
+    let candidates = candidate_keys
+        .into_iter()
         .map(|key| key.activation.inputs(world.types()))
         .filter(|inputs| inputs.len() >= captures_len)
         .collect::<Vec<_>>();
