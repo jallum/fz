@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T00:03:01Z",
+  "close_reason": "Landed on integration as 0ab55d993 (fz-9i4.7.1.1: flush product-drive source diagnostics). Product-drive now flushes queued source warnings when the root backend product is produced; case_tuple_pattern_sequential is undeferred for run/interp/build with active path-specific diagnostics sidecars. Coordinator verification: cargo test --lib passed (1302 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed; cargo test --test fz2_cli run_and_interp_report_partial_case_and_with_warnings passed; cargo test --test fixture_matrix case_tuple_pattern_sequential passed run/interp/build.",
   "created": "2026-07-09T22:00:13Z",
   "description": "Source jobs queue case/with exhaustiveness warnings through world.emit_warning_once, but fz2 run/interp/build product pulls run jobs directly and never flush world.flush_reported_warnings(). Acceptance: product-drive paths emit queued type/no-matching-clause warnings; case_tuple_pattern_sequential diagnostic fixture can be undeferred for run/interp/build where the warning is already produced; cargo test --lib and cargo clippy --all-targets -- -D warnings pass.",
   "id": "fz-9i4.7.1.1",
   "labels": [],
   "parent": "fz-9i4.7.1",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Product drive flushes queued source diagnostics before returning products",
   "type": "bug",
-  "updated_at": "2026-07-09T22:00:13Z"
+  "updated_at": "2026-07-10T00:03:01Z"
 }
