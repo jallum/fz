@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T14:24:24Z",
+  "close_reason": "Landed on integration as 9b4bca389 (fz-9i4.7.9: classify protocol-domain contract obligations). Replaced contract-side source-ref enforcement with resolved Ty + bounds protocol-domain marker obligations on ContractArrow; structural enforcement is derived from empty obligations; collect_spec_refs remains dependency/wait recording only; direct, when-bound, nested-complement, mixed-overload, and transitive-alias coverage landed. Audit passed after amendment to ignore negative descriptor complements. Coordinator verification: cargo test --lib --quiet passed (1314 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed; cargo test --lib compiler2::contract_test passed (16 tests); fixture_matrix spec_violation, spec_mixed_protocol_concrete_violation, spec_ok, file_handle, and binary_concat_runtime all passed on run/interp/build.",
   "created": "2026-07-10T02:17:02Z",
   "description": "Second spike branch spike/fz-contract-obligations commit 761f2d46b settled the model after rereading northstar.html. Protocol domains are markers, not source provenance and not an up-front implementer set. The real fix should replace contract-side source-ref enforcement with resolved contract obligation classification: after resolve_spec_decl produces params/result/constraints, classify protocol-domain marker tags contained in the resolved arrow Ty plus bounds, store that obligation set on each ContractArrow, and derive structural enforceability from obligations.is_empty() until protocol-domain validation exists. Keep collect_spec_refs only for source_publish dependency/wait recording. Do not enumerate protocol implementations. Acceptance: direct protocol-domain specs carry obligations; mixed protocol-domain/concrete overload still emits spec/violation for concrete calls rejected by all enforceable arrows; protocol-domain markers in when-bounds are detected; plain alias expansion such as @type enum_int :: Enumerable.t(integer) carries the marker through TypeDef; spec_violation and spec_mixed_protocol_concrete_violation fail with spec/violation on run/interp/build; spec_ok and representative protocol/extern/runtime paths stay clean; cargo test --lib and clippy pass. Audit of 761f2d46b passed with nits: production should decide whether obligation identity remains BTreeSet\u003cString\u003e marker tags or becomes a typed protocol-domain key, and FunctionContract::from_resolved should not remain a footgun that silently creates enforceable arrows without obligations.",
   "id": "fz-9i4.7.9",
   "labels": [],
   "parent": "fz-9i4.7",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Classify protocol-domain contract obligations from resolved Ty, not source rewalks",
   "type": "bug",
-  "updated_at": "2026-07-10T14:01:35Z"
+  "updated_at": "2026-07-10T14:24:24Z"
 }
