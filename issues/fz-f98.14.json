@@ -13,11 +13,15 @@
     {
       "text": "SPIKE SYNTHESIS (3 worktree spikes complete). The runaway is structural, not a bug in one fact: (1) fz-f98.14.3 CLOSED - the 281-activation closure is the LEGITIMATE size of this program (linear ~14+9.2*calls; all key dims dispatch-relevant); over-specialization ruled out by hard numbers, so collapsing activations is NOT the path. (2) The cost is O(closure^2): a monolithic seal re-walks the whole 281-activation closure ~346x. CLOSING THE RED GATE NEEDS BOTH ENGINE CHANGES, complementary: fz-f98.14.1 (incremental/cone-scoped seal via ActivationClosed fact + fan-in barrier, mirror transport fz-bfh.5) gets seal\u003c=32; fz-f98.14.2 (two-tier provisional/committed publication decoupled from waits, kills the replacing-fact retraction-\u003erebase cascade) gets total\u003c1500 + Resolved/clears the Fatal. Both grounded in existing precedents (transport split; extend_outputs/mark_dirty). Sequence 14.1 first or together. The RED gate compiler2_enum_take_drop_split_seals_without_reseal_runaway re-enables only when both land.",
       "timestamp": "2026-06-25T20:42:29Z"
+    },
+    {
+      "text": "COORDINATOR SIGNAL 2026-07-10: current enum_take_drop_split no longer matches only the old monolithic-reseal/LoweNativeProgram fatal. The fixture remains red because the interp leg is blocked by fz-k22.9 (ambiguous runtime closure identity) and the native leg is blocked by fz-f98.14.11 (incompatible callable materialization ABI on the same fixture). Added both as explicit blockers so this parent does not appear ready until the remaining fixture blockers close.",
+      "timestamp": "2026-07-10T15:42:39Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 convergence runaway: enum_take_drop_split (00420) drive is 1.3s and schedule-dependent — monolithic per-root reseal over a large closure + partial-publication churn",
   "type": "bug",
-  "updated_at": "2026-07-10T15:42:37Z"
+  "updated_at": "2026-07-10T15:42:39Z"
 }
