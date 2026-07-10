@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T20:01:13Z",
   "created": "2026-07-10T16:33:33Z",
   "description": "PROVEN (fz-k22.10 spike 5 final, wt-k22-root @ 93fe12d68). The proximate 4-vs-5 arithmetic: BoundaryId(56) surface = 2 SEMANTIC inputs [Ty(21),Ty(440)] = 3 arg LANES (the accumulator Ty(440) is a 2-lane shape). The declared cranelift signature counts lanes: build_fn_sigs -\u003e build_fn_signature(closure_target.arg_reprs) (native_codegen/driver.rs:126-136) = 3+self+cont = 5. But push_direct_closure_args (native_codegen/terminator.rs:164-181) iterates args.iter().enumerate() pushing ONE ABI arg per SEMANTIC arg (target.arg_reprs.get(i)) = 2+self+cont = 4 -\u003e got 4 expected 5, silently mis-coercing reprs along the way. ANY closure-lit direct call whose surface has a multi-lane input under-fills. Standalone, concrete, testable: a closure direct call with a multi-lane (e.g. 2-lane tuple/accumulator) input. NOTE: fixing this alone changes WHICH mismatch fires (the boundary surface vs target compiled ABI divergence remains, see sibling tickets) -- but per-lane arg pushing is correct regardless and must land.",
   "id": "fz-k22.17",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-k22: push_direct_closure_args pushes one ABI arg per SEMANTIC arg while the declared sig counts LANES -- multi-lane inputs under-fill the call (unit conflation)",
   "type": "bug",
-  "updated_at": "2026-07-10T18:32:07Z"
+  "updated_at": "2026-07-10T20:01:13Z"
 }
