@@ -5,6 +5,7 @@
     "fz-k22.14",
     "fz-k22.20"
   ],
+  "closed_at": "2026-07-10T22:07:37Z",
   "created": "2026-07-10T16:33:34Z",
   "description": "PROVEN (fz-k22.10 spike 5 final). Offender CallableId(35): capture_lanes=[] (producer demand judged the capture runtime-absent), so CallableDescr{function, capture_shapes, capture_lanes} (transport.rs:3377-3381 intern site) interns TWO distinct capture groundings of lambda FunctionId(181) to one identity. Its single boundary pools resolutions [Ty(453),Ty(21),Ty(440)] and [Ty(481),Ty(21),Ty(440)] (different capture Ty -\u003e potentially different compiled ABI) IN ONE PUBLISH (immutable BoundaryDescr, seq-traced: resolutions complete at publish, zero later growth -- publish-then-drift and late-acquisition both REFUTED). Resolutions minted per producer at callable_flow_resolution_edges_product (runtime_demand.rs:2810-2817: activation_key(root, fn, capture_tys ++ grounded_surface)) threaded via boundary_resolution_symbols_for_flow_surfaces (transport.rs:4116). This is the SAME identity principle as fz-k22.7: callable identity must include the capture GROUNDING (or boundaries must carry per-resolution surfaces), so one boundary never describes a grounding the artifact never materialized. Relates to fz-k22.14 (the semantic-layer face of the same multi-grounding representation question).",
   "id": "fz-k22.18",
@@ -21,8 +22,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-k22: capture-erased CallableId pooling -- CallableDescr with capture_lanes=[] interns DISTINCT capture groundings of one lambda into ONE callable identity; its boundary pools ABI-divergent resolutions from birth",
   "type": "bug",
-  "updated_at": "2026-07-10T18:32:08Z"
+  "updated_at": "2026-07-10T22:07:37Z"
 }
