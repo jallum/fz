@@ -9,9 +9,15 @@
   "id": "fz-1ah.1",
   "labels": [],
   "parent": "fz-1ah",
+  "comments": [
+    {
+      "text": "AUDIT FAIL on 7212a7820. Blocking: (1) domain coverage Cartesian-products parameter and nested tuple alternatives; a 16-field bool tuple generates 65,536 rows and takes 6.24s, so replace with symbolic/non-expanding analysis; (2) FunctionContract independently unions argument columns and invents cross-overload inputs, so preserve arrow correlation; (3) list projection discards element domains, causing exact @spec count_a([:a]) with []/[:a|tail] to warn; (4) guarded functions still skip analysis entirely, allowing declared inputs to fall through silently. Existing gates/00181 passed, but local correctness is insufficient. No fold; return to implementation and re-audit.",
+      "timestamp": "2026-07-10T16:28:22Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Domain-aware exhaustiveness must not warn on total library reducers",
   "type": "bug",
-  "updated_at": "2026-07-10T16:09:53Z"
+  "updated_at": "2026-07-10T16:28:22Z"
 }
