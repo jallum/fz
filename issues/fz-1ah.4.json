@@ -10,6 +10,12 @@
   "id": "fz-1ah.4",
   "labels": [],
   "parent": "fz-1ah",
+  "comments": [
+    {
+      "text": "Governing constraint: event bounding/buffering is handler-side work after fz-1ah.5/.6. Do not solve volume by adding eager aggregation, counters, formatted summaries, or derived metadata in compiler code. The compiler passes minimal raw references; handlers decide what to project, serialize, aggregate, copy, or retain.",
+      "timestamp": "2026-07-10T16:04:31Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Bound compiler2 pull telemetry and buffer JSONL output",
