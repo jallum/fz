@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [],
   "blocks": [
     "fz-1ah.2"
@@ -20,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "Domain-aware exhaustiveness must not warn on total library reducers",
   "type": "bug",
-  "updated_at": "2026-07-10T16:43:09Z"
+  "updated_at": "2026-07-10T16:54:32Z"
 }
