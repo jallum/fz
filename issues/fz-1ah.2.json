@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-1ah.1"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-1ah",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Render telemetry Diagnostics with their source spans in fz2",
   "type": "bug",
-  "updated_at": "2026-07-10T15:57:19Z"
+  "updated_at": "2026-07-10T20:04:53Z"
 }
