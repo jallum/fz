@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T16:59:54Z",
+  "description": "Output contract: a first-class callable boundary must translate a concrete target body's physical return lanes to the boundary's published return lanes. Repro: fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz on run/build at 0aa00f6f7. The pooled Enum.reduce bridge boundary publishes {:cont, any} as [RawAtom, ValueRef], while each resolved target body returns {:cont, integer} as [RawAtom, RawInt]. src/compiler2/native_codegen/driver.rs::emit_callable_boundary_bodies currently requires exact equality and tail-calls the target, so JIT/AOT fail before execution. Repair at the callable-boundary adapter/data-model seam: preserve the target's native ABI, box/unbox the adapted return payload before delivering to the caller continuation, and prove run/build plus the fixture matrix. This is distinct from the dropped-capture interpreter defect discovered in fz-pcd.",
+  "id": "fz-pcd.1",
+  "labels": [],
+  "parent": "fz-pcd",
+  "priority": 1,
+  "status": "open",
+  "title": "[BUG] callable boundary cannot adapt raw target returns to published ValueRef lanes",
+  "type": "bug",
+  "updated_at": "2026-07-10T16:59:54Z"
+}
