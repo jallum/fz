@@ -18,11 +18,15 @@
     {
       "text": "While implementing the required no-reconstruction entry flow, direct lambda construction reached CallableId(1) with multiple concrete resolved entries. This is not a package-time ambiguity: the callable interner has already pooled distinct capture groundings, exactly fz-k22.18. Added fz-k22.18 -\u003e fz-k22.20 dependency and am resolving the upstream identity fact first; no downstream target selection will be invented.",
       "timestamp": "2026-07-10T18:18:45Z"
+    },
+    {
+      "text": "No-reselection spike moved to dedicated fz-k22 worktree. Concrete CallableFacts now package target-owned ABI entries and stamp construction sites, but with FunctionId/type-overlap fallback removed the fixture deterministically returns 2/2 rather than 10/2. This proves fz-k22.14 is an upstream blocker: CallTargetSummary has already collapsed the needed direct target before entry construction. Added fz-k22.14 -\u003e fz-k22.20 dependency; will resolve that representation first rather than reintroduce selection.",
+      "timestamp": "2026-07-10T20:08:57Z"
     }
   ],
   "priority": 0,
   "status": "in_progress",
   "title": "[BUG] resolved callable entry must own target capture and return ABI",
   "type": "bug",
-  "updated_at": "2026-07-10T20:08:56Z"
+  "updated_at": "2026-07-10T20:08:57Z"
 }
