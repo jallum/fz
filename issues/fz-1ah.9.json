@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T19:06:31Z",
+  "description": "Goal\nMake contract application and declared-domain projection deterministic when one when-bound refers to another type variable.\n\nSignal\nSource syntax permits dependent constraints, for example t bounded by u and u bounded by :a | :b. Existing Types::match_arrow iterates ContractArrow.bounds as a HashMap. An RHS-only variable has no direct witness, so iteration order can choose Underconstrained on one run or reject a valid call on another. This is pre-existing and independent of fz-1ah.1, which now closes diagnostic domains deterministically.\n\nRepro\nA function declared with parameter t and bounds t: u, u: :a | :b has order-dependent normal call validation. The same source may settle underconstrained or emit a spec violation depending on HashMap iteration order.\n\nStrategy\nGive dependent bound evaluation one authoritative, deterministic graph/SCC interpretation shared by Types::match_arrow and FunctionContract input-domain projection. Acyclic dependencies close in dependency order. Cyclic components remain symbolic/conservative unless the type lattice can fold them canonically; never repeatedly unfold recursive structures. Do not sort formatted names as a semantic substitute, use addressed TypeVarId graph identity.\n\nTDD\nPin the source-level dependent-bound call across repeated fresh Worlds; assert one stable result. Cover acyclic chains, RHS-only variables, cyclic structural bounds, and contract-domain diagnostics. Preserve unbounded-variable conservatism.\n\nAcceptance\n- Identical source has identical application/diagnostic behavior across fresh Worlds.\n- Normal contract matching and exhaustiveness consume the same bound interpretation.\n- No infinite type unfolding or HashMap-order dependence.\n- Tests, docs, and clippy pass.",
+  "id": "fz-1ah.9",
+  "labels": [],
+  "parent": "fz-1ah",
+  "priority": 2,
+  "status": "open",
+  "title": "Make dependent contract bounds deterministic",
+  "type": "bug",
+  "updated_at": "2026-07-10T19:06:31Z"
+}
