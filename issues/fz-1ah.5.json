@@ -14,11 +14,15 @@
     {
       "text": "API constraint discovered during audit: Value::Opaque/OpaqueRef currently requires T: Any; Any requires a static concrete type. World has a telemetry lifetime (World\u003c'a\u003e), so the desired raw \u0026World event context cannot generally pass through OpaqueRef. The redesign must support event-scoped non-static typed context directly (or an equivalent borrowed projection interface). Do not respond by flattening World into Value metadata or making World static.",
       "timestamp": "2026-07-10T16:04:44Z"
+    },
+    {
+      "text": "Plan refinement for World lifetime: do not invent unsafe/non-static Any erasure. Remove the borrowed telemetry sink from semantic World. Make World an owned, lifetime-free authority; Compiler2/job execution context owns or borrows the generic telemetry sink separately. A zero-sized NullTelemetry specialization then becomes erasable. Short-lived execution context methods perform state mutation, reborrow \u0026World after the decision, and lazily emit raw context. This removes World\u003c'a\u003e at the source.",
+      "timestamp": "2026-07-10T16:07:38Z"
     }
   ],
   "priority": 0,
   "status": "open",
   "title": "Make telemetry emission lazy and the no-handler path erasable",
   "type": "bug",
-  "updated_at": "2026-07-10T16:04:44Z"
+  "updated_at": "2026-07-10T16:07:38Z"
 }
