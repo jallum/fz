@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-10T15:05:26Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-k22",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-k22: callsite activation recompute must widen the activation's own .inputs(), not surface_inputs -- surface_inputs is narrower and truncates a closure's capture slot",
   "type": "bug",
-  "updated_at": "2026-07-10T15:05:26Z"
+  "updated_at": "2026-07-10T15:29:41Z"
 }
