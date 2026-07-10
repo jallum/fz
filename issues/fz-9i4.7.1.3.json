@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T01:05:32Z",
+  "close_reason": "Landed on integration as e1ecccd8e (fz-9i4.7.1.3: emit compiler2 spec violation diagnostics). Registered spec/violation, added per-contract-arrow enforcement provenance so protocol-domain arrows do not mask concrete overload violations, emitted fatal production diagnostics from compiler2 call validation, undeferred spec_violation, and added spec_mixed_protocol_concrete_violation. Audit passed after the per-arrow provenance amendment. Coordinator verification: cargo test --lib --quiet passed (1309 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed; fixture_matrix spec_violation/spec_mixed_protocol_concrete_violation/spec_ok all passed on run/interp/build.",
   "created": "2026-07-09T22:00:24Z",
   "description": "spec_violation.fz currently exits 0 and prints 42 on run/interp/build; no spec/violation code is registered and FunctionContract facts refine calls without rejecting declared-vs-observed mismatches. Acceptance: register/emit spec/violation from production compiler2 validation, spec_violation.fz exits nonzero with diagnostic on run/interp/build, spec_ok.fz stays clean, cargo test --lib and cargo clippy --all-targets -- -D warnings pass.",
   "id": "fz-9i4.7.1.3",
   "labels": [],
   "parent": "fz-9i4.7.1",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Implement real @spec violation diagnostics on compiler2 product paths",
   "type": "bug",
-  "updated_at": "2026-07-09T22:00:24Z"
+  "updated_at": "2026-07-10T01:05:32Z"
 }
