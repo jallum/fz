@@ -17,11 +17,15 @@
     {
       "text": "COORDINATOR SIGNAL 2026-07-10: current enum_take_drop_split no longer matches only the old monolithic-reseal/LoweNativeProgram fatal. The fixture remains red because the interp leg is blocked by fz-k22.9 (ambiguous runtime closure identity) and the native leg is blocked by fz-f98.14.11 (incompatible callable materialization ABI on the same fixture). Added both as explicit blockers so this parent does not appear ready until the remaining fixture blockers close.",
       "timestamp": "2026-07-10T15:42:39Z"
+    },
+    {
+      "text": "BOOKKEEPING CORRECTION 2026-07-10: bw rejected fz-f98.14.11 -\u003e fz-f98.14 because descendants cannot block ancestors. The explicit blockers are now fz-k22.9 for enum_take_drop_split::interp ambiguity and fz-f98.6 for the native boxed-callable multi-surface/ABI incoherence. fz-f98.14.11 retains the concrete native return-lane evidence as a child note, but the non-descendant dependency edge is fz-f98.6.",
+      "timestamp": "2026-07-10T15:43:29Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 convergence runaway: enum_take_drop_split (00420) drive is 1.3s and schedule-dependent — monolithic per-root reseal over a large closure + partial-publication churn",
   "type": "bug",
-  "updated_at": "2026-07-10T15:42:39Z"
+  "updated_at": "2026-07-10T15:43:29Z"
 }
