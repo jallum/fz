@@ -80,6 +80,12 @@ semantic-closure seal or root transport-plan fact: the legacy
 `DeriveRuntimeDemand` jobs and their `SemanticClosed`/`TransportPlan`/
 `ExecutableTransport`/`RuntimeDemand`/`InputSources` facts do not exist;
 the product pull path is the only artifact path.
+
+A callable boundary's return ABI belongs to its selected `BackendExecutable`:
+native lowering reads that executable's return transport position directly. A
+boundary may carry publication facts, but it must never impose a second return
+representation on the target body.
+
 The planning artifact `../pull-based.html` documents the pull-based design
 and remains available as a reference; this doc and `northstar.html` are the
 durable source of truth for the pull artifact path as built.
@@ -473,14 +479,18 @@ obligations from the request-local product inventory for
 callable-construction values, returned callable values, and explicit
 callable-boundary arguments. A closure-call callee is a consumer of an already
 materialized callable value, not a constructor obligation.
-Native lowering preserves two distinct facts:
 
-- opaque callable-boundary refs on `MakeFnRef` / `MakeClosure` results
-- exact closure-target body facts for singleton-known direct closure calls
+`RootBackendProduct(root)` assigns every concrete callable entry a dense identity
+and records that identity on the exact `(TransportPosition, CallableId)` pairs
+that publish it. The position key preserves nested callable fields in tuples,
+returns, and continuation payloads without treating their outer carrier as a
+callable. Backend construction and native lowering consume this position-owned
+fact directly; they never recover an entry from a function id, capture count,
+type overlap, or a pooled `BoundaryId`.
 
-Direct closure-call lowering no longer reconstructs its ABI from capture-count
-side tables or mixed capture+arg vectors. Compiler2 native codegen reads two
-published surfaces:
+Direct closure-call lowering does not reconstruct ABI from capture-count side
+tables or mixed capture+arg vectors. Native codegen reads the entry-owned
+surfaces:
 
 - callable-boundary surface:
   `arg_reprs` describe the outward callable ABI lanes in source call order
@@ -500,21 +510,11 @@ return repr (`ReturnDelivery` / `ReturnContinuation`). Forcing boundary lanes to
 actual return, so the lanes stay grounded and the wrapper does the bridging.
 
 Opaque closure construction materializes the settled callable boundary published
-by native lowering; singleton-known closure calls bypass that boundary only
-through an explicit `direct_target`, and direct paths still adapt the return
-lane through the same return-shape machinery as any other native seam.
-When a concrete callable is materialized while crossing a first-class
-publication seam, native lowering uses the publication position as the first
-boundary discriminator. If that position is a generic publication rather than a
-native callable entry, native falls back to the callable's transport facts and
-narrows same-function candidates by the callable value's semantic surface. Those
-per-callable boundary facts (`CallableFacts.boundary_ids`) are surfaced through
-the `BackendProgram` product as `MaterializedTransportPlan.callable_boundaries`;
-native reads them from the product it already consumes and never reopens the
-legacy root transport plan.
-Joined callable publications carry concrete resolutions only from source
-positions/shapes recorded while projecting the join; transport must not recover
-them later by scanning unrelated same-surface boundaries.
+by native lowering. An opaque closure call uses that runtime code pointer; it
+does not carry a compiler-selected direct target. A published callable field
+uses the exact entry recorded for its own transport position, while a true union
+carrier remains an opaque runtime closure value rather than being arbitrarily
+assigned one of its members' entries.
 That constructor obligation is use-driven: a callable value earns a runtime
 callable boundary when it crosses an explicit callable-boundary argument seam,
 escapes as a value, or is reused opaquely / at multiple visible closure-call

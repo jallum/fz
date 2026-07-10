@@ -48,9 +48,9 @@ pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableEntry,
     BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendProgramMap,
-    BackendReceive, BackendStep, BackendTail, CallEdge, CallTarget, CallableEntry, DirectCallEdge, DispatchCallArm,
-    DispatchCallEdge, DispatchCallMiss, EmissionReadyCallEdge, EmissionReadyCallableEntry, EmissionReadyExecutable,
-    ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
+    BackendReceive, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm, DispatchCallEdge,
+    DispatchCallMiss, EmissionReadyCallEdge, EmissionReadyExecutable, ExecutableDispatch, MaterializedCallEdge,
+    MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
 pub use body::{

@@ -31,7 +31,7 @@ use super::body::{
 };
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::semantic::ExecutableRuntimeDemand;
-use super::transport::{BoundaryId, CallableId, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeId, TransportPosition};
+use super::transport::{BoundaryId, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportPosition};
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,20 +60,12 @@ pub struct MaterializedTransportPlan {
     pub entry: ExecutableSymbol,
     pub executable_membership: Box<[ExecutableSymbol]>,
     pub position_shapes: Vec<(TransportPosition, ShapeId)>,
+    pub callable_entry_positions: Vec<(TransportPosition, CallableId, u32)>,
     /// Per-callable settled boundary inventory, sourced from the `CallableFacts`
     /// pull product (`CallableFacts.boundary_ids`). Native callable
     /// materialization reads boundary selection from here; it never re-opens the
     /// legacy root transport plan.
     pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
-    /// Per-callable concrete producer resolutions, sourced from the
-    /// `CallableFacts` pull product (`CallableFacts.resolutions`). A callable
-    /// that never publishes a first-class boundary (it never escapes as an
-    /// opaque value) still needs its resolved target body's physical entry
-    /// layout to materialize a `MakeClosure`/`MakeFnRef` value correctly --
-    /// capture ABI is a property of the resolved target, never of the
-    /// reference. Native codegen reads this to synthesize a fallback
-    /// callable-boundary shim for such values.
-    pub callable_resolutions: Vec<(CallableId, Box<[ExecutableSymbol]>)>,
     pub boundary_ids: Vec<BoundaryId>,
     pub publication_boundaries: Vec<(TransportPosition, BoundaryId)>,
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
@@ -90,19 +82,18 @@ impl MaterializedTransportPlan {
             .find_map(|(candidate, boundaries)| (*candidate == callable).then_some(&boundaries[..]))
     }
 
-    /// Concrete producer resolutions for a callable that never published a
-    /// first-class boundary. `None` means the callable was never demanded for
-    /// this program (no facts), distinct from an empty resolution list.
-    pub fn callable_resolutions(&self, callable: CallableId) -> Option<&[ExecutableSymbol]> {
-        self.callable_resolutions
-            .iter()
-            .find_map(|(candidate, resolutions)| (*candidate == callable).then_some(&resolutions[..]))
-    }
-
     pub fn shape_at(&self, position: &TransportPosition) -> Option<ShapeId> {
         self.position_shapes
             .iter()
             .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+    }
+
+    pub fn callable_entry_at(&self, position: &TransportPosition, callable: CallableId) -> Option<u32> {
+        self.callable_entry_positions
+            .iter()
+            .find_map(|(candidate, candidate_callable, identity)| {
+                (candidate == position && *candidate_callable == callable).then_some(*identity)
+            })
     }
 }
 
@@ -301,11 +292,6 @@ pub(crate) struct NativeCallableBoundary {
     /// The transport `BoundaryId` this native boundary projects. Callable
     /// materialization selects a boundary by the value's `CallableId` fact
     /// (`CallableFacts.boundary_ids`), never by re-deriving from capture types.
-    /// `None` for a synthetic fallback entry: a target body that never
-    /// published a first-class boundary still needs a
-    /// physical callable-boundary shim so its `MakeClosure`/`MakeFnRef` value
-    /// carries a valid code pointer; that shim has no transport publication
-    /// to project.
     pub boundary: Option<BoundaryId>,
     /// Synthetic callable identity used at `MakeFnRef` / `MakeClosure` sites.
     pub identity_fn: FnId,
@@ -320,8 +306,6 @@ pub(crate) struct NativeCallableBoundary {
     /// Executable closure-entry argument lanes in source call order.
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    pub return_shape: ShapeId,
-    pub return_lanes: Vec<LaneId>,
     pub return_reprs: Vec<AbiValueRepr>,
     pub return_tuple_arity: Option<usize>,
 }
@@ -368,18 +352,6 @@ pub struct AbiReadyCallEdge {
     pub return_ty: Ty,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallableEntry {
-    pub boundary: BoundaryId,
-    pub target: ExecutableKey,
-    pub capture_count: usize,
-    pub capture_reprs: Vec<AbiValueRepr>,
-    pub arg_reprs: Vec<AbiValueRepr>,
-    pub return_ty: Ty,
-    pub return_shape: ShapeId,
-    pub return_lanes: Vec<LaneId>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct EmissionReadyExecutable {
     pub key: ExecutableKey,
@@ -402,18 +374,6 @@ pub struct EmissionReadyCallEdge {
     pub target: CallEdge<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmissionReadyCallableEntry {
-    pub boundary: BoundaryId,
-    pub target: usize,
-    pub capture_count: usize,
-    pub capture_reprs: Vec<AbiValueRepr>,
-    pub arg_reprs: Vec<AbiValueRepr>,
-    pub return_ty: Ty,
-    pub return_shape: ShapeId,
-    pub return_lanes: Vec<LaneId>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendExecutable {
     pub key: ExecutableKey,
@@ -430,14 +390,19 @@ pub struct BackendExecutable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCallableEntry {
-    pub boundary: BoundaryId,
+    /// Dense root-local identity of this exact resolved closure entry.
+    pub identity: u32,
+    /// Concrete callable producer whose value carries this entry identity.
+    pub callable: CallableId,
+    /// The first-class publication that carries this exact target, when the
+    /// callable crosses one. This is association data only; the entry's target
+    /// remains the sole ABI authority.
+    pub publication_boundary: Option<BoundaryId>,
     pub target: usize,
     pub capture_count: usize,
     pub capture_reprs: Vec<AbiValueRepr>,
     pub arg_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    pub return_shape: ShapeId,
-    pub return_lanes: Vec<LaneId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -656,6 +621,7 @@ pub enum BackendTail {
         callsite: CallSiteId,
         callee: ValueId,
         target: Option<usize>,
+        resolved_entry: Option<u32>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
         return_flow: Option<CallReturnFlow>,
@@ -715,11 +681,13 @@ pub enum BackendStep {
     FunctionRef {
         value: ValueId,
         function: FunctionId,
+        resolved_entry: Option<u32>,
     },
     Lambda {
         value: ValueId,
         function: FunctionId,
         captures: Vec<ValueId>,
+        resolved_entry: Option<u32>,
     },
     BinaryOp {
         value: ValueId,

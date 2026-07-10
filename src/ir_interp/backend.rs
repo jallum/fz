@@ -755,7 +755,7 @@ fn step_eval_entry(
         } => {
             let callee_value = env_get_value(&env, *callee);
             let missing_direct_callee = callee_value.is_err();
-            let (function, capture_shape, capture_lanes) = match callee_value {
+            let (fn_id, _capture_shape, capture_lanes) = match callee_value {
                 Ok(BackendBoundValue::Transport { shape, lanes })
                     if matches!(transport.interners().shape(shape), ShapeDescr::Callable(_)) =>
                 {
@@ -766,7 +766,7 @@ fn step_eval_entry(
                     let function = callable.function.ok_or_else(|| {
                         "backend closure call cannot directly invoke generic callable transport".to_string()
                     })?;
-                    (function, Some(shape), lanes)
+                    (FnId(function.as_u32()), Some(shape), lanes)
                 }
                 Ok(other) => {
                     let materialized = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
@@ -782,7 +782,7 @@ fn step_eval_entry(
                             )
                         })?,
                     };
-                    (FunctionId::from_fn_id(fn_id), None, captures)
+                    (fn_id, None, captures)
                 }
                 Err(error) => {
                     let Some(target) = target else {
@@ -798,46 +798,28 @@ fn step_eval_entry(
                         .executables
                         .get(*target)
                         .ok_or_else(|| format!("backend executable {} is out of bounds", target))?;
-                    (callee_executable.key.activation.function, None, Vec::new())
+                    (
+                        FnId(callee_executable.key.activation.function.as_u32()),
+                        None,
+                        Vec::new(),
+                    )
                 }
             };
-            let fn_id = FnId(function.as_u32());
-            let executable_target = if let Some(target) = target {
+            let settled_entry = callable_entry_for_identity(program, fn_id);
+            let function = settled_entry
+                .map(|entry| program.executables[entry.target].key.activation.function)
+                .unwrap_or_else(|| FunctionId::from_fn_id(fn_id));
+            let executable_target = if let Some(entry) = settled_entry {
+                entry.target
+            } else if let Some(target) = target {
                 *target
             } else {
-                let inventory_capture_count = shared_callable_capture_count(program, function, capture_lanes.len());
-                let resolved_capture_values;
-                let published_capture_values;
-                let capture_values = if let Some(capture_count) = inventory_capture_count {
-                    published_capture_values = capture_lanes
-                        .get(..capture_count)
-                        .ok_or_else(|| {
-                            format!(
-                                "backend callable inventory for function {} expected {} capture lane(s), got {}",
-                                function.as_u32(),
-                                capture_count,
-                                capture_lanes.len()
-                            )
-                        })?
-                        .to_vec();
-                    published_capture_values.as_slice()
-                } else if let Some(shape) = capture_shape {
-                    resolved_capture_values =
-                        callable_capture_values(transport, runtime.cur_proc(), shape, &capture_lanes)?;
-                    resolved_capture_values.as_slice()
-                } else {
-                    capture_lanes.as_slice()
-                };
-                let arg_values = materialize_call_args(transport, runtime.cur_proc(), &env, args)?;
-                resolve_backend_callable_executable(
-                    runtime,
-                    types,
-                    module,
-                    program,
-                    fn_id,
-                    capture_values,
-                    &arg_values,
-                )?
+                return Err(format!(
+                    "backend closure call executable={} function={} callsite={} has no resolved entry identity or direct target",
+                    executable_index,
+                    function.as_u32(),
+                    callsite.as_u32()
+                ));
             };
             let callee_executable = program
                 .executables
@@ -868,22 +850,21 @@ fn step_eval_entry(
                     arg_inputs_start
                 ));
             }
-            let capture_lanes_for_call =
-                if let Some(entry) = callable_entry_for_target(program, executable_target, function) {
-                    capture_lanes
-                        .get(..entry.capture_count)
-                        .ok_or_else(|| {
-                            format!(
-                                "backend callable entry {} expected {} capture lane(s), got {}",
-                                executable_target,
-                                entry.capture_count,
-                                capture_lanes.len()
-                            )
-                        })?
-                        .to_vec()
-                } else {
-                    capture_lanes
-                };
+            let capture_lanes_for_call = if let Some(entry) = settled_entry {
+                capture_lanes
+                    .get(..entry.capture_count)
+                    .ok_or_else(|| {
+                        format!(
+                            "backend callable entry {} expected {} capture lane(s), got {}",
+                            executable_target,
+                            entry.capture_count,
+                            capture_lanes.len()
+                        )
+                    })?
+                    .to_vec()
+            } else {
+                capture_lanes
+            };
             let mut call_args = Vec::new();
             call_args.extend(capture_lanes_for_call);
             call_args.extend(encode_call_args(
@@ -1206,12 +1187,17 @@ fn eval_steps(
                     )?),
                 );
             }
-            ProgramStep::FunctionRef { value, function } => {
-                let bound = if executable
-                    .runtime_demand
-                    .callable_flows
-                    .get(value)
-                    .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
+            ProgramStep::FunctionRef {
+                value,
+                function,
+                resolved_entry,
+            } => {
+                let bound = if resolved_entry.is_some()
+                    || executable
+                        .runtime_demand
+                        .callable_flows
+                        .get(value)
+                        .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
                 {
                     let proc = runtime.cur_proc();
                     direct_callable_value(
@@ -1224,6 +1210,7 @@ fn eval_steps(
                         *value,
                         *function,
                         &[],
+                        *resolved_entry,
                     )?
                 } else {
                     BackendBoundValue::Runtime(AnyValue::FnRef(FnId(function.as_u32())))
@@ -1234,16 +1221,27 @@ fn eval_steps(
                 value,
                 function,
                 captures,
+                resolved_entry,
             } => {
-                let bound = if executable
-                    .runtime_demand
-                    .callable_flows
-                    .get(value)
-                    .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
+                let bound = if resolved_entry.is_some()
+                    || executable
+                        .runtime_demand
+                        .callable_flows
+                        .get(value)
+                        .is_some_and(|flow| !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty())
                 {
                     let proc = runtime.cur_proc();
                     direct_callable_value(
-                        runtime, transport, program, executable, proc, env, *value, *function, captures,
+                        runtime,
+                        transport,
+                        program,
+                        executable,
+                        proc,
+                        env,
+                        *value,
+                        *function,
+                        captures,
+                        *resolved_entry,
                     )?
                 } else {
                     BackendBoundValue::Runtime(make_closure(
@@ -2007,6 +2005,7 @@ fn direct_callable_value(
     value: ValueId,
     function: FunctionId,
     captures: &[ValueId],
+    resolved_entry: Option<u32>,
 ) -> Result<BackendBoundValue, String> {
     let shape = value_shape(runtime, program, executable, value)?;
     let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
@@ -2015,7 +2014,8 @@ fn direct_callable_value(
             value.as_u32()
         ));
     };
-    let callable = transport.interners().callable(*callable);
+    let callable_id = *callable;
+    let callable = transport.interners().callable(callable_id);
     if callable.function != Some(function) {
         return Err(format!(
             "backend direct callable producer {} expected function {}, got {:?}",
@@ -2037,7 +2037,7 @@ fn direct_callable_value(
         let bound = env_get_value(env, capture)?;
         encode_runtime_value(transport, proc, &bound, shape, &mut lanes)?;
     }
-    if lanes.len() != callable.capture_lanes.len() {
+    if lanes.len() != callable.capture_lanes.len() && resolved_entry.is_none() {
         return Err(format!(
             "backend direct callable producer {} expected {} capture lane(s), got {}",
             value.as_u32(),
@@ -2045,7 +2045,48 @@ fn direct_callable_value(
             lanes.len()
         ));
     }
-    Ok(BackendBoundValue::Transport { shape, lanes })
+    let Some(identity) = resolved_entry else {
+        return Ok(BackendBoundValue::Transport { shape, lanes });
+    };
+    if lanes.len() != callable.capture_lanes.len() {
+        let mut runtime_captures = Vec::with_capacity(captures.len());
+        for capture in captures.iter().copied() {
+            let bound = env_get_value(env, capture)?;
+            runtime_captures.push(materialize_backend_value(transport, proc, &bound)?);
+        }
+        let identity = FnId(callable_entry_identity_fn(identity));
+        return if runtime_captures.is_empty() {
+            Ok(BackendBoundValue::Runtime(AnyValue::FnRef(identity)))
+        } else {
+            Ok(BackendBoundValue::Runtime(make_closure_on_proc(
+                proc,
+                identity.0,
+                runtime_captures,
+            )?))
+        };
+    }
+    let entry = callable_entry_for_identity_value(program, identity).ok_or_else(|| {
+        format!(
+            "backend direct callable producer {} references missing resolved entry {identity}",
+            value.as_u32()
+        )
+    })?;
+    if entry.callable != callable_id {
+        return Err(format!(
+            "backend direct callable producer {} has callable {:?}, but resolved entry {identity} belongs to {:?}",
+            value.as_u32(),
+            callable_id,
+            entry.callable
+        ));
+    }
+    let identity = FnId(callable_entry_identity_fn(identity));
+    if lanes.is_empty() {
+        Ok(BackendBoundValue::Runtime(AnyValue::FnRef(identity)))
+    } else {
+        Ok(BackendBoundValue::Runtime(make_closure_on_proc(
+            proc, identity.0, lanes,
+        )?))
+    }
 }
 
 fn materialize_backend_value(
@@ -2104,17 +2145,6 @@ fn materialize_transport_value(
             }
         }
     }
-}
-
-fn materialize_call_args(
-    transport: &TransportStore,
-    proc: *mut Process,
-    env: &HashMap<ValueId, BackendBoundValue>,
-    args: &[crate::compiler2::BackendCallArg],
-) -> Result<Vec<AnyValue>, String> {
-    args.iter()
-        .map(|arg| env_get(transport, proc, env, arg.value))
-        .collect()
 }
 
 fn encode_call_args(
@@ -2552,37 +2582,6 @@ fn tuple_field_values_for_shape(
         .collect()
 }
 
-fn callable_capture_values(
-    transport: &TransportStore,
-    proc: *mut Process,
-    shape: ShapeId,
-    lanes: &[AnyValue],
-) -> Result<Vec<AnyValue>, String> {
-    let ShapeDescr::Callable(callable) = transport.interners().shape(shape) else {
-        return Err(format!("backend transport shape {shape:?} is not callable"));
-    };
-    let callable = transport.interners().callable(*callable);
-    let mut offset = 0_usize;
-    callable
-        .capture_shapes
-        .iter()
-        .copied()
-        .map(|capture_shape| {
-            let width = transport.interners().shape_width(capture_shape);
-            let end = offset
-                .checked_add(width)
-                .ok_or_else(|| format!("backend callable shape {shape:?} capture lane offset overflow"))?;
-            let capture_lanes = lanes
-                .get(offset..end)
-                .ok_or_else(|| format!("backend callable shape {shape:?} has an invalid capture lane span"))?
-                .to_vec();
-            offset = end;
-            let bound = decode_backend_value_from_lanes(transport, capture_shape, capture_lanes)?;
-            materialize_backend_value(transport, proc, &bound)
-        })
-        .collect()
-}
-
 fn direct_callable_capture_lanes(
     transport: &TransportStore,
     proc: *mut Process,
@@ -2613,7 +2612,7 @@ fn direct_callable_capture_lanes(
                 AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
                 other => unpack_closure(other.value(proc)?)?,
             };
-            if FunctionId::from_fn_id(fn_id) != function {
+            if fn_id.0 & CALLABLE_ENTRY_IDENTITY_BASE == 0 && FunctionId::from_fn_id(fn_id) != function {
                 return Err(format!(
                     "backend direct-callable transport expected function {}, got {}",
                     function.as_u32(),
@@ -2738,8 +2737,14 @@ fn drain_pending_dtors_backend(
             }
         };
         let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
-        let target =
-            resolve_backend_callable_executable(runtime, types, module, program, fn_id, &captures, &[payload])?;
+        let target = if let Some(entry) = callable_entry_for_identity(program, fn_id) {
+            entry.target
+        } else {
+            return Err(format!(
+                "backend destructor closure {} has no resolved entry identity",
+                fn_id.0
+            ));
+        };
         let mut args = captures;
         args.push(payload);
         let _ = run_backend_resume(
@@ -2773,6 +2778,9 @@ pub(super) fn resolve_backend_callable_executable(
     captures: &[AnyValue],
     args: &[AnyValue],
 ) -> Result<usize, String> {
+    if let Some(entry) = callable_entry_for_identity(program, fn_id) {
+        return Ok(entry.target);
+    }
     let candidates = program
         .callable_entries
         .iter()
@@ -2920,40 +2928,26 @@ fn activation_inputs_strictly_narrow(
     strict
 }
 
-fn callable_entry_for_target(
-    program: &BackendProgram,
-    target: usize,
-    function: FunctionId,
-) -> Option<&crate::compiler2::BackendCallableEntry> {
-    program.callable_entries.iter().find(|entry| {
-        entry.target == target
-            && program
-                .executables
-                .get(entry.target)
-                .is_some_and(|executable| executable.key.activation.function == function)
-    })
+const CALLABLE_ENTRY_IDENTITY_BASE: u32 = 0x8000_0000;
+
+fn callable_entry_identity_fn(identity: u32) -> u32 {
+    CALLABLE_ENTRY_IDENTITY_BASE | identity
 }
 
-fn shared_callable_capture_count(
+fn callable_entry_for_identity(
     program: &BackendProgram,
-    function: FunctionId,
-    available_lanes: usize,
-) -> Option<usize> {
-    let mut counts = program
-        .callable_entries
-        .iter()
-        .filter(|entry| {
-            program
-                .executables
-                .get(entry.target)
-                .is_some_and(|executable| executable.key.activation.function == function)
-        })
-        .map(|entry| entry.capture_count);
-    let count = counts.next()?;
-    counts
-        .all(|candidate| candidate == count)
-        .then_some(count)
-        .filter(|count| *count <= available_lanes)
+    fn_id: FnId,
+) -> Option<&crate::compiler2::BackendCallableEntry> {
+    (fn_id.0 & CALLABLE_ENTRY_IDENTITY_BASE != 0)
+        .then_some(fn_id.0 & !CALLABLE_ENTRY_IDENTITY_BASE)
+        .and_then(|identity| callable_entry_for_identity_value(program, identity))
+}
+
+fn callable_entry_for_identity_value(
+    program: &BackendProgram,
+    identity: u32,
+) -> Option<&crate::compiler2::BackendCallableEntry> {
+    program.callable_entries.iter().find(|entry| entry.identity == identity)
 }
 
 fn runtime_values_match_callable_entry_reprs(

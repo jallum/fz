@@ -292,12 +292,16 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             let mut shim_cache = CodegenCache::default();
             let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
             let body_fref = cg.func_ref(body_func_id);
-            let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_reprs.len() + 2);
+            let mut direct_args: Vec<ir::Value> =
+                Vec::with_capacity(boundary.capture_reprs.len() + arg_reprs.len() + 1);
+            for (index, repr) in boundary.capture_reprs.iter().copied().enumerate() {
+                let binding = cg.closure_capture_as_binding(self_value, index, repr);
+                cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
+            }
             for (idx, repr) in arg_reprs.iter().copied().enumerate() {
                 let binding = CodegenValue::AnyRef(params[idx]);
                 cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
             }
-            direct_args.push(self_value);
             direct_args.push(cont_value);
             cg.b.ins().return_call(body_fref, &direct_args);
         })
@@ -941,6 +945,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
 /// `require_closure_target_surface_agreement` in surface.rs); body
 /// agreement is enforced only at the closure-lit direct-call consumption
 /// point in terminator.rs.
+#[cfg(test)]
 fn register_closure_target_surface(
     targets: &mut HashMap<FnId, NativeClosureTargetSurface>,
     target_fn: FnId,
@@ -963,122 +968,13 @@ fn register_closure_target_surface(
     }
 }
 
-fn build_codegen_closure_targets(
-    program: &crate::compiler2::NativeProgram,
-    param_reprs: &[Vec<ArgRepr>],
-) -> Result<HashMap<FnId, NativeClosureTargetSurface>, CodegenError> {
-    let mut targets = HashMap::new();
-    for boundary in &program.callable_boundaries {
-        let next = NativeClosureTargetSurface {
-            capture_count: boundary.capture_count,
-            capture_reprs: arg_reprs_from_compiler2(&boundary.capture_reprs),
-            arg_reprs: arg_reprs_from_compiler2(&boundary.arg_reprs),
-        };
-        register_closure_target_surface(
-            &mut targets,
-            boundary.target_fn,
-            "the closure-target registry (two boundaries publishing one target)",
-            next,
-        )?;
-    }
-
-    // `direct_target` on `CallClosure`/`TailCallClosure` is a devirtualization
-    // HINT for the call_indirect's code pointer — native codegen never emits a
-    // genuine direct `call`/`return_call` for either terminator (see
-    // `emit_call_closure`/`emit_tail_call_closure` in native_codegen/call.rs
-    // and terminator.rs, which always lower through `call_indirect` /
-    // `return_call_indirect`). The same `target_fn` can legitimately be named
-    // by call sites whose closures carry different real capture surfaces —
-    // e.g. `all?/1` closing over nothing vs `all?/2` closing over a
-    // caller-supplied `fun`, sharing one recursive body (see the "expected,
-    // not a bug" fallback comment in jobs/native.rs). Deriving a capture count
-    // from this call site's `args.len()` and comparing it against an already
-    // *authoritative* target surface (published above from the concrete
-    // producer boundaries) therefore fabricates false disagreements
-    // and must never happen. This loop exists only to synthesize a fallback
-    // surface for target bodies that own no callable boundary at all (e.g.
-    // closures that never escape as first-class values), so it must skip any
-    // `target_fn` the boundary walk above already settled.
-    let authoritative_targets: std::collections::HashSet<FnId> = targets.keys().copied().collect();
-    for function in &program.module.fns {
-        for block in &function.blocks {
-            let (target_fn, arg_count) = match &block.terminator {
-                Term::CallClosure {
-                    direct_target: Some(target_fn),
-                    args,
-                    ..
-                }
-                | Term::TailCallClosure {
-                    direct_target: Some(target_fn),
-                    args,
-                    ..
-                } => (*target_fn, args.len()),
-                _ => continue,
-            };
-            if authoritative_targets.contains(&target_fn) {
-                continue;
-            }
-            let target_ir = program.module.fn_by_id(target_fn);
-            let logical_param_count = target_ir.block(target_ir.entry).params.len();
-            assert!(
-                arg_count <= logical_param_count,
-                "direct closure target fn {} cannot receive {} call args through only {} logical params",
-                target_fn.0,
-                arg_count,
-                logical_param_count,
-            );
-            let capture_count = logical_param_count - arg_count;
-            let next = closure_target_surface_from_body(program, param_reprs, target_fn, capture_count);
-            register_closure_target_surface(
-                &mut targets,
-                target_fn,
-                "the closure-target registry (two call sites synthesizing a fallback surface for one unpublished target)",
-                next,
-            )?;
-        }
-    }
-
-    Ok(targets)
-}
-
-fn closure_target_surface_from_body(
-    program: &crate::compiler2::NativeProgram,
-    param_reprs: &[Vec<ArgRepr>],
-    target_fn: FnId,
-    capture_count: usize,
-) -> NativeClosureTargetSurface {
-    let target_sid = target_fn.0 as usize;
-    let target_body = program
-        .bodies
-        .iter()
-        .find(|body| body.fn_id == target_fn)
-        .unwrap_or_else(|| panic!("closure target fn {} must have a native body", target_fn.0));
-    let target_param_reprs = &param_reprs[target_sid];
-    let logical_param_count = target_body.param_reprs.len();
-    assert_eq!(
-        target_param_reprs.len(),
-        logical_param_count,
-        "closure target fn {} should publish one ABI repr per logical param",
-        target_fn.0,
-    );
-    assert!(
-        capture_count <= logical_param_count,
-        "closure target fn {} cannot dedicate {} capture lane(s) through only {} logical params",
-        target_fn.0,
-        capture_count,
-        logical_param_count,
-    );
-    NativeClosureTargetSurface {
-        capture_count,
-        capture_reprs: target_param_reprs[..capture_count].to_vec(),
-        arg_reprs: target_param_reprs[capture_count..].to_vec(),
-    }
+fn build_codegen_closure_targets() -> HashMap<FnId, NativeClosureTargetSurface> {
+    HashMap::new()
 }
 
 fn collect_codegen_mid_flight_cont_keys(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-    closure_targets: &HashMap<FnId, NativeClosureTargetSurface>,
 ) -> Vec<(u32, Vec<MidFlightArgShape>)> {
     let entry_abis = program
         .bodies
@@ -1119,9 +1015,6 @@ fn collect_codegen_mid_flight_cont_keys(
                         .copied()
                         .map(MidFlightArgShape::Value)
                         .collect::<Vec<_>>();
-                    if closure_targets.contains_key(&callee) {
-                        shapes.push(MidFlightArgShape::HeapRef);
-                    }
                     shapes.push(MidFlightArgShape::HeapRef);
                     shapes
                 }
@@ -1175,7 +1068,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
-    let closure_targets = build_codegen_closure_targets(program, &param_reprs)?;
+    let closure_targets = build_codegen_closure_targets();
     let native_abi_fns = program
         .module
         .fns
@@ -1204,8 +1097,8 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         spec_count: program.bodies.len(),
         body_slots,
         callable_boundaries,
-        closure_targets: closure_targets.clone(),
-        mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs, &closure_targets),
+        closure_targets,
+        mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs),
         param_reprs,
         halt_reprs,
         return_diverges,

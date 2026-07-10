@@ -2339,6 +2339,7 @@ mod tests {
         let shape = world.intern_shape(ShapeDescr::Lane(lane));
         let callable = world.intern_callable(CallableDescr {
             function: Some(executable.activation.function),
+            capture_tys: Box::default(),
             capture_shapes: Box::default(),
             capture_lanes: Box::default(),
         });
