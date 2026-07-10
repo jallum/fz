@@ -13,11 +13,15 @@
     {
       "text": "Validated the first deletion-only slice: native callable boundaries now derive return shape/reprs directly from the selected BackendExecutable return position; obsolete boundary-level return fields and unused pre-backend callable-entry structs are removed. LowerNativeProgram accepts the fixture and the compiled path now runs (no [RawAtom, ValueRef] vs [RawAtom, RawInt] boundary/body contradiction), but still prints 10/10. A carrier-lane spike proved the remaining defect is not return adaptation: a closure with a carrier capture still resolves by FunctionId to executable 65, whose body accepts only two runtime lanes. The required next slice is the ticket model: resolved callable-entry identity must be carried on constructed closure values and dispatched directly, replacing FunctionId/capture-count re-selection. No speculative carrier conversion remains in the branch.",
       "timestamp": "2026-07-10T18:03:34Z"
+    },
+    {
+      "text": "While implementing the required no-reconstruction entry flow, direct lambda construction reached CallableId(1) with multiple concrete resolved entries. This is not a package-time ambiguity: the callable interner has already pooled distinct capture groundings, exactly fz-k22.18. Added fz-k22.18 -\u003e fz-k22.20 dependency and am resolving the upstream identity fact first; no downstream target selection will be invented.",
+      "timestamp": "2026-07-10T18:18:45Z"
     }
   ],
   "priority": 0,
   "status": "in_progress",
   "title": "[BUG] resolved callable entry must own target capture and return ABI",
   "type": "bug",
-  "updated_at": "2026-07-10T18:18:44Z"
+  "updated_at": "2026-07-10T18:18:45Z"
 }
