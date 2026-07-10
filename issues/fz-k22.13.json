@@ -19,11 +19,15 @@
     {
       "text": "LOCALIZED AND PROVEN width-relevant (fz-k22.10 spike 5): the nondeterminism IS the order-dependent width-blind merge in CallSiteSummary coalescing -- kept/discarded flip direction run-to-run AND within one run at the recursive reducer callsite (FnId 203 callsite 0 -\u003e FnId 176). Which sid crashes (149/140/none) tracks the survivor. Fixing the merge to a width-aware deterministic join (fz-k22.10 fix part a) closes this.",
       "timestamp": "2026-07-10T16:21:01Z"
+    },
+    {
+      "text": "SECOND ENTRY POINT MEASURED (spike 5 final): ground_surface_for_template_in_session (runtime_demand.rs:2834+) resolves template surfaces by FIRST MATCH over HashSet iteration order of demanded executables -- probe counted 1300-1600 genuinely ambiguous multi-candidate picks PER RUN (template_ground_AMBIGUOUS). Together with the width-blind CallSiteSummary merge (the other proven source), these two decide which activations get minted/resolved/paired per run -- why the crash offender varies (sid149 / sid183 / none). FIX: both sources must become deterministic functions of demand -- (a) width-aware deterministic join in coalescing (with fz-k22.16), (b) template grounding must not first-match over unordered iteration: require agreement across candidates, pick by a deterministic demand-derived key, or wait until the demanded answer is unique (pull-correct).",
+      "timestamp": "2026-07-10T16:33:35Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: enum_predicate_search producer materialization is non-deterministic across runs (3 different failure messages in 3 runs of the same binary)",
   "type": "bug",
-  "updated_at": "2026-07-10T16:21:01Z"
+  "updated_at": "2026-07-10T16:33:35Z"
 }
