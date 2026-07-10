@@ -9,9 +9,15 @@
   "id": "fz-k22.9",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "COORDINATOR SIGNAL 2026-07-10 on integration 9b4bca389: enum_take_drop_split interp still hits the ambiguity named by this ticket. `cargo run --bin fz2 -- interp fixtures2/behavior/enum_take_drop_split.fz` prints expected prefix output, then fails: backend callable 189 with 0 capture(s) and 2 arg(s) is ambiguous across callable entries [161, 164, 167, 170]. This is a concrete blocker for closing fz-f98.14 on the interpreter leg.",
+      "timestamp": "2026-07-10T15:42:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: interpreter runtime closure repr loses resolved-target identity -- ambiguous dispatch when structurally-equal callables pool (needs identity in the heap closure header like native body_addr)",
   "type": "bug",
-  "updated_at": "2026-07-10T15:42:37Z"
+  "updated_at": "2026-07-10T15:42:38Z"
 }
