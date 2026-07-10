@@ -7,9 +7,15 @@
   "id": "fz-k22.12",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "SAME ROOT as fz-k22.10: the 4-vs-5-arg is the SYMPTOM of the coalescing keeping the wrong (arbitrary) activation, so the callsite projects args for one specialization while calling another. The real fix is fz-k22.10 (key coalescing by full ActivationKey). This ticket's native.rs args/input_bindings length-check (native_direct_call_target_and_args ~1442) stays as a last-resort pre-codegen FATAL guard (never a malformed cranelift call) but is NOT the fix.",
+      "timestamp": "2026-07-10T02:31:54Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: reduce_while_cont dispatch-arm direct call builds a 4-arg vector for a 5-param callee -- no length check zipping args against executable_input_bindings",
   "type": "bug",
-  "updated_at": "2026-07-10T00:15:26Z"
+  "updated_at": "2026-07-10T02:31:54Z"
 }
