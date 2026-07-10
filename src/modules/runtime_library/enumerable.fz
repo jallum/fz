@@ -1,5 +1,5 @@
 defprotocol Enumerable do
-  @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
+  @spec reduce(t(a), b, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
   fn reduce(enumerable, acc, reducer)
 
   @spec reduce_while(t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
