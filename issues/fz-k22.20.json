@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-10T17:00:07Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 0,
-  "status": "open",
+  "status": "in_progress",
   "title": "[BUG] resolved callable entry must own target capture and return ABI",
   "type": "bug",
-  "updated_at": "2026-07-10T18:03:34Z"
+  "updated_at": "2026-07-10T18:10:42Z"
 }
