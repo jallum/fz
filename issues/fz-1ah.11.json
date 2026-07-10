@@ -9,9 +9,15 @@
   "id": "fz-1ah.11",
   "labels": [],
   "parent": "fz-1ah",
+  "comments": [
+    {
+      "text": "fz-k22.20 deletion audit: `enum_take_drop_split` reaches a source publication position for CallableId(19) with BoundaryIds(4,5), but BoundaryId(4) still owns two concrete entries (targets 162/163) with the same physical ABI. Native now correctly refuses to invent a code pointer. The missing fact is upstream: publication must carry one exact callable-entry identity, or semantic/transport must split this pooled multi-specialization value before packaging. No native fallback or target/type re-selection remains.",
+      "timestamp": "2026-07-10T21:49:07Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Repair native Enum callable ABI regressions exposed by fz2 CLI",
   "type": "bug",
-  "updated_at": "2026-07-10T21:01:56Z"
+  "updated_at": "2026-07-10T21:49:07Z"
 }
