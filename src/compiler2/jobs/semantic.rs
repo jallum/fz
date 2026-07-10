@@ -1023,24 +1023,50 @@ fn rebuild_coalesced_call_emission(
     for target in &summary.targets {
         match target.callee.clone() {
             SelectedCallee::Function(function) => {
-                let Some(rebuilt) = call_emission_for_function(
-                    world,
-                    caller,
-                    call.key.clone(),
-                    function,
-                    target.surface_inputs.clone(),
-                    reads,
-                    waits,
-                )?
+                // `surface_inputs` is the declared call surface only -- a
+                // closure target's real activation carries a leading
+                // capture-environment slot that `surface_inputs` never
+                // names. Rebuilding from `surface_inputs` alone silently
+                // drops that capture slot and hands `call_emission_for_function`
+                // an under-arity input vector, which mints a truncated
+                // activation. The kept activation's own `.inputs()` still
+                // carries the true capture prefix, so splice today's
+                // widened surface back onto it instead of substituting
+                // for it.
+                let captures_len = target
+                    .activation
+                    .as_ref()
+                    .map(|activation| {
+                        activation
+                            .input_len(world.types())
+                            .saturating_sub(target.surface_inputs.len())
+                    })
+                    .unwrap_or(0);
+                let mut input_types = target
+                    .activation
+                    .as_ref()
+                    .map(|activation| activation.inputs(world.types()))
+                    .unwrap_or_default();
+                input_types.truncate(captures_len);
+                input_types.extend(target.surface_inputs.iter().copied());
+                let Some(rebuilt) =
+                    call_emission_for_function(world, caller, call.key.clone(), function, input_types, reads, waits)?
                 else {
                     return Ok(call);
                 };
                 let Some(rebuilt_summary) = rebuilt.summary else {
                     return Ok(call);
                 };
-                let Some(rebuilt_target) = rebuilt_summary.single_target().cloned() else {
+                let Some(mut rebuilt_target) = rebuilt_summary.single_target().cloned() else {
                     return Ok(call);
                 };
+                // `call_emission_for_function` published `surface_inputs` as
+                // the full vector it was handed; strip the capture prefix
+                // back off so the published surface stays capture-free, as
+                // every other producer of `CallTargetSummary` guarantees.
+                if captures_len > 0 {
+                    rebuilt_target.surface_inputs.drain(..captures_len);
+                }
                 rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
                 rebuilt_targets.push(rebuilt_target);
                 rebuilt_activations.extend(rebuilt.activations);
