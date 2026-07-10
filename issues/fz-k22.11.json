@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T20:01:12Z",
   "created": "2026-07-09T22:15:40Z",
   "description": "Pre-existing (NOT introduced by fz-k22.7; fz-k22.7 narrows its blast radius). native_codegen/driver.rs:996-999 loop 2 fills capture surfaces for target_fns reached SOLELY via a bare direct_target hint with no NativeCallableBoundary. Its self-consistency check debug_assert_eq!(previous, \u0026next) is compiled out in release builds. If such a target_fn is reached from \u003e=2 call sites whose derived capture counts DISAGREE, a release build silently picks whichever call sites arithmetic ran first -- a latent silent-miscompile class for direct-only closures with no boundary. fz-k22.7 made covered targets authoritative (narrower exposure) but did not eliminate this uncovered-target path. FIX: make the disagreement a real hard error (like fz-k22.7 Layer C), not a release-stripped debug_assert -- never trade a clean crash for a miscompile.",
   "id": "fz-k22.11",
   "labels": [],
   "parent": "fz-k22",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "native codegen: build_codegen_closure_targets self-consistency debug_assert_eq is release-mode-silent for direct-only closures with no boundary",
   "type": "bug",
-  "updated_at": "2026-07-09T22:15:40Z"
+  "updated_at": "2026-07-10T20:01:12Z"
 }
