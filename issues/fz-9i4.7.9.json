@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T02:17:02Z",
+  "description": "Spike branch spike/fz-spec-data-model commit abacc6559 proved the local fix: resolve_spec can return type-position provenance from the same resolver walk that mints Ty, allowing derive_function_contract to stop re-parsing specs with collect_spec_refs just to decide @spec enforcement. First sour point: ResolvedSpec/ResolvedSpecDecl currently collapse source type positions to bare Ty params/result/constraints, so contract derivation has to bolt on enforceability with a separate syntactic ref walk. Required real fix: make resolver products carry durable semantic provenance for type positions/spec arrows; keep source_publish walks for dependency/struct obligations only; remove contract-side collect_spec_refs enforceability logic; preserve per-arrow enforcement for mixed protocol-domain/concrete overloads; add alias-transitive coverage because TypeDef is still Ty + params only and would otherwise lose provenance through @type aliases. Prototype is intentionally WIP and uses a boolean sidecar, not the final provenance model. Verification target: spec_violation and spec_mixed_protocol_concrete_violation fail with spec/violation on run/interp/build; spec_ok, protocol-domain known-impl, extern, and runtime representatives stay clean; cargo test --lib and clippy pass.",
+  "id": "fz-9i4.7.9",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 2,
+  "status": "open",
+  "title": "Resolver provenance belongs to resolved type/spec products, not contract-side source rewalks",
+  "type": "bug",
+  "updated_at": "2026-07-10T02:17:02Z"
+}
