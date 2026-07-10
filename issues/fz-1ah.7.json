@@ -9,9 +9,15 @@
   "id": "fz-1ah.7",
   "labels": [],
   "parent": "fz-1ah",
+  "comments": [
+    {
+      "text": "SPIKE PROOF: target is viable; no prototype commit because a partial migration would knowingly not compile or would drop observations. World becomes lifetime-free semantic state; Compiler2\u003cT: Telemetry\u003e owns World+T; short-lived ExecutionContext holds split \u0026mut World and \u0026dyn Telemetry. Explicit World lifetime surface is 26 production files; 213 World::new(\u0026tel) and 566 Compiler2::new(\u0026tel) call sites. Move drive/complete_job/warning emission to Context; jobs::run takes Context; pure helpers remain World; product producers split world/tel; dump emitters take (\u0026World, tel); lowerers take Context only if they emit. Critical borrow rule: destructure Context fields before opening spans/ProductDriver; end mutable store borrows before emitting immutable \u0026World. Do not Deref Context to World, add a forwarding facade, unsafe erase lifetimes, or store Rc telemetry in World. Atomicity confirmed: owning World+telemetry while World borrows telemetry is self-referential, and splitting into independently green commits would require forbidden scaffolding. Spike baseline checks: cargo check --lib; world 19/19; compiler2 front door 12/12; product_drive 11/11; telemetry_dump 4/4 (2 ignored).",
+      "timestamp": "2026-07-10T16:15:57Z"
+    }
+  ],
   "priority": 0,
   "status": "open",
   "title": "Remove telemetry ownership and lifetime from World",
   "type": "task",
-  "updated_at": "2026-07-10T16:08:09Z"
+  "updated_at": "2026-07-10T16:15:57Z"
 }
