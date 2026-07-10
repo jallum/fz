@@ -7,9 +7,15 @@
   "id": "fz-pcd.1",
   "labels": [],
   "parent": "fz-pcd",
+  "comments": [
+    {
+      "text": "Superseded by fz-k22.20 after re-reading the north-star callable contract. A callable boundary must carry the selected target body's grounded return lanes; it must not adapt a raw target result to a forced ValueRef return. The observed [RawAtom, ValueRef] vs [RawAtom, RawInt] mismatch is upstream evidence that the pooled boundary, not the resolved callable entry, was incorrectly made the ABI authority.",
+      "timestamp": "2026-07-10T17:24:17Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "[BUG] callable boundary cannot adapt raw target returns to published ValueRef lanes",
   "type": "bug",
-  "updated_at": "2026-07-10T16:59:54Z"
+  "updated_at": "2026-07-10T17:24:17Z"
 }
