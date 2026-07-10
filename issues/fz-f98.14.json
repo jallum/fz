@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-f98.6",
     "fz-k22.9"
   ],
   "blocks": [],
@@ -27,5 +28,5 @@
   "status": "open",
   "title": "Compiler2 convergence runaway: enum_take_drop_split (00420) drive is 1.3s and schedule-dependent — monolithic per-root reseal over a large closure + partial-publication churn",
   "type": "bug",
-  "updated_at": "2026-07-10T15:43:29Z"
+  "updated_at": "2026-07-10T15:43:30Z"
 }
