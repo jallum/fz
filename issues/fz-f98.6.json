@@ -23,11 +23,15 @@
     {
       "text": "RESOLUTION OF SCOPE (do NOT fix at native/transport dedup): attempted the within-boundary dedup in derive_callable_entries (artifact.rs) -- it cleared the per-boundary native multi-match but the failure MOVED to the next resolver: src/ir_interp/backend.rs resolve_backend_callable_executable -\u003e 'backend callable 174 with 0 capture(s) and 2 arg(s) is ambiguous across callable entries [55,57,59]'. Same over-monomorphization, second layer. A per-layer dedup is whack-a-mole.\n\nCONFIRMED ROOT: the to_list reducer closure (one source lambda, one runtime identity_fn per (function,capture_count)) over-monomorphizes into N analysis activations whose accumulator types OVERLAP at runtime (acc grows [] -\u003e [int] -\u003e ...), so EVERY callable-resolution layer that keys by (function, capture_count, arg types) cannot tie-break them. Native boundary table AND interp backend resolver both choke; both read program.callable_entries.\n\nTHIS IS THE SAME CLASS AS fz-f98.5 and f98.5's own trace already nailed it: 'recursive activation keys were splitting on exact tuple/list/callable evidence' (fixed via Types::convergence_class), with the remaining issue being 'transport boundary/source resolution for a first-class reducer input', and an EXPLICIT guardrail: 'Artifact/native fixes that reconstruct target identity from local shape are the wrong direction... Do not make native/codegen choose among callable boundaries.' My reverted dedup was exactly that forbidden native-layer choice.\n\nCONCLUSION: f98.6 is a downstream symptom of the f98.5 upstream convergence / callable-flow boundary-source-resolution work, NOT an independent native/transport fix. Blocking f98.6 on f98.5; once f98.5 lands the upstream fix (accumulator activation convergence + source-to-boundary resolution for the initial reducer input), re-verify the to_list Range/Map and reduce/2 run/build symptoms here. No code change landed for f98.6 (partial native dedup reverted; tree clean at the f98.3 commit).",
       "timestamp": "2026-06-25T01:29:49Z"
+    },
+    {
+      "text": "COORDINATOR SIGNAL 2026-07-10 on integration 9b4bca389: enum_take_drop_split native run now exposes this same boxed-callable activation-coherence family as an incompatible ABI set rather than the older multiple-boundaries wording. `cargo test --test fz2_cli native_enum_take_drop_split_preserves_tuple_accumulator_lists -- --nocapture` fails in native callable materialization for CallableId(20): executable 170 arg_reprs=[ValueRef, ValueRef], return_reprs=[RawAtom, ValueRef, RawAtom] vs executable 171 arg_reprs=[RawInt, ValueRef], return_reprs=[RawAtom, ValueRef]. This is a concrete native blocker for fz-f98.14 closeout; do not paper over it in native by choosing one surface.",
+      "timestamp": "2026-07-10T15:43:29Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "shared reduce bridge: one published callable boundary fragments into multiple native boundaries",
   "type": "bug",
-  "updated_at": "2026-06-25T01:29:58Z"
+  "updated_at": "2026-07-10T15:43:29Z"
 }
