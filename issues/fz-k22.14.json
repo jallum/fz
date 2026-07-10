@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T15:05:26Z",
+  "description": "Found in fz-k22.10 option-B spike. CallTargetSummary bakes in the assumption that one SelectedCallee at one callsite has exactly ONE resolvable ABI. True for a recursive callee (bounded convergence class -\u003e canonical_activation_key recompute is the clean fix). NOT true for a non-recursive callee whose two joined observations are genuinely, permanently different ground specializations sharing one FunctionId -- e.g. one closure template captured with two different concrete predicates, or a shared generic bridge called once for Range and once for Map. Three attempts all fail: (1) fabricate a union activation -\u003e corrupts closure arity (spurious extra reducer executable); (2) keep both as separate CallTargetSummary entries -\u003e regresses the opaque_fn_value_join join-to-one guardrail AND grows unboundedly on ascent-transient noise (a still-converging recursive CALLER re-observing its non-recursive callee at different pre-settlement snapshots looks identical to two permanent targets); (3) deterministic least-Ty-id pick -\u003e order-independent but still arbitrarily drops one of two BOTH-NEEDED specs (regresses fz_f98_range_map_converges + 5). NEEDS new machinery: a representation for N-live-non-recursive-ground-specs-of-one-FunctionId that is neither dispatch nor collapse. Distinguish permanent divergence from ascent-transient snapshots. FZ_K22_10_TRACE telemetry on the branch is shaped to drive this.",
+  "id": "fz-k22.14",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-k22: CallTargetSummary cannot represent one callsite with N live NON-recursive ground specializations of one FunctionId (not a dispatch edge, not a collapse)",
+  "type": "bug",
+  "updated_at": "2026-07-10T15:05:26Z"
+}
