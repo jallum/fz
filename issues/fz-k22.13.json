@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-10T00:15:26Z",
@@ -26,8 +26,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-k22: enum_predicate_search producer materialization is non-deterministic across runs (3 different failure messages in 3 runs of the same binary)",
   "type": "bug",
-  "updated_at": "2026-07-10T16:33:35Z"
+  "updated_at": "2026-07-10T18:32:08Z"
 }
