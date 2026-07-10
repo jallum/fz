@@ -10,9 +10,15 @@
   "id": "fz-1ah.5",
   "labels": [],
   "parent": "fz-1ah",
+  "comments": [
+    {
+      "text": "API constraint discovered during audit: Value::Opaque/OpaqueRef currently requires T: Any; Any requires a static concrete type. World has a telemetry lifetime (World\u003c'a\u003e), so the desired raw \u0026World event context cannot generally pass through OpaqueRef. The redesign must support event-scoped non-static typed context directly (or an equivalent borrowed projection interface). Do not respond by flattening World into Value metadata or making World static.",
+      "timestamp": "2026-07-10T16:04:44Z"
+    }
+  ],
   "priority": 0,
   "status": "open",
   "title": "Make telemetry emission lazy and the no-handler path erasable",
   "type": "bug",
-  "updated_at": "2026-07-10T16:04:30Z"
+  "updated_at": "2026-07-10T16:04:44Z"
 }
