@@ -23,11 +23,15 @@
     {
       "text": "SECOND ENTRY POINT MEASURED (spike 5 final): ground_surface_for_template_in_session (runtime_demand.rs:2834+) resolves template surfaces by FIRST MATCH over HashSet iteration order of demanded executables -- probe counted 1300-1600 genuinely ambiguous multi-candidate picks PER RUN (template_ground_AMBIGUOUS). Together with the width-blind CallSiteSummary merge (the other proven source), these two decide which activations get minted/resolved/paired per run -- why the crash offender varies (sid149 / sid183 / none). FIX: both sources must become deterministic functions of demand -- (a) width-aware deterministic join in coalescing (with fz-k22.16), (b) template grounding must not first-match over unordered iteration: require agreement across candidates, pick by a deterministic demand-derived key, or wait until the demanded answer is unique (pull-correct).",
       "timestamp": "2026-07-10T16:33:35Z"
+    },
+    {
+      "text": "IMPLEMENTED on epic branch @ 16075d928 (close at fold). AUDIT yes-with-nits, independently reproduced both directions: parent commit 12/12 DIFFERENT hashes (bug real), fixed 10/10 byte-identical release runs both red fixtures + green fixtures stable; regression test proven live (fails on parent). D2 = sort ExecutableKeys before first-match; D1 = JobSet insertion-ordered wake lists + sorted contribution folds; sweep pinned protocol_impls_for/dedupe_facts/boundary_ids/stall-loop/pull-wait order. Pick semantics untouched (3 product_drive tests re-pinned to the new stable diagnostic choice -- audit hand-traced the wait-reversal and confirmed the new expectation correct, cosmetic pick among 3 equal dead-ends). NITS TRACKED: circular-sort-key gap (new ticket -- Ty ids admitted still-renumbering past job order while two tie-breaks consume raw Ty ids; unobservable on corpus, boundary must be closed or keys made structural) + JobSet::remove O(n) perf watch (new P4). fz-k22.16 (capture-type join semantics) deliberately NOT addressed here -- rides the k22.18/14 layer.",
+      "timestamp": "2026-07-10T19:38:37Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "fz-k22: enum_predicate_search producer materialization is non-deterministic across runs (3 different failure messages in 3 runs of the same binary)",
   "type": "bug",
-  "updated_at": "2026-07-10T18:32:08Z"
+  "updated_at": "2026-07-10T19:38:37Z"
 }
