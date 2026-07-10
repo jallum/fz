@@ -4,14 +4,16 @@
   "blocks": [
     "fz-f98.9"
   ],
+  "closed_at": "2026-07-10T15:49:54Z",
+  "close_reason": "Landed 227c93601 fz-f98.12: guard pid boundary for self send activations. Added production-path compiler2 telemetry regression proving Kernel.self/0 returns pid and Kernel.send/2 plus Kernel.fz_send/2 receive [pid, int], not any. Audit verdict: pass. Coordinator gates on integration: focused guard passed; existing self/send runtime test passed; cargo test --lib passed (1315 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed.",
   "created": "2026-06-25T14:37:33Z",
   "description": "Cluster from the fz-f98.9 graduation measurement (~9 hits): send/2 param0 and fz_send/2 param0 declare pid but receive any. A pid value graduates to any before reaching send. Smallest, likely-isolated cluster. Trace where the pid type is dropped (spawn/self return typing or the send call surface).",
   "id": "fz-f98.12",
   "labels": [],
   "parent": "fz-f98",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "pid graduates to any at send/2",
   "type": "bug",
-  "updated_at": "2026-06-25T14:37:34Z"
+  "updated_at": "2026-07-10T15:49:54Z"
 }
