@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-1ah.1"
+  ],
   "created": "2026-07-10T16:54:23Z",
   "description": "Goal\nMake pattern-dispatch reachability preserve the set-theoretic correlation of original input types through every tuple/list/map projection, then reuse that one calculator for semantic clause reachability and exhaustiveness.\n\nRoot defect\nThe failed fz-1ah.1 prototype converted each ContractArrow parameter Ty into a parallel KnownSubjectDomain tree, then stored one independent domain per projected SubjectId. Refining a tuple field or list head detached it from the originating union, so sibling projections invented impossible cross-products. Boundary-lifting patches moved the loss around: tuple siblings improved, tuple-\u003elist-\u003ehead lost correlation. The pre-existing semantic reachable_clause_ids has the same structural smell: HashMap\u003cSubjectId, Ty\u003e plus apply_evidence refining projected subjects independently; concrete activation inputs often hide it.\n\nAuthoritative model\n- FunctionContract arrows retain correlated parameter Ty rows.\n- PatternDispatchPlan retains original input subjects, projection paths, predicates, and branch-local EdgeEvidence.\n- Types already owns intersection, complement, difference, tuple/list projection, and emptiness.\n\nStrategy\nRepresent traversal state only at original input roots (one correlated contract arrow row at a time) plus accumulated path evidence. For a predicate on any projected subject:\n1. turn the Region into a Ty constraint at that subject;\n2. compute its preimage back through the complete projection path (tuple field, list head/tail, map where supported) to the original input root;\n3. match edge = intersect(root, preimage); miss edge = difference(root, preimage);\n4. prune an edge iff the refined root is empty;\n5. derive later projections fresh from the refined root, never from detached child slots.\nUnknown/value-only predicates conservatively keep both edges. Guards use exact constant truth when available and otherwise keep fallthrough possible.\n\nUnification/removal\nExtract one Types-backed dispatch reachability calculator and replace compiler2/jobs/semantic.rs reachable_clause_ids/branch_possible/apply_evidence. Do not keep KnownSubjectDomain generalized algebra, tuple-boundary heuristics, or a second diagnostics traversal. The old test-only simple-list helper can disappear when its intent is covered by the shared calculator.\n\nTDD\nPin semantic reachability and Fail reachability for:\n- {:a,:x}|{:b,:y} exact vs cross-wired;\n- {:a,[true]}|{:b,[false]} through tuple-\u003elist-\u003ehead;\n- nested tuples and list-of-tuples;\n- overload arrows without cross-arrow products;\n- wide 16-field unions with a bounded graph/state signal;\n- match/miss difference and unknown guards.\nUse production FunctionContract/PatternDispatchPlan/Types paths.\n\nAcceptance\n- Correlation is preserved across arbitrary supported projection chains without Cartesian materialization.\n- Semantic reachable clauses and exhaustiveness share one calculator.\n- Unsupported predicates are conservative, never unsound.\n- Parallel KnownSubjectDomain machinery and failed boundary heuristics are deleted.\n- Docs/tests/clippy pass.",
   "id": "fz-1ah.8",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Preserve root type correlation through dispatch projections",
   "type": "bug",
-  "updated_at": "2026-07-10T16:54:23Z"
+  "updated_at": "2026-07-10T16:54:33Z"
 }

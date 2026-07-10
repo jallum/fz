@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1ah.8"
+  ],
   "blocks": [
     "fz-1ah.2"
   ],
@@ -23,5 +25,5 @@
   "status": "open",
   "title": "Domain-aware exhaustiveness must not warn on total library reducers",
   "type": "bug",
-  "updated_at": "2026-07-10T16:54:32Z"
+  "updated_at": "2026-07-10T16:54:33Z"
 }
