@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-10T20:24:42Z",
-  "description": "Signal: cargo test --test fz2_cli fails on Enum fixtures. enum_take_positive_single and enum_predicate_search fail Cranelift verification because a call supplies four arguments to a five-argument callable signature. enum_take_drop_split fails native callable materialization because one clause receives incompatible physical ABI resolutions.\n\nGoal: restore JIT and AOT execution for these existing fz2 Enum fixture contracts without suppressing diagnostics or relaxing the CLI tests.\n\nStrategy: trace each failing callable from runtime demand through native ABI specialization; make its callable boundary identity include every representation-affecting input, then prove the affected JIT/AOT fixtures execute again.",
+  "description": "Signal: cargo test --test fz2_cli fails on Enum fixtures. enum_take_positive_single and enum_predicate_search fail Cranelift verification because a call supplies four arguments to a five-argument callable signature. enum_take_drop_split fails native callable materialization because one clause receives incompatible physical ABI resolutions.\n\nRoot cause: executable/transport symbols originally erased ActivationKey.arrow, so direct and closure-call materialization could select a sibling specialization with the same function/input projection. Clause helpers also copied the owner executable ABI instead of deriving their own entry-lane ABI. Both defects are being repaired in this ticket.\n\nRemaining repair: BackendCallableEntry represents a pooled transport boundary but names a concrete target. Its return lanes must be split by that target’s concrete return contract, and materialized callable values must select the matching native boundary. Reusing pooled return lanes for every concrete target is unsound: it creates a two-lane boundary that calls a three-lane target.\n\nGoal: restore JIT and AOT execution for the existing fz2 Enum fixture contracts without suppressing diagnostics or relaxing the CLI tests.\n\nVerification: enum_take_positive_single, enum_take_drop_split, and enum_predicate_search run/build; cargo test --test fz2_cli; cargo test --lib; strict clippy.",
   "id": "fz-1ah.11",
   "labels": [],
   "parent": "fz-1ah",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Repair native Enum callable ABI regressions exposed by fz2 CLI",
   "type": "bug",
-  "updated_at": "2026-07-10T20:26:07Z"
+  "updated_at": "2026-07-10T20:48:37Z"
 }
