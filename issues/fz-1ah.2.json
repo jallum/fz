@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1ah.1"
+  ],
   "blocks": [],
   "created": "2026-07-10T15:57:09Z",
   "description": "Goal\nMake every fz2 diagnostic source-actionable by rendering the structured Diagnostic already carried through telemetry.\n\nSignal\nemit_through places the full Diagnostic (primary/secondary spans, labels, notes, helps) in opaque metadata. ConsoleDiagnosticsHandler in compiler2/cli.rs ignores it and prints only severity/code/message because it owns no SourceMap. The result is four indistinguishable one-line warnings and no file, line, snippet, label, note, or help. telemetry::diag_render::DiagRenderer and diag::render::Renderer already implement rich rendering.\n\nStrategy\nPut source ownership at the compiler/front-door boundary so the CLI diagnostic handler can resolve CodeId spans through the authoritative SourceMap. Reuse the existing renderer; delete the flattened ConsoleDiagnosticsHandler path rather than maintaining two rendering contracts. Preserve saw_error without parsing rendered text.\n\nTDD\nPin exact stderr for one real user partial function through fz2 and verify dependency/runtime source names resolve correctly. Pin errors as well as warnings and NO_COLOR behavior.\n\nAcceptance\n- Diagnostics render location/snippet/labels/notes/help.\n- The CLI does not flatten Diagnostic metadata.\n- Span resolution remains valid for lazy runtime modules and macro-generated sources.\n- Tests/docs/clippy pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Render telemetry Diagnostics with their source spans in fz2",
   "type": "bug",
-  "updated_at": "2026-07-10T15:57:09Z"
+  "updated_at": "2026-07-10T15:57:19Z"
 }

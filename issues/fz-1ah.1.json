@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-1ah.2"
+  ],
   "created": "2026-07-10T15:57:08Z",
   "description": "Goal\nMake function-head exhaustiveness evaluate coverage inside the function's declared input domain, so total closed-domain reducers are correct by construction.\n\nSignal\n00181 defines only main/0 yet emits four type/no-matching-clause warnings. Telemetry/function facts identify the warned reachable functions as Enum.reduce_finish/1, List.reduce/3, List.reduce_cont/3, and List.reduce_step/3. Their clauses cover their @spec/list domains, but source_diagnostics::check_function_clauses calls domain-free is_inexhaustive over all Fz values. is_inexhaustive_with_domains exists only under cfg(test) and only recognizes list coverage.\n\nStrategy\nDerive subject domains from authoritative function contracts/specs and feed those domains into shared dispatch coverage analysis. Do not whitelist runtime modules, hide dependency diagnostics, add wildcard clauses to total functions, or suppress this warning by source name.\n\nTDD\nFirst pin 00181 as warning-free and pin a focused tuple-union/list-domain coverage test. Keep a user function genuinely partial within its declared domain warning. Extend telemetry/tests to identify the owning function/source for warnings if needed.\n\nAcceptance\n- The four false warnings disappear on interp/run/build for 00181.\n- Real partial clauses still warn.\n- Coverage uses the same dispatch model as runtime matching.\n- Docs state the domain invariant; all tests/clippy pass.",
   "id": "fz-1ah.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Domain-aware exhaustiveness must not warn on total library reducers",
   "type": "bug",
-  "updated_at": "2026-07-10T15:57:08Z"
+  "updated_at": "2026-07-10T15:57:19Z"
 }
