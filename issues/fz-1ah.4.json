@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T15:57:10Z",
+  "description": "Goal\nKeep --log-telemetry useful as a production diagnostic signal without making a tiny compile emit megabytes of retry bookkeeping or synchronously flush thousands of writes.\n\nSignal\n00181's 10-executable root produces 3,295 events / 2.43 MB: 612 product.requested, 380 product.produced, 231 product.waited, 252 work_graph.applied, and 496 job span records. A no-runtime one-function fixture still emits 420 events. JsonlBackend allocates/formats and flushes on every event. The agent telemetry doc's jq example is stale due filter precedence and its expected 160 transport positions is now 176.\n\nStrategy\nDefine a bounded public trace contract around sessions, phases, settled products, work-start reasons, and genuine stalls. Remove or gate retry-level request/wait chatter that can be derived from final/session events. Buffer JSONL writes and flush at ownership boundaries/drop rather than each event. Keep targeted in-memory telemetry for tests where fine-grained decisions are the asserted contract.\n\nTDD\nAdd CLI telemetry budgets for event count/bytes and required phase/session events on 00181 and the no-runtime fixture. Benchmark telemetry-on versus telemetry-off in a non-flaky structural way (write/flush counts where possible).\n\nAcceptance\n- 00181 telemetry is bounded and materially smaller while retaining actionable phase/session/job hotspot signal.\n- JSONL does not flush each record.\n- Docs examples and current 00181 measurements are corrected.\n- No temporary compatibility stream remains; tests/clippy pass.",
+  "id": "fz-1ah.4",
+  "labels": [],
+  "parent": "fz-1ah",
+  "priority": 2,
+  "status": "open",
+  "title": "Bound compiler2 pull telemetry and buffer JSONL output",
+  "type": "task",
+  "updated_at": "2026-07-10T15:57:10Z"
+}
