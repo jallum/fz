@@ -11,9 +11,15 @@
   "id": "fz-k22.14",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "fz-k22.20 no-reselection spike confirms this is active: after carrying concrete CallableId groundings and deleting FunctionId/capture/type-overlap interpreter fallback, repr_seam_enum_count_after_reduce2 becomes deterministic but returns 2/2 (required 10/2). The closure entry is present; the remaining incorrect direct target is already collapsed in CallTargetSummary. fz-k22.14 must preserve N live non-recursive ground targets before fz-k22.20 can bind the one target selected for each constructed closure.",
+      "timestamp": "2026-07-10T20:08:57Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: CallTargetSummary cannot represent one callsite with N live NON-recursive ground specializations of one FunctionId (not a dispatch edge, not a collapse)",
   "type": "bug",
-  "updated_at": "2026-07-10T20:08:56Z"
+  "updated_at": "2026-07-10T20:08:57Z"
 }
