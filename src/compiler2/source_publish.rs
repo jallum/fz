@@ -1683,7 +1683,7 @@ fn collect_type_refs(world: &mut World<'_>, scope: Namespace, expr: &TypeExpr, o
 
 /// Walks every type-position of a spec: each parameter, the result, and each
 /// constraint bound.
-fn collect_spec_refs(
+pub(crate) fn collect_spec_refs(
     world: &mut World<'_>,
     scope: Namespace,
     spec: &SpecDecl,

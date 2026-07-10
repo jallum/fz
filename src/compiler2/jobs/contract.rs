@@ -9,12 +9,12 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::extern_contract::extern_semantic_contract;
-use crate::type_expr::ResolvedSpecDecl;
 
-use super::super::contract::FunctionContract;
+use super::super::contract::{FunctionContract, ResolvedContractArrow};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
 use super::super::scheduler::FatalError;
+use super::super::source_publish::collect_spec_refs;
 use super::super::world::World;
 
 pub(super) fn derive_function_contract(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
@@ -78,8 +78,12 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
     // so consumers never block on a diagnosed declaration.
     let mut contract = Vec::with_capacity(specs.len());
     for spec in &specs {
+        let enforce = spec_is_enforceable(world, source.namespace, spec)?;
         match world.resolve_spec_decl(source.namespace, spec) {
-            Ok(resolved) => contract.push(resolved),
+            Ok(resolved) => contract.push(ResolvedContractArrow {
+                decl: resolved,
+                enforce,
+            }),
             Err(error) => emit_job_diagnostic(
                 world,
                 Diagnostic::error(
@@ -96,13 +100,23 @@ pub(super) fn derive_function_contract(world: &mut World<'_>, function: Function
     Ok(publish_contract(world, function, reads, contract))
 }
 
+fn spec_is_enforceable(
+    world: &mut World<'_>,
+    namespace: super::super::namespace::Namespace,
+    spec: &crate::ast::SpecDecl,
+) -> Result<bool, FatalError> {
+    let mut refs = Vec::new();
+    collect_spec_refs(world, namespace, spec, &mut refs)?;
+    Ok(!refs.iter().any(|name| world.is_protocol_domain_type(name)))
+}
+
 fn publish_contract(
     world: &mut World<'_>,
     function: FunctionId,
     reads: Vec<FactKey>,
-    contract: Vec<ResolvedSpecDecl<super::super::types::Ty>>,
+    contract: Vec<ResolvedContractArrow>,
 ) -> JobEffects {
-    let contract = FunctionContract::from_resolved(world.types_mut(), contract);
+    let contract = FunctionContract::from_resolved_arrows(world.types_mut(), contract);
     let changed = world.define_function_contract(function, contract);
     JobEffects {
         reads: current_uses(reads),

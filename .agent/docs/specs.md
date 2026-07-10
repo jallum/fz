@@ -19,6 +19,10 @@ Compiler2 owns the active contract path:
   `ResolvedTypeShape` values.
 - `compiler2/contract.rs` and the compiler2 type/arrow-matching code consume the
   resolved contract data.
+- `FunctionContract` keeps enforcement provenance per resolved arrow. Protocol
+  domain arrows can still refine calls, but they are skipped for fatal
+  `spec/violation` decisions until protocol-domain validation is implemented;
+  concrete arrows in the same overload set remain enforceable.
 
 The old `src/specs` operations were removed with the old-world compiler:
 scheme matching, overload-set application, structural correspondence grouping,
@@ -33,4 +37,5 @@ cargo test --lib compiler2::world_test::compiler2_resolve_spec_resolves_types_sh
 cargo test --lib compiler2::types::arrow_match
 cargo test --test fixture_matrix spec_ok
 cargo test --test fixture_matrix spec_boundary
+cargo test --test fixture_matrix spec_mixed_protocol_concrete_violation
 ```

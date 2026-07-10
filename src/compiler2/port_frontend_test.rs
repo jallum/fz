@@ -1,7 +1,8 @@
 //! Ported tests from old-world — behaviour already captured; assertions filled in next pass.
 use super::drive_test::assert_resolved;
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
-use crate::telemetry::ConfiguredTelemetry;
+use crate::diag::codes;
+use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
 // Ported from src/frontend/spec_check_test.rs: @spec param type matching inferred callsite type passes validation
 #[test]
@@ -48,6 +49,8 @@ fn spec_wider_than_inferred_passes_success_typing() {
 #[test]
 fn spec_disjoint_from_inferred_produces_subtype_violation() {
     let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00142_spec_float_disjoint.fz".to_string()),
@@ -59,11 +62,21 @@ fn spec_disjoint_from_inferred_produces_subtype_violation() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(
-        compiler.drive(),
-        "disjoint spec should still resolve (diagnostic emitted separately)",
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "disjoint spec should now fail with a diagnostic"
     );
-    // TODO: assert validate_specs produces a "not a subtype" diagnostic (float @spec vs integer inferred)
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the disjoint @spec must surface as a diagnostic");
+    let Some(Value::Str(code)) = diagnostic.metadata.get("code") else {
+        panic!("diagnostic code missing: {diagnostic:?}");
+    };
+    assert_eq!(
+        code.as_ref(),
+        codes::SPEC_VIOLATION.0,
+        "diagnostic should be a spec violation: {diagnostic:?}",
+    );
 }
 
 // Ported from src/frontend/spec_check_test.rs: multi-overload @spec each cover their respective inferred specialisation

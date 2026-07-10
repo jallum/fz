@@ -20,12 +20,19 @@ use crate::type_expr::ResolvedSpecDecl;
 use super::identity::FunctionId;
 use super::types::{ArrowMatch, Ty, TypeVarId, Types};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedContractArrow {
+    pub decl: ResolvedSpecDecl<Ty>,
+    pub enforce: bool,
+}
+
 /// One resolved contract clause: the addressed arrow surface and its
 /// address-keyed variable bounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractArrow {
     pub arrow: Ty,
     pub bounds: HashMap<TypeVarId, Ty>,
+    pub enforce: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +48,9 @@ pub struct FunctionContract {
 pub struct AppliedFunctionContract {
     pub matched_arrows: Vec<Vec<Ty>>,
     pub result: Option<Ty>,
+    pub satisfied: bool,
+    pub enforceable: bool,
+    pub enforceable_satisfied: bool,
 }
 
 #[derive(Debug, Default)]
@@ -50,6 +60,16 @@ pub struct FunctionContractMap {
 
 impl FunctionContract {
     pub fn from_resolved(types: &mut Types, arrows: Vec<ResolvedSpecDecl<Ty>>) -> Self {
+        Self::from_resolved_arrows(
+            types,
+            arrows
+                .into_iter()
+                .map(|decl| ResolvedContractArrow { decl, enforce: true })
+                .collect(),
+        )
+    }
+
+    pub fn from_resolved_arrows(types: &mut Types, arrows: Vec<ResolvedContractArrow>) -> Self {
         Self {
             arrows: arrows
                 .into_iter()
@@ -57,8 +77,9 @@ impl FunctionContract {
                     // params/result arrive addressed from the resolver binder
                     // (fz-hwn.27.14), so this packs them into the interned arrow
                     // surface; the bounds are already keyed by those addresses.
-                    arrow: types.arrow(&arrow.params, arrow.result),
-                    bounds: arrow.constraints,
+                    arrow: types.arrow(&arrow.decl.params, arrow.decl.result),
+                    bounds: arrow.decl.constraints,
+                    enforce: arrow.enforce,
                 })
                 .collect(),
         }
@@ -67,7 +88,11 @@ impl FunctionContract {
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
         let mut matched_arrows = Vec::new();
         let mut result = None;
+        let mut matched_any = false;
+        let mut enforceable = false;
+        let mut enforceable_matched = false;
         for clause in &self.arrows {
+            enforceable |= clause.enforce;
             let params = types.arrow_params(&clause.arrow);
             let clause_result = types
                 .arrow_result(&clause.arrow)
@@ -82,14 +107,24 @@ impl FunctionContract {
                         None => matched,
                     });
                     matched_arrows.push(params);
+                    matched_any = true;
+                    enforceable_matched |= clause.enforce;
                 }
                 ArrowMatch::Underconstrained { params, result: _ } => {
                     matched_arrows.push(params);
+                    matched_any = true;
+                    enforceable_matched |= clause.enforce;
                 }
                 ArrowMatch::Invalid => {}
             }
         }
-        AppliedFunctionContract { matched_arrows, result }
+        AppliedFunctionContract {
+            matched_arrows,
+            result,
+            satisfied: self.arrows.is_empty() || matched_any,
+            enforceable,
+            enforceable_satisfied: !enforceable || enforceable_matched,
+        }
     }
 }
 

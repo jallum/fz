@@ -7,12 +7,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
 
 use crate::ast::{BinOp, UnOp};
+use crate::diag::driver::emit_through;
+use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
     ComparisonValue, DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, Region, RegionPredicate, SubjectId,
     SubjectSource,
 };
 use crate::ground_value::GroundValue;
+use crate::source::Span;
 
 use super::super::body::{
     CallSiteId, ControlDestination, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
@@ -904,7 +907,8 @@ fn resolve_direct_call(
         return Ok((None, Some(none_ty(world))));
     }
 
-    let (summary, activations, return_ty) = resolve_function_call(world, caller, function, arg_types, reads, waits)?;
+    let (summary, activations, return_ty) =
+        resolve_function_call(world, caller, function, arg_types, callsite.span(), reads, waits)?;
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -1072,7 +1076,7 @@ fn call_emission_for_function(
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<CallEmission>, FatalError> {
     let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types, reads, waits)?
+        refine_function_call_surface(world, function, input_types, key.callsite.span(), reads, waits)?
     else {
         return Ok(None);
     };
@@ -1124,17 +1128,27 @@ fn resolve_function_call(
     caller: &ActivationKey,
     function: FunctionId,
     input_types: Vec<Ty>,
+    call_span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<ResolvedCall, FatalError> {
     if let Some(callback) = world.protocol_callback(function) {
-        return resolve_protocol_call(world, caller, function, callback.protocol, input_types, reads, waits);
+        return resolve_protocol_call(
+            world,
+            caller,
+            function,
+            callback.protocol,
+            input_types,
+            call_span,
+            reads,
+            waits,
+        );
     }
     if wait_for_unresolved_function_module(world, function, waits) {
         return Ok((None, Vec::new(), None));
     }
     let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types, reads, waits)?
+        refine_function_call_surface(world, function, input_types, call_span, reads, waits)?
     else {
         return Ok((None, Vec::new(), None));
     };
@@ -1186,6 +1200,7 @@ fn resolve_protocol_call(
     callback_function: FunctionId,
     protocol: ModuleId,
     input_types: Vec<Ty>,
+    call_span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<ResolvedCall, FatalError> {
@@ -1278,7 +1293,7 @@ fn resolve_protocol_call(
 
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let Some((refined_inputs, contract_return_ty)) =
-            refine_function_call_surface(world, selected.function, refined_inputs, reads, waits)?
+            refine_function_call_surface(world, selected.function, refined_inputs, call_span, reads, waits)?
         else {
             return Ok((None, Vec::new(), None));
         };
@@ -1375,7 +1390,7 @@ fn resolve_closure_call(
         let mut inputs = closure.captures;
         inputs.extend(refined_args.clone());
         let (summary, clause_activations, observed_return) =
-            resolve_function_call(world, caller, function, inputs, reads, waits)?;
+            resolve_function_call(world, caller, function, inputs, callsite.span(), reads, waits)?;
         let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
         return_ty = join_evidence(world, return_ty, clause_return);
 
@@ -1428,6 +1443,7 @@ fn refine_function_call_surface(
     world: &mut World<'_>,
     function: FunctionId,
     input_types: Vec<Ty>,
+    violation_span: Span,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<RefinedCallSurface>, FatalError> {
@@ -1444,23 +1460,49 @@ fn refine_function_call_surface(
         .function_contract(function)
         .cloned()
         .expect("function contract fact should resolve to a stored contract");
-    Ok(Some(apply_function_contract(world, &contract, input_types)))
+    Ok(Some(apply_function_contract(
+        world,
+        function,
+        &contract,
+        input_types,
+        violation_span,
+    )?))
 }
 
 fn apply_function_contract(
     world: &mut World<'_>,
+    function: FunctionId,
     contract: &FunctionContract,
     input_types: Vec<Ty>,
-) -> (Vec<Ty>, Option<Ty>) {
+    violation_span: Span,
+) -> Result<(Vec<Ty>, Option<Ty>), FatalError> {
     let application = contract.apply(world.types_mut(), &input_types);
-    (
+    if !application.enforceable_satisfied
+        && function_contract_is_enforced(world, function)
+        && spec_violation_is_actionable(world, &input_types)
+    {
+        return Err(emit_spec_violation(world, function, &input_types, violation_span));
+    }
+    Ok((
         refine_contract_inputs(
             world,
             input_types,
             application.matched_arrows.iter().map(|params| params.as_slice()),
         ),
         application.result,
-    )
+    ))
+}
+
+fn function_contract_is_enforced(world: &World<'_>, function: FunctionId) -> bool {
+    let (source, surface) = world.function_definition(function);
+    !world.is_bootstrap(source.code) && surface.extern_abi.is_none()
+}
+
+fn spec_violation_is_actionable(world: &mut World<'_>, input_types: &[Ty]) -> bool {
+    let any = world.types_mut().any();
+    input_types
+        .iter()
+        .all(|ty| !world.types().has_vars(ty) && !world.types().is_equivalent(ty, &any))
 }
 
 fn activation_contract_return(
@@ -1470,12 +1512,35 @@ fn activation_contract_return(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<Ty>, FatalError> {
+    let violation_span = world.function_surface(function).span;
     let Some((_, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types.to_vec(), reads, waits)?
+        refine_function_call_surface(world, function, input_types.to_vec(), violation_span, reads, waits)?
     else {
         return Ok(None);
     };
     Ok(contract_return_ty)
+}
+
+fn emit_spec_violation(world: &World<'_>, function: FunctionId, input_types: &[Ty], span: Span) -> FatalError {
+    let function_ref = world.function_ref(function);
+    let observed = input_types
+        .iter()
+        .map(|ty| world.types().display_for_diag(ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    emit_through(
+        world.tel(),
+        &[Diagnostic::error(
+            codes::SPEC_VIOLATION,
+            format!(
+                "call to `{}/{}` violates its @spec for arguments ({})",
+                function_ref.name, function_ref.arity, observed
+            ),
+            span,
+        )
+        .with_label("no declared @spec accepts these arguments")],
+    );
+    FatalError
 }
 
 fn refine_contract_inputs<'a>(

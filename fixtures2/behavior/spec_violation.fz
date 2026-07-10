@@ -2,9 +2,6 @@
 # purpose: "a wrong @spec is rejected with a spec/violation diagnostic on every path"
 # expect: diagnostic
 # diagnostic.code: spec/violation
-# defer.build: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
-# defer.interp: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
-# defer.run: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
 #---
 #
 # # spec_violation
@@ -12,7 +9,7 @@
 # `M.add1` declares `@spec add1(float) :: float` but its body adds `1` to an int
 # argument. The shared spec-validation pass rejects this at compile time with a
 # `spec/violation` diagnostic. The same pass runs in every driver, so the verdict
-# is invariant across the four paths; the fixture pins the diagnostic through the
+# is invariant across run, interp, and build; the fixture pins the diagnostic through the
 # `[fz, diag, error]` telemetry event.
 defmodule M do
   @spec add1(float) :: float

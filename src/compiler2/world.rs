@@ -1504,7 +1504,7 @@ impl<'a> World<'a> {
         self.protocol_impl_providers.providers_for_protocol(protocol)
     }
 
-    fn is_protocol_domain_type(&self, name: &TypeName) -> bool {
+    pub(crate) fn is_protocol_domain_type(&self, name: &TypeName) -> bool {
         name.name == "t"
             && matches!(name.arity, 0 | 1)
             && matches!(

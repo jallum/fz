@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::type_expr::ResolvedSpecDecl;
 
-use super::contract::ContractArrow;
+use super::contract::{ContractArrow, ResolvedContractArrow};
 use super::{CallableValueKind, ClosureTarget, FunctionContract, TypeVarId, Types};
 
 #[test]
@@ -320,6 +320,7 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
         arrows: vec![ContractArrow {
             arrow,
             bounds: HashMap::new(),
+            enforce: true,
         }],
     };
 
@@ -451,5 +452,75 @@ fn function_contract_application_does_not_recurse_through_concrete_any_inputs() 
             .as_ref()
             .is_some_and(|result| types.is_equivalent(result, &any)),
         "the result should stay any without recursively re-walking top list structure",
+    );
+}
+
+#[test]
+fn function_contract_application_reports_unsatisfied_when_no_arrow_accepts_observed_inputs() {
+    let mut types = Types::new();
+    let float = types.float();
+    let resolved = ResolvedSpecDecl {
+        params: vec![float],
+        result: float,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    let int = types.int();
+    let applied = contract.apply(&mut types, &[int]);
+
+    assert!(
+        !applied.satisfied,
+        "a concrete integer call must not satisfy a float-only contract"
+    );
+    assert!(
+        applied.matched_arrows.is_empty(),
+        "an unsatisfied contract should not refine inputs"
+    );
+    assert!(
+        applied.result.is_none(),
+        "an unsatisfied contract should not publish return evidence"
+    );
+}
+
+#[test]
+fn function_contract_application_tracks_enforceable_arrows_separately_from_matching_skipped_arrows() {
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let skipped = ResolvedSpecDecl {
+        params: vec![int],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let enforced = ResolvedSpecDecl {
+        params: vec![float],
+        result: float,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved_arrows(
+        &mut types,
+        vec![
+            ResolvedContractArrow {
+                decl: skipped,
+                enforce: false,
+            },
+            ResolvedContractArrow {
+                decl: enforced,
+                enforce: true,
+            },
+        ],
+    );
+
+    let applied = contract.apply(&mut types, &[int]);
+
+    assert!(applied.satisfied, "the skipped arrow still contributes to refinement");
+    assert!(
+        applied.enforceable,
+        "the contract still has an enforceable concrete arrow"
+    );
+    assert!(
+        !applied.enforceable_satisfied,
+        "a matching skipped arrow must not mask rejection by every enforceable arrow"
     );
 }

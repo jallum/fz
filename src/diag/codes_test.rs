@@ -23,6 +23,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         LOWER_UNBOUND,
         TYPE_NO_MATCHING_CLAUSE,
         TYPE_NUMERIC_LITERAL_WIDENED,
+        SPEC_VIOLATION,
         ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         INTERNAL_POST_RESOLUTION_LEFTOVER,
     ];
