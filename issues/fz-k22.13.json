@@ -11,11 +11,15 @@
     {
       "text": "SAME ROOT as fz-k22.10: the non-determinism is the 'arbitrary survivor' in semantic.rs CallSiteSummary coalescing (merge_callsite_activation discards a divergent arrow; which one survives depends on observation/HashMap order). Fixing fz-k22.10 (key coalescing by full ActivationKey, no arbitrary discard) should make it deterministic by construction. Verify determinism is restored when fz-k22.10 lands; likely closes as a dup.",
       "timestamp": "2026-07-10T02:31:53Z"
+    },
+    {
+      "text": "RE-SCOPED (fz-k22.10 option-B spike): the enum_predicate_search whole-fixture non-determinism is NOT the CallSiteSummary arbitrary-side-pick -- it is present IDENTICALLY in the be54e0126 baseline and persists after the coalescing recompute. It traces to Ty-interning / scheduling order UPSTREAM in the pipeline (callable/entry-id numbering + which cranelift instruction fails vary run to run). The coalescing merge order-independence IS now closed (unit-tested), but that was a different, narrower arbitrariness. This ticket's real target is the upstream Ty-interning/scheduling nondeterminism. Violates the north-star 'graph deterministic given the root'.",
+      "timestamp": "2026-07-10T15:05:27Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: enum_predicate_search producer materialization is non-deterministic across runs (3 different failure messages in 3 runs of the same binary)",
   "type": "bug",
-  "updated_at": "2026-07-10T02:31:53Z"
+  "updated_at": "2026-07-10T15:05:27Z"
 }
