@@ -14,7 +14,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] callable boundary cannot adapt raw target returns to published ValueRef lanes",
   "type": "bug",
   "updated_at": "2026-07-10T17:24:17Z"
