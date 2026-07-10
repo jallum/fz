@@ -876,7 +876,7 @@ pub(crate) fn compile_with_backend_native_program<
     backend: B,
     tel: &impl Telemetry,
 ) -> Result<B::Output, CodegenError> {
-    let surface = prepare_native_codegen_surface_from_native_program(t, program);
+    let surface = prepare_native_codegen_surface_from_native_program(t, program)?;
     compile_with_backend_surface(t, &surface, backend, tel)
 }
 
@@ -925,10 +925,48 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
     boundaries
 }
 
+/// Establish one `target_fn -> surface` binding in the closure-target
+/// registry, enforcing the registry's producer-consistency invariant as a
+/// hard error in every build profile: two producers binding the same
+/// target must agree on the FULL surface -- capture/arg split included,
+/// since two flattened-identical surfaces that slice their lanes at
+/// different capture counts declare different entry signatures and
+/// different capture harnesses for one physical body. Both former
+/// `debug_assert_eq!`s here were compiled out in release, so a
+/// disagreement silently kept whichever producer bound first.
+///
+/// Deliberately NOT checked here: agreement with the target body's own
+/// compiled `param_reprs`. A published surface may be a strict superset of
+/// the body's params and still be sound (see the invariant note on
+/// `require_closure_target_surface_agreement` in surface.rs); body
+/// agreement is enforced only at the closure-lit direct-call consumption
+/// point in terminator.rs.
+fn register_closure_target_surface(
+    targets: &mut HashMap<FnId, NativeClosureTargetSurface>,
+    target_fn: FnId,
+    context: &str,
+    surface: NativeClosureTargetSurface,
+) -> Result<(), CodegenError> {
+    match targets.get(&target_fn) {
+        Some(previous) if *previous != surface => Err(CodegenError::new(
+            crate::compiler2::artifact::incompatible_physical_abi_message(
+                format_args!("closure target fn {}", target_fn.0),
+                context,
+                format_args!("already-registered surface {previous:?}"),
+                format_args!("re-derived surface {surface:?}"),
+            ),
+        )),
+        _ => {
+            targets.insert(target_fn, surface);
+            Ok(())
+        }
+    }
+}
+
 fn build_codegen_closure_targets(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
-) -> HashMap<FnId, NativeClosureTargetSurface> {
+) -> Result<HashMap<FnId, NativeClosureTargetSurface>, CodegenError> {
     let mut targets = HashMap::new();
     for boundary in &program.callable_boundaries {
         let next = NativeClosureTargetSurface {
@@ -936,9 +974,12 @@ fn build_codegen_closure_targets(
             capture_reprs: arg_reprs_from_compiler2(&boundary.capture_reprs),
             arg_reprs: arg_reprs_from_compiler2(&boundary.arg_reprs),
         };
-        if let Some(previous) = targets.insert(boundary.target_fn, next.clone()) {
-            debug_assert_eq!(previous, next);
-        }
+        register_closure_target_surface(
+            &mut targets,
+            boundary.target_fn,
+            "the closure-target registry (two boundaries publishing one target)",
+            next,
+        )?;
     }
 
     // `direct_target` on `CallClosure`/`TailCallClosure` is a devirtualization
@@ -988,16 +1029,16 @@ fn build_codegen_closure_targets(
             );
             let capture_count = logical_param_count - arg_count;
             let next = closure_target_surface_from_body(program, param_reprs, target_fn, capture_count);
-            match targets.get(&target_fn) {
-                Some(previous) => debug_assert_eq!(previous, &next),
-                None => {
-                    targets.insert(target_fn, next);
-                }
-            }
+            register_closure_target_surface(
+                &mut targets,
+                target_fn,
+                "the closure-target registry (two call sites synthesizing a fallback surface for one unpublished target)",
+                next,
+            )?;
         }
     }
 
-    targets
+    Ok(targets)
 }
 
 fn closure_target_surface_from_body(
@@ -1096,7 +1137,7 @@ fn collect_codegen_mid_flight_cont_keys(
 fn prepare_native_codegen_surface_from_native_program<'a>(
     t: &mut impl ClosureTypes<Ty = Ty>,
     program: &'a crate::compiler2::NativeProgram,
-) -> NativeCodegenSurface<'a> {
+) -> Result<NativeCodegenSurface<'a>, CodegenError> {
     let max_fn_id = program
         .module
         .fns
@@ -1134,7 +1175,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
-    let closure_targets = build_codegen_closure_targets(program, &param_reprs);
+    let closure_targets = build_codegen_closure_targets(program, &param_reprs)?;
     let native_abi_fns = program
         .module
         .fns
@@ -1156,7 +1197,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         .map(|body| (body.fn_id.0, native_return_halt_repr(body).halt_kind()))
         .collect();
 
-    NativeCodegenSurface {
+    Ok(NativeCodegenSurface {
         module: &program.module,
         diagnostics: Diagnostics::new(),
         main_fn_id: Some(program.entry),
@@ -1172,7 +1213,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         cont_target_fns,
         cont_fns,
         fn_halt_kinds,
-    }
+    })
 }
 
 pub(crate) fn compile_with_backend_surface<
@@ -1461,4 +1502,114 @@ pub(crate) fn compile_with_backend_surface<
     let output = backend.finalize(metadata)?;
     drop(finalize_span);
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The registry-binding helper is the single enforcement point for the
+    /// registry's producer-consistency invariant: every closure-target
+    /// binding -- boundary-published or fallback-synthesized -- passes
+    /// through it. An agreeing (re)binding must land in the registry.
+    #[test]
+    fn registry_rebinding_with_identical_surface_is_established() {
+        let mut targets = HashMap::new();
+        let surface = NativeClosureTargetSurface {
+            capture_count: 1,
+            capture_reprs: vec![ArgRepr::RawAtom],
+            arg_reprs: vec![ArgRepr::RawInt],
+        };
+        for _ in 0..2 {
+            register_closure_target_surface(
+                &mut targets,
+                FnId(7),
+                "the closure-target registry (two boundaries publishing one target)",
+                surface.clone(),
+            )
+            .expect("identical rebinding must be accepted");
+        }
+        assert_eq!(targets.get(&FnId(7)), Some(&surface));
+    }
+
+    /// Two producers binding one target with different lane surfaces must
+    /// error cleanly at binding time -- before any consumer (the target's
+    /// declared Cranelift signature, its capture harness, or a direct
+    /// call's args) can be shaped from whichever surface happened to bind
+    /// first. Both former `debug_assert_eq!`s were compiled out in release,
+    /// making this disagreement a silent first-writer-wins.
+    #[test]
+    fn registry_rebinding_with_different_surface_errors_cleanly() {
+        let mut targets = HashMap::new();
+        let first = NativeClosureTargetSurface {
+            capture_count: 1,
+            capture_reprs: vec![ArgRepr::RawAtom],
+            arg_reprs: vec![ArgRepr::RawInt],
+        };
+        register_closure_target_surface(
+            &mut targets,
+            FnId(137),
+            "the closure-target registry (two boundaries publishing one target)",
+            first.clone(),
+        )
+        .expect("first binding must be accepted");
+        let err = register_closure_target_surface(
+            &mut targets,
+            FnId(137),
+            "the closure-target registry (two boundaries publishing one target)",
+            NativeClosureTargetSurface {
+                capture_count: 1,
+                capture_reprs: vec![ArgRepr::RawAtom],
+                arg_reprs: vec![ArgRepr::RawInt, ArgRepr::RawAtom],
+            },
+        )
+        .expect_err("a disagreeing rebinding must be rejected, not silently dropped");
+        let message = err.to_string();
+        assert!(
+            message.contains("closure target fn 137") && message.contains("incompatible physical ABI"),
+            "registry rejection should carry the shared physical-ABI prose: {message}"
+        );
+        assert_eq!(
+            targets.get(&FnId(137)),
+            Some(&first),
+            "the established binding must survive the rejected rebinding"
+        );
+    }
+
+    /// Two producers can derive flattened-identical surfaces that still
+    /// disagree on the capture/arg split -- and the split alone decides the
+    /// target's declared signature arity and how its entry harness
+    /// partitions params into capture loads vs arg bindings. The
+    /// producer-consistency check must be full-struct (partition-aware),
+    /// not a flattened-lane comparison.
+    #[test]
+    fn registry_rebinding_with_different_capture_split_errors_cleanly() {
+        let mut targets = HashMap::new();
+        register_closure_target_surface(
+            &mut targets,
+            FnId(9),
+            "the closure-target registry (two call sites synthesizing a fallback surface for one unpublished target)",
+            NativeClosureTargetSurface {
+                capture_count: 1,
+                capture_reprs: vec![ArgRepr::RawAtom],
+                arg_reprs: vec![ArgRepr::RawInt],
+            },
+        )
+        .expect("first binding must be accepted");
+        let err = register_closure_target_surface(
+            &mut targets,
+            FnId(9),
+            "the closure-target registry (two call sites synthesizing a fallback surface for one unpublished target)",
+            NativeClosureTargetSurface {
+                capture_count: 0,
+                capture_reprs: vec![],
+                arg_reprs: vec![ArgRepr::RawAtom, ArgRepr::RawInt],
+            },
+        )
+        .expect_err("a flattened-identical surface with a different capture/arg split must be rejected");
+        assert!(
+            err.to_string().contains("incompatible physical ABI"),
+            "the split disagreement should carry the shared physical-ABI prose: {err}"
+        );
+    }
 }

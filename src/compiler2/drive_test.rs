@@ -5170,6 +5170,157 @@ fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
 }
 
 #[test]
+fn compiler2_interp_runs_range_reduce2_first_acc_bridge_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_reduce2.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        let diagnostic = dbg.lines().join("\n");
+        panic!("Compiler2 backend interpreter should run Range Enum.reduce/2: {error}; dbg={diagnostic}");
+    });
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["105"],
+        "Range Enum.reduce/2 should thread the :first | {{:acc, value}} state through the bridge",
+    );
+    assert!(
+        capture.find(&["fz", "type_infer"]).is_empty()
+            && capture.find(&["fz", "planner"]).is_empty()
+            && capture.find(&["fz", "codegen"]).is_empty(),
+        "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_jit_runs_range_reduce2_first_acc_bridge_from_native_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_reduce2.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_jit(root_id)
+        .unwrap_or_else(|error| panic!("Compiler2 JIT should run Range Enum.reduce/2: {error}"));
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["105"],
+        "Range Enum.reduce/2 should keep the first-accumulator bridge valid on the native path",
+    );
+}
+
+#[test]
+fn compiler2_interp_preserves_range_reduce3_halt_and_suspend_from_backend_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/range_reduce3_halt_suspend.fz".to_string()),
+        text: r#"
+fn main() do
+  dbg(Enumerable.reduce(1..5, {:cont, 0}, fn (x, acc) ->
+    if x > 2 do
+      {:halt, acc}
+    else
+      {:cont, acc + x}
+    end
+  end))
+  dbg(Enumerable.reduce(1..5, {:suspend, 9}, fn (x, acc) -> {:cont, acc + x} end))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_interp(root_id)
+        .unwrap_or_else(|error| panic!("Compiler2 interpreter should preserve Range reduce/3 commands: {error}"));
+    let lines = dbg.lines();
+    assert_eq!(lines.first().map(String::as_str), Some("{:halted, 3}"));
+    assert!(
+        lines
+            .get(1)
+            .is_some_and(|line| line.starts_with("{:suspended, 9, #fn<")),
+        "Range reduce/3 suspend should preserve the initial accumulator and continuation, got {lines:?}",
+    );
+}
+
+#[test]
+fn compiler2_jit_preserves_range_reduce3_halt_and_suspend_from_native_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/range_reduce3_halt_suspend.fz".to_string()),
+        text: r#"
+fn main() do
+  dbg(Enumerable.reduce(1..5, {:cont, 0}, fn (x, acc) ->
+    if x > 2 do
+      {:halt, acc}
+    else
+      {:cont, acc + x}
+    end
+  end))
+  dbg(Enumerable.reduce(1..5, {:suspend, 9}, fn (x, acc) -> {:cont, acc + x} end))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_jit(root_id)
+        .unwrap_or_else(|error| panic!("Compiler2 JIT should preserve Range reduce/3 commands: {error}"));
+    let lines = dbg.lines();
+    assert_eq!(lines.first().map(String::as_str), Some("{:halted, 3}"));
+    assert!(
+        lines
+            .get(1)
+            .is_some_and(|line| line.starts_with("{:suspended, 9, #fn<")),
+        "Range reduce/3 suspend should preserve the initial accumulator and continuation, got {lines:?}",
+    );
+}
+
+#[test]
 fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();

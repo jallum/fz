@@ -281,13 +281,26 @@ impl World {
     /// producer. A producer that is itself paused on waits is not re-demanded
     /// — its missing facts are themselves blocked waits, so chains expand one
     /// frontier per pass. Returns how many producers were demanded.
+    ///
+    /// *Which* facts get demanded is provably a set (the dedup above), but
+    /// each demand enqueues its fact's producer job onto the same agenda, so
+    /// the order these calls happen in decides the order those jobs actually
+    /// run — and a job that observes another job's published fact can join
+    /// it under a keep-first merge, so run order is not free to vary. `Vec`
+    /// built from a `HashSet` carries `RandomState`'s per-process order;
+    /// sorting by `Debug` (pure data — ids and enum tags, no addresses or
+    /// hashes) pins it to a deterministic order without threading `Ord`
+    /// through every `FactKey` payload type.
     pub(crate) fn demand_blocked_wait_producers(&mut self) -> u64 {
-        let facts: std::collections::HashSet<FactKey> = self
+        let mut facts: Vec<FactKey> = self
             .work_graph
             .unresolved()
             .into_iter()
             .map(|wait| wait.fact.fact().clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
             .collect();
+        facts.sort_by_cached_key(|fact| format!("{fact:?}"));
         facts
             .into_iter()
             .map(|fact| self.demand_fact_producer(&fact, WorkStartReason::BlockedWaiterExpansion))
@@ -476,14 +489,22 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
             // fact->producer map — the same expansion the product drivers
             // perform when a fact wait finds an empty agenda. Only a genuine
             // drain reaches this pass, so it is event-driven, never a
-            // per-iteration sweep, and demanding producers is commutative, so
-            // the iteration order of the blocked-waiter set cannot matter.
+            // per-iteration sweep. Demanding producers is commutative for
+            // *which* facts get a producer job enqueued, but not for the
+            // *order* those jobs then run in — the agenda is a FIFO, and a
+            // job that observes another's published fact can join it under
+            // a keep-first merge, so the order this loop pokes producers in
+            // is still observable downstream. `unresolved()` is built from a
+            // `HashMap`, so its order is a per-process `RandomState`
+            // artifact; sort by `Debug` (pure data) to pin it.
             if std::mem::take(&mut changed_since_stall) {
                 stall_demanded.clear();
             }
             let mut producer_pokes = world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
             let mut demanded_facts: Vec<FactKey> = Vec::new();
-            for wait in world.work_graph.unresolved() {
+            let mut unresolved = world.work_graph.unresolved();
+            unresolved.sort_by_cached_key(|wait| format!("{:?}", wait.fact.fact()));
+            for wait in unresolved {
                 if stall_demanded.insert(wait.fact.fact().clone()) {
                     producer_pokes +=
                         world.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);

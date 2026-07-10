@@ -3134,17 +3134,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 return Err(incomplete_native_program(
                     self.telemetry,
                     self.root_id,
-                    format!(
-                        "native callable materialization for {callable:?} has resolutions with incompatible physical ABI: executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?}) vs executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?}) in {}",
-                        first_index,
-                        first_arg_reprs,
-                        first_return_reprs,
-                        first_return_tuple_arity,
-                        index,
-                        arg_reprs,
-                        return_reprs,
-                        return_tuple_arity,
-                        self.native_origin_debug(origin)
+                    super::super::artifact::incompatible_physical_abi_message(
+                        format_args!("native callable materialization for {callable:?}"),
+                        format_args!("resolution pooling in {}", self.native_origin_debug(origin)),
+                        format_args!(
+                            "executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?})",
+                            first_index, first_arg_reprs, first_return_reprs, first_return_tuple_arity
+                        ),
+                        format_args!(
+                            "executable {} (arg_reprs={:?}, return_reprs={:?}, return_tuple_arity={:?})",
+                            index, arg_reprs, return_reprs, return_tuple_arity
+                        ),
                     ),
                 ));
             }

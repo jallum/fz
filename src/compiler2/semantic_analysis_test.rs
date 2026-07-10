@@ -568,6 +568,54 @@ end
         "main/0 should not publish a dbg/1 edge for a continuation that cannot receive a value",
     );
 }
+/// A callsite whose two incoming branches disagree on `cap`'s type (`int`
+/// on one arm, `string` on the other) is observed twice by
+/// `coalesce_call_emissions` before it settles into one published target,
+/// so that target gets rebuilt (`rebuild_coalesced_call_emission`). The
+/// callee here is a zero-argument closure that only ever reads its capture
+/// -- its real activation is one input wide (the capture slot alone), even
+/// though its declared (capture-free) surface is zero wide. Rebuilding from
+/// that zero-wide surface instead of the activation's own `.inputs()` used
+/// to mint a truncated, zero-input activation, and derive_executable_runtime_demand's
+/// per-clause live-demand pass indexed the (nonexistent) capture slot on it
+/// and panicked. This test proves the whole backend product settles without
+/// truncating the activation.
+#[test]
+fn compiler2_coalesced_closure_target_keeps_its_capture_slot() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("coalesced_closure_capture.fz".to_string()),
+        r#"
+fn main() do
+  cap = if true, do: 1, else: "s"
+  f = fn () -> cap end
+  f.()
+end
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    drive_until_semantic_closure(
+        &mut world,
+        &tel,
+        root,
+        "a closure capturing a branch-joined value must settle without truncating its activation",
+    );
+
+    let main_function = world.root_function(root);
+    let main_activation = super::identity::ActivationKey::from_inputs(root, main_function, &[], world.types_mut());
+    let main_return = world
+        .activation_return(&main_activation)
+        .expect("main/0 should have a settled return type at semantic closure");
+    let displayed = world.types().display(&main_return);
+    assert!(
+        displayed.contains("int") && displayed.contains("binary"),
+        "main/0 should return the captured branch-joined union of int and string, got `{displayed}`",
+    );
+}
+
 #[test]
 fn compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();

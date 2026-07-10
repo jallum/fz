@@ -237,12 +237,20 @@ defmodule Enum do
   fnp reduce_finish({:halted, acc}), do: acc
   fnp reduce_finish({:suspended, acc, _continuation}), do: acc
 
+  @spec reduce_first_step(a, :first | {:acc, a}, (a, a) -> a) :: {:cont, {:acc, a}}
   fnp reduce_first_step(entry, :first, _reducer), do: {:cont, {:acc, entry}}
   fnp reduce_first_step(entry, {:acc, acc}, reducer), do: {:cont, {:acc, reducer.(entry, acc)}}
+  fnp reduce_first_step(_entry, _state, _reducer), do: panic("Enum.ReduceStateError")
 
-  fnp reduce_first_finish(result), do: reduce_first_acc(reduce_finish(result))
+  @spec reduce_first_finish({:done, :first | {:acc, a}} | {:halted, :first | {:acc, a}} | {:suspended, :first | {:acc, a}, () -> any}) :: a
+  fnp reduce_first_finish({:done, state}), do: reduce_first_acc(state)
+  fnp reduce_first_finish({:halted, state}), do: reduce_first_acc(state)
+  fnp reduce_first_finish({:suspended, state, _continuation}), do: reduce_first_acc(state)
+  fnp reduce_first_finish(_result), do: panic("Enum.ReduceStateError")
+  @spec reduce_first_acc(:first | {:acc, a}) :: a
   fnp reduce_first_acc(:first), do: panic("Enum.EmptyError")
   fnp reduce_first_acc({:acc, acc}), do: acc
+  fnp reduce_first_acc(_state), do: panic("Enum.ReduceStateError")
 
   fnp each_step(entry, acc, fun) do
     fun.(entry)

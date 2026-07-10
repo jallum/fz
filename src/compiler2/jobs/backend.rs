@@ -1032,7 +1032,11 @@ pub(crate) fn symbolic_materialized_transport_plan(
             rows.sort_by_key(|(callable, _)| callable.as_u32());
             rows
         },
-        boundary_ids: boundaries.keys().copied().collect(),
+        boundary_ids: {
+            let mut ids = boundaries.keys().copied().collect::<Vec<_>>();
+            ids.sort_by_key(|boundary| boundary.as_u32());
+            ids
+        },
         publication_boundaries,
         codegen_seam_facts,
     }

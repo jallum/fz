@@ -755,7 +755,7 @@ impl ActivationMap {
 impl<K, P, V> ContributionMap<K, P, V>
 where
     K: Clone + Eq + Hash,
-    P: Clone + Eq + Hash,
+    P: Clone + Eq + Hash + std::fmt::Debug,
     V: JoinContribution,
 {
     pub fn new() -> Self {
@@ -877,7 +877,18 @@ where
                 slot.contributors.remove(publisher);
             }
         }
-        let joined = join_contributions(ctx, slot.contributors.values());
+        // `slot.contributors` is a `HashMap<P, V>`: folding `.values()` in its
+        // native order makes the joined aggregate a function of `RandomState`
+        // iteration, not of which publishers contributed. `V::join_assign`
+        // (e.g. pointwise `Types::union`) is not guaranteed to be
+        // representative-stable across fold order — two runs that fold the
+        // same contributor set in a different order can settle on
+        // equivalent-but-differently-interned `Ty`s — so pin the fold order
+        // itself to a deterministic, publisher-identity-derived key (`Debug`
+        // is pure data here: ids and enum tags, no addresses or hashes).
+        let mut ordered_contributors = slot.contributors.iter().collect::<Vec<_>>();
+        ordered_contributors.sort_by_cached_key(|(publisher, _)| format!("{publisher:?}"));
+        let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
         let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
         if !slot.contributors.is_empty() {
             slot.joined = joined;
