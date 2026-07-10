@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1ah.5"
+  ],
   "blocks": [],
   "created": "2026-07-10T16:04:19Z",
   "description": "Goal\nCompiler and world code must emit only the smallest raw references needed to identify the decision; all lookup, projection, rendering, counting, serialization, and retention belongs to handlers.\n\nSignal\nCompiler2 has 87 opaque_debug payloads and many events extract overlapping root/module/function ids, names, counts, programs, and summaries from World. world.rs constructs inputs.iter().map(|ty| self.types.display(ty)).collect::\u003cVec\u003c_\u003e\u003e() solely for activation-input telemetry. Product events separately derive key.kind(), wait_count, and debug wrappers. Large program/body/plan debug payloads make the JSON handler serialize megabytes.\n\nStrategy\nDefine event-local raw context objects where the decision itself is not already one object. Prefer passing \u0026World plus the decision-local key/result/changed flag over extracting fields from World. Pass opaque raw borrows without selecting Debug formatting policy in compiler code. Handlers project stable fields while the borrow is live and copy only if they retain them. Metadata stays minimal and nonredundant; measurements are only already-computed scalar results, never telemetry-derived counts.\n\nTDD\nAdd emit-site contract tests that use handlers to derive the current assertions from raw references. Add a forbidden-pattern/lint-style guard against telemetry-only format!, collect, clone, to_string, opaque_debug, and duplicate id extraction in compiler2 emit sites. Migrate tests and dump handlers rather than keeping compatibility payloads.\n\nAcceptance\n- No data is constructed, transformed, cloned, rendered, or allocated for telemetry in compiler code.\n- No event asks World for fields solely to flatten them into metadata; handlers receive World when it is the authority.\n- Handlers own all retained copies and transformations.\n- Obsolete payload fields/helpers/tests are deleted; docs/tests/clippy pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Collapse compiler2 telemetry payloads to raw authority references",
   "type": "task",
-  "updated_at": "2026-07-10T16:04:19Z"
+  "updated_at": "2026-07-10T16:04:30Z"
 }
