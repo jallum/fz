@@ -219,7 +219,17 @@ pub(super) fn define_function(
 
     let surface = crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source)
         .map_err(|error| emit_surface_read_error(world, "quoted function decode failed", &error))?;
-    for diagnostic in crate::compiler2::source_diagnostics::function_warnings(&surface) {
+    let declares_contract = surface.extern_abi.is_some()
+        || surface
+            .attrs
+            .iter()
+            .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)));
+    let warnings = if declares_contract {
+        crate::compiler2::source_diagnostics::function_body_warnings(&surface)
+    } else {
+        crate::compiler2::source_diagnostics::function_warnings(&surface)
+    };
+    for diagnostic in warnings {
         world.emit_warning_once(diagnostic);
     }
     source_publish::record_function_type_refs(world, function_id, &surface)?;

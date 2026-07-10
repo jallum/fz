@@ -232,6 +232,7 @@ defmodule Enum do
   @spec slice(Enumerable.t(a)) :: {:ok, integer, any} | {:error, any}
   fn slice(_enumerable), do: {:error, :unsupported}
 
+  @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, () -> any}) :: a
   fnp reduce_finish({:done, acc}), do: acc
   fnp reduce_finish({:halted, acc}), do: acc
   fnp reduce_finish({:suspended, acc, _continuation}), do: acc

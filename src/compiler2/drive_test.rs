@@ -10903,6 +10903,10 @@ impl DiagnosticCapture {
     fn last(&self) -> Option<Diagnostic> {
         self.diagnostics.borrow().last().cloned()
     }
+
+    fn all(&self) -> Vec<Diagnostic> {
+        self.diagnostics.borrow().clone()
+    }
 }
 
 impl FunctionCapture {
@@ -13182,6 +13186,197 @@ fn main(), do: classify(:a)
         vec![0, 1],
         "guard predicates remain conservative in semantic reachability"
     );
+}
+
+#[test]
+fn compiler2_declared_domains_drive_function_head_exhaustiveness() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "declared_domain_exhaustiveness.fz",
+        r#"
+@spec tuple_total({:a, :x} | {:b, :y}) :: atom
+fn tuple_total({:a, :x}), do: :left
+fn tuple_total({:b, :y}), do: :right
+
+@spec overload_total(:a, :x) :: atom
+@spec overload_total(:b, :y) :: atom
+fn overload_total(:a, :x), do: :left
+fn overload_total(:b, :y), do: :right
+
+@spec count_a([:a]) :: integer
+fn count_a([]), do: 0
+fn count_a([:a | tail]), do: 1 + count_a(tail)
+
+fn main() do
+  {tuple_total({:a, :x}), overload_total(:b, :y), count_a([:a, :a])}
+end
+"#,
+    );
+
+    assert!(diagnostics.is_empty(), "total declared domains warned: {diagnostics:?}");
+}
+
+#[test]
+fn compiler2_bounded_contract_domains_drive_function_head_exhaustiveness() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "bounded_contract_exhaustiveness.fz",
+        r#"
+@spec bounded(t) :: atom when t: :a | :b
+fn bounded(:a), do: :left
+fn bounded(:b), do: :right
+
+@spec nested({:tag, t}) :: atom when t: :a | :b
+fn nested({:tag, :a}), do: :left
+fn nested({:tag, :b}), do: :right
+
+fn main(), do: {bounded(:a), nested({:tag, :b})}
+"#,
+    );
+
+    assert!(
+        diagnostics.is_empty(),
+        "bounded declared domains warned: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn compiler2_partial_bounded_contract_domain_still_warns() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "partial_bounded_contract.fz",
+        r#"
+@spec partial(t) :: atom when t: :a | :b
+fn partial(:a), do: :a
+
+fn main(), do: partial(:a)
+"#,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "the uncovered bounded atom must warn: {diagnostics:?}"
+    );
+    assert_eq!(diagnostics[0].1.message, "`fn` clauses don't cover every input");
+}
+
+#[test]
+fn compiler2_partial_declared_domains_warn_with_and_without_guards() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "partial_declared_domains.fz",
+        r#"
+@spec partial(:a | :b | :c) :: atom
+fn partial(:a), do: :a
+fn partial(:b), do: :b
+
+@spec guarded(:a | :b) :: atom
+fn guarded(value) when value == :a, do: :a
+
+fn main(), do: {partial(:a), guarded(:a)}
+"#,
+    );
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|(_, diagnostic)| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "`fn` clauses don't cover every input",
+            "`fn` clauses don't cover every input",
+        ],
+        "both real fallthroughs must warn: {diagnostics:?}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|(source, _)| source == "partial_declared_domains.fz")
+    );
+}
+
+#[test]
+fn compiler2_contracted_functions_keep_nested_match_diagnostics() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "contracted_nested_case.fz",
+        r#"
+@spec nested(:ok) :: integer
+fn nested(:ok) do
+  case :a do
+    :a -> 1
+    :b -> 2
+  end
+end
+
+fn main(), do: nested(:ok)
+"#,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "only the nested case should warn: {diagnostics:?}"
+    );
+    assert_eq!(diagnostics[0].1.message, "`case` clauses don't cover every input");
+}
+
+#[test]
+fn compiler2_invalid_contract_does_not_invent_a_domain_warning() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "invalid_contract_domain.fz",
+        r#"
+@spec invalid(Missing.t) :: atom
+fn invalid(:a), do: :a
+fn invalid(:b), do: :b
+
+fn main(), do: invalid(:a)
+"#,
+    );
+
+    assert!(
+        diagnostics.is_empty(),
+        "an unresolved contract has no valid domain: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "fixtures2/00181_enum_reduce_operator_ref.fz",
+        include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
+    );
+
+    assert!(
+        diagnostics.is_empty(),
+        "runtime reducers should be total in their contracts: {diagnostics:?}"
+    );
+}
+
+fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(String, Diagnostic)> {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = DiagnosticCapture::new();
+    tel.attach(&["fz", "diag"], diagnostics.handler());
+
+    let mut world = crate::compiler2::World::new(&tel);
+    let user_code = world.submit_code(Some(source_name.to_string()), source.to_string());
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    let outcome = world.drive();
+    assert!(
+        !matches!(outcome, DriveOutcome::Fatal { .. }),
+        "diagnostic fixture must not fail fatally: {outcome:?}; diagnostics: {:?}",
+        diagnostics.all(),
+    );
+
+    diagnostics
+        .all()
+        .into_iter()
+        .filter(|diagnostic| diagnostic.code == codes::TYPE_NO_MATCHING_CLAUSE)
+        .map(|diagnostic| {
+            let source = if diagnostic.primary.span.code_id.0 == user_code.as_u32() {
+                source_name.to_string()
+            } else {
+                "<runtime>".to_string()
+            };
+            (source, diagnostic)
+        })
+        .collect()
 }
 
 fn reachable_clauses_for_source(source_name: &str, source: &str, function_name: &str, arity: u64) -> Vec<u32> {

@@ -153,21 +153,6 @@ fn exhaustiveness_tracks_dispatch_graph_fallthrough() {
 }
 
 #[test]
-fn empty_list_and_cons_exhaust_list_domain_only() {
-    let cons = Pattern::List(
-        vec![sp(Pattern::Var("h".to_string()))],
-        Some(Box::new(sp(Pattern::Var("t".to_string())))),
-    );
-    let patterns = SourcePatternRows {
-        input_count: 1,
-        rows: vec![row(vec![Pattern::List(vec![], None)], 0), row(vec![cons], 1)],
-    };
-
-    assert!(!is_inexhaustive_with_domains(&patterns, &[KnownSubjectDomain::List]));
-    assert!(is_inexhaustive_with_domains(&patterns, &[KnownSubjectDomain::Any]));
-}
-
-#[test]
 fn source_pattern_rows_reject_row_arity_mismatch() {
     let patterns = SourcePatternRows {
         input_count: 1,

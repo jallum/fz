@@ -7,8 +7,18 @@ use crate::source::Span;
 use super::types::Ty;
 
 pub(crate) fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
+    collect_function_warnings(surface, true)
+}
+
+pub(crate) fn function_body_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
+    collect_function_warnings(surface, false)
+}
+
+fn collect_function_warnings(surface: &FunctionSurface, check_head: bool) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    check_function_clauses(surface, &mut diagnostics);
+    if check_head {
+        check_function_clauses(surface, &mut diagnostics);
+    }
     for clause in &surface.clauses {
         if let Some(guard) = &clause.guard {
             walk_expr(guard, &mut diagnostics);
@@ -18,13 +28,20 @@ pub(crate) fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
     diagnostics
 }
 
+pub(crate) fn function_head_warning(surface: &FunctionSurface) -> Option<Diagnostic> {
+    let last_clause = surface.clauses.last()?;
+    Some(inexhaustive_diag_at(
+        last_clause.span,
+        "fn",
+        "function_clause",
+        "the last clause is here",
+    ))
+}
+
 fn check_function_clauses(surface: &FunctionSurface, diagnostics: &mut Vec<Diagnostic>) {
     if surface.clauses.len() < 2 {
         return;
     }
-    let Some(last_clause) = surface.clauses.last() else {
-        return;
-    };
     if surface.extern_abi.is_some() || surface.clauses.iter().any(|clause| clause.guard.is_some()) {
         return;
     }
@@ -42,12 +59,7 @@ fn check_function_clauses(surface: &FunctionSurface, diagnostics: &mut Vec<Diagn
         .collect();
     let source_patterns = SourcePatternRows { input_count, rows };
     if is_inexhaustive(&source_patterns) {
-        diagnostics.push(inexhaustive_diag_at(
-            last_clause.span,
-            "fn",
-            "function_clause",
-            "the last clause is here",
-        ));
+        diagnostics.push(function_head_warning(surface).expect("a checked function has a last clause"));
     }
 }
 

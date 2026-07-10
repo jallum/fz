@@ -2,8 +2,6 @@ use std::collections::BTreeSet;
 
 use crate::ast::{Expr, Pattern, Spanned};
 use crate::dispatch_matrix::{DispatchNode, GraphNodeId};
-#[cfg(test)]
-use crate::dispatch_matrix::{ListRegion, Region, SubjectId};
 
 use super::{PatternDispatchPlan, PatternSubjectRef, pattern_dispatch_from_source};
 
@@ -25,13 +23,6 @@ pub(crate) struct PatternRow<TypeHandle> {
 pub(crate) struct SourcePatternRows<TypeHandle> {
     pub(crate) input_count: usize,
     pub(crate) rows: Vec<PatternRow<TypeHandle>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) enum KnownSubjectDomain {
-    Any,
-    List,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,16 +198,6 @@ pub(crate) fn is_inexhaustive<TypeHandle: Clone + PartialEq + Eq>(patterns: &Sou
     has_reachable_fail_in_graph(&plan, plan.graph.root)
 }
 
-#[cfg(test)]
-pub(crate) fn is_inexhaustive_with_domains<TypeHandle: Clone + PartialEq + Eq>(
-    patterns: &SourcePatternRows<TypeHandle>,
-    domains: &[KnownSubjectDomain],
-) -> bool {
-    let normalized = normalize_guards_for_analysis(patterns.clone());
-    let plan = plan_for_analysis(normalized);
-    has_reachable_fail_in_graph(&plan, plan.graph.root) && !list_domain_is_covered(patterns, domains, &plan)
-}
-
 fn plan_for_analysis<TypeHandle: Clone + PartialEq + Eq>(
     patterns: SourcePatternRows<TypeHandle>,
 ) -> PatternDispatchPlan<TypeHandle> {
@@ -268,57 +249,6 @@ fn has_reachable_fail_in_graph<TypeHandle>(plan: &PatternDispatchPlan<TypeHandle
             has_reachable_fail_in_graph(plan, on_match.target) || has_reachable_fail_in_graph(plan, on_miss.target)
         }
     }
-}
-
-#[cfg(test)]
-fn list_domain_is_covered<TypeHandle>(
-    patterns: &SourcePatternRows<TypeHandle>,
-    domains: &[KnownSubjectDomain],
-    plan: &PatternDispatchPlan<TypeHandle>,
-) -> bool {
-    if domains.is_empty() {
-        return false;
-    }
-    if patterns
-        .rows
-        .iter()
-        .any(|row| row.guard.is_some() || !row.preconditions.is_empty())
-    {
-        return false;
-    }
-    domains
-        .iter()
-        .enumerate()
-        .filter(|(_, domain)| **domain == KnownSubjectDomain::List)
-        .any(|(index, _)| {
-            let subject = SubjectId(index as u32);
-            let only_simple_list_partition = plan.matrix.arms.iter().all(|arm| {
-                arm.questions.len() == 1
-                    && arm.questions.iter().all(|question| {
-                        question.predicate.subject == subject
-                            && matches!(
-                                question.predicate.region,
-                                Region::List(ListRegion::Empty) | Region::List(ListRegion::Cons)
-                            )
-                    })
-            });
-            if !only_simple_list_partition {
-                return false;
-            }
-            let has_empty = plan.matrix.arms.iter().any(|arm| {
-                arm.questions.iter().any(|question| {
-                    question.predicate.subject == subject
-                        && matches!(question.predicate.region, Region::List(ListRegion::Empty))
-                })
-            });
-            let has_cons = plan.matrix.arms.iter().any(|arm| {
-                arm.questions.iter().any(|question| {
-                    question.predicate.subject == subject
-                        && matches!(question.predicate.region, Region::List(ListRegion::Cons))
-                })
-            });
-            has_empty && has_cons
-        })
 }
 
 #[cfg(test)]

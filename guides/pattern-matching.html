@@ -254,6 +254,25 @@ same DispatchGraph every time:</p>
   </tbody>
 </table>
 
+<p>Function-head coverage follows the function's declared input contract. For
+example, clauses for <code>[]</code> and <code>[head | tail]</code> cover a
+parameter declared as <code>[a]</code>; they do not need a wildcard for values
+the contract excludes. Each <code>@spec</code> overload is checked as its own
+argument row, so separate overloads such as <code>(:a, :x)</code> and
+<code>(:b, :y)</code> do not invent the cross-pairs <code>(:a, :y)</code> or
+<code>(:b, :x)</code>.</p>
+
+<p>Bounds introduced by <code>when</code> are part of that domain. A parameter
+<code>t</code> constrained by <code>when t: :a | :b</code> is covered by clauses
+for <code>:a</code> and <code>:b</code>, including when <code>t</code> appears
+inside a tuple or list. An unconstrained type variable remains open-ended.</p>
+
+<p>Without a declared contract, function clauses are checked against all fz
+values. Guards do not promise coverage: if a declared input can make the guard
+false and no later clause matches, the compiler reports
+<code>type/no-matching-clause</code>. Nested <code>case</code> and
+<code>with else</code> checks are independent of the function-head contract.</p>
+
 <p>Receive is the odd-looking one only because the scheduler has to run
 the dispatch plan against mailbox messages over time. The decision language
 is the same; the entry point is different. SourcePatternRows turn source

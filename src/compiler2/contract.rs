@@ -12,6 +12,9 @@
 //! substitution. The hand-rolled witness/substitution walk that used to live here
 //! is the Types calculator now (`Types::match_arrow`, `types::arrow_match`,
 //! fz-hwn.27.4); contract application is a calculator decision on the arrow.
+//! Input-domain projection likewise delegates substitution to
+//! `Types::instantiate`, closing dependent bounds to a fixed point while leaving
+//! unbounded or cyclic variables polymorphic.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -110,6 +113,10 @@ impl FunctionContract {
         }
     }
 
+    pub(crate) fn input_domain_rows(&self, types: &mut Types) -> Vec<Vec<Ty>> {
+        self.arrows.iter().map(|arrow| arrow.input_domain_row(types)).collect()
+    }
+
     pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
         let mut matched_arrows = Vec::new();
         let mut result = None;
@@ -152,6 +159,34 @@ impl FunctionContract {
             enforceable_satisfied: !enforceable || enforceable_matched,
         }
     }
+}
+
+impl ContractArrow {
+    fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
+        types
+            .arrow_params(&self.arrow)
+            .into_iter()
+            .map(|param| instantiate_domain(types, param, &self.bounds))
+            .collect()
+    }
+}
+
+fn instantiate_domain(types: &mut Types, mut domain: Ty, bounds: &HashMap<TypeVarId, Ty>) -> Ty {
+    let original = domain;
+    // An acyclic dependency path crosses at most one edge per bound. One
+    // additional substitution distinguishes a fixed/open result from a cycle.
+    for _ in 0..bounds.len() {
+        if !types.has_vars(&domain) {
+            return domain;
+        }
+        let instantiated = types.instantiate(&domain, bounds);
+        if instantiated == domain {
+            return domain;
+        }
+        domain = instantiated;
+    }
+    let next = types.instantiate(&domain, bounds);
+    if next == domain { domain } else { original }
 }
 
 impl FunctionContractMap {
