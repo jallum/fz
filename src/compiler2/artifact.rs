@@ -332,6 +332,21 @@ impl NativeCallableBoundary {
     }
 }
 
+/// One shared sentence shape for every physical-ABI agreement guard, so a
+/// mismatch reads the same whether it fired in native lowering's
+/// fallback-boundary selection, native codegen's closure-target registry,
+/// or a direct-call consumption check. The layers keep their own error
+/// types (FatalError-emitting diagnostics vs `CodegenError`); only the
+/// prose is shared.
+pub(crate) fn incompatible_physical_abi_message(
+    subject: impl std::fmt::Display,
+    consumption: impl std::fmt::Display,
+    published: impl std::fmt::Display,
+    resolved: impl std::fmt::Display,
+) -> String {
+    format!("{subject} has incompatible physical ABI at {consumption}: {published} disagrees with {resolved}")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbiReadyExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,

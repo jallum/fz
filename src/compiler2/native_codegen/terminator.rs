@@ -1,6 +1,6 @@
 //! Terminator emission for fz IR blocks.
 
-use super::surface::NativeClosureTargetSurface;
+use super::surface::{NativeClosureTargetSurface, require_closure_target_surface_agreement};
 use super::*;
 use crate::compiler2::NativeEntryAbi;
 use crate::fz_ir::{
@@ -68,7 +68,7 @@ fn resolve_direct_closure_surface<'a>(
     env: &'a CodegenEnv<'a>,
     direct_target_sid: u32,
     closure: Var,
-) -> Option<(FnId, &'a NativeClosureTargetSurface)> {
+) -> Result<Option<(FnId, &'a NativeClosureTargetSurface)>, CodegenError> {
     let target_fn = env.body_fn_id(direct_target_sid);
     if let Some(boundary_id) = env
         .active_native_body()
@@ -85,7 +85,22 @@ fn resolve_direct_closure_surface<'a>(
             "direct closure target should agree with the closure value's settled callable boundary",
         );
     }
-    env.surface.closure_target(target_fn).map(|target| (target_fn, target))
+    let Some(target) = env.surface.closure_target(target_fn) else {
+        return Ok(None);
+    };
+    // The closure-lit direct dispatch path is about to shape this call's
+    // args (and the target's own entry harness / declared signature) from
+    // `target`'s published lane surface -- the exact consumption point the
+    // surface-vs-compiled-ABI invariant guards. Compare against the
+    // target's own compiled param reprs (the ground truth) before any of
+    // that shaping happens.
+    require_closure_target_surface_agreement(
+        target_fn,
+        "a direct closure call",
+        target,
+        &env.param_reprs[direct_target_sid as usize],
+    )?;
+    Ok(Some((target_fn, target)))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1400,13 +1415,15 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         // at [K..., arg_descrs...] and call it directly with the body's
         // narrow ABI. Opaque / polymorphic closures fall through to the
         // all-ValueRef indirect seam below.
-        let lit_resolved = resolve_native_closure_sid(env, blk).map(|body_sid| {
-            let target_fn = env.body_fn_id(body_sid);
-            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-            let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)
-                .expect("direct closure target should publish an exact closure-target surface");
-            (body_sid, body_fid, target_fn, target)
-        });
+        let lit_resolved = resolve_native_closure_sid(env, blk)
+            .map(|body_sid| -> Result<_, CodegenError> {
+                let target_fn = env.body_fn_id(body_sid);
+                let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
+                let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)?
+                    .expect("direct closure target should publish an exact closure-target surface");
+                Ok((body_sid, body_fid, target_fn, target))
+            })
+            .transpose()?;
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let can_use_lazy_cont = is_native && continuation_uses_lazy_descriptor(t, env, &continuation.captured);
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
@@ -1548,13 +1565,15 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             }
         };
 
-        let lit_resolved = resolve_native_closure_sid(env, blk).map(|body_sid| {
-            let target_fn = env.body_fn_id(body_sid);
-            let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-            let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)
-                .expect("direct closure target should publish an exact closure-target surface");
-            (body_sid, body_fid, target_fn, target)
-        });
+        let lit_resolved = resolve_native_closure_sid(env, blk)
+            .map(|body_sid| -> Result<_, CodegenError> {
+                let target_fn = env.body_fn_id(body_sid);
+                let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
+                let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)?
+                    .expect("direct closure target should publish an exact closure-target surface");
+                Ok((body_sid, body_fid, target_fn, target))
+            })
+            .transpose()?;
         let telemetry_target = closure_call_telemetry_target(
             env,
             lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn),
