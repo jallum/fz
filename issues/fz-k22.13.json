@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T00:15:26Z",
+  "description": "Found during the fz-k22.10 spike. Running the SAME compiled binary for enum_predicate_search 3 times produced 3 DIFFERENT failure messages -- the affected producer materialization is schedule-dependent / non-deterministic. Per the campaigns rule (tiny-fixture slowness/instability = correctness), non-determinism here is a real correctness signal (a non-monotone join or unordered iteration in the callable/boundary materialization path), not flakiness to tolerate. Isolate via repeated runs + --log-telemetry diff; likely a HashMap-iteration-order or schedule-order dependence in the callable_for_producer / fallback_callable_boundary / materialize_transport_value path surfaced by the multi-resolution case. Blocks trusting any run/build result for enum_predicate_search until deterministic. Relates to fz-k22.10 (Bug A) and the new Bug B.",
+  "id": "fz-k22.13",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-k22: enum_predicate_search producer materialization is non-deterministic across runs (3 different failure messages in 3 runs of the same binary)",
+  "type": "bug",
+  "updated_at": "2026-07-10T00:15:26Z"
+}
