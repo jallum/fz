@@ -58,6 +58,7 @@ impl<'a> Renderer<'a> {
 
     /// Force-disable color regardless of mode. Used by tests so golden
     /// files don't carry escape sequences.
+    #[cfg(test)]
     pub fn with_color_disabled(mut self) -> Self {
         self.color = ColorMode::Never;
         self.use_color = false;

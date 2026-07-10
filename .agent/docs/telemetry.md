@@ -46,7 +46,10 @@ matches everything. Concrete handlers:
 
 - `DiagRenderer` (`diag_render.rs`) — events under `[fz, diag]` carrying a
   `Diagnostic` in their metadata; it downcasts and hands them to
-  `diag::render::Renderer` for stderr/writer output.
+  `diag::render::Renderer` for stderr/writer output. `fz2` gives it the
+  compiler-owned `CodeMap` source index at front-door construction, so source
+  text remains shared with compilation rather than being copied, formatted, or
+  attached to each event. The renderer owns only its output/status state.
 - `JsonlBackend` (`jsonl.rs`) — serializes every routed event to one JSON line.
 - `StatsHandler` (`stats.rs`) — counts events by name.
 - `Capture` (`capture.rs`) — the test handler; copies events into an owned

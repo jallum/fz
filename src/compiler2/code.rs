@@ -1,6 +1,11 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use super::namespace::Namespace;
 use super::quoted_surface::ScopeSurface;
 use super::source::{Horizon, QuotedSourceRoot};
+use crate::source::SourceMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CodeId(u32);
@@ -37,8 +42,9 @@ pub struct QuotedCodeSource {
 #[derive(Debug, Default)]
 pub struct CodeMap {
     slots: Vec<CodeState>,
+    source_map: Rc<RefCell<SourceMap>>,
     names: Vec<Option<String>>,
-    texts: Vec<String>,
+    texts: Vec<Arc<str>>,
 }
 
 impl CodeMap {
@@ -48,6 +54,9 @@ impl CodeMap {
 
     pub fn define(&mut self, name: Option<String>, text: String) -> CodeId {
         let id = CodeId(self.slots.len() as u32);
+        let text: Arc<str> = text.into();
+        let source_id = self.source_map.borrow_mut().add_code(name.clone(), text.clone());
+        assert_eq!(source_id.0, id.0, "code and source ids must advance together");
         self.slots.push(CodeState::Pending);
         self.names.push(name);
         self.texts.push(text);
@@ -87,10 +96,7 @@ impl CodeMap {
     }
 
     pub fn text(&self, id: CodeId) -> &str {
-        self.texts
-            .get(id.0 as usize)
-            .map(String::as_str)
-            .expect("code ids should have source text")
+        self.texts.get(id.0 as usize).expect("code ids should have source text")
     }
 
     pub fn ids(&self) -> Vec<CodeId> {
@@ -99,6 +105,10 @@ impl CodeMap {
 
     pub(crate) fn len(&self) -> usize {
         self.slots.len()
+    }
+
+    pub(crate) fn source_map(&self) -> Rc<RefCell<SourceMap>> {
+        self.source_map.clone()
     }
 }
 

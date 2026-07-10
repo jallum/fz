@@ -12,8 +12,7 @@
 //!   tracking. Single-threaded (`RefCell`, no `Send`/`Sync`).
 //! - **Handlers** (`handler`): `Handler::handle(&Event<'_, '_, '_>)` receives every
 //!   routed event. Concrete impls: `Capture` (tests), `JsonlBackend` (file
-//!   logging), `StatsHandler` (event counters), and a test-only diagnostic
-//!   renderer.
+//!   logging), `StatsHandler` (event counters), and `DiagRenderer`.
 //! - **Macros** (`measurements!`, `metadata!` in `macros`): ergonomic
 //!   construction of event payloads.
 //!
@@ -33,7 +32,6 @@
 pub mod bus;
 #[cfg(test)]
 pub mod capture;
-#[cfg(test)]
 pub mod diag_render;
 pub mod event;
 pub mod handler;

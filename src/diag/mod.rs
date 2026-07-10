@@ -7,9 +7,7 @@
 pub mod codes;
 pub mod diagnostic;
 pub mod driver;
-#[cfg(test)]
 pub mod render;
-#[cfg(test)]
 pub mod style;
 
 pub use diagnostic::{Diagnostic, Diagnostics};

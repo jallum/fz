@@ -537,6 +537,10 @@ impl World {
         self.code.text(id)
     }
 
+    pub(crate) fn source_map(&self) -> std::rc::Rc<std::cell::RefCell<crate::source::SourceMap>> {
+        self.code.source_map()
+    }
+
     fn code_len(&self) -> usize {
         self.code.len()
     }

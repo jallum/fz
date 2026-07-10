@@ -18,6 +18,14 @@ fn run_fz2(args: &[&OsStr]) -> Output {
     Command::new(FZ2_BIN).args(args).output().expect("invoke fz2 binary")
 }
 
+fn run_fz2_without_color(args: &[&OsStr]) -> Output {
+    Command::new(FZ2_BIN)
+        .env("NO_COLOR", "1")
+        .args(args)
+        .output()
+        .expect("invoke fz2 binary")
+}
+
 fn fixture_expected_stdout(path: &str) -> String {
     // Goldens are stem-scoped sidecars (`<stem>.expected.txt`), the same naming
     // `fixture_matrix` resolves via `sidecar_path`. The earlier `expected.txt`
@@ -434,7 +442,7 @@ fn main(), do: App.run()
     )
     .expect("write missing require fixture");
 
-    let out = run_fz2(&[OsStr::new("run"), source_path.as_os_str()]);
+    let out = run_fz2_without_color(&[OsStr::new("run"), source_path.as_os_str()]);
     assert!(
         !out.status.success(),
         "fz2 run should reject unrequired remote macro; output={}",
@@ -444,6 +452,18 @@ fn main(), do: App.run()
     assert!(
         text.contains("macro/not-required") && text.contains("require Helpers"),
         "fz2 diagnostic should name the missing require; output={text}",
+    );
+    assert!(
+        text.contains(&format!("--> {}:", source_path.display())),
+        "fz2 diagnostic should locate the remote macro call; output={text}",
+    );
+    assert!(
+        text.contains("Helpers.twice(21)"),
+        "fz2 diagnostic should show the offending source; output={text}"
+    );
+    assert!(
+        !text.contains("\x1b["),
+        "NO_COLOR must disable ANSI escapes; output={text}"
     );
 
     let _ = remove_file(&source_path);
@@ -537,7 +557,7 @@ fn run_and_interp_report_partial_case_and_with_warnings() {
     let fixture = "fixtures2/behavior/case_tuple_pattern_sequential.fz";
     let expected = fixture_expected_stdout(fixture);
     for command in ["run", "interp"] {
-        let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+        let out = run_fz2_without_color(&[OsStr::new(command), OsStr::new(fixture)]);
         assert!(
             out.status.success(),
             "fz2 {command} {fixture} should succeed; stdout={:?} stderr={:?}",
@@ -557,6 +577,14 @@ fn run_and_interp_report_partial_case_and_with_warnings() {
         assert!(
             stderr.contains("warning[type/no-matching-clause]: `with else` clauses don't cover every input"),
             "fz2 {command} should warn for partial with else clauses; stderr={stderr}"
+        );
+        assert!(stderr.contains("--> fixtures2/behavior/case_tuple_pattern_sequential.fz:"));
+        assert!(stderr.contains("matched values may fall through here"));
+        assert!(stderr.contains("= note: an input matched by no clause halts with `:case_clause` at runtime"));
+        assert!(stderr.contains("= help: add a wildcard clause `_ -> ...` to cover any remaining input"));
+        assert!(
+            !stderr.contains("\x1b["),
+            "NO_COLOR must disable ANSI escapes; stderr={stderr}"
         );
     }
 }
