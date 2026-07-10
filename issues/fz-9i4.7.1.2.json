@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T00:34:09Z",
+  "close_reason": "Landed on integration as d10db7b4a (fz-9i4.7.1.2: warn on partial function clauses). Implemented production source diagnostics for partial multi-clause function heads, undeferred tree.fz, and updated the reducer regression guard to reject the old unbound-demand crash while accepting the now-successful path. Coordinator verification: cargo test --lib --quiet passed (1305 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed; cargo test --lib compiler2::source_diagnostics passed (7 tests); cargo test --lib compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_crash passed; cargo test --test fixture_matrix tree passed (run/interp/build).",
   "created": "2026-07-09T22:00:18Z",
   "description": "Current source_diagnostics::function_warnings walks guards and bodies and checks case/with, but does not analyze surface.clauses/function params. Acceptance: partial multi-clause fn heads emit type/no-matching-clause through production source diagnostics; tree.fz reports its expected warning; total multi-clause functions remain clean; cargo test --lib and cargo clippy --all-targets -- -D warnings pass.",
   "id": "fz-9i4.7.1.2",
   "labels": [],
   "parent": "fz-9i4.7.1",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Source diagnostics warn on partial multi-clause function heads",
   "type": "bug",
-  "updated_at": "2026-07-09T22:00:18Z"
+  "updated_at": "2026-07-10T00:34:09Z"
 }
