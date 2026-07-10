@@ -11,9 +11,15 @@
   "id": "fz-1ah.6",
   "labels": [],
   "parent": "fz-1ah",
+  "comments": [
+    {
+      "text": "Raw World payload plan: after fz-1ah.5 removes telemetry from World, current OpaqueRef can borrow \u0026World because the concrete World type is static even though the event borrow is short-lived. Emit minimal tuples such as (\u0026World, \u0026ActivationKey, \u0026AnalysisOutcome) or dedicated borrowed decision records; no flattened ids/counts/debug strings. Handlers downcast synchronously and project/copy. World mutation completes before the immutable event borrow; handlers cannot mutate World.",
+      "timestamp": "2026-07-10T16:07:38Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Collapse compiler2 telemetry payloads to raw authority references",
   "type": "task",
-  "updated_at": "2026-07-10T16:04:31Z"
+  "updated_at": "2026-07-10T16:07:38Z"
 }
