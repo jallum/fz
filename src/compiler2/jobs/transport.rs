@@ -3359,6 +3359,7 @@ fn callable_for_producer(
         .collect::<Vec<_>>();
     let callable = world.intern_callable(CallableDescr {
         function: Some(producer.function),
+        capture_tys: capture_tys.into_boxed_slice(),
         capture_shapes: capture_shapes.into_boxed_slice(),
         capture_lanes: capture_lanes.clone().into_boxed_slice(),
     });
@@ -3557,6 +3558,7 @@ fn generic_callable_shape_with_resolutions(
     let boxed_value_lane = value_lane(world, ty);
     let callable = world.intern_callable(CallableDescr {
         function: None,
+        capture_tys: Box::default(),
         capture_shapes: Box::default(),
         capture_lanes: Box::from([boxed_value_lane]),
     });

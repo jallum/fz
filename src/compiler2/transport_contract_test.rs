@@ -3347,8 +3347,15 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         "dense executable indices are assigned at final packaging only"
     );
     assert!(
-        program.callable_entries.is_empty(),
-        "operator refs in fixture 00181 should stay direct callable transport with no backend callable entries"
+        !program.callable_entries.is_empty(),
+        "operator refs in fixture 00181 should package resolved callable entries",
+    );
+    assert!(
+        program
+            .callable_entries
+            .iter()
+            .all(|entry| entry.publication_boundary.is_none()),
+        "direct operator refs should not fabricate first-class publication boundaries",
     );
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
     assert_eq!(driver.session().producer_pokes(), 0);
@@ -3465,7 +3472,7 @@ fn executable_input_shape_is_nothing(
 }
 
 #[test]
-fn compiler2_transport_plan_keeps_joined_enum_reduce_reducer_callable_shaped() {
+fn compiler2_transport_plan_publishes_joined_enum_reduce_reducer_as_first_class() {
     let source = r#"
 fn add_a(x, acc), do: acc + x
 fn add_b(x, acc), do: acc + x
@@ -3524,11 +3531,12 @@ end
             let ShapeDescr::Callable(callable) = shape_descr(&world, *shape) else {
                 return false;
             };
-            session.callable_facts_inventory().get(callable).is_some_and(|facts| {
-                facts.direct_surfaces.iter().any(|surface| surface.len() == 2) && facts.boundary_ids.is_empty()
-            })
+            session
+                .callable_facts_inventory()
+                .get(callable)
+                .is_some_and(|facts| !facts.boundary_ids.is_empty())
         }),
-        "the joined reducer should retain a direct two-argument callable surface without becoming a boundary"
+        "the joined reducer must publish a first-class callable boundary instead of pooling a direct target"
     );
 }
 

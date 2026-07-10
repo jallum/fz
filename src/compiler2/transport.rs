@@ -224,6 +224,10 @@ pub struct CodegenSeamFact {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallableDescr {
     pub function: Option<FunctionId>,
+    /// The settled types of the closure's lexical captures. They remain part
+    /// of callable identity even when demand elides every physical capture
+    /// lane, preventing distinct groundings from pooling at the interner.
+    pub capture_tys: Box<[Ty]>,
     pub capture_shapes: Box<[ShapeId]>,
     pub capture_lanes: Box<[LaneId]>,
 }
