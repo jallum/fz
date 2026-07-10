@@ -6,9 +6,15 @@
   "description": "fz-k22.7 Layer C (synthesize fallback callable boundary from resolved target) stopped repr_seam_enum_count_after_reduce2 from CRASHING; it now runs but produces WRONG OUTPUT (10/10 instead of expected 10/2) on run/interp/build. Confirmed NOT caused by the fallback: its two orphan callables each resolve to exactly ONE candidate (no pooling), so the fallback picks correctly -- this is a distinct, previously-masked correctness defect the earlier crash was hiding. Was already in the known-red 10 (crash); now red-by-wrong-output. Root-cause the count-after-reduce2 semantics (the repr-seam between Enum.count and a preceding reduce2). Standalone from the k22 capture-ABI family.",
   "id": "fz-pcd",
   "labels": [],
+  "comments": [
+    {
+      "text": "Spike at 0aa00f6f7 disproves the ticket's current 'distinct from k22.7' premise and splits the work into two atomic bugs. INTERP: count alone returns 2; reduce(xs, sum) then count(xs, \u003e2) flips nondeterministically between 10/10 and 2/2 (10 isolated runs: 7 wrong, 3 right), while dbg(xs) remains [1, 2, 3, 4], so this is not list mutation. The backend artifact has pooled BoundaryId(0) entries for the generated Enum.reduce bridge with capture_count=0 and two args even though each target activation has 3 inputs (one reducer capture plus two args). fz-k22.7's concrete_target_capture_surfaces looks only at concrete BoundaryFacts; these concrete direct-only CallableFacts have resolutions but no BoundaryId, then the 'empty pooling surface is safe' fallback silently drops the capture. Tracked as fz-k22.20. NATIVE: run/build now consistently stop at callable boundary 0 return lanes boundary=[RawAtom, ValueRef], body=[RawAtom, RawInt]; the boundary adapter tail-calls the body and cannot adapt {:cont, integer} to its public {:cont, any} seam. Tracked as fz-pcd.1. Keep fz-pcd open as the fixture umbrella until both children produce 10/2 on all three paths; its description/title should be revised to remove the claim that the behavior is unrelated to k22.7.",
+      "timestamp": "2026-07-10T17:00:19Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "repr_seam_enum_count_after_reduce2 produces wrong output 10/10 instead of 10/2 on all 3 backends -- previously-masked defect unblocked by the k22.7 Layer-C callable-boundary fallback",
   "type": "bug",
-  "updated_at": "2026-07-09T20:14:01Z"
+  "updated_at": "2026-07-10T17:00:19Z"
 }
