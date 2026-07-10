@@ -7,9 +7,15 @@
   "id": "fz-k22.13",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "SAME ROOT as fz-k22.10: the non-determinism is the 'arbitrary survivor' in semantic.rs CallSiteSummary coalescing (merge_callsite_activation discards a divergent arrow; which one survives depends on observation/HashMap order). Fixing fz-k22.10 (key coalescing by full ActivationKey, no arbitrary discard) should make it deterministic by construction. Verify determinism is restored when fz-k22.10 lands; likely closes as a dup.",
+      "timestamp": "2026-07-10T02:31:53Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: enum_predicate_search producer materialization is non-deterministic across runs (3 different failure messages in 3 runs of the same binary)",
   "type": "bug",
-  "updated_at": "2026-07-10T00:15:26Z"
+  "updated_at": "2026-07-10T02:31:53Z"
 }
