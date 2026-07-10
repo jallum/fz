@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-k22.14",
     "fz-k22.18"
   ],
   "blocks": [],
@@ -23,5 +24,5 @@
   "status": "in_progress",
   "title": "[BUG] resolved callable entry must own target capture and return ABI",
   "type": "bug",
-  "updated_at": "2026-07-10T18:18:45Z"
+  "updated_at": "2026-07-10T20:08:56Z"
 }
