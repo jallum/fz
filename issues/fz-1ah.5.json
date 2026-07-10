@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1ah.7"
+  ],
   "blocks": [
     "fz-1ah.3",
     "fz-1ah.6"
@@ -24,5 +26,5 @@
   "status": "open",
   "title": "Make telemetry emission lazy and the no-handler path erasable",
   "type": "bug",
-  "updated_at": "2026-07-10T16:07:38Z"
+  "updated_at": "2026-07-10T16:08:09Z"
 }
