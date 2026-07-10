@@ -8,6 +8,7 @@ use super::types::Ty;
 
 pub(crate) fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+    check_function_clauses(surface, &mut diagnostics);
     for clause in &surface.clauses {
         if let Some(guard) = &clause.guard {
             walk_expr(guard, &mut diagnostics);
@@ -15,6 +16,39 @@ pub(crate) fn function_warnings(surface: &FunctionSurface) -> Vec<Diagnostic> {
         walk_expr(&clause.body, &mut diagnostics);
     }
     diagnostics
+}
+
+fn check_function_clauses(surface: &FunctionSurface, diagnostics: &mut Vec<Diagnostic>) {
+    if surface.clauses.len() < 2 {
+        return;
+    }
+    let Some(last_clause) = surface.clauses.last() else {
+        return;
+    };
+    if surface.extern_abi.is_some() || surface.clauses.iter().any(|clause| clause.guard.is_some()) {
+        return;
+    }
+    let input_count = surface.arity();
+    let rows = surface
+        .clauses
+        .iter()
+        .enumerate()
+        .map(|(index, clause)| PatternRow::<Ty> {
+            patterns: clause.params.clone(),
+            preconditions: Vec::new(),
+            guard: None,
+            body_id: index as PatternBodyId,
+        })
+        .collect();
+    let source_patterns = SourcePatternRows { input_count, rows };
+    if is_inexhaustive(&source_patterns) {
+        diagnostics.push(inexhaustive_diag_at(
+            last_clause.span,
+            "fn",
+            "function_clause",
+            "the last clause is here",
+        ));
+    }
 }
 
 fn walk_expr(expr: &Spanned<Expr>, diagnostics: &mut Vec<Diagnostic>) {
@@ -150,17 +184,22 @@ fn check_match_clauses(
         .collect();
     let source_patterns = SourcePatternRows { input_count: 1, rows };
     if is_inexhaustive(&source_patterns) {
-        diagnostics.push(inexhaustive_diag_at(span, construct, halt_atom));
+        diagnostics.push(inexhaustive_diag_at(
+            span,
+            construct,
+            halt_atom,
+            "matched values may fall through here",
+        ));
     }
 }
 
-fn inexhaustive_diag_at(primary: Span, construct: &str, halt_atom: &str) -> Diagnostic {
+fn inexhaustive_diag_at(primary: Span, construct: &str, halt_atom: &str, label: &str) -> Diagnostic {
     Diagnostic::warning(
         codes::TYPE_NO_MATCHING_CLAUSE,
         format!("`{}` clauses don't cover every input", construct),
         primary,
     )
-    .with_label("matched values may fall through here")
+    .with_label(label)
     .with_note(format!(
         "an input matched by no clause halts with `:{}` at runtime",
         halt_atom
@@ -173,17 +212,11 @@ mod tests {
     use super::*;
     use crate::ast::{FnClause, Pattern, TypeExprBody};
 
-    fn surface(body: Spanned<Expr>) -> FunctionSurface {
+    fn function_surface(clauses: Vec<FnClause>) -> FunctionSurface {
         FunctionSurface {
             name: "main".to_string(),
             name_span: Span::DUMMY,
-            clauses: vec![FnClause {
-                params: Vec::new(),
-                param_annotations: Vec::new(),
-                guard: None,
-                body,
-                span: Span::DUMMY,
-            }],
+            clauses,
             is_macro: false,
             extern_abi: None,
             extern_param_tokens: Vec::new(),
@@ -191,6 +224,20 @@ mod tests {
             extern_constraints: Vec::new(),
             variadic: false,
             attrs: Vec::new(),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn surface(body: Spanned<Expr>) -> FunctionSurface {
+        function_surface(vec![fn_clause(Vec::new(), body)])
+    }
+
+    fn fn_clause(params: Vec<Spanned<Pattern>>, body: Spanned<Expr>) -> FnClause {
+        FnClause {
+            param_annotations: vec![None; params.len()],
+            params,
+            guard: None,
+            body,
             span: Span::DUMMY,
         }
     }
@@ -208,6 +255,58 @@ mod tests {
         ));
 
         assert!(function_warnings(&surface(body)).is_empty());
+    }
+
+    #[test]
+    fn single_clause_function_head_does_not_warn() {
+        let surface = function_surface(vec![fn_clause(
+            vec![Spanned::dummy(Pattern::List(Vec::new(), None))],
+            Spanned::dummy(Expr::Int(1)),
+        )]);
+
+        assert!(function_warnings(&surface).is_empty());
+    }
+
+    #[test]
+    fn partial_multi_clause_function_heads_warn() {
+        let surface = function_surface(vec![
+            fn_clause(
+                vec![Spanned::dummy(Pattern::Atom("empty".to_string()))],
+                Spanned::dummy(Expr::Atom("empty".to_string())),
+            ),
+            fn_clause(
+                vec![Spanned::dummy(Pattern::Tuple(vec![
+                    Spanned::dummy(Pattern::Atom("node".to_string())),
+                    Spanned::dummy(Pattern::Var("left".to_string())),
+                    Spanned::dummy(Pattern::Var("value".to_string())),
+                    Spanned::dummy(Pattern::Var("right".to_string())),
+                ]))],
+                Spanned::dummy(Expr::Var("value".to_string())),
+            ),
+        ]);
+
+        let warnings = function_warnings(&surface);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, codes::TYPE_NO_MATCHING_CLAUSE);
+        assert_eq!(warnings[0].message, "`fn` clauses don't cover every input");
+        assert_eq!(warnings[0].primary.label, "the last clause is here");
+        assert_eq!(
+            warnings[0].notes,
+            vec!["an input matched by no clause halts with `:function_clause` at runtime"]
+        );
+    }
+
+    #[test]
+    fn total_multi_clause_function_heads_do_not_warn() {
+        let surface = function_surface(vec![
+            fn_clause(
+                vec![Spanned::dummy(Pattern::Atom("ok".to_string()))],
+                Spanned::dummy(Expr::Int(1)),
+            ),
+            fn_clause(vec![Spanned::dummy(Pattern::Wildcard)], Spanned::dummy(Expr::Int(0))),
+        ]);
+
+        assert!(function_warnings(&surface).is_empty());
     }
 
     #[test]

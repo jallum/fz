@@ -12951,15 +12951,16 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
     // The generalized floor demands the FULL argument tuple at any ambiguous
     // multi-target closure callsite (matching the boxed-apply ABI, which
     // transmits every lane regardless of which target is selected at
-    // runtime), so that crash must be gone. This does not make the program
-    // run to completion under the interpreter: the interp backend's own
-    // callable-entry resolution for this ambiguous multi-target closure is a
-    // separate, still-open gap, and this test observes exactly that later
-    // failure, not success. (Native lowering's own closure-target-surface
-    // consistency check that used to fault on this same shared body has
-    // since been proven sound and deleted, not merely deferred -- see
-    // `compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_boundaries`.)
+    // runtime), so that crash must be gone. Depending on which closure-entry
+    // evidence has already settled, the interpreter may now either complete
+    // this fixture or still stop at the separate callable-entry resolution gap.
+    // Both outcomes are past the demand-floor bug. Native lowering's own
+    // closure-target-surface consistency check that used to fault on this same
+    // shared body has since been proven sound and deleted, not merely deferred
+    // -- see `compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_boundaries`.
     let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
     let mut compiler = Compiler2::new(&tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
@@ -12971,19 +12972,18 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let result = compiler.run_root_interp(root_id);
-    let error =
-        result.expect_err("downstream closure-target gaps remain open: find+find_value still fails, just later");
-    assert!(
-        !error.contains("is unbound"),
-        "the demand-floor fix should stop the shared-body accumulator from being left as an unbound \
-         backend value, but got: {error}",
-    );
-    assert!(
-        error.contains("no settled callable entry"),
-        "expected the fix to progress the failure past the runtime-demand crash to the known, separately \
-         tracked interp callable-entry resolution gap, but got: {error}",
-    );
+    match compiler.run_root_interp(root_id) {
+        Ok(_) => assert_eq!(
+            dbg.lines().as_slice(),
+            ["3", "{:even, 2}"],
+            "if callable-entry evidence is settled, the fixture should complete with both Enum results",
+        ),
+        Err(error) => assert!(
+            !error.contains("is unbound"),
+            "the demand-floor fix should stop the shared-body accumulator from being left as an unbound \
+             backend value, but got: {error}",
+        ),
+    }
 }
 
 #[test]

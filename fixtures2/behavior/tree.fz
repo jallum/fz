@@ -1,8 +1,5 @@
 #---
 # purpose: "source-level tuple-tree traversal allocation baseline"
-# defer.build: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
-# defer.interp: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
-# defer.run: fz-9i4.7.1 compiler2 lost exhaustiveness/spec diagnostics regressed
 #---
 #
 # # tree
@@ -17,9 +14,9 @@
 #
 # The input tree has three `{:node, left, value, right}` tuples. Native JIT/AOT
 # currently fold the literal input tree into the traversal and allocate only the
-# three rebuilt output nodes. The interpreter/REPL direct IR path allocates both
-# the three input nodes and the three output nodes. No list or map allocations are
-# needed in either path.
+# three rebuilt output nodes. The interpreter/REPL direct IR path now follows the
+# same scalar-box-free shape for this literal input. No list or map allocations
+# are needed in either path.
 fn inc_tree(:empty), do: :empty
 fn inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1, inc_tree(right)}
 
