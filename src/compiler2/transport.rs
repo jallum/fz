@@ -143,6 +143,7 @@ pub struct LaneDescr {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActivationSymbol {
     pub function: FunctionId,
+    pub arrow: Ty,
     pub input: Box<[Ty]>,
 }
 

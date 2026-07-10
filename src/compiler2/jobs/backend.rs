@@ -349,10 +349,14 @@ fn boundary_resolution_executables(
 pub(crate) fn executable_key_for_symbol(
     root: RootId,
     symbol: &ExecutableSymbol,
-    types: &mut super::super::Types,
+    _types: &mut super::super::Types,
 ) -> ExecutableKey {
     ExecutableKey {
-        activation: ActivationKey::from_inputs(root, symbol.activation.function, &symbol.activation.input, types),
+        activation: ActivationKey {
+            root,
+            function: symbol.activation.function,
+            arrow: symbol.activation.arrow,
+        },
         need: symbol.need,
     }
 }
@@ -740,6 +744,7 @@ fn executable_key_for_symbol_in_index(
         .find(|key| {
             key.need == symbol.need
                 && key.activation.function == symbol.activation.function
+                && key.activation.arrow == symbol.activation.arrow
                 && key.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
         })
         .cloned()
@@ -1004,6 +1009,7 @@ pub(crate) fn symbolic_materialized_transport_plan(
         entry: ExecutableSymbol {
             activation: ActivationSymbol {
                 function: executable.activation.function,
+                arrow: executable.activation.arrow,
                 input: executable.activation.inputs(world.types()).into_boxed_slice(),
             },
             need: executable.need,
@@ -1336,6 +1342,7 @@ fn executable_symbol(executable: &ExecutableKey, world: &World) -> ExecutableSym
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
+            arrow: executable.activation.arrow,
             input: executable.activation.inputs(world.types()).into_boxed_slice(),
         },
         need: executable.need,
@@ -1641,6 +1648,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         let executable_symbol = ExecutableSymbol {
             activation: ActivationSymbol {
                 function: executable.key.activation.function,
+                arrow: executable.key.activation.arrow,
                 input: executable.key.activation.inputs(self.world.types()).into_boxed_slice(),
             },
             need: executable.key.need,

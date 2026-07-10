@@ -2134,10 +2134,13 @@ mod tests {
             &ProductKey::CodegenSeamFacts(session.root()),
             ProductValue::CodegenSeamFacts(Box::default()),
         );
+        let mut world = crate::compiler2::World::new();
+        let arrow = world.types_mut().any();
         let publication = TransportPosition::Value {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: FunctionId::for_test(1),
+                    arrow,
                     input: Box::default(),
                 },
                 need: ExecutableNeed::Value,
@@ -2352,6 +2355,7 @@ mod tests {
             resolutions: Box::new([ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: executable.activation.function,
+                    arrow: executable.activation.arrow,
                     input: Box::default(),
                 },
                 need: executable.need,
@@ -3035,6 +3039,7 @@ mod tests {
         super::super::transport::ExecutableSymbol {
             activation: super::super::transport::ActivationSymbol {
                 function: executable.activation.function,
+                arrow: executable.activation.arrow,
                 input: Box::default(),
             },
             need: executable.need,

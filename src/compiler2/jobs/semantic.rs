@@ -1752,7 +1752,7 @@ fn merge_call_targets(
 }
 
 fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool {
-    left.callee == right.callee
+    left.callee == right.callee && left.activation == right.activation
 }
 
 fn merge_target_activation(

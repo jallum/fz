@@ -270,20 +270,12 @@ fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<
     }
 }
 
-fn direct_closure_cont_for_exact_return(
-    source_diverges: bool,
-    source_reprs: &[ArgRepr],
-    passthrough_cont: ir::Value,
+fn direct_closure_return_matches(
+    env: &CodegenEnv<'_, impl Telemetry>,
+    body_sid: u32,
     expected_reprs: &[ArgRepr],
-    seam: &'static str,
-) -> ir::Value {
-    if source_diverges || source_reprs == expected_reprs {
-        return passthrough_cont;
-    }
-    panic!(
-        "{seam} requires exact transport return-lane agreement: callee={:?}, expected={:?}",
-        source_reprs, expected_reprs
-    );
+) -> bool {
+    return_diverges(env, body_sid) || env.body_return_reprs(body_sid) == expected_reprs
 }
 
 enum ContinuationPlan {
@@ -1400,12 +1392,13 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         // at [K..., arg_descrs...] and call it directly with the body's
         // narrow ABI. Opaque / polymorphic closures fall through to the
         // all-ValueRef indirect seam below.
-        let lit_resolved = resolve_native_closure_sid(env, blk).map(|body_sid| {
+        let lit_resolved = resolve_native_closure_sid(env, blk).and_then(|body_sid| {
             let target_fn = env.body_fn_id(body_sid);
             let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
             let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)
                 .expect("direct closure target should publish an exact closure-target surface");
-            (body_sid, body_fid, target_fn, target)
+            direct_closure_return_matches(env, body_sid, &continuation_entry_reprs(env, cont_sid))
+                .then_some((body_sid, body_fid, target_fn, target))
         });
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let can_use_lazy_cont = is_native && continuation_uses_lazy_descriptor(t, env, &continuation.captured);
@@ -1438,17 +1431,10 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
             },
             &telemetry_metadata,
         );
-        if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
+        if let Some((_body_sid, body_fid, _target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
-            let direct_cont = direct_closure_cont_for_exact_return(
-                return_diverges(env, body_sid),
-                &env.body_return_reprs(body_sid),
-                cf,
-                &continuation_entry_reprs(env, cont_sid),
-                "direct closure call",
-            );
-            direct_args.push(direct_cont);
+            direct_args.push(cf);
             let _ = host_ctx;
             if can_use_lazy_cont {
                 let call_inst = body.b.ins().call(body_fref, &direct_args);
@@ -1548,12 +1534,13 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             }
         };
 
-        let lit_resolved = resolve_native_closure_sid(env, blk).map(|body_sid| {
+        let lit_resolved = resolve_native_closure_sid(env, blk).and_then(|body_sid| {
             let target_fn = env.body_fn_id(body_sid);
             let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
             let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)
                 .expect("direct closure target should publish an exact closure-target surface");
-            (body_sid, body_fid, target_fn, target)
+            direct_closure_return_matches(env, body_sid, &env.body_return_reprs(env.active_spec_id))
+                .then_some((body_sid, body_fid, target_fn, target))
         });
         let telemetry_target = closure_call_telemetry_target(
             env,
@@ -1576,17 +1563,10 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             &telemetry_metadata,
         );
 
-        if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
+        if let Some((_body_sid, body_fid, _target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
-            let direct_cont = direct_closure_cont_for_exact_return(
-                return_diverges(env, body_sid),
-                &env.body_return_reprs(body_sid),
-                my_cont,
-                &env.body_return_reprs(env.active_spec_id),
-                "direct tail closure call",
-            );
-            direct_args.push(direct_cont);
+            direct_args.push(my_cont);
             let _ = host_ctx;
             if is_native {
                 body.b.ins().return_call(body_fref, &direct_args);

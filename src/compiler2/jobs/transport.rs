@@ -109,6 +109,7 @@ impl TransportContexts {
         let found = self.by_executable.iter().find(|(candidate, _)| {
             candidate.need == symbol.need
                 && candidate.activation.function == symbol.activation.function
+                && candidate.activation.arrow == symbol.activation.arrow
                 && candidate.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
         });
         if let Some((key, _)) = found {
@@ -1233,11 +1234,15 @@ fn incoming_slot_source_pairs(sources: &[IncomingInputSource]) -> Vec<(Executabl
 fn executable_key_for_transport_position(
     root: RootId,
     position: &TransportPosition,
-    types: &mut Types,
+    _types: &mut Types,
 ) -> ExecutableKey {
     let symbol = position.executable();
     ExecutableKey {
-        activation: ActivationKey::from_inputs(root, symbol.activation.function, &symbol.activation.input, types),
+        activation: ActivationKey {
+            root,
+            function: symbol.activation.function,
+            arrow: symbol.activation.arrow,
+        },
         need: symbol.need,
     }
 }
@@ -2047,8 +2052,8 @@ fn boxed_value_return(world: &World, shape: ShapeId) -> bool {
 // structural render reorders which resolution a boundary picks for its return
 // lane, which is a layout regression, not a determinism fix.
 type ExecutableSortKey = (u32, Vec<String>, u8, usize);
-type ExecutableSymbolSortKey = (u32, Vec<Ty>, u8, usize);
-type TransportPositionSortKey = (u8, u32, Vec<String>, u8, usize, u64, u64, usize);
+type ExecutableSymbolSortKey = (u32, Ty, Vec<Ty>, u8, usize);
+type TransportPositionSortKey = (u8, u32, Ty, Vec<String>, u8, usize, u64, u64, usize);
 
 /// Canonical structural render of an input type vector — the schedule-free
 /// projection used as the executable visitation secondary sort key.
@@ -2101,6 +2106,7 @@ fn transport_position_sort_key(position: &TransportPosition, types: &Types) -> T
     (
         rank,
         executable.activation.function.as_u32(),
+        executable.activation.arrow,
         input_structure_key(&executable.activation.input, types),
         need.0,
         need.1,
@@ -2114,6 +2120,7 @@ fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSym
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
+            arrow: executable.activation.arrow,
             input: executable.activation.inputs(types).into_boxed_slice(),
         },
         need: executable.need,
@@ -2127,6 +2134,7 @@ fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> ExecutableSymbolSort
     };
     (
         symbol.activation.function.as_u32(),
+        symbol.activation.arrow,
         symbol.activation.input.to_vec(),
         need.0,
         need.1,
@@ -4327,6 +4335,7 @@ mod tests {
         let executable = ExecutableSymbol {
             activation: ActivationSymbol {
                 function,
+                arrow: ty,
                 input: vec![ty].into_boxed_slice(),
             },
             need: ExecutableNeed::Value,

@@ -132,7 +132,7 @@ impl CallSiteTargets {
 }
 
 fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool {
-    left.callee == right.callee
+    left.callee == right.callee && left.activation == right.activation
 }
 
 fn merge_callsite_input_vec(types: &mut Types, current: &mut Vec<Ty>, observed: &[Ty]) {
@@ -1235,6 +1235,60 @@ mod tests {
                 .iter()
                 .any(|target| target.activation.as_ref() == Some(&int_activation)),
             "target membership is a snapshot; stale activations must not linger"
+        );
+        assert!(
+            stored
+                .targets
+                .iter()
+                .any(|target| target.activation.as_ref() == Some(&float_activation))
+        );
+    }
+
+    #[test]
+    fn callsite_summary_keeps_distinct_activations_for_one_callee() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let caller = world.root_function(root);
+        let callee_root = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
+        let callee = world.root_function(callee_root);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let caller_activation = ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+        let int_activation = ActivationKey::from_inputs(root, callee, &[int], world.types_mut());
+        let float_activation = ActivationKey::from_inputs(root, callee, &[float], world.types_mut());
+        let key = CallSiteKey {
+            activation: caller_activation,
+            callsite: CallSiteId::from_u32(0),
+        };
+        let summary = CallSiteSummary {
+            targets: vec![
+                CallTargetSummary {
+                    callee: SelectedCallee::Function(callee),
+                    surface_inputs: vec![int],
+                    activation: Some(int_activation.clone()),
+                    return_ty: Some(int),
+                },
+                CallTargetSummary {
+                    callee: SelectedCallee::Function(callee),
+                    surface_inputs: vec![float],
+                    activation: Some(float_activation.clone()),
+                    return_ty: Some(float),
+                },
+            ],
+            return_ty: Some(world.types_mut().union(int, float)),
+        };
+        let mut map = CallSiteMap::new();
+
+        assert!(map.define(world.types_mut(), key.clone(), summary));
+
+        let stored = map.get(&key).expect("stored callsite summary");
+        assert_eq!(stored.targets.len(), 2);
+        assert!(
+            stored
+                .targets
+                .iter()
+                .any(|target| target.activation.as_ref() == Some(&int_activation))
         );
         assert!(
             stored

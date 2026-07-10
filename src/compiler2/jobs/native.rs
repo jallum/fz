@@ -481,13 +481,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<(), FatalError> {
         let (return_reprs, return_tuple_arity) =
             native_return_contract(self.world, self.program, &executable.transport.return_position);
+        let entry_tys = executable_input_tys(self.world, self.program, executable);
+        let param_reprs = entry_tys
+            .iter()
+            .copied()
+            .map(|ty| abi_value_repr(self.world, ty))
+            .collect();
         let mut ctx = NativeFnCtx::new(
             fn_id,
             name,
             category,
             origin,
             NativeEntryAbi::Direct,
-            executable.param_reprs.clone(),
+            param_reprs,
             executable.return_ty,
             executable.transport.return_position.clone(),
             return_reprs,
@@ -495,7 +501,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             executable.effects,
         );
         let mut env = ValueEnv::default();
-        let entry_tys = executable_input_tys(self.world, self.program, executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let semantic_inputs = self.bind_executable_inputs(executable, &mut ctx, &entry_vars)?;
         for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
@@ -1457,6 +1462,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let callee_executable = &self.program.executables[*callee];
                 let mut lanes = Vec::new();
                 let input_bindings = executable_input_bindings(self.program, callee_executable);
+                if args.len() != input_bindings.len() {
+                    return Err(incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!(
+                            "direct call to executable {} has {} arguments but the callee requires {} input bindings",
+                            callee,
+                            args.len(),
+                            input_bindings.len(),
+                        ),
+                    ));
+                }
                 for (arg, binding) in args.iter().zip(input_bindings.iter()) {
                     let local = env_local_value(env, arg.value)?;
                     if publication_boundaries_for_position(self.program, &arg.position).is_empty() {
@@ -4035,6 +4052,7 @@ fn shape_lane_tys(world: &World, shape: ShapeId) -> Vec<Ty> {
 fn executable_symbol_matches(key: &ExecutableKey, symbol: &ExecutableSymbol, types: &Types) -> bool {
     key.need == symbol.need
         && key.activation.function == symbol.activation.function
+        && key.activation.arrow == symbol.activation.arrow
         && key.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
 }
 

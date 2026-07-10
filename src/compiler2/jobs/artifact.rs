@@ -25,7 +25,7 @@ use super::super::body::{
 };
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
-use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{ProductKey, ProductValue, PullOutcome, PullSession, PullWait};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee, ShapeDemand};
@@ -538,7 +538,7 @@ fn session_codegen_publication_seam_facts(world: &World, session: &PullSession) 
     out.into_boxed_slice()
 }
 
-pub(crate) type CodegenSeamOwnerKey = (u8, u32, Vec<Ty>, u8, usize, u32);
+pub(crate) type CodegenSeamOwnerKey = (u8, u32, Option<Ty>, Vec<Ty>, u8, usize, u32);
 pub(crate) type CodegenSeamSortKey = (u8, CodegenSeamOwnerKey, u32, u32, u32, u32, u8);
 
 pub(crate) fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamSortKey {
@@ -555,12 +555,12 @@ pub(crate) fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamS
 }
 
 fn executable_owner_key(executable: &ExecutableSymbol) -> CodegenSeamOwnerKey {
-    let (function, inputs, need0, need1) = transport_executable_sort_key(executable);
-    (0, function, inputs, need0, need1, 0)
+    let (function, arrow, inputs, need0, need1) = transport_executable_sort_key(executable);
+    (0, function, Some(arrow), inputs, need0, need1, 0)
 }
 
 fn boundary_owner_key(boundary: BoundaryId) -> CodegenSeamOwnerKey {
-    (1, 0, Vec::new(), 0, 0, boundary.as_u32())
+    (1, 0, None, Vec::new(), 0, 0, boundary.as_u32())
 }
 
 fn codegen_seam_kind_key(seam: &CodegenSeam) -> (u8, CodegenSeamOwnerKey, u32, u32) {
@@ -1170,6 +1170,7 @@ fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> Exe
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
+            arrow: executable.activation.arrow,
             input: executable.activation.inputs(types).into_boxed_slice(),
         },
         need: executable.need,
@@ -1187,7 +1188,7 @@ fn sort_transport_positions(positions: &mut [TransportPosition]) {
 }
 
 pub(crate) type TransportPositionLocalSortKey = (u32, u32, usize);
-pub(crate) type TransportExecutableSortKey = (u32, Vec<Ty>, u8, usize);
+pub(crate) type TransportExecutableSortKey = (u32, Ty, Vec<Ty>, u8, usize);
 
 fn transport_position_local_sort_key(position: &TransportPosition) -> TransportPositionLocalSortKey {
     match position {
@@ -1218,6 +1219,7 @@ fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExec
     };
     (
         executable.activation.function.as_u32(),
+        executable.activation.arrow,
         executable.activation.input.to_vec(),
         need.0,
         need.1,
@@ -1558,11 +1560,11 @@ fn materialize_transport_closure_call_edge(
     if rest.iter().any(|candidate| candidate != resolution) {
         return Ok(None);
     }
-    let activation = world.activation_key(
-        root_id,
-        resolution.activation.function,
-        resolution.activation.input.as_ref(),
-    );
+    let activation = ActivationKey {
+        root: root_id,
+        function: resolution.activation.function,
+        arrow: resolution.activation.arrow,
+    };
     let target = ExecutableKey {
         activation,
         need: resolution.need,
@@ -2503,6 +2505,7 @@ mod tests {
         let symbol = ExecutableSymbol {
             activation: ActivationSymbol {
                 function,
+                arrow: int,
                 input: vec![int].into_boxed_slice(),
             },
             need: ExecutableNeed::Value,
@@ -2632,6 +2635,7 @@ mod tests {
         let executable = ExecutableSymbol {
             activation: ActivationSymbol {
                 function,
+                arrow: int,
                 input: vec![int].into_boxed_slice(),
             },
             need: ExecutableNeed::Value,

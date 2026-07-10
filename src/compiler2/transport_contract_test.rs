@@ -3444,6 +3444,7 @@ fn executable_input_shape_is_nothing(
     let symbol = ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.key.activation.function,
+            arrow: executable.key.activation.arrow,
             input: executable.key.activation.inputs(world.types()).into_boxed_slice(),
         },
         need: executable.key.need,
@@ -4317,6 +4318,7 @@ fn executable_symbol_for(world: &World, key: &ExecutableKey) -> ExecutableSymbol
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: key.activation.function,
+            arrow: key.activation.arrow,
             input: key.activation.inputs(world.types()).into_boxed_slice(),
         },
         need: key.need,
@@ -4899,6 +4901,7 @@ fn flow_resolution_symbols(world: &World, flow: &CallableFlowFact) -> Vec<Execut
         .map(|resolution| ExecutableSymbol {
             activation: ActivationSymbol {
                 function: resolution.activation.function,
+                arrow: resolution.activation.arrow,
                 input: resolution.activation.inputs(world.types()).into_boxed_slice(),
             },
             need: resolution.need,
@@ -4922,6 +4925,7 @@ fn assert_boundary_resolutions_match_upstream_flow(
             .push(ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: edge.resolution.activation.function,
+                    arrow: edge.resolution.activation.arrow,
                     input: edge.resolution.activation.inputs(world.types()).into_boxed_slice(),
                 },
                 need: edge.resolution.need,

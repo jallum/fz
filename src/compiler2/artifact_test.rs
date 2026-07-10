@@ -33,6 +33,7 @@ fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSym
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
+            arrow: executable.activation.arrow,
             input: executable.activation.inputs(types).into_boxed_slice(),
         },
         need: executable.need,
