@@ -1,9 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
+use crate::telemetry::ConfiguredTelemetry;
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::contract::{ContractArrow, ResolvedContractArrow};
-use super::{CallableValueKind, ClosureTarget, FunctionContract, TypeVarId, Types};
+use super::protocol::ProtocolDomainObligation;
+use super::{
+    CallableValueKind, ClosureTarget, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, FunctionContract,
+    MapKey, RootSubmission, TypeVarId, Types,
+};
 
 #[test]
 fn function_contract_application_refines_callable_params_from_outer_bindings() {
@@ -320,7 +325,7 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
         arrows: vec![ContractArrow {
             arrow,
             bounds: HashMap::new(),
-            enforce: true,
+            protocol_domain_obligations: BTreeSet::new(),
         }],
     };
 
@@ -498,17 +503,14 @@ fn function_contract_application_tracks_enforceable_arrows_separately_from_match
         result: float,
         constraints: HashMap::new(),
     };
-    let contract = FunctionContract::from_resolved_arrows(
+    let contract = FunctionContract::from_classified_arrows(
         &mut types,
         vec![
-            ResolvedContractArrow {
-                decl: skipped,
-                enforce: false,
-            },
-            ResolvedContractArrow {
-                decl: enforced,
-                enforce: true,
-            },
+            ResolvedContractArrow::with_obligations(
+                skipped,
+                BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+            ),
+            ResolvedContractArrow::with_obligations(enforced, BTreeSet::new()),
         ],
     );
 
@@ -522,5 +524,172 @@ fn function_contract_application_tracks_enforceable_arrows_separately_from_match
     assert!(
         !applied.enforceable_satisfied,
         "a matching skipped arrow must not mask rejection by every enforceable arrow"
+    );
+}
+
+#[test]
+fn function_contract_arrow_stores_direct_protocol_domain_obligations() {
+    let mut types = Types::new();
+    let domain = types.opaque_of("protocol::Enumerable.t");
+    let int = types.int();
+    let resolved = ResolvedSpecDecl {
+        params: vec![domain],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    assert_eq!(
+        contract.arrows[0].protocol_domain_obligations,
+        BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+        "the durable arrow should carry the resolved protocol marker"
+    );
+    let applied = contract.apply(&mut types, &[int]);
+    assert!(
+        !applied.enforceable,
+        "a direct protocol-domain arrow should not participate in structural spec/violation enforcement yet"
+    );
+    assert!(
+        applied.enforceable_satisfied,
+        "without enforceable concrete arrows there is no structural violation to emit"
+    );
+}
+
+#[test]
+fn function_contract_mixed_protocol_and_concrete_keeps_concrete_rejection_enforceable() {
+    let mut types = Types::new();
+    let domain = types.opaque_of("protocol::Enumerable.t");
+    let float = types.float();
+    let int = types.int();
+    let protocol_arrow = ResolvedSpecDecl {
+        params: vec![domain],
+        result: int,
+        constraints: HashMap::new(),
+    };
+    let concrete_arrow = ResolvedSpecDecl {
+        params: vec![float],
+        result: float,
+        constraints: HashMap::new(),
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![protocol_arrow, concrete_arrow]);
+
+    let applied = contract.apply(&mut types, &[int]);
+
+    assert!(
+        applied.enforceable,
+        "the concrete overload remains structurally enforceable"
+    );
+    assert!(
+        !applied.enforceable_satisfied,
+        "an integer call rejected by every concrete overload must still be a structural violation"
+    );
+}
+
+#[test]
+fn function_contract_arrow_stores_protocol_domain_obligations_from_when_bounds() {
+    let mut types = Types::new();
+    let var = TypeVarId(0);
+    let param = types.type_var(var);
+    let int = types.int();
+    let domain = types.opaque_of("protocol::Enumerable.t");
+    let mut constraints = HashMap::new();
+    constraints.insert(var, domain);
+    let resolved = ResolvedSpecDecl {
+        params: vec![param],
+        result: int,
+        constraints,
+    };
+    let contract = FunctionContract::from_resolved(&mut types, vec![resolved]);
+
+    assert_eq!(
+        contract.arrows[0].protocol_domain_obligations,
+        BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+        "protocol markers in bounds must be classified even when the arrow surface is only a variable"
+    );
+}
+
+#[test]
+fn function_contract_ignores_protocol_markers_inside_nested_complements() {
+    let mut types = Types::new();
+    let domain = types.opaque_of("protocol::Enumerable.t");
+    let int = types.int();
+    let tuple = types.tuple(&[domain]);
+    let list = types.list(domain);
+    let resource = types.resource(domain);
+    let fun = types.arrow(&[domain], int);
+    let map_key = MapKey::Atom("value".to_string());
+    let map = types.map(&[(map_key, domain)]);
+    let negated_nested_shapes = [tuple, list, resource, fun, map]
+        .into_iter()
+        .map(|ty| types.complement(ty))
+        .map(|param| ResolvedSpecDecl {
+            params: vec![param],
+            result: int,
+            constraints: HashMap::new(),
+        })
+        .collect::<Vec<_>>();
+
+    let contract = FunctionContract::from_resolved(&mut types, negated_nested_shapes);
+
+    assert!(
+        contract
+            .arrows
+            .iter()
+            .all(|arrow| arrow.protocol_domain_obligations.is_empty()),
+        "markers inside nested negative clauses describe excluded values, not positive protocol-domain obligations"
+    );
+    let applied = contract.apply(&mut types, &[int]);
+    assert!(
+        applied.enforceable,
+        "negative nested marker mentions must not disable structural enforcement"
+    );
+    assert!(
+        applied.enforceable_satisfied,
+        "a concrete non-nested argument should still satisfy the enforceable complement arrows"
+    );
+}
+
+#[test]
+fn derive_function_contract_carries_protocol_domain_obligation_through_transitive_aliases() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(&tel);
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("M".to_string()),
+        name: "f".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some("alias_protocol_domain_contract.fz".to_string()),
+        text: concat!(
+            "defprotocol Enumerable do\n",
+            "  fn reduce(enumerable, acc, reducer)\n",
+            "end\n",
+            "\n",
+            "defmodule M do\n",
+            "  @type enum_int :: Enumerable.t(integer)\n",
+            "  @type alias_enum_int :: enum_int\n",
+            "  @spec f(alias_enum_int) :: integer\n",
+            "  fn f(_), do: 1\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "alias protocol-domain contract should settle through the normal resolver"
+    );
+    let function = compiler.root_function(root);
+    let contract = compiler
+        .world()
+        .function_contract(function)
+        .expect("f/1 should publish a function contract");
+
+    assert_eq!(contract.arrows.len(), 1);
+    assert_eq!(
+        contract.arrows[0].protocol_domain_obligations,
+        BTreeSet::from([ProtocolDomainObligation::from_marker_tag("protocol::Enumerable.t")]),
+        "transitive @type aliases should expand to the protocol marker before contract classification"
     );
 }

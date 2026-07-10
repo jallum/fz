@@ -19,8 +19,13 @@ Compiler2 owns the active contract path:
   `ResolvedTypeShape` values.
 - `compiler2/contract.rs` and the compiler2 type/arrow-matching code consume the
   resolved contract data.
-- `FunctionContract` keeps enforcement provenance per resolved arrow. Protocol
-  domain arrows can still refine calls, but they are skipped for fatal
+- `FunctionContract` stores resolved protocol-domain marker obligations per
+  arrow. The current obligation identity is the resolved opaque marker tag
+  (`protocol::<Name>.t`) wrapped as a `ProtocolDomainObligation`; it is
+  classified from explicit positive markers in hard `Ty` values plus the
+  contract bounds sidecar, not from source refs, negative/complement clauses, or
+  protocol impl registries. Protocol-domain arrows can still refine calls, but
+  arrows with obligations are skipped for fatal
   `spec/violation` decisions until protocol-domain validation is implemented;
   concrete arrows in the same overload set remain enforceable.
 

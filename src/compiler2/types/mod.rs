@@ -15,12 +15,13 @@ mod format;
 mod sigs;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
 
 use super::keying::DispatchDemand;
+use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
 use crate::type_expr::opaque_owner_module;
 use crate::types::{
     ClosureTypes as SharedClosureTypes, RenderTypes as SharedRenderTypes, Types as SharedTypes,
@@ -965,6 +966,86 @@ impl Types {
 
     pub fn opaque_singleton(&self, a: &Ty) -> Option<String> {
         self.descr(a).as_opaque_singleton().map(String::from)
+    }
+
+    /// Classifies the resolved protocol-domain markers carried by a contract.
+    ///
+    /// The obligation identity is the resolved protocol-domain opaque marker
+    /// tag (`protocol::<Name>.t`) wrapped as [`ProtocolDomainObligation`].
+    /// This walks explicit positive markers in the hard `Ty` surface plus the
+    /// contract-bound sidecar; negative descriptor clauses and cofinite
+    /// complements describe excluded values, not obligations. It deliberately
+    /// does not read source references or protocol implementation registries.
+    pub(crate) fn protocol_domain_obligations(
+        &self,
+        roots: impl IntoIterator<Item = Ty>,
+        bounds: &HashMap<TypeVarId, Ty>,
+    ) -> BTreeSet<ProtocolDomainObligation> {
+        let mut obligations = BTreeSet::new();
+        let mut seen = HashSet::new();
+        for root in roots {
+            self.collect_protocol_domain_obligations(root, &mut seen, &mut obligations);
+        }
+        for bound in bounds.values().copied() {
+            self.collect_protocol_domain_obligations(bound, &mut seen, &mut obligations);
+        }
+        obligations
+    }
+
+    fn collect_protocol_domain_obligations(
+        &self,
+        ty: Ty,
+        seen: &mut HashSet<Ty>,
+        obligations: &mut BTreeSet<ProtocolDomainObligation>,
+    ) {
+        if !seen.insert(ty) {
+            return;
+        }
+        let descr = self.descr(&ty);
+        if let Some(tags) = descr.opaques.finite_elems() {
+            obligations.extend(tags.filter_map(|tag| {
+                is_protocol_domain_tag(&tag).then(|| ProtocolDomainObligation::from_marker_tag(tag))
+            }));
+        }
+        for conj in &descr.tuples {
+            for sig in &conj.pos {
+                for elem in &sig.elems {
+                    self.collect_protocol_domain_obligations(*elem, seen, obligations);
+                }
+            }
+        }
+        for conj in &descr.lists {
+            for sig in &conj.pos {
+                if let Some(elem) = sig.elem {
+                    self.collect_protocol_domain_obligations(elem, seen, obligations);
+                }
+            }
+        }
+        for conj in &descr.resources {
+            for sig in &conj.pos {
+                self.collect_protocol_domain_obligations(sig.payload, seen, obligations);
+            }
+        }
+        for conj in &descr.funcs {
+            for sig in &conj.pos {
+                for arg in &sig.args {
+                    self.collect_protocol_domain_obligations(*arg, seen, obligations);
+                }
+                self.collect_protocol_domain_obligations(sig.ret, seen, obligations);
+                if let Some(lit) = &sig.lit {
+                    for capture in &lit.captures {
+                        self.collect_protocol_domain_obligations(*capture, seen, obligations);
+                    }
+                }
+            }
+        }
+        for conj in &descr.maps {
+            for sig in &conj.pos {
+                for field in sig.fields.values() {
+                    self.collect_protocol_domain_obligations(*field, seen, obligations);
+                }
+            }
+        }
     }
 
     #[cfg(test)]

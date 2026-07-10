@@ -143,6 +143,12 @@ not a dispatch matrix and is not the union of known implementations. Runtime
 dispatch still matches the receiver against implementation-target types directly
 inside `resolve_protocol_call`.
 
+Function contracts classify protocol-domain obligations from this resolved
+marker, after aliases and bounds have become hard `Ty` values. The durable key is
+the marker tag (`protocol::<Name>.t`) wrapped as `ProtocolDomainObligation`.
+`collect_spec_refs` remains a source-publication dependency/wait tool; contract
+enforcement must not rewalk source refs or enumerate protocol implementations.
+
 ## Callback surface vs domain
 
 The two are checked in different places. The **callback surface** is validated at

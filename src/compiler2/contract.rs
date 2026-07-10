@@ -13,26 +13,53 @@
 //! is the Types calculator now (`Types::match_arrow`, `types::arrow_match`,
 //! fz-hwn.27.4); contract application is a calculator decision on the arrow.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::FunctionId;
+use super::protocol::ProtocolDomainObligation;
 use super::types::{ArrowMatch, Ty, TypeVarId, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedContractArrow {
-    pub decl: ResolvedSpecDecl<Ty>,
-    pub enforce: bool,
+pub(crate) struct ResolvedContractArrow {
+    decl: ResolvedSpecDecl<Ty>,
+    protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+}
+
+impl ResolvedContractArrow {
+    pub(crate) fn classify(types: &Types, decl: ResolvedSpecDecl<Ty>) -> Self {
+        let protocol_domain_obligations = types.protocol_domain_obligations(
+            decl.params.iter().copied().chain(std::iter::once(decl.result)),
+            &decl.constraints,
+        );
+        Self {
+            decl,
+            protocol_domain_obligations,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_obligations(
+        decl: ResolvedSpecDecl<Ty>,
+        protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+    ) -> Self {
+        Self {
+            decl,
+            protocol_domain_obligations,
+        }
+    }
 }
 
 /// One resolved contract clause: the addressed arrow surface and its
-/// address-keyed variable bounds.
+/// address-keyed variable bounds. Protocol-domain obligations are classified
+/// from the resolved `Ty` marker tags, so current structural enforceability is
+/// derived from `protocol_domain_obligations.is_empty()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractArrow {
     pub arrow: Ty,
     pub bounds: HashMap<TypeVarId, Ty>,
-    pub enforce: bool,
+    pub protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,16 +87,14 @@ pub struct FunctionContractMap {
 
 impl FunctionContract {
     pub fn from_resolved(types: &mut Types, arrows: Vec<ResolvedSpecDecl<Ty>>) -> Self {
-        Self::from_resolved_arrows(
-            types,
-            arrows
-                .into_iter()
-                .map(|decl| ResolvedContractArrow { decl, enforce: true })
-                .collect(),
-        )
+        let arrows = arrows
+            .into_iter()
+            .map(|decl| ResolvedContractArrow::classify(types, decl))
+            .collect();
+        Self::from_classified_arrows(types, arrows)
     }
 
-    pub fn from_resolved_arrows(types: &mut Types, arrows: Vec<ResolvedContractArrow>) -> Self {
+    pub(crate) fn from_classified_arrows(types: &mut Types, arrows: Vec<ResolvedContractArrow>) -> Self {
         Self {
             arrows: arrows
                 .into_iter()
@@ -79,7 +104,7 @@ impl FunctionContract {
                     // surface; the bounds are already keyed by those addresses.
                     arrow: types.arrow(&arrow.decl.params, arrow.decl.result),
                     bounds: arrow.decl.constraints,
-                    enforce: arrow.enforce,
+                    protocol_domain_obligations: arrow.protocol_domain_obligations,
                 })
                 .collect(),
         }
@@ -92,7 +117,8 @@ impl FunctionContract {
         let mut enforceable = false;
         let mut enforceable_matched = false;
         for clause in &self.arrows {
-            enforceable |= clause.enforce;
+            let clause_enforceable = clause.protocol_domain_obligations.is_empty();
+            enforceable |= clause_enforceable;
             let params = types.arrow_params(&clause.arrow);
             let clause_result = types
                 .arrow_result(&clause.arrow)
@@ -108,12 +134,12 @@ impl FunctionContract {
                     });
                     matched_arrows.push(params);
                     matched_any = true;
-                    enforceable_matched |= clause.enforce;
+                    enforceable_matched |= clause_enforceable;
                 }
                 ArrowMatch::Underconstrained { params, result: _ } => {
                     matched_arrows.push(params);
                     matched_any = true;
-                    enforceable_matched |= clause.enforce;
+                    enforceable_matched |= clause_enforceable;
                 }
                 ArrowMatch::Invalid => {}
             }

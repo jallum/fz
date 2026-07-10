@@ -11,8 +11,32 @@ use std::collections::HashMap;
 
 use super::identity::{FunctionId, ModuleId};
 
+/// Current resolved identity for a protocol-domain contract obligation.
+///
+/// Protocol domains are type markers, not source provenance or implementer
+/// sets. The marker is the opaque tag minted for `Protocol.t(...)` in resolved
+/// `Ty` values; contract enforcement uses this key only to tell whether an
+/// arrow still needs protocol-domain validation before it can participate in
+/// structural `spec/violation` checks.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProtocolDomainObligation {
+    tag: String,
+}
+
+impl ProtocolDomainObligation {
+    pub(crate) fn from_marker_tag(tag: impl Into<String>) -> Self {
+        let tag = tag.into();
+        debug_assert!(is_protocol_domain_tag(&tag));
+        Self { tag }
+    }
+}
+
 pub(crate) fn protocol_domain_tag(protocol: impl std::fmt::Display) -> String {
     format!("protocol::{}.t", protocol)
+}
+
+pub(crate) fn is_protocol_domain_tag(tag: &str) -> bool {
+    tag.starts_with("protocol::") && tag.ends_with(".t")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
