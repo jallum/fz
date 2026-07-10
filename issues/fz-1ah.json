@@ -6,9 +6,15 @@
   "description": "Goal\nMake `fz2 build` on a tiny source report only correct, source-actionable diagnostics and expose/avoid material front-door latency.\n\nSignal\n`./target/release/fz2 build -o foo fixtures2/00181_enum_reduce_operator_ref.fz` currently takes 110-220 ms, prints four identical spanless warnings for library functions the user did not write, and `--log-telemetry` emits 3,295 events / 2.43 MB while ending about 90 ms before the command exits.\n\nStrategy\nRepair authority boundaries rather than suppress symptoms: exhaustiveness must consume declared input domains; the CLI must render the existing structured Diagnostic through a source map; AOT archive discovery/linking must be explicit observable stages and must not invoke Cargo to rediscover a known sibling artifact; telemetry must report bounded decisions/phases and buffer writes rather than expose every pull retry as a costly public trace.\n\nAcceptance\n- 00181 emits no false partial-clause warnings.\n- A genuine user partial clause renders file, line, snippet, label, note, and help.\n- Warm build does not spawn Cargo merely to locate the sibling runtime archive.\n- Telemetry covers the complete build through object write/archive resolution/link and stays bounded for this fixture.\n- Tests and agent/user docs pin the contracts; temporary probes are removed.\n\nRemoval targets\n- Domain-free function-head warning decisions where a declared domain exists.\n- `ConsoleDiagnosticsHandler` flattened message rendering.\n- Per-build Cargo artifact rediscovery for ordinary sibling release/debug builds.\n- Per-event JSONL flush and redundant product retry chatter.",
   "id": "fz-1ah",
   "labels": [],
+  "comments": [
+    {
+      "text": "Telemetry contract correction: telemetry is not merely low-volume; it must be nearly free. Compiler emit sites may pass only raw event-scoped borrows. They must not construct, transform, allocate, clone, render, count, or flatten data for telemetry. Handlers perform every projection and own every retained copy. Metadata is minimal; when World is the authority, pass \u0026World rather than extracting a parallel payload. With no matching handler, payload expressions and spans do no work; a null sink must be statically erasable. DAG foundation is fz-1ah.5 -\u003e fz-1ah.6, with AOT span work also waiting on .5; handler/event-volume work .4 waits on both raw-payload .6 and AOT boundary .3.",
+      "timestamp": "2026-07-10T16:04:31Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz2 build must be fast, observable, and source-actionable",
   "type": "epic",
-  "updated_at": "2026-07-10T15:56:08Z"
+  "updated_at": "2026-07-10T16:04:31Z"
 }
