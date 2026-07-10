@@ -2,6 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-10T01:05:32Z",
+  "close_reason": "Sub-epic complete on integration. Children landed: 0ab55d993 flushed queued source diagnostics at product boundaries for case/with; d10db7b4a emitted partial multi-clause function-head warnings and undeferred tree; e1ecccd8e emitted compiler2 spec/violation diagnostics with per-arrow contract enforcement and undeferred spec_violation. Coordinator verification after final fold: cargo test --lib --quiet passed (1309 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed; fixture_matrix case_tuple_pattern_sequential, tree, spec_violation, spec_mixed_protocol_concrete_violation, and spec_ok passed.",
   "created": "2026-06-18T03:40:59Z",
   "description": "Fixtures that should emit (or fail on) a non-exhaustiveness diagnostic no longer do. Regression of the closed fz-rh2.11.8 (emit type/no-matching-clause for partial case/with). Verified pre-existing vs parent commit ca703c6b7 — independent of the fz-vn5 cons-reuse arc.\n\nFixtures / signals (fixtures2/behavior):\n- spec_violation (run/interp/build): matrix reports 'expected diagnostic (nonzero exit) but the program succeeded' — fz2 exits 0 where it must halt.\n- tree: lost its 'warning[type/no-matching-clause]: fn clauses don't cover every input' (the inc_tree tuple clause). Golden tree.expected.diagnostics still holds the warning.\n- case_tuple_pattern_sequential: lost its 'case_clause' fall-through diagnostics.\n\nRecover the exhaustiveness/clause-coverage diagnostics across fn clauses and case/with so these fixtures fail (spec_violation) or warn (tree, case_tuple) as their goldens require. References: closed fz-rh2.11.8; golden disposition tracked in fz-rh2.16.2.",
   "id": "fz-9i4.7.1",
@@ -14,8 +16,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] Compiler2 lost exhaustiveness/spec diagnostics regressed",
   "type": "bug",
-  "updated_at": "2026-07-09T22:00:06Z"
+  "updated_at": "2026-07-10T01:05:32Z"
 }
