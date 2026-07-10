@@ -15,11 +15,15 @@
     {
       "text": "RE-SCOPED (fz-k22.10 option-B spike): the enum_predicate_search whole-fixture non-determinism is NOT the CallSiteSummary arbitrary-side-pick -- it is present IDENTICALLY in the be54e0126 baseline and persists after the coalescing recompute. It traces to Ty-interning / scheduling order UPSTREAM in the pipeline (callable/entry-id numbering + which cranelift instruction fails vary run to run). The coalescing merge order-independence IS now closed (unit-tested), but that was a different, narrower arbitrariness. This ticket's real target is the upstream Ty-interning/scheduling nondeterminism. Violates the north-star 'graph deterministic given the root'.",
       "timestamp": "2026-07-10T15:05:27Z"
+    },
+    {
+      "text": "LOCALIZED AND PROVEN width-relevant (fz-k22.10 spike 5): the nondeterminism IS the order-dependent width-blind merge in CallSiteSummary coalescing -- kept/discarded flip direction run-to-run AND within one run at the recursive reducer callsite (FnId 203 callsite 0 -\u003e FnId 176). Which sid crashes (149/140/none) tracks the survivor. Fixing the merge to a width-aware deterministic join (fz-k22.10 fix part a) closes this.",
+      "timestamp": "2026-07-10T16:21:01Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: enum_predicate_search producer materialization is non-deterministic across runs (3 different failure messages in 3 runs of the same binary)",
   "type": "bug",
-  "updated_at": "2026-07-10T15:05:27Z"
+  "updated_at": "2026-07-10T16:21:01Z"
 }
