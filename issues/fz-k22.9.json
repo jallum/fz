@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-f98.14"
+  ],
   "created": "2026-07-09T20:14:00Z",
   "description": "Exposed by fz-k22.7 Layer C. ir_interp/backend.rs resolve_backend_callable_executable errors ambiguous when \u003e=2 candidate entries share (fn_id, capture_count, arg_count) and neither dominates. Root: by dispatch time the callee has collapsed from a transport-shaped value (carries CallableId) to a raw runtime closure/FnRef via ProgramStep::Lambda -\u003e make_closure, which stores only function.as_u32() -- the same ambiguous structural key, no resolved-target field. Recovering identity from the call sites TransportPosition::Value shape is UNSOUND (that shape is the erased/generic/pooling callable type, matched 20-43 unrelated boundaries -\u003e risks miscompile). Native codegen avoids this because callable_value_boundaries is populated per-Var at each MakeClosure CONSTRUCTION site. CORRECT FIX: embed resolved-target identity into the interpreters heap closure representation (mirror native body_addr embedded in the closure header alongside structural fid) -- a fz_runtime::heap closure-layout change touching interp + native construction sites + GC. Materially bigger than a dispatch-site plumbing fix. Blocks enum_predicate_search::interp + enum_take_drop_split::interp.",
   "id": "fz-k22.9",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-k22: interpreter runtime closure repr loses resolved-target identity -- ambiguous dispatch when structurally-equal callables pool (needs identity in the heap closure header like native body_addr)",
   "type": "bug",
-  "updated_at": "2026-07-09T20:14:00Z"
+  "updated_at": "2026-07-10T15:42:37Z"
 }

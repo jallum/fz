@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.9"
+  ],
   "blocks": [],
   "created": "2026-06-25T20:26:10Z",
   "description": "fixtures2/00420_enum_take_drop_split.fz drives ~5300 jobs in ~1.3s, schedule-dependent (jobs_ran 5598-5702), ends Fatal LowerNativeProgram. Isolated via --log-telemetry post-processing (drive elapsed_ns + per-job-kind/changed-fact histograms). VERIFIED: zero return-widening, max 4 ascents (healthy per-activation type ascent) — NOT the f98 graduate-to-any. Root is breadth: a several-hundred-activation closure (take/drop/split x List+Range x lambdas x recursive reduce bridge), where SealSemanticClosure re-walks the WHOLE closure on every settled-fact change (~342x) = O(closure x changes) monolithic reseal (downstream-monolith), amplified by spurious replacing-fact re-appearance churn from partial publication (~4040 None-\u003eSome re-publishes). RED gate test: compiler2_enum_take_drop_split_seals_without_reseal_runaway (seal\u003c=32, total\u003c1500, Resolved). Sound cumulative fix lands but doesn't close it; replacing-fact preserve is unsound (claims overwritten value, unknown-is-not-none). Closure needs the foundational levers in child tickets.",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "Compiler2 convergence runaway: enum_take_drop_split (00420) drive is 1.3s and schedule-dependent — monolithic per-root reseal over a large closure + partial-publication churn",
   "type": "bug",
-  "updated_at": "2026-06-25T20:42:29Z"
+  "updated_at": "2026-07-10T15:42:37Z"
 }
