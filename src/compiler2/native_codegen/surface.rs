@@ -96,6 +96,47 @@ pub(crate) fn require_closure_target_surface_agreement(
     ))
 }
 
+/// Direct-dispatch consumption also requires the call's argument count to
+/// agree with the target's declared argument-LANE count. `target.arg_reprs`
+/// is the target's own compiled per-LANE ABI: a semantic argument whose
+/// transport shape spans more than one physical lane (e.g. a 2-lane
+/// accumulator) advances `arg_reprs` by more than one entry for that one
+/// logical argument. The call's own `args`, by contrast, is per-SEMANTIC-
+/// argument: each logical call argument has already been collapsed to one
+/// materialized value (boxed generically, if needed, for the closure's
+/// indirect calling convention) before it reaches this consumption point.
+/// There is no lossless way to re-expand one already-materialized value
+/// back into its target's several constituent lanes here -- doing so would
+/// require per-argument lane-width bookkeeping this surface does not carry
+/// and a runtime decode of an opaque boxed value that does not exist. So,
+/// exactly like `require_closure_target_surface_agreement`, a length
+/// disagreement here must fail cleanly rather than silently under-fill the
+/// physical call (previously: a raw cranelift verifier "argument count"
+/// panic, or worse, an in-bounds but wrong-repr coercion when the counts
+/// happened to coincide).
+pub(crate) fn require_direct_closure_call_arity_agreement(
+    target_fn: FnId,
+    context: &str,
+    call_arg_count: usize,
+    target: &NativeClosureTargetSurface,
+) -> Result<(), CodegenError> {
+    if call_arg_count == target.arg_reprs.len() {
+        return Ok(());
+    }
+    Err(CodegenError::new(
+        crate::compiler2::artifact::incompatible_physical_abi_message(
+            format_args!("closure target fn {}", target_fn.0),
+            context,
+            format_args!("a call site supplying {call_arg_count} semantic argument(s)"),
+            format_args!(
+                "the target's published argument lanes ({:?}, {} lane(s) total)",
+                target.arg_reprs,
+                target.arg_reprs.len()
+            ),
+        ),
+    ))
+}
+
 pub(crate) struct NativeCodegenSurface<'a> {
     pub module: &'a Module,
     pub diagnostics: Diagnostics,
@@ -222,5 +263,54 @@ mod tests {
         let compiled = vec![ArgRepr::RawAtom, ArgRepr::RawInt];
         require_closure_target_surface_agreement(FnId(1), "a direct closure call", &published, &compiled)
             .expect_err("reordered lanes are a real physical-ABI disagreement");
+    }
+
+    /// Ordinary case for the arity guard: a call site whose semantic
+    /// argument count matches the target's published argument-LANE count
+    /// one-for-one must pass silently (the common case, where no semantic
+    /// argument spans more than one physical lane).
+    #[test]
+    fn matching_call_arity_and_arg_lane_count_pass() {
+        let target = NativeClosureTargetSurface {
+            capture_count: 1,
+            capture_reprs: vec![ArgRepr::RawAtom],
+            arg_reprs: vec![ArgRepr::RawInt, ArgRepr::ValueRef],
+        };
+        require_direct_closure_call_arity_agreement(FnId(7), "a direct closure call", 2, &target)
+            .expect("one semantic argument per published argument lane must agree");
+    }
+
+    /// Pins the fz-k22.17 defect: a target whose accumulator argument
+    /// compiled to a 2-lane shape publishes 3 argument lanes total (2 for
+    /// the accumulator + 1 for the element) for a call site that only
+    /// supplies 2 already-materialized semantic arguments (accumulator,
+    /// element) -- one materialized value per logical argument, not per
+    /// lane. Before this guard, `push_direct_closure_args` zipped `args`
+    /// against `target.arg_reprs` by semantic index and silently under-
+    /// filled the physical call (3 args + self + cont pushed vs 4 + self +
+    /// cont declared), surfacing later as a bare cranelift verifier
+    /// "argument count" panic. The guard must catch it as a clean `Err`.
+    #[test]
+    fn under_supplied_multi_lane_argument_produces_a_clean_error_not_a_panic() {
+        let target = NativeClosureTargetSurface {
+            capture_count: 0,
+            capture_reprs: vec![],
+            arg_reprs: vec![ArgRepr::RawInt, ArgRepr::ValueRef, ArgRepr::ValueRef],
+        };
+        let err = require_direct_closure_call_arity_agreement(FnId(137), "a direct closure call", 2, &target)
+            .expect_err("2 materialized semantic arguments cannot fill 3 declared argument lanes");
+        let message = err.to_string();
+        assert!(
+            message.contains("closure target fn 137"),
+            "error should name the offending target fn: {message}"
+        );
+        assert!(
+            message.contains("incompatible physical ABI"),
+            "error should use the same 'incompatible physical ABI' idiom as the sibling guard: {message}"
+        );
+        assert!(
+            message.contains("a direct closure call"),
+            "error should name the consumption-point context: {message}"
+        );
     }
 }

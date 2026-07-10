@@ -1,6 +1,8 @@
 //! Terminator emission for fz IR blocks.
 
-use super::surface::{NativeClosureTargetSurface, require_closure_target_surface_agreement};
+use super::surface::{
+    NativeClosureTargetSurface, require_closure_target_surface_agreement, require_direct_closure_call_arity_agreement,
+};
 use super::*;
 use crate::compiler2::NativeEntryAbi;
 use crate::fz_ir::{
@@ -179,20 +181,30 @@ fn continuation_entry_reprs(env: &CodegenEnv<'_>, cont_sid: u32) -> Vec<ArgRepr>
 fn push_direct_closure_args<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
+    target_fn: FnId,
+    context: &str,
     args: &[Var],
     target: &NativeClosureTargetSurface,
     cl_val: ir::Value,
-) -> Vec<ir::Value> {
+) -> Result<Vec<ir::Value>, CodegenError> {
+    // `args` is per-SEMANTIC-argument (one already-materialized value per
+    // logical call argument); `target.arg_reprs` is per-LANE (a semantic
+    // argument whose transport shape spans more than one physical lane
+    // advances it by more than one entry for that one argument). Zipping
+    // them by a shared index `i` is only sound when the two counts agree --
+    // see `require_direct_closure_call_arity_agreement` for why a
+    // disagreement can't be losslessly repaired here and must fail clean.
+    require_direct_closure_call_arity_agreement(target_fn, context, args.len(), target)?;
     let mut direct_args = Vec::with_capacity(args.len() + 2);
     for (i, arg) in args.iter().enumerate() {
         let binding = *var_env
             .get(&arg.0)
             .unwrap_or_else(|| panic!("direct closure arg {} is unbound", i));
-        let to = target.arg_reprs.get(i).copied().unwrap_or(ArgRepr::ValueRef);
+        let to = target.arg_reprs[i];
         body.push_binding_as_abi_arg(&mut direct_args, binding, to);
     }
     direct_args.push(cl_val);
-    direct_args
+    Ok(direct_args)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1455,9 +1467,10 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
             },
             &telemetry_metadata,
         );
-        if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
+        if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
-            let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
+            let mut direct_args =
+                push_direct_closure_args(body, var_env, target_fn, "a direct closure call", args, target, cl_val)?;
             let direct_cont = direct_closure_cont_for_exact_return(
                 return_diverges(env, body_sid),
                 &env.body_return_reprs(body_sid),
@@ -1595,9 +1608,17 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             &telemetry_metadata,
         );
 
-        if let Some((body_sid, body_fid, _target_fn, target)) = lit_resolved {
+        if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
-            let mut direct_args = push_direct_closure_args(body, var_env, args, target, cl_val);
+            let mut direct_args = push_direct_closure_args(
+                body,
+                var_env,
+                target_fn,
+                "a direct tail closure call",
+                args,
+                target,
+                cl_val,
+            )?;
             let direct_cont = direct_closure_cont_for_exact_return(
                 return_diverges(env, body_sid),
                 &env.body_return_reprs(body_sid),
