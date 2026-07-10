@@ -132,7 +132,7 @@ impl CallSiteTargets {
 }
 
 fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool {
-    left.callee == right.callee
+    left.callee == right.callee && left.activation == right.activation
 }
 
 fn merge_callsite_input_vec(types: &mut Types, current: &mut Vec<Ty>, observed: &[Ty]) {
