@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-1ah.3"
+    "fz-1ah.3",
+    "fz-1ah.6"
   ],
   "blocks": [],
   "created": "2026-07-10T15:57:10Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Bound compiler2 pull telemetry and buffer JSONL output",
   "type": "task",
-  "updated_at": "2026-07-10T15:57:20Z"
+  "updated_at": "2026-07-10T16:04:31Z"
 }
