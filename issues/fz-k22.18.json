@@ -10,9 +10,15 @@
   "id": "fz-k22.18",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "Implemented the producer-side identity split in the current worktree: CallableDescr now includes capture_tys, so empty capture lanes cannot collapse distinct lexical capture groundings. cargo check passes. Repro no longer faults on a pooled CallableId with multiple entries; it now deterministically reaches the next ownership violation (closure carrier capture passed to executable 65 whose body has two runtime lanes). This confirms the interner collision was upstream and that fz-k22.20 can next bind one target-owned ABI per now-distinct callable entry.",
+      "timestamp": "2026-07-10T18:22:11Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "fz-k22: capture-erased CallableId pooling -- CallableDescr with capture_lanes=[] interns DISTINCT capture groundings of one lambda into ONE callable identity; its boundary pools ABI-divergent resolutions from birth",
   "type": "bug",
-  "updated_at": "2026-07-10T18:18:44Z"
+  "updated_at": "2026-07-10T18:22:11Z"
 }
