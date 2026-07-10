@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T16:16:01Z",
+  "description": "CONFIRMED by instrumentation during the fz-k22.15 audit (2026-07-10). merge_target_activation (jobs/semantic.rs ~1743-1758) checks only root/function equality and returns current untouched, discarding observed ActivationKey even when arrows differ (trace: current.arrow=Ty(29) observed.arrow=Ty(30) same_arrow=false for a closure capturing cap = if true, do: 1, else: \"s\"). The k22.15 rebuild reads its capture-type prefix from that arbitrarily-kept activation, so capture COUNT is right but the concrete capture TYPE spliced in is whichever branch landed first in the grouped HashMap -- not a join. OBSERVED consequence: pre-rebuild target.return_ty was already correctly joined (int | binary) by merge_call_targets join_evidence; the rebuild then discarded it and republished narrower Some(int). Currently masked because a later non-coalesced round republishes the wide value and facts accumulate monotonically -- convergence-order LUCK, not proof (exactly the class the fixpoint notes say requires proof). FIX SHAPE: make merge_target_activation join/widen capture types across observations (or assert+wait), not arbitrarily pick. SAME arbitrary-survivor family as the fz-k22.10 diagnosis (merge_callsite_activation in semantic.rs -- note these are sibling DUPLICATES of one merge shape in two files; folding them into one correct join is the north-star move). A second test pinning capture-type divergence should land with the fix.",
+  "id": "fz-k22.16",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-k22: merge_target_activation is arbitrary-survivor on capture TYPES -- coalesce-rebuild can publish a narrower-than-joined return type for branch-divergent captures (masked by monotone accumulation)",
+  "type": "bug",
+  "updated_at": "2026-07-10T16:16:01Z"
+}
