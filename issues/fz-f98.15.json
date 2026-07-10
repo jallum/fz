@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T16:24:59Z",
+  "description": "Found during fz-f98.7 audit after the single-call Range reduce/2 sentinel path was fixed. Repro: one main with three Range Enum.reduce/2 calls: `Enum.reduce(1..1, fn (x, acc) -\u003e x * acc end)`, `Enum.reduce(5..1//-2, fn (x, acc) -\u003e x - acc end)`, and `Enum.reduce(1..5//2, fn (x, acc) -\u003e x * acc end)`. On the fz-f98.7 fixed branch, single-call one-element and negative-step reduce2 each pass on interp/run/build, but the combined body fails: interp prints the first result then reports `backend value 1 is unbound`; native run/build report artifact/incomplete-semantic-plan around absent reducer materialization. The first one-element reduce can finish without invoking the captured user reducer, then a later shared reduce2 activation needs that reducer lane. This appears to be the existing shared-HOF callable materialization / fz-k22 / fz-f98.6 family, not the fz-f98.7 sentinel-threading defect. Acceptance: combined multi-call Range reduce2 body works on interp/run/build without native choosing among incompatible callable surfaces; single-call fz-f98.7 fixture remains green.",
+  "id": "fz-f98.15",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 2,
+  "status": "open",
+  "title": "Range Enum.reduce/2 multi-call body loses reducer materialization after one-element reduce finishes without invoking reducer",
+  "type": "bug",
+  "updated_at": "2026-07-10T16:24:59Z"
+}
