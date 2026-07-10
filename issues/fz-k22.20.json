@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-10T17:00:07Z",
+  "description": "Regression in fz-k22.7 target-surface re-grounding. Output contract: every BackendCallableEntry must carry the target executable's true capture ABI, so target.activation.input_len == capture_count + arg_reprs.len(). Repro: fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz at 0aa00f6f7. Its pooled BoundaryId(0) resolves two Enum.reduce bridge executables with three activation inputs (one reducer capture + two explicit args), but package_backend_callable_entries emits capture_count=0 and two arg lanes because concrete_target_capture_surfaces scans only concrete BoundaryFacts. The concrete callable producers are direct-only (their CallableFacts have resolutions but no boundary IDs), so their one capture lane is invisible; the empty pooling fallback is unsound. Interp then flakes between 10/10 and 2/2 (10 runs: 7 wrong, 3 right) after a preceding reduce, while xs itself remains [1,2,3,4]. Repair the data model: derive target capture surfaces from all concrete CallableFacts/CallableDescrs keyed by resolved executable, require agreement, and make a missing concrete source a fatal incomplete semantic plan rather than treating zero pooling lanes as safe. Add a production-path regression assertion over repr_seam_enum_count_after_reduce2's backend program.",
+  "id": "fz-k22.20",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 0,
+  "status": "open",
+  "title": "[BUG] pooling boundary must recover capture ABI from direct-only concrete CallableFacts",
+  "type": "bug",
+  "updated_at": "2026-07-10T17:00:07Z"
+}
