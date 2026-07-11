@@ -47,24 +47,17 @@ matrix fixtures rather than duplicating fixture-only coverage.
 ## AOT Runtime Archive Resolution
 
 `fz2 build` links generated object code against the `fz-runtime` staticlib.
-`src/aot_link.rs` resolves that archive's path by invoking
-`cargo build -p fz-runtime --message-format=json` and reading the artifact
-path Cargo reports, rather than globbing `libfz_runtime-*.a` and picking the
-newest by mtime (a prior mtime glob was nondeterministic under concurrent
-builds).
-
-This narrows what an ordinary `::build` needs at runtime: a `cargo` binary on
-`$CARGO`/`PATH`, and the `fz` source tree present on disk at the absolute
-`CARGO_MANIFEST_DIR` baked into the `fz2` binary at compile time (Cargo is
-invoked with `--manifest-path` against that baked-in path). A `fz2` binary
-copied somewhere without its source checkout, or run in an environment with no
-Cargo toolchain, cannot self-link an AOT executable through this path.
+`build.rs` builds the exact `fz-runtime` staticlib into its isolated `OUT_DIR`
+target once, then records that path in the `fz2` binary. Ordinary AOT builds
+use that recorded archive directly: they do not invoke Cargo, scan hashed
+dependency archives, or depend on the caller's current directory.
 
 `FZ_AOT_RUNTIME_STATICLIB=<absolute path>` is the escape hatch: set to a
 non-empty absolute path naming a prebuilt `libfz_runtime*.a`, it short-circuits
-archive resolution to that path with no `cargo` invocation at all (the path
-must exist; its ABI must match the linking `fz2`'s target/profile, which is
-not checked automatically).
+archive resolution to that path. The override must be absolute and exist; its
+ABI must match the linking `fz2`'s target/profile, which is not checked
+automatically. Packaging a binary independently of Cargo's build directory
+must supply this override with the packaged runtime archive.
 
 ## Remaining Classes
 

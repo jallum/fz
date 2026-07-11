@@ -161,6 +161,22 @@ fn assert_native_backend_compile_telemetry(path: &Path, context: &str) {
     );
 }
 
+fn assert_aot_link_telemetry(path: &Path, context: &str) {
+    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
+    for name in [
+        r#""name":["fz","compiler2","aot","build"]"#,
+        r#""name":["fz","compiler2","aot","write_object"]"#,
+        r#""name":["fz","compiler2","aot","resolve_runtime_archive"]"#,
+        r#""name":["fz","compiler2","aot","link"]"#,
+    ] {
+        assert!(log.contains(name), "{context} should emit {name}; log=\n{log}");
+    }
+    assert!(
+        log.contains(r#""source":"embedded""#),
+        "{context} should identify the embedded runtime archive; log=\n{log}"
+    );
+}
+
 fn output_text(out: &Output) -> String {
     format!(
         "{}{}",
@@ -339,14 +355,19 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
     let telemetry_path = unique_temp_path("fz2_build", ".jsonl");
     write(&source_path, "fn main(), do: 0\n").expect("write Compiler2 build fixture");
 
-    let build = run_fz2(&[
-        OsStr::new("--log-telemetry"),
-        telemetry_path.as_os_str(),
-        OsStr::new("build"),
-        source_path.as_os_str(),
-        OsStr::new("-o"),
-        out_bin.as_os_str(),
-    ]);
+    let build = Command::new(FZ2_BIN)
+        .current_dir(temp_dir())
+        .env("CARGO", "/definitely/not/cargo")
+        .args([
+            OsStr::new("--log-telemetry"),
+            telemetry_path.as_os_str(),
+            OsStr::new("build"),
+            source_path.as_os_str(),
+            OsStr::new("-o"),
+            out_bin.as_os_str(),
+        ])
+        .output()
+        .expect("invoke fz2 binary outside its build directory");
     assert!(
         build.status.success(),
         "fz2 build should succeed; stdout={:?} stderr={:?}",
@@ -354,6 +375,7 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
         String::from_utf8_lossy(&build.stderr)
     );
     assert_compiler2_telemetry_only(&telemetry_path, "fz2 build");
+    assert_aot_link_telemetry(&telemetry_path, "fz2 build");
     assert!(
         metadata(&out_bin).is_ok(),
         "fz2 build should produce a linked native binary at {}",

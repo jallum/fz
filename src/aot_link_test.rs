@@ -41,31 +41,26 @@ fn explicit_runtime_archive_override_wins_over_coverage_detection() {
 }
 
 #[test]
-fn ordinary_debug_binary_uses_sibling_target_dir() {
-    let exe = Path::new("/repo/target/debug/fz");
+fn override_requires_an_absolute_existing_archive() {
+    let relative = resolve_runtime_archive_plan(RuntimeArchivePlan::EnvOverride(PathBuf::from("libfz_runtime.a")))
+        .expect_err("relative override must be rejected");
+    assert!(relative.to_string().contains("must be an absolute"));
 
-    let plan = runtime_archive_plan(exe, None, false);
-
-    assert_eq!(
-        plan,
-        RuntimeArchivePlan::Sibling {
-            target_dir: PathBuf::from("/repo/target/debug")
-        }
-    );
+    let missing = resolve_runtime_archive_plan(RuntimeArchivePlan::EnvOverride(PathBuf::from(
+        "/missing/libfz_runtime.a",
+    )))
+    .expect_err("missing override must be rejected");
+    assert!(missing.to_string().contains("runtime archive is missing"));
 }
 
 #[test]
-fn deps_binary_uses_parent_target_dir() {
-    let exe = Path::new("/repo/target/debug/deps/fz-abc123");
+fn ordinary_plan_uses_the_existing_embedded_archive_independent_of_executable_location() {
+    let plan = runtime_archive_plan(Path::new("/elsewhere/fz2"), None, false);
+    let archive = resolve_runtime_archive_plan(plan).expect("build script must produce the embedded archive");
 
-    let plan = runtime_archive_plan(exe, None, false);
-
-    assert_eq!(
-        plan,
-        RuntimeArchivePlan::Sibling {
-            target_dir: PathBuf::from("/repo/target/debug")
-        }
-    );
+    assert_eq!(archive.source, RuntimeArchiveSource::Embedded);
+    assert!(archive.path.is_absolute());
+    assert!(archive.path.is_file());
 }
 
 #[test]

@@ -8,7 +8,7 @@
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::aot_link;
 use crate::diag::diagnostic::Severity;
@@ -17,7 +17,7 @@ use crate::diag::style::ColorMode;
 use crate::ir_codegen::{ir_text_record_enable, ir_text_record_take};
 use crate::notify_fixture_execution_start;
 use crate::telemetry::diag_render::{DiagRenderer, DiagnosticStatus};
-use crate::telemetry::{ConfiguredTelemetry, JsonlBackend, StatsHandler};
+use crate::telemetry::{ConfiguredTelemetry, JsonlBackend, StatsHandler, Telemetry};
 
 use super::code::CodeId;
 use super::dump::{DumpKind, DumpSpec, install_dump_handlers, max_requested_stage, parse_dump_spec};
@@ -244,45 +244,73 @@ fn build_command(
     args: &[String],
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(), CliError> {
-    let options = parse_build_options(args)?;
-    let path = options.path;
-    let output = options.output;
-    let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
-    install_dump_handlers(compiler.telemetry(), root, &options.dumps);
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        ir_text_record_enable();
+    let mut compiler = configured_compiler(tel, diagnostic_status);
+    let build_span = compiler
+        .telemetry()
+        .is_span_enabled(&["fz", "compiler2", "aot", "build"])
+        .then(|| {
+            let metadata = crate::telemetry::Metadata::new();
+            (
+                compiler
+                    .telemetry()
+                    .span_start(&["fz", "compiler2", "aot", "build"], &metadata),
+                Instant::now(),
+            )
+        });
+    let result = (|| {
+        let options = parse_build_options(args)?;
+        let path = options.path;
+        let output = options.output;
+        let root = submit_main_root_from_path(&mut compiler, &path)?;
+        install_dump_handlers(compiler.telemetry(), root, &options.dumps);
+        if options
+            .dumps
+            .iter()
+            .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+        {
+            ir_text_record_enable();
+        }
+        emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
+        let obj_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("fz_program");
+        let artifact = compiler
+            .compile_root_aot(root, obj_name)
+            .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
+        emit_through(compiler.telemetry(), artifact.diagnostics.as_slice());
+        if artifact
+            .diagnostics
+            .as_slice()
+            .iter()
+            .any(|diag| diag.severity == Severity::Error)
+        {
+            return Err(CliError::failure("fz2 build failed with codegen diagnostics"));
+        }
+        if artifact.main_symbol.is_none() {
+            return Err(CliError::failure("fz2 build: no `main/0` fn found"));
+        }
+        aot_link::link_aot_artifact(&artifact, &output, compiler.telemetry())
+            .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
+        if options
+            .dumps
+            .iter()
+            .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
+        {
+            let _ = ir_text_record_take();
+        }
+        Ok(())
+    })();
+    if let Some((span_id, start)) = build_span {
+        let measurements = crate::telemetry::Measurements::new();
+        let metadata = crate::telemetry::Metadata::new();
+        let elapsed_ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        compiler.telemetry().span_stop(
+            &["fz", "compiler2", "aot", "build"],
+            span_id,
+            elapsed_ns,
+            &measurements,
+            &metadata,
+        );
     }
-    emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
-    let obj_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("fz_program");
-    let artifact = compiler
-        .compile_root_aot(root, obj_name)
-        .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
-    emit_through(compiler.telemetry(), artifact.diagnostics.as_slice());
-    if artifact
-        .diagnostics
-        .as_slice()
-        .iter()
-        .any(|diag| diag.severity == Severity::Error)
-    {
-        return Err(CliError::failure("fz2 build failed with codegen diagnostics"));
-    }
-    if artifact.main_symbol.is_none() {
-        return Err(CliError::failure("fz2 build: no `main/0` fn found"));
-    }
-    aot_link::link_aot_artifact(&artifact, &output)
-        .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        let _ = ir_text_record_take();
-    }
-    Ok(())
+    result
 }
 
 /// `fz2 test <src.fz>`: discovers every `test(:name) do ... end` item — at
@@ -707,28 +735,15 @@ fn load_root(
     arity: usize,
     diagnostic_status: &DiagnosticStatus,
 ) -> Result<(Compiler2<ConfiguredTelemetry>, RootId), CliError> {
-    let source_name = path.display().to_string();
-    let text = read_to_string(path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
-    Ok(load_root_from_text(
-        tel,
-        source_name,
-        text,
-        module_name,
-        name,
-        arity,
-        diagnostic_status,
-    ))
+    let mut compiler = configured_compiler(tel, diagnostic_status);
+    let root = submit_root_from_path(&mut compiler, path, module_name, name, arity)?;
+    Ok((compiler, root))
 }
 
-fn load_root_from_text(
+fn configured_compiler(
     tel: ConfiguredTelemetry,
-    source_name: String,
-    text: String,
-    module_name: Option<String>,
-    name: String,
-    arity: usize,
     diagnostic_status: &DiagnosticStatus,
-) -> (Compiler2<ConfiguredTelemetry>, RootId) {
+) -> Compiler2<ConfiguredTelemetry> {
     let mut compiler = Compiler2::new(tel);
     compiler.telemetry().attach(
         &["fz", "diag"],
@@ -739,20 +754,53 @@ fn load_root_from_text(
         )),
     );
     compiler.set_drive_timeout(FZ2_COMPILER_DRIVE_TIMEOUT);
+    compiler
+}
+
+fn submit_main_root_from_path(compiler: &mut Compiler2<ConfiguredTelemetry>, path: &Path) -> Result<RootId, CliError> {
+    submit_root_from_path(compiler, path, None, "main".to_string(), 0)
+}
+
+fn submit_root_from_path(
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
+    path: &Path,
+    module_name: Option<String>,
+    name: String,
+    arity: usize,
+) -> Result<RootId, CliError> {
+    let source_name = path.display().to_string();
+    let text = read_to_string(path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
+    Ok(submit_root_from_text(
+        compiler,
+        source_name,
+        text,
+        module_name,
+        name,
+        arity,
+    ))
+}
+
+fn submit_root_from_text(
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
+    source_name: String,
+    text: String,
+    module_name: Option<String>,
+    name: String,
+    arity: usize,
+) -> RootId {
     compiler.submit_code(CodeSubmission {
         name: Some(source_name),
         text,
     });
-    let root = compiler.submit_root(RootSubmission {
+    compiler.submit_root(RootSubmission {
         module_name,
         name,
         arity,
         need: ExecutableNeed::Value,
-    });
-    (compiler, root)
+    })
 }
 
-/// Like [`load_root_from_text`] but first registers the `test` item macro as a
+/// Like ordinary root setup but first registers the `test` item macro as a
 /// scoped prelude, so the submitted test source — passed verbatim, spans
 /// intact — can use `test(:name) do ... end` without the macro being spliced
 /// into its text or added to the global Kernel bootstrap.
