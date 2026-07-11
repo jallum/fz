@@ -7,6 +7,7 @@ use crate::fz_ir::{
     FnId, Module, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+use crate::telemetry::TelemetryExt as _;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},
@@ -2242,32 +2243,34 @@ fn emit_callable_boundary_materialized(
     boundary_id: u32,
 ) {
     let span = mk_ident.span();
-    env.telemetry.execute(
-        &["fz", "codegen", "callable_boundary_materialized"],
-        &crate::measurements! {
-            spec_id: env.active_spec_id as u64,
-            fn_id: env.active_body_fn_id.0 as u64,
-            closure_fn_id: fn_id.0 as u64,
-            capture_count: capture_count as u64,
-            callable_boundary_id: boundary_id as u64,
-            block_id: block_id.0 as u64,
-            stmt_idx: stmt_idx as u64,
-            span_start: span.start as u64,
-            span_end: span.end as u64,
-        },
-        &crate::metadata! {
-            module_path: env.module.module_path(),
-            body_name: env.active_body_name,
-            module: crate::telemetry::opaque(env.module),
-            materialization_kind: materialization_kind,
-            callable_boundary_target_fn_id: env
-                .surface
-                .callable_boundary(boundary_id)
-                .expect("materialized callable boundary must exist in the codegen surface")
-                .target_fn
-                .0 as u64,
-        },
-    );
+    env.telemetry
+        .execute_lazy(&["fz", "codegen", "callable_boundary_materialized"], || {
+            (
+                crate::measurements! {
+                    spec_id: env.active_spec_id as u64,
+                    fn_id: env.active_body_fn_id.0 as u64,
+                    closure_fn_id: fn_id.0 as u64,
+                    capture_count: capture_count as u64,
+                    callable_boundary_id: boundary_id as u64,
+                    block_id: block_id.0 as u64,
+                    stmt_idx: stmt_idx as u64,
+                    span_start: span.start as u64,
+                    span_end: span.end as u64,
+                },
+                crate::metadata! {
+                    module_path: env.module.module_path(),
+                    body_name: env.active_body_name,
+                    module: crate::telemetry::opaque(env.module),
+                    materialization_kind: materialization_kind,
+                    callable_boundary_target_fn_id: env
+                        .surface
+                        .callable_boundary(boundary_id)
+                        .expect("materialized callable boundary must exist in the codegen surface")
+                        .target_fn
+                        .0 as u64,
+                },
+            )
+        });
 }
 
 fn settled_callable_boundary_id(

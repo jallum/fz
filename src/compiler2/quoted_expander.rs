@@ -5,7 +5,7 @@ use fz_runtime::any_value::{AnyValueRef, ValueKind};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
-use crate::telemetry::opaque_debug;
+use crate::telemetry::{TelemetryExt as _, opaque_debug};
 use crate::{measurements, metadata};
 
 use super::drive::{FactKey, JobEffects};
@@ -698,23 +698,24 @@ pub(crate) fn emit_macro_expanded(
     depth: usize,
     arg_count: usize,
 ) {
-    tel.execute(
-        &["fz", "compiler2", "macro", "expanded"],
-        &measurements! {
-            function_id: function.as_u32() as u64,
-            module_id: function_ref.module.as_u32() as u64,
-            depth: depth as u64,
-            depth_budget: MAX_MACRO_EXPANSION_DEPTH as u64,
-            arg_count: arg_count as u64,
-            input_heap_id: input.key().heap_id as u64,
-            input_root_ref: input_root.raw_word(),
-            output_heap_id: output.key().heap_id as u64,
-            output_root_ref: output.root().raw_word(),
-        },
-        &metadata! {
-            function_ref: opaque_debug(function_ref),
-        },
-    );
+    tel.execute_lazy(&["fz", "compiler2", "macro", "expanded"], || {
+        (
+            measurements! {
+                function_id: function.as_u32() as u64,
+                module_id: function_ref.module.as_u32() as u64,
+                depth: depth as u64,
+                depth_budget: MAX_MACRO_EXPANSION_DEPTH as u64,
+                arg_count: arg_count as u64,
+                input_heap_id: input.key().heap_id as u64,
+                input_root_ref: input_root.raw_word(),
+                output_heap_id: output.key().heap_id as u64,
+                output_root_ref: output.root().raw_word(),
+            },
+            metadata! {
+                function_ref: opaque_debug(function_ref),
+            },
+        )
+    });
 }
 
 pub(crate) fn emit_job_diagnostic(

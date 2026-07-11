@@ -30,10 +30,10 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::ir_interp::make_resource_in_current_process;
-use crate::telemetry::Telemetry;
 #[cfg(test)]
 use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::value::opaque;
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::{AnyValue, AnyValueRef};
 use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
@@ -112,21 +112,22 @@ impl ExitRecord {
     /// compiled and interpreter schedulers so the event shape is identical
     /// across engines (durable measurements + opaque `&Process`).
     pub fn emit(tel: &dyn Telemetry, pid: PidId, process: &Process) {
-        let exit = Self::project(pid, process);
-        tel.execute(
-            &["fz", "runtime", "process_exited"],
-            &crate::measurements! {
-                halt_value: exit.halt_value,
-                live_count: exit.live_count as u64,
-                bytes_used: exit.bytes_used as u64,
-                reusable_cons_attempts: exit.reusable_cons_attempts,
-                reusable_cons_reused: exit.reusable_cons_reused,
-            },
-            &crate::metadata! {
-                pid: exit.pid as u64,
-                process: opaque(process),
-            },
-        );
+        tel.execute_lazy(&["fz", "runtime", "process_exited"], || {
+            let exit = Self::project(pid, process);
+            (
+                crate::measurements! {
+                    halt_value: exit.halt_value,
+                    live_count: exit.live_count as u64,
+                    bytes_used: exit.bytes_used as u64,
+                    reusable_cons_attempts: exit.reusable_cons_attempts,
+                    reusable_cons_reused: exit.reusable_cons_reused,
+                },
+                crate::metadata! {
+                    pid: exit.pid as u64,
+                    process: opaque(process),
+                },
+            )
+        });
     }
 }
 
@@ -166,7 +167,7 @@ pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, 
     let tel: &dyn Telemetry = unsafe { *(tel as *const &dyn Telemetry) };
     let bytes = unsafe { from_raw_parts(line_ptr, line_len) };
     let line = from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
-    tel.event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
+    tel.event_lazy(&["fz", "runtime", "dbg"], || crate::metadata! { line: line });
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime

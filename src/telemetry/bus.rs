@@ -115,7 +115,21 @@ impl Default for ConfiguredTelemetry {
 }
 
 impl Telemetry for ConfiguredTelemetry {
-    fn execute(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata) {
+    fn is_enabled(&self, name: &[&'static str]) -> bool {
+        self.handlers
+            .borrow()
+            .iter()
+            .any(|entry| name.starts_with(&entry.prefix))
+    }
+
+    fn is_span_enabled(&self, name: &[&'static str]) -> bool {
+        self.handlers
+            .borrow()
+            .iter()
+            .any(|entry| name.starts_with(&entry.prefix) || entry.prefix.starts_with(name))
+    }
+
+    fn dispatch(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata) {
         let (span_id, parent_span_id) = self.current_span_ids();
         self.dispatch(name, EventKind::Event, measurements, metadata, span_id, parent_span_id);
     }

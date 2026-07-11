@@ -12,7 +12,7 @@ use super::super::keying::DispatchDemand;
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
-use crate::telemetry::opaque_debug;
+use crate::telemetry::{TelemetryExt as _, opaque_debug};
 use crate::{measurements, metadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,16 +89,17 @@ pub(super) fn derive_dispatch_mask(
 
     let plan = world.entry_dispatch(function);
     let mask = dispatch_input_mask(&plan);
-    tel.execute(
-        &["fz", "compiler2", "dispatch_mask", "derived"],
-        &measurements! {
-            function_id: function.as_u32(),
-            arity: mask.len(),
-        },
-        &metadata! {
-            mask: opaque_debug(&mask),
-        },
-    );
+    tel.execute_lazy(&["fz", "compiler2", "dispatch_mask", "derived"], || {
+        (
+            measurements! {
+                function_id: function.as_u32(),
+                arity: mask.len(),
+            },
+            metadata! {
+                mask: opaque_debug(&mask),
+            },
+        )
+    });
     let changed = world.define_dispatch_mask(function, mask);
     Ok(JobEffects {
         reads: current_uses([FactKey::EntryDispatch(function)]),

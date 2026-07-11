@@ -8,7 +8,7 @@ use crate::compiler2::NativeEntryAbi;
 use crate::fz_ir::{
     self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
 };
-use crate::telemetry::Value;
+use crate::telemetry::{TelemetryExt as _, Value};
 use crate::types::{ClosureTypes, Types};
 use crate::{measurements, metadata};
 use cranelift_codegen::ir::TrapCode;
@@ -1445,28 +1445,30 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         } else {
             "heap_closure"
         };
-        let telemetry_target = closure_call_telemetry_target(
-            env,
-            lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn),
-            *closure,
-        );
-        let mut telemetry_metadata = metadata! {
-            body_name: env.active_body_name,
-            call_kind: "call_closure",
-            closure_binding_repr: closure_binding.repr().as_str(),
-            dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
-            continuation_storage: continuation_storage,
-        };
-        add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
-        env.telemetry.execute(
-            &["fz", "codegen", "closure_call_lowered"],
-            &measurements! {
-                spec_id: env.active_spec_id as u64,
-                closure_var: closure.0 as u64,
-                continuation_spec_id: cont_sid as u64,
-            },
-            &telemetry_metadata,
-        );
+        env.telemetry
+            .execute_lazy(&["fz", "codegen", "closure_call_lowered"], || {
+                let telemetry_target = closure_call_telemetry_target(
+                    env,
+                    lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn),
+                    *closure,
+                );
+                let mut telemetry_metadata = metadata! {
+                    body_name: env.active_body_name,
+                    call_kind: "call_closure",
+                    closure_binding_repr: closure_binding.repr().as_str(),
+                    dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
+                    continuation_storage: continuation_storage,
+                };
+                add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
+                (
+                    measurements! {
+                    spec_id: env.active_spec_id as u64,
+                    closure_var: closure.0 as u64,
+                    continuation_spec_id: cont_sid as u64,
+                    },
+                    telemetry_metadata,
+                )
+            });
         if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args =
@@ -1587,26 +1589,28 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
                 Ok((body_sid, body_fid, target_fn, target))
             })
             .transpose()?;
-        let telemetry_target = closure_call_telemetry_target(
-            env,
-            lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn),
-            *closure,
-        );
-        let mut telemetry_metadata = metadata! {
-            body_name: env.active_body_name,
-            call_kind: "tail_call_closure",
-            closure_binding_repr: closure_binding.repr().as_str(),
-            dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
-        };
-        add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
-        env.telemetry.execute(
-            &["fz", "codegen", "closure_call_lowered"],
-            &measurements! {
-                spec_id: env.active_spec_id as u64,
-                closure_var: closure.0 as u64,
-            },
-            &telemetry_metadata,
-        );
+        env.telemetry
+            .execute_lazy(&["fz", "codegen", "closure_call_lowered"], || {
+                let telemetry_target = closure_call_telemetry_target(
+                    env,
+                    lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn),
+                    *closure,
+                );
+                let mut telemetry_metadata = metadata! {
+                    body_name: env.active_body_name,
+                    call_kind: "tail_call_closure",
+                    closure_binding_repr: closure_binding.repr().as_str(),
+                    dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
+                };
+                add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
+                (
+                    measurements! {
+                    spec_id: env.active_spec_id as u64,
+                    closure_var: closure.0 as u64,
+                    },
+                    telemetry_metadata,
+                )
+            });
 
         if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);

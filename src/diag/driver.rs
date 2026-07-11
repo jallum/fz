@@ -4,9 +4,9 @@
 //!   in metadata. Printing is the renderer-handler's responsibility.
 
 use super::diagnostic::{Diagnostic, Severity};
-use crate::telemetry::Telemetry;
 use crate::telemetry::value::opaque;
 use crate::telemetry::{Metadata, Value};
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 /// Emit each diagnostic as a telemetry event in the `[fz, diag, *]`
 /// family. Printing is delegated to whatever renderer-handler the bus
@@ -17,13 +17,14 @@ pub fn emit_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
             Severity::Error => (&["fz", "diag", "error"], "error"),
             Severity::Warning => (&["fz", "diag", "warning"], "warning"),
         };
-        let metadata = vec![
-            ("severity", Value::from(severity)),
-            ("code", Value::from(d.code.0)),
-            ("message", Value::from(d.message.as_str())),
-            ("diagnostic", opaque(d)),
-        ];
-        tel.event(name, Metadata::from_pairs(metadata));
+        tel.event_lazy(name, || {
+            Metadata::from_pairs([
+                ("severity", Value::from(severity)),
+                ("code", Value::from(d.code.0)),
+                ("message", Value::from(d.message.as_str())),
+                ("diagnostic", opaque(d)),
+            ])
+        });
     }
 }
 

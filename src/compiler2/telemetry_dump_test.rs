@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::telemetry::capture::vec_writer;
-use crate::telemetry::{Capture, ConfiguredTelemetry, JsonlBackend, Telemetry as _};
+use crate::telemetry::{Capture, ConfiguredTelemetry, JsonlBackend, TelemetryExt as _};
 
 use super::dump::{DumpKind, DumpSpec, install_dump_handlers};
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
@@ -178,7 +178,7 @@ fn dump_harness_uses_the_same_jsonl_backend_as_cli_logging() {
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], Box::new(JsonlBackend::new_writer(writer)));
 
-    tel.event(&["fz", "compiler2", "ping"], crate::metadata! {});
+    tel.event_lazy(&["fz", "compiler2", "ping"], || crate::metadata! {});
 
     let log = String::from_utf8(buf.borrow().clone()).expect("jsonl log should stay utf-8");
     assert!(

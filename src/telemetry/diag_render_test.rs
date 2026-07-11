@@ -5,7 +5,7 @@ use crate::metadata;
 use crate::source::{Id as CodeId, SourceMap, Span};
 use crate::telemetry::bus::ConfiguredTelemetry;
 use crate::telemetry::capture::vec_writer;
-use crate::telemetry::sink::Telemetry;
+use crate::telemetry::sink::TelemetryExt;
 use crate::telemetry::value::opaque;
 
 fn fixture() -> (Rc<RefCell<SourceMap>>, CodeId) {
@@ -25,7 +25,7 @@ fn renders_warning_identically_to_render_to_string() {
     );
 
     let d = Diagnostic::warning(DiagCode("test/warning"), "test warning", Span::new(fid, 0, 2)).with_label("here");
-    t.event(&["fz", "diag", "warning"], metadata! { diagnostic: opaque(&d) });
+    t.event_lazy(&["fz", "diag", "warning"], || metadata! { diagnostic: opaque(&d) });
 
     let actual = String::from_utf8(buf.borrow().clone()).unwrap();
     let expected = render_diagnostics_to_string(&sm.borrow(), &Diagnostics::from_one(d));
@@ -45,7 +45,7 @@ fn renders_error_identically_to_render_to_string() {
     let d = Diagnostic::error(DiagCode("test/error"), "test error", Span::new(fid, 3, 7))
         .with_note("first note")
         .with_help("did you mean foo?");
-    t.event(&["fz", "diag", "error"], metadata! { diagnostic: opaque(&d) });
+    t.event_lazy(&["fz", "diag", "error"], || metadata! { diagnostic: opaque(&d) });
 
     let actual = String::from_utf8(buf.borrow().clone()).unwrap();
     let expected = render_diagnostics_to_string(&sm.borrow(), &Diagnostics::from_one(d));
@@ -58,7 +58,7 @@ fn ignores_events_without_diagnostic_metadata() {
     let (buf, w) = vec_writer();
     let t = ConfiguredTelemetry::new();
     t.attach(&["fz"], Box::new(DiagRenderer::new_to_writer(sm, w, ColorMode::Never)));
-    t.emit(&["fz", "lex", "tokens_built"]);
+    t.event_lazy(&["fz", "lex", "tokens_built"], crate::telemetry::Metadata::new);
     assert!(buf.borrow().is_empty());
 }
 
@@ -74,8 +74,8 @@ fn multiple_diagnostics_concatenate_in_order() {
 
     let d1 = Diagnostic::warning(DiagCode("a/1"), "first", Span::new(fid, 0, 1));
     let d2 = Diagnostic::error(DiagCode("a/2"), "second", Span::new(fid, 2, 3));
-    t.event(&["fz", "diag", "warning"], metadata! { diagnostic: opaque(&d1) });
-    t.event(&["fz", "diag", "error"], metadata! { diagnostic: opaque(&d2) });
+    t.event_lazy(&["fz", "diag", "warning"], || metadata! { diagnostic: opaque(&d1) });
+    t.event_lazy(&["fz", "diag", "error"], || metadata! { diagnostic: opaque(&d2) });
 
     let mut ds = Diagnostics::new();
     ds.push(d1);

@@ -7,8 +7,8 @@ not control flow — diagnostics, pass spans, counters, IR dumps, internal marke
 answer.
 
 The compiler depends on one thing: the `Telemetry` trait (`sink.rs`). Generic
-compiler paths retain the concrete handler type and pass `&T` through to
-`execute`/`span`; callers may choose dynamic dispatch only at an intentional
+compiler paths retain the concrete handler type and pass `&T` through to lazy
+event/span helpers; callers may choose dynamic dispatch only at an intentional
 boundary. Who is listening, and what they do with the events, is none of the
 compiler's business.
 
@@ -18,17 +18,19 @@ exit, `dbg` output, how tests observe a run — live in
 
 ## The Pieces
 
-**`Telemetry` trait** (`sink.rs`) — the compiler-facing surface. Four methods:
-`execute(name, measurements, metadata)` emits one event; `span_start` /
-`span_stop` / `span_exception` bracket a timed region. `emit(name)` and
-`event(name, metadata)` are payload-free conveniences. `name` is a
+**`Telemetry` trait** (`sink.rs`) — the sink surface. `dispatch` receives an
+already-borrowed event only after lazy routing proved interest; `span_start` /
+`span_stop` / `span_exception` bracket an active timed region. Compiler emit
+sites use `TelemetryExt::execute_lazy`, `execute_lazy_with`, `event_lazy`, and
+`span_lazy`, never construct a payload for `dispatch` directly. `name` is a
 `&[&'static str]` path like `&["fz", "lexer", "tokens_built"]` — broad to
 specific.
 
 **Silence by type** — `NullTelemetry` is a zero-sized implementation whose
-methods are empty. Because compiler execution retains its concrete telemetry
-type, optimized builds can inline those calls away. `ConfiguredTelemetry` is
-used when handlers may be attached at runtime.
+interest checks are false. Lazy payload closures therefore do not run, disabled
+spans do not timestamp, allocate an id, or touch stack state, and generic
+compiler execution can inline the branch away. `ConfiguredTelemetry` is used
+when handlers may be attached at runtime.
 
 **`ConfiguredTelemetry`** (`bus.rs`) — the listening impl the driver
 instantiates. It owns a handler registry (`Vec<Entry>`, each entry a `prefix` +
@@ -84,9 +86,9 @@ of metadata without flattening it to a string.
 ```text
 pass code                bus                       handlers
 ---------                ---                       --------
-tel.execute(name, m, md) ── dispatch ──▶ for each entry where
-                                          name.starts_with(prefix):
-                                            handler.handle(&Event{ .. })
+tel.execute_lazy(name, || (m, md)) ── interest ──▶ payload + dispatch only when
+                                                    name.starts_with(prefix):
+                                                      handler.handle(&Event{ .. })
 ```
 
 The bus borrows its handler list immutably for the whole dispatch, so a handler
@@ -96,22 +98,24 @@ programmer error, not a case the bus defends against.
 ## Spans
 
 A span is a timed region whose child events know their parent. `TelemetryExt`
-(`sink.rs`) gives `t.span(name, metadata)` on any `T: Telemetry` (including an
-intentional trait object) and returns an RAII `Span<'_, T>` guard. The guard
-borrows both `T` and the static name slice; it neither erases `T` nor copies the
-name. Construction calls `span_start` (which pushes a fresh id onto
+(`sink.rs`) gives `t.span_lazy(name, || metadata)` on any `T: Telemetry`
+(including an intentional trait object) and returns an RAII `Span<'_, T>`
+guard. The guard borrows both `T` and the static name slice; it neither erases
+`T` nor copies the name. When no handler can observe the span or a descendant,
+the guard is disabled and performs no timestamp, id, or stack work. An active
+guard calls `span_start` (which pushes a fresh id onto
 the bus's `span_stack` and emits a `SpanStart`); `Drop` measures `elapsed_ns` and
 emits `SpanStop`, or `SpanException` when the scope is unwinding from a panic
 (`panicking()`).
 
-While a span is open it sits on the `span_stack`, so every `execute` during that
+While a span is open it sits on the `span_stack`, so every lazy event during that
 region carries the span's id as `span_id` and the enclosing span as
 `parent_span_id`. `close_span` pops LIFO but tolerates any position so a panic
 unwinding several layers still closes cleanly. The pop happens after dispatch, so
 a handler peeking at the stack still sees the closing span as open.
 
 ```text
-tel.span(["fz","compile"], { compile_nonce, module_path })
+tel.span_lazy(["fz","compile"], || { compile_nonce, module_path })
   span_start → SpanStart(id=7, parent=0)
   ... lexer/parser/lowering emit events tagged span_id=7 ...
   Drop → SpanStop(id=7, elapsed_ns=…)
@@ -168,8 +172,10 @@ constructs a short-lived `ExecutionContext<'_, T>` that split-borrows
 Every job/event
 under `[fz, compiler2, ...]` flows through the compiler's one telemetry value.
 
-**Emit points are cheap: raw borrowed state only.** An emit site performs no
-formatting, no processing, no allocation, no calculation, and no cloning. It
+**Emit points are cheap: raw borrowed state only.** An emit site places every
+payload expression inside a lazy closure. Before handler interest, it performs
+no formatting, processing, allocation, calculation, or cloning. After interest,
+it
 passes O(1) reads of existing state — ids and stored counts in measurements;
 borrowed `&str`s and `opaque`/`opaque_debug` borrows of compiler-owned
 structures in metadata (`Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
@@ -194,8 +200,9 @@ Two recurring patterns keep emit sites clone-free:
   telemetry can borrow the local afterward is a telemetry-induced clone — the
   pattern this rule exists to kill.
 - **Spans borrow.** Span-start metadata and `stop_with` payloads accept
-  borrowed lifetimes; only `close_with` (drop-time emission) demands
-  `'static`. Prefer `stop_with` so names and paths ride as borrows.
+  borrowed lifetimes. Use `close_with_lazy` only when drop-time emission needs
+  owned data; it evaluates that payload only for an active span. Prefer
+  `stop_with` so names and paths ride as borrows.
 - **Front doors borrow labels until storage.** CLI helpers, `compile_pipeline`,
   and `parse_quoted_program` thread `source_name` as `&str` across the public
   entry seams. If both the lexer and parser need the same label at once, they

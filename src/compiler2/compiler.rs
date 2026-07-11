@@ -157,8 +157,7 @@ impl<T: Telemetry> Compiler2<T> {
     {
         let backend_kind = backend.kind();
         let tel = &self.telemetry;
-        let _span = tel.span(
-            &["fz", "compiler2", "native_backend", "compile"],
+        let _span = tel.span_lazy(&["fz", "compiler2", "native_backend", "compile"], || {
             crate::metadata! {
                 root_id: root.as_u32() as u64,
                 backend_revision: program.backend_revision,
@@ -166,8 +165,8 @@ impl<T: Telemetry> Compiler2<T> {
                 body_count: program.bodies.len() as u64,
                 callable_boundary_count: program.callable_boundaries.len() as u64,
                 backend: backend_kind,
-            },
-        );
+            }
+        });
         super::native_codegen::compile_with_backend_native_program(self.world.types_mut(), program, backend, tel)
     }
 

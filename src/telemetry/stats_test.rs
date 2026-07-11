@@ -1,5 +1,5 @@
 use super::*;
-use crate::telemetry::{ConfiguredTelemetry, Metadata, Telemetry as _};
+use crate::telemetry::{ConfiguredTelemetry, Metadata, TelemetryExt as _};
 
 #[test]
 fn counts_events_by_name() {
@@ -7,9 +7,9 @@ fn counts_events_by_name() {
     let stats = StatsHandler::new();
     tel.attach(&[], stats.handler());
 
-    tel.emit(&["fz", "lexer", "pass"]);
-    tel.emit(&["fz", "lexer", "pass"]);
-    tel.emit(&["fz", "parse", "done"]);
+    tel.event_lazy(&["fz", "lexer", "pass"], Metadata::new);
+    tel.event_lazy(&["fz", "lexer", "pass"], Metadata::new);
+    tel.event_lazy(&["fz", "parse", "done"], Metadata::new);
 
     let counts = stats.counts();
     assert_eq!(counts.get("fz.lexer.pass"), Some(&2));
@@ -25,10 +25,10 @@ fn span_events_not_counted() {
     let stats = StatsHandler::new();
     tel.attach(&[], stats.handler());
 
-    let _span = tel.span(&["fz", "test", "span"], Metadata::new());
+    let _span = tel.span_lazy(&["fz", "test", "span"], Metadata::new);
     drop(_span);
 
-    tel.emit(&["fz", "test", "event"]);
+    tel.event_lazy(&["fz", "test", "event"], Metadata::new);
 
     let counts = stats.counts();
     assert_eq!(counts.get("fz.test.event"), Some(&1), "event should be counted");
@@ -49,9 +49,9 @@ fn sorted_alphabetically() {
     let stats = StatsHandler::new();
     tel.attach(&[], stats.handler());
 
-    tel.emit(&["z", "last"]);
-    tel.emit(&["a", "first"]);
-    tel.emit(&["m", "middle"]);
+    tel.event_lazy(&["z", "last"], Metadata::new);
+    tel.event_lazy(&["a", "first"], Metadata::new);
+    tel.event_lazy(&["m", "middle"], Metadata::new);
 
     let keys: Vec<_> = stats.counts().into_keys().collect();
     assert_eq!(keys, vec!["a.first", "m.middle", "z.last"]);

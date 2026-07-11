@@ -19,7 +19,7 @@ use crate::compiler2::{
 use crate::exec::runtime::output_hook_thunk;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::matches_runtime_type_predicate;
-use crate::telemetry::Telemetry;
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
 };
@@ -255,9 +255,9 @@ impl IrInterpRuntime {
         }
         let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
         let Some(task) = self.tasks.get_mut(&receiver_pid) else {
-            tel.event(
+            tel.event_lazy(
                 &["fz", "runtime", "send_to_unknown_pid"],
-                crate::metadata! { pid: receiver_pid as u64 },
+                || crate::metadata! { pid: receiver_pid as u64 },
             );
             return Ok(());
         };
@@ -311,7 +311,10 @@ fn drive_backend_until_idle(
                     mso_drop_all_deferred(&mut (*proc_ptr).heap);
                 }
                 if let Err(e) = drain_pending_dtors_backend(runtime, types, transport, tel, program, module) {
-                    tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
+                    tel.event_lazy(
+                        &["fz", "runtime", "dtor_drain_failed"],
+                        || crate::metadata! { error: e },
+                    );
                 }
                 unsafe {
                     (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
@@ -2732,7 +2735,10 @@ fn drain_pending_dtors_backend(
         let (fn_id, captures) = match unpack_closure(closure) {
             Ok(parts) => parts,
             Err(err) => {
-                tel.event(&["fz", "runtime", "bad_dtor_closure"], crate::metadata! { error: err });
+                tel.event_lazy(
+                    &["fz", "runtime", "bad_dtor_closure"],
+                    || crate::metadata! { error: err },
+                );
                 continue;
             }
         };

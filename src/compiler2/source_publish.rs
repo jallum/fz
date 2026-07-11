@@ -13,7 +13,7 @@ use crate::diag::{Diagnostic, codes};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
 use crate::source::Span;
-use crate::telemetry::opaque_debug;
+use crate::telemetry::{TelemetryExt as _, opaque_debug};
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
@@ -1606,22 +1606,23 @@ fn emit_compiler_service_define(
     source: &FunctionSource,
 ) {
     let function_ref = world.function_ref(function);
-    tel.execute(
-        &["fz", "compiler2", "compiler_service", "define"],
-        &measurements! {
-            code_id: source.code.as_u32() as u64,
-            module_id: function_ref.module.as_u32() as u64,
-            owner_module_id: source.owner_module.as_u32() as u64,
-            function_id: function.as_u32() as u64,
-            namespace: source.namespace.as_u32() as u64,
-            source_heap_id: source.source.key().heap_id as u64,
-            source_root_ref: source.source.root().raw_word(),
-        },
-        &metadata! {
-            origin: "fz_compiler",
-            function_ref: opaque_debug(function_ref),
-        },
-    );
+    tel.execute_lazy(&["fz", "compiler2", "compiler_service", "define"], || {
+        (
+            measurements! {
+                code_id: source.code.as_u32() as u64,
+                module_id: function_ref.module.as_u32() as u64,
+                owner_module_id: source.owner_module.as_u32() as u64,
+                function_id: function.as_u32() as u64,
+                namespace: source.namespace.as_u32() as u64,
+                source_heap_id: source.source.key().heap_id as u64,
+                source_root_ref: source.source.root().raw_word(),
+            },
+            metadata! {
+                origin: "fz_compiler",
+                function_ref: opaque_debug(function_ref),
+            },
+        )
+    });
 }
 
 /// Walks a parsed type expression a second time, recording each `%Mod{...}`

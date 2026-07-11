@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::telemetry::handler::EventKind;
-use crate::telemetry::{ConfiguredTelemetry, Handler, Value, opaque};
+use crate::telemetry::{ConfiguredTelemetry, Handler, TelemetryExt as _, Value, opaque};
 
 use super::artifact::{BackendProgram, NativeProgram};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
@@ -148,23 +148,23 @@ fn emit_dump_events(
 ) {
     let activations = root_owned_activations(world, root, activations);
 
-    let types = TypesDump {
-        text: render_types_dump(world, &activations),
-    };
-    tel.execute(
-        &["fz", "compiler2", "dump", "types"],
-        &crate::measurements! { root_id: root.as_u32() },
-        &crate::metadata! { dump: opaque(&types) },
-    );
+    tel.execute_lazy_with(&["fz", "compiler2", "dump", "types"], |emit| {
+        let types = TypesDump {
+            text: render_types_dump(world, &activations),
+        };
+        let measurements = crate::measurements! { root_id: root.as_u32() };
+        let metadata = crate::metadata! { dump: opaque(&types) };
+        emit(&measurements, &metadata);
+    });
 
-    let activations = ActivationsDump {
-        text: render_activations_dump(world, &activations),
-    };
-    tel.execute(
-        &["fz", "compiler2", "dump", "activations"],
-        &crate::measurements! { root_id: root.as_u32() },
-        &crate::metadata! { dump: opaque(&activations) },
-    );
+    tel.execute_lazy_with(&["fz", "compiler2", "dump", "activations"], |emit| {
+        let activations = ActivationsDump {
+            text: render_activations_dump(world, &activations),
+        };
+        let measurements = crate::measurements! { root_id: root.as_u32() };
+        let metadata = crate::metadata! { dump: opaque(&activations) };
+        emit(&measurements, &metadata);
+    });
 }
 
 fn boxed_text_dump_handler<T: 'static + DumpText>(

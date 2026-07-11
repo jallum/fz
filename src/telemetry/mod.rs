@@ -27,7 +27,7 @@
 //!   are the fz program's stdout, not compiler output.
 //! - **Runtime simulation warnings** (`ir_interp.rs` send/dtor errors) stay as
 //!   `eprintln!` — these are interpreter runtime stderr, not compilation events.
-//! - Everything else should be a `tel.execute(...)` call.
+//! - Everything else should use the lazy telemetry extension methods.
 
 pub mod bus;
 #[cfg(test)]

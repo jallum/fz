@@ -8,7 +8,7 @@ use crate::telemetry::capture::vec_writer;
 use crate::telemetry::event::{Measurements, Metadata};
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::value::opaque_debug;
-use crate::telemetry::{ConfiguredTelemetry, Telemetry as _};
+use crate::telemetry::{ConfiguredTelemetry, Telemetry as _, TelemetryExt as _};
 
 use super::*;
 
@@ -185,7 +185,7 @@ fn through_configured_telemetry_roundtrips() {
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], Box::new(JsonlBackend::new_writer(w)));
 
-    tel.execute(
+    tel.dispatch(
         &["fz", "lexer", "pass"],
         &crate::measurements! { token_count: 42usize },
         &Metadata::new(),
@@ -213,7 +213,7 @@ fn file_backend_flushes_each_event() {
     let tel = ConfiguredTelemetry::new();
     tel.attach(&[], Box::new(JsonlBackend::new_file(&path).expect("open jsonl")));
 
-    tel.event(&["fz", "diag", "error"], crate::metadata! { code: "spec/violation" });
+    tel.event_lazy(&["fz", "diag", "error"], || crate::metadata! { code: "spec/violation" });
 
     let output = read_to_string(&path).expect("read live jsonl");
     let _ = remove_file(&path);

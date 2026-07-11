@@ -35,8 +35,8 @@ fn empty_prefix_matches_every_event() {
     let t = ConfiguredTelemetry::new();
     let cap = Capture::new();
     t.attach(&[], cap.handler());
-    t.emit(&["fz", "a"]);
-    t.emit(&["other"]);
+    t.event_lazy(&["fz", "a"], Metadata::new);
+    t.event_lazy(&["other"], Metadata::new);
     assert_eq!(cap.len(), 2);
 }
 
@@ -45,9 +45,9 @@ fn prefix_filters_non_matching_events() {
     let t = ConfiguredTelemetry::new();
     let cap = Capture::new();
     t.attach(&["fz", "lex"], cap.handler());
-    t.emit(&["fz", "lex", "tokens_built"]);
-    t.emit(&["fz", "parse", "ast"]);
-    t.emit(&["other"]);
+    t.event_lazy(&["fz", "lex", "tokens_built"], Metadata::new);
+    t.event_lazy(&["fz", "parse", "ast"], Metadata::new);
+    t.event_lazy(&["other"], Metadata::new);
     let evs = cap.events();
     assert_eq!(evs.len(), 1);
     assert_eq!(evs[0].name, vec!["fz", "lex", "tokens_built"]);
@@ -60,8 +60,8 @@ fn multiple_handlers_fan_out_independently() {
     let only_lex = Capture::new();
     t.attach(&[], all.handler());
     t.attach(&["fz", "lex"], only_lex.handler());
-    t.emit(&["fz", "lex", "x"]);
-    t.emit(&["fz", "parse", "y"]);
+    t.event_lazy(&["fz", "lex", "x"], Metadata::new);
+    t.event_lazy(&["fz", "parse", "y"], Metadata::new);
     assert_eq!(all.len(), 2);
     assert_eq!(only_lex.len(), 1);
 }
@@ -72,12 +72,10 @@ fn span_lifecycle_emits_synthetic_events() {
     let cap = Capture::new();
     t.attach(&[], cap.handler());
     {
-        let _s = t.span(&["fz", "lex", "pass"], metadata! { fn_name: "main" });
-        t.execute(
-            &["fz", "lex", "tokens_built"],
-            &measurements! { count: 17u64 },
-            &Metadata::new(),
-        );
+        let _s = t.span_lazy(&["fz", "lex", "pass"], || metadata! { fn_name: "main" });
+        t.execute_lazy(&["fz", "lex", "tokens_built"], || {
+            (measurements! { count: 17u64 }, Metadata::new())
+        });
     }
     let evs = cap.events();
     // Expected: span.start, then user event, then span.stop.
@@ -88,13 +86,34 @@ fn span_lifecycle_emits_synthetic_events() {
 }
 
 #[test]
+fn descendant_handler_keeps_its_parent_lazy_span_active() {
+    let t = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    t.attach(&["fz", "outer", "child"], cap.handler());
+    let constructed = std::cell::Cell::new(0);
+    {
+        let _parent = t.span_lazy(&["fz", "outer"], || {
+            constructed.set(constructed.get() + 1);
+            Metadata::new()
+        });
+        t.execute_lazy(&["fz", "outer", "child", "event"], || {
+            (Measurements::new(), Metadata::new())
+        });
+    }
+
+    assert_eq!(constructed.get(), 1);
+    let event = cap.last(&["fz", "outer", "child", "event"]).expect("child event");
+    assert!(event.span_id > 0);
+}
+
+#[test]
 fn events_during_span_inherit_span_id() {
     let t = ConfiguredTelemetry::new();
     let cap = Capture::new();
     t.attach(&[], cap.handler());
     {
-        let _s = t.span(&["fz", "outer"], Metadata::new());
-        t.emit(&["fz", "user", "event"]);
+        let _s = t.span_lazy(&["fz", "outer"], Metadata::new);
+        t.event_lazy(&["fz", "user", "event"], Metadata::new);
     }
     let evs = cap.events();
     // outer.start, user.event, outer.stop
@@ -111,10 +130,10 @@ fn nested_spans_set_parent_span_id() {
     let cap = Capture::new();
     t.attach(&[], cap.handler());
     {
-        let _outer = t.span(&["fz", "outer"], Metadata::new());
+        let _outer = t.span_lazy(&["fz", "outer"], Metadata::new);
         {
-            let _inner = t.span(&["fz", "outer", "inner"], Metadata::new());
-            t.emit(&["fz", "u"]);
+            let _inner = t.span_lazy(&["fz", "outer", "inner"], Metadata::new);
+            t.event_lazy(&["fz", "u"], Metadata::new);
         }
     }
     let evs = cap.events();
@@ -144,7 +163,7 @@ fn span_stop_event_carries_elapsed_ns() {
     let cap = Capture::new();
     t.attach(&[], cap.handler());
     {
-        let _s = t.span(&["fz", "x"], Metadata::new());
+        let _s = t.span_lazy(&["fz", "x"], Metadata::new);
         sleep(Duration::from_micros(50));
     }
     let evs = cap.events();
@@ -165,8 +184,8 @@ fn span_stop_event_carries_close_payload() {
     let cap = Capture::new();
     t.attach(&[], cap.handler());
     {
-        let mut span = t.span(&["fz", "x"], Metadata::new());
-        span.close_with(measurements! { jobs_ran: 3u64 }, metadata! { outcome: "ok" });
+        let mut span = t.span_lazy(&["fz", "x"], Metadata::new);
+        span.close_with_lazy(|| (measurements! { jobs_ran: 3u64 }, metadata! { outcome: "ok" }));
     }
     let events = cap.events();
     let stop = events
@@ -186,7 +205,7 @@ fn panic_inside_span_emits_exception_event() {
     let cap = Capture::new();
     t.attach(&[], cap.handler());
     let r = catch_unwind(AssertUnwindSafe(|| {
-        let _s = t.span(&["fz", "boom"], Metadata::new());
+        let _s = t.span_lazy(&["fz", "boom"], Metadata::new);
         panic!("planned");
     }));
     assert!(r.is_err());

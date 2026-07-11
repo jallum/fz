@@ -22,6 +22,7 @@ use crate::fz_ir::{
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
+use crate::telemetry::TelemetryExt as _;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
@@ -62,15 +63,16 @@ pub(super) fn lower_native_program(
     let stats = reusable_cons_telemetry_counts(&backend);
     let program = NativeLowerer::new(world, tel, root_id, &backend)?.lower()?;
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_native_program(root_id, program);
-    tel.execute(
-        &["fz", "compiler2", "native_program", "reusable_cons"],
-        &crate::measurements! {
-            root_id: root_id.as_u32() as u64,
-            birth_count: stats.birth_count,
-            transport_count: stats.transport_count,
-        },
-        &crate::metadata! {},
-    );
+    tel.execute_lazy(&["fz", "compiler2", "native_program", "reusable_cons"], || {
+        (
+            crate::measurements! {
+                root_id: root_id.as_u32() as u64,
+                birth_count: stats.birth_count,
+                transport_count: stats.transport_count,
+            },
+            crate::metadata! {},
+        )
+    });
     Ok(JobEffects {
         reads: settled_uses([backend_fact]),
         outputs: vec![FactKey::NativeProgram(root_id)],

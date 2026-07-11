@@ -21,10 +21,19 @@ use super::handler::{Handler, HandlerId};
 /// Fatal errors are *not* on this trait; they stay on `Result<T, FatalError>`.
 /// Telemetry is purely the side channel.
 pub trait Telemetry {
+    /// Returns whether at least one handler will observe an event at `name`.
+    fn is_enabled(&self, _name: &[&'static str]) -> bool {
+        true
+    }
+
+    fn is_span_enabled(&self, name: &[&'static str]) -> bool {
+        self.is_enabled(name)
+    }
+
     /// Emit a single event. `name` is the hierarchical path
     /// (e.g. `&["fz", "lexer", "tokens_built"]`); `measurements` carry
     /// numeric data fit for aggregation; `metadata` carries everything else.
-    fn execute(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata);
+    fn dispatch(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata);
 
     /// Open a new span. Returns the assigned `span_id` (opaque to callers
     /// other than the matching `span_stop` / `span_exception`). Impls
@@ -64,19 +73,6 @@ pub trait Telemetry {
     fn detach(&self, _id: HandlerId) -> bool {
         false
     }
-
-    /// Emit an event with no payload. Shorthand for
-    /// `execute(name, &Measurements::new(), &Metadata::new())`.
-    fn emit(&self, name: &[&'static str]) {
-        self.execute(name, &Measurements::new(), &Metadata::new());
-    }
-
-    /// Emit an event carrying only metadata (no measurements). Metadata is
-    /// passed by value and borrowed for the dispatch — no heap allocation
-    /// since `Metadata` uses inline `SmallVec` storage for ≤ 4 entries.
-    fn event(&self, name: &[&'static str], metadata: Metadata) {
-        self.execute(name, &Measurements::new(), &metadata);
-    }
 }
 
 /// Zero-sized telemetry for callers that install no observation path.
@@ -85,7 +81,15 @@ pub trait Telemetry {
 pub struct NullTelemetry;
 
 impl Telemetry for NullTelemetry {
-    fn execute(&self, _name: &[&'static str], _measurements: &Measurements, _metadata: &Metadata) {}
+    fn is_enabled(&self, _name: &[&'static str]) -> bool {
+        false
+    }
+
+    fn is_span_enabled(&self, _name: &[&'static str]) -> bool {
+        false
+    }
+
+    fn dispatch(&self, _name: &[&'static str], _measurements: &Measurements, _metadata: &Metadata) {}
 
     fn span_start(&self, _name: &[&'static str], _metadata: &Metadata) -> u64 {
         0
@@ -112,15 +116,19 @@ impl Telemetry for NullTelemetry {
     }
 }
 
-/// RAII guard returned by `TelemetryExt::span`. Captures the start time
-/// when constructed; on `Drop`, computes elapsed ns and calls back into
-/// the bus — `span_exception` when the scope is unwinding from a panic,
-/// `span_stop` otherwise.
+/// RAII guard returned by `TelemetryExt::span_lazy`. An active guard captures
+/// the start time; on `Drop`, it computes elapsed ns and calls back into the
+/// bus — `span_exception` when the scope is unwinding from a panic,
+/// `span_stop` otherwise. A disabled guard contains no telemetry state.
 ///
 /// The `span_id` carried here is opaque to client code; the bus impl
 /// (fz-ndf.5) uses it to thread parent linkage into child events emitted
 /// while the span is live.
 pub struct Span<'a, T: Telemetry + ?Sized> {
+    active: Option<ActiveSpan<'a, T>>,
+}
+
+struct ActiveSpan<'a, T: Telemetry + ?Sized> {
     tel: &'a T,
     name: &'a [&'static str],
     span_id: u64,
@@ -133,77 +141,126 @@ pub struct Span<'a, T: Telemetry + ?Sized> {
 impl<'a, T: Telemetry + ?Sized> Span<'a, T> {
     pub(super) fn new(tel: &'a T, name: &'a [&'static str], span_id: u64) -> Self {
         Self {
-            tel,
-            name,
-            span_id,
-            start: Instant::now(),
-            stop_measurements: Measurements::new(),
-            stop_metadata: Metadata::new(),
-            closed: false,
+            active: Some(ActiveSpan {
+                tel,
+                name,
+                span_id,
+                start: Instant::now(),
+                stop_measurements: Measurements::new(),
+                stop_metadata: Metadata::new(),
+                closed: false,
+            }),
         }
     }
 
-    /// Replace the payload that will be attached to the eventual stop or
-    /// exception event for this span.
-    pub fn close_with(&mut self, measurements: Measurements<'static>, metadata: Metadata<'static>) {
-        self.stop_measurements = measurements;
-        self.stop_metadata = metadata;
+    pub(super) fn disabled() -> Self {
+        Self { active: None }
+    }
+
+    fn set_stop_payload(&mut self, measurements: Measurements<'static>, metadata: Metadata<'static>) {
+        if let Some(active) = self.active.as_mut() {
+            active.stop_measurements = measurements;
+            active.stop_metadata = metadata;
+        }
+    }
+
+    pub fn close_with_lazy(&mut self, payload: impl FnOnce() -> (Measurements<'static>, Metadata<'static>)) {
+        if self.active.is_some() {
+            let (measurements, metadata) = payload();
+            self.set_stop_payload(measurements, metadata);
+        }
     }
 
     /// Close the span immediately with borrowed payload. Useful when the stop
     /// data is only valid for the current scope and should not be copied into
     /// the guard for drop-time emission.
     pub fn stop_with<'meas, 'meta>(mut self, measurements: &Measurements<'meas>, metadata: &Metadata<'meta>) {
-        let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        self.tel
-            .span_stop(self.name, self.span_id, elapsed_ns, measurements, metadata);
-        self.closed = true;
+        if let Some(active) = self.active.as_mut() {
+            let elapsed_ns = active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            active
+                .tel
+                .span_stop(active.name, active.span_id, elapsed_ns, measurements, metadata);
+            active.closed = true;
+        }
+    }
+
+    pub fn stop_with_lazy<'meas, 'meta>(self, payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>)) {
+        if self.active.is_some() {
+            let (measurements, metadata) = payload();
+            self.stop_with(&measurements, &metadata);
+        }
     }
 
     /// Opaque identifier for this span. The bus impl uses this to attach
     /// `parent_span_id` to events emitted while the span is open.
     #[cfg(test)]
     pub fn span_id(&self) -> u64 {
-        self.span_id
+        match &self.active {
+            Some(active) => active.span_id,
+            None => 0,
+        }
     }
 
     /// Hierarchical name of the span. Useful for tests and renderers.
     #[cfg(test)]
     pub fn name(&self) -> &[&'static str] {
-        self.name
+        match &self.active {
+            Some(active) => active.name,
+            None => &[],
+        }
     }
 }
 
 impl<T: Telemetry + ?Sized> Drop for Span<'_, T> {
     fn drop(&mut self) {
-        if self.closed {
-            return;
-        }
-        let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        if panicking() {
-            self.tel.span_exception(
-                self.name,
-                self.span_id,
-                elapsed_ns,
-                &self.stop_measurements,
-                &self.stop_metadata,
-            );
-        } else {
-            self.tel.span_stop(
-                self.name,
-                self.span_id,
-                elapsed_ns,
-                &self.stop_measurements,
-                &self.stop_metadata,
-            );
+        if let Some(active) = self.active.as_ref() {
+            if active.closed {
+                return;
+            }
+            let elapsed_ns = active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            if panicking() {
+                active.tel.span_exception(
+                    active.name,
+                    active.span_id,
+                    elapsed_ns,
+                    &active.stop_measurements,
+                    &active.stop_metadata,
+                );
+            } else {
+                active.tel.span_stop(
+                    active.name,
+                    active.span_id,
+                    elapsed_ns,
+                    &active.stop_measurements,
+                    &active.stop_metadata,
+                );
+            }
         }
     }
 }
 
-/// Ergonomic extension trait giving `t.span(...)` on concrete handlers and
-/// intentional trait objects without erasing the concrete type in generic code.
+/// Lazy telemetry helpers for concrete handlers and intentional trait objects
+/// without erasing the concrete type in generic compiler code.
 pub trait TelemetryExt: Telemetry {
-    fn span<'a>(&'a self, name: &'a [&'static str], metadata: Metadata) -> Span<'a, Self>;
+    fn execute_lazy<'meas, 'meta>(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>),
+    );
+
+    fn execute_lazy_with(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce(&mut dyn FnMut(&Measurements<'_>, &Metadata<'_>)),
+    );
+
+    fn event_lazy<'meta>(&self, name: &[&'static str], metadata: impl FnOnce() -> Metadata<'meta>);
+
+    fn span_lazy<'a, 'meta>(
+        &'a self,
+        name: &'a [&'static str],
+        metadata: impl FnOnce() -> Metadata<'meta>,
+    ) -> Span<'a, Self>;
 }
 
 fn make_span<'a, T: Telemetry + ?Sized>(tel: &'a T, name: &'a [&'static str], metadata: Metadata) -> Span<'a, T> {
@@ -212,8 +269,44 @@ fn make_span<'a, T: Telemetry + ?Sized>(tel: &'a T, name: &'a [&'static str], me
 }
 
 impl<T: Telemetry + ?Sized> TelemetryExt for T {
-    fn span<'a>(&'a self, name: &'a [&'static str], metadata: Metadata) -> Span<'a, Self> {
-        make_span(self, name, metadata)
+    fn execute_lazy<'meas, 'meta>(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>),
+    ) {
+        if self.is_enabled(name) {
+            let (measurements, metadata) = payload();
+            self.dispatch(name, &measurements, &metadata);
+        }
+    }
+
+    fn execute_lazy_with(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce(&mut dyn FnMut(&Measurements<'_>, &Metadata<'_>)),
+    ) {
+        if self.is_enabled(name) {
+            let mut dispatch = |measurements: &Measurements<'_>, metadata: &Metadata<'_>| {
+                self.dispatch(name, measurements, metadata);
+            };
+            payload(&mut dispatch);
+        }
+    }
+
+    fn event_lazy<'meta>(&self, name: &[&'static str], metadata: impl FnOnce() -> Metadata<'meta>) {
+        self.execute_lazy(name, || (Measurements::new(), metadata()));
+    }
+
+    fn span_lazy<'a, 'meta>(
+        &'a self,
+        name: &'a [&'static str],
+        metadata: impl FnOnce() -> Metadata<'meta>,
+    ) -> Span<'a, Self> {
+        if self.is_span_enabled(name) {
+            make_span(self, name, metadata())
+        } else {
+            Span::disabled()
+        }
     }
 }
 

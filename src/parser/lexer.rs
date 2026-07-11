@@ -748,8 +748,7 @@ impl<'a> Lexer<'a> {
     /// lookahead heuristic required downstream.
     pub fn tokenize(mut self, tel: &dyn Telemetry) -> Result<Vec<Token>, LexError> {
         use crate::telemetry::TelemetryExt;
-        let metadata = self.telemetry_metadata();
-        let _span = tel.span(LEX_PASS_NAME, metadata.clone());
+        let _span = tel.span_lazy(LEX_PASS_NAME, || self.telemetry_metadata());
         let mut out: Vec<Token> = Vec::new();
         loop {
             let t = self.next_token()?;
@@ -761,7 +760,9 @@ impl<'a> Lexer<'a> {
             }
             out.push(t);
             if done {
-                tel.execute(TOKENS_BUILT_NAME, &measurements! { count: out.len() }, &metadata);
+                tel.execute_lazy(TOKENS_BUILT_NAME, || {
+                    (measurements! { count: out.len() }, self.telemetry_metadata())
+                });
                 return Ok(out);
             }
         }

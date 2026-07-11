@@ -266,21 +266,22 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
         }
         let sig = build_callable_boundary_signature(arg_reprs.len());
         let boundary_name = format!("callable_boundary_b{boundary_id}");
-        tel.execute(
-            &["fz", "codegen", "callable_boundary_lowered"],
-            &crate::measurements! {
-                spec_id: body_sid as u64,
-                arg_count: arg_reprs.len() as u64,
-                capture_count: boundary.capture_count as u64,
-                callable_boundary_id: boundary_id as u64,
-            },
-            &crate::metadata! {
-                module_path: module_path,
-                fn_name: boundary_name.as_str(),
-                boundary_target_fn_id: boundary.target_fn.0 as u64,
-                boundary_identity_fn_id: boundary.identity_fn.0 as u64,
-            },
-        );
+        tel.execute_lazy(&["fz", "codegen", "callable_boundary_lowered"], || {
+            (
+                crate::measurements! {
+                    spec_id: body_sid as u64,
+                    arg_count: arg_reprs.len() as u64,
+                    capture_count: boundary.capture_count as u64,
+                    callable_boundary_id: boundary_id as u64,
+                },
+                crate::metadata! {
+                    module_path: module_path,
+                    fn_name: boundary_name.as_str(),
+                    boundary_target_fn_id: boundary.target_fn.0 as u64,
+                    boundary_identity_fn_id: boundary.identity_fn.0 as u64,
+                },
+            )
+        });
         emit_fn_body(m, fbctx, sig, callable_boundary_id, |m, b| {
             let entry_block = b.create_block();
             b.append_block_params_for_function_params(entry_block);
@@ -317,31 +318,32 @@ fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &impl Tel
         };
         let sid = body_slot.codegen_id as usize;
         let f = &surface.module.fns[body_slot.fn_idx];
-        tel.execute(
-            &["fz", "codegen", "abi_contract"],
-            &crate::measurements! {
-                spec_id: sid as u64,
-                fn_id: f.id.0 as u64,
-                param_count: surface.param_reprs[sid].len() as u64,
-                capture_count: surface
-                    .closure_target(f.id)
-                    .map(|target| target.capture_count)
-                    .unwrap_or(0) as u64,
-            },
-            &crate::metadata! {
-                module_path: surface.module.module_path(),
-                fn_name: f.name.as_str(),
-                body_origin: crate::telemetry::opaque_debug(&body_slot.native_body.origin),
-                entry_abi: crate::telemetry::opaque_debug(&body_slot.native_body.entry_abi),
-                param_reprs: crate::telemetry::opaque_debug(&surface.param_reprs[sid]),
-                halt_repr: surface.halt_reprs[sid].as_str(),
-                return_reprs: crate::telemetry::opaque_debug(&body_slot.native_body.return_reprs),
-                return_tuple_arity: crate::telemetry::opaque_debug(&body_slot.native_body.return_tuple_arity),
-                is_native: surface.native_abi_fns.contains(&f.id),
-                is_cont_fn: surface.cont_fns.contains(&f.id),
-                is_closure_target: surface.closure_targets.contains_key(&f.id),
-            },
-        );
+        tel.execute_lazy(&["fz", "codegen", "abi_contract"], || {
+            (
+                crate::measurements! {
+                    spec_id: sid as u64,
+                    fn_id: f.id.0 as u64,
+                    param_count: surface.param_reprs[sid].len() as u64,
+                    capture_count: surface
+                        .closure_target(f.id)
+                        .map(|target| target.capture_count)
+                        .unwrap_or(0) as u64,
+                },
+                crate::metadata! {
+                    module_path: surface.module.module_path(),
+                    fn_name: f.name.as_str(),
+                    body_origin: crate::telemetry::opaque_debug(&body_slot.native_body.origin),
+                    entry_abi: crate::telemetry::opaque_debug(&body_slot.native_body.entry_abi),
+                    param_reprs: crate::telemetry::opaque_debug(&surface.param_reprs[sid]),
+                    halt_repr: surface.halt_reprs[sid].as_str(),
+                    return_reprs: crate::telemetry::opaque_debug(&body_slot.native_body.return_reprs),
+                    return_tuple_arity: crate::telemetry::opaque_debug(&body_slot.native_body.return_tuple_arity),
+                    is_native: surface.native_abi_fns.contains(&f.id),
+                    is_cont_fn: surface.cont_fns.contains(&f.id),
+                    is_closure_target: surface.closure_targets.contains_key(&f.id),
+                },
+            )
+        });
     }
 }
 
@@ -648,25 +650,26 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
             let m_id = declare_receive_dispatch(m, &name)?;
             dispatch_fn_ids.insert((f.id.0, blk.id.0), m_id);
             receive_matched_sites.push((f.id, blk.id));
-            tel.execute(
-                &["fz", "codegen", "receive", "site"],
-                &crate::measurements! {
-                    fn_id: f.id.0 as u64,
-                    block_id: blk.id.0 as u64,
-                    clause_count: clauses.len() as u64,
-                    after_count: if after.is_some() { 1u64 } else { 0u64 },
-                    pinned_count: pinned.len() as u64,
-                    capture_count: captures.len() as u64,
-                    dispatch_input_count: dispatch.input_count as u64,
-                    dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
-                    dispatch_node_count: dispatch.graph.nodes.len() as u64,
-                },
-                &crate::metadata! {
-                    module_path: module.module_path(),
-                    fn_name: f.name.as_str(),
-                    dispatch: opaque(dispatch),
-                },
-            );
+            tel.execute_lazy(&["fz", "codegen", "receive", "site"], || {
+                (
+                    crate::measurements! {
+                        fn_id: f.id.0 as u64,
+                        block_id: blk.id.0 as u64,
+                        clause_count: clauses.len() as u64,
+                        after_count: if after.is_some() { 1u64 } else { 0u64 },
+                        pinned_count: pinned.len() as u64,
+                        capture_count: captures.len() as u64,
+                        dispatch_input_count: dispatch.input_count as u64,
+                        dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
+                        dispatch_node_count: dispatch.graph.nodes.len() as u64,
+                    },
+                    crate::metadata! {
+                        module_path: module.module_path(),
+                        fn_name: f.name.as_str(),
+                        dispatch: opaque(dispatch),
+                    },
+                )
+            });
         }
     }
     Ok((dispatch_fn_ids, receive_matched_sites))
@@ -704,16 +707,15 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
         let m_id = dispatch_fn_ids[&(fn_id.0, blk_id.0)];
         let display_name = format!("fz_receive_dispatch_fn_{}_b{}", fn_id.0, blk_id.0);
         let (block_count, instruction_count) = {
-            let _span = tel.span(
-                &["fz", "codegen", "lower_function"],
+            let _span = tel.span_lazy(&["fz", "codegen", "lower_function"], || {
                 crate::metadata! {
                     body_kind: "receive_dispatch",
                     module_path: module.module_path(),
                     fn_name: display_name.as_str(),
                     fn_id: fn_id.0 as u64,
                     block_id: blk_id.0 as u64,
-                },
-            );
+                }
+            });
             emit_receive_dispatch_body(
                 m,
                 fbctx,
@@ -747,26 +749,27 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                 },
             )?
         };
-        tel.execute(
-            &["fz", "codegen", "function_lowered"],
-            &crate::measurements! {
-                fn_id: fn_id.0 as u64,
-                block_id: blk_id.0 as u64,
-                block_count: block_count as u64,
-                instruction_count: instruction_count as u64,
-                clause_count: clauses.len() as u64,
-                pinned_count: pinned.len() as u64,
-                dispatch_input_count: dispatch.input_count as u64,
-                dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
-                dispatch_node_count: dispatch.graph.nodes.len() as u64,
-            },
-            &crate::metadata! {
-                body_kind: "receive_dispatch",
-                module_path: module.module_path(),
-                fn_name: display_name,
-                dispatch: opaque(dispatch),
-            },
-        );
+        tel.execute_lazy(&["fz", "codegen", "function_lowered"], || {
+            (
+                crate::measurements! {
+                    fn_id: fn_id.0 as u64,
+                    block_id: blk_id.0 as u64,
+                    block_count: block_count as u64,
+                    instruction_count: instruction_count as u64,
+                    clause_count: clauses.len() as u64,
+                    pinned_count: pinned.len() as u64,
+                    dispatch_input_count: dispatch.input_count as u64,
+                    dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
+                    dispatch_node_count: dispatch.graph.nodes.len() as u64,
+                },
+                crate::metadata! {
+                    body_kind: "receive_dispatch",
+                    module_path: module.module_path(),
+                    fn_name: display_name,
+                    dispatch: opaque(dispatch),
+                },
+            )
+        });
     }
     Ok(())
 }
@@ -1122,17 +1125,16 @@ pub(crate) fn compile_with_backend_surface<
     // compile = declare + per-spec(lower + define) + emit_runtime + finalize.
     // Parent linkage is threaded by the bus from the open-span stack, so every
     // phase span below nests under this one automatically.
-    let _compile_span = tel.span(
-        &["fz", "codegen", "compile"],
+    let _compile_span = tel.span_lazy(&["fz", "codegen", "compile"], || {
         crate::metadata! {
             module_path: surface.module.module_path(),
             backend: backend.kind(),
             spec_count: surface.spec_count as u64,
-        },
-    );
-    let declare_span = tel.span(
+        }
+    });
+    let declare_span = tel.span_lazy(
         &["fz", "codegen", "declare"],
-        crate::metadata! { module_path: surface.module.module_path() },
+        || crate::metadata! { module_path: surface.module.module_path() },
     );
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
@@ -1216,16 +1218,15 @@ pub(crate) fn compile_with_backend_surface<
         };
         let cranelift_instruction_count;
         {
-            let _span = tel.span(
-                &["fz", "codegen", "lower_function"],
+            let _span = tel.span_lazy(&["fz", "codegen", "lower_function"], || {
                 crate::metadata! {
                     body_kind: "fz_spec",
                     module_path: module.module_path(),
                     fn_name: display_name.as_str(),
                     fn_id: body_slot.fn_id.0 as u64,
                     spec_id: sid as u64,
-                },
-            );
+                }
+            });
             let stats = compile_fn(
                 backend.module_mut(),
                 t,
@@ -1239,55 +1240,56 @@ pub(crate) fn compile_with_backend_surface<
             )?;
             let (block_count, instruction_count) = cranelift_body_stats(&ctx.func);
             cranelift_instruction_count = instruction_count;
-            tel.execute(
-                &["fz", "codegen", "function_lowered"],
-                &crate::measurements! {
-                    fn_id: body_slot.fn_id.0 as u64,
-                    spec_id: sid as u64,
-                    block_count: block_count as u64,
-                    instruction_count: instruction_count as u64,
-                    fz_block_count: f.blocks.len() as u64,
-                    reusable_cons_candidate_count: stats.reusable_cons_candidate_count,
-                    reusable_cons_consumed_count: stats.reusable_cons_consumed_count,
-                },
-                &crate::metadata! {
-                    body_kind: "fz_spec",
-                    module_path: module.module_path(),
-                    fn_name: display_name.as_str(),
-                },
-            );
+            tel.execute_lazy(&["fz", "codegen", "function_lowered"], || {
+                (
+                    crate::measurements! {
+                        fn_id: body_slot.fn_id.0 as u64,
+                        spec_id: sid as u64,
+                        block_count: block_count as u64,
+                        instruction_count: instruction_count as u64,
+                        fz_block_count: f.blocks.len() as u64,
+                        reusable_cons_candidate_count: stats.reusable_cons_candidate_count,
+                        reusable_cons_consumed_count: stats.reusable_cons_consumed_count,
+                    },
+                    crate::metadata! {
+                        body_kind: "fz_spec",
+                        module_path: module.module_path(),
+                        fn_name: display_name.as_str(),
+                    },
+                )
+            });
         }
         let fn_span = module.source.fn_span_of(f.id);
         // The native-compile step: verify the lowered Cranelift IR, then hand it
         // to the backend to produce machine code. This is the dominant per-spec
         // cost and was previously the unattributed gap between `lower_function`
         // spans; its stop payload carries the emitted code size.
-        let define_span = tel.span(
-            &["fz", "codegen", "define_function"],
+        let define_span = tel.span_lazy(&["fz", "codegen", "define_function"], || {
             crate::metadata! {
                 body_kind: "fz_spec",
                 module_path: module.module_path(),
                 fn_name: display_name.as_str(),
                 fn_id: body_slot.fn_id.0 as u64,
                 spec_id: sid as u64,
-            },
-        );
+            }
+        });
         if crate::ir_codegen::ir_text_record_enabled() {
             let entry = crate::compiler2::dump::ClifDumpEntry {
                 fn_id: body_slot.fn_id.0,
                 fn_name: display_name.clone(),
                 text: ctx.func.display().to_string(),
             };
-            tel.execute(
-                &["fz", "compiler2", "dump", "clif"],
-                &crate::measurements! {
-                    fn_id: body_slot.fn_id.0 as u64,
-                    spec_id: sid as u64,
-                },
-                &crate::metadata! {
-                    entry: crate::telemetry::opaque(&entry),
-                },
-            );
+            tel.execute_lazy(&["fz", "compiler2", "dump", "clif"], || {
+                (
+                    crate::measurements! {
+                        fn_id: body_slot.fn_id.0 as u64,
+                        spec_id: sid as u64,
+                    },
+                    crate::metadata! {
+                        entry: crate::telemetry::opaque(&entry),
+                    },
+                )
+            });
         }
         cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(|e| {
             CodegenError::new(format!(
@@ -1303,25 +1305,27 @@ pub(crate) fn compile_with_backend_surface<
             .define_function(func_id, &mut ctx)
             .map_err(|e| CodegenError::new(format!("define {}: {}", display_name, e)).with_span(fn_span))?;
         let code_bytes = ctx.compiled_code().map(|cc| cc.code_buffer().len() as u64).unwrap_or(0);
-        define_span.stop_with(
-            &crate::measurements! {
-                fn_id: body_slot.fn_id.0 as u64,
-                spec_id: sid as u64,
-                instruction_count: cranelift_instruction_count as u64,
-                code_bytes: code_bytes,
-            },
-            &crate::metadata! {
-                body_kind: "fz_spec",
-                module_path: module.module_path(),
-                fn_name: display_name.as_str(),
-            },
-        );
+        define_span.stop_with_lazy(|| {
+            (
+                crate::measurements! {
+                    fn_id: body_slot.fn_id.0 as u64,
+                    spec_id: sid as u64,
+                    instruction_count: cranelift_instruction_count as u64,
+                    code_bytes: code_bytes,
+                },
+                crate::metadata! {
+                    body_kind: "fz_spec",
+                    module_path: module.module_path(),
+                    fn_name: display_name.as_str(),
+                },
+            )
+        });
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    let emit_runtime_span = tel.span(
+    let emit_runtime_span = tel.span_lazy(
         &["fz", "codegen", "emit_runtime"],
-        crate::metadata! { module_path: module.module_path() },
+        || crate::metadata! { module_path: module.module_path() },
     );
     emit_receive_dispatch_bodies(
         backend.module_mut(),
@@ -1387,9 +1391,9 @@ pub(crate) fn compile_with_backend_surface<
         resume_id,
     };
 
-    let finalize_span = tel.span(
+    let finalize_span = tel.span_lazy(
         &["fz", "codegen", "finalize"],
-        crate::metadata! { module_path: module.module_path() },
+        || crate::metadata! { module_path: module.module_path() },
     );
     backend.emit_metadata_carriers(&mut fbctx, &metadata)?;
     let output = backend.finalize(metadata)?;

@@ -176,25 +176,26 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::Telemetry, E: Product
                 job
             }
         };
-        let job_span = tel.span(
-            &["fz", "compiler2", "job"],
+        let job_span = tel.span_lazy(&["fz", "compiler2", "job"], || {
             metadata! {
                 job: opaque_debug(&job),
-            },
-        );
+            }
+        });
         match super::jobs::run(&mut super::drive::ExecutionContext::new(world, tel), &job) {
             Ok(effects) => {
                 jobs_ran += 1;
-                job_span.stop_with(
-                    &measurements! {},
-                    &metadata! {
-                        effects: opaque_debug(&effects),
-                    },
-                );
+                job_span.stop_with_lazy(|| {
+                    (
+                        measurements! {},
+                        metadata! {
+                            effects: opaque_debug(&effects),
+                        },
+                    )
+                });
                 super::drive::ExecutionContext::new(world, tel).complete_job(job, effects);
             }
             Err(err) => {
-                job_span.stop_with(&measurements! {}, &metadata! {});
+                job_span.stop_with_lazy(|| (measurements! {}, metadata! {}));
                 return Err(E::job_failed(world, tel, root, &fact, &job, err));
             }
         }

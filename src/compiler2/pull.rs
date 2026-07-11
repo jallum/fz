@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::telemetry::{Telemetry, opaque_debug};
+use crate::telemetry::{Telemetry, TelemetryExt as _, opaque_debug};
 use crate::{measurements, metadata};
 
 use super::artifact::{
@@ -1693,25 +1693,26 @@ impl PullSession {
     }
 
     fn emit_finished(&self, tel: &impl Telemetry) {
-        tel.execute(
-            &["fz", "compiler2", "pull", "session", "finished"],
-            &measurements! {
-                root_id: self.root.as_u32(),
-                executables: self.demanded_executables.len(),
-                transport_positions: self.demanded_transport_positions.len(),
-                callables: self.demanded_callables.len(),
-                boundaries: self.demanded_boundaries.len(),
-                producer_pokes: self.producer_pokes,
-                work_starts_ignition: self.work_starts.ignition,
-                work_starts_changed_revision_wake: self.work_starts.changed_revision_wake,
-                work_starts_standing_root_frontier: self.work_starts.standing_root_frontier,
-                work_starts_activation_frontier: self.work_starts.activation_frontier,
-                work_starts_blocked_waiter_expansion: self.work_starts.blocked_waiter_expansion,
-                unsanctioned_work_starts: self.work_starts.unclassified,
-                root_scans: self.work_starts.root_scans,
-            },
-            &metadata! {},
-        );
+        tel.execute_lazy(&["fz", "compiler2", "pull", "session", "finished"], || {
+            (
+                measurements! {
+                    root_id: self.root.as_u32(),
+                    executables: self.demanded_executables.len(),
+                    transport_positions: self.demanded_transport_positions.len(),
+                    callables: self.demanded_callables.len(),
+                    boundaries: self.demanded_boundaries.len(),
+                    producer_pokes: self.producer_pokes,
+                    work_starts_ignition: self.work_starts.ignition,
+                    work_starts_changed_revision_wake: self.work_starts.changed_revision_wake,
+                    work_starts_standing_root_frontier: self.work_starts.standing_root_frontier,
+                    work_starts_activation_frontier: self.work_starts.activation_frontier,
+                    work_starts_blocked_waiter_expansion: self.work_starts.blocked_waiter_expansion,
+                    unsanctioned_work_starts: self.work_starts.unclassified,
+                    root_scans: self.work_starts.root_scans,
+                },
+                metadata! {},
+            )
+        });
     }
 }
 
@@ -1917,44 +1918,50 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     fn emit_produced(&self, key: &ProductKey, identical: bool) {
-        self.tel.execute(
-            &["fz", "compiler2", "pull", "product", "produced"],
-            &measurements! {
-                wait_count: 0_usize,
-                identical: identical,
-            },
-            &metadata! {
-                kind: key.kind(),
-                product: opaque_debug(key),
-            },
-        );
+        self.tel
+            .execute_lazy(&["fz", "compiler2", "pull", "product", "produced"], || {
+                (
+                    measurements! {
+                        wait_count: 0_usize,
+                        identical: identical,
+                    },
+                    metadata! {
+                        kind: key.kind(),
+                        product: opaque_debug(key),
+                    },
+                )
+            });
     }
 
     fn emit(&self, event: &'static str, key: &ProductKey, wait_count: usize) {
-        self.tel.execute(
-            &["fz", "compiler2", "pull", "product", event],
-            &measurements! {
-                wait_count: wait_count,
-            },
-            &metadata! {
-                kind: key.kind(),
-                product: opaque_debug(key),
-            },
-        );
+        self.tel
+            .execute_lazy(&["fz", "compiler2", "pull", "product", event], || {
+                (
+                    measurements! {
+                        wait_count: wait_count,
+                    },
+                    metadata! {
+                        kind: key.kind(),
+                        product: opaque_debug(key),
+                    },
+                )
+            });
     }
 
     fn emit_waited(&self, key: &ProductKey, waits: &Vec<PullWait>) {
-        self.tel.execute(
-            &["fz", "compiler2", "pull", "product", "waited"],
-            &measurements! {
-                wait_count: waits.len(),
-            },
-            &metadata! {
-                kind: key.kind(),
-                product: opaque_debug(key),
-                waits: opaque_debug(waits),
-            },
-        );
+        self.tel
+            .execute_lazy(&["fz", "compiler2", "pull", "product", "waited"], || {
+                (
+                    measurements! {
+                        wait_count: waits.len(),
+                    },
+                    metadata! {
+                        kind: key.kind(),
+                        product: opaque_debug(key),
+                        waits: opaque_debug(waits),
+                    },
+                )
+            });
     }
 }
 

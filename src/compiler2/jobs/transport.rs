@@ -24,7 +24,7 @@ use super::super::transport::{
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
-use crate::telemetry::opaque_debug;
+use crate::telemetry::{TelemetryExt as _, opaque_debug};
 use crate::{measurements, metadata};
 
 #[derive(Debug, Clone)]
@@ -690,15 +690,16 @@ pub(crate) fn produce_transport_shape_product(
 }
 
 fn emit_transport_component_produced(tel: &impl crate::telemetry::Telemetry, component: &TransportComponentInventory) {
-    tel.execute(
-        &["fz", "compiler2", "pull", "transport_component", "produced"],
-        &measurements! {
-            component_size: component.positions.len() as u64,
-        },
-        &metadata! {
-            representative: opaque_debug(&component.representative),
-        },
-    );
+    tel.execute_lazy(&["fz", "compiler2", "pull", "transport_component", "produced"], || {
+        (
+            measurements! {
+                component_size: component.positions.len() as u64,
+            },
+            metadata! {
+                representative: opaque_debug(&component.representative),
+            },
+        )
+    });
 }
 
 /// Fires exactly when an executable's transport component is freshly
@@ -714,26 +715,31 @@ fn emit_transport_component_materialized(
     executable: &ExecutableKey,
     component: &TransportComponentInventory,
 ) {
-    tel.execute(
-        &["fz", "compiler2", "executable_transport", "projected"],
-        &measurements! {
-            component_size: component.positions.len() as u64,
-        },
-        &metadata! {
-            executable: opaque_debug(executable),
-        },
-    );
+    tel.execute_lazy(&["fz", "compiler2", "executable_transport", "projected"], || {
+        (
+            measurements! {
+                component_size: component.positions.len() as u64,
+            },
+            metadata! {
+                executable: opaque_debug(executable),
+            },
+        )
+    });
 }
 
 fn emit_transport_closure_solved(tel: &impl crate::telemetry::Telemetry, closure: &SolvedTransportClosure) {
-    tel.execute(
+    tel.execute_lazy(
         &["fz", "compiler2", "pull", "transport_component", "closure_solved"],
-        &measurements! {
-            executables: closure.executables.len(),
-            components: closure.components.len(),
-            positions: closure.component_of.len(),
+        || {
+            (
+                measurements! {
+                    executables: closure.executables.len(),
+                    components: closure.components.len(),
+                    positions: closure.component_of.len(),
+                },
+                metadata! {},
+            )
         },
-        &metadata! {},
     );
 }
 

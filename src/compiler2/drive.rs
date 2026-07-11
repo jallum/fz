@@ -30,31 +30,33 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
         let completion = self.world.complete_job(job, effects);
         for activation in &completion.activation_input_changed {
             if let Some(inputs) = self.world.activation_inputs_ref(activation) {
-                self.telemetry.execute(
-                    &["fz", "compiler2", "activation_inputs", "defined"],
-                    &measurements! {
-                        root_id: activation.root.as_u32(),
-                        function_id: activation.function.as_u32(),
-                        input_arity: inputs.len(),
-                        rebased: completion.rebased,
-                    },
-                    &metadata! {
-                        activation: opaque_debug(activation),
-                        inputs: opaque_debug(inputs),
-                        world: opaque(&*self.world),
-                        publisher: opaque_debug(&completion.job),
-                    },
-                );
+                self.telemetry
+                    .execute_lazy(&["fz", "compiler2", "activation_inputs", "defined"], || {
+                        (
+                            measurements! {
+                                root_id: activation.root.as_u32(),
+                                function_id: activation.function.as_u32(),
+                                input_arity: inputs.len(),
+                                rebased: completion.rebased,
+                            },
+                            metadata! {
+                                activation: opaque_debug(activation),
+                                inputs: opaque_debug(inputs),
+                                world: opaque(&*self.world),
+                                publisher: opaque_debug(&completion.job),
+                            },
+                        )
+                    });
             }
         }
-        self.telemetry.event(
-            &["fz", "compiler2", "work_graph", "applied"],
-            metadata! {
-                job: opaque_debug(&completion.job),
-                step: opaque_debug(&completion.step),
-                world: opaque(&*self.world),
-            },
-        );
+        self.telemetry
+            .event_lazy(&["fz", "compiler2", "work_graph", "applied"], || {
+                metadata! {
+                    job: opaque_debug(&completion.job),
+                    step: opaque_debug(&completion.step),
+                    world: opaque(&*self.world),
+                }
+            });
         completion.step
     }
 }
@@ -410,12 +412,11 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
         let ExecutionContext { world, telemetry } = self;
         let tel = *telemetry;
         world.clear_reported_warnings();
-        let mut span = tel.span(
-            &["fz", "compiler2", "drive"],
+        let mut span = tel.span_lazy(&["fz", "compiler2", "drive"], || {
             metadata! {
                 pending_jobs: world.work_graph.pending_jobs(),
-            },
-        );
+            }
+        });
         let mut jobs_ran = 0_u64;
         // Facts whose producers were already demanded at a stall with no fact
         // change since: re-demanding them would re-run byte-identical jobs.
@@ -428,55 +429,59 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
                 if deadline.is_some_and(|limit| Instant::now() >= limit) {
                     let pending_jobs = world.work_graph.pending_jobs();
                     let timeout_ms = timeout.map_or(0, |limit| limit.as_millis().min(u64::MAX as u128) as u64);
-                    tel.event(
-                        &["fz", "compiler2", "drive", "timed_out"],
+                    tel.event_lazy(&["fz", "compiler2", "drive", "timed_out"], || {
                         metadata! {
                             pending_jobs: pending_jobs as u64,
                             jobs_ran: jobs_ran,
                             timeout_ms: timeout_ms,
-                        },
-                    );
+                        }
+                    });
                     world.clear_unresolved_diagnostics();
                     ExecutionContext::new(world, tel).flush_reported_warnings();
-                    span.stop_with(
-                        &measurements! { jobs_ran: jobs_ran },
-                        &metadata! {
-                            pending_jobs: pending_jobs as u64,
-                            timeout_ms: timeout_ms,
-                        },
-                    );
+                    span.stop_with_lazy(|| {
+                        (
+                            measurements! { jobs_ran: jobs_ran },
+                            metadata! {
+                                pending_jobs: pending_jobs as u64,
+                                timeout_ms: timeout_ms,
+                            },
+                        )
+                    });
                     return DriveOutcome::TimedOut { jobs_ran, pending_jobs };
                 }
                 let Some(job) = world.work_graph.pop() else {
                     break;
                 };
-                let job_span = tel.span(
-                    &["fz", "compiler2", "job"],
+                let job_span = tel.span_lazy(&["fz", "compiler2", "job"], || {
                     metadata! {
                         job: opaque_debug(&job),
-                    },
-                );
+                    }
+                });
                 let result = super::jobs::run(&mut ExecutionContext::new(world, tel), &job);
                 match result {
                     Ok(effects) => {
                         jobs_ran += 1;
-                        job_span.stop_with(
-                            &measurements! {},
-                            &metadata! {
-                                effects: opaque_debug(&effects),
-                            },
-                        );
+                        job_span.stop_with_lazy(|| {
+                            (
+                                measurements! {},
+                                metadata! {
+                                    effects: opaque_debug(&effects),
+                                },
+                            )
+                        });
                         let step = ExecutionContext::new(world, tel).complete_job(job, effects);
                         changed_since_stall |= !step.changed.is_empty();
                     }
                     Err(_) => {
-                        job_span.stop_with(&measurements! {}, &metadata! {});
+                        job_span.stop_with_lazy(|| (measurements! {}, metadata! {}));
                         world.clear_unresolved_diagnostics();
                         ExecutionContext::new(world, tel).flush_reported_warnings();
-                        span.stop_with(
-                            &measurements! { jobs_ran: jobs_ran },
-                            &metadata! { job: opaque_debug(&job) },
-                        );
+                        span.stop_with_lazy(|| {
+                            (
+                                measurements! { jobs_ran: jobs_ran },
+                                metadata! { job: opaque_debug(&job) },
+                            )
+                        });
                         return DriveOutcome::Fatal { job };
                     }
                 }
@@ -515,29 +520,30 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
                 // Nothing left to demand: either resolved, or a genuine stall.
                 break 'drive;
             }
-            tel.event(
-                &["fz", "compiler2", "drive", "demand_on_stall"],
+            tel.event_lazy(&["fz", "compiler2", "drive", "demand_on_stall"], || {
                 metadata! {
                     producer_pokes: producer_pokes,
                     demanded_facts: opaque_debug(&demanded_facts),
-                },
-            );
+                }
+            });
         }
         if !world.work_graph.has_unresolved() {
             world.clear_unresolved_diagnostics();
             ExecutionContext::new(world, tel).flush_reported_warnings();
-            span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! {});
+            span.close_with_lazy(|| (measurements! { jobs_ran: jobs_ran }, metadata! {}));
             DriveOutcome::Resolved
         } else {
             let unresolved = world.work_graph.unresolved();
             ExecutionContext::new(world, tel).emit_unresolved_diagnostics(&unresolved);
             ExecutionContext::new(world, tel).flush_reported_warnings();
-            span.stop_with(
-                &measurements! { jobs_ran: jobs_ran },
-                &metadata! {
-                    waits: opaque_debug(&unresolved),
-                },
-            );
+            span.stop_with_lazy(|| {
+                (
+                    measurements! { jobs_ran: jobs_ran },
+                    metadata! {
+                        waits: opaque_debug(&unresolved),
+                    },
+                )
+            });
             DriveOutcome::Unresolved { waits: unresolved }
         }
     }

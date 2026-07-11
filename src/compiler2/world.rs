@@ -16,7 +16,7 @@ use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch}
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::runtime_library;
 use crate::source::Span;
-use crate::telemetry::{Telemetry, opaque, opaque_debug};
+use crate::telemetry::{Telemetry, TelemetryExt as _, opaque, opaque_debug};
 use crate::{FunctionSurface, measurements, metadata};
 
 use super::CodeId;
@@ -2781,11 +2781,10 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
     pub fn submit_code(&mut self, name: Option<String>, text: String) -> CodeId {
         let bytes = text.len();
         let code_id = self.world.submit_code(name, text);
-        self.telemetry.execute(
-            &["fz", "compiler2", "code", "submitted"],
-            &measurements! { code_id: code_id.as_u32(), bytes: bytes },
-            &metadata! {},
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "code", "submitted"], || {
+                (measurements! { code_id: code_id.as_u32(), bytes: bytes }, metadata! {})
+            });
         code_id
     }
 
@@ -2801,20 +2800,22 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         let module = self.world.function_ref(root.function).module;
         let function = root.function;
         let function_ref = self.world.function_ref(function);
-        self.telemetry.execute(
-            &["fz", "compiler2", "root", "submitted"],
-            &measurements! {
-                root_id: root_id.as_u32(),
-                module_id: module.as_u32(),
-                function_id: function.as_u32(),
-                arity: arity,
-                pending_codes: self.world.code_len(),
-            },
-            &metadata! {
-                root: opaque_debug(root),
-                function_ref: opaque_debug(function_ref),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "root", "submitted"], || {
+                (
+                    measurements! {
+                        root_id: root_id.as_u32(),
+                        module_id: module.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: arity,
+                        pending_codes: self.world.code_len(),
+                    },
+                    metadata! {
+                        root: opaque_debug(root),
+                        function_ref: opaque_debug(function_ref),
+                    },
+                )
+            });
         root_id
     }
 
@@ -2851,20 +2852,22 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             .world
             .activation_analysis(key)
             .expect("activation analysis should be readable right after it is defined");
-        self.telemetry.execute(
-            &["fz", "compiler2", "activation_analysis", "defined"],
-            &measurements! {
-                root_id: key.root.as_u32(),
-                function_id: key.function.as_u32(),
-                reachable_clauses: analysis.reachable_clauses.len(),
-                callsites: analysis.callsites.len(),
-                values: analysis.value_types.len(),
-            },
-            &metadata! {
-                activation: opaque_debug(key),
-                analysis: opaque_debug(analysis),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "activation_analysis", "defined"], || {
+                (
+                    measurements! {
+                        root_id: key.root.as_u32(),
+                        function_id: key.function.as_u32(),
+                        reachable_clauses: analysis.reachable_clauses.len(),
+                        callsites: analysis.callsites.len(),
+                        values: analysis.value_types.len(),
+                    },
+                    metadata! {
+                        activation: opaque_debug(key),
+                        analysis: opaque_debug(analysis),
+                    },
+                )
+            });
         changed
     }
 
@@ -2879,32 +2882,36 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         let outcome = decision.outcome;
         let rebased = decision.rebased;
         let evidence = self.world.activation_return_evidence(key);
-        self.telemetry.execute(
-            &["fz", "compiler2", "return_type", "defined"],
-            &measurements! {
-                root_id: key.root.as_u32(),
-                function_id: key.function.as_u32(),
-                ascents: outcome.ascents,
-                rebased: rebased,
-                changed: outcome.changed as u64,
-            },
-            &metadata! {
-                activation: opaque_debug(key),
-                return_ty: opaque_debug(&evidence),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "return_type", "defined"], || {
+                (
+                    measurements! {
+                        root_id: key.root.as_u32(),
+                        function_id: key.function.as_u32(),
+                        ascents: outcome.ascents,
+                        rebased: rebased,
+                        changed: outcome.changed as u64,
+                    },
+                    metadata! {
+                        activation: opaque_debug(key),
+                        return_ty: opaque_debug(&evidence),
+                    },
+                )
+            });
         if outcome.widened {
-            self.telemetry.execute(
-                &["fz", "compiler2", "return_type", "widened"],
-                &measurements! {
-                    root_id: key.root.as_u32(),
-                    function_id: key.function.as_u32(),
-                    ascents: outcome.ascents,
-                },
-                &metadata! {
-                    activation: opaque_debug(key),
-                },
-            );
+            self.telemetry
+                .execute_lazy(&["fz", "compiler2", "return_type", "widened"], || {
+                    (
+                        measurements! {
+                            root_id: key.root.as_u32(),
+                            function_id: key.function.as_u32(),
+                            ascents: outcome.ascents,
+                        },
+                        metadata! {
+                            activation: opaque_debug(key),
+                        },
+                    )
+                });
         }
         outcome.changed
     }
@@ -2915,41 +2922,45 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             .world
             .callsite_summary(&key)
             .expect("callsite summaries should be readable right after they are defined");
-        self.telemetry.execute(
-            &["fz", "compiler2", "callsite", "defined"],
-            &measurements! {
-                root_id: key.activation.root.as_u32(),
-                function_id: key.activation.function.as_u32(),
-                callsite_id: key.callsite.as_u32(),
-                input_arity: summary.arity(),
-                target_count: summary.targets.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                callsite: opaque_debug(&key),
-                summary: opaque_debug(summary),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "callsite", "defined"], || {
+                (
+                    measurements! {
+                        root_id: key.activation.root.as_u32(),
+                        function_id: key.activation.function.as_u32(),
+                        callsite_id: key.callsite.as_u32(),
+                        input_arity: summary.arity(),
+                        target_count: summary.targets.len(),
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        callsite: opaque_debug(&key),
+                        summary: opaque_debug(summary),
+                    },
+                )
+            });
         changed
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
         let changed = self.world.define_backend_program(root, program);
         let program = self.world.backend_program_ref(root);
-        self.telemetry.execute(
-            &["fz", "compiler2", "backend_program", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                atom_count: program.atom_names.len(),
-                executable_count: program.executables.len(),
-                callable_entry_count: program.callable_entries.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-                root_id: opaque_debug(&root),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "backend_program", "defined"], || {
+                (
+                    measurements! {
+                        root_id: root.as_u32(),
+                        atom_count: program.atom_names.len(),
+                        executable_count: program.executables.len(),
+                        callable_entry_count: program.callable_entries.len(),
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        program: opaque_debug(program),
+                        root_id: opaque_debug(&root),
+                    },
+                )
+            });
         changed
     }
 
@@ -2968,19 +2979,21 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             .macro_executable(function)
             .expect("macro executable should be present after definition")
             .program;
-        self.telemetry.execute(
-            &["fz", "compiler2", "macro_executable", "defined"],
-            &measurements! {
-                function_id: function.as_u32() as u64,
-                root_id: root.as_u32() as u64,
-                backend_revision: backend_revision,
-                executable_count: program.executables.len() as u64,
-                changed: changed as u64,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "macro_executable", "defined"], || {
+                (
+                    measurements! {
+                        function_id: function.as_u32() as u64,
+                        root_id: root.as_u32() as u64,
+                        backend_revision: backend_revision,
+                        executable_count: program.executables.len() as u64,
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        program: opaque_debug(program),
+                    },
+                )
+            });
         changed
     }
 
@@ -3005,20 +3018,22 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
     pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
         let changed = self.world.define_native_program(root, program);
         let program = self.world.native_program_ref(root);
-        self.telemetry.execute(
-            &["fz", "compiler2", "native_program", "defined"],
-            &measurements! {
-                root_id: root.as_u32(),
-                body_count: program.bodies.len(),
-                callable_boundary_count: program.callable_boundaries.len(),
-                fn_count: program.module.fns.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                program: opaque_debug(program),
-                root_id: opaque_debug(&root),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "native_program", "defined"], || {
+                (
+                    measurements! {
+                        root_id: root.as_u32(),
+                        body_count: program.bodies.len(),
+                        callable_boundary_count: program.callable_boundaries.len(),
+                        fn_count: program.module.fns.len(),
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        program: opaque_debug(program),
+                        root_id: opaque_debug(&root),
+                    },
+                )
+            });
         changed
     }
 
@@ -3026,17 +3041,19 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         let code = self.world.module_definition_code(id);
         let changed = self.world.define_module(id, base, interface);
         let module = self.world.module_state(id);
-        self.telemetry.execute(
-            &["fz", "compiler2", "module", "defined"],
-            &measurements! {
-                code_id: code.as_u32(),
-                module_id: id.as_u32(),
-            },
-            &metadata! {
-                module: opaque_debug(module),
-                module_id: opaque_debug(&id),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "module", "defined"], || {
+                (
+                    measurements! {
+                        code_id: code.as_u32(),
+                        module_id: id.as_u32(),
+                    },
+                    metadata! {
+                        module: opaque_debug(module),
+                        module_id: opaque_debug(&id),
+                    },
+                )
+            });
         changed
     }
 
@@ -3057,18 +3074,19 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                 .world
                 .type_decl(&name)
                 .expect("type decls should be readable right after they are noted");
-            self.telemetry.execute(
-                &["fz", "compiler2", "type", "noted"],
-                &measurements! {
-                    module_id: name.module.as_u32(),
-                    arity: name.arity,
-                    namespace: decl.namespace.as_u32(),
-                },
-                &metadata! {
-                    name: &name.name,
-                    decl: opaque_debug(decl),
-                },
-            );
+            self.telemetry.execute_lazy(&["fz", "compiler2", "type", "noted"], || {
+                (
+                    measurements! {
+                        module_id: name.module.as_u32(),
+                        arity: name.arity,
+                        namespace: decl.namespace.as_u32(),
+                    },
+                    metadata! {
+                        name: &name.name,
+                        decl: opaque_debug(decl),
+                    },
+                )
+            });
         }
     }
 
@@ -3095,20 +3113,22 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             .world
             .type_def(&name)
             .expect("type def should be present after definition");
-        self.telemetry.execute(
-            &["fz", "compiler2", "type", "defined"],
-            &measurements! {
-                module_id: name.module.as_u32(),
-                arity: name.arity,
-                params: def.params.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                name: &name.name,
-                def: opaque_debug(def),
-                types: opaque(self.world.types()),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "type", "defined"], || {
+                (
+                    measurements! {
+                        module_id: name.module.as_u32(),
+                        arity: name.arity,
+                        params: def.params.len(),
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        name: &name.name,
+                        def: opaque_debug(def),
+                        types: opaque(self.world.types()),
+                    },
+                )
+            });
         changed
     }
 
@@ -3118,17 +3138,19 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             .world
             .struct_def(module)
             .expect("struct def should be present after definition");
-        self.telemetry.execute(
-            &["fz", "compiler2", "struct_def", "defined"],
-            &measurements! {
-                module_id: module.as_u32(),
-                field_count: def.fields.len(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                def: opaque_debug(def),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "struct_def", "defined"], || {
+                (
+                    measurements! {
+                        module_id: module.as_u32(),
+                        field_count: def.fields.len(),
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        def: opaque_debug(def),
+                    },
+                )
+            });
         changed
     }
 
@@ -3161,32 +3183,36 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             .world
             .protocol_dispatch(protocol)
             .expect("protocol dispatch should be present after refresh");
-        self.telemetry.execute(
-            &["fz", "compiler2", "protocol_dispatch", "defined"],
-            &measurements! {
-                protocol_id: protocol.as_u32(),
-                arms: dispatch.arms.len(),
-                changed: changed as u64,
-            },
-            &metadata! { dispatch: opaque_debug(dispatch) },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "protocol_dispatch", "defined"], || {
+                (
+                    measurements! {
+                        protocol_id: protocol.as_u32(),
+                        arms: dispatch.arms.len(),
+                        changed: changed as u64,
+                    },
+                    metadata! { dispatch: opaque_debug(dispatch) },
+                )
+            });
         changed
     }
 
     fn emit_type_referenced(&self, consumer_kind: &'static str, consumer_name: &str, referenced: &TypeName) {
-        self.telemetry.execute(
-            &["fz", "compiler2", "type", "referenced"],
-            &measurements! {
-                ref_module_id: referenced.module.as_u32(),
-                ref_arity: referenced.arity,
-            },
-            &metadata! {
-                ref_name: &referenced.name,
-                consumer_kind: consumer_kind,
-                consumer: consumer_name,
-                referenced: opaque_debug(referenced),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "type", "referenced"], || {
+                (
+                    measurements! {
+                        ref_module_id: referenced.module.as_u32(),
+                        ref_arity: referenced.arity,
+                    },
+                    metadata! {
+                        ref_name: &referenced.name,
+                        consumer_kind: consumer_kind,
+                        consumer: consumer_name,
+                        referenced: opaque_debug(referenced),
+                    },
+                )
+            });
     }
 
     pub(crate) fn define_function(
@@ -3205,26 +3231,28 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         if changed {
             let function = self.world.function_state(id);
             let function_ref = self.world.function_ref(id);
-            self.telemetry.execute(
-                &["fz", "compiler2", "function", "defined"],
-                &measurements! {
-                    code_id: code.as_u32(),
-                    module_id: module.as_u32(),
-                    owner_module_id: owner_module.as_u32(),
-                    function_id: id.as_u32(),
-                    arity: arity,
-                    clauses: clauses,
-                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
-                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
-                },
-                &metadata! {
-                    function: opaque_debug(function),
-                    function_ref: opaque_debug(function_ref),
-                    function_id: opaque_debug(&id),
-                    module_id: opaque_debug(&module),
-                    owner_module_id: opaque_debug(&owner_module),
-                },
-            );
+            self.telemetry
+                .execute_lazy(&["fz", "compiler2", "function", "defined"], || {
+                    (
+                        measurements! {
+                            code_id: code.as_u32(),
+                            module_id: module.as_u32(),
+                            owner_module_id: owner_module.as_u32(),
+                            function_id: id.as_u32(),
+                            arity: arity,
+                            clauses: clauses,
+                            source_heap_id: function.state_source_heap_id().unwrap_or_default(),
+                            source_root_ref: function.state_source_root_word().unwrap_or_default(),
+                        },
+                        metadata! {
+                            function: opaque_debug(function),
+                            function_ref: opaque_debug(function_ref),
+                            function_id: opaque_debug(&id),
+                            module_id: opaque_debug(&module),
+                            owner_module_id: opaque_debug(&owner_module),
+                        },
+                    )
+                });
         }
         changed
     }
@@ -3241,25 +3269,27 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         // consumer pulls it (fz-f98.14.5). It mirrors the `function.source.noted`
         // shape so name-keyed observers see every scope-defined function, and it
         // is the surface counterpart to `type.noted`.
-        self.telemetry.execute(
-            &["fz", "compiler2", "function", "source", "stashed"],
-            &measurements! {
-                code_id: source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                owner_module_id: source.owner_module.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                clauses: function_source_clause_count(source),
-                source_heap_id: source.source.key().heap_id,
-                source_root_ref: source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                source: opaque_debug(source),
-                function_id: opaque_debug(&function),
-                world: opaque(&*self.world),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "function", "source", "stashed"], || {
+                (
+                    measurements! {
+                        code_id: source.code.as_u32(),
+                        module_id: function_ref.module.as_u32(),
+                        owner_module_id: source.owner_module.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: function_ref.arity,
+                        clauses: function_source_clause_count(source),
+                        source_heap_id: source.source.key().heap_id,
+                        source_root_ref: source.source.root().raw_word(),
+                    },
+                    metadata! {
+                        function_ref: opaque_debug(function_ref),
+                        source: opaque_debug(source),
+                        function_id: opaque_debug(&function),
+                        world: opaque(&*self.world),
+                    },
+                )
+            });
         changed
     }
 
@@ -3281,52 +3311,56 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         let function_ref = self.world.function_ref(function);
         let source_owner_module = source.owner_module;
         let source_module_id = function_ref.module;
-        self.telemetry.execute(
-            &["fz", "compiler2", "function", "source", "noted"],
-            &measurements! {
-                code_id: source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                owner_module_id: source.owner_module.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                clauses: function_source_clause_count(source),
-                source_heap_id: source.source.key().heap_id,
-                source_root_ref: source.source.root().raw_word(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                source: opaque_debug(source),
-                function_id: opaque_debug(&function),
-                module_id: opaque_debug(&source_module_id),
-                owner_module_id: opaque_debug(&source_owner_module),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "function", "source", "noted"], || {
+                (
+                    measurements! {
+                        code_id: source.code.as_u32(),
+                        module_id: function_ref.module.as_u32(),
+                        owner_module_id: source.owner_module.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: function_ref.arity,
+                        clauses: function_source_clause_count(source),
+                        source_heap_id: source.source.key().heap_id,
+                        source_root_ref: source.source.root().raw_word(),
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        function_ref: opaque_debug(function_ref),
+                        source: opaque_debug(source),
+                        function_id: opaque_debug(&function),
+                        module_id: opaque_debug(&source_module_id),
+                        owner_module_id: opaque_debug(&source_owner_module),
+                    },
+                )
+            });
     }
 
     pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
         let changed = self.world.note_expanded_function_source(function, source);
         let source = self.world.expanded_function_source_ref(function);
         let function_ref = self.world.function_ref(function);
-        self.telemetry.execute(
-            &["fz", "compiler2", "function", "source", "expanded"],
-            &measurements! {
-                code_id: source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                owner_module_id: source.owner_module.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                clauses: function_source_clause_count(source),
-                source_heap_id: source.source.key().heap_id,
-                source_root_ref: source.source.root().raw_word(),
-                changed: changed as u64,
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                source: opaque_debug(source),
-                function_id: opaque_debug(&function),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "function", "source", "expanded"], || {
+                (
+                    measurements! {
+                        code_id: source.code.as_u32(),
+                        module_id: function_ref.module.as_u32(),
+                        owner_module_id: source.owner_module.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: function_ref.arity,
+                        clauses: function_source_clause_count(source),
+                        source_heap_id: source.source.key().heap_id,
+                        source_root_ref: source.source.root().raw_word(),
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        function_ref: opaque_debug(function_ref),
+                        source: opaque_debug(source),
+                        function_id: opaque_debug(&function),
+                    },
+                )
+            });
         changed
     }
 
@@ -3337,18 +3371,20 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             .function_contract(function)
             .expect("function contract should be present after definition");
         let function_ref = self.world.function_ref(function);
-        self.telemetry.execute(
-            &["fz", "compiler2", "function_contract", "defined"],
-            &measurements! {
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-                changed: changed as u64,
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                contract: opaque_debug(contract),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "function_contract", "defined"], || {
+                (
+                    measurements! {
+                        function_id: function.as_u32(),
+                        arity: function_ref.arity,
+                        changed: changed as u64,
+                    },
+                    metadata! {
+                        function_ref: opaque_debug(function_ref),
+                        contract: opaque_debug(contract),
+                    },
+                )
+            });
         changed
     }
 
@@ -3356,18 +3392,20 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         let callback = ProtocolCallback { protocol };
         self.world.define_protocol_callback(function, protocol);
         let function_ref = self.world.function_ref(function);
-        self.telemetry.execute(
-            &["fz", "compiler2", "protocol_callback", "defined"],
-            &measurements! {
-                protocol_id: protocol.as_u32(),
-                function_id: function.as_u32(),
-                arity: function_ref.arity,
-            },
-            &metadata! {
-                callback: opaque_debug(&callback),
-                function_ref: opaque_debug(function_ref),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "protocol_callback", "defined"], || {
+                (
+                    measurements! {
+                        protocol_id: protocol.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: function_ref.arity,
+                    },
+                    metadata! {
+                        callback: opaque_debug(&callback),
+                        function_ref: opaque_debug(function_ref),
+                    },
+                )
+            });
     }
 
     pub(crate) fn define_protocol_impl(
@@ -3379,18 +3417,20 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         let key = ProtocolImplKey { protocol, target };
         self.world.define_protocol_impl(protocol, target, callbacks);
         let protocol_impl = self.world.protocol_impl(&key);
-        self.telemetry.execute(
-            &["fz", "compiler2", "protocol_impl", "defined"],
-            &measurements! {
-                protocol_id: protocol.as_u32(),
-                target_id: target.as_u32(),
-                callbacks: protocol_impl.callbacks.len(),
-            },
-            &metadata! {
-                key: opaque_debug(&key),
-                protocol_impl: opaque_debug(protocol_impl),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "protocol_impl", "defined"], || {
+                (
+                    measurements! {
+                        protocol_id: protocol.as_u32(),
+                        target_id: target.as_u32(),
+                        callbacks: protocol_impl.callbacks.len(),
+                    },
+                    metadata! {
+                        key: opaque_debug(&key),
+                        protocol_impl: opaque_debug(protocol_impl),
+                    },
+                )
+            });
     }
 
     pub(crate) fn define_generated_function(
@@ -3411,28 +3451,30 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         if changed {
             let function = self.world.function_state(id);
             let function_ref = self.world.function_ref(id);
-            self.telemetry.execute(
-                &["fz", "compiler2", "function", "defined"],
-                &measurements! {
-                    code_id: owner_code.as_u32(),
-                    module_id: owner_module.as_u32(),
-                    owner_module_id: owner_source.owner_module.as_u32(),
-                    function_id: id.as_u32(),
-                    arity: arity,
-                    clauses: clauses,
-                    owner_function_id: owner.as_u32(),
-                    source_heap_id: function.state_source_heap_id().unwrap_or_default(),
-                    source_root_ref: function.state_source_root_word().unwrap_or_default(),
-                },
-                &metadata! {
-                    function: opaque_debug(function),
-                    function_ref: opaque_debug(function_ref),
-                    function_id: opaque_debug(&id),
-                    module_id: opaque_debug(&owner_module),
-                    owner_module_id: opaque_debug(&owner_source.owner_module),
-                    owner_function_id: opaque_debug(&owner),
-                },
-            );
+            self.telemetry
+                .execute_lazy(&["fz", "compiler2", "function", "defined"], || {
+                    (
+                        measurements! {
+                            code_id: owner_code.as_u32(),
+                            module_id: owner_module.as_u32(),
+                            owner_module_id: owner_source.owner_module.as_u32(),
+                            function_id: id.as_u32(),
+                            arity: arity,
+                            clauses: clauses,
+                            owner_function_id: owner.as_u32(),
+                            source_heap_id: function.state_source_heap_id().unwrap_or_default(),
+                            source_root_ref: function.state_source_root_word().unwrap_or_default(),
+                        },
+                        metadata! {
+                            function: opaque_debug(function),
+                            function_ref: opaque_debug(function_ref),
+                            function_id: opaque_debug(&id),
+                            module_id: opaque_debug(&owner_module),
+                            owner_module_id: opaque_debug(&owner_source.owner_module),
+                            owner_function_id: opaque_debug(&owner),
+                        },
+                    )
+                });
         }
         (id, changed)
     }
@@ -3452,23 +3494,25 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
             LoweredBody::Extern { signature } => (0_usize, 0_usize, signature.params.len()),
             LoweredBody::Clauses { clauses, generated, .. } => (clauses.len(), generated.len(), fn_surface.arity()),
         };
-        self.telemetry.execute(
-            &["fz", "compiler2", "lowered_body", "defined"],
-            &measurements! {
-                code_id: fn_source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                function_id: function.as_u32(),
-                arity: arity,
-                clauses: clauses,
-                generated: generated,
-                source_root_ref: fn_source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                body: opaque_debug(body),
-                function_id: opaque_debug(&function),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "lowered_body", "defined"], || {
+                (
+                    measurements! {
+                        code_id: fn_source.code.as_u32(),
+                        module_id: function_ref.module.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: arity,
+                        clauses: clauses,
+                        generated: generated,
+                        source_root_ref: fn_source.source.root().raw_word(),
+                    },
+                    metadata! {
+                        function_ref: opaque_debug(function_ref),
+                        body: opaque_debug(body),
+                        function_id: opaque_debug(&function),
+                    },
+                )
+            });
         changed
     }
 
@@ -3483,24 +3527,26 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                 panic!("guard dispatch should only be defined for known functions")
             }
         };
-        self.telemetry.execute(
-            &["fz", "compiler2", "guard_dispatch", "defined"],
-            &measurements! {
-                code_id: fn_source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                function_id: function.as_u32(),
-                arity: fn_surface.arity(),
-                bodies: dispatch.bodies.len(),
-                guards: dispatch.plan.guards.len(),
-                pinned: dispatch.plan.pinned.len(),
-                source_root_ref: fn_source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                dispatch: opaque_debug(dispatch),
-                function_id: opaque_debug(&function),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "guard_dispatch", "defined"], || {
+                (
+                    measurements! {
+                        code_id: fn_source.code.as_u32(),
+                        module_id: function_ref.module.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: fn_surface.arity(),
+                        bodies: dispatch.bodies.len(),
+                        guards: dispatch.plan.guards.len(),
+                        pinned: dispatch.plan.pinned.len(),
+                        source_root_ref: fn_source.source.root().raw_word(),
+                    },
+                    metadata! {
+                        function_ref: opaque_debug(function_ref),
+                        dispatch: opaque_debug(dispatch),
+                        function_id: opaque_debug(&function),
+                    },
+                )
+            });
         changed
     }
 
@@ -3515,24 +3561,26 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                 panic!("entry dispatch should only be defined for known functions")
             }
         };
-        self.telemetry.execute(
-            &["fz", "compiler2", "entry_dispatch", "defined"],
-            &measurements! {
-                code_id: fn_source.code.as_u32(),
-                module_id: function_ref.module.as_u32(),
-                function_id: function.as_u32(),
-                arity: fn_surface.arity(),
-                outcomes: plan.outcomes.len(),
-                guards: plan.guards.len(),
-                pinned: plan.pinned.len(),
-                source_root_ref: fn_source.source.root().raw_word(),
-            },
-            &metadata! {
-                function_ref: opaque_debug(function_ref),
-                plan: opaque_debug(plan),
-                function_id: opaque_debug(&function),
-            },
-        );
+        self.telemetry
+            .execute_lazy(&["fz", "compiler2", "entry_dispatch", "defined"], || {
+                (
+                    measurements! {
+                        code_id: fn_source.code.as_u32(),
+                        module_id: function_ref.module.as_u32(),
+                        function_id: function.as_u32(),
+                        arity: fn_surface.arity(),
+                        outcomes: plan.outcomes.len(),
+                        guards: plan.guards.len(),
+                        pinned: plan.pinned.len(),
+                        source_root_ref: fn_source.source.root().raw_word(),
+                    },
+                    metadata! {
+                        function_ref: opaque_debug(function_ref),
+                        plan: opaque_debug(plan),
+                        function_id: opaque_debug(&function),
+                    },
+                )
+            });
         changed
     }
 
@@ -3558,14 +3606,16 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
 
     fn emit_runtime_module_registration(&self, registration: &RuntimeModuleRegistration) {
         if registration.inserted {
-            self.telemetry.execute(
-                &["fz", "compiler2", "code", "submitted"],
-                &measurements! {
-                    code_id: registration.code_id.as_u32(),
-                    bytes: self.world.code_text(registration.code_id).len(),
-                },
-                &metadata! {},
-            );
+            self.telemetry
+                .execute_lazy(&["fz", "compiler2", "code", "submitted"], || {
+                    (
+                        measurements! {
+                            code_id: registration.code_id.as_u32(),
+                            bytes: self.world.code_text(registration.code_id).len(),
+                        },
+                        metadata! {},
+                    )
+                });
         }
     }
 }
