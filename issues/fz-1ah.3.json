@@ -7,7 +7,7 @@
     "fz-1ah.4"
   ],
   "created": "2026-07-10T15:57:09Z",
-  "description": "Goal\nMake the ordinary warm fz2 build consume the sibling runtime archive directly and make every post-codegen AOT phase observable.\n\nSignal\nTelemetry ends at 33.8 ms but warm wall time is 110-120 ms. link_aot_artifact always calls locate_runtime_staticlib, which spawns cargo build -p fz-runtime --release --message-format=json just to rediscover the sibling archive, then spawns cc. FZ_AOT_RUNTIME_STATICLIB pointing to the same target/release/libfz_runtime.a reduces builds to a stable 60 ms; Cargo discovery alone costs 40-50 ms. cc/object/archive/link work has no telemetry.\n\nStrategy\nAt the build/install boundary, retain or deterministically derive the exact sibling runtime artifact path once instead of asking Cargo on every compilation. Preserve the isolated coverage-build rule and explicit override. Add spans for object emission, runtime archive resolution (including source), linker invocation, and total build/front-door time. Do not add a process-global stale path cache.\n\nTDD\nPin that a normal sibling plan performs no Cargo invocation, coverage still selects a clean isolated archive, and an override validates its path. Observe link-stage telemetry in the CLI build integration test.\n\nAcceptance\n- Warm ordinary builds spawn no Cargo process for archive lookup.\n- Coverage and packaged-binary behavior remain correct.\n- Telemetry accounts through command completion/link.\n- Docs/tests/clippy pass.",
+  "description": "",
   "id": "fz-1ah.3",
   "labels": [],
   "parent": "fz-1ah",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Remove Cargo rediscovery from ordinary AOT archive selection and span the link",
   "type": "bug",
-  "updated_at": "2026-07-10T16:04:30Z"
+  "updated_at": "2026-07-11T22:25:21Z"
 }
