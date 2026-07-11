@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-11T14:29:33Z",
   "created": "2026-07-10T20:03:32Z",
   "description": "fz-1ah.8 made dispatch_reachability the shared authority. During the fz-1ah.7 telemetry-boundary integration, the former compiler2/jobs/semantic.rs traversal remains only as unreachable compatibility code because both changes overlap that file. Remove the obsolete traversal and its test-only support after the typed telemetry migration has landed; retain only calculate_dispatch_reachability. This is cleanup, not a behavior change.",
   "id": "fz-1ah.10",
   "labels": [],
   "parent": "fz-1ah",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Remove superseded local dispatch reachability helper",
   "type": "task",
-  "updated_at": "2026-07-11T14:26:11Z"
+  "updated_at": "2026-07-11T14:29:33Z"
 }
