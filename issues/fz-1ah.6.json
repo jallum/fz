@@ -19,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "closed",
+  "status": "in_progress",
   "title": "Collapse compiler2 telemetry payloads to raw authority references",
   "type": "task",
-  "updated_at": "2026-07-11T22:20:03Z"
+  "updated_at": "2026-07-11T22:20:25Z"
 }
