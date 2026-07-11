@@ -32,6 +32,10 @@
     {
       "text": "Implemented the entry-owned closure ABI model without fallback reconstruction. Root packaging now records exact callable-entry identity by `(TransportPosition, CallableId)`, including nested tuple fields, returns, resume payloads, and entry captures. Backend and native consume that fact directly; native no longer selects by FunctionId, capture count, type overlap, or pooled BoundaryId. Target fixture `repr_seam_enum_count_after_reduce2` prints `10\\n2` in interp/run/build. Verified `cargo fmt --check`, `cargo check`, `cargo test --lib` (1329 passed, 0 failed, 6 ignored), and `git diff --check`. The remaining multi-entry Enum dispatch behavior is tracked on fz-1ah.11.",
       "timestamp": "2026-07-10T22:04:48Z"
+    },
+    {
+      "text": "RETROSPECTIVE BATCH AUDIT FAIL at aadab3a24. The commit adds tagged-entry dispatch but does not complete its stated no-reselection deletion: src/ir_interp/backend.rs resolve_backend_callable_executable still selects untagged callables by FunctionId, capture count, ABI reprs, and runtime type overlap. The arc diff itself modified this function to add the entry fast path while retaining that fallback; its remaining production caller is fz_spawn/fz_spawn_opt in src/ir_interp/extern_call.rs. actor_ring succeeds only on the tagged route, so it is not proof the untagged fallback is impossible. Repair by making spawn consume the upstream entry identity or fail closed; remove the selector and add a regression that proves no first-class spawn callable can re-enter selection. Audit otherwise confirms exact entry propagation and target-owned ABI. Focused ownership tests passed; isolated fmt, clippy -D warnings, and cargo test --lib passed (1329 passed, 0 failed, 6 ignored). repr_seam_enum_count_after_reduce2, actor_ring, opaque_fn_value_join, and fz_f98_range_map_converges pass interp/run/build. enum_predicate_search and enum_take_drop_split remain explicit failures within already-tracked fz-1ah.11; no fallback selects a native target there.",
+      "timestamp": "2026-07-11T00:05:49Z"
     }
   ],
   "priority": 0,
