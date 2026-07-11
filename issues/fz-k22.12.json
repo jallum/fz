@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.23"
+  ],
   "blocks": [],
   "created": "2026-07-10T00:15:26Z",
   "description": "BUG B of the reduce_while_cont arg-shape family (fz-k22.10 is Bug A). enum_predicate_search run/build fail the cranelift verifier: reduce_while_cont__e152__branch_3 (a dispatch ARM) direct-calls a shared body passing 4 args to a 5-param tail-CC callee. native_direct_call_target_and_args (native.rs:1436-1470) builds the arg vector by zipping the call sites args against the callees executable_input_bindings (native.rs:4565-4589) with NO length check -- so a mismatch reaches cranelift as a malformed-arity call instead of being caught as a fatal pre-codegen error. CANDIDATE ORIGIN (not pinned): a CallEdge::Dispatch arm resolving to the wrong sibling instantiation -- an ExecutableKey whose input-binding count does not match what the CALLING clause was analyzed against. Check whether the arg-count used to build BackendCallArgs at the call site derives from the SAME activation as the callees executable_input_bindings. Exposed on enum_predicate_search now, and on enum_take_drop_split once Bug A (fz-k22.10) lands. Greening either fixtures run/build needs BOTH A and B. Add a pre-codegen length-check that fatals (never a malformed cranelift call) as a guard regardless.",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "fz-k22: reduce_while_cont dispatch-arm direct call builds a 4-arg vector for a 5-param callee -- no length check zipping args against executable_input_bindings",
   "type": "bug",
-  "updated_at": "2026-07-10T02:31:54Z"
+  "updated_at": "2026-07-11T12:39:30Z"
 }
