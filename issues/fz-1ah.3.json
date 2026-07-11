@@ -6,14 +6,16 @@
   "blocks": [
     "fz-1ah.4"
   ],
+  "closed_at": "2026-07-11T22:29:19Z",
+  "close_reason": "Folded as c49bb6c56 after fresh audit; integration passed AOT link tests, the real fz2 CLI build test, and strict all-target clippy. Full lib/CLI milestone failures remain owned by fz-k22.23.",
   "created": "2026-07-10T15:57:09Z",
   "description": "Goal\nMake the ordinary warm fz2 build consume the exact runtime archive established at the Cargo build boundary and make every post-codegen AOT phase observable.\n\nStrategy\nAt the Cargo build boundary, build the target-correct fz-runtime staticlib in an isolated artifact directory and record its exact path in fz2. Ordinary builds consume that recorded path directly, never rediscover through Cargo. Preserve isolated coverage selection and a validated absolute override for independently packaged binaries. Add handler-gated spans for total build/front-door time, object emission, runtime archive resolution with source, and linker invocation. Do not add a process-global stale path cache.\n\nTDD\nPin that a normal embedded plan performs no Cargo invocation, coverage still selects a clean isolated archive, an override is absolute and exists, and an fz2 build succeeds outside the build directory with an unusable CARGO executable. Observe all link-stage telemetry in the CLI build integration test.\n\nAcceptance\n- Warm ordinary builds spawn no Cargo process for archive lookup.\n- Coverage and packaged-binary override behavior remain correct.\n- Telemetry accounts through command completion/link.\n- Docs/tests/clippy pass.",
   "id": "fz-1ah.3",
   "labels": [],
   "parent": "fz-1ah",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Remove Cargo rediscovery from ordinary AOT archive selection and span the link",
   "type": "bug",
-  "updated_at": "2026-07-11T22:25:35Z"
+  "updated_at": "2026-07-11T22:29:19Z"
 }
