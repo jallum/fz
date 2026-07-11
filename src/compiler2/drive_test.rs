@@ -4257,26 +4257,17 @@ fn compiler2_backend_program_surfaces_per_callable_boundary_association() {
         );
     }
     for entry in &program.callable_entries {
-        let owning_callable = program
-            .transport
-            .callable_boundaries
-            .iter()
-            .find(|(_, boundaries)| boundaries.contains(&entry.boundary))
-            .map(|(callable, _)| *callable)
-            .unwrap_or_else(|| {
-                panic!(
-                    "published boundary {:?} should be reachable from a callable's product boundary facts",
-                    entry.boundary,
-                )
-            });
-        assert!(
-            program
-                .transport
-                .callable_boundary_ids(owning_callable)
-                .is_some_and(|ids| ids.contains(&entry.boundary)),
-            "callable_boundary_ids should return published boundary {:?} for {owning_callable:?}",
-            entry.boundary,
-        );
+        if let Some(boundary) = entry.publication_boundary {
+            assert!(
+                program
+                    .transport
+                    .callable_boundary_ids(entry.callable)
+                    .is_some_and(|ids| ids.contains(&boundary)),
+                "callable entry {} should retain published boundary {boundary:?} for {:?}",
+                entry.identity,
+                entry.callable,
+            );
+        }
     }
 }
 
@@ -14046,13 +14037,13 @@ fn compiler2_backend_program_capture_surface_is_authoritative_from_concrete_prod
                 first_count,
                 "target {target} is named by boundaries {:?} that disagree on capture_count -- capture ABI must \
                  be a property of the target body, not the naming boundary",
-                entries.iter().map(|e| e.boundary).collect::<Vec<_>>(),
+                entries.iter().map(|e| e.publication_boundary).collect::<Vec<_>>(),
             );
             assert_eq!(
                 &entry.capture_reprs,
                 first_reprs,
                 "target {target} is named by boundaries {:?} that disagree on capture_reprs",
-                entries.iter().map(|e| e.boundary).collect::<Vec<_>>(),
+                entries.iter().map(|e| e.publication_boundary).collect::<Vec<_>>(),
             );
         }
         if first_count > 0 {

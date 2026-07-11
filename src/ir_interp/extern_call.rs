@@ -227,15 +227,7 @@ pub(super) fn call_lowered_extern(
                 return Err(format!("{}/1+ got 0 args", signature.symbol));
             }
             let (fn_id, captured) = super::binop::unpack_callable(args[0], runtime.cur_proc())?;
-            let target = super::backend::resolve_backend_callable_executable(
-                runtime,
-                types,
-                module,
-                program,
-                fn_id,
-                &captured,
-                &[],
-            )?;
+            let target = super::backend::callable_entry_target(program, fn_id)?;
             let pid = runtime.spawn_backend(target, captured)?;
             return Ok(AnyValue::Int(pid as i64));
         }

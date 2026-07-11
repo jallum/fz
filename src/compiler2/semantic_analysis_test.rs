@@ -698,7 +698,7 @@ end
 }
 
 #[test]
-fn compiler2_semantic_callsite_joins_duplicate_function_targets_before_artifact() {
+fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
@@ -715,25 +715,67 @@ fn compiler2_semantic_callsite_joins_duplicate_function_targets_before_artifact(
         &mut world,
         &tel,
         root_id,
-        "joined reducer function refs should settle to one semantic call target before artifact",
+        "reducer function refs should retain every grounded semantic specialization before artifact",
     );
 
     let main = function_id(&functions, "main", 0);
-    let duplicate = callsites
+    let specialized = callsites
         .all()
         .into_iter()
         .filter(|record| record.key.activation.function == main)
         .find(|record| {
-            let callees = record
+            let activations = record
                 .summary
                 .targets
                 .iter()
-                .map(|target| target.callee.clone())
+                .filter_map(|target| target.activation.clone())
                 .collect::<HashSet<_>>();
-            callees.len() < record.summary.targets.len()
+            activations.len() >= 2
         });
     assert!(
-        duplicate.is_none(),
-        "semantic callsite summaries must join repeated observations of the same callee instead of leaving artifact to dispatch by activation-key differences: {duplicate:#?}",
+        specialized.is_some(),
+        "semantic callsite summaries must preserve distinct grounded function activations instead of unioning their call surfaces: {specialized:#?}",
+    );
+}
+
+#[test]
+fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let callsites = CallsiteCapture::new();
+    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+
+    let mut world = World::new();
+    world.submit_code(
+        Some("repr_seam_enum_count_after_reduce2.fz".to_string()),
+        include_str!("../../fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz").to_string(),
+    );
+    let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    drive_until_semantic_closure(
+        &mut world,
+        &tel,
+        root_id,
+        "the retained list must keep reduce and count ground callable activations distinct",
+    );
+
+    let retained_specializations = callsites.all().into_iter().find(|record| {
+        let mut targets_by_callee = std::collections::HashMap::new();
+        for target in &record.summary.targets {
+            let Some(activation) = target.activation.as_ref() else {
+                continue;
+            };
+            targets_by_callee
+                .entry(target.callee.clone())
+                .or_insert_with(Vec::new)
+                .push(activation);
+        }
+        targets_by_callee.values().any(|activations| {
+            activations.len() >= 2 && activations.windows(2).any(|pair| pair[0].arrow != pair[1].arrow)
+        })
+    });
+
+    assert!(
+        retained_specializations.is_some(),
+        "the retained-list fixture must publish separate grounded targets for one callable function instead of one unioned target: {:#?}",
+        callsites.all(),
     );
 }

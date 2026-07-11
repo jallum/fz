@@ -68,6 +68,7 @@ impl TestTransportShapes {
     fn boundary_id(&mut self, return_shape: ShapeId, return_lane: LaneId) -> BoundaryId {
         let callable = self.transport.interners_mut().intern_callable(CallableDescr {
             function: None,
+            capture_tys: Box::default(),
             capture_shapes: Box::default(),
             capture_lanes: Box::default(),
         });
@@ -169,8 +170,6 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_shape,
-            return_lanes: vec![return_lane],
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
         }],
@@ -325,8 +324,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             capture_reprs: Vec::new(),
             arg_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_shape,
-            return_lanes: vec![return_lane],
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
         }],

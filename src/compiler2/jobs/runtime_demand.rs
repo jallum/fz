@@ -286,7 +286,33 @@ pub(crate) fn produce_runtime_demand_product(
         // members' memos afterwards cannot be wiped by their own contributions.
         let mut displaced: HashSet<ExecutableKey> = HashSet::new();
         for (member, contributions) in settled.contributions {
-            displaced.extend(session.replace_settled_return_demand_contributions(member, contributions, &members));
+            // A resolution `type_derived_flow_resolutions` pulls into THIS cone
+            // settles here, but a callable-flow resolution can ALSO already be
+            // memoized from an earlier, separate pull (its own cone anchored
+            // elsewhere ran first) -- then it is `graph.external`, not a member,
+            // and this settlement's pin must cross the cone boundary exactly
+            // like a return-demand contribution does. Both halves persist
+            // through the same per-caller replace-and-recompute channel.
+            let mut return_demand_contributions: HashMap<ExecutableKey, RuntimeDemand> = HashMap::new();
+            let mut input_demand_contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = HashMap::new();
+            for (target, contribution) in contributions {
+                if let Some(demand) = contribution.return_demand {
+                    return_demand_contributions.insert(target.clone(), demand);
+                }
+                if !contribution.input_demands.is_empty() {
+                    input_demand_contributions.insert(target, contribution.input_demands);
+                }
+            }
+            displaced.extend(session.replace_settled_return_demand_contributions(
+                member.clone(),
+                return_demand_contributions,
+                &members,
+            ));
+            displaced.extend(session.replace_settled_input_demand_contributions(
+                member,
+                input_demand_contributions,
+                &members,
+            ));
         }
         // The epoch baseline is everything this settlement accounted for: a
         // member's own call edges plus the WHOLE group's callable-flow resolutions
@@ -347,7 +373,18 @@ struct DemandGraph {
 
 struct SettledDemandCone {
     demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
-    contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
+    contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>>,
+}
+
+/// One caller's contribution to a single target: its joined return-demand
+/// pin (the existing channel) plus any boundary-pinned INPUT positions —
+/// e.g. a boundary-published callable's argument, which a contract can
+/// demand even when the body itself elides it. Both halves join
+/// independently onto the target's `ExecutableRuntimeDemand`.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct TargetDemandContribution {
+    return_demand: Option<RuntimeDemand>,
+    input_demands: HashMap<usize, RuntimeDemand>,
 }
 
 fn collect_demand_cone(
@@ -496,6 +533,17 @@ fn settle_demand_cone(
                 .map(|demand| (member.clone(), demand))
         })
         .collect();
+    // The INPUT-side sibling: boundary-pinned argument positions a settled
+    // contributor OUTSIDE this cone joined onto a member the cone treats as
+    // an anchor (a resolution settled on an earlier, separate pull before its
+    // producer's cone was collected).
+    let external_input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = members
+        .iter()
+        .filter_map(|member| {
+            let demands = session.external_input_demand(member, &member_set);
+            (!demands.is_empty()).then_some((member.clone(), demands))
+        })
+        .collect();
     // A member's derivation reads exactly three things out of the round's
     // iterates: its own joined return demand, its call-edge targets' demands
     // (`local_target_input_demands` over the same targets the cone's edges
@@ -532,22 +580,35 @@ fn settle_demand_cone(
         reads.insert(member.clone(), bottom.clone());
         iterates.insert(member.clone(), bottom);
     }
-    let mut contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>> = HashMap::new();
+    let mut contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>> = HashMap::new();
     let mut bootstrapped: HashSet<ExecutableKey> = HashSet::new();
     let mut dirty: HashSet<&ExecutableKey> = members.iter().collect();
     let mut rounds = 0_u32;
     loop {
         rounds += 1;
         // Invert the per-caller contribution store once per round: each
-        // member's joined return demand is then a single lookup instead of a
-        // scan over every member's contributions (quadratic in cone size).
+        // member's joined return demand (and boundary-pinned input demand
+        // positions) is then a single lookup instead of a scan over every
+        // member's contributions (quadratic in cone size).
         let mut joined_contributions: HashMap<ExecutableKey, RuntimeDemand> = HashMap::new();
+        let mut joined_input_contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = HashMap::new();
         for member_contributions in contributions.values() {
-            for (target, demand) in member_contributions {
-                joined_contributions
-                    .entry(target.clone())
-                    .and_modify(|joined| joined.join_assign(demand))
-                    .or_insert_with(|| demand.clone());
+            for (target, contribution) in member_contributions {
+                if let Some(demand) = &contribution.return_demand {
+                    joined_contributions
+                        .entry(target.clone())
+                        .and_modify(|joined| joined.join_assign(demand))
+                        .or_insert_with(|| demand.clone());
+                }
+                if !contribution.input_demands.is_empty() {
+                    let slots = joined_input_contributions.entry(target.clone()).or_default();
+                    for (index, demand) in &contribution.input_demands {
+                        slots
+                            .entry(*index)
+                            .and_modify(|joined| joined.join_assign(demand))
+                            .or_insert_with(|| demand.clone());
+                    }
+                }
             }
         }
         for member in &members {
@@ -562,8 +623,24 @@ fn settle_demand_cone(
                 joined.join_assign(&runtime_demand_for_executable_need(member.need));
             }
             let cell = reads.get_mut(member).expect("every cone member has a read cell");
+            let mut moved_cell = false;
             if cell.return_demand != joined {
                 cell.return_demand = joined;
+                moved_cell = true;
+            }
+            let local_positions = joined_input_contributions.get(member).into_iter().flatten();
+            let external_positions = external_input_demands.get(member).into_iter().flatten();
+            for (&index, demand) in local_positions.chain(external_positions) {
+                if let Some(slot) = cell.input_demands.get_mut(index) {
+                    let mut merged = slot.clone();
+                    merged.join_assign(demand);
+                    if merged != *slot {
+                        *slot = merged;
+                        moved_cell = true;
+                    }
+                }
+            }
+            if moved_cell {
                 dirty.insert(member);
             }
         }
@@ -657,7 +734,10 @@ fn derive_member_demand(
     facts: &ExecutableFacts,
     reads: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     waits: &mut HashSet<PullWait>,
-) -> (ExecutableRuntimeDemand, HashMap<ExecutableKey, RuntimeDemand>) {
+) -> (
+    ExecutableRuntimeDemand,
+    HashMap<ExecutableKey, TargetDemandContribution>,
+) {
     let mut derived = derive_executable_runtime_demand(world, member, facts, reads);
     let return_demand_contributions = call_return_demand_contributions(facts, derived.call_return_demands);
     derive_callable_flow_facts_for_executable_product(
@@ -672,10 +752,20 @@ fn derive_member_demand(
     );
     let boundary_return_demands =
         callable_boundary_return_demand_contributions_product(world, facts, &derived.demand, waits);
-    let mut contributions = HashMap::<ExecutableKey, RuntimeDemand>::new();
+    let boundary_input_demands = callable_boundary_input_demand_contributions_product(world, &derived.demand);
+    let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
     for (target, demand) in return_demand_contributions.into_iter().chain(boundary_return_demands) {
-        contributions
-            .entry(target)
+        let entry = contributions.entry(target).or_default();
+        match &mut entry.return_demand {
+            Some(current) => current.join_assign(&demand),
+            None => entry.return_demand = Some(demand),
+        }
+    }
+    for (target, index, demand) in boundary_input_demands {
+        let entry = contributions.entry(target).or_default();
+        entry
+            .input_demands
+            .entry(index)
             .and_modify(|current| current.join_assign(&demand))
             .or_insert(demand);
     }
@@ -1068,6 +1158,48 @@ fn callable_boundary_return_demand_contributions_product(
     required
 }
 
+/// The sibling of [`callable_boundary_return_demand_contributions_product`]
+/// for INPUT positions: a boundary-published callable's contract (the
+/// `first_class_surfaces` an outside boundary observed for the value) names
+/// argument types the resolved target's body may not itself demand — e.g. a
+/// destructor parameter the body ignores. Demand elision must not compile
+/// that parameter away, so pin a non-Ignore demand onto each resolution's
+/// `input_demands[semantic_index]` for exactly the surface's own (non-capture)
+/// argument positions. Only `first_class_surfaces` name a published boundary
+/// contract; `direct_edges` are ordinary in-cone calls whose input demand
+/// already flows through the normal call-edge channel.
+fn callable_boundary_input_demand_contributions_product(
+    world: &mut World,
+    demand: &ExecutableRuntimeDemand,
+) -> Vec<(ExecutableKey, usize, RuntimeDemand)> {
+    let mut required = Vec::new();
+    for flow in demand.callable_flows.values() {
+        if flow.first_class_surfaces.is_empty() {
+            continue;
+        }
+        for surface in &flow.first_class_surfaces {
+            for resolution in &flow.resolutions {
+                let resolution_inputs = resolution.activation.inputs(world.types());
+                if resolution.activation.function != flow.function || resolution_inputs.len() < surface.inputs.len() {
+                    continue;
+                }
+                let captures_len = resolution_inputs.len() - surface.inputs.len();
+                let own_surface = world.types_mut().own_surface(&resolution_inputs, captures_len);
+                if own_surface != surface.inputs {
+                    continue;
+                }
+                for (offset, &arg_ty) in surface.inputs.iter().enumerate() {
+                    let Some(arg_demand) = informative_boundary_return_demand(world, arg_ty) else {
+                        continue;
+                    };
+                    required.push((resolution.clone(), captures_len + offset, arg_demand));
+                }
+            }
+        }
+    }
+    required
+}
+
 fn callable_flow_edge_return_demand_product(
     world: &mut World,
     facts: &ExecutableFacts,
@@ -1101,6 +1233,10 @@ fn callable_flow_edge_return_demand_product(
     None
 }
 
+/// Whether `return_ty` is informative enough to pin as a boundary demand.
+/// Despite the name (kept for its original return-side call sites), this is
+/// type-generic and doubles as the gate for boundary-published INPUT
+/// positions (`callable_boundary_input_demand_contributions_product`).
 fn informative_boundary_return_demand(world: &mut World, return_ty: Ty) -> Option<RuntimeDemand> {
     if world.types().is_empty(&return_ty) {
         return None;
@@ -1170,6 +1306,18 @@ fn executable_dispatch_input_ordinals(
     }
 }
 
+/// Join a carried-forward `input_demands` iterate (round-to-round evidence,
+/// including boundary-pinned positions a contributor joined onto this
+/// executable) onto a freshly rebuilt `input_demands`. Positions the fresh
+/// walk did not touch keep the carried demand; this is the input-side
+/// counterpart of seeding `return_demand` from the previous round's value.
+fn join_previous_input_demands(input_demands: &mut [RuntimeDemand], previous: Option<&[RuntimeDemand]>) {
+    let Some(previous) = previous else { return };
+    for (slot, prev) in input_demands.iter_mut().zip(previous) {
+        slot.join_assign(prev);
+    }
+}
+
 fn derive_executable_runtime_demand(
     world: &mut World,
     executable: &ExecutableKey,
@@ -1177,6 +1325,14 @@ fn derive_executable_runtime_demand(
     demands: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
 ) -> DerivedExecutableDemand {
     let mut callable_flows = CallableFlowBuilder::new();
+    // The previous round's iterate for THIS executable, if any: it carries
+    // boundary-pinned input-demand contributions other members joined onto
+    // this executable's `input_demands` (mirrors how `return_demand` below
+    // seeds from the same round-carried value). Unlike `return_demand`, the
+    // body walk below fully rebuilds `input_demands` from scratch, so the
+    // carried positions are joined back in at every return point instead of
+    // seeded up front.
+    let previous_input_demands = demands.get(executable).map(|demand| demand.input_demands.clone());
     let mut out = ExecutableRuntimeDemand {
         return_demand: demands
             .get(executable)
@@ -1204,6 +1360,7 @@ fn derive_executable_runtime_demand(
                 .collect(),
             LoweredBody::Clauses { .. } => unreachable!(),
         };
+        join_previous_input_demands(&mut out.input_demands, previous_input_demands.as_deref());
         return DerivedExecutableDemand {
             demand: out,
             call_return_demands,
@@ -1266,6 +1423,8 @@ fn derive_executable_runtime_demand(
         let demand = boundary_runtime_demand(world, ty);
         out.input_demands[semantic_index].join_assign(&demand);
     }
+
+    join_previous_input_demands(&mut out.input_demands, previous_input_demands.as_deref());
 
     DerivedExecutableDemand {
         demand: out,
