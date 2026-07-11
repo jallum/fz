@@ -6691,6 +6691,45 @@ fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
 }
 
 #[test]
+fn compiler2_interp_spawn_paths_carry_resolved_callable_entries() {
+    for (name, text) in [
+        (
+            "named child",
+            include_str!("../../fixtures2/behavior/concurrency_ping_pong.fz"),
+        ),
+        (
+            "captured lambda",
+            include_str!("../../fixtures2/behavior/spawn_with_captures.fz"),
+        ),
+        (
+            "nested actor lambda",
+            include_str!("../../fixtures2/behavior/actor_ring.fz"),
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(&tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("fixtures2/behavior/{name}.fz")),
+            text: text.to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+
+        assert_eq!(
+            compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+                panic!("{name} must reach fz_spawn with a resolved callable entry: {error}")
+            }),
+            0,
+            "{name} should complete after spawning through its carried callable entry",
+        );
+    }
+}
+
+#[test]
 fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();

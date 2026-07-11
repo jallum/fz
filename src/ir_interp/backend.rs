@@ -10,12 +10,12 @@ use super::value::{
     interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
+use crate::compiler2::FunctionId;
 use crate::compiler2::transport::{CallableId, ShapeDescr, ShapeId, TransportPosition, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendEntry, BackendExecutable, BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge,
     CallTarget, ControlDestination, ExecutableDispatch, ValueId,
 };
-use crate::compiler2::{ExecutableNeed, FunctionId};
 use crate::exec::runtime::output_hook_thunk;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::matches_runtime_type_predicate;
@@ -25,7 +25,7 @@ use fz_runtime::any_value::{
 };
 use fz_runtime::exec_ctx::ExecCtx;
 use fz_runtime::heap::Schema;
-use fz_runtime::heap::{FieldKind, Heap, deep_copy_any_value_ref};
+use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
@@ -2764,168 +2764,10 @@ fn drain_pending_dtors_backend(
     Ok(())
 }
 
-/// Resolves one runtime callable value against the closed backend inventory.
-///
-/// Callable identity comes from the published closure body + capture shape.
-/// Dynamic arg types only break ties when more than one closed executable
-/// matches that identity.
-pub(super) fn resolve_backend_callable_executable(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    module: &Module,
-    program: &BackendProgram,
-    fn_id: FnId,
-    captures: &[AnyValue],
-    args: &[AnyValue],
-) -> Result<usize, String> {
-    if let Some(entry) = callable_entry_for_identity(program, fn_id) {
-        return Ok(entry.target);
-    }
-    let candidates = program
-        .callable_entries
-        .iter()
-        .filter_map(|entry| {
-            let executable = &program.executables[entry.target];
-            (executable.key.need == ExecutableNeed::Value
-                && executable.key.activation.function == FunctionId::from_fn_id(fn_id)
-                && entry.capture_count == captures.len()
-                && {
-                    let input_len = executable.key.activation.input_len(types);
-                    input_len == captures.len() + args.len() || input_len >= args.len()
-                })
-            .then_some(entry.target)
-        })
-        .collect::<Vec<_>>();
-
-    let mut actual_types = Vec::with_capacity(captures.len() + args.len());
-    for value in captures.iter().chain(args.iter()) {
-        actual_types.push(dynamic_value_ty(runtime, types, module, *value)?);
-    }
-    let arg_types = actual_types[captures.len()..].to_vec();
-
-    let mut matches = candidates
-        .into_iter()
-        .filter(|target| {
-            let executable = &program.executables[*target];
-            let Some(entry) = program.callable_entries.iter().find(|entry| entry.target == *target) else {
-                return false;
-            };
-            if !runtime_values_match_callable_entry_reprs(entry, captures, args) {
-                return false;
-            }
-            let expected_inputs = executable.key.activation.inputs(types);
-            let actual_inputs = if expected_inputs.len() == actual_types.len() {
-                actual_types.as_slice()
-            } else if expected_inputs.len() == arg_types.len() {
-                arg_types.as_slice()
-            } else if expected_inputs.len() > arg_types.len() {
-                let expected_suffix_start = expected_inputs.len() - arg_types.len();
-                return arg_types
-                    .iter()
-                    .zip(expected_inputs[expected_suffix_start..].iter())
-                    .all(|(&actual, &expected)| {
-                        let overlap = types.intersect(actual, expected);
-                        !types.is_empty(&overlap)
-                    });
-            } else {
-                return false;
-            };
-            actual_inputs
-                .iter()
-                .zip(expected_inputs.iter())
-                .all(|(&actual, &expected)| {
-                    let overlap = types.intersect(actual, expected);
-                    !types.is_empty(&overlap)
-                })
-        })
-        .collect::<Vec<_>>();
-    matches.sort_unstable();
-    matches.dedup();
-
-    // A closure that is dispatched indirectly may have several body
-    // specializations of the same surface that differ only in how tightly they
-    // narrow their (non-capture) argument inputs -- e.g. a mapper whose
-    // accumulator starts as `nil` and widens to `nil | integer` across a fold.
-    // The runtime value carries the concrete arguments, so the most-specialized
-    // body that still accepts them is the unique correct callee; a wider sibling
-    // only matched because its input type is a superset. Keep the minimal
-    // specializations (those not strictly subsumed by another match) so a chain
-    // of narrowings resolves to its tightest body instead of reporting a false
-    // ambiguity.
-    let minimal = most_specialized_callable_targets(types, program, &matches);
-
-    match minimal.as_slice() {
-        [target] => Ok(*target),
-        [] => Err(format!(
-            "backend callable {} with {} capture(s) and {} arg(s) has no settled callable entry",
-            fn_id.0,
-            captures.len(),
-            args.len()
-        )),
-        _ => Err(format!(
-            "backend callable {} with {} capture(s) and {} arg(s) is ambiguous across callable entries {:?}",
-            fn_id.0,
-            captures.len(),
-            args.len(),
-            minimal
-        )),
-    }
-}
-
-/// Reduce a set of matching closure-call targets to the most specialized ones.
-///
-/// Targets are compared by their executable activation inputs (capture + arg
-/// types). A target is *dominated* when another matching target narrows every
-/// input to a subtype and strictly narrows at least one -- the dominating target
-/// is the more specialized body and is the one a concrete runtime value should
-/// dispatch to. Returning only the undominated (minimal) targets collapses a
-/// narrowing chain to its tightest element; genuinely incomparable surfaces are
-/// all retained so a real ambiguity is still reported.
-fn most_specialized_callable_targets(
-    types: &crate::compiler2::Types,
-    program: &BackendProgram,
-    matches: &[usize],
-) -> Vec<usize> {
-    let inputs: Vec<Vec<crate::compiler2::Ty>> = matches
-        .iter()
-        .map(|target| program.executables[*target].key.activation.inputs(types))
-        .collect();
-    matches
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(i, _)| {
-            !matches
-                .iter()
-                .enumerate()
-                .any(|(j, _)| j != *i && activation_inputs_strictly_narrow(types, &inputs[j], &inputs[*i]))
-        })
-        .map(|(_, target)| target)
-        .collect()
-}
-
-/// True when `narrow` is a strictly more specialized input vector than `wide`:
-/// equal length, every input of `narrow` is a subtype of the matching `wide`
-/// input, and at least one is a strict subtype. Different arities are
-/// incomparable.
-fn activation_inputs_strictly_narrow(
-    types: &crate::compiler2::Types,
-    narrow: &[crate::compiler2::Ty],
-    wide: &[crate::compiler2::Ty],
-) -> bool {
-    if narrow.len() != wide.len() {
-        return false;
-    }
-    let mut strict = false;
-    for (n, w) in narrow.iter().zip(wide.iter()) {
-        if !types.is_subtype(n, w) {
-            return false;
-        }
-        if !types.is_subtype(w, n) {
-            strict = true;
-        }
-    }
-    strict
+pub(super) fn callable_entry_target(program: &BackendProgram, fn_id: FnId) -> Result<usize, String> {
+    callable_entry_for_identity(program, fn_id)
+        .map(|entry| entry.target)
+        .ok_or_else(|| format!("backend callable {} has no resolved entry identity", fn_id.0))
 }
 
 const CALLABLE_ENTRY_IDENTITY_BASE: u32 = 0x8000_0000;
@@ -2950,128 +2792,12 @@ fn callable_entry_for_identity_value(
     program.callable_entries.iter().find(|entry| entry.identity == identity)
 }
 
-fn runtime_values_match_callable_entry_reprs(
-    entry: &crate::compiler2::BackendCallableEntry,
-    captures: &[AnyValue],
-    args: &[AnyValue],
-) -> bool {
-    let reprs = entry
-        .capture_reprs
-        .iter()
-        .chain(entry.arg_reprs.iter())
-        .copied()
-        .collect::<Vec<_>>();
-    let values = captures.iter().chain(args.iter()).copied().collect::<Vec<_>>();
-    if reprs.len() != values.len() {
-        return true;
-    }
-    values
-        .into_iter()
-        .zip(reprs)
-        .all(|(value, repr)| runtime_value_matches_abi_repr(value, repr))
-}
-
-fn runtime_value_matches_abi_repr(value: AnyValue, repr: crate::compiler2::AbiValueRepr) -> bool {
-    match repr {
-        crate::compiler2::AbiValueRepr::RawInt => matches!(value, AnyValue::Int(_)),
-        crate::compiler2::AbiValueRepr::RawF64 => matches!(value, AnyValue::Float(_)),
-        crate::compiler2::AbiValueRepr::RawAtom => matches!(value, AnyValue::Atom(_)),
-        crate::compiler2::AbiValueRepr::ValueRef => true,
-    }
-}
-
 fn is_tuple_arity(runtime: &mut IrInterpRuntime, value: AnyValue, arity: usize) -> Result<bool, String> {
     let slot = value.value(runtime.cur_proc())?;
     Ok(slot.kind() == ValueKind::STRUCT
         && slot
             .heap_addr()
             .is_some_and(|p| unsafe { struct_schema_id(p) } == interp_tuple_schema_id(runtime, arity)))
-}
-
-fn dynamic_value_ty(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    module: &Module,
-    value: AnyValue,
-) -> Result<crate::compiler2::Ty, String> {
-    match value {
-        AnyValue::Null => Ok(types.any()),
-        AnyValue::Int(value) => Ok(types.int_lit(value)),
-        AnyValue::Float(value) => Ok(types.float_lit(value)),
-        AnyValue::Atom(id) => {
-            let Some(name) = module.atom_names.get(id as usize) else {
-                return Ok(types.atom());
-            };
-            Ok(types.atom_lit(name))
-        }
-        AnyValue::EmptyList => Ok(types.empty_list()),
-        AnyValue::FnRef(_) => Ok(types.any()),
-        AnyValue::Ref(value_ref) => dynamic_ref_ty(runtime, types, module, value_ref),
-    }
-}
-
-fn dynamic_ref_ty(
-    runtime: &mut IrInterpRuntime,
-    types: &mut crate::compiler2::Types,
-    module: &Module,
-    value_ref: AnyValueRef,
-) -> Result<crate::compiler2::Ty, String> {
-    let value = RuntimeAnyValue::from_ref(value_ref).map_err(|err| format!("backend dynamic ref type: {err:?}"))?;
-    match value.kind() {
-        ValueKind::LIST => {
-            let mut current = AnyValue::Ref(value_ref);
-            let mut elems = Vec::new();
-            while !current.is_empty_list() {
-                let slot = current.value(runtime.cur_proc())?;
-                if !interp_is_list_cons(slot) {
-                    let any = types.any();
-                    return Ok(types.list(any));
-                }
-                let head = interp_list_head(runtime.cur_proc(), current)?;
-                elems.push(dynamic_value_ty(runtime, types, module, head)?);
-                current = interp_list_tail(runtime.cur_proc(), current)?;
-            }
-            if elems.is_empty() {
-                Ok(types.empty_list())
-            } else {
-                let elem_ty = elems
-                    .into_iter()
-                    .reduce(|lhs, rhs| types.union(lhs, rhs))
-                    .unwrap_or_else(|| types.any());
-                Ok(types.non_empty_list(elem_ty))
-            }
-        }
-        ValueKind::STRUCT => {
-            let Some(struct_ptr) = value.heap_addr() else {
-                return Ok(types.any());
-            };
-            let schema_id = unsafe { struct_schema_id(struct_ptr) };
-            let schema = runtime.schemas.borrow().get(schema_id).clone();
-            if !schema.name.starts_with("Tuple") {
-                return Ok(types.any());
-            }
-            let mut fields = Vec::new();
-            for field in schema.fields {
-                if field.kind != FieldKind::AnyValue {
-                    continue;
-                }
-                let field_value = with_value_ref(
-                    runtime.cur_proc(),
-                    AnyValue::Ref(value_ref),
-                    "backend tuple ty",
-                    |struct_ref| fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, field.offset),
-                )
-                .and_then(|ref_word| interp_value_from_ref_word(ref_word, "backend tuple ty"))?;
-                fields.push(dynamic_value_ty(runtime, types, module, field_value)?);
-            }
-            Ok(types.tuple(&fields))
-        }
-        ValueKind::MAP => Ok(types.map_top()),
-        ValueKind::BITSTRING | ValueKind::PROCBIN => Ok(types.str_t()),
-        ValueKind::RESOURCE | ValueKind::CLOSURE => Ok(types.any()),
-        ValueKind::NULL | ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => Ok(types.any()),
-        _ => Ok(types.any()),
-    }
 }
 
 fn backend_bit_type_tag(ty: crate::ast::BitType) -> u32 {
