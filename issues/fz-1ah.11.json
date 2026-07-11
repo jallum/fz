@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-k22.20"
+    "fz-k22.20",
+    "fz-k22.23"
   ],
   "blocks": [],
   "created": "2026-07-10T20:24:42Z",
@@ -19,5 +20,5 @@
   "status": "in_progress",
   "title": "Repair native Enum callable ABI regressions exposed by fz2 CLI",
   "type": "bug",
-  "updated_at": "2026-07-11T13:29:50Z"
+  "updated_at": "2026-07-11T13:49:38Z"
 }

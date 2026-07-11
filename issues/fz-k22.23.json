@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-1ah.11",
     "fz-k22.10",
     "fz-k22.12"
   ],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "fz-k22: shared consumer bodies must dispatch closure calls through the VALUE-carried entry identity -- a static position-\u003eentry stamp is unrepresentable for type-variable arg slots",
   "type": "bug",
-  "updated_at": "2026-07-11T12:39:30Z"
+  "updated_at": "2026-07-11T13:49:38Z"
 }
