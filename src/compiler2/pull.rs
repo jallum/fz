@@ -470,6 +470,14 @@ pub struct PullSession {
     return_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
     return_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     return_demands: HashMap<ExecutableKey, RuntimeDemand>,
+    // The INPUT-side sibling of the three fields above: a boundary-published
+    // callable's contract can pin specific argument POSITIONS on a resolved
+    // target even when the target's own body elides them (a destructor that
+    // ignores its payload). Keyed the same way, with an extra position level
+    // (`usize` = semantic input index) nested under the target.
+    input_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>>,
+    input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
+    input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
     materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
     abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
@@ -565,6 +573,9 @@ impl PullSession {
             return_demand_contributions: HashMap::new(),
             return_demand_contributors: HashMap::new(),
             return_demands: HashMap::new(),
+            input_demand_contributions: HashMap::new(),
+            input_demand_contributors: HashMap::new(),
+            input_demands: HashMap::new(),
             materialized_executables: HashMap::new(),
             executable_effects: HashMap::new(),
             abi_executables: HashMap::new(),
@@ -708,6 +719,37 @@ impl PullSession {
                 }
                 None => Some(demand.clone()),
             })
+    }
+
+    /// The INPUT-side sibling of [`Self::external_return_demand`]: the joined
+    /// per-position demand contributed to `target` by settled contributors
+    /// OUTSIDE `members` (a boundary contract pinning an argument position on
+    /// a resolution this cone treats as an already-settled external).
+    pub fn external_input_demand(
+        &self,
+        target: &ExecutableKey,
+        members: &HashSet<ExecutableKey>,
+    ) -> HashMap<usize, RuntimeDemand> {
+        let mut joined: HashMap<usize, RuntimeDemand> = HashMap::new();
+        for contributor in self.input_demand_contributors.get(target).into_iter().flatten() {
+            if members.contains(contributor) {
+                continue;
+            }
+            let Some(positions) = self
+                .input_demand_contributions
+                .get(contributor)
+                .and_then(|c| c.get(target))
+            else {
+                continue;
+            };
+            for (index, demand) in positions {
+                joined
+                    .entry(*index)
+                    .and_modify(|current| current.join_assign(demand))
+                    .or_insert_with(|| demand.clone());
+            }
+        }
+        joined
     }
 
     pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&MaterializedExecutable> {
@@ -973,6 +1015,88 @@ impl PullSession {
              target is present in one iff present in the other (absent from both = \
              not-yet-observed; present in both = observed, possibly joined to an `ignore` \
              marker). A target present in only one map means the two fell out of sync."
+        );
+        if changed && !settled_members.contains(target) {
+            self.invalidate_demand_derived_products(target)
+        } else {
+            HashSet::new()
+        }
+    }
+
+    /// The INPUT-side sibling of [`Self::replace_settled_return_demand_contributions`]:
+    /// replace `caller`'s full set of SETTLED boundary input-demand pins
+    /// (target -> position -> demand). Same OBSERVED/retraction semantics —
+    /// a re-settled caller whose pin drops retracts cleanly because each
+    /// target's joined positions are rebuilt from current contributors.
+    pub fn replace_settled_input_demand_contributions(
+        &mut self,
+        caller: ExecutableKey,
+        contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
+        settled_members: &HashSet<ExecutableKey>,
+    ) -> HashSet<ExecutableKey> {
+        let previous = self.input_demand_contributions.remove(&caller).unwrap_or_default();
+        let mut affected: HashSet<ExecutableKey> = HashSet::new();
+        for target in previous.keys() {
+            affected.insert(target.clone());
+            if let Some(contributors) = self.input_demand_contributors.get_mut(target) {
+                contributors.remove(&caller);
+            }
+        }
+        for target in contributions.keys() {
+            affected.insert(target.clone());
+            self.input_demand_contributors
+                .entry(target.clone())
+                .or_default()
+                .insert(caller.clone());
+        }
+        if !contributions.is_empty() {
+            self.input_demand_contributions.insert(caller, contributions);
+        }
+        let mut displaced = HashSet::new();
+        for target in affected {
+            displaced.extend(self.recompute_input_demand(&target, settled_members));
+        }
+        displaced
+    }
+
+    fn recompute_input_demand(
+        &mut self,
+        target: &ExecutableKey,
+        settled_members: &HashSet<ExecutableKey>,
+    ) -> HashSet<ExecutableKey> {
+        let mut joined: HashMap<usize, RuntimeDemand> = HashMap::new();
+        for contributor in self.input_demand_contributors.get(target).into_iter().flatten() {
+            let Some(positions) = self
+                .input_demand_contributions
+                .get(contributor)
+                .and_then(|c| c.get(target))
+            else {
+                continue;
+            };
+            for (index, demand) in positions {
+                joined
+                    .entry(*index)
+                    .and_modify(|current| current.join_assign(demand))
+                    .or_insert_with(|| demand.clone());
+            }
+        }
+        let changed = self.input_demands.get(target).cloned().unwrap_or_default() != joined;
+        if joined.is_empty() {
+            self.input_demand_contributors.remove(target);
+            self.input_demands.remove(target);
+        } else {
+            self.demanded_executables.insert(target.clone());
+            self.input_demands.insert(target.clone(), joined);
+        }
+        debug_assert_eq!(
+            self.input_demand_contributors
+                .get(target)
+                .is_some_and(|c| !c.is_empty()),
+            self.input_demands.contains_key(target),
+            "input_demand_contributors[target] and input_demands must stay in lockstep: a \
+             target is present in one iff present in the other (absent from both = \
+             not-yet-observed; present in both = observed, possibly joined to per-position \
+             demand). A target present in only one map means the two fell out of sync."
         );
         if changed && !settled_members.contains(target) {
             self.invalidate_demand_derived_products(target)
@@ -2223,6 +2347,86 @@ mod tests {
             session.external_return_demand(&callee, &HashSet::new()),
             None,
             "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
+        );
+    }
+
+    #[test]
+    fn pull_session_invalidates_runtime_demand_when_input_demand_grows() {
+        let caller = fake_executable(RootId::for_test(9));
+        let callee = fake_executable(RootId::for_test(9));
+        let mut session = PullSession::new(RootId::for_test(9));
+        session.memo.finish(
+            &ProductKey::RuntimeDemand(callee.clone()),
+            ProductValue::RuntimeDemand(Box::default()),
+        );
+
+        session.replace_settled_input_demand_contributions(
+            caller,
+            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::whole())]))]),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            session.external_input_demand(&callee, &HashSet::new()),
+            HashMap::from([(0, RuntimeDemand::whole())]),
+            "the joined input demand should be retained for the next pull"
+        );
+        assert!(
+            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
+            "an epoch contribution that grows a non-member target's input demand re-settles it"
+        );
+    }
+
+    #[test]
+    fn pull_session_retracts_input_demand_when_a_caller_collapses_to_a_discard() {
+        // The input-side sibling of the return-demand retraction test above:
+        // a caller re-settled across an epoch whose contribution collapses to
+        // an observed discard must DROP its callee's joined position demand,
+        // not bake the stale `whole`.
+        let caller = fake_executable(RootId::for_test(11));
+        let callee = fake_executable(RootId::for_test(11));
+        let mut session = PullSession::new(RootId::for_test(11));
+
+        session.replace_settled_input_demand_contributions(
+            caller.clone(),
+            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::whole())]))]),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            session.external_input_demand(&callee, &HashSet::new()),
+            HashMap::from([(0, RuntimeDemand::whole())])
+        );
+
+        session.memo.finish(
+            &ProductKey::RuntimeDemand(callee.clone()),
+            ProductValue::RuntimeDemand(Box::default()),
+        );
+        session.replace_settled_input_demand_contributions(
+            caller.clone(),
+            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::ignore())]))]),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            session.external_input_demand(&callee, &HashSet::new()),
+            HashMap::from([(0, RuntimeDemand::ignore())]),
+            "a collapsed caller retracts its callee's whole position demand down to the observed discard"
+        );
+        assert!(
+            session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_none(),
+            "retracting a non-member callee's input demand re-settles its runtime demand"
+        );
+
+        session.replace_settled_input_demand_contributions(caller, HashMap::new(), &HashSet::new());
+        assert_eq!(
+            session.external_input_demand(&callee, &HashSet::new()),
+            HashMap::new(),
+            "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
+        );
+        assert!(
+            !session.input_demand_contributors.contains_key(&callee),
+            "withdrawing the last contributor must remove the stale empty contributor entry, \
+             not leave it behind as an empty HashSet"
         );
     }
 
