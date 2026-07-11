@@ -19,11 +19,15 @@
     {
       "text": "ACCEPTANCE ADDITION (from fz-k22.17's layer discovery): after the identity/grounding fix, a closure-lit DIRECT call's surface must present one value per semantic argument at codegen (multi-lane semantic args either decomposed at IR-construction or routed indirect) -- the require_direct_closure_call_arity_agreement guard (surface.rs) must never fire on legitimate code. It currently fails clean on the pooled-surface cases.",
       "timestamp": "2026-07-10T18:32:08Z"
+    },
+    {
+      "text": "Retrospective batch audit PASS at aadab3a24: inspected the callable descriptor producer and interner identity flow; elided capture groundings are now distinct. Focused regression transport_callable_descriptors_keep_elided_capture_groundings_distinct passed. The isolated audit worktree passed fmt, clippy -D warnings, cargo test --lib (1329 passed, 0 failed, 6 ignored), and the targeted interp/run/build fixture suite.",
+      "timestamp": "2026-07-11T00:05:48Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "fz-k22: capture-erased CallableId pooling -- CallableDescr with capture_lanes=[] interns DISTINCT capture groundings of one lambda into ONE callable identity; its boundary pools ABI-divergent resolutions from birth",
   "type": "bug",
-  "updated_at": "2026-07-10T22:07:37Z"
+  "updated_at": "2026-07-11T00:05:48Z"
 }
