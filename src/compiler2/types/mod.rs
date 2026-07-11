@@ -336,6 +336,33 @@ impl ComparisonCache {
 }
 
 impl Types {
+    pub(crate) fn close_bounds(&mut self, bounds: &HashMap<TypeVarId, Ty>, seed: &Sigma<Ty>) -> Sigma<Ty> {
+        let mut closed = seed.clone();
+        let mut vars = bounds.keys().copied().collect::<Vec<_>>();
+        vars.sort();
+        for _ in 0..bounds.len() {
+            let mut changed = false;
+            for var in &vars {
+                if seed.contains_key(var) {
+                    continue;
+                }
+                let bound = bounds[var];
+                let next = self.instantiate(&bound, &closed);
+                if self.has_vars(&next) {
+                    continue;
+                }
+                if closed.get(var) != Some(&next) {
+                    closed.insert(*var, next);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        closed
+    }
+
     pub fn any(&mut self) -> Ty {
         self.intern(Descr::any())
     }

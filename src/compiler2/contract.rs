@@ -172,21 +172,9 @@ impl ContractArrow {
 }
 
 fn instantiate_domain(types: &mut Types, mut domain: Ty, bounds: &HashMap<TypeVarId, Ty>) -> Ty {
-    let original = domain;
-    // An acyclic dependency path crosses at most one edge per bound. One
-    // additional substitution distinguishes a fixed/open result from a cycle.
-    for _ in 0..bounds.len() {
-        if !types.has_vars(&domain) {
-            return domain;
-        }
-        let instantiated = types.instantiate(&domain, bounds);
-        if instantiated == domain {
-            return domain;
-        }
-        domain = instantiated;
-    }
-    let next = types.instantiate(&domain, bounds);
-    if next == domain { domain } else { original }
+    let closed = types.close_bounds(bounds, &HashMap::new());
+    domain = types.instantiate(&domain, &closed);
+    domain
 }
 
 impl FunctionContractMap {

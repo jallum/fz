@@ -705,6 +705,41 @@ fn function_contract_input_domains_close_dependent_bounds_without_grounding_unbo
 }
 
 #[test]
+fn dependent_contract_bounds_are_stable_across_fresh_type_worlds() {
+    for reverse in [false, true] {
+        let mut types = Types::new();
+        let outer = TypeVarId(0);
+        let inner = TypeVarId(1);
+        let outer_ty = types.type_var(outer);
+        let inner_ty = types.type_var(inner);
+        let a = types.atom_lit("a");
+        let b = types.atom_lit("b");
+        let domain = types.union(a, b);
+        let mut constraints = HashMap::new();
+        if reverse {
+            constraints.insert(inner, domain);
+            constraints.insert(outer, inner_ty);
+        } else {
+            constraints.insert(outer, inner_ty);
+            constraints.insert(inner, domain);
+        }
+        let contract = FunctionContract::from_resolved(
+            &mut types,
+            vec![ResolvedSpecDecl {
+                params: vec![outer_ty],
+                result: outer_ty,
+                constraints,
+            }],
+        );
+
+        let applied = contract.apply(&mut types, &[a]);
+        assert!(applied.satisfied);
+        assert!(applied.enforceable_satisfied);
+        assert!(types.is_equivalent(&applied.result.expect("dependent bound should resolve"), &a));
+    }
+}
+
+#[test]
 fn function_contract_ignores_protocol_markers_inside_nested_complements() {
     let mut types = Types::new();
     let domain = types.opaque_of("protocol::Enumerable.t");

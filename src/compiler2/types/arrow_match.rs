@@ -123,25 +123,32 @@ impl Types {
             self.collect_ambiguous_empty_list_vars(pattern, witness, &mut ambiguous_vars, &mut ambiguous_seen);
         }
 
-        for (var, bound) in bounds {
-            let Some(actual) = sigma.get(var) else {
+        let closed = self.close_bounds(bounds, &sigma);
+        let mut bound_vars = bounds.keys().copied().collect::<Vec<_>>();
+        bound_vars.sort();
+        for var in bound_vars {
+            let Some(actual) = sigma.get(&var) else {
+                if closed.contains_key(&var) {
+                    continue;
+                }
                 let surface = surface_sigma(&sigma, &ambiguous_vars);
                 let (params, result) = self.instantiated_match(params, result, &surface);
                 return ArrowMatch::Underconstrained { params, result };
             };
-            if !self.is_subtype(actual, bound) {
+            let bound = self.instantiate(&bounds[&var], &closed);
+            if !self.is_subtype(actual, &bound) {
                 return ArrowMatch::Invalid;
             }
         }
 
         for (pattern, witness) in params.iter().zip(witnesses.iter()) {
-            let expected = self.instantiate(pattern, &sigma);
+            let expected = self.instantiate(pattern, &closed);
             if !self.has_vars(witness) && !self.has_vars(&expected) && !self.is_subtype(witness, &expected) {
                 return ArrowMatch::Invalid;
             }
         }
 
-        let surface = surface_sigma(&sigma, &ambiguous_vars);
+        let surface = surface_sigma(&closed, &ambiguous_vars);
         let (params, result) = self.instantiated_match(params, result, &surface);
         if params.iter().any(|param| self.has_vars(param)) || self.has_vars(&result) {
             ArrowMatch::Underconstrained { params, result }
@@ -620,5 +627,25 @@ mod tests {
         let mut bounds = HashMap::new();
         bounds.insert(v, int);
         assert_eq!(t.match_arrow(&[a], &a, &bounds, &[str_t]), ArrowMatch::Invalid);
+    }
+
+    #[test]
+    fn dependent_rhs_only_bound_closes_before_validation() {
+        let mut t = Types::new();
+        let outer = TypeVarId(7);
+        let inner = TypeVarId(3);
+        let outer_ty = t.type_var(outer);
+        let inner_ty = t.type_var(inner);
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let domain = t.union(a, b);
+        let mut bounds = HashMap::new();
+        bounds.insert(outer, inner_ty);
+        bounds.insert(inner, domain);
+
+        match t.match_arrow(&[outer_ty], &outer_ty, &bounds, &[a]) {
+            ArrowMatch::Known { result, .. } => assert_eq!(result, a),
+            other => panic!("expected known dependent-bound match, got {other:?}"),
+        }
     }
 }
