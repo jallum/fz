@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-11T12:31:57Z",
+  "description": "From the user directive (2026-07-11): the SCC-settled inner solver (RuntimeDemand/ExecutableEffects) is TOLERATED DEBT, a removal target -- never justify new machinery by that precedent. Audit finding (fz-k22.22): expressing demand as ordinary joined facts fails today because for a cyclic group no single per-key producer completion means settled -- each key would wait on its own transitive dependents (deadlock). The missing primitive: a settled-group EPOCH/MARKER fact spanning a whole SCC that dependents wait on instead of the individual slot -- new fact-engine infrastructure, bigger than any single demand ticket. History (semantic-fixpoint.md:134-196, fz-go4.18.22 / 0cb890e95): the naive first-class-fact form WAS the founding defect (period-2 orbit, 5 compensators); rejected alternatives on record: provisional-when-seeded flag, widen-at-conflict, pure wavefront gating (livelock), SCC damping (mixed-state miscompile). SCOPE: (1) design the settled-group epoch primitive in the scheduler/fact table; (2) migrate BOTH PullSession side channels (return_demand_* and input_demand_* -- structural twins coupled via TargetDemandContribution, must move together) to first-class facts gated on the epoch; (3) delete replace_settled_*/recompute_* imperative invalidation. Acceptance: no session-level demand stores; demand pins arrive via revision-driven wakes; all k22/f98/rh2 convergence fixtures stay green + deterministic.",
+  "id": "fz-976",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "compiler2: dissolve the SCC-internal demand solver -- prerequisite is a settled-GROUP epoch fact primitive; until then return+input session channels are coupled tolerated debt",
+  "type": "task",
+  "updated_at": "2026-07-11T12:31:57Z"
+}
