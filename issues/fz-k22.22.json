@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-11T11:24:38Z",
+  "description": "Continuation of the landed-on-branch fz-k22.18/.14/.20 work (branch fz-k22.18/callable-entry-ownership @ f557a9c7d, evaluated 2026-07-11: architecture adopted; lib 1330/0/6; fz-pcd FIXED 10/2; enum_predicate_search::interp GREEN; actor_ring::interp GREEN; matrix delta 74-\u003e75). TWO blockers before fold:\n\n1. REGRESSION (blocking): resource_index_payload_private::{run,build} HANGS (30s timeout, output stalls after nil) -- previously green. Not a clean diagnostic: likely a WRONG entry stamped for a position (or a mis-split capture prefix for the 1-published-lane-over-0-param body this fixture exercises -- the same benign-superset shape that false-fired the k22.19 registry variant) causing a runtime livelock. Root-cause first; never-worse-than-clean-crash is the branch standard.\n\n2. UNSTAMPED ENTRIES: materialize_callable_entry_positions (jobs/backend.rs) stamps a position only on an EXACTLY-ONE entry match and silently skips multi-matches -- precisely the multi-resolution callables this epic exists for. Downstream clean errors: enum_predicate_search::run \"closure call target 48 disagrees with resolved entry 0 target 47\"; enum_take_drop_split::run \"materialize direct-only callable CallableId(19) without its upstream resolved entry\"; ::interp \"no resolved entry identity or direct target\". FIX: per-position disambiguation -- the positions own demand context (its executable/clause origin, its position shapes grounded surface) selects WHICH resolution; a position that genuinely reaches N resolutions needs N-aware handling (the entry identity is per-resolution; the position knows its grounding). Both blockers are likely the same root (position-\u003eentry mapping correctness).\n\nACCEPTANCE: resource_index_payload_private green again; enum_predicate_search + enum_take_drop_split green on run/interp/build (the epics goal); matrix name-set vs eae19c725 baseline shows ONLY removals (actor_ring::interp stays fixed, nothing new red); lib/clippy green; determinism retained (byte-identical repeat runs). Work on branch wt/k22-20-finish (based at f557a9c7d).",
+  "id": "fz-k22.22",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-k22: finish callable-entry ownership -- per-position entry disambiguation + resource_index_payload_private hang regression",
+  "type": "bug",
+  "updated_at": "2026-07-11T11:24:38Z"
+}
