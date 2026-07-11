@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [
     "fz-k22.14",
     "fz-k22.18"
@@ -7,7 +7,6 @@
   "blocks": [
     "fz-1ah.11"
   ],
-  "closed_at": "2026-07-10T22:10:15Z",
   "created": "2026-07-10T17:00:07Z",
   "description": "Root defect exposed by fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz at 0aa00f6f7: a generic/pooling BoundaryId is incorrectly treated as the ABI authority for concrete closure targets. The north-star contract requires callable-flow target identity to cross the artifact boundary, and callable-boundary lanes to use the selected target body's grounded representations. Current package_backend_callable_entries recovers captures only from concrete BoundaryFacts; direct-only concrete CallableFacts have resolutions but no BoundaryId, so an empty pooling fallback silently produces capture_count=0 for a three-input bridge body (one capture + two args). It also copies the pooling boundary's published return lanes [RawAtom, ValueRef] instead of the target body's [RawAtom, RawInt], so native rejects an invalid self-contradiction. Repair one data model: materialize a target-specific resolved callable-entry contract from concrete CallableFacts plus selected ExecutableKey, carry its identity on constructed closure values through generic publication, and derive capture/argument/grounded return lanes from that entry. Root packaging assigns dense entry ids; interpreter dispatches that id directly rather than reselecting by FunctionId/capture count/type overlap; native emits one thunk per entry and its boundary/body lanes agree by construction. Delete the empty-pooling ABI fallback, FunctionId-based interpreter reselection, and boundary-level return-lane derivation. Keep return adaptation only in existing CallReturnFlow/ReturnDelivery continuations. Regression proof: count-alone=2; reduce-then-count=10/2 on interp/run/build every run, target inputs equal capture+args, and every callable thunk's return lanes equal its target body.",
   "id": "fz-k22.20",
@@ -36,8 +35,8 @@
     }
   ],
   "priority": 0,
-  "status": "closed",
+  "status": "open",
   "title": "[BUG] resolved callable entry must own target capture and return ABI",
   "type": "bug",
-  "updated_at": "2026-07-10T22:10:15Z"
+  "updated_at": "2026-07-11T00:05:49Z"
 }
