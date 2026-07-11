@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-k22.19"
+    "fz-k22.19",
+    "fz-k22.23"
   ],
   "blocks": [],
   "created": "2026-07-09T20:14:00Z",
@@ -47,5 +48,5 @@
   "status": "open",
   "title": "fz-k22: reduce_while_cont clause_0/clause_1 direct call passes 4 args to a 5-param tail-CC body (fn6/fn7) -- cranelift verifier reject",
   "type": "bug",
-  "updated_at": "2026-07-10T16:33:35Z"
+  "updated_at": "2026-07-11T12:39:29Z"
 }

@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-k22.10"
+  ],
   "created": "2026-07-11T12:13:27Z",
   "description": "Successor to fz-k22.22 task 2 (investigated + STOPPED with evidence, speculative tie-break reverted). materialize_callable_entry_positions (backend.rs:471) silently skips multi-resolution callables; a position-level disambiguation was BUILT AND TESTED and proven impossible: for enum_predicate_search + enum_take_drop_split the ambiguous entries (e.g. CallableId(11) -\u003e targets specialized RawInt vs RawAtom) share ONE consumer executable whose own argument slot is STILL A TYPE VARIABLE when positions are materialized -- the shared body genuinely receives either specialization depending on the caller; no fact on the TransportPosition can pick.\n\nTHE ARCHITECTURE ALREADY CARRIES THE ANSWER: entry identity is stamped at CONSTRUCTION sites (per-grounding, unambiguous) and travels IN the runtime value (per-entry identity_fn in the fid slot; interp callable_entry_target resolves by it). The fix: consumption sites in a shared/generic consumer body must DISPATCH THROUGH THE VALUE-CARRIED IDENTITY (runtime entry lookup -\u003e target) instead of requiring a static resolved_entry stamp -- the current hard requirements fail clean: native \"materialize direct-only callable CallableId(19) without its upstream resolved entry\" (jobs/native.rs), interp \"closure call executable=260 function=196 callsite=0 has no resolved entry identity or direct target\" (ir_interp/backend.rs). Positions that ARE statically unambiguous keep the static stamp (devirtualized fast path); only genuinely shared consumers go through value identity. This greens enum_predicate_search + enum_take_drop_split run/interp/build (the k22 epic goal). Blocks fz-k22.10 resolution. Evidence + reverted prototype described in fz-k22.22 comments.",
   "id": "fz-k22.23",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-k22: shared consumer bodies must dispatch closure calls through the VALUE-carried entry identity -- a static position-\u003eentry stamp is unrepresentable for type-variable arg slots",
   "type": "bug",
-  "updated_at": "2026-07-11T12:13:27Z"
+  "updated_at": "2026-07-11T12:39:29Z"
 }
