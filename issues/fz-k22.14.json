@@ -20,11 +20,15 @@
     {
       "text": "Implemented activation-owned CallTargetSummary identity: same FunctionId targets now remain distinct when their ActivationKeys differ. Added retained-list semantic telemetry regression. This exposed legacy tests that expected all direct-only callable facts to become entry inventory; fz-k22.20 now limits entries to first-class publication and leaves ambiguous constructions unstamped rather than selecting a target.",
       "timestamp": "2026-07-10T20:27:55Z"
+    },
+    {
+      "text": "Retrospective batch audit PASS at aadab3a24: CallSiteSummary now coalesces only matching callee plus ActivationKey, preserving live non-recursive specializations. Focused regressions compiler2_semantic_callsite_preserves_distinct_function_specializations and compiler2_semantic_callsite_retains_reduce_and_count_specializations passed. The isolated batch gate was clean: fmt, clippy -D warnings, cargo test --lib (1329 passed, 0 failed, 6 ignored).",
+      "timestamp": "2026-07-11T00:05:48Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "fz-k22: CallTargetSummary cannot represent one callsite with N live NON-recursive ground specializations of one FunctionId (not a dispatch edge, not a collapse)",
   "type": "bug",
-  "updated_at": "2026-07-10T22:07:45Z"
+  "updated_at": "2026-07-11T00:05:48Z"
 }
