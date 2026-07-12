@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.24"
+  ],
   "blocks": [
     "fz-1ah.11",
     "fz-k22.10",
@@ -15,5 +17,5 @@
   "status": "in_progress",
   "title": "fz-k22: shared consumer bodies must dispatch closure calls through the VALUE-carried entry identity -- a static position-\u003eentry stamp is unrepresentable for type-variable arg slots",
   "type": "bug",
-  "updated_at": "2026-07-12T01:27:45Z"
+  "updated_at": "2026-07-12T01:32:44Z"
 }
