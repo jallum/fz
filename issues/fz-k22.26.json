@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-k22.24"
+    "fz-k22.24",
+    "fz-k22.27"
   ],
   "created": "2026-07-12T01:36:02Z",
   "description": "BackendCallableEntry currently conflates two authorities: first-class callable publication and native direct-only closure implementation. fz-k22.24 correctly gates published entries on transport boundary authority, but native then loses direct-only target/capture/ABI lookup and eight tests fail.\\n\\nGoal\\nRepresent direct callable target/capture/ABI authority in a distinct BackendProgram registry or equivalent canonical source. Published BackendCallableEntry remains only for actual first-class value publications.\\n\\nSignal\\nFiltering empty-boundary entries restores direct-only inventory correctness yet causes native direct target telemetry, shared capture surface, published target flow, and fallback lowering failures.\\n\\nStrategy\\nSplit the authoritative data model before applying the inventory gate. Native direct materialization/fallback reads the direct registry; first-class packaging reads publication boundaries. Do not retain semantic publication records with None boundaries as a compatibility registry.\\n\\nAcceptance\\nDirect-only and published callable paths both retain their distinct authority; fz-k22.24's inventory gate can then land without native regressions.",
