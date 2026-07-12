@@ -6,16 +6,12 @@
 
 use std::any::{Any, type_name};
 use std::borrow::Cow;
-use std::fmt;
 use std::sync::Arc;
 
-type OpaqueDebugFn = fn(&dyn Any, &mut fmt::Formatter<'_>) -> fmt::Result;
-
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct OpaqueRef<'a> {
     type_name: &'static str,
     value: &'a dyn Any,
-    debug: Option<OpaqueDebugFn>,
 }
 
 impl<'a> OpaqueRef<'a> {
@@ -23,15 +19,6 @@ impl<'a> OpaqueRef<'a> {
         Self {
             type_name: type_name::<T>(),
             value,
-            debug: None,
-        }
-    }
-
-    pub fn new_debug<T: Any + fmt::Debug>(value: &'a T) -> Self {
-        Self {
-            type_name: type_name::<T>(),
-            value,
-            debug: Some(debug_opaque::<T>),
         }
     }
 
@@ -41,38 +28,6 @@ impl<'a> OpaqueRef<'a> {
 
     pub fn type_name(self) -> &'static str {
         self.type_name
-    }
-
-    pub fn debug_value(self) -> Option<OpaqueDebugValue<'a>> {
-        self.debug.map(|_| OpaqueDebugValue(self))
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct OpaqueDebugValue<'a>(OpaqueRef<'a>);
-
-impl fmt::Debug for OpaqueDebugValue<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        (self.0.debug.expect("opaque debug wrapper requires a debug formatter"))(self.0.value, f)
-    }
-}
-
-fn debug_opaque<T: Any + fmt::Debug>(value: &dyn Any, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let value = value
-        .downcast_ref::<T>()
-        .expect("opaque debug formatter should only run on the original value type");
-    fmt::Debug::fmt(value, f)
-}
-
-impl fmt::Debug for OpaqueRef<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut debug = f.debug_struct("OpaqueRef");
-        debug.field("type_name", &self.type_name);
-        if let Some(value) = self.debug_value() {
-            debug.field("value", &value).finish()
-        } else {
-            debug.finish_non_exhaustive()
-        }
     }
 }
 
@@ -91,10 +46,6 @@ pub enum Value<'a> {
 impl<'a> Value<'a> {
     pub fn opaque<T: Any>(value: &'a T) -> Self {
         Value::Opaque(OpaqueRef::new(value))
-    }
-
-    pub fn opaque_debug<T: Any + fmt::Debug>(value: &'a T) -> Self {
-        Value::Opaque(OpaqueRef::new_debug(value))
     }
 
     pub fn downcast_ref<T: Any>(&self) -> Option<&'a T> {
@@ -144,10 +95,6 @@ impl<'a> Value<'a> {
 
 pub fn opaque<T: Any>(value: &T) -> Value<'_> {
     Value::opaque(value)
-}
-
-pub fn opaque_debug<T: Any + fmt::Debug>(value: &T) -> Value<'_> {
-    Value::opaque_debug(value)
 }
 
 // `From` impls let macros write `Value::from(expr)` without callers

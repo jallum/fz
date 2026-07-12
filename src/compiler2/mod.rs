@@ -64,6 +64,7 @@ pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
+pub(crate) use drive::JobEffects;
 pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReadiness, FactReplace, FactTable, FactUse};
 #[cfg(test)]
@@ -84,6 +85,7 @@ pub use module_interface::{
     ReadyOrPending,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
+pub(crate) use pull::{ProductKey, PullWait};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler, WorkStartReason, WorkStartTally};
 pub use scope::ScopeSnapshot;
 pub use semantic::{

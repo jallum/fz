@@ -13,7 +13,7 @@ use crate::diag::{Diagnostic, codes};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
 use crate::source::Span;
-use crate::telemetry::{TelemetryExt as _, opaque_debug};
+use crate::telemetry::{TelemetryExt as _, opaque};
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
@@ -1614,12 +1614,10 @@ fn emit_compiler_service_define(
                 owner_module_id: source.owner_module.as_u32() as u64,
                 function_id: function.as_u32() as u64,
                 namespace: source.namespace.as_u32() as u64,
-                source_heap_id: source.source.key().heap_id as u64,
-                source_root_ref: source.source.root().raw_word(),
             },
             metadata! {
                 origin: "fz_compiler",
-                function_ref: opaque_debug(function_ref),
+                function_ref: opaque(function_ref),
             },
         )
     });

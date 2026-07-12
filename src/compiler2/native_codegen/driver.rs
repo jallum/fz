@@ -332,12 +332,12 @@ fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &impl Tel
                 crate::metadata! {
                     module_path: surface.module.module_path(),
                     fn_name: f.name.as_str(),
-                    body_origin: crate::telemetry::opaque_debug(&body_slot.native_body.origin),
-                    entry_abi: crate::telemetry::opaque_debug(&body_slot.native_body.entry_abi),
-                    param_reprs: crate::telemetry::opaque_debug(&surface.param_reprs[sid]),
+                    body_origin: crate::telemetry::opaque(&body_slot.native_body.origin),
+                    entry_abi: crate::telemetry::opaque(&body_slot.native_body.entry_abi),
+                    param_reprs: crate::telemetry::opaque(&surface.param_reprs[sid]),
                     halt_repr: surface.halt_reprs[sid].as_str(),
-                    return_reprs: crate::telemetry::opaque_debug(&body_slot.native_body.return_reprs),
-                    return_tuple_arity: crate::telemetry::opaque_debug(&body_slot.native_body.return_tuple_arity),
+                    return_reprs: crate::telemetry::opaque(&body_slot.native_body.return_reprs),
+                    return_tuple_arity: crate::telemetry::opaque(&body_slot.native_body.return_tuple_arity),
                     is_native: surface.native_abi_fns.contains(&f.id),
                     is_cont_fn: surface.cont_fns.contains(&f.id),
                     is_closure_target: surface.closure_targets.contains_key(&f.id),
@@ -1274,11 +1274,6 @@ pub(crate) fn compile_with_backend_surface<
             }
         });
         if crate::ir_codegen::ir_text_record_enabled() {
-            let entry = crate::compiler2::dump::ClifDumpEntry {
-                fn_id: body_slot.fn_id.0,
-                fn_name: display_name.clone(),
-                text: ctx.func.display().to_string(),
-            };
             tel.execute_lazy(&["fz", "compiler2", "dump", "clif"], || {
                 (
                     crate::measurements! {
@@ -1286,7 +1281,8 @@ pub(crate) fn compile_with_backend_surface<
                         spec_id: sid as u64,
                     },
                     crate::metadata! {
-                        entry: crate::telemetry::opaque(&entry),
+                        function: crate::telemetry::opaque(&ctx.func),
+                        fn_name: display_name.as_str(),
                     },
                 )
             });

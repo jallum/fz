@@ -170,6 +170,11 @@ fn jsonl_backend_shows_precipitating_compiler2_actions() {
         log.contains("\"waits\":{\"opaque_type\""),
         "compiler2 jsonl log should surface the unresolved wait frontier on the drive span:\n{log}"
     );
+    assert!(
+        log.contains("\"world\":{\"opaque_type\":\"fz::compiler2::world::World\",\"codes\":")
+            && log.contains("\"activation_frontier\":"),
+        "compiler2 jsonl log should project world state from the borrowed authority:\n{log}"
+    );
 }
 
 #[test]

@@ -50,4 +50,4 @@ pub use handler::{Event, Handler};
 pub use jsonl::JsonlBackend;
 pub use sink::{Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
-pub use value::{Value, opaque, opaque_debug};
+pub use value::{Value, opaque};

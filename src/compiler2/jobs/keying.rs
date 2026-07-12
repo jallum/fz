@@ -12,7 +12,7 @@ use super::super::keying::DispatchDemand;
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
-use crate::telemetry::{TelemetryExt as _, opaque_debug};
+use crate::telemetry::{TelemetryExt as _, opaque};
 use crate::{measurements, metadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ pub(super) fn derive_dispatch_mask(
                 arity: mask.len(),
             },
             metadata! {
-                mask: opaque_debug(&mask),
+                mask: opaque(&mask),
             },
         )
     });

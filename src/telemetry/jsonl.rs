@@ -18,8 +18,7 @@
 //! was constructed. All events in one session share the same epoch, making
 //! it trivial to profile relative ordering.
 //!
-//! Opaque metadata values are rendered as `{"opaque_type":"..."}` and gain a
-//! `"debug"` field when the emitter used `opaque_debug(...)`. `Value::Bytes`
+//! Opaque metadata values are rendered as `{"opaque_type":"..."}`. `Value::Bytes`
 //! is rendered as `"<N bytes>"`; `Value::StrSeq` is rendered as a JSON string
 //! array.
 
@@ -103,7 +102,125 @@ fn write_event(out: &mut String, ev: &Event<'_, '_, '_>, time_ns: u64) {
     // metadata
     out.push_str(",\"metadata\":");
     write_kv(out, ev.metadata.iter());
+    write_compiler2_semantic(out, ev);
     out.push('}');
+}
+
+fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
+    let Some(world) = ev
+        .metadata
+        .get("world")
+        .and_then(Value::downcast_ref::<crate::compiler2::World>)
+    else {
+        return;
+    };
+    if ev.name == ["fz", "compiler2", "callsite", "defined"] {
+        if let Some(callsite) = ev
+            .metadata
+            .get("callsite")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::CallSiteKey>())
+            && let Some(summary) = world.callsite_summary(callsite)
+        {
+            out.push_str(",\"semantic\":");
+            write_callsite_summary(out, world, summary);
+        }
+        return;
+    }
+    let Some(activation) = ev
+        .metadata
+        .get("activation")
+        .and_then(Value::downcast_ref::<crate::compiler2::ActivationKey>)
+    else {
+        return;
+    };
+    match ev.name {
+        ["fz", "compiler2", "activation_inputs", "defined"] => {
+            if let Some(inputs) = world.activation_inputs_ref(activation) {
+                out.push_str(",\"semantic\":{\"inputs\":");
+                write_types(out, world, inputs);
+                out.push('}');
+            }
+        }
+        ["fz", "compiler2", "return_type", "defined"] => {
+            out.push_str(",\"semantic\":{\"return\":");
+            write_optional_type(out, world, world.activation_return_evidence(activation));
+            out.push('}');
+        }
+        ["fz", "compiler2", "activation_analysis", "defined"] => {
+            if let Some(analysis) = world.activation_analysis(activation) {
+                out.push_str(",\"semantic\":{\"reachable_clauses\":");
+                push_u64(out, analysis.reachable_clauses.len() as u64);
+                out.push_str(",\"reachable_entries\":");
+                push_u64(out, analysis.reachable_entries.len() as u64);
+                out.push_str(",\"callsites\":");
+                push_u64(out, analysis.callsites.len() as u64);
+                out.push_str(",\"latent_executables\":");
+                push_u64(out, analysis.latent_executables.len() as u64);
+                out.push_str(",\"values\":");
+                push_u64(out, analysis.value_types.len() as u64);
+                out.push('}');
+            }
+        }
+        _ => {}
+    }
+}
+
+fn write_types(out: &mut String, world: &crate::compiler2::World, types: &[crate::compiler2::Ty]) {
+    out.push('[');
+    for (index, ty) in types.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_str_lit(out, &world.types().display(ty));
+    }
+    out.push(']');
+}
+
+fn write_optional_type(out: &mut String, world: &crate::compiler2::World, ty: Option<crate::compiler2::Ty>) {
+    match ty {
+        Some(ty) => write_str_lit(out, &world.types().display(&ty)),
+        None => out.push_str("null"),
+    }
+}
+
+fn write_callsite_summary(
+    out: &mut String,
+    world: &crate::compiler2::World,
+    summary: &crate::compiler2::CallSiteSummary,
+) {
+    out.push_str("{\"return\":");
+    write_optional_type(out, world, summary.return_ty);
+    out.push_str(",\"targets\":[");
+    for (index, target) in summary.targets.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"callee\":");
+        let (kind, function) = match target.callee {
+            crate::compiler2::SelectedCallee::Function(function) => ("function", function),
+            crate::compiler2::SelectedCallee::ProviderBoundary(function) => ("provider_boundary", function),
+        };
+        out.push('{');
+        write_str_lit(out, "kind");
+        out.push(':');
+        write_str_lit(out, kind);
+        out.push(',');
+        write_str_lit(out, "name");
+        out.push(':');
+        let function_ref = world.function_ref(function);
+        write_str_lit(out, &function_ref.name);
+        out.push(',');
+        write_str_lit(out, "arity");
+        out.push(':');
+        push_u64(out, function_ref.arity as u64);
+        out.push('}');
+        out.push_str(",\"inputs\":");
+        write_types(out, world, &target.surface_inputs);
+        out.push_str(",\"return\":");
+        write_optional_type(out, world, target.return_ty);
+        out.push('}');
+    }
+    out.push_str("]}");
 }
 
 fn write_name(out: &mut String, name: &[&'static str]) {
@@ -179,13 +296,242 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
     write_str_lit(out, "opaque_type");
     out.push(':');
     write_str_lit(out, opaque.type_name());
-    if let Some(debug) = opaque.debug_value() {
+    if let Some(job) = opaque.downcast_ref::<crate::compiler2::Job>() {
         out.push(',');
-        write_str_lit(out, "debug");
+        write_str_lit(out, "kind");
         out.push(':');
-        write_str_lit(out, &format!("{debug:?}"));
+        write_str_lit(out, job_kind(job));
+    } else if let Some(effects) = opaque.downcast_ref::<crate::compiler2::JobEffects>() {
+        out.push(',');
+        write_str_lit(out, "reads");
+        out.push(':');
+        push_u64(out, effects.reads.len() as u64);
+        out.push(',');
+        write_str_lit(out, "waits");
+        out.push(':');
+        push_u64(out, effects.waits.len() as u64);
+        out.push(',');
+        write_str_lit(out, "outputs");
+        out.push(':');
+        push_u64(out, effects.outputs.len() as u64);
+        out.push(',');
+        write_str_lit(out, "changed");
+        out.push(':');
+        push_u64(out, effects.changed.len() as u64);
+    } else if let Some(program) = opaque.downcast_ref::<crate::compiler2::BackendProgram>() {
+        out.push(',');
+        write_str_lit(out, "backend_revision");
+        out.push(':');
+        push_u64(out, program.backend_revision);
+        out.push(',');
+        write_str_lit(out, "executables");
+        out.push(':');
+        push_u64(out, program.executables.len() as u64);
+    } else if let Some(step) =
+        opaque.downcast_ref::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>>()
+    {
+        out.push(',');
+        write_str_lit(out, "changed");
+        out.push(':');
+        push_u64(out, step.changed.len() as u64);
+        out.push(',');
+        write_str_lit(out, "enqueued");
+        out.push(':');
+        push_u64(out, step.enqueued.len() as u64);
+        out.push(',');
+        write_str_lit(out, "blocked");
+        out.push(':');
+        out.push('[');
+        let mut blocked = step
+            .blocked
+            .iter()
+            .map(|wait| fact_kind(wait.fact()))
+            .collect::<Vec<_>>();
+        blocked.sort_unstable();
+        for (index, kind) in blocked.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write_str_lit(out, kind);
+        }
+        out.push(']');
+    } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
+        write_activation_key(out, key);
+    } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::CallSiteKey>() {
+        out.push(',');
+        write_str_lit(out, "callsite");
+        out.push(':');
+        push_u64(out, key.callsite.as_u32() as u64);
+        write_activation_key(out, &key.activation);
+    } else if let Some(function) = opaque.downcast_ref::<crate::compiler2::FunctionRef>() {
+        out.push(',');
+        write_str_lit(out, "module_id");
+        out.push(':');
+        push_u64(out, function.module.as_u32() as u64);
+        out.push(',');
+        write_str_lit(out, "name");
+        out.push(':');
+        write_str_lit(out, &function.name);
+        out.push(',');
+        write_str_lit(out, "arity");
+        out.push(':');
+        push_u64(out, function.arity as u64);
+    } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ProductKey>() {
+        out.push(',');
+        write_str_lit(out, "kind");
+        out.push(':');
+        write_str_lit(out, key.kind());
+    } else if let Some(wait) = opaque.downcast_ref::<crate::compiler2::PullWait>() {
+        out.push(',');
+        write_str_lit(out, "kind");
+        out.push(':');
+        write_str_lit(
+            out,
+            match wait {
+                crate::compiler2::PullWait::Product(_) => "product",
+                crate::compiler2::PullWait::Fact(_) => "fact",
+            },
+        );
+    } else if let Some(waits) = opaque.downcast_ref::<Vec<crate::compiler2::PullWait>>() {
+        out.push(',');
+        write_str_lit(out, "count");
+        out.push(':');
+        push_u64(out, waits.len() as u64);
+        out.push(',');
+        write_str_lit(out, "kinds");
+        out.push(':');
+        out.push('[');
+        let mut kinds = waits
+            .iter()
+            .map(|wait| match wait {
+                crate::compiler2::PullWait::Product(key) => key.kind(),
+                crate::compiler2::PullWait::Fact(fact) => fact_kind(fact.fact()),
+            })
+            .collect::<Vec<_>>();
+        kinds.sort_unstable();
+        for (index, kind) in kinds.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write_str_lit(out, kind);
+        }
+        out.push(']');
+    } else if let Some(world) = opaque.downcast_ref::<crate::compiler2::World>() {
+        let (codes, roots, frontier) = world.telemetry_counts();
+        out.push(',');
+        write_str_lit(out, "codes");
+        out.push(':');
+        push_u64(out, codes as u64);
+        out.push(',');
+        write_str_lit(out, "roots");
+        out.push(':');
+        push_u64(out, roots as u64);
+        out.push(',');
+        write_str_lit(out, "activation_frontier");
+        out.push(':');
+        push_u64(out, frontier as u64);
+    } else if let Some(ty) = opaque.downcast_ref::<crate::compiler2::Ty>() {
+        out.push(',');
+        write_str_lit(out, "interned");
+        out.push(':');
+        write_str_lit(out, &format!("{ty:?}"));
+    } else if let Some(types) = opaque.downcast_ref::<Vec<crate::compiler2::Ty>>() {
+        out.push(',');
+        write_str_lit(out, "values");
+        out.push(':');
+        write_str_lit(out, &format!("{types:?}"));
+    } else if let Some(ty) = opaque.downcast_ref::<Option<crate::compiler2::Ty>>() {
+        out.push(',');
+        write_str_lit(out, "value");
+        out.push(':');
+        write_str_lit(out, &format!("{ty:?}"));
+    } else if let Some(analysis) = opaque.downcast_ref::<crate::compiler2::ActivationAnalysis>() {
+        out.push(',');
+        write_str_lit(out, "value");
+        out.push(':');
+        write_str_lit(out, &format!("{analysis:?}"));
+    } else if let Some(summary) = opaque.downcast_ref::<crate::compiler2::CallSiteSummary>() {
+        out.push(',');
+        write_str_lit(out, "value");
+        out.push(':');
+        write_str_lit(out, &format!("{summary:?}"));
     }
     out.push('}');
+}
+
+fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey) {
+    out.push(',');
+    write_str_lit(out, "root_id");
+    out.push(':');
+    push_u64(out, key.root.as_u32() as u64);
+    out.push(',');
+    write_str_lit(out, "function_id");
+    out.push(':');
+    push_u64(out, key.function.as_u32() as u64);
+}
+
+fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
+    use crate::compiler2::FactKey;
+
+    match fact {
+        FactKey::CodeIndexed(_) => "CodeIndexed",
+        FactKey::CodeScoped(_) => "CodeScoped",
+        FactKey::ModuleIndexed(_) => "ModuleIndexed",
+        FactKey::ModuleDefined(_) => "ModuleDefined",
+        FactKey::ModuleInterface(_) => "ModuleInterface",
+        FactKey::FunctionSource(_) => "FunctionSource",
+        FactKey::FunctionSourceStash(_) => "FunctionSourceStash",
+        FactKey::ExpandedFunctionSource(_) => "ExpandedFunctionSource",
+        FactKey::TypeDefined(_) => "TypeDefined",
+        FactKey::StructDefined(_) => "StructDefined",
+        FactKey::ProtocolDispatch(_) => "ProtocolDispatch",
+        FactKey::ProtocolImplProviders(_) => "ProtocolImplProviders",
+        FactKey::FunctionDefined(_) => "FunctionDefined",
+        FactKey::FunctionContract(_) => "FunctionContract",
+        FactKey::LoweredBody(_) => "LoweredBody",
+        FactKey::GuardDispatch(_) => "GuardDispatch",
+        FactKey::EntryDispatch(_) => "EntryDispatch",
+        FactKey::MacroExecutable(_) => "MacroExecutable",
+        FactKey::Recursive(_) => "Recursive",
+        FactKey::DispatchMask(_) => "DispatchMask",
+        FactKey::RootEntry(_) => "RootEntry",
+        FactKey::Activation(_) => "Activation",
+        FactKey::ActivationInputs(_) => "ActivationInputs",
+        FactKey::ActivationAnalyzed(_) => "ActivationAnalyzed",
+        FactKey::ReturnType(_) => "ReturnType",
+        FactKey::CallSiteTargets(_) => "CallSiteTargets",
+        FactKey::CallSiteSummary(_) => "CallSiteSummary",
+        FactKey::Executable(_) => "Executable",
+        FactKey::BackendProgram(_) => "BackendProgram",
+        FactKey::NativeProgram(_) => "NativeProgram",
+    }
+}
+
+fn job_kind(job: &crate::compiler2::Job) -> &'static str {
+    use crate::compiler2::Job;
+
+    match job {
+        Job::IndexCode(_) => "IndexCode",
+        Job::ScopeCode(_) => "ScopeCode",
+        Job::DefineModule(_) => "DefineModule",
+        Job::DefineModuleInterface(_) => "DefineModuleInterface",
+        Job::PublishFunctionSource(_) => "PublishFunctionSource",
+        Job::ExpandFunctionSource(_) => "ExpandFunctionSource",
+        Job::DefineFunction(_) => "DefineFunction",
+        Job::DeriveTypeDef(_) => "DeriveTypeDef",
+        Job::DeriveFunctionContract(_) => "DeriveFunctionContract",
+        Job::LowerFunction(_) => "LowerFunction",
+        Job::ReifyGuardDispatch(_) => "ReifyGuardDispatch",
+        Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
+        Job::BuildMacroExecutable(_) => "BuildMacroExecutable",
+        Job::DeriveRecursive(_) => "DeriveRecursive",
+        Job::DeriveDispatchMask(_) => "DeriveDispatchMask",
+        Job::SeedRoot(_) => "SeedRoot",
+        Job::SeedActivation(_) => "SeedActivation",
+        Job::AnalyzeActivation(_) => "AnalyzeActivation",
+        Job::BuildBackendProduct(_) => "BuildBackendProduct",
+        Job::LowerNativeProgram(_) => "LowerNativeProgram",
+    }
 }
 
 fn write_str_lit(out: &mut String, s: &str) {

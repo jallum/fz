@@ -12,7 +12,7 @@
 //! inventory); the backend job publishes the `BackendProgram` fact behind a
 //! `FatalError` and finishes the session itself. `ProductDriveError`
 //! parameterizes exactly that seam so the loop body lives once.
-use crate::telemetry::{TelemetryExt as _, opaque_debug};
+use crate::telemetry::{TelemetryExt as _, opaque};
 use crate::{measurements, metadata};
 
 use super::drive::{ExecutionContext, FactKey};
@@ -178,7 +178,7 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::Telemetry, E: Product
         };
         let job_span = tel.span_lazy(&["fz", "compiler2", "job"], || {
             metadata! {
-                job: opaque_debug(&job),
+                job: opaque(&job),
             }
         });
         match super::jobs::run(&mut super::drive::ExecutionContext::new(world, tel), &job) {
@@ -188,7 +188,7 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::Telemetry, E: Product
                     (
                         measurements! {},
                         metadata! {
-                            effects: opaque_debug(&effects),
+                            effects: opaque(&effects),
                         },
                     )
                 });

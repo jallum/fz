@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::telemetry::{Telemetry, TelemetryExt as _, opaque_debug};
+use crate::telemetry::{Telemetry, TelemetryExt as _, opaque};
 use crate::{measurements, metadata};
 
 use super::artifact::{
@@ -1927,7 +1927,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     },
                     metadata! {
                         kind: key.kind(),
-                        product: opaque_debug(key),
+                        product: opaque(key),
                     },
                 )
             });
@@ -1942,7 +1942,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     },
                     metadata! {
                         kind: key.kind(),
-                        product: opaque_debug(key),
+                        product: opaque(key),
                     },
                 )
             });
@@ -1957,8 +1957,8 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     },
                     metadata! {
                         kind: key.kind(),
-                        product: opaque_debug(key),
-                        waits: opaque_debug(waits),
+                        product: opaque(key),
+                        waits: opaque(waits),
                     },
                 )
             });

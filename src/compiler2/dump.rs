@@ -34,23 +34,6 @@ pub(crate) enum DumpStage {
     Native,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct TypesDump {
-    pub(crate) text: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ActivationsDump {
-    pub(crate) text: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ClifDumpEntry {
-    pub(crate) fn_id: u32,
-    pub(crate) fn_name: String,
-    pub(crate) text: String,
-}
-
 impl DumpKind {
     pub(crate) fn required_stage(self) -> Option<DumpStage> {
         match self {
@@ -92,13 +75,13 @@ pub(crate) fn install_dump_handlers(tel: &ConfiguredTelemetry, root: RootId, spe
             DumpKind::Types => {
                 tel.attach(
                     &["fz", "compiler2", "dump", "types"],
-                    boxed_text_dump_handler::<TypesDump>(&spec.path, root, "dump"),
+                    boxed_semantic_dump_handler(&spec.path, root, DumpKind::Types),
                 );
             }
             DumpKind::Activations => {
                 tel.attach(
                     &["fz", "compiler2", "dump", "activations"],
-                    boxed_text_dump_handler::<ActivationsDump>(&spec.path, root, "dump"),
+                    boxed_semantic_dump_handler(&spec.path, root, DumpKind::Activations),
                 );
             }
             DumpKind::Backend => {
@@ -135,7 +118,7 @@ pub(crate) fn emit_product_semantic_dump_events(
     world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root: RootId,
-    activations: impl IntoIterator<Item = ActivationKey>,
+    activations: &Vec<ActivationKey>,
 ) {
     emit_dump_events(world, tel, root, activations);
 }
@@ -144,44 +127,45 @@ fn emit_dump_events(
     world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root: RootId,
-    activations: impl IntoIterator<Item = ActivationKey>,
+    activations: &Vec<ActivationKey>,
 ) {
-    let activations = root_owned_activations(world, root, activations);
-
     tel.execute_lazy_with(&["fz", "compiler2", "dump", "types"], |emit| {
-        let types = TypesDump {
-            text: render_types_dump(world, &activations),
-        };
         let measurements = crate::measurements! { root_id: root.as_u32() };
-        let metadata = crate::metadata! { dump: opaque(&types) };
+        let metadata = crate::metadata! { world: opaque(world), activations: opaque(activations) };
         emit(&measurements, &metadata);
     });
 
     tel.execute_lazy_with(&["fz", "compiler2", "dump", "activations"], |emit| {
-        let activations = ActivationsDump {
-            text: render_activations_dump(world, &activations),
-        };
         let measurements = crate::measurements! { root_id: root.as_u32() };
-        let metadata = crate::metadata! { dump: opaque(&activations) };
+        let metadata = crate::metadata! { world: opaque(world), activations: opaque(activations) };
         emit(&measurements, &metadata);
     });
 }
 
-fn boxed_text_dump_handler<T: 'static + DumpText>(
-    path: &Path,
-    root: RootId,
-    metadata_key: &'static str,
-) -> Box<dyn Handler> {
+fn boxed_semantic_dump_handler(path: &Path, root: RootId, kind: DumpKind) -> Box<dyn Handler> {
     let path = path.to_path_buf();
     let wrote = Rc::new(Cell::new(false));
     Box::new(move |ev: &crate::telemetry::Event<'_, '_, '_>| {
         if ev.kind != EventKind::Event || wrote.get() || !event_matches_root(ev, root) {
             return;
         }
-        let Some(value) = ev.metadata.get(metadata_key).and_then(Value::downcast_ref::<T>) else {
+        let Some(world) = ev.metadata.get("world").and_then(Value::downcast_ref::<World>) else {
             return;
         };
-        write_dump_file(&path, value.dump_text());
+        let Some(activations) = ev
+            .metadata
+            .get("activations")
+            .and_then(Value::downcast_ref::<Vec<ActivationKey>>)
+        else {
+            return;
+        };
+        let activations = root_owned_activations(world, root, activations.iter().cloned());
+        let text = match kind {
+            DumpKind::Types => render_types_dump(world, &activations),
+            DumpKind::Activations => render_activations_dump(world, &activations),
+            DumpKind::Backend | DumpKind::Native | DumpKind::Fnir | DumpKind::Clif => return,
+        };
+        write_dump_file(&path, &text);
         wrote.set(true);
     })
 }
@@ -231,7 +215,17 @@ fn boxed_clif_dump_handler(path: &Path) -> Box<dyn Handler> {
         if ev.kind != EventKind::Event {
             return;
         }
-        let Some(entry) = ev.metadata.get("entry").and_then(Value::downcast_ref::<ClifDumpEntry>) else {
+        let Some(function) = ev
+            .metadata
+            .get("function")
+            .and_then(Value::downcast_ref::<cranelift_codegen::ir::Function>)
+        else {
+            return;
+        };
+        let Some(Value::Str(fn_name)) = ev.metadata.get("fn_name") else {
+            return;
+        };
+        let Some(Value::U64(fn_id)) = ev.measurements.get("fn_id") else {
             return;
         };
         if !cleared.replace(true) {
@@ -239,25 +233,9 @@ fn boxed_clif_dump_handler(path: &Path) -> Box<dyn Handler> {
         }
         append_dump_file(
             &path,
-            &format!("; fn {} ({})\n{}\n", entry.fn_name, entry.fn_id, entry.text),
+            &format!("; fn {} ({})\n{}\n", fn_name, fn_id, function.display()),
         );
     })
-}
-
-trait DumpText {
-    fn dump_text(&self) -> &str;
-}
-
-impl DumpText for TypesDump {
-    fn dump_text(&self) -> &str {
-        &self.text
-    }
-}
-
-impl DumpText for ActivationsDump {
-    fn dump_text(&self) -> &str {
-        &self.text
-    }
 }
 
 fn parse_dump_kind_name(name: &str) -> Result<DumpKind, String> {

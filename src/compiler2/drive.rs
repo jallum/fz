@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::telemetry::{TelemetryExt, opaque, opaque_debug};
+use crate::telemetry::{TelemetryExt, opaque};
 use crate::{measurements, metadata};
 
 use super::code::CodeId;
@@ -29,34 +29,24 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::AppliedStep<Job, FactKey> {
         let completion = self.world.complete_job(job, effects);
         for activation in &completion.activation_input_changed {
-            if let Some(inputs) = self.world.activation_inputs_ref(activation) {
-                self.telemetry
-                    .execute_lazy(&["fz", "compiler2", "activation_inputs", "defined"], || {
-                        (
-                            measurements! {
-                                root_id: activation.root.as_u32(),
-                                function_id: activation.function.as_u32(),
-                                input_arity: inputs.len(),
-                                rebased: completion.rebased,
-                            },
-                            metadata! {
-                                activation: opaque_debug(activation),
-                                inputs: opaque_debug(inputs),
-                                world: opaque(&*self.world),
-                                publisher: opaque_debug(&completion.job),
-                            },
-                        )
-                    });
-            }
-        }
-        self.telemetry
-            .event_lazy(&["fz", "compiler2", "work_graph", "applied"], || {
-                metadata! {
-                    job: opaque_debug(&completion.job),
-                    step: opaque_debug(&completion.step),
-                    world: opaque(&*self.world),
-                }
+            self.emit_world_lazy(&["fz", "compiler2", "activation_inputs", "defined"], |world| {
+                (
+                    measurements! { rebased: completion.rebased },
+                    metadata! {
+                        activation: opaque(activation),
+                        world: world.telemetry_opaque(),
+                        publisher: opaque(&completion.job),
+                    },
+                )
             });
+        }
+        self.emit_world_event_lazy(&["fz", "compiler2", "work_graph", "applied"], |world| {
+            metadata! {
+                job: opaque(&completion.job),
+                step: opaque(&completion.step),
+                world: world.telemetry_opaque(),
+            }
+        });
         completion.step
     }
 }
@@ -454,7 +444,7 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
                 };
                 let job_span = tel.span_lazy(&["fz", "compiler2", "job"], || {
                     metadata! {
-                        job: opaque_debug(&job),
+                        job: opaque(&job),
                     }
                 });
                 let result = super::jobs::run(&mut ExecutionContext::new(world, tel), &job);
@@ -465,7 +455,7 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
                             (
                                 measurements! {},
                                 metadata! {
-                                    effects: opaque_debug(&effects),
+                                    effects: opaque(&effects),
                                 },
                             )
                         });
@@ -476,12 +466,7 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
                         job_span.stop_with_lazy(|| (measurements! {}, metadata! {}));
                         world.clear_unresolved_diagnostics();
                         ExecutionContext::new(world, tel).flush_reported_warnings();
-                        span.stop_with_lazy(|| {
-                            (
-                                measurements! { jobs_ran: jobs_ran },
-                                metadata! { job: opaque_debug(&job) },
-                            )
-                        });
+                        span.stop_with_lazy(|| (measurements! { jobs_ran: jobs_ran }, metadata! { job: opaque(&job) }));
                         return DriveOutcome::Fatal { job };
                     }
                 }
@@ -506,14 +491,12 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
                 stall_demanded.clear();
             }
             let mut producer_pokes = world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
-            let mut demanded_facts: Vec<FactKey> = Vec::new();
             let mut unresolved = world.work_graph.unresolved();
             unresolved.sort_by_cached_key(|wait| format!("{:?}", wait.fact.fact()));
-            for wait in unresolved {
+            for wait in &unresolved {
                 if stall_demanded.insert(wait.fact.fact().clone()) {
                     producer_pokes +=
                         world.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);
-                    demanded_facts.push(wait.fact.fact().clone());
                 }
             }
             if producer_pokes == 0 {
@@ -523,7 +506,7 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
             tel.event_lazy(&["fz", "compiler2", "drive", "demand_on_stall"], || {
                 metadata! {
                     producer_pokes: producer_pokes,
-                    demanded_facts: opaque_debug(&demanded_facts),
+                    demanded_facts: opaque(&stall_demanded),
                 }
             });
         }
@@ -540,7 +523,7 @@ impl<T: crate::telemetry::Telemetry> ExecutionContext<'_, T> {
                 (
                     measurements! { jobs_ran: jobs_ran },
                     metadata! {
-                        waits: opaque_debug(&unresolved),
+                        waits: opaque(&unresolved),
                     },
                 )
             });

@@ -24,7 +24,7 @@ use super::super::transport::{
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
-use crate::telemetry::{TelemetryExt as _, opaque_debug};
+use crate::telemetry::{TelemetryExt as _, opaque};
 use crate::{measurements, metadata};
 
 #[derive(Debug, Clone)]
@@ -696,7 +696,7 @@ fn emit_transport_component_produced(tel: &impl crate::telemetry::Telemetry, com
                 component_size: component.positions.len() as u64,
             },
             metadata! {
-                representative: opaque_debug(&component.representative),
+                representative: opaque(&component.representative),
             },
         )
     });
@@ -721,7 +721,7 @@ fn emit_transport_component_materialized(
                 component_size: component.positions.len() as u64,
             },
             metadata! {
-                executable: opaque_debug(executable),
+                executable: opaque(executable),
             },
         )
     });

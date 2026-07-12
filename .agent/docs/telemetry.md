@@ -172,33 +172,30 @@ constructs a short-lived `ExecutionContext<'_, T>` that split-borrows
 Every job/event
 under `[fz, compiler2, ...]` flows through the compiler's one telemetry value.
 
-**Emit points are cheap: raw borrowed state only.** An emit site places every
-payload expression inside a lazy closure. Before handler interest, it performs
-no formatting, processing, allocation, calculation, or cloning. After interest,
-it
-passes O(1) reads of existing state — ids and stored counts in measurements;
-borrowed `&str`s and `opaque`/`opaque_debug` borrows of compiler-owned
-structures in metadata (`Job`, `JobEffects`, `AppliedStep<Job, FactKey>`,
-`FunctionRef`, `CallSiteSummary`, `BackendProgram`,
-`NativeProgram`, `TypeDef` with the `Types` interner beside it,
-`Vec<ArgRepr>`, …). Handlers do any rendering, counting, or projection at event
-time. If an emit site has to
-build a display string, a `Vec<String>`, or a derived value just for
-telemetry, that is the wrong side of the boundary. Plain `opaque(...)` values
-stay type-erased; `opaque_debug(...)` additionally carries a borrowed `Debug`
-formatter so rendering handlers (the JSONL backend) can print the value —
-choose it when the debug output is useful and bounded, plain `opaque` when it
-would explode a log line (a whole `fz_ir::Module`, the `Types` interner).
+**Emit points are cheap: raw borrowed authorities only.** An emit site places
+every payload expression inside a lazy closure. Before handler interest, it
+performs no formatting, processing, allocation, calculation, cloning, or World
+lookup. After interest, it passes O(1) immutable keys and the smallest borrowed
+authority that already owns the decision, normally `&World`. The event does not
+also extract a `FunctionRef`, source, body, dispatch plan, activation result, or
+program from that authority. A handler that needs one copies or renders it at
+event time. The JSONL backend is such a handler: it derives semantic activation
+inputs, return evidence, and call summaries from `World` plus their keys.
 
-Two recurring patterns keep emit sites clone-free:
+Metadata must be nonredundant. An id belongs either in measurements or as the
+key used to query an authority, never both under alternate names. Emitters pass
+plain `opaque(...)` borrows; they never use `opaque_debug(...)`, construct a
+display string, collect a derived vector, or clone a value for telemetry.
 
-- **Define in `World`, then re-borrow.** A `World::define_*` core owns the
+Two recurring patterns keep emit sites clone-free and erasable:
+
+- **Define in `World`, then pass the authority.** A `World::define_*` core owns
   mutation and invariants without accepting telemetry. Its typed
-  `ExecutionContext::define_*` wrapper calls that core, then borrows the stored
-  value through a `World` getter for the event (`define_module` is the
-  exemplar). Wrappers never access stores directly. A `store.define(k, v.clone())` written so
-  telemetry can borrow the local afterward is a telemetry-induced clone — the
-  pattern this rule exists to kill.
+  `ExecutionContext::define_*` wrapper calls that core, then emits only
+  `&World`, the fact key, and the change outcome. The handler performs any
+  post-mutation lookup. A `store.define(k, v.clone())`, World getter, or
+  projection written so an emitter can report a detail is telemetry work on the
+  wrong side of the boundary.
 - **Spans borrow.** Span-start metadata and `stop_with` payloads accept
   borrowed lifetimes. Use `close_with_lazy` only when drop-time emission needs
   owned data; it evaluates that payload only for an active span. Prefer

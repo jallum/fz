@@ -4,10 +4,10 @@ use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, Nat
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::transport::{ExecutableSymbol, ShapeId, TransportPosition};
 use crate::compiler2::{
-    AbiValueRepr, ActivationKey, BackendCallableEntry, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId,
-    CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse, FunctionId,
-    FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap, QuotedSourceMetadata,
-    SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
+    AbiValueRepr, ActivationKey, BackendBody, BackendCallableEntry, BackendEntryOrigin, BackendProgram, BackendStep,
+    CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
+    FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap,
+    QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::Region;
@@ -44,6 +44,7 @@ type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type Diagnostics = Rc<RefCell<Vec<Diagnostic>>>;
+type ReusableConsCounts = Rc<RefCell<Vec<(u64, u64, u64)>>>;
 
 fn jit_compile_native_program(
     compiler: &mut Compiler2<ConfiguredTelemetry>,
@@ -200,8 +201,11 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
 #[test]
 fn compiler2_records_type_references_as_consumer_dependencies() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    let references = TypeReferenceCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "type", "references", "recorded"],
+        references.handler(),
+    );
     let functions = FunctionCapture::new();
     tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
@@ -226,24 +230,7 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
         "third drive should materialize the function and publish its type references",
     );
 
-    // The event carries the consumer as raw state — a kind tag and the bare
-    // name — so the `kind:name` rendering happens here, in the observer.
-    let consumers_of = |ref_name: &str| {
-        let mut consumers = capture
-            .find(&["fz", "compiler2", "type", "referenced"])
-            .into_iter()
-            .filter(|event| metadata_str(event, "ref_name") == ref_name)
-            .map(|event| {
-                format!(
-                    "{}:{}",
-                    metadata_str(&event, "consumer_kind"),
-                    metadata_str(&event, "consumer")
-                )
-            })
-            .collect::<Vec<_>>();
-        consumers.sort();
-        consumers
-    };
+    let consumers_of = |ref_name: &str| references.consumers_of(ref_name);
 
     // tkf_target is named by the @spec of `tkf_uses` and — nested inside the
     // parametric application `tkf_box(tkf_target)` — by the wrapper type. The
@@ -265,28 +252,81 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     // arity is part of the identity, so tkf_box and tkf_box/1 never conflate.
     // (Its own body `list(a)` references nothing: `list` is a builtin ctor and
     // `a` is a formal type variable.)
-    let box_refs = capture
-        .find(&["fz", "compiler2", "type", "referenced"])
-        .into_iter()
-        .filter(|event| metadata_str(event, "ref_name") == "tkf_box")
-        .collect::<Vec<_>>();
     assert_eq!(
-        box_refs.len(),
+        references.reference_count("tkf_box", 1),
         1,
         "the parametric type tkf_box is referenced exactly once"
     );
-    assert_eq!(
-        measurement_u64(&box_refs[0], "ref_arity"),
-        1,
-        "tkf_box is referenced at arity 1",
-    );
-    assert_eq!(metadata_str(&box_refs[0], "consumer_kind"), "type");
-    assert_eq!(metadata_str(&box_refs[0], "consumer"), "tkf_wrapper");
     assert_eq!(
         consumers_of("tkf_box"),
         vec!["type:tkf_wrapper".to_string()],
         "the parametric type is a dep of the wrapper that applies it",
     );
+}
+
+struct TypeReferenceCapture(Rc<RefCell<Vec<(String, u64, String)>>>);
+
+impl TypeReferenceCapture {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(Vec::new())))
+    }
+    fn handler(&self) -> Box<dyn Handler> {
+        let records = self.0.clone();
+        Box::new(move |event: &Event<'_, '_, '_>| {
+            let Some(world) = event
+                .metadata
+                .get("world")
+                .and_then(Value::downcast_ref::<crate::compiler2::World>)
+            else {
+                return;
+            };
+            let Some(Value::Str(kind)) = event.metadata.get("consumer_kind") else {
+                return;
+            };
+            let Some(consumer) = event.metadata.get("consumer") else {
+                return;
+            };
+            let (name, refs) = if kind.as_ref() == "function" {
+                let Some(function) = consumer.downcast_ref::<FunctionId>() else {
+                    return;
+                };
+                (
+                    world.function_ref(*function).name.clone(),
+                    world.function_type_refs(*function),
+                )
+            } else {
+                let Some(name) = consumer.downcast_ref::<TypeName>() else {
+                    return;
+                };
+                (name.name.clone(), world.type_def_refs(name))
+            };
+            records.borrow_mut().extend(refs.iter().map(|reference| {
+                (
+                    reference.name.clone(),
+                    reference.arity as u64,
+                    format!("{}:{}", if kind.as_ref() == "function" { "fn" } else { "type" }, name),
+                )
+            }));
+        })
+    }
+    fn consumers_of(&self, ref_name: &str) -> Vec<String> {
+        let mut consumers = self
+            .0
+            .borrow()
+            .iter()
+            .filter(|(name, _, _)| name == ref_name)
+            .map(|(_, _, consumer)| consumer.clone())
+            .collect::<Vec<_>>();
+        consumers.sort();
+        consumers
+    }
+    fn reference_count(&self, ref_name: &str, arity: u64) -> usize {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|(name, found_arity, _)| name == ref_name && *found_arity == arity)
+            .count()
+    }
 }
 
 struct RenderedTypeDef {
@@ -305,33 +345,31 @@ fn rendered_type_defs(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<RenderedTypeD
     tel.attach(
         &["fz", "compiler2", "type", "defined"],
         Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(Value::Str(name)) = event.metadata.get("name") else {
-                return;
-            };
-            let (Some(Value::U64(arity)), Some(Value::U64(changed))) =
-                (event.measurements.get("arity"), event.measurements.get("changed"))
-            else {
-                return;
-            };
-            let Some(types) = event
+            let Some(name) = event
                 .metadata
-                .get("types")
-                .and_then(|value| value.downcast_ref::<Types>())
+                .get("name")
+                .and_then(|value| value.downcast_ref::<TypeName>())
             else {
                 return;
             };
-            let Some(def) = event
+            let Some(Value::U64(changed)) = event.measurements.get("changed") else {
+                return;
+            };
+            let Some(world) = event
                 .metadata
-                .get("def")
-                .and_then(|value| value.downcast_ref::<crate::compiler2::typedef::TypeDef>())
+                .get("world")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
             else {
+                return;
+            };
+            let Some(def) = world.type_def(name) else {
                 return;
             };
             sink.borrow_mut().push(RenderedTypeDef {
-                name: name.to_string(),
-                arity: *arity,
+                name: name.name.clone(),
+                arity: name.arity as u64,
                 changed: *changed,
-                rendered: types.display(&def.ty),
+                rendered: world.types().display(&def.ty),
             });
         }),
     );
@@ -341,8 +379,6 @@ fn rendered_type_defs(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<RenderedTypeD
 #[test]
 fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_others_cold() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
     let rendered = rendered_type_defs(&tel);
 
     let mut compiler = Compiler2::new(tel);
@@ -358,10 +394,10 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
     assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
 
     let define_count = |name: &str| {
-        capture
-            .find(&["fz", "compiler2", "type", "defined"])
-            .into_iter()
-            .filter(|event| metadata_str(event, "name") == name)
+        rendered
+            .borrow()
+            .iter()
+            .filter(|definition| definition.name == name)
             .count()
     };
 
@@ -868,17 +904,25 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
     tel.attach(
         &["fz", "compiler2", "struct_def", "defined"],
         Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
-                return;
-            };
-            let Some(def) = event
+            let Some(module_id) = event
                 .metadata
-                .get("def")
-                .and_then(|value| value.downcast_ref::<crate::compiler2::structdef::StructDef>())
+                .get("module")
+                .and_then(|value| value.downcast_ref::<ModuleId>())
+                .copied()
             else {
                 return;
             };
-            fields_sink.borrow_mut().push((*module_id as u32, def.fields.clone()));
+            let Some(world) = event
+                .metadata
+                .get("world")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
+            else {
+                return;
+            };
+            let Some(def) = world.struct_def(module_id) else {
+                return;
+            };
+            fields_sink.borrow_mut().push((module_id.as_u32(), def.fields.clone()));
         }),
     );
     let mut world = crate::compiler2::World::new();
@@ -2624,11 +2668,6 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
         "root submission should report the returned root id"
     );
     assert_eq!(
-        measurement_u64(&root_submitted, "module_id"),
-        ModuleId::GLOBAL.as_u32() as u64,
-        "root submission should mark top-level entries with the global module id"
-    );
-    assert_eq!(
         root_submitted.metadata.len(),
         0,
         "generic capture should not durable-copy opaque root submission metadata",
@@ -2958,10 +2997,6 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     assert!(
         measurement_u64(&macro_defined, "backend_revision") > 0,
         "macro readiness should reuse a BackendProgram revision, not a separate evaluator"
-    );
-    assert!(
-        measurement_u64(&macro_defined, "executable_count") > 0,
-        "macro readiness should carry a backend executable inventory"
     );
     assert!(
         !outputs
@@ -9270,6 +9305,11 @@ fn compiler2_reusable_cons_telemetry_reports_birth_transport_and_consumption() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let reusable_cons = ReusableConsCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        reusable_cons.handler(),
+    );
     let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9297,12 +9337,7 @@ fn main(), do: rebuild([1, 2])
         panic!("reusable-cons telemetry fixture should run end-to-end: {error}");
     });
 
-    let native = capture
-        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
-        .expect("native reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
-    assert_eq!(measurement_u64(&native, "birth_count"), 1);
-    assert_eq!(measurement_u64(&native, "transport_count"), 1);
+    assert_eq!(reusable_cons.last(), Some((root_id.as_u32() as u64, 1, 1)));
 
     let consumed = capture
         .find(&["fz", "codegen", "function_lowered"])
@@ -9333,6 +9368,11 @@ fn compiler2_reusable_cons_telemetry_reports_born_but_not_transported() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let reusable_cons = ReusableConsCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        reusable_cons.handler(),
+    );
     let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9360,12 +9400,7 @@ fn main(), do: ignore([1, 2])
         panic!("born-without-transport fixture should run end-to-end: {error}");
     });
 
-    let native = capture
-        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
-        .expect("native reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
-    assert_eq!(measurement_u64(&native, "birth_count"), 1);
-    assert_eq!(measurement_u64(&native, "transport_count"), 0);
+    assert_eq!(reusable_cons.last(), Some((root_id.as_u32() as u64, 1, 0)));
 
     let consumed = capture
         .find(&["fz", "codegen", "function_lowered"])
@@ -9385,6 +9420,11 @@ fn compiler2_reusable_cons_runtime_telemetry_reports_in_place_reuse() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
+    let reusable_cons = ReusableConsCapture::new();
+    tel.attach(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        reusable_cons.handler(),
+    );
     let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -9409,12 +9449,7 @@ fn main(), do: rebuild([1, 2])
         panic!("direct reusable-cons fixture should run end-to-end: {error}");
     });
 
-    let native = capture
-        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
-        .expect("native reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
-    assert_eq!(measurement_u64(&native, "birth_count"), 1);
-    assert_eq!(measurement_u64(&native, "transport_count"), 0);
+    assert_eq!(reusable_cons.last(), Some((root_id.as_u32() as u64, 1, 0)));
 
     let exit = capture
         .last(&["fz", "runtime", "process_exited"])
@@ -11081,6 +11116,32 @@ struct NativeProgramCapture {
     defs: NativeProgramDefs,
 }
 
+struct ReusableConsCapture {
+    counts: ReusableConsCounts,
+}
+
+struct ReusableConsCaptureHandler {
+    counts: ReusableConsCounts,
+}
+
+impl ReusableConsCapture {
+    fn new() -> Self {
+        Self {
+            counts: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(ReusableConsCaptureHandler {
+            counts: self.counts.clone(),
+        })
+    }
+
+    fn last(&self) -> Option<(u64, u64, u64)> {
+        self.counts.borrow().last().copied()
+    }
+}
+
 struct EntryDispatchCapture {
     plans: EntryDispatchMap,
 }
@@ -11636,6 +11697,47 @@ struct LoweredBodyCaptureHandler {
     bodies: LoweredBodyDefs,
 }
 
+impl Handler for ReusableConsCaptureHandler {
+    fn handle(&self, event: &Event<'_, '_, '_>) {
+        let Some(program) = event
+            .metadata
+            .get("program")
+            .and_then(|value| value.downcast_ref::<BackendProgram>())
+        else {
+            return;
+        };
+        let Some(root_id) = event.measurements.get("root_id").and_then(|value| match value {
+            Value::U64(value) => Some(*value),
+            _ => None,
+        }) else {
+            return;
+        };
+        let mut birth_count = 0_u64;
+        let mut transport_count = 0_u64;
+        for executable in &program.executables {
+            let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+                continue;
+            };
+            for clause in clauses {
+                birth_count += clause
+                    .projections
+                    .iter()
+                    .filter(|step| matches!(step, BackendStep::SplitList { .. }))
+                    .count() as u64;
+            }
+            for entry in entries {
+                birth_count += entry
+                    .steps
+                    .iter()
+                    .filter(|step| matches!(step, BackendStep::SplitList { .. }))
+                    .count() as u64;
+                transport_count += entry.reusable_cons_captures.len() as u64;
+            }
+        }
+        self.counts.borrow_mut().push((root_id, birth_count, transport_count));
+    }
+}
+
 impl Handler for OutputCaptureHandler {
     fn handle(&self, event: &Event<'_, '_, '_>) {
         if event.name != ["fz", "compiler2", "job"] {
@@ -11727,42 +11829,41 @@ impl Handler for FunctionCaptureHandler {
         };
         let Some(function_id) = event
             .metadata
-            .get("function_id")
+            .get("function")
             .and_then(|v| v.downcast_ref::<FunctionId>())
             .copied()
         else {
             return;
         };
-        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
-            return;
-        };
-        let Some(Value::U64(clauses)) = event.measurements.get("clauses") else {
-            return;
-        };
-        let Some(function_ref) = event
+        let Some(world) = event
             .metadata
-            .get("function_ref")
-            .and_then(|value| value.downcast_ref::<FunctionRef>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
             return;
         };
+        let function_ref = world.function_ref(function_id);
         let module_id = function_ref.module;
-        let owner_function_id = if from_source {
-            None
+        let clauses = if from_source {
+            world
+                .pending_function_source(function_id)
+                .and_then(|source| crate::compiler2::quoted_function::derive_function_surface(&source.source).ok())
+                .map_or(0, |surface| surface.clauses.len() as u64)
         } else {
-            event
-                .metadata
-                .get("owner_function_id")
-                .and_then(|v| v.downcast_ref::<FunctionId>())
-                .copied()
+            world.function_surface(function_id).clauses.len() as u64
         };
+        let owner_function_id = event
+            .metadata
+            .get("owner")
+            .and_then(|v| v.downcast_ref::<FunctionId>())
+            .copied();
         self.defs.borrow_mut().insert(
             function_id,
             FunctionDefinedRecord {
                 function_id,
                 module_id,
-                arity: *arity,
-                clauses: *clauses,
+                arity: function_ref.arity as u64,
+                clauses,
                 owner_function_id,
                 function_ref: function_ref.clone(),
             },
@@ -11775,14 +11876,21 @@ impl Handler for SourceNoteCaptureHandler {
         if event.name != self.event || event.kind != EventKind::Event {
             return;
         }
-        let Some(function_ref) = event
+        let Some(function) = event
             .metadata
-            .get("function_ref")
-            .and_then(|value| value.downcast_ref::<FunctionRef>())
+            .get("function")
+            .and_then(|value| value.downcast_ref::<FunctionId>())
         else {
             return;
         };
-        self.notes.borrow_mut().push(function_ref.clone());
+        let Some(world) = event
+            .metadata
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
+        else {
+            return;
+        };
+        self.notes.borrow_mut().push(world.function_ref(*function).clone());
     }
 }
 
@@ -11793,16 +11901,16 @@ impl Handler for ModuleCaptureHandler {
         }
         let Some(module_id) = event
             .metadata
-            .get("module_id")
+            .get("module")
             .and_then(|v| v.downcast_ref::<ModuleId>())
             .copied()
         else {
             return;
         };
-        let Some(module) = event
+        let Some(world) = event
             .metadata
-            .get("module")
-            .and_then(|value| value.downcast_ref::<ModuleState>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
             return;
         };
@@ -11810,7 +11918,7 @@ impl Handler for ModuleCaptureHandler {
             .borrow_mut()
             .entry(module_id)
             .or_default()
-            .push(module.clone());
+            .push(world.module_state(module_id));
     }
 }
 
@@ -11826,11 +11934,14 @@ impl Handler for CallsiteCaptureHandler {
         else {
             return;
         };
-        let Some(summary) = event
+        let Some(world) = event
             .metadata
-            .get("summary")
-            .and_then(|value| value.downcast_ref::<CallSiteSummary>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
+            return;
+        };
+        let Some(summary) = world.callsite_summary(key) else {
             return;
         };
         self.defs.borrow_mut().push(CallsiteDefinedRecord {
@@ -11852,15 +11963,14 @@ impl Handler for ReturnTypeCaptureHandler {
         else {
             return;
         };
-        // The event carries the activation's return EVIDENCE. Only rounds
-        // that hold evidence are recorded; the last record at quiescence is
-        // the settled return.
-        let Some(Some(return_ty)) = event
+        let Some(world) = event
             .metadata
-            .get("return_ty")
-            .and_then(|value| value.downcast_ref::<Option<Ty>>())
-            .copied()
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
+            return;
+        };
+        let Some(return_ty) = world.activation_return_evidence(activation) else {
             return;
         };
         let Some(Value::U64(changed)) = event.measurements.get("changed") else {
@@ -11886,11 +11996,14 @@ impl Handler for ActivationInputCaptureHandler {
         else {
             return;
         };
-        let Some(inputs) = event
+        let Some(world) = event
             .metadata
-            .get("inputs")
-            .and_then(|value| value.downcast_ref::<Vec<Ty>>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
+            return;
+        };
+        let Some(inputs) = world.activation_inputs_ref(activation) else {
             return;
         };
         self.defs.borrow_mut().push(ActivationInputRecord {
@@ -11907,7 +12020,7 @@ impl Handler for BackendProgramCaptureHandler {
         }
         let Some(root_id) = event
             .metadata
-            .get("root_id")
+            .get("root")
             .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
             .copied()
         else {
@@ -11916,17 +12029,17 @@ impl Handler for BackendProgramCaptureHandler {
         let Some(Value::U64(changed)) = event.measurements.get("changed") else {
             return;
         };
-        let Some(program) = event
+        let Some(world) = event
             .metadata
-            .get("program")
-            .and_then(|value| value.downcast_ref::<BackendProgram>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
             return;
         };
         self.defs.borrow_mut().push(BackendProgramRecord {
             root_id,
             changed: *changed != 0,
-            program: program.clone(),
+            program: world.backend_program(root_id),
         });
     }
 }
@@ -11938,7 +12051,7 @@ impl Handler for NativeProgramCaptureHandler {
         }
         let Some(root_id) = event
             .metadata
-            .get("root_id")
+            .get("root")
             .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
             .copied()
         else {
@@ -11947,17 +12060,17 @@ impl Handler for NativeProgramCaptureHandler {
         let Some(Value::U64(changed)) = event.measurements.get("changed") else {
             return;
         };
-        let Some(program) = event
+        let Some(world) = event
             .metadata
-            .get("program")
-            .and_then(|value| value.downcast_ref::<NativeProgram>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
             return;
         };
         self.defs.borrow_mut().push(NativeProgramRecord {
             root_id,
             changed: *changed != 0,
-            program: program.clone(),
+            program: world.native_program(root_id),
         });
     }
 }
@@ -11969,16 +12082,16 @@ impl Handler for GuardDispatchCaptureHandler {
         }
         let Some(function_id) = event
             .metadata
-            .get("function_id")
+            .get("function")
             .and_then(|v| v.downcast_ref::<FunctionId>())
             .copied()
         else {
             return;
         };
-        let Some(dispatch) = event
+        let Some(world) = event
             .metadata
-            .get("dispatch")
-            .and_then(|value| value.downcast_ref::<PatternGuardDispatch<Ty>>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
             return;
         };
@@ -11986,7 +12099,7 @@ impl Handler for GuardDispatchCaptureHandler {
             .borrow_mut()
             .entry(function_id)
             .or_default()
-            .push(dispatch.clone());
+            .push(world.guard_dispatch(function_id));
     }
 }
 
@@ -11997,16 +12110,16 @@ impl Handler for EntryDispatchCaptureHandler {
         }
         let Some(function_id) = event
             .metadata
-            .get("function_id")
+            .get("function")
             .and_then(|v| v.downcast_ref::<FunctionId>())
             .copied()
         else {
             return;
         };
-        let Some(plan) = event
+        let Some(world) = event
             .metadata
-            .get("plan")
-            .and_then(|value| value.downcast_ref::<PatternDispatchPlan<Ty>>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
             return;
         };
@@ -12014,7 +12127,7 @@ impl Handler for EntryDispatchCaptureHandler {
             .borrow_mut()
             .entry(function_id)
             .or_default()
-            .push(plan.clone());
+            .push(world.entry_dispatch(function_id));
     }
 }
 
@@ -12025,16 +12138,16 @@ impl Handler for LoweredBodyCaptureHandler {
         }
         let Some(function_id) = event
             .metadata
-            .get("function_id")
+            .get("function")
             .and_then(|v| v.downcast_ref::<FunctionId>())
             .copied()
         else {
             return;
         };
-        let Some(body) = event
+        let Some(world) = event
             .metadata
-            .get("body")
-            .and_then(|value| value.downcast_ref::<LoweredBody>())
+            .get("world")
+            .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
         else {
             return;
         };
@@ -12042,7 +12155,7 @@ impl Handler for LoweredBodyCaptureHandler {
             .borrow_mut()
             .entry(function_id)
             .or_default()
-            .push(body.clone());
+            .push(world.lowered_body(function_id));
     }
 }
 
@@ -13317,17 +13430,25 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
     tel.attach(
         &["fz", "compiler2", "activation_analysis", "defined"],
         Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(Value::U64(function)) = event.measurements.get("function_id") else {
-                return;
-            };
-            let Some(analysis) = event
+            let Some(activation) = event
                 .metadata
-                .get("analysis")
-                .and_then(|value| value.downcast_ref::<crate::compiler2::ActivationAnalysis>())
+                .get("activation")
+                .and_then(|value| value.downcast_ref::<ActivationKey>())
             else {
                 return;
             };
-            sink.borrow_mut().push((*function, analysis.reachable_clauses.clone()));
+            let Some(world) = event
+                .metadata
+                .get("world")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
+            else {
+                return;
+            };
+            let Some(analysis) = world.activation_analysis(activation) else {
+                return;
+            };
+            sink.borrow_mut()
+                .push((activation.function.as_u32() as u64, analysis.reachable_clauses.clone()));
         }),
     );
 
@@ -13706,17 +13827,25 @@ fn semantic_reachability_for_source(
     tel.attach(
         &["fz", "compiler2", "activation_analysis", "defined"],
         Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(Value::U64(function)) = event.measurements.get("function_id") else {
-                return;
-            };
-            let Some(analysis) = event
+            let Some(activation) = event
                 .metadata
-                .get("analysis")
-                .and_then(|value| value.downcast_ref::<crate::compiler2::ActivationAnalysis>())
+                .get("activation")
+                .and_then(|value| value.downcast_ref::<ActivationKey>())
             else {
                 return;
             };
-            sink.borrow_mut().push((*function, analysis.reachable_clauses.clone()));
+            let Some(world) = event
+                .metadata
+                .get("world")
+                .and_then(|value| value.downcast_ref::<crate::compiler2::World>())
+            else {
+                return;
+            };
+            let Some(analysis) = world.activation_analysis(activation) else {
+                return;
+            };
+            sink.borrow_mut()
+                .push((activation.function.as_u32() as u64, analysis.reachable_clauses.clone()));
         }),
     );
 

@@ -193,7 +193,7 @@ impl<T: Telemetry> Compiler2<T> {
     /// content sourced entirely from demanded products.
     pub(crate) fn emit_product_semantic_dumps(&mut self, root: RootId) -> Result<(), String> {
         let activations = self.product_activation_inventory(root)?;
-        super::dump::emit_product_semantic_dump_events(&self.world, &self.telemetry, root, activations);
+        super::dump::emit_product_semantic_dump_events(&self.world, &self.telemetry, root, &activations);
         Ok(())
     }
 

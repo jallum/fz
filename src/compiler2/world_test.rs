@@ -6,7 +6,241 @@ use crate::compiler2::drive::JobEffects;
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, EventKind, Handler, Value};
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::rc::Rc;
+use syn::parse::{Parse, ParseStream};
+use syn::visit::{self, Visit};
+
+struct MetadataKeys(Vec<syn::Ident>);
+
+impl Parse for MetadataKeys {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut keys = Vec::new();
+        while !input.is_empty() {
+            keys.push(input.parse()?);
+            input.parse::<syn::Token![:]>()?;
+            let _: syn::Expr = input.parse()?;
+            if input.is_empty() {
+                break;
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+        Ok(Self(keys))
+    }
+}
+
+struct LazyEmitterGuard {
+    emitters: usize,
+    violations: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for LazyEmitterGuard {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        let name = call.method.to_string();
+        if matches!(
+            name.as_str(),
+            "execute_lazy" | "execute_lazy_with" | "event_lazy" | "span_lazy" | "stop_with_lazy"
+        ) {
+            self.emitters += 1;
+            match call.args.last() {
+                Some(syn::Expr::Closure(closure)) => {
+                    let mut payload = LazyPayloadGuard::default();
+                    payload.visit_expr(&closure.body);
+                    self.violations.extend(payload.violations);
+                }
+                _ => self.violations.push(format!("{name} does not receive a closure")),
+            }
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+}
+
+#[derive(Default)]
+struct LazyPayloadGuard {
+    violations: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for LazyPayloadGuard {
+    fn visit_expr_macro(&mut self, call: &'ast syn::ExprMacro) {
+        if call
+            .mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "metadata")
+        {
+            match syn::parse2::<MetadataKeys>(call.mac.tokens.clone()) {
+                Ok(MetadataKeys(keys)) => {
+                    let mut seen = HashSet::new();
+                    for key in keys {
+                        if !seen.insert(key.to_string()) {
+                            self.violations.push(format!("metadata repeats literal key `{key}`"));
+                        }
+                    }
+                }
+                Err(error) => self.violations.push(format!("metadata tokens do not parse: {error}")),
+            }
+        }
+        if call.mac.path.segments.last().is_some_and(|segment| {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "format" | "vec" | "println" | "eprintln"
+            )
+        }) {
+            self.violations.push(format!(
+                "payload invokes {}!",
+                call.mac.path.segments.last().expect("checked").ident
+            ));
+        }
+        visit::visit_expr_macro(self, call);
+    }
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if matches!(
+            call.method.to_string().as_str(),
+            "clone"
+                | "to_string"
+                | "collect"
+                | "type_decl"
+                | "function_type_refs"
+                | "type_def_refs"
+                | "activation_inputs_ref"
+                | "code_text"
+                | "activation_analysis"
+                | "activation_return"
+                | "activation_return_evidence"
+                | "callsite_summary"
+                | "callsite_targets"
+                | "function_ref"
+                | "function_definition"
+                | "function_surface"
+                | "backend_program"
+                | "native_program_ref"
+                | "lowered_body"
+                | "guard_dispatch"
+                | "entry_dispatch"
+        ) {
+            self.violations.push(format!("payload calls {}", call.method));
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = &*call.func
+            && path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "opaque_debug" || segment.ident == "format")
+        {
+            self.violations.push(format!(
+                "payload calls {}",
+                path.path.segments.last().expect("checked").ident
+            ));
+        }
+        visit::visit_expr_call(self, call);
+    }
+}
+
+#[test]
+fn compiler2_emitters_do_not_select_or_construct_telemetry_payloads() {
+    fn visit(path: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(path).expect("read compiler2 source") {
+            let entry = entry.expect("source entry");
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, files);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    visit(
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/compiler2")),
+        &mut files,
+    );
+    let mut guard = LazyEmitterGuard {
+        emitters: 0,
+        violations: Vec::new(),
+    };
+    for path in files {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("_test.rs") || name == "cli.rs")
+        {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read emitter source");
+        assert!(
+            !source.contains(".dispatch(") && !source.contains(".span_start(") && !source.contains(".span_stop("),
+            "{} bypasses lazy telemetry helpers",
+            path.display()
+        );
+        let file = syn::parse_file(&source).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        guard.visit_file(&file);
+    }
+    assert!(
+        guard.violations.is_empty(),
+        "lazy telemetry payload violations: {:?}",
+        guard.violations
+    );
+    assert!(
+        guard.emitters > 30,
+        "the guard must cover the compiler2 emitter population"
+    );
+}
+
+#[test]
+fn compiler2_lazy_emitter_guard_handles_multiline_nested_braces_comments_and_strings() {
+    let source = r#"
+        fn example(tel: &impl Telemetry) {
+            tel.execute_lazy(&["x"], || {
+                let text = "{ comment-like }";
+                // } nested comment
+                metadata! { text: text }
+            });
+            tel.span_lazy(
+                &["x"],
+                || crate::metadata! { label: "multiline" },
+            );
+        }
+    "#;
+    let file = syn::parse_file(source).expect("fixture parses");
+    let mut guard = LazyEmitterGuard {
+        emitters: 0,
+        violations: Vec::new(),
+    };
+    guard.visit_file(&file);
+    assert_eq!(guard.emitters, 2);
+    assert!(guard.violations.is_empty(), "{:?}", guard.violations);
+}
+
+#[test]
+fn compiler2_lazy_emitter_guard_rejects_duplicate_metadata_literal_keys() {
+    let file = syn::parse_file(
+        r#"
+            fn example(tel: &impl Telemetry) {
+                tel.execute_lazy(&["x"], || metadata! { world: opaque(world), world: opaque(world) });
+            }
+        "#,
+    )
+    .expect("fixture parses");
+    let mut guard = LazyEmitterGuard {
+        emitters: 0,
+        violations: Vec::new(),
+    };
+    guard.visit_file(&file);
+    assert_eq!(guard.emitters, 1);
+    assert!(
+        guard
+            .violations
+            .iter()
+            .any(|violation| violation == "metadata repeats literal key `world`"),
+        "{:?}",
+        guard.violations
+    );
+}
 
 #[test]
 fn compiler2_world_is_lifetime_free_semantic_state() {
@@ -41,6 +275,45 @@ fn compiler2_execution_context_retains_the_concrete_telemetry_type() {
     let context = super::drive::ExecutionContext::new(&mut world, &tel);
     requires_null(&context);
     assert_eq!(std::mem::size_of_val(context.telemetry), 0);
+}
+
+#[test]
+fn compiler2_telemetry_does_not_observe_world_when_no_handler_matches() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&["unmatched"], capture.handler());
+
+    let mut world = World::new();
+    world.submit_code(
+        Some("unmatched_telemetry.fz".to_string()),
+        "fn main(), do: 0\n".to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+
+    let type_name = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "unobserved".to_string(),
+        arity: 0,
+    };
+    let function = world.reference_function(ModuleId::GLOBAL, "unobserved_fn", 0);
+    let queries_before = world.telemetry_query_count();
+    super::drive::ExecutionContext::new(&mut world, &tel).record_function_type_refs(function, vec![type_name.clone()]);
+    super::drive::ExecutionContext::new(&mut world, &tel).record_type_def_refs(type_name, Vec::new());
+    assert_eq!(
+        world.telemetry_query_count(),
+        queries_before,
+        "disabled telemetry must not query World to prepare type-reference events"
+    );
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    assert_eq!(
+        world.telemetry_world_emit_count(),
+        0,
+        "unmatched handlers must not enter World-bearing decision-event payloads"
+    );
+    assert!(capture.is_empty());
 }
 
 #[test]
@@ -92,25 +365,15 @@ impl Handler for PostMutationWorldHandler {
         if event.name == ["fz", "compiler2", "function", "source", "stashed"] && event.kind == EventKind::Event {
             let function = event
                 .metadata
-                .get("function_id")
+                .get("function")
                 .and_then(|value| value.downcast_ref::<super::FunctionId>())
                 .expect("source-stash event function");
-            let source = event
-                .metadata
-                .get("source")
-                .and_then(|value| value.downcast_ref::<super::identity::FunctionSource>())
-                .expect("source-stash event source");
             let world = event
                 .metadata
                 .get("world")
                 .and_then(|value| value.downcast_ref::<World>())
                 .expect("source-stash event world");
-            assert!(std::ptr::eq(
-                world
-                    .pending_function_source(*function)
-                    .expect("source must be stashed before telemetry dispatch"),
-                source,
-            ));
+            assert!(world.pending_function_source(*function).is_some());
             self.saw_stashed_source.set(true);
             return;
         }
@@ -120,11 +383,6 @@ impl Handler for PostMutationWorldHandler {
                 .get("activation")
                 .and_then(|value| value.downcast_ref::<super::ActivationKey>())
                 .expect("activation-input event activation");
-            let inputs = event
-                .metadata
-                .get("inputs")
-                .and_then(|value| value.downcast_ref::<Vec<super::Ty>>())
-                .expect("activation-input event inputs");
             let world = event
                 .metadata
                 .get("world")
@@ -133,7 +391,7 @@ impl Handler for PostMutationWorldHandler {
             let fact = FactKey::ActivationInputs(activation.clone());
             assert!(world.has_fact(&fact));
             assert!(world.fact_revision(&fact).is_some());
-            assert_eq!(world.activation_inputs_ref(activation), Some(inputs));
+            assert!(world.activation_inputs_ref(activation).is_some());
             self.saw_activation_inputs.set(true);
             return;
         }
@@ -744,7 +1002,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&["fz", "compiler2", "drive", "demand_on_stall"], capture.handler());
-    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<Vec<FactKey>>>> =
+    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<std::collections::HashSet<FactKey>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let demanded_facts_sink = std::rc::Rc::clone(&demanded_facts);
     tel.attach(
@@ -753,7 +1011,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
             let Some(facts) = event
                 .metadata
                 .get("demanded_facts")
-                .and_then(Value::downcast_ref::<Vec<FactKey>>)
+                .and_then(Value::downcast_ref::<std::collections::HashSet<FactKey>>)
             else {
                 return;
             };

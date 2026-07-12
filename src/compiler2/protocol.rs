@@ -153,10 +153,6 @@ impl ProtocolImplMap {
         self.slots.insert(key, protocol_impl);
     }
 
-    pub(crate) fn impl_for(&self, key: &ProtocolImplKey) -> Option<&ProtocolImpl> {
-        self.slots.get(key)
-    }
-
     pub(crate) fn impls_for_protocol(
         &self,
         protocol: ModuleId,

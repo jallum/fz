@@ -5,7 +5,7 @@ use fz_runtime::any_value::{AnyValueRef, ValueKind};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
-use crate::telemetry::{TelemetryExt as _, opaque_debug};
+use crate::telemetry::{TelemetryExt as _, opaque};
 use crate::{measurements, metadata};
 
 use super::drive::{FactKey, JobEffects};
@@ -692,9 +692,9 @@ pub(crate) fn emit_macro_expanded(
     function_ref: &super::FunctionRef,
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
-    input: &QuotedSourceRoot,
-    input_root: AnyValueRef,
-    output: &QuotedSourceRoot,
+    _input: &QuotedSourceRoot,
+    _input_root: AnyValueRef,
+    _output: &QuotedSourceRoot,
     depth: usize,
     arg_count: usize,
 ) {
@@ -706,13 +706,9 @@ pub(crate) fn emit_macro_expanded(
                 depth: depth as u64,
                 depth_budget: MAX_MACRO_EXPANSION_DEPTH as u64,
                 arg_count: arg_count as u64,
-                input_heap_id: input.key().heap_id as u64,
-                input_root_ref: input_root.raw_word(),
-                output_heap_id: output.key().heap_id as u64,
-                output_root_ref: output.root().raw_word(),
             },
             metadata! {
-                function_ref: opaque_debug(function_ref),
+                function_ref: opaque(function_ref),
             },
         )
     });
