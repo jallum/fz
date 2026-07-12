@@ -95,6 +95,28 @@ fn assert_compiler2_telemetry_only(path: &Path, context: &str) {
     );
 }
 
+fn assert_bounded_public_trace(path: &Path, context: &str, max_events: usize, max_bytes: u64) {
+    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
+    assert!(
+        log.lines().count() <= max_events,
+        "{context} exceeded telemetry event budget: {} > {max_events}",
+        log.lines().count()
+    );
+    assert!(
+        metadata(path).expect("telemetry metadata").len() <= max_bytes,
+        "{context} exceeded telemetry byte budget"
+    );
+    assert!(
+        log.contains("\"pull\",\"session\""),
+        "{context} needs a pull session signal"
+    );
+    assert!(
+        log.contains("\"pull\",\"product\",\"produced\""),
+        "{context} needs a settled product signal"
+    );
+    assert!(log.contains("\"job\""), "{context} needs job hotspot signal");
+}
+
 fn assert_lexer_passes_match_submitted_sources(path: &Path, context: &str, expected_sources: &[String]) {
     let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
     let mut counts = BTreeMap::<String, usize>::new();
@@ -263,6 +285,25 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
     }
 
     let _ = remove_file(&source_path);
+}
+
+#[test]
+fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
+    for (fixture, max_events, max_bytes) in [
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_000, 256 * 1024),
+        ("fixtures2/00009_no_runtime.fz", 300, 96 * 1024),
+    ] {
+        let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
+        let output = run_fz2(&[
+            OsStr::new("--log-telemetry"),
+            telemetry_path.as_os_str(),
+            OsStr::new("interp"),
+            OsStr::new(fixture),
+        ]);
+        assert_successful_stdout(&output, &fixture_expected_stdout(fixture), fixture);
+        assert_bounded_public_trace(&telemetry_path, fixture, max_events, max_bytes);
+        let _ = remove_file(telemetry_path);
+    }
 }
 
 #[test]

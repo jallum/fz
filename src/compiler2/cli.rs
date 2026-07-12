@@ -35,7 +35,7 @@ pub fn run() {
 
     let tel = ConfiguredTelemetry::new();
     if let Some(path) = log_telemetry.as_deref() {
-        let backend = JsonlBackend::new_file(Path::new(path)).unwrap_or_else(|error| {
+        let backend = JsonlBackend::new_public_file(Path::new(path)).unwrap_or_else(|error| {
             eprintln!("fz2 --log-telemetry {}: {}", path, error);
             exit(2);
         });

@@ -271,7 +271,7 @@ cargo run -q -- --log-telemetry /tmp/fz-00181.jsonl \
   interp fixtures2/00181_enum_reduce_operator_ref.fz
 
 jq -sr '
-  def nm: .name|join(".");
+  def nm: (.name | join("."));
   "job_starts=\([.[] | select(nm=="fz.compiler2.job" and .kind=="span_start")] | length)",
   "root_session=\([.[] | select(nm=="fz.compiler2.pull.session.finished" and .measurements.root_id==0)] | last | .measurements)"
 ' /tmp/fz-00181.jsonl
@@ -285,7 +285,7 @@ oracle sources its activation set from `Compiler2::product_executable_inventory`
 collects `driver.session().materialized_executables()` — there is no separate
 frontier scan.
 Root session measurements for `fixtures2/00181_enum_reduce_operator_ref.fz` are
-`executables=10`, `transport_positions=160`, `callables=2`, `boundaries=0`,
+`executables=10`, `transport_positions=176`, `callables=2`, `boundaries=0`,
 `producer_pokes=0`. Backend dumps may be requested with `--dump
 backend=/tmp/fz-00181.backend`; the `types` / `activations` dumps are served
 from the product-path activation inventory

@@ -1,6 +1,9 @@
+use std::cell::Cell;
 use std::env::temp_dir;
 use std::fs::{read_to_string, remove_file};
+use std::io::Write;
 use std::process::id as process_id;
+use std::rc::Rc;
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -31,7 +34,110 @@ fn capture_jsonl(ev: &Event<'_, '_, '_>) -> String {
     let (buf, w) = vec_writer();
     let backend = JsonlBackend::new_writer(w);
     backend.handle(ev);
+    backend.flush();
     String::from_utf8(buf.borrow().clone()).unwrap()
+}
+
+struct CountingWriter {
+    writes: Rc<Cell<usize>>,
+    flushes: Rc<Cell<usize>>,
+}
+
+struct PartialThenErrorWriter {
+    bytes: Rc<RefCell<Vec<u8>>>,
+    calls: Rc<Cell<usize>>,
+}
+
+impl Write for PartialThenErrorWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let call = self.calls.get();
+        self.calls.set(call + 1);
+        if call == 0 {
+            let written = bytes.len() / 2;
+            self.bytes.borrow_mut().extend_from_slice(&bytes[..written]);
+            Ok(written)
+        } else if call == 1 {
+            Err(std::io::Error::other("injected write failure"))
+        } else {
+            self.bytes.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.writes.set(self.writes.get() + 1);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushes.set(self.flushes.get() + 1);
+        Ok(())
+    }
+}
+
+#[test]
+fn jsonl_batches_writes_and_flushes_at_the_owner_boundary() {
+    let writes = Rc::new(Cell::new(0));
+    let flushes = Rc::new(Cell::new(0));
+    let backend = JsonlBackend::new_public_writer(CountingWriter {
+        writes: writes.clone(),
+        flushes: flushes.clone(),
+    });
+    let measurements = Measurements::new();
+    let metadata = Metadata::new();
+    let event = make_event(&["fz", "lexer", "pass"], EventKind::Event, &measurements, &metadata);
+    backend.handle(&event);
+    backend.handle(&event);
+    assert_eq!(writes.get(), 0);
+    assert_eq!(flushes.get(), 0);
+    backend.flush();
+    assert_eq!(writes.get(), 1);
+    assert_eq!(flushes.get(), 1);
+}
+
+#[test]
+fn default_jsonl_backend_retains_internal_compiler_events() {
+    let (buf, writer) = vec_writer();
+    let backend = JsonlBackend::new_writer(writer);
+    let measurements = Measurements::new();
+    let metadata = Metadata::new();
+    for name in [
+        &["fz", "compiler2", "work_graph", "applied"][..],
+        &["fz", "compiler2", "drive", "timed_out"][..],
+        &["fz", "compiler2", "dump", "types"][..],
+    ] {
+        backend.handle(&make_event(name, EventKind::Event, &measurements, &metadata));
+    }
+    let output = String::from_utf8(buf.borrow().clone()).unwrap();
+    assert!(output.contains("\"work_graph\",\"applied\""));
+    assert!(output.contains("\"drive\",\"timed_out\""));
+    assert!(output.contains("\"dump\",\"types\""));
+}
+
+#[test]
+fn jsonl_retries_only_the_unsent_suffix_after_a_partial_write_error() {
+    let bytes = Rc::new(RefCell::new(Vec::new()));
+    let calls = Rc::new(Cell::new(0));
+    let backend = JsonlBackend::new_public_writer(PartialThenErrorWriter {
+        bytes: bytes.clone(),
+        calls,
+    });
+    let measurements = Measurements::new();
+    let metadata = Metadata::new();
+    let event = make_event(&["fz", "lexer", "pass"], EventKind::Event, &measurements, &metadata);
+    backend.handle(&event);
+    backend.flush();
+    let prefix = bytes.borrow().len();
+    assert!(prefix > 0);
+    backend.flush();
+    let output = String::from_utf8(bytes.borrow().clone()).unwrap();
+    assert_eq!(output.lines().count(), 1, "retry must not duplicate the sent prefix");
 }
 
 #[test]
@@ -152,6 +258,7 @@ fn time_ns_increases_across_events() {
     // Burn a small but reliable amount of time.
     sleep(Duration::from_micros(50));
     backend.handle(&ev);
+    backend.flush();
     let output = String::from_utf8(buf.borrow().clone()).unwrap();
     let times: Vec<u64> = output
         .lines()
@@ -186,6 +293,8 @@ fn through_configured_telemetry_roundtrips() {
         &Metadata::new(),
     );
 
+    drop(tel);
+
     let output = String::from_utf8(buf.borrow().clone()).unwrap();
     assert!(output.contains("\"fz\""), "{}", output);
     assert!(output.contains("\"lexer\""), "{}", output);
@@ -196,7 +305,7 @@ fn through_configured_telemetry_roundtrips() {
 }
 
 #[test]
-fn file_backend_flushes_each_event() {
+fn file_backend_flushes_when_telemetry_owner_drops() {
     let path = temp_dir().join(format!(
         "fz_jsonl_flush_{}_{}.jsonl",
         process_id(),
@@ -209,6 +318,8 @@ fn file_backend_flushes_each_event() {
     tel.attach(&[], Box::new(JsonlBackend::new_file(&path).expect("open jsonl")));
 
     tel.event_lazy(&["fz", "diag", "error"], || crate::metadata! { code: "spec/violation" });
+
+    drop(tel);
 
     let output = read_to_string(&path).expect("read live jsonl");
     let _ = remove_file(&path);

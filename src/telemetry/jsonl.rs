@@ -33,7 +33,10 @@ use super::value::Value;
 
 pub struct JsonlBackend {
     writer: RefCell<Box<dyn Write>>,
+    buffer: RefCell<Vec<u8>>,
     start: Instant,
+    public_compiler2_trace: bool,
+    buffered: bool,
 }
 
 impl JsonlBackend {
@@ -41,29 +44,107 @@ impl JsonlBackend {
         let f = File::create(path)?;
         Ok(Self {
             writer: RefCell::new(Box::new(f)),
+            buffer: RefCell::new(Vec::with_capacity(64 * 1024)),
             start: Instant::now(),
+            public_compiler2_trace: false,
+            buffered: false,
         })
+    }
+
+    pub fn new_public_file(path: &Path) -> std::io::Result<Self> {
+        let mut backend = Self::new_file(path)?;
+        backend.public_compiler2_trace = true;
+        backend.buffered = true;
+        Ok(backend)
     }
 
     #[cfg(test)]
     pub fn new_writer(w: impl Write + 'static) -> Self {
         Self {
             writer: RefCell::new(Box::new(w)),
+            buffer: RefCell::new(Vec::with_capacity(64 * 1024)),
             start: Instant::now(),
+            public_compiler2_trace: false,
+            buffered: false,
         }
+    }
+
+    #[cfg(test)]
+    pub fn new_public_writer(w: impl Write + 'static) -> Self {
+        let mut backend = Self::new_writer(w);
+        backend.public_compiler2_trace = true;
+        backend.buffered = true;
+        backend
     }
 }
 
 impl Handler for JsonlBackend {
     fn handle(&self, ev: &Event<'_, '_, '_>) {
+        if self.public_compiler2_trace && !is_public_compiler2_trace_event(ev) {
+            return;
+        }
         let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         let mut buf = String::with_capacity(128);
         write_event(&mut buf, ev, time_ns);
         buf.push('\n');
-        let mut writer = self.writer.borrow_mut();
-        let _ = writer.write_all(buf.as_bytes());
-        let _ = writer.flush();
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.extend_from_slice(buf.as_bytes());
+        if !self.buffered || buffer.len() >= 64 * 1024 {
+            let mut writer = self.writer.borrow_mut();
+            write_buffer(&mut **writer, &mut buffer);
+        }
     }
+}
+
+impl JsonlBackend {
+    #[cfg(test)]
+    pub fn flush(&self) {
+        let mut buffer = self.buffer.borrow_mut();
+        {
+            let mut writer = self.writer.borrow_mut();
+            write_buffer(&mut **writer, &mut buffer);
+        }
+        let _ = self.writer.borrow_mut().flush();
+    }
+}
+
+impl Drop for JsonlBackend {
+    fn drop(&mut self) {
+        let buffer = self.buffer.get_mut();
+        write_buffer(self.writer.get_mut(), buffer);
+        let _ = self.writer.get_mut().flush();
+    }
+}
+
+fn write_buffer(writer: &mut dyn Write, buffer: &mut Vec<u8>) {
+    while !buffer.is_empty() {
+        match writer.write(buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(written) => {
+                buffer.drain(..written);
+            }
+        }
+    }
+}
+
+fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
+    if !ev.name.starts_with(&["fz", "compiler2"]) {
+        return true;
+    }
+    matches!(
+        ev.name,
+        ["fz", "compiler2", "pull", "session", ..]
+            | ["fz", "compiler2", "pull", "phase", ..]
+            | ["fz", "compiler2", "pull", "product", "produced"]
+            | ["fz", "compiler2", "work", "started"]
+            | ["fz", "compiler2", "drive", "stalled"]
+            | ["fz", "compiler2", "drive", "timed_out"]
+            | ["fz", "compiler2", "job"]
+            | ["fz", "compiler2", "backend_program", "defined"]
+            | ["fz", "compiler2", "native_program", "defined"]
+            | ["fz", "compiler2", "native_backend", ..]
+            | ["fz", "compiler2", "aot", ..]
+    )
 }
 
 fn write_event(out: &mut String, ev: &Event<'_, '_, '_>, time_ns: u64) {
