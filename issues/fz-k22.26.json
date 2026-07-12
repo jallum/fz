@@ -7,7 +7,7 @@
     "fz-k22.27"
   ],
   "created": "2026-07-12T01:36:02Z",
-  "description": "BackendCallableEntry currently conflates two authorities: first-class callable publication and native direct-only closure implementation. fz-k22.24 correctly gates published entries on transport boundary authority, but native then loses direct-only target/capture/ABI lookup and eight tests fail.\\n\\nGoal\\nRepresent direct callable target/capture/ABI authority in a distinct BackendProgram registry or equivalent canonical source. Published BackendCallableEntry remains only for actual first-class value publications.\\n\\nSignal\\nFiltering empty-boundary entries restores direct-only inventory correctness yet causes native direct target telemetry, shared capture surface, published target flow, and fallback lowering failures.\\n\\nStrategy\\nSplit the authoritative data model before applying the inventory gate. Native direct materialization/fallback reads the direct registry; first-class packaging reads publication boundaries. Do not retain semantic publication records with None boundaries as a compatibility registry.\\n\\nAcceptance\\nDirect-only and published callable paths both retain their distinct authority; fz-k22.24's inventory gate can then land without native regressions.",
+  "description": "Folded into fz-k22.23 before implementation. Direct/public registry separation cannot be verified independently because a construction's CallableId can have several producer-owned specializations. A singleton direct identity causes native closure call target disagreement; choosing by consumer target is unsound.\\n\\nRetained discovery\\nThe final fz-k22.23 model needs producer-scoped member sets carried from FunctionRef/Lambda construction, direct ABI authority distinct from BoundaryId publications, and lazy closure wrappers only for real materialized values.\\n\\nClosure condition\\nClose as folded when fz-k22.23 lands this coherent model and full gates pass.",
   "id": "fz-k22.26",
   "labels": [],
   "parent": "fz-k22",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Separate native direct-call authority from published callable inventory",
   "type": "bug",
-  "updated_at": "2026-07-12T02:03:16Z"
+  "updated_at": "2026-07-12T02:03:17Z"
 }
