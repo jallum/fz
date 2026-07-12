@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-12T01:33:25Z",
+  "description": "A callable value can be constructed once with one capture environment yet have multiple compatible specialized executable members. Current transport materialization chooses one BackendCallableEntry, pinning an ABI that later receives a different invocation shape.\\n\\nSignal\\ncompiler2_jit_runs_range_reduce2_first_acc_bridge_from_native_artifacts calls a closure whose chosen Entry expects [RawInt, RawAtom] with the alternative accumulator shape and aborts in fz_unbox_atom. Backend evidence has one Lambda construction for CallableId(1), capture_count 1 / capture_reprs [ValueRef], and two entries differing only in specialized semantic argument surface.\\n\\nStrategy\\nIntroduce a producer-scoped callable value member set, validated to share callable producer and capture surface. Carry it through transport publication and Lambda/FunctionRef value identity. Native materializes one value-facing closure boundary which dispatches boxed semantic arguments among those members, invokes each target through its authoritative ABI, and reboxes its result. This is NOT BackendCallableDispatchSet, which is a later callsite analysis union and may combine distinct closure values/environments.\\n\\nAcceptance\\nThe range-reduce JIT regression passes without widening target lanes, and runtime member selection is proven to derive only from the one constructed callable value's validated member set.",
+  "id": "fz-k22.25",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 1,
+  "status": "open",
+  "title": "Represent multi-specialization members on one callable value",
+  "type": "bug",
+  "updated_at": "2026-07-12T01:33:25Z"
+}
