@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-k22.24",
     "fz-k22.27"
   ],
   "created": "2026-07-12T01:36:02Z",
@@ -14,5 +13,5 @@
   "status": "open",
   "title": "Separate native direct-call authority from published callable inventory",
   "type": "bug",
-  "updated_at": "2026-07-12T01:46:32Z"
+  "updated_at": "2026-07-12T02:03:16Z"
 }
