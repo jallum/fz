@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-07-12T01:46:06Z",
-  "description": "fz-k22.26 separates BackendDirectCallableEntry (direct target/capture/ABI authority) from BackendCallableEntry (actual transport publication). The split fixes direct-only backend inventory and fallback transport binding, but full native tests prove NativeLowerer still eagerly constructs boundaries from every direct entry.\\n\\nGoal\\nNative closure boundaries are materialized only at a concrete closure-producing use: published values use their publication association; direct-only closures derive a local boundary from the exact concrete producer/call target. The direct registry remains lookup authority, never a global closure-value inventory.\\n\\nSignal\\nFull cargo test --lib after the split fails typed-capture/direct-target telemetry, multi-target capture surface, source-lambda JIT, published target flow, and direct-only inventory contracts. Treating all direct entries as native boundaries collapses direct executable authority into first-class value authority.\\n\\nStrategy\\nTrace concrete FunctionRef/Lambda construction and direct call lowering to identify the authoritative target at that use. Encode the boundary derivation there, retaining publication boundary data only for actual transport values. Do not restore None-boundary publication records or synthesize boundaries globally from the direct registry.\\n\\nAcceptance\\nThe full native contract/JIT regressions pass with direct-only entries absent from published inventory and no duplicate target/capture/ABI authority.",
+  "description": "Folded into fz-k22.26 before implementation because the direct registry split and lazy native-boundary derivation cannot be verified green separately.\\n\\nRetained discovery\\nNativeProgram.callable_boundaries must begin from actual BackendCallableEntry publications only. BackendDirectCallableEntry is lookup authority; a direct-only boundary is minted only at a concrete FunctionRef/Lambda materialization fallback. Native's current eager boundary inventory creates phantom boundary: None records and loses published boundary association.\\n\\nSignal\\nAfter the direct/public split, full cargo test --lib shows direct-only enum reducers and typed captures incorrectly present in native boundary inventory, while a published reducer loses its boundary target.\\n\\nClosure condition\\nClose as folded when fz-k22.26 lands the complete direct authority split with lazy direct-boundary derivation and full gates pass.",
   "id": "fz-k22.27",
   "labels": [],
   "parent": "fz-k22",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Derive native direct boundaries at concrete closure producers",
   "type": "bug",
-  "updated_at": "2026-07-12T01:46:32Z"
+  "updated_at": "2026-07-12T01:46:33Z"
 }
