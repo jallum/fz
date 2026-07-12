@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-k22.23"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-k22.26"
+  ],
   "created": "2026-07-12T01:32:40Z",
   "description": "Carrier analysis currently requests Value executables broadly, and backend packaging then creates BackendCallableEntry records for every resolution. This pollutes first-class callable inventory for direct-only reducers that have no publication boundary.\\n\\nGoal\\nPackage a callable entry only when a transport publication boundary actually names its first-class value. Direct edges remain executable/direct-call authority.\\n\\nSignal\\ncompiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inventory fails on 00010_enum_reduce_main.fz because entries are emitted with empty boundary_ids.\\n\\nStrategy\\nKeep the carrier analysis reachability it needs, but gate BackendCallableEntry packaging on boundary authority rather than facts.resolutions. Do not revise the test to accept phantom first-class inventory.\\n\\nAcceptance\\nThe direct-only inventory regression passes, and carrier/value tests retain their necessary published entries.",
   "id": "fz-k22.24",
