@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-k22.23",
     "fz-k22.26"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Keep direct-only callables out of first-class backend inventory",
   "type": "bug",
-  "updated_at": "2026-07-12T02:03:15Z"
+  "updated_at": "2026-07-12T02:03:16Z"
 }
