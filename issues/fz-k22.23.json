@@ -15,7 +15,7 @@
   "parent": "fz-k22",
   "priority": 1,
   "status": "in_progress",
-  "title": "fz-k22: shared consumer bodies must dispatch closure calls through the VALUE-carried entry identity -- a static position-\u003eentry stamp is unrepresentable for type-variable arg slots",
+  "title": "fz-k22: preserve producer callable constructions behind one public indirect ABI",
   "type": "bug",
-  "updated_at": "2026-07-13T02:27:52Z"
+  "updated_at": "2026-07-13T02:28:00Z"
 }
