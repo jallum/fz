@@ -2948,6 +2948,7 @@ fn project_executable_input_source(
         };
     }
     if demand.is_callable()
+        && !demand.callable.is_first_class()
         && let Some(shape) = select_callable_input_shape_for_demand(world, &mut delta, &exact, &demand.callable)
     {
         if let Some(publication) = publication {
@@ -4617,6 +4618,59 @@ mod tests {
             descr.capture_lanes.len(),
             1,
             "the generic boxed callable shape is one ValueRef lane: {descr:?}"
+        );
+    }
+
+    #[test]
+    fn project_executable_input_source_keeps_escaped_callable_generic_with_one_direct_source() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let surface_ty = world.types_mut().int();
+
+        let producer_fn = FunctionId::for_test(203);
+        let (context, value) = direct_callable_producer_context(&mut world, producer_fn, surface_ty);
+        let producer = fake_executable(&mut world, 90, 94, &[]);
+        let callee = fake_executable(&mut world, 90, 95, &[surface_ty]);
+
+        let mut contexts = TransportContexts::default();
+        contexts.by_executable.insert(producer.clone(), context);
+        contexts.incoming_input_sources.insert(
+            (callee.clone(), 0),
+            vec![IncomingInputSource {
+                producer,
+                value,
+                role: IncomingInputRole::CallArgument,
+            }],
+        );
+
+        let demand = RuntimeDemand::callable(CallableDemand {
+            resolved: BTreeSet::from([CallableSurface::new(vec![surface_ty], world.types_mut())]),
+            opaque: false,
+            escape: true,
+        });
+
+        let mut facts = TransportFactsBuilder::default();
+        let mut cycle = Cycle::default();
+        let mut memo = ProjectionMemo::default();
+        let projected = project_executable_input_source(
+            &mut world, &contexts, &mut facts, &callee, surface_ty, &demand, 0, None, &mut cycle, &mut memo,
+        );
+
+        let SourceShape::Exact(shape) = projected else {
+            panic!("escaped callable input must resolve to a generic boxed shape, not {projected:?}");
+        };
+        let ShapeDescr::Callable(callable) = world.shape(shape) else {
+            panic!("expected a callable shape, got {:?}", world.shape(shape));
+        };
+        let descr = world.callable(*callable);
+        assert_eq!(
+            descr.function, None,
+            "an escaped callable cannot reuse a direct-only shape: {descr:?}"
+        );
+        assert_eq!(
+            descr.capture_lanes.len(),
+            1,
+            "an escaped callable is one boxed ValueRef lane: {descr:?}"
         );
     }
 
