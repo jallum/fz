@@ -4,7 +4,9 @@
     "fz-k22.20",
     "fz-k22.23"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-1ah.12"
+  ],
   "created": "2026-07-10T20:24:42Z",
   "description": "Signal: cargo test --test fz2_cli fails on Enum fixtures. After the fz-k22.14/.18/.20/.22 fold, the old Cranelift verifier failure is gone, but native_enum_take_positive_single_call_survives_reduction_yield reaches runtime and aborts in fz_closure_get_capture_ref: capture index 1 reads raw tag ValueKind(0), word 0x2.\n\nRoot cause repaired by the folded work: executable/transport symbols preserve ActivationKey.arrow; capture groundings and callable entry identity now cross transport.\n\nRemaining blocker: fz-k22.23. A shared consumer body cannot select one static callable-entry stamp when its argument remains type-variable; it must dispatch through the value-carried entry identity. The integration full-library gate currently has ten failures in the affected direct-only/boundary assertions and native closure paths. The user-owned regression test src/compiler2/drive_test.rs::compiler2_native_enum_take_closure_constructors_match_entry_capture_counts passes, proving construction counts align; the crash is later invocation/dispatch.\n\nGoal: restore JIT and AOT execution for the existing fz2 Enum fixture contracts without suppressing diagnostics or relaxing the CLI tests.\n\nVerification after fz-k22.23: enum_take_positive_single, enum_take_drop_split, and enum_predicate_search run/build; the constructor capture-count test; cargo test --test fz2_cli; cargo test --lib; strict clippy.",
   "id": "fz-1ah.11",
@@ -20,5 +22,5 @@
   "status": "in_progress",
   "title": "Repair native Enum callable ABI regressions exposed by fz2 CLI",
   "type": "bug",
-  "updated_at": "2026-07-11T13:49:38Z"
+  "updated_at": "2026-07-13T07:22:13Z"
 }

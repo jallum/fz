@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1ah.11"
+  ],
   "blocks": [],
   "created": "2026-07-13T07:22:08Z",
   "description": "Goal\nThe telemetry arc is complete only when every handler derives presentation data from raw authority references and the full suite proves that contract. Emitters remain lazy and pass minimal borrowed authorities; handlers that retain data copy it themselves.\n\nBaseline proof\nOn fz-1ah/integration at ca59b76ac, source_publication_defers_local_macro_expansion_until_function_demand fails because the macro-expanded test still expects input_heap_id/output_heap_id/input_root_ref scalar measurements that the raw-reference emitter removed. compiler2_notes_top_level_types_into_the_global_scope and protocol-domain telemetry likewise still expect copied name strings instead of reading opaque TypeName/World authority. These failures predate fz-k22.23 and must not be hidden in its callable-model changes.\n\nStrategy\nInventory all compiler2 telemetry emitters and handlers. Remove emitter-side id/name/count/render transformations and redundant fields; pass the smallest raw borrowed authorities, preferring World plus stable keys when the fact already lives in World. Update production and test handlers to derive values during the callback and copy only when retaining them. Where a test needs macro input/output heap identity, pass the raw QuotedSourceRoot/input root references rather than reconstructing scalar measurements. Delete obsolete helper accessors and copied metadata assertions.\n\nSignal\nThe no-handler world query counters stay zero; emitter guard tests prove no eager payload work; handler tests prove retained copies are made in handlers; cargo test --lib and cargo clippy --all-targets -- -D warnings pass. Release telemetry/no-telemetry fixture measurements remain within the epic performance bounds.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Migrate raw-authority telemetry handlers and audit event payloads",
   "type": "bug",
-  "updated_at": "2026-07-13T07:22:08Z"
+  "updated_at": "2026-07-13T07:22:13Z"
 }
