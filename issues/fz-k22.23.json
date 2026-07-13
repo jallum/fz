@@ -13,9 +13,15 @@
   "id": "fz-k22.23",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "Refinement-only model correction: downstream must never infer or reverse-engineer an observable discriminator from Ty. Preserve an authoritative observation witness forward, or collapse targets where they diverge. Real-fixture spikes found zero direct-callsite runtime-predicate collisions. Callable construction edges do collide, but exact {[], int} vs {[int], int} edges resolve to the same executable and must not motivate dispatch. Remaining split-family distinct targets have identical transported shapes; drop_while differs only in boolean lane identity while retaining the same tuple structure. Structural DispatchMatrix capability is therefore not proof of necessity. Current lead: DispatchDemand is forward-derived from EntryDispatch and convergence-collapse is the existing key abstraction, but CallableSurface/CallableFlowEdge retain only Ty surfaces. Prove whether ignored tuple-union correlation and scalar literals should collapse at key formation; do not synthesize patterns later.",
+      "timestamp": "2026-07-13T19:14:02Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-k22: preserve producer callable constructions behind one public indirect ABI",
   "type": "bug",
-  "updated_at": "2026-07-13T13:18:00Z"
+  "updated_at": "2026-07-13T19:14:02Z"
 }
