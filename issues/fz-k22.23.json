@@ -17,5 +17,5 @@
   "status": "in_progress",
   "title": "fz-k22: shared consumer bodies must dispatch closure calls through the VALUE-carried entry identity -- a static position-\u003eentry stamp is unrepresentable for type-variable arg slots",
   "type": "bug",
-  "updated_at": "2026-07-13T02:26:50Z"
+  "updated_at": "2026-07-13T02:27:14Z"
 }
