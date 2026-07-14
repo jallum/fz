@@ -6,14 +6,16 @@
   "blocks": [
     "fz-k22.27"
   ],
+  "closed_at": "2026-07-14T19:52:34Z",
+  "close_reason": "Folded into fz-k22.23 and landed in 8cb9b7a90. Direct-call evidence remains separate from first-class construction/publication inventory.",
   "created": "2026-07-12T01:36:02Z",
   "description": "Folded into fz-k22.23 before implementation. Direct/public registry separation cannot be verified independently because a construction's CallableId can have several producer-owned specializations. A singleton direct identity causes native closure call target disagreement; choosing by consumer target is unsound.\\n\\nRetained discovery\\nThe final fz-k22.23 model needs producer-scoped member sets carried from FunctionRef/Lambda construction, direct ABI authority distinct from BoundaryId publications, and lazy closure wrappers only for real materialized values.\\n\\nClosure condition\\nClose as folded when fz-k22.23 lands this coherent model and full gates pass.",
   "id": "fz-k22.26",
   "labels": [],
   "parent": "fz-k22",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Separate native direct-call authority from published callable inventory",
   "type": "bug",
-  "updated_at": "2026-07-12T02:03:17Z"
+  "updated_at": "2026-07-14T19:52:34Z"
 }
