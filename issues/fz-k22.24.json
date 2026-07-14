@@ -6,14 +6,16 @@
   "blocks": [
     "fz-k22.26"
   ],
+  "closed_at": "2026-07-14T19:52:34Z",
+  "close_reason": "Folded into fz-k22.23 and landed in 8cb9b7a90. Backend construction inventory is gated by actual first-class publications; direct-only producers remain excluded.",
   "created": "2026-07-12T01:32:40Z",
   "description": "Folded into fz-k22.23 before implementation. Published inventory gating is inseparable from producer-scoped callable member identity: filtering direct-only entries is correct, but native/interpreter need the same constructed value's member relation to preserve target/capture authority.\\n\\nRetained discovery\\nBackendCallableEntry must represent actual BoundaryId publications only; direct target ABI is distinct. The final fz-k22.23 change must establish both without consumer-position re-selection.\\n\\nClosure condition\\nClose as folded when fz-k22.23 lands the coherent direct/public/member-set model and full gates pass.",
   "id": "fz-k22.24",
   "labels": [],
   "parent": "fz-k22",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Keep direct-only callables out of first-class backend inventory",
   "type": "bug",
-  "updated_at": "2026-07-12T02:03:17Z"
+  "updated_at": "2026-07-14T19:52:34Z"
 }
