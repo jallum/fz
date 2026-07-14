@@ -11,8 +11,8 @@ use crate::telemetry::{Telemetry, TelemetryExt as _, opaque};
 use crate::{measurements, metadata};
 
 use super::artifact::{
-    AbiReadyExecutable, BackendCallArg, BackendEntryOrigin, BackendProgram, BackendReceive, BackendStep, CallEdge,
-    CallReturnFlow, EffectSummary, MaterializedExecutable, ReusableConsCapture,
+    AbiReadyExecutable, BackendCallArg, BackendProgram, BackendReceive, BackendStep, CallEdge, CallReturnFlow,
+    EffectSummary, MaterializedExecutable, ReusableConsCapture,
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
@@ -24,8 +24,10 @@ use super::jobs::runtime_demand::DemandFactsCache;
 use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{
-    BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportPosition,
+    BoundaryFacts, BoundaryId, CallableConstructionFact, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol,
+    ShapeId, TransportPosition,
 };
+pub use super::transport::{TransportCarrier, TransportLayout};
 use super::world::World;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -103,23 +105,23 @@ impl ProductKey {
     }
 }
 
-/// A transport position's shape verdict. `AbsentForClosure` is never a
-/// terminal claim -- it names the closure solve (`transport_closure_cover`
-/// id) that failed to ground the position, so `invalidate_transport_products`
-/// can retract it the moment that SAME solve is displaced (a settled-demand
-/// change or a new incoming edge touching anything the solve consulted).
-/// There is no bare "permanently absent" variant: every absence is provisional
-/// on the closure that produced it, by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportShapeFact {
-    Shape(ShapeId),
+    Layout(TransportLayout),
     AbsentForClosure(u64),
 }
 
 impl TransportShapeFact {
     pub fn shape(&self) -> Option<ShapeId> {
         match self {
-            Self::Shape(shape) => Some(*shape),
+            Self::Layout(layout) => Some(layout.structural),
+            Self::AbsentForClosure(_) => None,
+        }
+    }
+
+    pub fn layout(&self) -> Option<TransportLayout> {
+        match self {
+            Self::Layout(layout) => Some(*layout),
             Self::AbsentForClosure(_) => None,
         }
     }
@@ -185,13 +187,24 @@ pub struct SymbolicBackendClause {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SymbolicBackendEntry {
     pub span: crate::source::Span,
-    pub origin: BackendEntryOrigin,
+    pub origin: SymbolicBackendEntryOrigin,
     pub params: Vec<ValueId>,
     pub captures: Vec<ValueId>,
     pub capture_positions: Vec<TransportPosition>,
     pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<BackendStep>,
     pub tail: SymbolicBackendTail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolicBackendEntryOrigin {
+    Clause,
+    Branch,
+    ReceiveOutcome,
+    DeliveredResume {
+        value: ValueId,
+        position: TransportPosition,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -358,6 +371,16 @@ impl ProductMemo {
 pub struct IncomingInputSource {
     pub producer: ExecutableKey,
     pub value: ValueId,
+    pub role: IncomingInputRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IncomingInputRole {
+    CallArgument,
+    CallableCapture {
+        construction: ValueId,
+        capture_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -479,6 +502,8 @@ pub struct PullSession {
     input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
     materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
+    materialized_world_revisions: HashMap<ExecutableKey, [u64; 3]>,
+    root_artifact_revisions: HashMap<RootId, u64>,
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
     abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
     backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
@@ -491,6 +516,7 @@ pub struct PullSession {
     // `note_demanded_transport_position`, the single insertion point.
     demanded_capture_resume_positions: HashMap<ExecutableSymbol, HashSet<TransportPosition>>,
     transport_shape_facts: HashMap<TransportPosition, TransportShapeFact>,
+    transport_layouts: HashMap<TransportPosition, TransportLayout>,
     // `transport_shapes` and `transport_shapes_by_symbol` are one fact in two
     // keyings: the flat position->shape map, and the per-owning-executable
     // index `session_materialized_executable_transport` consumes instead of
@@ -543,6 +569,7 @@ pub struct PullSession {
     transport_closure_consult_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
     callable_facts: HashMap<CallableId, CallableFacts>,
+    callable_constructions: HashMap<TransportPosition, CallableConstructionFact>,
     boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
     demanded_callables: HashSet<CallableId>,
     demanded_boundaries: HashSet<BoundaryId>,
@@ -577,6 +604,8 @@ impl PullSession {
             input_demand_contributors: HashMap::new(),
             input_demands: HashMap::new(),
             materialized_executables: HashMap::new(),
+            materialized_world_revisions: HashMap::new(),
+            root_artifact_revisions: HashMap::new(),
             executable_effects: HashMap::new(),
             abi_executables: HashMap::new(),
             backend_executables: HashMap::new(),
@@ -584,6 +613,7 @@ impl PullSession {
             demanded_capture_resume_positions: HashMap::new(),
             transport_shape_facts: HashMap::new(),
             transport_shapes: HashMap::new(),
+            transport_layouts: HashMap::new(),
             transport_shapes_by_symbol: HashMap::new(),
             transport_components: HashMap::new(),
             solved_transport_closures: HashMap::new(),
@@ -592,6 +622,7 @@ impl PullSession {
             transport_closure_consult_dependents: HashMap::new(),
             transport_positions_by_executable: HashMap::new(),
             callable_facts: HashMap::new(),
+            callable_constructions: HashMap::new(),
             boundary_facts: HashMap::new(),
             demanded_callables: HashSet::new(),
             demanded_boundaries: HashSet::new(),
@@ -756,6 +787,35 @@ impl PullSession {
         self.materialized_executables.get(executable)
     }
 
+    pub fn materialized_executable_is_fresh(&self, executable: &ExecutableKey, revisions: [u64; 3]) -> bool {
+        self.materialized_world_revisions.get(executable) == Some(&revisions)
+    }
+
+    pub fn record_materialized_executable_revisions(&mut self, executable: ExecutableKey, revisions: [u64; 3]) {
+        self.materialized_world_revisions.insert(executable, revisions);
+    }
+
+    fn root_artifacts_are_fresh(&self, root: RootId, revision: u64) -> bool {
+        self.root_artifact_revisions.get(&root) == Some(&revision)
+    }
+
+    fn record_root_artifact_revision(&mut self, root: RootId, revision: u64) {
+        self.root_artifact_revisions.insert(root, revision);
+    }
+
+    fn invalidate_root_artifact_products(&mut self, root: RootId) {
+        self.memo.remove(&ProductKey::RootBackendProduct(root));
+        self.root_artifact_revisions.remove(&root);
+        let executables = self.demanded_executables.iter().cloned().collect::<Vec<_>>();
+        for executable in executables {
+            self.invalidate_artifact_products(&executable);
+        }
+    }
+
+    pub fn invalidate_artifact_products_for(&mut self, executable: &ExecutableKey) {
+        self.invalidate_artifact_products(executable);
+    }
+
     pub fn materialized_executables(&self) -> &HashMap<ExecutableKey, MaterializedExecutable> {
         &self.materialized_executables
     }
@@ -789,7 +849,11 @@ impl PullSession {
     }
 
     pub fn transport_shape(&self, position: &TransportPosition) -> Option<ShapeId> {
-        self.transport_shapes.get(position).copied()
+        self.transport_layout(position).map(|layout| layout.structural)
+    }
+
+    pub fn transport_layout(&self, position: &TransportPosition) -> Option<TransportLayout> {
+        self.transport_layouts.get(position).copied()
     }
 
     pub fn transport_shape_fact(&self, position: &TransportPosition) -> Option<&TransportShapeFact> {
@@ -798,6 +862,10 @@ impl PullSession {
 
     pub fn transport_shapes(&self) -> &HashMap<TransportPosition, ShapeId> {
         &self.transport_shapes
+    }
+
+    pub fn transport_layouts(&self) -> &HashMap<TransportPosition, TransportLayout> {
+        &self.transport_layouts
     }
 
     /// Every position with a recorded shape whose OWNING executable is
@@ -851,6 +919,10 @@ impl PullSession {
 
     pub fn callable_facts_inventory(&self) -> &HashMap<CallableId, CallableFacts> {
         &self.callable_facts
+    }
+
+    pub fn callable_constructions(&self) -> &HashMap<TransportPosition, CallableConstructionFact> {
+        &self.callable_constructions
     }
 
     pub fn boundary_facts(&self, boundary: BoundaryId) -> Option<&BoundaryFacts> {
@@ -1309,10 +1381,14 @@ impl PullSession {
     }
 
     pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
+        self.record_transport_layout(position, TransportLayout::structural(shape));
+    }
+
+    pub fn record_transport_layout(&mut self, position: TransportPosition, layout: TransportLayout) {
         self.note_demanded_transport_position(&position);
         self.transport_shape_facts
-            .insert(position.clone(), TransportShapeFact::Shape(shape));
-        self.insert_transport_shape(position, shape);
+            .insert(position.clone(), TransportShapeFact::Layout(layout));
+        self.insert_transport_layout(position, layout);
     }
 
     pub fn record_transport_shape_for(
@@ -1321,14 +1397,23 @@ impl PullSession {
         position: TransportPosition,
         shape: ShapeId,
     ) {
+        self.record_transport_layout_for(executable, position, TransportLayout::structural(shape));
+    }
+
+    pub fn record_transport_layout_for(
+        &mut self,
+        executable: &ExecutableKey,
+        position: TransportPosition,
+        layout: TransportLayout,
+    ) {
         self.note_demanded_transport_position(&position);
         self.transport_positions_by_executable
             .entry(executable.clone())
             .or_default()
             .insert(position.clone());
         self.transport_shape_facts
-            .insert(position.clone(), TransportShapeFact::Shape(shape));
-        let changed = self.insert_transport_shape(position, shape);
+            .insert(position.clone(), TransportShapeFact::Layout(layout));
+        let changed = self.insert_transport_layout(position, layout);
         if changed {
             self.invalidate_artifact_products(executable);
         }
@@ -1390,18 +1475,20 @@ impl PullSession {
 
     /// The SOLE insertion point into `transport_shapes`: keeps the by-symbol
     /// index in lockstep. Returns whether the recorded shape changed.
-    fn insert_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) -> bool {
+    fn insert_transport_layout(&mut self, position: TransportPosition, layout: TransportLayout) -> bool {
         self.transport_shapes_by_symbol
             .entry(position.executable().clone())
             .or_default()
             .insert(position.clone());
-        self.transport_shapes.insert(position, shape) != Some(shape)
+        self.transport_shapes.insert(position.clone(), layout.structural);
+        self.transport_layouts.insert(position, layout) != Some(layout)
     }
 
     /// The SOLE removal point from `transport_shapes`: keeps the by-symbol
     /// index in lockstep.
     fn remove_transport_shape(&mut self, position: &TransportPosition) {
         self.transport_shapes.remove(position);
+        self.transport_layouts.remove(position);
         if let Some(positions) = self.transport_shapes_by_symbol.get_mut(position.executable()) {
             positions.remove(position);
             if positions.is_empty() {
@@ -1431,6 +1518,11 @@ impl PullSession {
     pub fn record_callable_facts(&mut self, callable: CallableId, facts: CallableFacts) {
         self.demanded_callables.insert(callable);
         self.callable_facts.insert(callable, facts);
+    }
+
+    pub fn record_callable_construction(&mut self, construction: CallableConstructionFact) {
+        self.callable_constructions
+            .insert(construction.producer.clone(), construction);
     }
 
     pub fn record_boundary_facts(&mut self, boundary: BoundaryId, facts: BoundaryFacts) {
@@ -1504,6 +1596,7 @@ impl PullSession {
         match key {
             ProductKey::MaterializedExecutable(executable) => {
                 self.materialized_executables.remove(executable);
+                self.materialized_world_revisions.remove(executable);
             }
             ProductKey::ExecutableEffects(executable) => {
                 self.executable_effects.remove(executable);
@@ -1537,6 +1630,7 @@ impl PullSession {
         self.memo.remove(&ProductKey::AbiExecutable(executable.clone()));
         self.memo.remove(&ProductKey::BackendExecutable(executable.clone()));
         self.materialized_executables.remove(executable);
+        self.materialized_world_revisions.remove(executable);
         self.abi_executables.remove(executable);
         self.backend_executables.remove(executable);
     }
@@ -1739,6 +1833,22 @@ where
 }
 
 pub trait ProductProducers {
+    fn transport_executable(&mut self, _root: RootId, _position: &TransportPosition) -> Option<ExecutableKey> {
+        None
+    }
+
+    fn fact_revision(&mut self, _fact: &FactKey) -> u64 {
+        0
+    }
+
+    fn root_artifact_revision(&mut self, _root: RootId) -> Option<u64> {
+        None
+    }
+
+    fn executable_artifact_revisions(&mut self, _executable: &ExecutableKey) -> Option<[u64; 3]> {
+        None
+    }
+
     fn produce_root_backend_product(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome;
     fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
     fn produce_abi_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
@@ -1767,6 +1877,25 @@ impl<'w, 'a, T: crate::telemetry::Telemetry> WorldProductProducers<'w, 'a, T> {
 }
 
 impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
+    fn transport_executable(&mut self, root: RootId, position: &TransportPosition) -> Option<ExecutableKey> {
+        Some(super::jobs::backend::executable_key_for_symbol(
+            root,
+            position.executable(),
+        ))
+    }
+
+    fn fact_revision(&mut self, fact: &FactKey) -> u64 {
+        self.world.fact_revision(fact).unwrap_or(0)
+    }
+
+    fn root_artifact_revision(&mut self, root: RootId) -> Option<u64> {
+        Some(self.world.root_artifact_revision(root))
+    }
+
+    fn executable_artifact_revisions(&mut self, executable: &ExecutableKey) -> Option<[u64; 3]> {
+        Some(self.world.executable_artifact_revisions(executable))
+    }
+
     fn produce_root_backend_product(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome {
         super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, session, root)
     }
@@ -1806,7 +1935,7 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
     }
 
     fn produce_transport_shape(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
-        super::jobs::transport::produce_transport_shape_product(self.world, session, position)
+        super::jobs::transport::produce_transport_shape_product(session, position)
     }
 
     fn produce_transport_component(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
@@ -1862,6 +1991,47 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
         self.emit("requested", &key, 0);
         self.session.note_product_request(&key);
+        let stale_transport_executable = key.transport_position().and_then(|position| {
+            let executable = producers.transport_executable(self.session.root(), position)?;
+            self.session
+                .covering_solve_consumed_revisions(&executable)
+                .is_some_and(|snapshot| {
+                    snapshot
+                        .iter()
+                        .any(|(fact, revision)| producers.fact_revision(fact) != *revision)
+                })
+                .then_some(executable)
+        });
+        if let Some(executable) = stale_transport_executable {
+            self.session.displace_transport_closure_for(&executable);
+        }
+        let root_artifact_revision = match &key {
+            ProductKey::RootBackendProduct(root) => producers.root_artifact_revision(*root),
+            _ => None,
+        };
+        let executable_artifact_revisions = match &key {
+            ProductKey::BackendExecutable(executable)
+            | ProductKey::AbiExecutable(executable)
+            | ProductKey::MaterializedExecutable(executable) => producers.executable_artifact_revisions(executable),
+            _ => None,
+        };
+        if let (ProductKey::RootBackendProduct(root), Some(revision)) = (&key, root_artifact_revision)
+            && self.session.memo.get(&key).is_some()
+            && !self.session.root_artifacts_are_fresh(*root, revision)
+        {
+            self.session.invalidate_root_artifact_products(*root);
+        }
+        if let (
+            ProductKey::BackendExecutable(executable)
+            | ProductKey::AbiExecutable(executable)
+            | ProductKey::MaterializedExecutable(executable),
+            Some(revisions),
+        ) = (&key, executable_artifact_revisions)
+            && self.session.memo.get(&key).is_some()
+            && !self.session.materialized_executable_is_fresh(executable, revisions)
+        {
+            self.session.invalidate_artifact_products(executable);
+        }
         if let Some(value) = self.session.memo.get(&key) {
             self.emit("cache_hit", &key, 0);
             return PullOutcome::Produced(value.clone());
@@ -1907,6 +2077,9 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     return PullOutcome::Waiting(waits);
                 }
                 self.emit_produced(&key, finish.identical);
+                if let (ProductKey::RootBackendProduct(root), Some(revision)) = (&key, root_artifact_revision) {
+                    self.session.record_root_artifact_revision(*root, revision);
+                }
                 PullOutcome::Produced(value)
             }
             PullOutcome::Waiting(waits) => {
@@ -1981,6 +2154,7 @@ mod tests {
         calls: Vec<ProductKey>,
         reenter: Option<ProductKey>,
         root_entry: Option<ExecutableKey>,
+        artifact_revisions: Option<[u64; 3]>,
     }
 
     impl FakeProducers {
@@ -2016,15 +2190,22 @@ mod tests {
     }
 
     impl ProductProducers for FakeProducers {
+        fn executable_artifact_revisions(&mut self, _executable: &ExecutableKey) -> Option<[u64; 3]> {
+            self.artifact_revisions
+        }
+
         fn produce_root_backend_product(&mut self, _session: &mut PullSession, root: RootId) -> PullOutcome {
             self.produce(ProductKey::RootBackendProduct(root))
         }
 
-        fn produce_backend_executable(
-            &mut self,
-            _session: &mut PullSession,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
+        fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+            if let Some(revisions) = self.artifact_revisions {
+                session.record_materialized_executable_revisions(executable.clone(), revisions);
+                let key = ProductKey::BackendExecutable(executable.clone());
+                self.calls.push(key.clone());
+                self.produced.insert(key);
+                return PullOutcome::Produced(ProductValue::Unit);
+            }
             self.produce(ProductKey::BackendExecutable(executable.clone()))
         }
 
@@ -2126,6 +2307,36 @@ mod tests {
     }
 
     #[test]
+    fn product_driver_rebuilds_cached_artifacts_after_semantic_revision_moves() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(7);
+        let executable = fake_executable(root);
+        let key = ProductKey::BackendExecutable(executable);
+        let mut producers = FakeProducers {
+            artifact_revisions: Some([1, 1, 1]),
+            ..FakeProducers::default()
+        };
+        let mut driver = ProductDriver::new(&tel, root);
+
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+
+        producers.artifact_revisions = Some([1, 2, 1]);
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+
+        assert_eq!(producers.calls.iter().filter(|called| **called == key).count(), 2);
+    }
+
+    #[test]
     fn product_driver_reports_fact_waits_as_waits_not_scheduler_work() {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
@@ -2172,6 +2383,7 @@ mod tests {
         let source = IncomingInputSource {
             producer: caller.clone(),
             value: ValueId::from_u32(7),
+            role: IncomingInputRole::CallArgument,
         };
         let edge = DemandedCallEdge {
             caller: caller.clone(),
@@ -2459,6 +2671,7 @@ mod tests {
         let source = IncomingInputSource {
             producer: caller.clone(),
             value: ValueId::from_u32(9),
+            role: IncomingInputRole::CallArgument,
         };
         let mut driver = ProductDriver::new(&tel, root);
         driver.session_mut().record_call_edge(DemandedCallEdge {
@@ -2492,6 +2705,7 @@ mod tests {
         let source = IncomingInputSource {
             producer: caller.clone(),
             value: ValueId::from_u32(11),
+            role: IncomingInputRole::CallArgument,
         };
         let mut driver = ProductDriver::new(&tel, root);
         let mut world = World::new();
@@ -2595,7 +2809,9 @@ mod tests {
 
         assert_eq!(
             driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
-            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Shape(shape)))
+            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Layout(
+                TransportLayout::structural(shape),
+            )))
         );
         assert_eq!(
             driver.pull(&mut producers, ProductKey::TransportComponent(position.clone())),
@@ -2714,8 +2930,12 @@ mod tests {
                 target: CallEdge::Direct(DirectCallEdge {
                     callee: CallTarget::Local(callee),
                     return_flow: CallReturnFlow::Tail {
-                        callee_return: TransportPosition::ExecutableReturn {
+                        source: TransportPosition::ExecutableReturn {
                             executable: callee_symbol,
+                        },
+                        payload: TransportPosition::ReturnPayload {
+                            executable: caller_symbol.clone(),
+                            callsite: CallSiteId::from_u32(0),
                         },
                         caller_return: TransportPosition::ExecutableReturn {
                             executable: caller_symbol,
@@ -2925,8 +3145,12 @@ mod tests {
                 target: CallEdge::Direct(DirectCallEdge {
                     callee: CallTarget::Local(callee),
                     return_flow: CallReturnFlow::Tail {
-                        callee_return: TransportPosition::ExecutableReturn {
+                        source: TransportPosition::ExecutableReturn {
                             executable: callee_symbol,
+                        },
+                        payload: TransportPosition::ReturnPayload {
+                            executable: caller_symbol.clone(),
+                            callsite: CallSiteId::from_u32(0),
                         },
                         caller_return: TransportPosition::ExecutableReturn {
                             executable: caller_symbol,
@@ -3113,8 +3337,12 @@ mod tests {
                 target: CallEdge::Direct(DirectCallEdge {
                     callee: CallTarget::Local(callee),
                     return_flow: CallReturnFlow::Tail {
-                        callee_return: TransportPosition::ExecutableReturn {
+                        source: TransportPosition::ExecutableReturn {
                             executable: callee_symbol,
+                        },
+                        payload: TransportPosition::ReturnPayload {
+                            executable: caller_symbol.clone(),
+                            callsite: CallSiteId::from_u32(0),
                         },
                         caller_return: TransportPosition::ExecutableReturn {
                             executable: caller_symbol,

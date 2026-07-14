@@ -11,15 +11,17 @@ use super::super::drive::FactKey;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
     IncomingInputSource, InputSlot, ProductKey, ProductValue, PullOutcome, PullSession, PullWait,
-    SolvedTransportClosure, SolvedTransportComponent, TransportComponentInventory, TransportShapeFact,
+    SolvedTransportClosure, SolvedTransportComponent, TransportCarrier, TransportComponentInventory, TransportLayout,
+    TransportShapeFact,
 };
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand,
     RuntimeDemand, SelectedCallee, ShapeDemand,
 };
 use super::super::transport::{
-    ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableDescr, CallableDirectEdge, CallableFacts,
-    CallableId, CodegenLaneRepr, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
+    ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
+    CallableConstructionMember, CallableDescr, CallableDirectEdge, CallableFacts, CallableId, CodegenLaneRepr,
+    ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -59,7 +61,7 @@ type IncomingInputKey = (ExecutableKey, usize);
 #[derive(Debug, Default)]
 struct TransportContexts {
     by_executable: HashMap<ExecutableKey, ExecutableContext>,
-    incoming_input_sources: HashMap<IncomingInputKey, Vec<(ExecutableKey, ValueId)>>,
+    incoming_input_sources: HashMap<IncomingInputKey, Vec<IncomingInputSource>>,
     /// When `Some`, every projection lookup that dereferences a neighbor's
     /// context records that neighbor's key here. `derive_executable_transport`
     /// runs a throwaway recording projection against the full-closure context
@@ -122,13 +124,13 @@ impl TransportContexts {
     /// value)` pairs, in a deterministic order (producer sort key, then value).
     /// Records each producer as accessed: projection projects each through its
     /// own context, so the producers belong to the cone.
-    fn incoming_inputs(&self, callee: &ExecutableKey, semantic_index: usize) -> &[(ExecutableKey, ValueId)] {
+    fn incoming_inputs(&self, callee: &ExecutableKey, semantic_index: usize) -> &[IncomingInputSource] {
         let sources = self
             .incoming_input_sources
             .get(&(callee.clone(), semantic_index))
             .map_or(&[][..], Vec::as_slice);
-        for (producer, _) in sources {
-            self.record_access(producer);
+        for source in sources {
+            self.record_access(&source.producer);
         }
         sources
     }
@@ -148,6 +150,7 @@ enum TransportSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LocalCallableProducer {
+    value: ValueId,
     function: FunctionId,
     captures: Box<[ValueId]>,
 }
@@ -247,6 +250,7 @@ struct ProjectionMemo {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TransportFactsBuilder {
     callables: HashMap<CallableId, CallableFactsDraft>,
+    constructions: HashMap<TransportPosition, CallableConstructionFact>,
     boundaries: HashMap<BoundaryId, BoundaryFactsDraft>,
     publication_source_shapes: HashMap<TransportPosition, Vec<ShapeId>>,
     publication_source_positions: HashMap<TransportPosition, Vec<TransportPosition>>,
@@ -280,6 +284,17 @@ impl ShapeConstraintGraph {
         self.anchors
             .iter()
             .find_map(|(anchored, shape)| (anchored == position).then_some(*shape))
+    }
+
+    fn component_has_anchor(&self, position: &TransportPosition) -> bool {
+        let union = self.build_union();
+        let Some(_) = union.indexes.get(position) else {
+            return false;
+        };
+        let root = union.find_existing(position);
+        self.anchors
+            .iter()
+            .any(|(anchored, _)| union.find_existing(anchored) == root)
     }
 
     /// Build the position union-find from the anchors and equality edges. The
@@ -607,6 +622,9 @@ impl TransportFactsBuilder {
                 draft.boundary_ids.clone(),
             );
         }
+        for construction in other.constructions.values() {
+            self.record_callable_construction(construction.clone());
+        }
         for (boundary, draft) in &other.boundaries {
             for publication in &draft.publications {
                 self.record_boundary(*boundary, publication.clone());
@@ -621,7 +639,17 @@ impl TransportFactsBuilder {
         }
     }
 
-    fn finish(self) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
+    fn record_callable_construction(&mut self, construction: CallableConstructionFact) {
+        self.constructions.insert(construction.producer.clone(), construction);
+    }
+
+    fn finish(
+        self,
+    ) -> (
+        HashMap<CallableId, CallableFacts>,
+        HashMap<TransportPosition, CallableConstructionFact>,
+        HashMap<BoundaryId, BoundaryFacts>,
+    ) {
         let callables = self
             .callables
             .into_iter()
@@ -657,17 +685,12 @@ impl TransportFactsBuilder {
                 )
             })
             .collect();
-        (callables, boundaries)
+        (callables, self.constructions, boundaries)
     }
 }
 
-pub(crate) fn produce_transport_shape_product(
-    world: &mut World,
-    session: &mut PullSession,
-    position: &TransportPosition,
-) -> PullOutcome {
-    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
-    displace_covering_solve_if_stale(world, session, &executable);
+pub(crate) fn produce_transport_shape_product(session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
+    let executable = executable_key_for_transport_position(session.root(), position);
     if let Some(fact) = session.transport_shape_fact(position) {
         return PullOutcome::Produced(ProductValue::TransportShape(fact.clone()));
     }
@@ -749,8 +772,7 @@ pub(crate) fn produce_transport_component_product(
     session: &mut PullSession,
     position: &TransportPosition,
 ) -> PullOutcome {
-    let executable = executable_key_for_transport_position(session.root(), position, world.types_mut());
-    displace_covering_solve_if_stale(world, session, &executable);
+    let executable = executable_key_for_transport_position(session.root(), position);
     if let Some(component) = session.transport_component(position).cloned() {
         emit_transport_component_produced(tel, &component);
         return PullOutcome::Produced(ProductValue::TransportComponent(component));
@@ -787,9 +809,28 @@ fn materialize_transport_component(
         return component;
     };
     if let Some(shape) = solved.shape {
+        let carrier = !matches!(world.shape(shape), ShapeDescr::Nothing)
+            && solved.positions.iter().any(|member| {
+                let member_executable = executable_key_for_transport_position(session.root(), member);
+                matches!(
+                    transport_carrier_for_position(world, session, &member_executable, member),
+                    TransportCarrier::ValueRef
+                )
+            });
         for member in &solved.positions {
-            let member_executable = executable_key_for_transport_position(session.root(), member, world.types_mut());
-            session.record_transport_shape_for(&member_executable, member.clone(), shape);
+            let member_executable = executable_key_for_transport_position(session.root(), member);
+            session.record_transport_layout_for(
+                &member_executable,
+                member.clone(),
+                TransportLayout {
+                    structural: shape,
+                    carrier: if carrier {
+                        TransportCarrier::ValueRef
+                    } else {
+                        TransportCarrier::Absent
+                    },
+                },
+            );
         }
     }
     let component = TransportComponentInventory {
@@ -800,26 +841,60 @@ fn materialize_transport_component(
     component
 }
 
-/// Read-time freshness gate for the WORLD facts a recorded solve consumed.
-/// Session products push their movement into the session
-/// (`record_settled_runtime_demand`, `record_call_edge`, the materialization
-/// epoch gate), but world facts have no push channel -- so before a recorded
-/// solve answers a pull, its revision snapshot is compared against the
-/// world's current revisions, and any moved fact displaces the whole
-/// covering solve (the full invalidation walk over the consult ledger). The
-/// same validated-at-read discipline `DemandFactsCache` applies to
-/// demand-cone facts.
-fn displace_covering_solve_if_stale(world: &World, session: &mut PullSession, executable: &ExecutableKey) {
-    let stale = session
-        .covering_solve_consumed_revisions(executable)
-        .is_some_and(|snapshot| {
-            snapshot
-                .iter()
-                .any(|(fact, revision)| world.fact_revision(fact).unwrap_or(0) != *revision)
-        });
-    if stale {
-        session.displace_transport_closure_for(executable);
+fn transport_carrier_for_position(
+    world: &World,
+    session: &PullSession,
+    executable: &ExecutableKey,
+    position: &TransportPosition,
+) -> TransportCarrier {
+    if transport_position_requires_carrier(world, session, executable, position) {
+        TransportCarrier::ValueRef
+    } else {
+        TransportCarrier::Absent
     }
+}
+
+fn transport_position_requires_carrier(
+    world: &World,
+    session: &PullSession,
+    executable: &ExecutableKey,
+    position: &TransportPosition,
+) -> bool {
+    if session
+        .boundary_facts_inventory()
+        .values()
+        .any(|facts| facts.publications.iter().any(|publication| publication == position))
+    {
+        return true;
+    }
+    match position {
+        TransportPosition::ResumePayload {
+            callsite: Some(callsite),
+            ..
+        }
+        | TransportPosition::ReturnPayload { callsite, .. } => {
+            callsite_is_public_callable(world, session, executable, *callsite)
+        }
+        TransportPosition::ExecutableInput { .. }
+        | TransportPosition::ExecutableReturn { .. }
+        | TransportPosition::ResumePayload { callsite: None, .. }
+        | TransportPosition::CallArg { .. }
+        | TransportPosition::EntryCapture { .. }
+        | TransportPosition::Value { .. } => false,
+    }
+}
+
+fn callsite_is_public_callable(
+    world: &World,
+    session: &PullSession,
+    executable: &ExecutableKey,
+    callsite: CallSiteId,
+) -> bool {
+    let body = session
+        .materialized_executable(executable)
+        .map(|materialized| materialized.body.clone())
+        .unwrap_or_else(|| world.lowered_body(executable.activation.function));
+    callsite_input_modes(&body).get(&callsite) == Some(&CallInputMode::Closure)
 }
 
 /// The consulted-facts ledger ONE closure solve accumulates, then registers
@@ -1017,18 +1092,22 @@ fn solve_transport_closure(
             &mut memo,
         );
     }
-    collect_clause_parameter_equalities(&contexts, &ordered, &mut shape_graph, world.types());
+    collect_clause_parameter_equalities(world, &contexts, &ordered, &mut shape_graph);
     seed_callable_capture_inputs(world, &contexts, &mut facts, &mut shape_graph, &mut memo);
     collect_executable_input_constraints(world, &contexts, &mut facts, &ordered, &mut shape_graph);
+    anchor_unshaped_retained_entry_captures(world, &contexts, &ordered, &mut facts, &mut shape_graph, &mut memo);
 
     let union = shape_graph.build_union();
     let component_shapes = shape_graph.component_shapes(&union);
     let equivalents = ShapeConstraintGraph::equivalents_for(&union);
     facts.expand_boundary_publications(&equivalents);
     facts.resolve_publication_source_boundaries(world);
-    let (callables, boundaries) = facts.finish();
+    let (callables, constructions, boundaries) = facts.finish();
     for (callable, facts) in callables {
         session.record_callable_facts(callable, facts);
+    }
+    for (_, construction) in constructions {
+        session.record_callable_construction(construction);
     }
     for (boundary, facts) in boundaries {
         session.record_boundary_facts(boundary, facts);
@@ -1230,18 +1309,11 @@ fn install_produced_incoming_inputs(
     Ok(())
 }
 
-fn incoming_slot_source_pairs(sources: &[IncomingInputSource]) -> Vec<(ExecutableKey, ValueId)> {
-    sources
-        .iter()
-        .map(|source| (source.producer.clone(), source.value))
-        .collect()
+fn incoming_slot_source_pairs(sources: &[IncomingInputSource]) -> Vec<IncomingInputSource> {
+    sources.to_vec()
 }
 
-fn executable_key_for_transport_position(
-    root: RootId,
-    position: &TransportPosition,
-    _types: &mut Types,
-) -> ExecutableKey {
+fn executable_key_for_transport_position(root: RootId, position: &TransportPosition) -> ExecutableKey {
     let symbol = position.executable();
     ExecutableKey {
         activation: ActivationKey {
@@ -1534,12 +1606,13 @@ fn project_one_executable(
         for (entry_index, entry) in entries.iter().enumerate() {
             let entry_id = original_entry_id(context, entry_index);
             for (capture_index, capture) in entry.captures.iter().copied().enumerate() {
+                let capture_position = TransportPosition::EntryCapture {
+                    executable: symbol.clone(),
+                    entry: entry_id,
+                    capture_index,
+                };
                 shape_graph.equal(
-                    TransportPosition::EntryCapture {
-                        executable: symbol.clone(),
-                        entry: entry_id,
-                        capture_index,
-                    },
+                    capture_position,
                     TransportPosition::Value {
                         executable: symbol.clone(),
                         value: capture,
@@ -1620,6 +1693,64 @@ fn project_one_executable(
                 memo,
             );
             shape_graph.anchor(position, shape);
+        }
+    }
+}
+
+fn anchor_unshaped_retained_entry_captures(
+    world: &mut World,
+    contexts: &TransportContexts,
+    executables: &[ExecutableKey],
+    facts: &mut TransportFactsBuilder,
+    shape_graph: &mut ShapeConstraintGraph,
+    memo: &mut ProjectionMemo,
+) {
+    for executable in executables {
+        let Some(context) = contexts.get(executable) else {
+            continue;
+        };
+        let LoweredBody::Clauses { entries, .. } = &context.body else {
+            continue;
+        };
+        let symbol = executable_symbol(executable, world.types());
+        for (entry_index, entry) in entries.iter().enumerate() {
+            let entry_id = original_entry_id(context, entry_index);
+            for (capture_index, capture) in entry.captures.iter().copied().enumerate() {
+                let position = TransportPosition::EntryCapture {
+                    executable: symbol.clone(),
+                    entry: entry_id,
+                    capture_index,
+                };
+                if shape_graph.component_has_anchor(&position) {
+                    continue;
+                }
+                let Some(ty) = context.analysis.value_types.get(&capture).copied() else {
+                    continue;
+                };
+                let demand = RuntimeDemand {
+                    shape: ShapeDemand::Whole,
+                    ..context
+                        .runtime_demand
+                        .entry_capture_demands
+                        .get(&entry_id)
+                        .and_then(|demands| demands.get(capture_index))
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                let shape = shape_for_local_value(
+                    world,
+                    contexts,
+                    facts,
+                    executable,
+                    context,
+                    capture,
+                    ty,
+                    &demand,
+                    Some(position.clone()),
+                    memo,
+                );
+                shape_graph.anchor(position, shape);
+            }
         }
     }
 }
@@ -1818,6 +1949,12 @@ fn collect_executable_input_constraints(
                 executable: symbol.clone(),
                 semantic_index,
             };
+            if matches!(demand.shape, ShapeDemand::TupleFields(_))
+                && has_incompatible_clause_tuple_layout(context, semantic_index)
+            {
+                shape_graph.anchor(position, value_lane_shape(world, ty));
+                continue;
+            }
             let incoming = incoming_executable_input_positions(world, contexts, executable, semantic_index);
             let projected_callable_input_shape = if demand.is_callable()
                 && let Some(incoming) = incoming.as_ref()
@@ -1920,16 +2057,38 @@ fn collect_executable_input_constraints(
     }
 }
 
+fn has_incompatible_clause_tuple_layout(context: &ExecutableContext, semantic_index: usize) -> bool {
+    let LoweredBody::Clauses { clauses, .. } = &context.body else {
+        return false;
+    };
+    let arities = clauses
+        .iter()
+        .filter_map(|clause| {
+            let param = *clause.params.get(semantic_index)?;
+            clause
+                .projections
+                .iter()
+                .filter_map(|step| match step {
+                    LoweredStep::TupleField { source, index, .. } if *source == param => Some(*index + 1),
+                    _ => None,
+                })
+                .max()
+        })
+        .collect::<HashSet<_>>();
+    arities.len() > 1
+}
+
 fn executable_input_demand_requires_own_shape(demand: &RuntimeDemand) -> bool {
     (!matches!(demand.shape, ShapeDemand::Ignore)) || demand.callable.is_first_class()
 }
 
 fn collect_clause_parameter_equalities(
+    world: &World,
     contexts: &TransportContexts,
     executables: &[ExecutableKey],
     shape_graph: &mut ShapeConstraintGraph,
-    types: &Types,
 ) {
+    let types = world.types();
     for executable in executables {
         let symbol = executable_symbol(executable, types);
         let context = contexts
@@ -1938,8 +2097,47 @@ fn collect_clause_parameter_equalities(
         let LoweredBody::Clauses { clauses, .. } = &context.body else {
             continue;
         };
-        for clause in clauses {
-            for (semantic_index, value) in clause.params.iter().copied().enumerate() {
+        let max_arity = clauses
+            .iter()
+            .map(|clause| clause.params.len())
+            .max()
+            .unwrap_or_default();
+        for semantic_index in 0..max_arity {
+            let activation_input = world
+                .activation_inputs(&executable.activation)
+                .unwrap_or_else(|| executable.activation.inputs(types))
+                .get(semantic_index)
+                .copied();
+            if activation_input.is_some_and(|ty| {
+                types
+                    .runtime_type_predicate(&ty)
+                    .tuple_arities
+                    .finite_len()
+                    .is_some_and(|count| count > 1)
+            }) {
+                continue;
+            }
+            let params = clauses
+                .iter()
+                .filter_map(|clause| clause.params.get(semantic_index).copied())
+                .collect::<Vec<_>>();
+            let Some(first) = params
+                .first()
+                .and_then(|value| context.analysis.value_types.get(value))
+                .copied()
+            else {
+                continue;
+            };
+            if params.iter().skip(1).any(|value| {
+                context
+                    .analysis
+                    .value_types
+                    .get(value)
+                    .is_none_or(|ty| !types.is_equivalent(&first, ty))
+            }) {
+                continue;
+            }
+            for value in params {
                 let input_position = TransportPosition::ExecutableInput {
                     executable: symbol.clone(),
                     semantic_index,
@@ -1956,11 +2154,6 @@ fn collect_clause_parameter_equalities(
     }
 }
 
-/// The `ExecutableReturn` position a call result is produced from, when the
-/// call settles to exactly one known callee executable. Resume payloads and
-/// return payloads are callsite result positions, so they share the producer
-/// return `ShapeId` instead of mutating that shape through the caller's local
-/// demand.
 fn callsite_callee_return_position(
     world: &World,
     contexts: &TransportContexts,
@@ -1968,6 +2161,9 @@ fn callsite_callee_return_position(
     context: &ExecutableContext,
     callsite: CallSiteId,
 ) -> Option<TransportPosition> {
+    if context.callsite_modes.get(&callsite) != Some(&CallInputMode::Direct) {
+        return None;
+    }
     let summary = world.callsite_summary(&CallSiteKey {
         activation: executable.activation.clone(),
         callsite,
@@ -2273,6 +2469,7 @@ fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, TransportS
             out.insert(
                 *value,
                 TransportSource::CallableValue(LocalCallableProducer {
+                    value: *value,
                     function: *function,
                     captures: Box::default(),
                 }),
@@ -2286,6 +2483,7 @@ fn collect_step_origin(step: &LoweredStep, out: &mut HashMap<ValueId, TransportS
             out.insert(
                 *value,
                 TransportSource::CallableValue(LocalCallableProducer {
+                    value: *value,
                     function: *function,
                     captures: captures.clone().into_boxed_slice(),
                 }),
@@ -2619,9 +2817,9 @@ fn incoming_executable_input_positions(
     let positions = contexts
         .incoming_inputs(executable, semantic_index)
         .iter()
-        .map(|(producer, value)| TransportPosition::Value {
-            executable: executable_symbol(producer, world.types()),
-            value: *value,
+        .map(|source| TransportPosition::Value {
+            executable: executable_symbol(&source.producer, world.types()),
+            value: source.value,
         })
         .collect::<Vec<_>>();
     (!positions.is_empty()).then_some(positions)
@@ -2928,12 +3126,12 @@ fn project_executable_input_source(
     let mut exact = Vec::new();
     let mut recursive = false;
     let mut unknown = false;
-    for (source_executable, value) in sources {
-        let Some(source_context) = contexts.context_for(source_executable) else {
+    for source in sources {
+        let Some(source_context) = contexts.context_for(&source.producer) else {
             unknown = true;
             continue;
         };
-        let Some(source_ty) = source_context.analysis.value_types.get(value).copied() else {
+        let Some(source_ty) = source_context.analysis.value_types.get(&source.value).copied() else {
             unknown = true;
             continue;
         };
@@ -2941,11 +3139,11 @@ fn project_executable_input_source(
             world,
             contexts,
             &mut delta,
-            source_executable,
+            &source.producer,
             source_context,
             source_ty,
             demand,
-            TransportSource::LocalValue(*value),
+            TransportSource::LocalValue(source.value),
             None,
             cycle,
             memo,
@@ -2964,6 +3162,7 @@ fn project_executable_input_source(
         };
     }
     if demand.is_callable()
+        && !demand.callable.is_first_class()
         && let Some(shape) = select_callable_input_shape_for_demand(world, &mut delta, &exact, &demand.callable)
     {
         if let Some(publication) = publication {
@@ -3343,6 +3542,7 @@ fn callable_for_producer(
         surface_shapes(world, &direct_surface_demands, facts)
     };
     let direct_edges = callable_direct_edges(world, &upstream_flow.direct_edges, facts);
+    let construction_edges = callable_direct_edges(world, &upstream_flow.first_class_edges, facts);
     let capture_demands = capture_demands_for_resolutions(contexts, &capture_tys, &resolution_symbols, world.types());
     let capture_shapes = producer
         .captures
@@ -3364,14 +3564,27 @@ fn callable_for_producer(
             ))
         })
         .collect::<Option<Vec<_>>>()?;
-    let capture_lanes = capture_shapes
+    let capture_layouts = capture_shapes
         .iter()
         .copied()
         .zip(capture_tys.iter().copied())
         .zip(capture_demands.iter())
-        .flat_map(|((shape, capture_ty), demand)| {
-            capture_lanes_for_callable_descriptor(world, shape, capture_ty, demand)
+        .map(|((shape, capture_ty), demand)| {
+            let lanes = capture_lanes_for_callable_descriptor(world, shape, capture_ty, demand);
+            let layout = TransportLayout {
+                structural: shape,
+                carrier: if demand.is_callable() || !lanes.is_empty() {
+                    TransportCarrier::ValueRef
+                } else {
+                    TransportCarrier::Absent
+                },
+            };
+            (layout, lanes)
         })
+        .collect::<Vec<_>>();
+    let capture_lanes = capture_layouts
+        .iter()
+        .flat_map(|(_, lanes)| lanes.iter().copied())
         .collect::<Vec<_>>();
     let callable = world.intern_callable(CallableDescr {
         function: Some(producer.function),
@@ -3416,6 +3629,41 @@ fn callable_for_producer(
     } else {
         Vec::new()
     };
+    facts.record_callable_construction(CallableConstructionFact {
+        callable,
+        producer: TransportPosition::Value {
+            executable: executable_symbol(executable, world.types()),
+            value: producer.value,
+        },
+        captures: producer
+            .captures
+            .iter()
+            .copied()
+            .zip(capture_layouts)
+            .map(|(value, (layout, _))| CallableConstructionCapture {
+                source: TransportPosition::Value {
+                    executable: executable_symbol(executable, world.types()),
+                    value,
+                },
+                layout,
+            })
+            .collect(),
+        members: construction_edges
+            .iter()
+            .map(|edge| CallableConstructionMember {
+                surface_inputs: edge.surface_inputs.clone(),
+                surface_arg_shapes: edge.surface_arg_shapes.clone(),
+                resolution: edge.resolution.clone(),
+                capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
+                surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
+            })
+            .collect(),
+        selection: super::super::callsite_dispatch::dispatch_from_callable_flow_edges(
+            world.types_mut(),
+            &upstream_flow.first_class_edges,
+        )
+        .expect("settled callable flow edges should produce a dispatch plan"),
+    });
     facts.record_callable(
         callable,
         resolution_symbols,
@@ -3490,6 +3738,8 @@ fn callable_direct_edges(
             surface_inputs: edge.surface.inputs.clone().into_boxed_slice(),
             surface_arg_shapes: surface_shape(world, &edge.surface, facts),
             resolution: executable_symbol(&edge.resolution, world.types()),
+            capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
+            surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
         })
         .collect()
 }
@@ -3524,6 +3774,9 @@ fn generic_shape_from_demand(
         ShapeDemand::Ignore => world.intern_shape(ShapeDescr::Nothing),
         ShapeDemand::Whole => value_lane_shape(world, ty),
         ShapeDemand::TupleFields(fields) => {
+            if !has_exact_tuple_arity(world, ty, fields.len()) {
+                return value_lane_shape(world, ty);
+            }
             let items = tuple_field_tys(world, ty, fields.len())
                 .into_iter()
                 .zip(fields.iter())
@@ -3532,6 +3785,24 @@ fn generic_shape_from_demand(
             world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice()))
         }
     }
+}
+
+fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
+    let predicate = world.types().runtime_type_predicate(&ty);
+    predicate.tuple_arities.finite_elems().is_some_and(|mut arities| {
+        arities.next() == Some(arity)
+            && arities.next().is_none()
+            && predicate.ints.is_none()
+            && predicate.floats.is_none()
+            && predicate.atoms.is_none()
+            && predicate.lists.is_none()
+            && predicate.named_structs.is_none()
+            && !predicate.allow_other_structs
+            && !predicate.maps
+            && !predicate.binaries
+            && !predicate.closures
+            && !predicate.resources
+    })
 }
 
 fn generic_callable_shape(
@@ -4277,6 +4548,7 @@ fn boundary_runtime_demand(world: &mut World, ty: Ty) -> RuntimeDemand {
             .into_iter()
             .map(|clause| CallableSurface::new(clause.args, world.types_mut()))
             .collect::<BTreeSet<_>>(),
+        targets: BTreeSet::new(),
         opaque: false,
         escape: true,
     })
@@ -4328,6 +4600,7 @@ fn resume_shape(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler2::pull::IncomingInputRole;
     use crate::telemetry::ConfiguredTelemetry;
 
     fn intern_test_shape(world: &mut World) -> ShapeId {
@@ -4429,7 +4702,7 @@ mod tests {
             executable: symbol,
             semantic_index: 0,
         };
-        let reconstructed = executable_key_for_transport_position(root, &position, t);
+        let reconstructed = executable_key_for_transport_position(root, &position);
 
         assert_eq!(
             reconstructed, key,
@@ -4472,9 +4745,14 @@ mod tests {
         let callee = fake_executable(&mut world, 81, 83, &[int]);
         let value = ValueId::from_u32(9);
         let mut contexts = TransportContexts::default();
-        contexts
-            .incoming_input_sources
-            .insert((callee.clone(), 0), vec![(producer.clone(), value)]);
+        contexts.incoming_input_sources.insert(
+            (callee.clone(), 0),
+            vec![IncomingInputSource {
+                producer: producer.clone(),
+                value,
+                role: IncomingInputRole::CallArgument,
+            }],
+        );
 
         let positions = incoming_executable_input_positions(&world, &contexts, &callee, 0)
             .expect("slot source should produce one incoming input position");
@@ -4518,6 +4796,7 @@ mod tests {
         let value = ValueId::from_u32(1);
         let surface = CallableSurface::new(vec![surface_ty], world.types_mut());
         let producer = LocalCallableProducer {
+            value,
             function,
             captures: Box::default(),
         };
@@ -4532,6 +4811,8 @@ mod tests {
                     activation: ActivationKey::from_inputs(RootId::for_test(1), function, &[], world.types_mut()),
                     need: ExecutableNeed::Value,
                 },
+                capture_semantic_inputs: Box::default(),
+                surface_semantic_inputs: Box::default(),
             }],
             first_class_edges: Vec::new(),
             opaque: false,
@@ -4595,9 +4876,21 @@ mod tests {
         let mut contexts = TransportContexts::default();
         contexts.by_executable.insert(producer_a.clone(), context_a);
         contexts.by_executable.insert(producer_b.clone(), context_b);
-        contexts
-            .incoming_input_sources
-            .insert((callee.clone(), 0), vec![(producer_a, value_a), (producer_b, value_b)]);
+        contexts.incoming_input_sources.insert(
+            (callee.clone(), 0),
+            vec![
+                IncomingInputSource {
+                    producer: producer_a,
+                    value: value_a,
+                    role: IncomingInputRole::CallArgument,
+                },
+                IncomingInputSource {
+                    producer: producer_b,
+                    value: value_b,
+                    role: IncomingInputRole::CallArgument,
+                },
+            ],
+        );
 
         let demand = RuntimeDemand {
             shape: ShapeDemand::Ignore,
@@ -4630,6 +4923,60 @@ mod tests {
             descr.capture_lanes.len(),
             1,
             "the generic boxed callable shape is one ValueRef lane: {descr:?}"
+        );
+    }
+
+    #[test]
+    fn project_executable_input_source_keeps_escaped_callable_generic_with_one_direct_source() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let surface_ty = world.types_mut().int();
+
+        let producer_fn = FunctionId::for_test(203);
+        let (context, value) = direct_callable_producer_context(&mut world, producer_fn, surface_ty);
+        let producer = fake_executable(&mut world, 90, 94, &[]);
+        let callee = fake_executable(&mut world, 90, 95, &[surface_ty]);
+
+        let mut contexts = TransportContexts::default();
+        contexts.by_executable.insert(producer.clone(), context);
+        contexts.incoming_input_sources.insert(
+            (callee.clone(), 0),
+            vec![IncomingInputSource {
+                producer,
+                value,
+                role: IncomingInputRole::CallArgument,
+            }],
+        );
+
+        let demand = RuntimeDemand::callable(CallableDemand {
+            resolved: BTreeSet::from([CallableSurface::new(vec![surface_ty], world.types_mut())]),
+            targets: BTreeSet::new(),
+            opaque: false,
+            escape: true,
+        });
+
+        let mut facts = TransportFactsBuilder::default();
+        let mut cycle = Cycle::default();
+        let mut memo = ProjectionMemo::default();
+        let projected = project_executable_input_source(
+            &mut world, &contexts, &mut facts, &callee, surface_ty, &demand, 0, None, &mut cycle, &mut memo,
+        );
+
+        let SourceShape::Exact(shape) = projected else {
+            panic!("escaped callable input must resolve to a generic boxed shape, not {projected:?}");
+        };
+        let ShapeDescr::Callable(callable) = world.shape(shape) else {
+            panic!("expected a callable shape, got {:?}", world.shape(shape));
+        };
+        let descr = world.callable(*callable);
+        assert_eq!(
+            descr.function, None,
+            "an escaped callable cannot reuse a direct-only shape: {descr:?}"
+        );
+        assert_eq!(
+            descr.capture_lanes.len(),
+            1,
+            "an escaped callable is one boxed ValueRef lane: {descr:?}"
         );
     }
 

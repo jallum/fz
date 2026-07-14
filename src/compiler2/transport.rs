@@ -13,6 +13,7 @@ use std::ops::Range;
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ExecutableNeed, FunctionId};
 use super::types::Ty;
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ShapeId(u32);
@@ -25,6 +26,27 @@ impl ShapeId {
     #[cfg(test)]
     pub(crate) fn for_test(raw: u32) -> Self {
         Self(raw)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportCarrier {
+    Absent,
+    ValueRef,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TransportLayout {
+    pub structural: ShapeId,
+    pub carrier: TransportCarrier,
+}
+
+impl TransportLayout {
+    pub const fn structural(structural: ShapeId) -> Self {
+        Self {
+            structural,
+            carrier: TransportCarrier::Absent,
+        }
     }
 }
 
@@ -171,6 +193,11 @@ pub enum CodegenSeam {
         executable: ExecutableSymbol,
         entry: ControlEntryId,
     },
+    EntryCapture {
+        executable: ExecutableSymbol,
+        entry: ControlEntryId,
+        capture_index: usize,
+    },
     ReturnDelivery {
         executable: ExecutableSymbol,
     },
@@ -204,6 +231,7 @@ impl CodegenSeam {
         match self {
             Self::FunctionEntry { executable, .. }
             | Self::BlockParam { executable, .. }
+            | Self::EntryCapture { executable, .. }
             | Self::ReturnDelivery { executable }
             | Self::ContinuationEntry { executable, .. }
             | Self::ReturnContinuation { executable, .. }
@@ -241,11 +269,37 @@ pub struct CallableFacts {
     pub boundary_ids: Box<[BoundaryId]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableConstructionFact {
+    pub callable: CallableId,
+    pub producer: TransportPosition,
+    pub captures: Box<[CallableConstructionCapture]>,
+    pub members: Box<[CallableConstructionMember]>,
+    pub(crate) selection: Option<PatternDispatchPlan<Ty>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableConstructionCapture {
+    pub source: TransportPosition,
+    pub layout: TransportLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableConstructionMember {
+    pub surface_inputs: Box<[Ty]>,
+    pub surface_arg_shapes: Box<[ShapeId]>,
+    pub resolution: ExecutableSymbol,
+    pub capture_semantic_inputs: Box<[usize]>,
+    pub surface_semantic_inputs: Box<[usize]>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallableDirectEdge {
     pub surface_inputs: Box<[Ty]>,
     pub surface_arg_shapes: Box<[ShapeId]>,
     pub resolution: ExecutableSymbol,
+    pub capture_semantic_inputs: Box<[usize]>,
+    pub surface_semantic_inputs: Box<[usize]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

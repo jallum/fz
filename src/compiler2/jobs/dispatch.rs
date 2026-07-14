@@ -303,6 +303,7 @@ fn entry_source_patterns(
                         ),
                     )
                 })?;
+            let ty = world.types_mut().runtime_type_test_envelope(ty);
             preconditions.push((
                 PatternSubjectRef::Input((macro_offset + capture_patterns.len() + index) as u32),
                 ty,

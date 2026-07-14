@@ -35,6 +35,7 @@ pub struct CallTargetSummary {
     /// The exact bounded activation this target demanded, when the callee is
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
     pub activation: Option<ActivationKey>,
+    pub activation_inputs: Option<Vec<Ty>>,
     /// `None` means the callee has produced no return evidence yet — an
     /// honest snapshot mid-ascent. Settledness guarantees resolution before
     /// consumers read; at the fixpoint a still-`None` return *is* the empty
@@ -92,6 +93,11 @@ impl CallSiteSummary {
                     &mut observed_target.activation,
                     current_target.activation.clone(),
                 );
+                merge_callsite_optional_input_vec(
+                    types,
+                    &mut observed_target.activation_inputs,
+                    current_target.activation_inputs.as_deref(),
+                );
                 observed_target.return_ty =
                     join_optional_ty(types, current_target.return_ty, observed_target.return_ty);
             }
@@ -106,6 +112,11 @@ impl CallSiteSummary {
             if let Some(current) = coalesced.iter_mut().find(|current| same_call_target(current, &target)) {
                 merge_callsite_input_vec(types, &mut current.surface_inputs, &target.surface_inputs);
                 merge_callsite_activation(types, &mut current.activation, target.activation.take());
+                merge_callsite_optional_input_vec(
+                    types,
+                    &mut current.activation_inputs,
+                    target.activation_inputs.as_deref(),
+                );
                 current.return_ty = join_optional_ty(types, current.return_ty, target.return_ty);
             } else {
                 coalesced.push(target);
@@ -151,6 +162,14 @@ fn merge_callsite_input_vec(types: &mut Types, current: &mut Vec<Ty>, observed: 
     }
 }
 
+fn merge_callsite_optional_input_vec(types: &mut Types, current: &mut Option<Vec<Ty>>, observed: Option<&[Ty]>) {
+    match (current, observed) {
+        (Some(current), Some(observed)) => merge_callsite_input_vec(types, current, observed),
+        (current @ None, Some(observed)) => *current = Some(observed.to_vec()),
+        _ => {}
+    }
+}
+
 fn merge_callsite_activation(_types: &mut Types, current: &mut Option<ActivationKey>, observed: Option<ActivationKey>) {
     match (current.as_mut(), observed) {
         (Some(current), Some(observed)) if current.root == observed.root && current.function == observed.function => {}
@@ -189,12 +208,20 @@ impl CallableSurface {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableTarget {
+    pub surface: CallableSurface,
+    pub activation: ActivationKey,
+    pub activation_inputs: Vec<Ty>,
+}
+
 /// Runtime demand specific to callable values, kept separate from generic
 /// whole-value demand so semantic flow derivation can publish one exact
 /// callable-flow fact per local producer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct CallableDemand {
     pub resolved: BTreeSet<CallableSurface>,
+    pub targets: BTreeSet<CallableTarget>,
     pub opaque: bool,
     pub escape: bool,
 }
@@ -205,6 +232,7 @@ impl CallableDemand {
         resolved.insert(CallableSurface::new(inputs, types));
         Self {
             resolved,
+            targets: BTreeSet::new(),
             opaque: false,
             escape: false,
         }
@@ -213,6 +241,7 @@ impl CallableDemand {
     pub fn opaque() -> Self {
         Self {
             resolved: BTreeSet::new(),
+            targets: BTreeSet::new(),
             opaque: true,
             escape: false,
         }
@@ -221,13 +250,14 @@ impl CallableDemand {
     pub fn escaped() -> Self {
         Self {
             resolved: BTreeSet::new(),
+            targets: BTreeSet::new(),
             opaque: false,
             escape: true,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.resolved.is_empty() && !self.opaque && !self.escape
+        self.resolved.is_empty() && self.targets.is_empty() && !self.opaque && !self.escape
     }
 
     /// Whether the callable crosses a boundary that cannot carry a grounded
@@ -246,6 +276,7 @@ impl CallableDemand {
 
     pub fn join_assign(&mut self, other: &Self) {
         self.resolved.extend(other.resolved.iter().cloned());
+        self.targets.extend(other.targets.iter().cloned());
         self.opaque |= other.opaque;
         self.escape |= other.escape;
     }
@@ -382,7 +413,8 @@ impl RuntimeDemand {
 
     /// Ground this demand's callable dispatch surfaces (and those of any tuple
     /// fields) to the concrete runtime shapes, dropping phantom polymorphic
-    /// templates that a grounded sibling already covers. See
+    /// templates when the same carried demand already names a concrete
+    /// instantiation. See
     /// [`ground_dispatch_surfaces`].
     pub(crate) fn ground_callable_surfaces(&mut self, types: &Types) {
         if !self.callable.resolved.is_empty() {
@@ -417,29 +449,31 @@ pub struct CallableFlowFact {
 pub struct CallableFlowEdge {
     pub surface: CallableSurface,
     pub resolution: ExecutableKey,
+    pub capture_semantic_inputs: Box<[usize]>,
+    pub surface_semantic_inputs: Box<[usize]>,
 }
 
 /// Resolve callable `surfaces` to the ground runtime dispatch shapes the program
-/// actually invokes, drawing concrete instantiations from `ground_source`.
+/// actually invokes, drawing concrete instantiations from the same producer
+/// flow's `ground_source`.
 ///
 /// A callable surface that publishes a transport boundary names a runtime
 /// dispatch site, so it must be ground. When a callable escapes through a
 /// generic parameter slot (e.g. `Enum.reduce`'s reducer) analysis collects both
 /// the polymorphic template that slot is typed at and the concrete surfaces a
-/// real call instantiates it to. The template is not a distinct dispatch site —
-/// the grounded sibling is what the runtime invokes — so keeping it mints a
-/// phantom boundary that collapses onto the sibling after type erasure and
-/// forces an impossible multi-boundary publication in native (one boxed value
-/// has exactly one entry).
+/// real call instantiates it to. The template is not a distinct dispatch site;
+/// the same flow's concrete surface is what the runtime invokes. Keeping both
+/// mints a phantom boundary that collapses onto the concrete surface after type
+/// erasure and forces an impossible multi-boundary publication in native (one
+/// boxed value has exactly one entry).
 ///
 /// Each surface is therefore grounded: a ground surface is kept, and a template
-/// is replaced by the ground surfaces — from `surfaces` itself or `ground_source`
-/// — that instantiate it under one consistent substitution
+/// is replaced only by the same carried set or producer flow's ground surfaces
+/// that instantiate it under one consistent substitution
 /// ([`Types::key_list_subsumes`]). When the callable is invoked at any ground
 /// shape, every template is an inference artifact, so only ground dispatch
-/// shapes are published. A callable with no ground surface anywhere is a
-/// genuinely polymorphic escape — it has no concrete runtime shape of its own —
-/// so its templates are kept verbatim.
+/// shapes are published. A callable with no ground surface in that flow is a
+/// genuinely polymorphic escape, so its templates are kept verbatim.
 pub(crate) fn ground_dispatch_surfaces(
     types: &Types,
     surfaces: &BTreeSet<CallableSurface>,
@@ -536,16 +570,6 @@ pub struct ActivationSlot {
     analysis: Option<ActivationAnalysis>,
 }
 
-/// The BUDGET of strict ascents one activation's return may take per epoch
-/// (between rebases) before the join starts widening. This is deliberately a
-/// total, not a consecutive-ascent delay: resetting on a quiet round would
-/// let spurious wakes interleave with a genuinely divergent chain and starve
-/// the widening forever — the per-epoch total makes termination a theorem.
-/// Honest programs converge in a few rungs; only programs whose precise
-/// ascent provably never lands pay the precision loss. The corpus sweep
-/// (`compiler2_corpus_never_engages_return_widening_*`) pins the measured
-/// maximum at ≤ 4 strict ascents across every fixture; the budget sits at
-/// 2× that headroom.
 pub const RETURN_WIDENING_BUDGET: u32 = 8;
 
 /// The outcome of installing one round's return evidence.
@@ -1113,6 +1137,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(activation.clone()),
+                activation_inputs: Some(vec![int]),
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1122,6 +1147,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![any],
                 activation: Some(activation),
+                activation_inputs: Some(vec![any]),
                 return_ty: Some(atom),
             }],
             return_ty: Some(atom),
@@ -1165,6 +1191,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(callee_activation.clone()),
+                activation_inputs: Some(vec![int]),
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1174,6 +1201,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(callee_activation),
+                activation_inputs: Some(vec![int]),
                 return_ty: None,
             }],
             return_ty: None,
@@ -1225,6 +1253,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![input],
                 activation: Some(activation),
+                activation_inputs: Some(vec![input]),
                 return_ty: Some(input),
             }],
             return_ty: Some(input),
@@ -1278,12 +1307,14 @@ mod tests {
                     callee: SelectedCallee::Function(callee),
                     surface_inputs: vec![int],
                     activation: Some(int_activation.clone()),
+                    activation_inputs: Some(vec![int]),
                     return_ty: Some(int),
                 },
                 CallTargetSummary {
                     callee: SelectedCallee::Function(callee),
                     surface_inputs: vec![float],
                     activation: Some(float_activation.clone()),
+                    activation_inputs: Some(vec![float]),
                     return_ty: Some(float),
                 },
             ],
@@ -1337,6 +1368,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![ty],
                 activation: Some(callee_activation.clone()),
+                activation_inputs: Some(vec![ty]),
                 return_ty: Some(ty),
             }],
             return_ty: Some(ty),
@@ -1505,6 +1537,7 @@ mod tests {
             joined,
             RuntimeDemand::callable(CallableDemand {
                 resolved: BTreeSet::from([CallableSurface::new(vec![int], world.types_mut())]),
+                targets: BTreeSet::new(),
                 opaque: false,
                 escape: true,
             }),
@@ -1530,6 +1563,7 @@ mod tests {
         let left = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()));
         let right = RuntimeDemand::callable(CallableDemand {
             resolved: BTreeSet::from([CallableSurface::new(vec![atom], world.types_mut())]),
+            targets: BTreeSet::new(),
             opaque: false,
             escape: true,
         });
@@ -1543,6 +1577,7 @@ mod tests {
             joined,
             RuntimeDemand::callable(CallableDemand {
                 resolved: expected_resolved,
+                targets: BTreeSet::new(),
                 opaque: false,
                 escape: true,
             }),

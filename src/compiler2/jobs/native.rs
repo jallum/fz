@@ -25,23 +25,29 @@ use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
 use super::super::artifact::{
-    AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram,
-    BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DispatchCallEdge, EffectSummary, NativeBody,
-    NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram,
-    ReusableConsCapture,
+    AbiValueRepr, BackendBody, BackendCallableReturn, BackendClause, BackendEntry, BackendEntryCapture,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge,
+    CallTarget, DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
+    NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeProgram, ReusableConsCapture,
+    required_dispatch_input_ordinals,
 };
 use super::super::body::{ControlDestination, ControlEntryId, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
 use super::super::identity::RootId;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
-use super::super::transport::{
-    BoundaryId, CallableId, CodegenLaneRepr, CodegenSeam, LaneId, ShapeDescr, ShapeId, TransportPosition,
-};
+use super::super::transport::{CallableId, ShapeDescr, ShapeId};
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
+
+fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
+    match form {
+        BackendCallableReturn::Diverges | BackendCallableReturn::Absent => Vec::new(),
+        BackendCallableReturn::ValueRef => vec![AbiValueRepr::ValueRef],
+    }
+}
 
 /// Lowers one backend program into the Compiler2-owned native handoff.
 ///
@@ -84,7 +90,7 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     module: ModuleBuilder,
     atom_ids: HashMap<String, u32>,
     executable_fns: Vec<FnId>,
-    callable_entry_identity_fns: HashMap<u32, FnId>,
+    construction_identity_fns: HashMap<u32, FnId>,
     callable_boundaries: Vec<NativeCallableBoundary>,
     extern_ids: HashMap<usize, ExternId>,
     extern_marshals: HashMap<usize, Vec<ExternTy>>,
@@ -118,10 +124,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .map(|_| module.fresh_fn_id())
             .collect::<Vec<_>>();
 
-        let callable_entry_identity_fns = program
-            .callable_entries
+        let construction_identity_fns = program
+            .construction_wrappers
             .iter()
-            .map(|entry| (entry.identity, module.fresh_fn_id()))
+            .map(|wrapper| (wrapper.identity, module.fresh_fn_id()))
+            .collect::<HashMap<_, _>>();
+        let construction_wrapper_fns = program
+            .construction_wrappers
+            .iter()
+            .map(|wrapper| (wrapper.identity, module.fresh_fn_id()))
             .collect::<HashMap<_, _>>();
 
         let extern_marshals = collect_extern_marshals(world, telemetry, root_id, program)?;
@@ -143,32 +154,38 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             });
         }
 
-        let callable_boundaries = program
-            .callable_entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let executable = &program.executables[entry.target];
-                let identity_fn = *callable_entry_identity_fns
-                    .get(&entry.identity)
-                    .expect("callable identity should be predeclared");
-                let return_position = &executable.transport.return_position;
-                let (return_reprs, return_tuple_arity) = native_return_contract(world, program, return_position);
-                NativeCallableBoundary {
-                    id: NativeCallableBoundaryId(index as u32),
-                    boundary: entry.publication_boundary,
-                    identity_fn,
-                    target_fn: executable_fns[entry.target],
-                    target: executable.key.clone(),
-                    capture_count: entry.capture_count,
-                    capture_reprs: entry.capture_reprs.clone(),
-                    arg_reprs: entry.arg_reprs.clone(),
-                    return_ty: entry.return_ty,
-                    return_reprs,
-                    return_tuple_arity,
-                }
-            })
-            .collect();
+        let mut callable_boundaries = Vec::with_capacity(program.construction_wrappers.len());
+        for (index, wrapper) in program.construction_wrappers.iter().enumerate() {
+            let identity_fn = *construction_identity_fns
+                .get(&wrapper.identity)
+                .expect("construction identity should be predeclared");
+            let wrapper_fn = *construction_wrapper_fns
+                .get(&wrapper.identity)
+                .expect("construction wrapper should be predeclared");
+            callable_boundaries.push(NativeCallableBoundary {
+                id: NativeCallableBoundaryId(index as u32),
+                identity_fn,
+                wrapper_fn,
+                captures: wrapper.captures.clone(),
+                capture_reprs: native_construction_capture_reprs(wrapper),
+                call_arity: wrapper.call_arity,
+                return_form: wrapper.return_form,
+                members: wrapper
+                    .members
+                    .iter()
+                    .map(|member| NativeConstructionMember {
+                        target_fn: executable_fns[member.target],
+                        target: program.executables[member.target].key.clone(),
+                        surface_inputs: member.surface_inputs.clone(),
+                        capture_semantic_inputs: member.capture_semantic_inputs.clone(),
+                        surface_semantic_inputs: member.surface_semantic_inputs.clone(),
+                        target_inputs: member.target_inputs.clone(),
+                        target_return: member.target_return.clone(),
+                    })
+                    .collect(),
+                selection: wrapper.selection.clone(),
+            });
+        }
 
         Ok(Self {
             world,
@@ -178,7 +195,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             module,
             atom_ids,
             executable_fns,
-            callable_entry_identity_fns,
+            construction_identity_fns,
             callable_boundaries,
             extern_ids,
             extern_marshals,
@@ -190,42 +207,67 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     fn lower(mut self) -> Result<NativeProgram, FatalError> {
         for (index, executable) in self.program.executables.iter().enumerate() {
-            match &executable.body {
-                BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature)?,
-                BackendBody::Clauses { clauses, entries, .. } => {
-                    let entry_fns = entry_fn_ids(&mut self.module, entries);
-                    if executable.entry_dispatch.is_some() {
-                        self.lower_clause_dispatch_executable(index, executable, clauses, entries, &entry_fns)?;
-                    } else {
-                        let [clause] = clauses.as_slice() else {
-                            return Err(incomplete_native_program(
-                                self.telemetry,
-                                self.root_id,
-                                format!(
-                                    "backend executable {} has {} clauses but no settled entry dispatch",
-                                    index,
-                                    clauses.len()
+            let lowered = (|| -> Result<(), FatalError> {
+                match &executable.body {
+                    BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
+                    BackendBody::Clauses { clauses, entries, .. } => {
+                        let entry_fns = entry_fn_ids(&mut self.module, entries);
+                        if executable.entry_dispatch.is_some() {
+                            self.lower_clause_dispatch_executable(index, executable, clauses, entries, &entry_fns)?;
+                        } else {
+                            let [clause] = clauses.as_slice() else {
+                                return Err(incomplete_native_program(
+                                    self.telemetry,
+                                    self.root_id,
+                                    format!(
+                                        "backend executable {} has {} clauses but no settled entry dispatch",
+                                        index,
+                                        clauses.len()
+                                    ),
+                                ));
+                            };
+                            self.lower_clause_body_fn(
+                                self.executable_fns[index],
+                                executable,
+                                &format!(
+                                    "{}__e{}",
+                                    self.world.function_ref(executable.key.activation.function).name,
+                                    index
                                 ),
-                            ));
-                        };
-                        self.lower_clause_body_fn(
-                            self.executable_fns[index],
-                            executable,
-                            &format!(
-                                "{}__e{}",
-                                self.world.function_ref(executable.key.activation.function).name,
-                                index
-                            ),
-                            FnCategory::User,
-                            NativeBodyOrigin::Executable(executable.key.clone()),
-                            entries,
-                            &entry_fns,
-                            clause,
-                        )?;
+                                FnCategory::User,
+                                NativeBodyOrigin::Executable(executable.key.clone()),
+                                entries,
+                                &entry_fns,
+                                clause,
+                            )?;
+                        }
+                        self.lower_entry_helpers(index, executable, entries, &entry_fns)?;
+                        Ok(())
                     }
-                    self.lower_entry_helpers(index, executable, entries, &entry_fns)?;
                 }
-            }
+            })();
+            lowered.map_err(|_| {
+                incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!(
+                        "native executable lowering failed for index {index}, key {:?}",
+                        executable.key
+                    ),
+                )
+            })?;
+        }
+        for boundary in self.callable_boundaries.clone() {
+            self.lower_callable_construction_wrapper(&boundary).map_err(|_| {
+                incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!(
+                        "native callable wrapper lowering failed for construction {}",
+                        boundary.id.as_u32()
+                    ),
+                )
+            })?;
         }
 
         let entry = *self
@@ -252,6 +294,352 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
+    fn lower_callable_construction_wrapper(&mut self, boundary: &NativeCallableBoundary) -> Result<(), FatalError> {
+        let mut ctx = NativeFnCtx::new(
+            boundary.wrapper_fn,
+            &format!("callable_wrapper_{}", boundary.id.as_u32()),
+            FnCategory::User,
+            NativeBodyOrigin::CallableWrapper {
+                identity: boundary.id.as_u32(),
+            },
+            NativeEntryAbi::Direct,
+            vec![AbiValueRepr::ValueRef; boundary.capture_reprs.len() + boundary.call_arity],
+            self.world.types_mut().any(),
+            callable_return_reprs(boundary.return_form),
+            None,
+            EffectSummary::default(),
+        );
+        let params = ctx.entry_params(&vec![
+            self.world.types_mut().any();
+            boundary.capture_reprs.len() + boundary.call_arity
+        ]);
+        let captures = params[..boundary.capture_reprs.len()].to_vec();
+        let args = params[boundary.capture_reprs.len()..].to_vec();
+        match &boundary.selection {
+            Some(selection) => {
+                if selection.input_count != args.len() {
+                    return Err(incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!(
+                            "callable construction {} dispatch expects {} inputs but exposes {} call arguments",
+                            boundary.id.as_u32(),
+                            selection.input_count,
+                            args.len(),
+                        ),
+                    ));
+                }
+                let mut state = DispatchState::new(args.clone(), Vec::new(), Vec::new());
+                self.lower_callable_construction_wrapper_dispatch_node(
+                    &mut ctx,
+                    boundary,
+                    selection,
+                    selection.graph.root,
+                    &captures,
+                    &args,
+                    &mut state,
+                )?;
+            }
+            None if boundary.members.len() == 1 => {
+                self.lower_callable_construction_wrapper_member(&mut ctx, boundary, 0, &captures, &args)?;
+            }
+            None if boundary.members.is_empty() => {
+                ctx.halt_with_atom(self.atom_id("function_clause"));
+            }
+            None => {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!(
+                        "callable construction {} has {} members without a selection plan",
+                        boundary.id.as_u32(),
+                        boundary.members.len(),
+                    ),
+                ));
+            }
+        }
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    fn lower_callable_construction_wrapper_dispatch_node(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        boundary: &NativeCallableBoundary,
+        plan: &PatternDispatchPlan<Ty>,
+        node_id: GraphNodeId,
+        captures: &[Var],
+        args: &[Var],
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        let Some(node) = plan.graph.node(node_id).cloned() else {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "callable construction {} dispatch graph node {:?} is out of bounds",
+                    boundary.id.as_u32(),
+                    node_id,
+                ),
+            ));
+        };
+        match node {
+            DispatchNode::Fail => {
+                ctx.halt_with_atom(self.atom_id("function_clause"));
+                Ok(())
+            }
+            DispatchNode::Outcome { outcome, .. } => {
+                let body_id = plan
+                    .outcome(outcome)
+                    .ok_or_else(|| {
+                        incomplete_native_program(
+                            self.telemetry,
+                            self.root_id,
+                            format!(
+                                "callable construction {} dispatch outcome {:?} is out of bounds",
+                                boundary.id.as_u32(),
+                                outcome,
+                            ),
+                        )
+                    })?
+                    .body_id;
+                self.lower_callable_construction_wrapper_member(ctx, boundary, body_id as usize, captures, args)
+            }
+            DispatchNode::Test {
+                predicate,
+                on_match,
+                on_miss,
+            } => {
+                let cond = self.lower_dispatch_region(ctx, plan, predicate.subject, &predicate.region, state)?;
+                let then_b = ctx.builder.block(vec![]);
+                let else_b = ctx.builder.block(vec![]);
+                ctx.set_term(Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    origin: BranchOrigin::ClauseDispatch,
+                });
+                let mut match_state = state.clone();
+                ctx.current_block = then_b;
+                self.lower_callable_construction_wrapper_dispatch_node(
+                    ctx,
+                    boundary,
+                    plan,
+                    on_match.target,
+                    captures,
+                    args,
+                    &mut match_state,
+                )?;
+                ctx.current_block = else_b;
+                self.lower_callable_construction_wrapper_dispatch_node(
+                    ctx,
+                    boundary,
+                    plan,
+                    on_miss.target,
+                    captures,
+                    args,
+                    state,
+                )
+            }
+        }
+    }
+
+    fn lower_callable_construction_wrapper_member(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        boundary: &NativeCallableBoundary,
+        member_index: usize,
+        captures: &[Var],
+        args: &[Var],
+    ) -> Result<(), FatalError> {
+        let member = boundary.members.get(member_index).ok_or(FatalError)?;
+        let target = self
+            .program
+            .executables
+            .iter()
+            .find(|executable| executable.key == member.target)
+            .ok_or(FatalError)?;
+        let mut values = vec![
+            None;
+            member
+                .target_inputs
+                .iter()
+                .map(|input| input.semantic_index)
+                .max()
+                .map_or(0, |index| index + 1)
+        ];
+        let mut capture_cursor = 0;
+        for (capture_index, capture) in boundary.captures.iter().enumerate() {
+            let input = *member.capture_semantic_inputs.get(capture_index).ok_or(FatalError)?;
+            if !matches!(capture.carrier, super::super::pull::TransportCarrier::ValueRef) {
+                continue;
+            }
+            values[input] = Some(NativeBoundValue::Runtime(
+                *captures.get(capture_cursor).ok_or(FatalError)?,
+            ));
+            capture_cursor += 1;
+        }
+        if member.surface_semantic_inputs.len() != args.len() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "callable construction {} member {:?} publishes {} surface semantic inputs for {} wrapper call lanes",
+                    boundary.id.as_u32(),
+                    member.target,
+                    member.surface_semantic_inputs.len(),
+                    args.len(),
+                ),
+            ));
+        }
+        for (surface_index, semantic_index) in member.surface_semantic_inputs.iter().copied().enumerate() {
+            if member
+                .target_inputs
+                .iter()
+                .find(|input| input.semantic_index == semantic_index)
+                .is_some_and(|input| !input.layout.reprs.is_empty())
+            {
+                values[semantic_index] = Some(NativeBoundValue::Runtime(args[surface_index]));
+            }
+        }
+        if member
+            .target_inputs
+            .iter()
+            .any(|input| values[input.semantic_index].is_none() && !input.layout.reprs.is_empty())
+        {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "callable construction {} could not assign its published capture and surface lanes to member {:?}: captures={}, surface_inputs={:?}, target_inputs={:?}, assigned={:?}",
+                    boundary.id.as_u32(),
+                    member.target,
+                    captures.len(),
+                    member.surface_semantic_inputs,
+                    member.target_inputs,
+                    values.iter().map(Option::is_some).collect::<Vec<_>>(),
+                ),
+            ));
+        }
+        let input_reprs = member
+            .target_inputs
+            .iter()
+            .flat_map(|input| input.layout.reprs.iter().copied())
+            .collect::<Vec<_>>();
+        if input_reprs.as_slice() != target.param_reprs.as_slice() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "callable construction {} target {:?} input ABI {:?} disagrees with declared ABI {:?}",
+                    boundary.id.as_u32(),
+                    member.target,
+                    input_reprs,
+                    target.param_reprs,
+                ),
+            ));
+        }
+        let mut target_args = Vec::new();
+        for input in &member.target_inputs {
+            if input.layout.reprs.is_empty() {
+                continue;
+            }
+            if let Some(value) = &values[input.semantic_index] {
+                if input.layout.reprs.as_ref() == [AbiValueRepr::ValueRef] {
+                    target_args.push(self.materialize_native_value(ctx, None, value)?);
+                } else {
+                    self.encode_runtime_value(ctx, target, None, value, input.layout.structural, &mut target_args)?;
+                }
+            }
+        }
+        if target_args.len() != input_reprs.len() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "callable construction {} emitted {} ABI arguments for target {:?}, which declares {}",
+                    boundary.id.as_u32(),
+                    target_args.len(),
+                    member.target,
+                    input_reprs.len(),
+                ),
+            ));
+        }
+        let continuation = self.callable_wrapper_return_continuation(ctx, boundary, member)?;
+        ctx.set_term(Term::Call {
+            ident: CallsiteIdent::from_source(Span::DUMMY),
+            callee: DirectCallTarget::Local(member.target_fn),
+            args: target_args,
+            continuation,
+        });
+        Ok(())
+    }
+
+    fn callable_wrapper_return_continuation(
+        &mut self,
+        owner: &NativeFnCtx,
+        boundary: &NativeCallableBoundary,
+        member: &NativeConstructionMember,
+    ) -> Result<Cont, FatalError> {
+        let param_tys = member.target_return.layout.tys.to_vec();
+        let fn_id = self.module.fresh_fn_id();
+        let index = self.return_continuation_count;
+        self.return_continuation_count += 1;
+        let mut ctx = NativeFnCtx::new(
+            fn_id,
+            &format!("callable_wrapper_return_{}_{}", owner.fn_id.0, index),
+            FnCategory::CpsCont,
+            NativeBodyOrigin::Continuation {
+                owner: owner.fn_id,
+                index,
+            },
+            NativeEntryAbi::Continuation {
+                extra_params: member.target_return.layout.reprs.len(),
+            },
+            member.target_return.layout.reprs.to_vec(),
+            self.world.types_mut().any(),
+            if member.target_return.layout.reprs.is_empty() {
+                member.target_return.layout.reprs.to_vec()
+            } else {
+                callable_return_reprs(boundary.return_form)
+            },
+            None,
+            EffectSummary::default(),
+        );
+        let params = ctx.entry_params(&param_tys);
+        if params.len() != member.target_return.layout.reprs.len() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "callable construction {} return adapter exposes {} typed lanes for {} published return lane(s)",
+                    boundary.id.as_u32(),
+                    params.len(),
+                    member.target_return.layout.reprs.len(),
+                ),
+            ));
+        }
+        let return_lanes = if member.target_return.layout.reprs.is_empty() {
+            Vec::new()
+        } else {
+            let value = match self.world.shape(member.target_return.layout.structural) {
+                ShapeDescr::Lane(_) => NativeBoundValue::Runtime(*params.first().ok_or(FatalError)?),
+                ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport {
+                    shape: member.target_return.layout.structural,
+                    lanes: params,
+                },
+                ShapeDescr::Nothing => NativeBoundValue::Absent,
+            };
+            vec![self.materialize_native_value(&mut ctx, None, &value)?]
+        };
+        ctx.set_term(Term::ReturnLanes(return_lanes));
+        self.finish_native_fn(ctx);
+        Ok(Cont {
+            fn_id,
+            captured: Vec::new(),
+        })
+    }
+
     fn lower_extern_executable(
         &mut self,
         index: usize,
@@ -264,8 +652,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             self.world.function_ref(executable.key.activation.function).name,
             index
         );
-        let (return_reprs, return_tuple_arity) =
-            native_return_contract(self.world, self.program, &executable.transport.return_position);
+        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.return_layout);
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &name,
@@ -274,7 +661,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.transport.return_position.clone(),
             return_reprs,
             return_tuple_arity,
             executable.effects,
@@ -334,8 +720,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             self.world.function_ref(executable.key.activation.function).name,
             index
         );
-        let (return_reprs, return_tuple_arity) =
-            native_return_contract(self.world, self.program, &executable.transport.return_position);
+        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.return_layout);
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &name,
@@ -344,12 +729,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.transport.return_position.clone(),
             return_reprs,
             return_tuple_arity,
             executable.effects,
         );
-        let entry_tys = executable_input_tys(self.world, self.program, executable);
+        let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let semantic_inputs = self.bind_executable_inputs(executable, &mut ctx, &entry_vars)?;
         let dispatch = executable
@@ -380,14 +764,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             )
             .collect::<Result<Vec<_>, _>>()?;
         let mut state = DispatchState::new(inputs, entry_vars, Vec::new());
-        self.lower_dispatch_node(
-            &mut ctx,
-            executable,
-            dispatch,
-            dispatch.plan().graph.root,
-            &helper_ids,
-            &mut state,
-        )?;
+        self.lower_dispatch_node(&mut ctx, dispatch, dispatch.plan().graph.root, &helper_ids, &mut state)?;
         self.finish_native_fn(ctx);
 
         for (clause_index, (clause, helper_id)) in clauses.iter().zip(helper_ids.iter().copied()).enumerate() {
@@ -423,8 +800,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &HashMap<ControlEntryId, FnId>,
         clause: &BackendClause,
     ) -> Result<(), FatalError> {
-        let (return_reprs, return_tuple_arity) =
-            native_return_contract(self.world, self.program, &executable.transport.return_position);
+        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.return_layout);
         let mut ctx = NativeFnCtx::new(
             fn_id,
             name,
@@ -433,13 +809,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             NativeEntryAbi::Direct,
             executable.param_reprs.clone(),
             executable.return_ty,
-            executable.transport.return_position.clone(),
             return_reprs,
             return_tuple_arity,
             executable.effects,
         );
         let mut env = ValueEnv::default();
-        let entry_tys = executable_input_tys(self.world, self.program, executable);
+        let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
         let semantic_inputs = self.bind_executable_inputs(executable, &mut ctx, &entry_vars)?;
         for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
@@ -519,8 +894,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         let (entry_tys, param_reprs, entry_abi) =
             self.entry_signature(executable, entry, entry.reusable_cons_captures.as_slice());
-        let (return_reprs, return_tuple_arity) =
-            native_return_contract(self.world, self.program, &executable.transport.return_position);
+        let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.return_layout);
         let mut ctx = NativeFnCtx::new(
             fn_id,
             &entry_name,
@@ -532,7 +906,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             entry_abi,
             param_reprs,
             executable.return_ty,
-            executable.transport.return_position.clone(),
             return_reprs,
             return_tuple_arity,
             executable.effects,
@@ -579,27 +952,30 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
                 BackendStep::Tuple { value, items } => {
-                    if let Some(shape) = maybe_value_shape(self.program, executable, *value)
+                    if let Some(layout) = executable.value_layouts.get(value)
+                        && let shape = layout.structural
                         && let ShapeDescr::Tuple(fields) = self.world.shape(shape).clone()
                     {
                         if fields.len() != items.len() {
                             return Err(FatalError);
                         }
-                        let mut lanes = Vec::new();
-                        for (item, field_shape) in items.iter().copied().zip(fields) {
-                            self.encode_env_value_for_shape(ctx, executable, env, item, field_shape, &mut lanes)?;
+                        if matches!(layout.carrier, super::super::pull::TransportCarrier::ValueRef) {
+                            let vars = self.env_runtime_vars(ctx, executable, env, items);
+                            let (var, _) = ctx.emit_let(Prim::MakeTuple(vars));
+                            self.bind_runtime_value(ctx, executable, env, *value, var);
+                        } else {
+                            let mut lanes = Vec::new();
+                            for (item, field_shape) in items.iter().copied().zip(fields) {
+                                self.encode_env_value_for_shape(ctx, executable, env, item, field_shape, &mut lanes)?;
+                            }
+                            bind_local_value(
+                                ctx,
+                                executable,
+                                env,
+                                *value,
+                                NativeBoundValue::Transport { shape, lanes },
+                            );
                         }
-                        bind_local_value(
-                            ctx,
-                            executable,
-                            env,
-                            *value,
-                            NativeBoundValue::Transport {
-                                shape,
-                                lanes,
-                                callable_boundary: None,
-                            },
-                        );
                     } else {
                         let fields = self.env_runtime_vars(ctx, executable, env, items);
                         let (var, _) = ctx.emit_let(Prim::MakeTuple(fields));
@@ -694,15 +1070,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BackendStep::FunctionRef {
                     value,
                     function: _,
-                    resolved_entry,
+                    construction,
                 } => {
-                    let shape = value_shape(self.program, executable, *value);
+                    let shape = value_shape(executable, *value);
                     if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
                         // The transport plan settled this reference to Nothing: it is
                         // never demanded as a runtime callable (passed only to an
                         // ignoring boundary or discarded), so it carries no lanes.
                         // Honor that proof and construct nothing.
                         bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
+                    } else if let Some(identity) = construction {
+                        let boundary = self.native_callable_boundary_for_construction(*identity)?;
+                        let var = self.emit_callable_construction(ctx, boundary, Vec::new());
+                        self.bind_runtime_value(ctx, executable, env, *value, var);
                     } else {
                         callable_id_for_shape(self.world, shape)?;
                         bind_local_value(
@@ -713,9 +1093,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             NativeBoundValue::Transport {
                                 shape,
                                 lanes: Vec::new(),
-                                callable_boundary: resolved_entry
-                                    .map(|identity| self.native_callable_boundary_for_entry(identity))
-                                    .transpose()?,
                             },
                         );
                     }
@@ -724,9 +1101,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     value,
                     function: _,
                     captures,
-                    resolved_entry,
+                    construction,
                 } => {
-                    let shape = value_shape(self.program, executable, *value);
+                    let shape = value_shape(executable, *value);
                     if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
                         // A settled-Nothing constructed callable is never demanded at
                         // runtime, so its captures carry nothing. Honor the transport
@@ -734,51 +1111,83 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                         continue;
                     }
-                    let callable = callable_id_for_shape(self.world, shape)?;
-                    let callable_descr = self.world.callable(callable).clone();
-                    let capture_shapes = callable_descr.capture_shapes.to_vec();
-                    if capture_shapes.len() != captures.len() {
-                        return Err(incomplete_native_program(
-                            self.telemetry,
-                            self.root_id,
-                            "native direct callable capture count did not match transport callable descriptor",
-                        ));
-                    }
-                    let mut capture_lanes = Vec::new();
-                    let mut descriptor_lane_index = 0;
-                    for (capture, shape) in captures.iter().copied().zip(capture_shapes) {
-                        let structural_width = self.world.shape_width(shape);
-                        if structural_width == 0 && descriptor_lane_index < callable_descr.capture_lanes.len() {
-                            let lane = callable_descr.capture_lanes[descriptor_lane_index];
-                            descriptor_lane_index += 1;
-                            let local = env_local_value(env, capture)?;
-                            let ty = self.world.lane(lane).ty;
-                            capture_lanes.push(self.materialize_native_value(ctx, Some(ty), &local)?);
-                        } else {
-                            self.encode_env_value_for_shape(ctx, executable, env, capture, shape, &mut capture_lanes)?;
-                            descriptor_lane_index += structural_width;
+                    let callable_boundary = construction
+                        .map(|identity| self.native_callable_boundary_for_construction(identity))
+                        .transpose()?;
+                    if let Some(boundary) = callable_boundary {
+                        let mut capture_lanes = Vec::new();
+                        let capture_carriers = self.callable_boundaries[boundary.as_u32() as usize]
+                            .captures
+                            .iter()
+                            .map(|slot| slot.carrier)
+                            .collect::<Vec<_>>();
+                        if capture_carriers.len() != captures.len() {
+                            return Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                "native callable construction capture inventory disagrees with its lambda producer",
+                            ));
                         }
+                        for (capture, carrier) in captures.iter().copied().zip(capture_carriers) {
+                            if matches!(carrier, super::super::pull::TransportCarrier::ValueRef) {
+                                let local = env_local_value(env, capture)?;
+                                let ty = executable.value_types.get(&capture).copied();
+                                capture_lanes.push(self.materialize_native_value(ctx, ty, &local)?);
+                            }
+                        }
+                        let var = self.emit_callable_construction(ctx, boundary, capture_lanes);
+                        self.bind_runtime_value(ctx, executable, env, *value, var);
+                    } else {
+                        let callable = callable_id_for_shape(self.world, shape)?;
+                        let callable_descr = self.world.callable(callable).clone();
+                        let capture_shapes = callable_descr.capture_shapes.to_vec();
+                        if capture_shapes.len() != captures.len() {
+                            return Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                "native direct callable capture count did not match transport callable descriptor",
+                            ));
+                        }
+                        let mut capture_lanes = Vec::new();
+                        let mut descriptor_lane_index = 0;
+                        for (capture, shape) in captures.iter().copied().zip(capture_shapes) {
+                            let structural_width = self.world.shape_width(shape);
+                            if structural_width == 0 && descriptor_lane_index < callable_descr.capture_lanes.len() {
+                                let lane = callable_descr.capture_lanes[descriptor_lane_index];
+                                descriptor_lane_index += 1;
+                                let local = env_local_value(env, capture)?;
+                                let ty = self.world.lane(lane).ty;
+                                capture_lanes.push(self.materialize_native_value(ctx, Some(ty), &local)?);
+                            } else {
+                                self.encode_env_value_for_shape(
+                                    ctx,
+                                    executable,
+                                    env,
+                                    capture,
+                                    shape,
+                                    &mut capture_lanes,
+                                )?;
+                                descriptor_lane_index += structural_width;
+                            }
+                        }
+                        if descriptor_lane_index != callable_descr.capture_lanes.len() {
+                            return Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                "native lambda capture lowering did not consume the callable descriptor capture lanes",
+                            ));
+                        }
+                        bind_local_value(
+                            ctx,
+                            executable,
+                            env,
+                            *value,
+                            NativeBoundValue::Transport {
+                                shape,
+                                lanes: capture_lanes,
+                            },
+                        );
                     }
-                    if descriptor_lane_index != callable_descr.capture_lanes.len() {
-                        return Err(incomplete_native_program(
-                            self.telemetry,
-                            self.root_id,
-                            "native lambda capture lowering did not consume the callable descriptor capture lanes",
-                        ));
-                    }
-                    bind_local_value(
-                        ctx,
-                        executable,
-                        env,
-                        *value,
-                        NativeBoundValue::Transport {
-                            shape,
-                            lanes: capture_lanes,
-                            callable_boundary: resolved_entry
-                                .map(|identity| self.native_callable_boundary_for_entry(identity))
-                                .transpose()?,
-                        },
-                    );
                 }
                 BackendStep::BinaryOp { value, op, left, right } => {
                     let left = self.env_runtime_var(ctx, executable, env, *left);
@@ -932,7 +1341,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 CallEdge::Dispatch(dispatch) => {
                     self.lower_dispatch_call_tail(ctx, executable, entries, entry_fns, env, dispatch, args, dest)
                 }
-                CallEdge::Indirect => Err(incomplete_native_program(
+                CallEdge::Indirect { .. } => Err(incomplete_native_program(
                     self.telemetry,
                     self.root_id,
                     "native direct call materialized as an indirect closure edge; Indirect is closure-call-only",
@@ -941,14 +1350,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             BackendTail::ClosureCall {
                 callee,
                 target,
-                resolved_entry,
                 args,
                 dest,
                 return_flow,
                 ..
             } => {
-                let callee_value = env_local_value(env, *callee)?;
-                let direct_call = if let Some(capture_lanes) = self.direct_callable_lanes(&callee_value)? {
+                let callee_value = env.cloned_value(*callee);
+                let direct_capture_lanes =
+                    self.direct_closure_capture_lanes(callee_value.as_ref(), *target, args.len())?;
+                let direct_call = if let Some(capture_lanes) = direct_capture_lanes {
                     let target = target.ok_or_else(|| {
                         incomplete_native_program(
                             self.telemetry,
@@ -959,28 +1369,63 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let callee_executable = &self.program.executables[target];
                     let mut call_args = capture_lanes;
                     let mut direct_ok = true;
-                    let input_bindings = executable_input_bindings(self.program, callee_executable);
-                    let arg_inputs_start = input_bindings.len().checked_sub(args.len()).ok_or(FatalError)?;
-                    for (arg, binding) in args.iter().zip(input_bindings.iter().skip(arg_inputs_start)) {
+                    let capture_inputs_end = callee_executable
+                        .key
+                        .activation
+                        .input_len(self.world.types())
+                        .checked_sub(args.len())
+                        .ok_or(FatalError)?;
+                    for (surface_index, arg) in args.iter().enumerate() {
+                        let semantic_index = capture_inputs_end + surface_index;
+                        let Some(target_input) = callee_executable
+                            .semantic_inputs
+                            .iter()
+                            .find(|input| input.semantic_index == semantic_index)
+                        else {
+                            continue;
+                        };
+                        if target_input.layout.reprs.is_empty() {
+                            continue;
+                        }
                         let local = env_local_value(env, arg.value)?;
-                        if !binding.publication_lanes.is_empty() {
-                            direct_ok = false;
-                            break;
+                        if matches!(
+                            target_input.layout.carrier,
+                            super::super::pull::TransportCarrier::ValueRef
+                        ) {
+                            self.encode_runtime_value_for_layout(
+                                ctx,
+                                callee_executable,
+                                Some(arg.value),
+                                &local,
+                                &target_input.layout,
+                                &mut call_args,
+                            )?;
+                        } else {
+                            if !self.closure_fast_path_arg_is_structural(&local, target_input.layout.structural) {
+                                direct_ok = false;
+                                break;
+                            }
+                            self.encode_runtime_value(
+                                ctx,
+                                callee_executable,
+                                Some(arg.value),
+                                &local,
+                                target_input.layout.structural,
+                                &mut call_args,
+                            )?;
                         }
-                        if !self.closure_fast_path_arg_is_structural(&local, binding.shape) {
-                            direct_ok = false;
-                            break;
-                        }
-                        self.encode_runtime_value(
-                            ctx,
-                            callee_executable,
-                            Some(arg.value),
-                            &local,
-                            binding.shape,
-                            &mut call_args,
-                        )?;
                     }
                     if call_args.len() != callee_executable.param_reprs.len() {
+                        direct_ok = false;
+                    }
+                    if !matches!(return_flow, Some(BackendReturnFlow::Tail))
+                        && !return_flow.as_ref().is_some_and(|flow| match flow {
+                            BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
+                                source.as_ref() == &callee_executable.return_layout
+                            }
+                            BackendReturnFlow::Tail => true,
+                        })
+                    {
                         direct_ok = false;
                     }
                     direct_ok.then_some((target, call_args))
@@ -989,34 +1434,59 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 };
                 if let Some((target, call_args)) = direct_call {
                     let callee = DirectCallTarget::Local(self.executable_fns[target]);
-                    match dest {
-                        ControlDestination::Return => match return_flow.as_ref().ok_or_else(|| {
-                            incomplete_native_program(
-                                self.telemetry,
-                                self.root_id,
-                                "native direct closure call with Return destination is missing return-flow facts",
-                            )
-                        })? {
-                            CallReturnFlow::Tail { .. } => {
-                                ctx.set_term(Term::TailCall {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    callee,
-                                    args: call_args,
-                                    is_back_edge: false,
-                                });
-                                Ok(())
-                            }
-                            CallReturnFlow::Continue { payload, .. } => {
-                                let source_return = self.closure_call_return_position(Some(target), *resolved_entry)?;
-                                let continuation = match source_return {
-                                    Some(source_return) => self.return_lane_continuation_for_source_payload(
-                                        ctx,
-                                        executable,
-                                        &source_return,
-                                        payload,
-                                    )?,
-                                    None => self.return_lane_continuation_for_payload(ctx, executable, payload)?,
-                                };
+                    if self.program.executables[target].return_layout.diverges {
+                        ctx.set_term(Term::TailCall {
+                            ident: CallsiteIdent::from_source(Span::DUMMY),
+                            callee,
+                            args: call_args,
+                            is_back_edge: false,
+                        });
+                        Ok(())
+                    } else {
+                        match dest {
+                            ControlDestination::Return => match return_flow.as_ref().ok_or_else(|| {
+                                incomplete_native_program(
+                                    self.telemetry,
+                                    self.root_id,
+                                    "native direct closure call with Return destination is missing return-flow facts",
+                                )
+                            })? {
+                                BackendReturnFlow::Tail => {
+                                    ctx.set_term(Term::TailCall {
+                                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                                        callee,
+                                        args: call_args,
+                                        is_back_edge: false,
+                                    });
+                                    Ok(())
+                                }
+                                BackendReturnFlow::Continue { source } => {
+                                    let continuation =
+                                        self.return_lane_continuation_for_source_payload(ctx, executable, source)?;
+                                    ctx.set_term(Term::Call {
+                                        ident: CallsiteIdent::from_source(Span::DUMMY),
+                                        callee,
+                                        args: call_args,
+                                        continuation,
+                                    });
+                                    Ok(())
+                                }
+                                BackendReturnFlow::Deliver { .. } => Err(incomplete_native_program(
+                                    self.telemetry,
+                                    self.root_id,
+                                    "native direct closure call with Return destination carried Deliver return-flow",
+                                )),
+                            },
+                            ControlDestination::Deliver(entry_id) => {
+                                let continuation = self.delivered_call_continuation(
+                                    ctx,
+                                    executable,
+                                    entries,
+                                    entry_fns,
+                                    *entry_id,
+                                    env,
+                                    return_flow.as_ref(),
+                                )?;
                                 ctx.set_term(Term::Call {
                                     ident: CallsiteIdent::from_source(Span::DUMMY),
                                     callee,
@@ -1025,38 +1495,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                 });
                                 Ok(())
                             }
-                            CallReturnFlow::Deliver { .. } => Err(incomplete_native_program(
-                                self.telemetry,
-                                self.root_id,
-                                "native direct closure call with Return destination carried Deliver return-flow",
-                            )),
-                        },
-                        ControlDestination::Deliver(entry_id) => {
-                            let source_return = self.closure_call_return_position(Some(target), *resolved_entry)?;
-                            let continuation = self.delivered_call_continuation(
-                                ctx,
-                                executable,
-                                entries,
-                                entry_fns,
-                                *entry_id,
-                                env,
-                                return_flow.as_ref(),
-                                source_return.as_ref(),
-                            )?;
-                            ctx.set_term(Term::Call {
-                                ident: CallsiteIdent::from_source(Span::DUMMY),
-                                callee,
-                                args: call_args,
-                                continuation,
-                            });
-                            Ok(())
                         }
                     }
                 } else {
-                    let boundary = resolved_entry
-                        .map(|identity| self.native_callable_boundary_for_entry(identity))
-                        .transpose()?;
-                    let closure = self.materialize_native_value_with_boundary(ctx, None, &callee_value, boundary)?;
+                    let callee_value = callee_value.as_ref().ok_or_else(|| {
+                        incomplete_native_program(
+                            self.telemetry,
+                            self.root_id,
+                            "native indirect closure call has no runtime callee value",
+                        )
+                    })?;
+                    let closure = self.materialize_native_value(ctx, None, callee_value)?;
                     let call_args = self.env_runtime_vars(
                         ctx,
                         executable,
@@ -1065,18 +1514,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     );
                     let direct_target = None;
                     match dest {
-                        ControlDestination::Return => {
-                            if let Some(CallReturnFlow::Continue { payload, .. }) = return_flow.as_ref() {
-                                let source_return = self.closure_call_return_position(*target, *resolved_entry)?;
-                                let continuation = match source_return {
-                                    Some(source_return) => self.return_lane_continuation_for_source_payload(
-                                        ctx,
-                                        executable,
-                                        &source_return,
-                                        payload,
-                                    )?,
-                                    None => self.return_lane_continuation_for_payload(ctx, executable, payload)?,
-                                };
+                        ControlDestination::Return => match return_flow.as_ref() {
+                            Some(BackendReturnFlow::Continue { source }) => {
+                                let continuation =
+                                    self.return_lane_continuation_for_source_payload(ctx, executable, source)?;
                                 ctx.set_term(Term::CallClosure {
                                     ident: CallsiteIdent::from_source(Span::DUMMY),
                                     closure,
@@ -1084,27 +1525,44 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                     args: call_args,
                                     continuation,
                                 });
-                                return Ok(());
+                                Ok(())
                             }
-                            ctx.set_term(Term::TailCallClosure {
-                                ident: CallsiteIdent::from_source(Span::DUMMY),
-                                closure,
-                                direct_target,
-                                args: call_args,
-                            });
-                            Ok(())
-                        }
+                            Some(BackendReturnFlow::Tail) => {
+                                ctx.set_term(Term::TailCallClosure {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    closure,
+                                    direct_target,
+                                    args: call_args,
+                                });
+                                Ok(())
+                            }
+                            _ => {
+                                ctx.set_term(Term::TailCallClosure {
+                                    ident: CallsiteIdent::from_source(Span::DUMMY),
+                                    closure,
+                                    direct_target,
+                                    args: call_args,
+                                });
+                                Ok(())
+                            }
+                        },
                         ControlDestination::Deliver(entry_id) => {
-                            let source_return = self.closure_call_return_position(*target, *resolved_entry)?;
-                            let continuation = self.delivered_call_continuation(
-                                ctx,
-                                executable,
-                                entries,
-                                entry_fns,
-                                *entry_id,
-                                env,
-                                return_flow.as_ref(),
-                                source_return.as_ref(),
+                            let Some(BackendReturnFlow::Deliver { source, entry }) = return_flow.as_ref() else {
+                                return Err(incomplete_native_program(
+                                    self.telemetry,
+                                    self.root_id,
+                                    "native indirect closure call with Deliver destination is missing delivered return-flow",
+                                ));
+                            };
+                            if entry != entry_id {
+                                return Err(incomplete_native_program(
+                                    self.telemetry,
+                                    self.root_id,
+                                    "native indirect closure call delivered return-flow targets another entry",
+                                ));
+                            }
+                            let continuation = self.deliver_entry_continuation_for_source(
+                                ctx, executable, entries, entry_fns, *entry_id, env, source,
                             )?;
                             ctx.set_term(Term::CallClosure {
                                 ident: CallsiteIdent::from_source(Span::DUMMY),
@@ -1242,7 +1700,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         callee: &CallTarget<usize>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
-        return_flow: &CallReturnFlow,
+        return_flow: &BackendReturnFlow,
     ) -> Result<(), FatalError> {
         let (callee, call_args) = self.native_direct_call_target_and_args(ctx, executable, env, callee, args)?;
         self.emit_native_direct_call_tail(
@@ -1266,18 +1724,23 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entries: &[BackendEntry],
         entry_fns: &HashMap<ControlEntryId, FnId>,
         env: &ValueEnv,
-        dispatch: &DispatchCallEdge<usize>,
+        dispatch: &DispatchCallEdge<usize, BackendReturnFlow>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
     ) -> Result<(), FatalError> {
-        let receiver = args.first().ok_or_else(|| {
-            incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                "native dispatch call has no receiver argument",
-            )
-        })?;
-        let input_vars = self.env_runtime_vars(ctx, executable, env, &[receiver.value]);
+        let input_ids = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
+        let required_inputs = required_dispatch_input_ordinals(&dispatch.plan);
+        let input_vars = input_ids
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                if required_inputs.contains(&index) {
+                    self.env_runtime_var(ctx, executable, env, *value)
+                } else {
+                    ctx.emit_let(Prim::Const(Const::Nil)).0
+                }
+            })
+            .collect();
         let mut state = DispatchState::new(input_vars, Vec::new(), Vec::new());
         self.lower_dispatch_call_node(
             ctx,
@@ -1301,7 +1764,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entries: &[BackendEntry],
         entry_fns: &HashMap<ControlEntryId, FnId>,
         env: &ValueEnv,
-        dispatch: &DispatchCallEdge<usize>,
+        dispatch: &DispatchCallEdge<usize, BackendReturnFlow>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
         node_id: GraphNodeId,
@@ -1324,13 +1787,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
                     return Ok(());
                 };
-                let arm = dispatch.arms.iter().find(|arm| arm.body_id == body_id).ok_or_else(|| {
-                    incomplete_native_program(
-                        self.telemetry,
-                        self.root_id,
-                        format!("call dispatch arm {} is out of bounds", body_id),
-                    )
-                })?;
+                let Some(arm) = dispatch.arms.iter().find(|arm| arm.body_id == body_id) else {
+                    ctx.halt_with_atom(self.atom_id(UNREACHABLE_CONTROL_ATOM));
+                    return Ok(());
+                };
                 let (callee, call_args) =
                     self.native_direct_call_target_and_args(ctx, executable, env, &arm.callee, args)?;
                 self.emit_native_direct_call_tail(
@@ -1350,14 +1810,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond = self.lower_dispatch_region(
-                    ctx,
-                    executable,
-                    &dispatch.plan,
-                    predicate.subject,
-                    &predicate.region,
-                    state,
-                )?;
+                let cond =
+                    self.lower_dispatch_region(ctx, &dispatch.plan, predicate.subject, &predicate.region, state)?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -1409,37 +1863,50 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             CallTarget::Local(callee) => {
                 let callee_executable = &self.program.executables[*callee];
                 let mut lanes = Vec::new();
-                let input_bindings = executable_input_bindings(self.program, callee_executable);
-                for (arg, binding) in args.iter().zip(input_bindings.iter()) {
+                for (semantic_index, arg) in args.iter().enumerate() {
+                    let Some(target_input) = callee_executable
+                        .semantic_inputs
+                        .iter()
+                        .find(|input| input.semantic_index == semantic_index)
+                    else {
+                        continue;
+                    };
+                    if target_input.layout.reprs.is_empty() {
+                        continue;
+                    }
                     let local = env_local_value(env, arg.value)?;
-                    if publication_boundaries_for_position(self.program, &arg.position).is_empty() {
-                        self.encode_runtime_value_for_position(
+                    if !matches!(
+                        target_input.layout.carrier,
+                        super::super::pull::TransportCarrier::ValueRef
+                    ) {
+                        self.encode_runtime_value_for_layout(
                             ctx,
-                            callee_executable,
+                            executable,
                             Some(arg.value),
                             &local,
-                            binding.shape,
-                            &arg.position,
+                            &target_input.layout,
                             &mut lanes,
                         )?;
                     } else {
-                        let value = match self.world.shape(binding.shape) {
-                            ShapeDescr::Callable(callable) => self.materialize_native_value_for_publication(
-                                ctx,
-                                executable.value_types.get(&arg.value).copied(),
-                                &local,
-                                &arg.position,
-                                *callable,
-                            )?,
-                            ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Tuple(_) => self
-                                .materialize_native_value(
-                                    ctx,
-                                    executable.value_types.get(&arg.value).copied(),
-                                    &local,
-                                )?,
-                        };
+                        let value = self.materialize_native_value(
+                            ctx,
+                            executable.value_types.get(&arg.value).copied(),
+                            &local,
+                        )?;
                         lanes.push(value);
                     }
+                }
+                if lanes.len() != callee_executable.param_reprs.len() {
+                    return Err(incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!(
+                            "native direct call emitted {} arguments for target {:?}, which declares {}",
+                            lanes.len(),
+                            callee_executable.key,
+                            callee_executable.param_reprs.len(),
+                        ),
+                    ));
                 }
                 Ok((DirectCallTarget::Local(self.executable_fns[*callee]), lanes))
             }
@@ -1466,11 +1933,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         callee: DirectCallTarget,
         call_args: Vec<Var>,
         dest: &ControlDestination,
-        return_flow: &CallReturnFlow,
+        return_flow: &BackendReturnFlow,
     ) -> Result<(), FatalError> {
         match dest {
             ControlDestination::Return => match return_flow {
-                CallReturnFlow::Tail { .. } => {
+                BackendReturnFlow::Tail => {
                     ctx.set_term(Term::TailCall {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
                         callee,
@@ -1479,8 +1946,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     });
                     Ok(())
                 }
-                CallReturnFlow::Continue { payload, .. } => {
-                    let continuation = self.return_lane_continuation_for_payload(ctx, executable, payload)?;
+                BackendReturnFlow::Continue { source } => {
+                    let continuation = self.return_lane_continuation_for_source_payload(ctx, executable, source)?;
                     ctx.set_term(Term::Call {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
                         callee,
@@ -1489,7 +1956,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     });
                     Ok(())
                 }
-                CallReturnFlow::Deliver { .. } => Err(incomplete_native_program(
+                BackendReturnFlow::Deliver { .. } => Err(incomplete_native_program(
                     self.telemetry,
                     self.root_id,
                     "native direct call with Return destination carried Deliver return-flow",
@@ -1504,7 +1971,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     *entry_id,
                     env,
                     Some(return_flow),
-                    None,
                 )?;
                 ctx.set_term(Term::Call {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
@@ -1555,10 +2021,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &ValueEnv,
         value_id: ValueId,
     ) -> Result<Vec<Var>, FatalError> {
+        if executable.return_layout.layout.reprs.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut lanes = Vec::new();
-        let position = &executable.transport.return_position;
-        let return_shape = position_shape(self.program, position);
-        self.encode_env_value_for_position(ctx, executable, env, value_id, return_shape, position, &mut lanes)?;
+        let local = env
+            .cloned_value(value_id)
+            .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
+        self.encode_runtime_value_for_layout(
+            ctx,
+            executable,
+            Some(value_id),
+            &local,
+            &executable.return_layout.layout,
+            &mut lanes,
+        )?;
         Ok(lanes)
     }
 
@@ -1579,20 +2056,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .unwrap_or_else(|| self.world.types_mut().any())
             })
             .collect::<Vec<_>>();
-        let capture_shapes = entry
-            .capture_positions
+        let capture_lane_tys = entry
+            .captures
             .iter()
-            .map(|position| position_shape(self.program, position))
+            .flat_map(|capture| capture.layout.tys.iter().copied())
             .collect::<Vec<_>>();
-        let capture_lane_tys = capture_shapes
+        let capture_lane_reprs = entry
+            .captures
             .iter()
-            .copied()
-            .zip(entry.capture_positions.iter())
-            .flat_map(|(shape, position)| {
-                position_lane_tys_with_publications(self.world, self.program, position, shape)
-            })
+            .flat_map(|capture| capture.layout.reprs.iter().copied())
             .collect::<Vec<_>>();
-        let capture_lane_reprs = entry_capture_reprs(self.world, self.program, entry);
         let physical_capture_tys = reusable_cons_captures
             .iter()
             .map(|capture| {
@@ -1633,8 +2106,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 param_tys.extend(capture_lane_tys.iter().copied());
                 (param_tys, param_reprs, NativeEntryAbi::Continuation { extra_params: 0 })
             }
-            BackendEntryOrigin::DeliveredResume { value: _, position } => {
-                let (mut entry_tys, mut param_reprs) = continuation_result_entry(self.world, self.program, &position);
+            BackendEntryOrigin::DeliveredResume { value: _, layout } => {
+                let (mut entry_tys, mut param_reprs) = (layout.layout.tys.to_vec(), layout.layout.reprs.to_vec());
                 let extra_params = param_reprs.len();
                 entry_tys.extend(param_tys.iter().copied());
                 param_reprs.extend(param_tys.iter().copied().map(|ty| abi_value_repr(self.world, ty)));
@@ -1674,15 +2147,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 Ok(entry.params.len())
             }
-            BackendEntryOrigin::DeliveredResume { value, position } => {
-                if self.resume_payload_is_runtime_absent(position) {
+            BackendEntryOrigin::DeliveredResume { value, layout } => {
+                if matches!(layout.layout.carrier, super::super::pull::TransportCarrier::Absent)
+                    && matches!(self.world.shape(layout.layout.structural), ShapeDescr::Nothing)
+                {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                     return Ok(0);
                 }
-                let shape = position_shape(self.program, position);
                 let mut lane_index = 0;
-                let bound =
-                    self.decode_runtime_value_for_position(ctx, position, shape, entry_vars, &mut lane_index)?;
+                let bound = self.decode_runtime_value_for_layout(ctx, &layout.layout, entry_vars, &mut lane_index)?;
                 bind_local_value(ctx, executable, env, *value, bound);
                 Ok(lane_index)
             }
@@ -1698,26 +2171,28 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         capture_offset: &mut usize,
         env: &mut ValueEnv,
     ) -> Result<(), FatalError> {
-        for (value, position) in entry.captures.iter().copied().zip(entry.capture_positions.iter()) {
-            let shape = position_shape(self.program, position);
+        for capture in &entry.captures {
+            if capture.layout.reprs.is_empty() {
+                bind_local_value(ctx, executable, env, capture.value, NativeBoundValue::Absent);
+                continue;
+            }
             let bound = self
-                .decode_runtime_value_for_position(ctx, position, shape, entry_vars, capture_offset)
+                .decode_runtime_value_for_layout(ctx, &capture.layout, entry_vars, capture_offset)
                 .map_err(|_| {
                     incomplete_native_program(
                         self.telemetry,
                         self.root_id,
                         format!(
-                            "native entry {:?} failed to decode capture {} at position {:?} with shape {:?}; offset={} params={}",
+                            "native entry {:?} failed to decode capture {} with shape {:?}; offset={} params={}",
                             ctx.origin,
-                            value.as_u32(),
-                            position,
-                            self.world.shape(shape),
+                            capture.value.as_u32(),
+                            self.world.shape(capture.layout.structural),
                             *capture_offset,
                             entry_vars.len()
                         ),
                     )
                 })?;
-            bind_local_value(ctx, executable, env, value, bound);
+            bind_local_value(ctx, executable, env, capture.value, bound);
         }
         for capture in entry.reusable_cons_captures.iter().copied() {
             let physical_var = *entry_vars.get(*capture_offset).ok_or_else(|| {
@@ -1747,17 +2222,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry: &BackendEntry,
         input_vars: &[Var],
     ) -> Result<(), FatalError> {
-        let BackendEntryOrigin::DeliveredResume { value, position } = &entry.origin else {
+        let BackendEntryOrigin::DeliveredResume { value, layout } = &entry.origin else {
             return Ok(());
         };
-        let shape = position_shape(self.program, position);
-        let publication_lanes =
-            position_publication_lanes(self.program, |seam| continuation_seam_matches(position, seam));
+        if input_vars.is_empty() {
+            return Ok(());
+        }
+        let shape = layout.layout.structural;
         let mut lane_index = 0;
-        if !publication_lanes.is_empty() {
+        if matches!(layout.layout.carrier, super::super::pull::TransportCarrier::ValueRef) {
             let ignore = RuntimeDemand::ignore();
             let demand = executable.runtime_demand.value_demands.get(value).unwrap_or(&ignore);
-            mark_ignored_publication_lanes(&mut ctx.builder, input_vars, demand, &mut lane_index)?;
+            mark_ignored_carrier_lane(&mut ctx.builder, input_vars, demand, &mut lane_index)?;
         } else if let Some(demand) = executable.runtime_demand.value_demands.get(value) {
             mark_ignored_lanes_for_demand(self.world, &mut ctx.builder, input_vars, shape, demand, &mut lane_index)?;
         } else {
@@ -1786,10 +2262,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &HashMap<ControlEntryId, FnId>,
         entry_id: ControlEntryId,
         env: &ValueEnv,
-        return_flow: Option<&CallReturnFlow>,
-        source_return: Option<&TransportPosition>,
+        return_flow: Option<&BackendReturnFlow>,
     ) -> Result<Cont, FatalError> {
-        let Some(CallReturnFlow::Deliver { payload, entry, .. }) = return_flow else {
+        let Some(BackendReturnFlow::Deliver { source, entry }) = return_flow else {
             return self.entry_continuation(ctx, executable, entries, entry_fns, entry_id, env);
         };
         if *entry != entry_id {
@@ -1803,15 +2278,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ),
             ));
         }
-        self.deliver_entry_continuation_for_source(
-            ctx,
-            executable,
-            entries,
-            entry_fns,
-            entry_id,
-            env,
-            source_return.unwrap_or(payload),
-        )
+        self.deliver_entry_continuation_for_source(ctx, executable, entries, entry_fns, entry_id, env, source)
     }
 
     fn entry_continuation(
@@ -1843,95 +2310,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
-    fn return_lane_continuation_for_payload(
-        &mut self,
-        ctx: &NativeFnCtx,
-        executable: &BackendExecutable,
-        payload: &TransportPosition,
-    ) -> Result<Cont, FatalError> {
-        let payload_shape = position_shape(self.program, payload);
-        let (param_tys, payload_reprs) = return_payload_entry(self.world, self.program, payload);
-        if param_tys.len() != payload_reprs.len() {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!(
-                    "native return-lane continuation for {:?} expected {} payload lane types, got {} reprs",
-                    payload,
-                    param_tys.len(),
-                    payload_reprs.len()
-                ),
-            ));
-        }
-
-        let fn_id = self.module.fresh_fn_id();
-        let index = self.return_continuation_count;
-        self.return_continuation_count += 1;
-        let name = format!("return_lanes__{}_{}", ctx.fn_id.0, index);
-        let mut cont_ctx = NativeFnCtx::new(
-            fn_id,
-            &name,
-            FnCategory::CpsCont,
-            NativeBodyOrigin::Continuation {
-                owner: ctx.fn_id,
-                index,
-            },
-            NativeEntryAbi::Continuation {
-                extra_params: payload_reprs.len(),
-            },
-            payload_reprs,
-            executable.return_ty,
-            executable.transport.return_position.clone(),
-            ctx.return_reprs.clone(),
-            ctx.return_tuple_arity,
-            executable.effects,
-        );
-        let params = cont_ctx.entry_params(param_tys.as_slice());
-        let mut lane_index = 0;
-        let payload_value =
-            self.decode_runtime_value_for_position(&mut cont_ctx, payload, payload_shape, &params, &mut lane_index)?;
-        if lane_index != params.len() {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!(
-                    "native return-lane continuation for {:?} consumed {} payload lanes, but received {}",
-                    payload,
-                    lane_index,
-                    params.len()
-                ),
-            ));
-        }
-        let return_position = executable.transport.return_position.clone();
-        let return_shape = position_shape(self.program, &return_position);
-        let mut return_lanes = Vec::new();
-        self.encode_runtime_value_for_position(
-            &mut cont_ctx,
-            executable,
-            None,
-            &payload_value,
-            return_shape,
-            &return_position,
-            &mut return_lanes,
-        )?;
-        cont_ctx.set_term(Term::ReturnLanes(return_lanes));
-        self.finish_native_fn(cont_ctx);
-        Ok(Cont {
-            fn_id,
-            captured: Vec::new(),
-        })
-    }
-
     fn return_lane_continuation_for_source_payload(
         &mut self,
         ctx: &NativeFnCtx,
         executable: &BackendExecutable,
-        source_return: &TransportPosition,
-        payload: &TransportPosition,
+        source_return: &super::super::artifact::BackendReturnLayout,
     ) -> Result<Cont, FatalError> {
-        let source_shape = position_shape(self.program, source_return);
-        let param_tys = position_lane_tys_with_publications(self.world, self.program, source_return, source_shape);
-        let (source_reprs, _) = native_return_contract(self.world, self.program, source_return);
+        let param_tys = source_return.layout.tys.to_vec();
+        let source_reprs = source_return.layout.reprs.to_vec();
         if param_tys.len() != source_reprs.len() {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -1962,20 +2348,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             },
             source_reprs,
             executable.return_ty,
-            executable.transport.return_position.clone(),
             ctx.return_reprs.clone(),
             ctx.return_tuple_arity,
             executable.effects,
         );
         let params = cont_ctx.entry_params(param_tys.as_slice());
         let mut lane_index = 0;
-        let source_value = self.decode_runtime_value_for_position(
-            &mut cont_ctx,
-            source_return,
-            source_shape,
-            &params,
-            &mut lane_index,
-        )?;
+        let source_value =
+            self.decode_runtime_value_for_layout(&mut cont_ctx, &source_return.layout, &params, &mut lane_index)?;
         if lane_index != params.len() {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -1988,15 +2368,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ),
             ));
         }
-        let payload_shape = position_shape(self.program, payload);
         let mut return_lanes = Vec::new();
-        self.encode_runtime_value_for_position(
+        self.encode_runtime_value_for_layout(
             &mut cont_ctx,
             executable,
             None,
             &source_value,
-            payload_shape,
-            payload,
+            &executable.return_layout.layout,
             &mut return_lanes,
         )?;
         cont_ctx.set_term(Term::ReturnLanes(return_lanes));
@@ -2015,7 +2393,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &HashMap<ControlEntryId, FnId>,
         entry_id: ControlEntryId,
         env: &ValueEnv,
-        source: &TransportPosition,
+        source: &super::super::artifact::BackendReturnLayout,
     ) -> Result<Cont, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let Some(value) = entry.origin.input_value() else {
@@ -2029,14 +2407,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ));
         };
 
-        let source_shape = position_shape(self.program, source);
-        let (source_tys, source_reprs) = if matches!(source, TransportPosition::ExecutableReturn { .. }) {
-            let source_tys = position_lane_tys_with_publications(self.world, self.program, source, source_shape);
-            let (source_reprs, _) = native_return_contract(self.world, self.program, source);
-            (source_tys, source_reprs)
-        } else {
-            continuation_result_entry(self.world, self.program, source)
-        };
+        let (source_tys, source_reprs) = (source.layout.tys.to_vec(), source.layout.reprs.to_vec());
         if source_tys.len() != source_reprs.len() {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -2050,21 +2421,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ));
         }
         let extra_params = source_reprs.len();
+        let source_is_absent = source_reprs.is_empty();
 
-        let capture_shapes = entry
-            .capture_positions
+        let capture_lane_tys = entry
+            .captures
             .iter()
-            .map(|position| position_shape(self.program, position))
+            .flat_map(|capture| capture.layout.tys.iter().copied())
             .collect::<Vec<_>>();
-        let capture_lane_tys = capture_shapes
+        let capture_lane_reprs = entry
+            .captures
             .iter()
-            .copied()
-            .zip(entry.capture_positions.iter())
-            .flat_map(|(shape, position)| {
-                position_lane_tys_with_publications(self.world, self.program, position, shape)
-            })
+            .flat_map(|capture| capture.layout.reprs.iter().copied())
             .collect::<Vec<_>>();
-        let capture_lane_reprs = entry_capture_reprs(self.world, self.program, entry);
         let physical_capture_tys = entry
             .reusable_cons_captures
             .iter()
@@ -2104,20 +2472,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             NativeEntryAbi::Continuation { extra_params },
             param_reprs,
             executable.return_ty,
-            executable.transport.return_position.clone(),
             ctx.return_reprs.clone(),
             ctx.return_tuple_arity,
             executable.effects,
         );
         let entry_vars = cont_ctx.entry_params(param_tys.as_slice());
         let mut source_lane_index = 0;
-        let delivered = self.decode_runtime_value_for_position(
-            &mut cont_ctx,
-            source,
-            source_shape,
-            &entry_vars,
-            &mut source_lane_index,
-        )?;
+        let delivered =
+            self.decode_runtime_value_for_layout(&mut cont_ctx, &source.layout, &entry_vars, &mut source_lane_index)?;
         let mut adapter_env = ValueEnv::default();
         bind_local_value(&mut cont_ctx, executable, &mut adapter_env, value, delivered);
         let mut lane_index = extra_params;
@@ -2141,8 +2503,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ),
             ));
         }
-        let args =
-            self.entry_call_args_from_value(&mut cont_ctx, executable, entries, entry_id, &adapter_env, value)?;
+        let args = if source_is_absent {
+            self.entry_capture_args(&mut cont_ctx, executable, entries, entry_id, &adapter_env)?
+        } else {
+            self.entry_call_args_from_value(&mut cont_ctx, executable, entries, entry_id, &adapter_env, value)?
+        };
         cont_ctx.set_term(Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
             callee: DirectCallTarget::Local(*entry_fns.get(&entry_id).expect("resume entry should have a helper fn")),
@@ -2167,20 +2532,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<Vec<Var>, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let mut args = Vec::new();
-        for (value, position) in entry.captures.iter().copied().zip(entry.capture_positions.iter()) {
-            let local = env_local_value(env, value)?;
-            let shape = position_shape(self.program, position);
-            self.encode_runtime_value_for_position(ctx, executable, Some(value), &local, shape, position, &mut args)?;
+        for capture in &entry.captures {
+            if capture.layout.reprs.is_empty() {
+                continue;
+            }
+            let local = env_local_value(env, capture.value)?;
+            self.encode_runtime_value_for_layout(
+                ctx,
+                executable,
+                Some(capture.value),
+                &local,
+                &capture.layout,
+                &mut args,
+            )?;
         }
         for capture in &entry.reusable_cons_captures {
             args.push(self.env_runtime_var(ctx, executable, env, capture.source));
         }
         Ok(args)
-    }
-
-    fn resume_payload_is_runtime_absent(&self, position: &TransportPosition) -> bool {
-        let shape = position_shape(self.program, position);
-        matches!(self.world.shape(shape), ShapeDescr::Nothing)
     }
 
     fn receive_pinned_vars(
@@ -2231,7 +2600,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .unwrap_or_default();
         for entry_id in iter {
             let entry_captures = &entries[entry_id.as_u32() as usize].captures;
-            if *entry_captures != capture_ids {
+            if entry_captures.len() != capture_ids.len()
+                || entry_captures
+                    .iter()
+                    .zip(&capture_ids)
+                    .any(|(left, right)| !same_entry_capture_contract(left, right))
+            {
                 return Err(incomplete_native_program(
                     self.telemetry,
                     self.root_id,
@@ -2239,20 +2613,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ));
             }
         }
-        let entry = entries
-            .get(
-                clauses
-                    .first()
-                    .map(|clause| clause.entry.as_u32() as usize)
-                    .or_else(|| after.map(|after| after.entry.as_u32() as usize))
-                    .unwrap_or(0),
-            )
-            .ok_or(FatalError)?;
         let mut args = Vec::new();
-        for (value, position) in capture_ids.into_iter().zip(entry.capture_positions.iter()) {
-            let local = env_local_value(env, value)?;
-            let shape = position_shape(self.program, position);
-            self.encode_runtime_value(ctx, executable, Some(value), &local, shape, &mut args)?;
+        for capture in capture_ids {
+            if capture.layout.reprs.is_empty() {
+                continue;
+            }
+            let local = env_local_value(env, capture.value)?;
+            self.encode_runtime_value_for_layout(
+                ctx,
+                executable,
+                Some(capture.value),
+                &local,
+                &capture.layout,
+                &mut args,
+            )?;
         }
         Ok(args)
     }
@@ -2269,17 +2643,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let entry = &entries[entry_id.as_u32() as usize];
         let mut args = match &entry.origin {
             BackendEntryOrigin::Clause | BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome => Vec::new(),
-            BackendEntryOrigin::DeliveredResume { position, .. } => {
+            BackendEntryOrigin::DeliveredResume { layout, .. } => {
                 let mut lanes = Vec::new();
-                let publication_lanes =
-                    position_publication_lanes(self.program, |seam| continuation_seam_matches(position, seam));
-                if publication_lanes.is_empty() {
-                    let shape = position_shape(self.program, position);
-                    self.encode_env_value_for_shape(ctx, executable, env, value_id, shape, &mut lanes)?;
-                } else {
-                    let shape = position_shape(self.program, position);
-                    self.encode_env_value_for_position(ctx, executable, env, value_id, shape, position, &mut lanes)?;
-                }
+                let local = env
+                    .cloned_value(value_id)
+                    .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
+                self.encode_runtime_value_for_layout(
+                    ctx,
+                    executable,
+                    Some(value_id),
+                    &local,
+                    &layout.layout,
+                    &mut lanes,
+                )?;
                 lanes
             }
         };
@@ -2296,63 +2672,78 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let semantic_arity = executable.key.activation.input_len(self.world.types());
         let mut bound = vec![None; semantic_arity];
         let mut lane_index = 0;
-        for binding in executable_input_bindings(self.program, executable) {
-            bound[binding.semantic_index] = Some(self.decode_runtime_value_for_position(
-                ctx,
-                &binding.position,
-                binding.shape,
-                params,
-                &mut lane_index,
-            )?);
+        for input in executable
+            .semantic_inputs
+            .iter()
+            .filter(|input| !input.layout.reprs.is_empty())
+        {
+            let value = self.decode_runtime_value_for_layout(ctx, &input.layout, params, &mut lane_index)?;
+            bound[input.semantic_index] = Some(value);
         }
         if lane_index != params.len() {
-            return Err(FatalError);
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "native executable {:?} decoded {} of {} published input lane(s)",
+                    executable.key,
+                    lane_index,
+                    params.len(),
+                ),
+            ));
         }
         Ok(bound)
     }
 
-    fn decode_runtime_value_for_position(
+    fn decode_runtime_value_for_layout(
         &mut self,
         ctx: &mut NativeFnCtx,
-        position: &TransportPosition,
+        layout: &super::super::artifact::BackendValueLayout,
+        params: &[Var],
+        lane_index: &mut usize,
+    ) -> Result<NativeBoundValue, FatalError> {
+        self.decode_runtime_value(
+            ctx,
+            matches!(layout.carrier, super::super::pull::TransportCarrier::ValueRef),
+            layout.structural,
+            params,
+            lane_index,
+        )
+    }
+
+    fn decode_runtime_value(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        carries_runtime_value: bool,
         shape: ShapeId,
         params: &[Var],
         lane_index: &mut usize,
     ) -> Result<NativeBoundValue, FatalError> {
         match self.world.shape(shape).clone() {
+            ShapeDescr::Nothing if carries_runtime_value => {
+                Ok(NativeBoundValue::Runtime(next_runtime_lane(params, lane_index)?))
+            }
             ShapeDescr::Nothing => Ok(NativeBoundValue::Absent),
             ShapeDescr::Lane(_) => Ok(NativeBoundValue::Runtime(next_runtime_lane(params, lane_index)?)),
-            ShapeDescr::Callable(callable) if self.position_publishes_callable(position, callable) => {
-                let var = next_runtime_lane(params, lane_index)?;
-                if let Some(identity) = self.program.transport.callable_entry_at(position, callable) {
-                    let boundary = self.native_callable_boundary_for_entry(identity)?;
-                    ctx.callable_value_boundaries.insert(var, boundary);
-                }
-                Ok(NativeBoundValue::Runtime(var))
+            ShapeDescr::Callable(_) if carries_runtime_value => {
+                Ok(NativeBoundValue::Runtime(next_runtime_lane(params, lane_index)?))
             }
-            ShapeDescr::Callable(callable) => {
+            ShapeDescr::Callable(_) => {
                 let width = self.world.shape_width(shape);
                 let end = lane_index.checked_add(width).ok_or(FatalError)?;
                 let lanes = params.get(*lane_index..end).ok_or(FatalError)?.to_vec();
                 *lane_index = end;
-                let callable_boundary = self
-                    .program
-                    .transport
-                    .callable_entry_at(position, callable)
-                    .map(|identity| self.native_callable_boundary_for_entry(identity))
-                    .transpose()?;
-                Ok(NativeBoundValue::Transport {
-                    shape,
-                    lanes,
-                    callable_boundary,
-                })
+                Ok(NativeBoundValue::Transport { shape, lanes })
+            }
+            ShapeDescr::Tuple(_) if carries_runtime_value => {
+                Ok(NativeBoundValue::Runtime(next_runtime_lane(params, lane_index)?))
             }
             ShapeDescr::Tuple(fields) => {
                 let mut field_values = Vec::with_capacity(fields.len());
                 let mut raw_lanes = Vec::new();
                 let mut all_raw = true;
                 for field in fields.iter().copied() {
-                    let value = self.decode_runtime_value_for_position(ctx, position, field, params, lane_index)?;
+                    let value = self.decode_runtime_value(ctx, carries_runtime_value, field, params, lane_index)?;
                     if all_raw {
                         if let Some(lanes) = self.raw_lanes_for_shape_value(field, &value)? {
                             raw_lanes.extend(lanes);
@@ -2366,7 +2757,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     return Ok(NativeBoundValue::Transport {
                         shape,
                         lanes: raw_lanes,
-                        callable_boundary: None,
                     });
                 }
                 let mut vars = Vec::with_capacity(field_values.len());
@@ -2401,7 +2791,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     fn lower_dispatch_node(
         &mut self,
         ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
         dispatch: &crate::compiler2::ExecutableDispatch,
         node_id: GraphNodeId,
         helper_ids: &[FnId],
@@ -2449,14 +2838,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond = self.lower_dispatch_region(
-                    ctx,
-                    executable,
-                    dispatch.plan(),
-                    predicate.subject,
-                    &predicate.region,
-                    state,
-                )?;
+                let cond =
+                    self.lower_dispatch_region(ctx, dispatch.plan(), predicate.subject, &predicate.region, state)?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -2467,9 +2850,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 });
                 let mut match_state = state.clone();
                 ctx.current_block = then_b;
-                self.lower_dispatch_node(ctx, executable, dispatch, on_match.target, helper_ids, &mut match_state)?;
+                self.lower_dispatch_node(ctx, dispatch, on_match.target, helper_ids, &mut match_state)?;
                 ctx.current_block = else_b;
-                self.lower_dispatch_node(ctx, executable, dispatch, on_miss.target, helper_ids, state)
+                self.lower_dispatch_node(ctx, dispatch, on_miss.target, helper_ids, state)
             }
         }
     }
@@ -2550,8 +2933,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond =
-                    self.lower_dispatch_region(ctx, executable, plan, predicate.subject, &predicate.region, state)?;
+                let cond = self.lower_dispatch_region(ctx, plan, predicate.subject, &predicate.region, state)?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -2655,7 +3037,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     fn lower_dispatch_region(
         &mut self,
         ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
         plan: &PatternDispatchPlan<Ty>,
         subject: SubjectId,
         region: &Region<Ty>,
@@ -2715,7 +3096,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         format!("dispatch guard {:?} is out of bounds", guard),
                     )
                 })?;
-                self.lower_guard_expr(ctx, executable, plan, state, expr)?
+                self.lower_guard_expr(ctx, plan, state, expr)?
             }
             Region::Equal(ComparisonValue::Pinned(pinned)) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
@@ -2736,7 +3117,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     fn lower_guard_expr(
         &mut self,
         ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
         plan: &PatternDispatchPlan<Ty>,
         state: &mut DispatchState,
         expr: &PatternGuardExpr<Ty>,
@@ -2745,7 +3125,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?,
             PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
             PatternGuardExpr::Unary { op, expr } => {
-                let input = self.lower_guard_expr(ctx, executable, plan, state, expr)?;
+                let input = self.lower_guard_expr(ctx, plan, state, expr)?;
                 let (var, _) = ctx.emit_let(Prim::UnOp(
                     match op {
                         crate::dispatch_matrix::pattern::PatternGuardUnaryOp::Not => IrUnOp::Not,
@@ -2756,14 +3136,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 var
             }
             PatternGuardExpr::Binary { op, lhs, rhs } => {
-                let lhs = self.lower_guard_expr(ctx, executable, plan, state, lhs)?;
-                let rhs = self.lower_guard_expr(ctx, executable, plan, state, rhs)?;
+                let lhs = self.lower_guard_expr(ctx, plan, state, lhs)?;
+                let rhs = self.lower_guard_expr(ctx, plan, state, rhs)?;
                 let (var, _) = ctx.emit_let(Prim::BinOp(lower_guard_binop(*op), lhs, rhs));
                 var
             }
             PatternGuardExpr::Dispatch { .. } => {
                 if let PatternGuardExpr::Dispatch { inputs, dispatch } = expr {
-                    self.lower_guard_dispatch(ctx, executable, plan, state, inputs, dispatch)?
+                    self.lower_guard_dispatch(ctx, plan, state, inputs, dispatch)?
                 } else {
                     unreachable!("dispatch arm must have matched");
                 }
@@ -2775,7 +3155,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     fn lower_guard_dispatch(
         &mut self,
         ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
         parent_plan: &PatternDispatchPlan<Ty>,
         state: &mut DispatchState,
         inputs: &[PatternGuardExpr<Ty>],
@@ -2783,7 +3162,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<Var, FatalError> {
         let input_vars = inputs
             .iter()
-            .map(|input| self.lower_guard_expr(ctx, executable, parent_plan, state, input))
+            .map(|input| self.lower_guard_expr(ctx, parent_plan, state, input))
             .collect::<Result<Vec<_>, _>>()?;
         let done_value = ctx.builder.fresh_var();
         let done_b = ctx.builder.block(vec![done_value]);
@@ -2791,7 +3170,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let mut dispatch_state = DispatchState::new(input_vars, Vec::new(), Vec::new());
         self.lower_guard_dispatch_node(
             ctx,
-            executable,
             &dispatch.plan,
             &dispatch.bodies,
             dispatch.plan.graph.root,
@@ -2810,7 +3188,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     fn lower_guard_dispatch_node(
         &mut self,
         ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
         plan: &PatternDispatchPlan<Ty>,
         bodies: &[PatternGuardExpr<Ty>],
         node_id: GraphNodeId,
@@ -2845,7 +3222,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         format!("guard dispatch body {} is out of bounds", outcome.body_id),
                     )
                 })?;
-                let value = self.lower_guard_expr(ctx, executable, plan, state, body)?;
+                let value = self.lower_guard_expr(ctx, plan, state, body)?;
                 ctx.set_term(Term::Goto(done_b, vec![value]));
                 Ok(())
             }
@@ -2854,8 +3231,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 on_match,
                 on_miss,
             } => {
-                let cond =
-                    self.lower_dispatch_region(ctx, executable, plan, predicate.subject, &predicate.region, state)?;
+                let cond = self.lower_dispatch_region(ctx, plan, predicate.subject, &predicate.region, state)?;
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
                 ctx.set_term(Term::If {
@@ -2866,18 +3242,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 });
                 let mut match_state = state.clone();
                 ctx.current_block = then_b;
-                self.lower_guard_dispatch_node(
-                    ctx,
-                    executable,
-                    plan,
-                    bodies,
-                    on_match.target,
-                    done_b,
-                    fail_b,
-                    &mut match_state,
-                )?;
+                self.lower_guard_dispatch_node(ctx, plan, bodies, on_match.target, done_b, fail_b, &mut match_state)?;
                 ctx.current_block = else_b;
-                self.lower_guard_dispatch_node(ctx, executable, plan, bodies, on_miss.target, done_b, fail_b, state)
+                self.lower_guard_dispatch_node(ctx, plan, bodies, on_miss.target, done_b, fail_b, state)
             }
         }
     }
@@ -2979,72 +3346,25 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         *self.atom_ids.get(name).expect("required atom should be interned")
     }
 
-    fn native_callable_boundary_for_entry(&self, identity: u32) -> Result<NativeCallableBoundaryId, FatalError> {
-        let entry = self
-            .program
-            .callable_entries
-            .iter()
-            .find(|entry| entry.identity == identity)
-            .ok_or_else(|| {
-                incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!("native callable construction names unknown resolved entry identity {identity}"),
-                )
-            })?;
+    fn native_callable_boundary_for_construction(&self, identity: u32) -> Result<NativeCallableBoundaryId, FatalError> {
+        let identity_fn = self.construction_identity_fns.get(&identity).ok_or_else(|| {
+            incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!("native callable construction names unknown construction identity {identity}"),
+            )
+        })?;
         self.callable_boundaries
             .iter()
-            .find(|boundary| {
-                boundary.target == self.program.executables[entry.target].key
-                    && boundary.capture_count == entry.capture_count
-                    && boundary.identity_fn == self.callable_entry_identity_fns[&identity]
-            })
+            .find(|boundary| boundary.identity_fn == *identity_fn)
             .map(NativeCallableBoundary::id)
             .ok_or_else(|| {
                 incomplete_native_program(
                     self.telemetry,
                     self.root_id,
-                    format!("native callable entry identity {identity} has no materialized native boundary"),
+                    format!("native callable construction {identity} has no materialized native boundary"),
                 )
             })
-    }
-
-    fn closure_call_return_position(
-        &self,
-        target: Option<usize>,
-        resolved_entry: Option<u32>,
-    ) -> Result<Option<TransportPosition>, FatalError> {
-        let entry_target = if let Some(identity) = resolved_entry {
-            let entry = self
-                .program
-                .callable_entries
-                .iter()
-                .find(|entry| entry.identity == identity)
-                .ok_or_else(|| {
-                    incomplete_native_program(
-                        self.telemetry,
-                        self.root_id,
-                        format!("native closure call names unknown resolved entry identity {identity}"),
-                    )
-                })?;
-            Some((identity, entry.target))
-        } else {
-            None
-        };
-        if let (Some(target), Some((identity, entry_target))) = (target, entry_target)
-            && entry_target != target
-        {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!(
-                    "native closure call target {} disagrees with resolved entry {} target {}",
-                    target, identity, entry_target
-                ),
-            ));
-        }
-        let target = target.or(entry_target.map(|(_, target)| target));
-        Ok(target.map(|target| self.program.executables[target].transport.return_position.clone()))
     }
 
     fn env_runtime_var(
@@ -3149,39 +3469,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ty: Option<Ty>,
         value: &NativeBoundValue,
     ) -> Result<Var, FatalError> {
-        self.materialize_native_value_with_boundary(ctx, ty, value, None)
-    }
-
-    fn materialize_native_value_for_publication(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        ty: Option<Ty>,
-        value: &NativeBoundValue,
-        position: &TransportPosition,
-        callable: CallableId,
-    ) -> Result<Var, FatalError> {
-        let boundary = match value {
-            NativeBoundValue::Transport {
-                callable_boundary: Some(boundary),
-                ..
-            } => Some(*boundary),
-            NativeBoundValue::Absent | NativeBoundValue::Runtime(_) | NativeBoundValue::Transport { .. } => self
-                .program
-                .transport
-                .callable_entry_at(position, callable)
-                .map(|identity| self.native_callable_boundary_for_entry(identity))
-                .transpose()?,
-        };
-        self.materialize_native_value_with_boundary(ctx, ty, value, boundary)
-    }
-
-    fn materialize_native_value_with_boundary(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        ty: Option<Ty>,
-        value: &NativeBoundValue,
-        boundary: Option<NativeCallableBoundaryId>,
-    ) -> Result<Var, FatalError> {
         let var = match value {
             NativeBoundValue::Absent if ty.is_some_and(|ty| self.ty_is_exact_empty_list(ty)) => {
                 ctx.emit_let(Prim::MakeList(Vec::new(), None)).0
@@ -3197,11 +3484,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ));
             }
             NativeBoundValue::Runtime(var) => *var,
-            NativeBoundValue::Transport {
-                shape,
-                lanes,
-                callable_boundary,
-            } => self.materialize_transport_value(ctx, *shape, lanes, boundary.or(*callable_boundary))?,
+            NativeBoundValue::Transport { shape, lanes } => self.materialize_transport_value(ctx, *shape, lanes)?,
         };
         if let Some(ty) = ty {
             ctx.value_types.insert(var, ty);
@@ -3214,7 +3497,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         shape: ShapeId,
         lanes: &[Var],
-        boundary: Option<NativeCallableBoundaryId>,
     ) -> Result<Var, FatalError> {
         match self.world.shape(shape).clone() {
             ShapeDescr::Nothing => Err(incomplete_native_program(
@@ -3247,49 +3529,54 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 if descr.function.is_none() && lanes.len() == 1 {
                     return Ok(lanes[0]);
                 }
-                if lanes.len() != descr.capture_lanes.len() {
+                let capture_lanes = descr.capture_lanes.len();
+                if lanes.len() != capture_lanes {
                     return Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
                         format!(
                             "native callable transport value {shape:?} has {} lanes, but callable {callable:?} expects {} capture lanes in {:?}",
                             lanes.len(),
-                            descr.capture_lanes.len(),
+                            capture_lanes,
                             ctx.origin,
                         ),
                     ));
                 }
-                descr.function.ok_or_else(|| {
-                    incomplete_native_program(
+                if descr.function.is_none() {
+                    return Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
                         format!(
                             "native attempted to rematerialize generic callable shape {:?} in {:?}; first-class callable values must come from transport publication lanes",
                             shape, ctx.origin,
                         ),
-                    )
-                })?;
-                let boundary = boundary.ok_or_else(|| {
-                    incomplete_native_program(
-                        self.telemetry,
-                        self.root_id,
-                        format!(
-                            "native attempted to materialize direct-only callable {callable:?} without its upstream resolved entry in {:?}",
-                            ctx.origin
-                        ),
-                    )
-                })?;
-                let identity = self.callable_boundaries[boundary.as_u32() as usize].identity_fn;
-                let prim = if lanes.is_empty() {
-                    Prim::MakeFnRef(ctx.fresh_callsite(), identity)
-                } else {
-                    Prim::MakeClosure(ctx.fresh_callsite(), identity, lanes.to_vec())
-                };
-                let (var, _) = ctx.emit_let(prim);
-                ctx.callable_value_boundaries.insert(var, boundary);
-                Ok(var)
+                    ));
+                }
+                Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!(
+                        "native attempted to materialize direct-only callable {callable:?} in {:?}",
+                        ctx.origin
+                    ),
+                ))
             }
         }
+    }
+
+    fn emit_callable_construction(
+        &self,
+        ctx: &mut NativeFnCtx,
+        boundary: NativeCallableBoundaryId,
+        captures: Vec<Var>,
+    ) -> Var {
+        let identity = self.callable_boundaries[boundary.as_u32() as usize].identity_fn;
+        let prim = if captures.is_empty() {
+            Prim::MakeFnRef(ctx.fresh_callsite(), identity)
+        } else {
+            Prim::MakeClosure(ctx.fresh_callsite(), identity, captures)
+        };
+        ctx.emit_let(prim).0
     }
 
     fn transport_tuple_arity(&self, value: &NativeBoundValue) -> Option<usize> {
@@ -3322,17 +3609,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     fn direct_callable_lanes(&self, value: &NativeBoundValue) -> Result<Option<Vec<Var>>, FatalError> {
-        let NativeBoundValue::Transport {
-            shape,
-            lanes,
-            callable_boundary,
-        } = value
-        else {
+        let NativeBoundValue::Transport { shape, lanes } = value else {
             return Ok(None);
         };
-        if callable_boundary.is_some() {
-            return Ok(None);
-        }
         let ShapeDescr::Callable(callable) = self.world.shape(*shape) else {
             return Ok(None);
         };
@@ -3352,6 +3631,49 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ));
         }
         Ok(Some(lanes.clone()))
+    }
+
+    fn direct_closure_capture_lanes(
+        &self,
+        value: Option<&NativeBoundValue>,
+        target: Option<usize>,
+        surface_arity: usize,
+    ) -> Result<Option<Vec<Var>>, FatalError> {
+        let mut absent = true;
+        if let Some(value) = value {
+            if let Some(lanes) = self.direct_callable_lanes(value)? {
+                return Ok(Some(lanes));
+            }
+            absent = matches!(value, NativeBoundValue::Absent);
+        }
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let executable = self.program.executables.get(target).ok_or(FatalError)?;
+        let capture_inputs_end = executable
+            .key
+            .activation
+            .input_len(self.world.types())
+            .checked_sub(surface_arity)
+            .ok_or(FatalError)?;
+        if executable
+            .semantic_inputs
+            .iter()
+            .any(|input| input.semantic_index < capture_inputs_end && !input.layout.reprs.is_empty())
+        {
+            if !absent {
+                return Ok(None);
+            }
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "native exact closure target {:?} requires physical capture inputs, but its callee value is absent",
+                    executable.key,
+                ),
+            ));
+        }
+        Ok(Some(Vec::new()))
     }
 
     fn closure_fast_path_arg_is_structural(&self, value: &NativeBoundValue, shape: ShapeId) -> bool {
@@ -3423,7 +3745,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport {
                     shape: field,
                     lanes: field_lanes,
-                    callable_boundary: None,
                 },
             };
             values.push(value);
@@ -3501,7 +3822,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         shape: ShapeId,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
-        if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
+        if self.world.shape_width(shape) == 0 {
             return Ok(());
         }
         let local = env
@@ -3510,62 +3831,89 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         self.encode_runtime_value(ctx, executable, Some(value_id), &local, shape, lanes)
     }
 
-    fn encode_env_value_for_position(
+    fn encode_runtime_value_for_layout(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
-        env: &ValueEnv,
-        value_id: ValueId,
-        shape: ShapeId,
-        position: &TransportPosition,
+        value_id: Option<ValueId>,
+        value: &NativeBoundValue,
+        layout: &super::super::artifact::BackendValueLayout,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
-        let local = env
-            .cloned_value(value_id)
-            .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
-        self.encode_runtime_value_for_position(ctx, executable, Some(value_id), &local, shape, position, lanes)
+        self.encode_runtime_value_with_carrier(
+            ctx,
+            executable,
+            value_id,
+            value,
+            layout.structural,
+            matches!(layout.carrier, super::super::pull::TransportCarrier::ValueRef),
+            lanes,
+        )
     }
 
-    fn encode_runtime_value_for_position(
+    fn encode_runtime_value_with_carrier(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         value_id: Option<ValueId>,
         value: &NativeBoundValue,
         shape: ShapeId,
-        position: &TransportPosition,
+        carries_runtime_value: bool,
         lanes: &mut Vec<Var>,
     ) -> Result<(), FatalError> {
         match self.world.shape(shape).clone() {
-            ShapeDescr::Tuple(fields) => {
-                let tuple_fields = self.tuple_field_values_for_shape(ctx, value, shape, &fields)?;
-                for (field, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
-                    self.encode_runtime_value_for_position(ctx, executable, None, field, field_shape, position, lanes)?;
-                }
-                Ok(())
-            }
-            ShapeDescr::Callable(callable) if self.position_publishes_callable(position, callable) => {
-                lanes.push(self.materialize_native_value_for_publication(
+            ShapeDescr::Tuple(_) if carries_runtime_value => {
+                lanes.push(self.materialize_native_value(
                     ctx,
                     value_id.and_then(|value_id| executable.value_types.get(&value_id).copied()),
                     value,
-                    position,
-                    callable,
+                )?);
+                Ok(())
+            }
+            ShapeDescr::Tuple(fields) => {
+                let tuple_fields = self.tuple_field_values_for_shape(ctx, value, shape, &fields)?;
+                for (field, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
+                    self.encode_runtime_value_with_carrier(
+                        ctx,
+                        executable,
+                        None,
+                        field,
+                        field_shape,
+                        carries_runtime_value,
+                        lanes,
+                    )?;
+                }
+                Ok(())
+            }
+            ShapeDescr::Callable(_) if carries_runtime_value => {
+                lanes.push(self.materialize_native_value(
+                    ctx,
+                    value_id.and_then(|value_id| executable.value_types.get(&value_id).copied()),
+                    value,
                 )?);
                 Ok(())
             }
             ShapeDescr::Callable(_) => self.encode_runtime_value(ctx, executable, value_id, value, shape, lanes),
+            ShapeDescr::Nothing if carries_runtime_value => {
+                lanes.push(self.materialize_native_value(
+                    ctx,
+                    value_id.and_then(|value_id| executable.value_types.get(&value_id).copied()),
+                    value,
+                )?);
+                Ok(())
+            }
             ShapeDescr::Nothing | ShapeDescr::Lane(_) => {
                 self.encode_runtime_value(ctx, executable, value_id, value, shape, lanes)
             }
         }
     }
+}
 
-    fn position_publishes_callable(&self, position: &TransportPosition, callable: CallableId) -> bool {
-        publication_boundaries_for_position(self.program, position)
-            .into_iter()
-            .any(|boundary| self.world.boundary(boundary).callable == callable)
-    }
+fn same_entry_capture_contract(left: &BackendEntryCapture, right: &BackendEntryCapture) -> bool {
+    left.value == right.value
+        && left.layout.structural == right.layout.structural
+        && left.layout.tys == right.layout.tys
+        && left.layout.reprs == right.layout.reprs
 }
 
 fn entry_fn_ids(module: &mut ModuleBuilder, entries: &[BackendEntry]) -> HashMap<ControlEntryId, FnId> {
@@ -3737,21 +4085,11 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
     }
 }
 
-/// Native lowering cache for already-emitted IR artifacts.
-///
-/// Shape and lane layout stay in `MaterializedTransportPlan`; this cache carries
-/// a constructed callable's already-settled native boundary alongside its lanes.
-/// Later materialization consumes that fact directly instead of reconstructing a
-/// callable target from its function id or capture shape.
 #[derive(Debug, Clone)]
 enum NativeBoundValue {
     Absent,
     Runtime(Var),
-    Transport {
-        shape: ShapeId,
-        lanes: Vec<Var>,
-        callable_boundary: Option<NativeCallableBoundaryId>,
-    },
+    Transport { shape: ShapeId, lanes: Vec<Var> },
 }
 
 impl NativeBoundValue {
@@ -3786,28 +4124,6 @@ impl ValueEnv {
     }
 }
 
-fn shape_lane_tys(world: &World, shape: ShapeId) -> Vec<Ty> {
-    world
-        .shape_lane_ids(shape)
-        .into_iter()
-        .map(|lane| world.lane(lane).ty)
-        .collect()
-}
-
-/// Whether `key` is the concrete executable a `CallableFacts.resolutions`
-/// `ExecutableSymbol` names, mirroring `executable_key_for_symbol_in_index`
-/// in `jobs/backend.rs` (that helper closes over a `BackendProgram`-specific
-/// `executable_index` map that native's own `program.executables` slice
-/// doesn't carry).
-fn position_shape(program: &BackendProgram, position: &TransportPosition) -> ShapeId {
-    program
-        .transport
-        .position_shapes
-        .iter()
-        .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
-        .unwrap_or_else(|| panic!("backend transport handoff should publish shape for {position:?}"))
-}
-
 fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
     match world.shape(shape) {
         ShapeDescr::Callable(_) => true,
@@ -3818,72 +4134,24 @@ fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
 
 fn native_return_contract(
     world: &World,
-    program: &BackendProgram,
-    position: &TransportPosition,
+    layout: &super::super::artifact::BackendReturnLayout,
 ) -> (Vec<AbiValueRepr>, Option<usize>) {
-    let shape = position_shape(program, position);
-    let reprs = seam_reprs_for_position_shape_with_publications(world, program, position, shape, |seam| {
-        return_delivery_seam_matches(position, seam)
-    });
-    let tuple_arity = match world.shape(shape) {
+    let tuple_arity = match world.shape(layout.layout.structural) {
         ShapeDescr::Tuple(fields) => Some(fields.len()),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => None,
     };
-    (reprs, tuple_arity)
+    (layout.layout.reprs.to_vec(), tuple_arity)
 }
 
-fn seam_reprs_for_position_shape_with_publications(
-    world: &World,
-    program: &BackendProgram,
-    position: &TransportPosition,
-    shape: ShapeId,
-    seam_matches: impl Fn(&CodegenSeam) -> bool + Copy,
-) -> Vec<AbiValueRepr> {
-    match world.shape(shape) {
-        ShapeDescr::Tuple(fields) => fields
-            .iter()
-            .copied()
-            .flat_map(|field| {
-                seam_reprs_for_position_shape_with_publications(world, program, position, field, seam_matches)
-            })
-            .collect(),
-        ShapeDescr::Callable(callable) => {
-            let publication_lanes = position_publication_lanes_for_callable(world, program, position, *callable);
-            if !publication_lanes.is_empty() {
-                return publication_lanes
-                    .into_iter()
-                    .map(|lane| seam_repr_for_lane(program, &seam_matches, None, lane))
-                    .collect();
-            }
-            seam_reprs_for_position_shape(world, program, position, shape, seam_matches)
-        }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => {
-            seam_reprs_for_position_shape(world, program, position, shape, seam_matches)
-        }
-    }
-}
-
-fn position_lane_tys_with_publications(
-    world: &World,
-    program: &BackendProgram,
-    position: &TransportPosition,
-    shape: ShapeId,
-) -> Vec<Ty> {
-    match world.shape(shape) {
-        ShapeDescr::Tuple(fields) => fields
-            .iter()
-            .copied()
-            .flat_map(|field| position_lane_tys_with_publications(world, program, position, field))
-            .collect(),
-        ShapeDescr::Callable(callable) => {
-            let publication_lanes = position_publication_lanes_for_callable(world, program, position, *callable);
-            if !publication_lanes.is_empty() {
-                return publication_lanes.into_iter().map(|lane| world.lane(lane).ty).collect();
-            }
-            shape_lane_tys(world, shape)
-        }
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) => shape_lane_tys(world, shape),
-    }
+fn native_construction_capture_reprs(
+    wrapper: &super::super::artifact::BackendConstructionWrapper,
+) -> Box<[AbiValueRepr]> {
+    wrapper
+        .captures
+        .iter()
+        .filter(|capture| matches!(capture.carrier, super::super::pull::TransportCarrier::ValueRef))
+        .map(|_| AbiValueRepr::ValueRef)
+        .collect()
 }
 
 fn native_block_param_reprs(
@@ -3902,243 +4170,6 @@ fn native_block_param_reprs(
         }
     }
     reprs
-}
-
-fn continuation_result_entry(
-    world: &World,
-    program: &BackendProgram,
-    position: &TransportPosition,
-) -> (Vec<Ty>, Vec<AbiValueRepr>) {
-    let shape = position_shape(program, position);
-    let seam_matches = |seam: &CodegenSeam| continuation_seam_matches(position, seam);
-    let reprs = seam_reprs_for_position_shape_with_publications(world, program, position, shape, seam_matches);
-    (
-        position_lane_tys_with_publications(world, program, position, shape),
-        reprs,
-    )
-}
-
-fn return_payload_entry(
-    world: &World,
-    program: &BackendProgram,
-    position: &TransportPosition,
-) -> (Vec<Ty>, Vec<AbiValueRepr>) {
-    let shape = position_shape(program, position);
-    let seam_matches = |seam: &CodegenSeam| return_payload_seam_matches(position, seam);
-    let reprs = seam_reprs_for_position_shape_with_publications(world, program, position, shape, seam_matches);
-    (
-        position_lane_tys_with_publications(world, program, position, shape),
-        reprs,
-    )
-}
-
-fn continuation_seam_matches(position: &TransportPosition, seam: &CodegenSeam) -> bool {
-    matches!(
-        (position, seam),
-        (
-            TransportPosition::ResumePayload {
-                executable: position_executable,
-                callsite: Some(position_callsite),
-                entry: position_entry,
-            },
-            CodegenSeam::ContinuationEntry {
-                executable: seam_executable,
-                callsite: seam_callsite,
-                entry: seam_entry,
-            }
-        ) if position_executable == seam_executable
-            && position_callsite == seam_callsite
-            && position_entry == seam_entry
-    ) || matches!(
-        (position, seam),
-        (
-            TransportPosition::ResumePayload {
-                executable: position_executable,
-                callsite: None,
-                entry: position_entry,
-            },
-            CodegenSeam::BlockParam {
-                executable: seam_executable,
-                entry: seam_entry,
-            }
-        ) if position_executable == seam_executable && position_entry == seam_entry
-    )
-}
-
-fn return_delivery_seam_matches(position: &TransportPosition, seam: &CodegenSeam) -> bool {
-    matches!(
-        (position, seam),
-        (
-            TransportPosition::ExecutableReturn {
-                executable: position_executable,
-            },
-            CodegenSeam::ReturnDelivery {
-                executable: seam_executable,
-            }
-        ) if position_executable == seam_executable
-    )
-}
-
-fn return_payload_seam_matches(position: &TransportPosition, seam: &CodegenSeam) -> bool {
-    matches!(
-        (position, seam),
-        (
-            TransportPosition::ReturnPayload {
-                executable: position_executable,
-                callsite: position_callsite,
-            },
-            CodegenSeam::ReturnContinuation {
-                executable: seam_executable,
-                callsite: seam_callsite,
-            }
-        ) if position_executable == seam_executable && position_callsite == seam_callsite
-    )
-}
-
-fn seam_reprs_for_position_shape(
-    world: &World,
-    program: &BackendProgram,
-    _position: &TransportPosition,
-    shape: ShapeId,
-    seam_matches: impl Fn(&CodegenSeam) -> bool,
-) -> Vec<AbiValueRepr> {
-    world
-        .shape_leaf_lanes(shape)
-        .into_iter()
-        .map(|(leaf_shape, lane)| seam_repr_for_lane(program, &seam_matches, Some(leaf_shape), lane))
-        .collect()
-}
-
-fn function_entry_publication_lanes(
-    program: &BackendProgram,
-    executable: &super::super::transport::ExecutableSymbol,
-    semantic_index: usize,
-) -> Vec<LaneId> {
-    position_publication_lanes(program, |seam| {
-        matches!(
-            seam,
-            CodegenSeam::FunctionEntry {
-                executable: candidate,
-                semantic_index: candidate_index,
-            } if candidate == executable && *candidate_index == semantic_index
-        )
-    })
-}
-
-fn position_publication_lanes(program: &BackendProgram, seam_matches: impl Fn(&CodegenSeam) -> bool) -> Vec<LaneId> {
-    let mut lanes = Vec::new();
-    for lane in program
-        .transport
-        .codegen_seam_facts
-        .iter()
-        .filter(|fact| fact.shape.is_none() && seam_matches(&fact.seam))
-        .map(|fact| fact.lane)
-    {
-        if !lanes.contains(&lane) {
-            lanes.push(lane);
-        }
-    }
-    lanes
-}
-
-fn position_publication_lanes_for_callable(
-    world: &World,
-    program: &BackendProgram,
-    position: &TransportPosition,
-    callable: CallableId,
-) -> Vec<LaneId> {
-    let mut lanes = Vec::new();
-    let boundaries = publication_boundaries_for_position(program, position);
-    for lane in boundaries.iter().copied().filter_map(|boundary| {
-        let descr = world.boundary(boundary);
-        (descr.callable == callable).then_some(descr.published_value_lane)
-    }) {
-        if !lanes.contains(&lane) {
-            lanes.push(lane);
-        }
-    }
-    lanes
-}
-
-fn publication_boundaries_for_position(program: &BackendProgram, position: &TransportPosition) -> Vec<BoundaryId> {
-    program
-        .transport
-        .publication_boundaries
-        .iter()
-        .filter_map(|(candidate, boundary)| (candidate == position).then_some(*boundary))
-        .collect()
-}
-
-fn entry_capture_reprs(world: &World, program: &BackendProgram, entry: &BackendEntry) -> Vec<AbiValueRepr> {
-    entry
-        .capture_positions
-        .iter()
-        .flat_map(|position| {
-            let shape = position_shape(program, position);
-            seam_reprs_for_position_shape_with_publications(world, program, position, shape, |seam| {
-                entry_capture_seam_matches(entry, position, seam)
-            })
-        })
-        .collect()
-}
-
-fn entry_capture_seam_matches(entry: &BackendEntry, position: &TransportPosition, seam: &CodegenSeam) -> bool {
-    let TransportPosition::EntryCapture {
-        executable,
-        entry: captured_entry,
-        ..
-    } = position
-    else {
-        return false;
-    };
-    if let BackendEntryOrigin::DeliveredResume {
-        position: TransportPosition::ResumePayload {
-            callsite: Some(callsite),
-            ..
-        },
-        ..
-    } = &entry.origin
-    {
-        return matches!(
-            seam,
-            CodegenSeam::ContinuationEntry {
-                executable: seam_executable,
-                callsite: seam_callsite,
-                entry: seam_entry,
-            } if seam_executable == executable && seam_callsite == callsite && seam_entry == captured_entry
-        );
-    }
-    matches!(
-        seam,
-        CodegenSeam::BlockParam {
-            executable: seam_executable,
-            entry: seam_entry,
-        } if seam_executable == executable && seam_entry == captured_entry
-    )
-}
-
-fn seam_repr_for_lane(
-    program: &BackendProgram,
-    seam_matches: &impl Fn(&CodegenSeam) -> bool,
-    shape: Option<ShapeId>,
-    lane: LaneId,
-) -> AbiValueRepr {
-    let fact = program
-        .transport
-        .codegen_seam_facts
-        .iter()
-        .find(|fact| seam_matches(&fact.seam) && fact.shape == shape && fact.lane == lane)
-        .unwrap_or_else(|| panic!("backend transport handoff should publish seam fact for {shape:?} {lane:?}"));
-    abi_repr_from_codegen(fact.repr)
-}
-
-fn abi_repr_from_codegen(repr: CodegenLaneRepr) -> AbiValueRepr {
-    match repr {
-        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
-        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
-        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
-        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
-    }
 }
 
 #[derive(Clone)]
@@ -4166,14 +4197,12 @@ struct NativeFnCtx {
     current_block: BlockId,
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
-    callable_value_boundaries: HashMap<Var, NativeCallableBoundaryId>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     failure_blocks: HashMap<u32, BlockId>,
     origin: NativeBodyOrigin,
     entry_abi: NativeEntryAbi,
     param_reprs: Vec<AbiValueRepr>,
     return_ty: Ty,
-    return_position: TransportPosition,
     return_reprs: Vec<AbiValueRepr>,
     return_tuple_arity: Option<usize>,
     effects: EffectSummary,
@@ -4189,7 +4218,6 @@ impl NativeFnCtx {
         entry_abi: NativeEntryAbi,
         param_reprs: Vec<AbiValueRepr>,
         return_ty: Ty,
-        return_position: TransportPosition,
         return_reprs: Vec<AbiValueRepr>,
         return_tuple_arity: Option<usize>,
         effects: EffectSummary,
@@ -4201,14 +4229,12 @@ impl NativeFnCtx {
             current_block: BlockId(0),
             stmt_counts: HashMap::new(),
             value_types: HashMap::new(),
-            callable_value_boundaries: HashMap::new(),
             extern_marshals: HashMap::new(),
             failure_blocks: HashMap::new(),
             origin,
             entry_abi,
             param_reprs,
             return_ty,
-            return_position,
             return_reprs,
             return_tuple_arity,
             effects,
@@ -4283,12 +4309,10 @@ impl NativeFnCtx {
             entry_abi: self.entry_abi,
             param_reprs: self.param_reprs,
             return_ty: self.return_ty,
-            return_position: self.return_position,
             return_reprs: self.return_reprs,
             return_tuple_arity: self.return_tuple_arity,
             block_param_reprs: HashMap::new(),
             value_types: self.value_types,
-            callable_value_boundaries: self.callable_value_boundaries,
             extern_marshals: self.extern_marshals,
             effects: self.effects,
         };
@@ -4300,57 +4324,20 @@ fn env_local_value(env: &ValueEnv, value: ValueId) -> Result<NativeBoundValue, F
     env.cloned_value(value).ok_or(FatalError)
 }
 
-fn executable_input_tys(world: &World, program: &BackendProgram, executable: &BackendExecutable) -> Vec<Ty> {
-    executable_input_bindings(program, executable)
-        .into_iter()
-        .flat_map(|binding| position_lane_tys_with_publications(world, program, &binding.position, binding.shape))
+fn executable_input_tys(executable: &BackendExecutable) -> Vec<Ty> {
+    executable
+        .semantic_inputs
+        .iter()
+        .flat_map(|input| input.layout.tys.iter().copied())
         .collect()
 }
 
-#[derive(Clone)]
-struct ExecutableInputBinding {
-    position: TransportPosition,
-    semantic_index: usize,
-    shape: ShapeId,
-    publication_lanes: Vec<LaneId>,
-}
-
-fn executable_input_bindings(program: &BackendProgram, executable: &BackendExecutable) -> Vec<ExecutableInputBinding> {
-    let mut inputs = executable
-        .transport
-        .input_positions
-        .iter()
-        .filter_map(|position| {
-            let TransportPosition::ExecutableInput {
-                executable,
-                semantic_index,
-            } = position
-            else {
-                return None;
-            };
-            Some(ExecutableInputBinding {
-                position: position.clone(),
-                semantic_index: *semantic_index,
-                shape: position_shape(program, position),
-                publication_lanes: function_entry_publication_lanes(program, executable, *semantic_index),
-            })
-        })
-        .collect::<Vec<_>>();
-    inputs.sort_by_key(|binding| binding.semantic_index);
-    inputs.dedup_by_key(|binding| binding.semantic_index);
-    inputs
-}
-
-fn value_shape(program: &BackendProgram, executable: &BackendExecutable, value: ValueId) -> ShapeId {
-    maybe_value_shape(program, executable, value)
-        .unwrap_or_else(|| panic!("backend transport handoff should publish value position for {value:?}"))
-}
-
-fn maybe_value_shape(program: &BackendProgram, executable: &BackendExecutable, value: ValueId) -> Option<ShapeId> {
-    let position = executable.transport.value_positions.iter().find(
-        |position| matches!(position, TransportPosition::Value { value: candidate, .. } if *candidate == value),
-    )?;
-    Some(position_shape(program, position))
+fn value_shape(executable: &BackendExecutable, value: ValueId) -> ShapeId {
+    executable
+        .value_layouts
+        .get(&value)
+        .map(|layout| layout.structural)
+        .unwrap_or_else(|| panic!("backend executable should publish a layout for {value:?}"))
 }
 
 fn callable_id_for_shape(world: &World, shape: ShapeId) -> Result<CallableId, FatalError> {
@@ -4441,7 +4428,7 @@ fn collect_extern_marshals_in_tail(
             }
             // Indirect is closure-call-only (never a DirectCall edge); no
             // local callee to collect extern marshals for.
-            CallEdge::Indirect => {}
+            CallEdge::Indirect { .. } => {}
         }
     }
     Ok(())
@@ -4724,17 +4711,15 @@ fn mark_ignored_lanes_for_demand(
     }
 }
 
-fn mark_ignored_publication_lanes(
+fn mark_ignored_carrier_lane(
     builder: &mut FnBuilder,
     vars: &[Var],
     demand: &RuntimeDemand,
     lane_index: &mut usize,
 ) -> Result<(), FatalError> {
-    for _ in 0..vars.len() {
-        let var = next_runtime_lane(vars, lane_index)?;
-        if demand.is_ignore() {
-            builder.mark_param_ignored(var);
-        }
+    let var = next_runtime_lane(vars, lane_index)?;
+    if demand.is_ignore() {
+        builder.mark_param_ignored(var);
     }
     Ok(())
 }

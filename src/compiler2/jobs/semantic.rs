@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
 use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
@@ -31,7 +30,6 @@ use super::super::semantic::{
 use super::super::types::{ClosureTarget, Ty};
 use super::super::world::World;
 
-type DispatchPlan = PatternDispatchPlan<Ty>;
 type SemanticValues = HashMap<ValueId, Ty>;
 type ValueTypes = HashMap<ValueId, Ty>;
 type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
@@ -117,7 +115,12 @@ pub(super) fn analyze_activation(
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
-    let reachable_clauses = reachable_clause_ids(world, &entry_dispatch, &inputs);
+    let clause_inputs = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &inputs)
+        .outcome_inputs
+        .into_iter()
+        .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
+        .collect::<Vec<_>>();
+    let reachable_clauses = clause_inputs.iter().map(|(clause, _)| *clause).collect::<Vec<_>>();
 
     let mut analysis_calls = Vec::new();
     let mut reachable_entries = HashSet::new();
@@ -137,17 +140,17 @@ pub(super) fn analyze_activation(
             ref entries,
             ..
         } => {
-            for clause_id in &reachable_clauses {
+            for (clause_id, clause_inputs) in &clause_inputs {
                 let clause = &clauses[*clause_id as usize];
                 // Input evidence that has not caught up to the clause's
                 // arity cannot bind its params. Like an absent capture,
                 // incomplete evidence yields no evidence — the analysis
                 // re-runs when the joined inputs grow. Never `any`.
-                if clause.params.len() > inputs.len() {
+                if clause.params.len() > clause_inputs.len() {
                     continue;
                 }
                 let mut values = HashMap::new();
-                for (value, ty) in clause.params.iter().copied().zip(inputs.iter().cloned()) {
+                for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
                     values.insert(value, ty);
                 }
                 apply_steps(
@@ -744,19 +747,30 @@ fn analyze_tail(
             else {
                 return Ok(None);
             };
-            let reachable = reachable_clause_ids(world, &dispatch.plan, &input_tys);
+            let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
             let mut merged = None;
-            for body_id in reachable {
+            for (outcome, refined_inputs) in reachability.outcome_inputs {
+                let body_id = dispatch
+                    .plan
+                    .outcomes
+                    .iter()
+                    .find(|candidate| candidate.outcome == outcome)
+                    .expect("reachable dispatch outcome should have an arm")
+                    .body_id;
                 let arm_entry = *dispatch
                     .arm_entries
                     .get(body_id as usize)
                     .unwrap_or_else(|| panic!("compiler2 local dispatch arm {} is out of bounds", body_id));
+                let mut refined_values = values.clone();
+                for (input, ty) in inputs.iter().copied().zip(refined_inputs) {
+                    refined_values.insert(input, ty);
+                }
                 let arm_ty = analyze_branch(
                     world,
                     tel,
                     entries,
                     arm_entry,
-                    values,
+                    &refined_values,
                     &[],
                     reachable_entries,
                     value_types,
@@ -1090,18 +1104,13 @@ fn rebuild_coalesced_call_emission(
                 let Some(rebuilt_summary) = rebuilt.summary else {
                     return Ok(call);
                 };
-                let Some(mut rebuilt_target) = rebuilt_summary.single_target().cloned() else {
-                    return Ok(call);
-                };
-                // `call_emission_for_function` published `surface_inputs` as
-                // the full vector it was handed; strip the capture prefix
-                // back off so the published surface stays capture-free, as
-                // every other producer of `CallTargetSummary` guarantees.
-                if captures_len > 0 {
-                    rebuilt_target.surface_inputs.drain(..captures_len);
+                for mut rebuilt_target in rebuilt_summary.targets {
+                    if captures_len > 0 {
+                        rebuilt_target.surface_inputs.drain(..captures_len);
+                    }
+                    rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
+                    merge_call_targets(world, &mut rebuilt_targets, vec![rebuilt_target])?;
                 }
-                rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
-                rebuilt_targets.push(rebuilt_target);
                 rebuilt_activations.extend(rebuilt.activations);
                 rebuilt_latent.extend(rebuilt.latent_executables);
             }
@@ -1150,6 +1159,7 @@ fn call_emission_for_function(
                     callee: SelectedCallee::ProviderBoundary(function),
                     surface_inputs: input_types,
                     activation: None,
+                    activation_inputs: None,
                     return_ty,
                 }],
                 return_ty,
@@ -1172,8 +1182,9 @@ fn call_emission_for_function(
         summary: Some(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
-                surface_inputs: input_types,
+                surface_inputs: input_types.clone(),
                 activation: Some(activation),
+                activation_inputs: Some(input_types),
                 return_ty,
             }],
             return_ty,
@@ -1224,6 +1235,7 @@ fn resolve_function_call(
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
                     None,
+                    None,
                     Some(return_ty),
                 )],
                 return_ty: Some(return_ty),
@@ -1240,12 +1252,13 @@ fn resolve_function_call(
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     Ok((
         Some(CallSiteSummary {
-            targets: vec![call_target_summary(
-                SelectedCallee::Function(function),
-                input_types.clone(),
-                Some(activation.clone()),
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(function),
+                surface_inputs: input_types.clone(),
+                activation: Some(activation.clone()),
+                activation_inputs: Some(input_types.clone()),
                 return_ty,
-            )],
+            }],
             return_ty,
         }),
         vec![ActivationContribution {
@@ -1371,6 +1384,7 @@ fn resolve_protocol_call(
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
             Some(activation.clone()),
+            Some(refined_inputs.clone()),
             target_return,
         ));
         activations.push(ActivationContribution {
@@ -1455,23 +1469,26 @@ fn resolve_closure_call(
         inputs.extend(refined_args.clone());
         let (summary, clause_activations, observed_return) =
             resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
-        let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
-        return_ty = join_evidence(world, return_ty, clause_return);
 
         if let Some(summary) = summary {
-            let Some(target) = summary.single_target() else {
-                return Err(FatalError);
-            };
-            let rebuilt_target = call_target_summary(
-                target.callee.clone(),
-                refined_args.clone(),
-                target.activation.clone(),
-                clause_return,
-            );
-            if !selected_targets.contains(&rebuilt_target) {
-                selected_targets.push(rebuilt_target.clone());
+            for target in summary.targets {
+                let target_return = refine_call_return(world, target.return_ty, Some(clause.ret));
+                return_ty = join_evidence(world, return_ty, target_return);
+                let rebuilt_target = call_target_summary(
+                    target.callee,
+                    refined_args.clone(),
+                    target.activation,
+                    target.activation_inputs,
+                    target_return,
+                );
+                if !selected_targets.contains(&rebuilt_target) {
+                    selected_targets.push(rebuilt_target);
+                }
             }
             activations.extend(clause_activations);
+        } else {
+            let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
+            return_ty = join_evidence(world, return_ty, clause_return);
         }
     }
 
@@ -1768,6 +1785,11 @@ fn merge_call_targets(
                 &mut current_target.surface_inputs,
                 &observed_target.surface_inputs,
             );
+            merge_optional_summary_input_vec(
+                world,
+                &mut current_target.activation_inputs,
+                observed_target.activation_inputs.as_deref(),
+            );
             current_target.activation =
                 merge_target_activation(world, current_target.activation.take(), observed_target.activation)?;
             current_target.return_ty = join_evidence(world, current_target.return_ty, observed_target.return_ty);
@@ -1822,6 +1844,14 @@ fn merge_summary_input_vec(world: &mut World, current: &mut Vec<Ty>, observed: &
     }
 }
 
+fn merge_optional_summary_input_vec(world: &mut World, current: &mut Option<Vec<Ty>>, observed: Option<&[Ty]>) {
+    match (current, observed) {
+        (Some(current), Some(observed)) => merge_summary_input_vec(world, current, observed),
+        (current @ None, Some(observed)) => *current = Some(observed.to_vec()),
+        _ => {}
+    }
+}
+
 fn refine_protocol_target_inputs(world: &mut World, input_types: &[Ty], receiver_ty: Ty, target_ty: Ty) -> Vec<Ty> {
     let mut refined = input_types.to_vec();
     if let Some(receiver) = refined.first_mut() {
@@ -1834,26 +1864,16 @@ fn call_target_summary(
     callee: SelectedCallee,
     surface_inputs: Vec<Ty>,
     activation: Option<ActivationKey>,
+    activation_inputs: Option<Vec<Ty>>,
     return_ty: Option<Ty>,
 ) -> CallTargetSummary {
     CallTargetSummary {
         callee,
         surface_inputs,
         activation,
+        activation_inputs,
         return_ty,
     }
-}
-
-fn reachable_clause_ids(world: &mut World, plan: &DispatchPlan, inputs: &[Ty]) -> Vec<u32> {
-    let reachability = calculate_dispatch_reachability(world.types_mut(), plan, inputs);
-    let mut reachable = plan
-        .outcomes
-        .iter()
-        .filter(|outcome| reachability.outcomes.binary_search(&outcome.outcome).is_ok())
-        .map(|outcome| outcome.body_id)
-        .collect::<Vec<_>>();
-    reachable.sort_unstable();
-    reachable
 }
 
 pub(super) fn executable_callsite_needs(

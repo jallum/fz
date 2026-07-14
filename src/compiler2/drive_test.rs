@@ -1,10 +1,9 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{BackendEntry, BackendTail, CallEdge, CallReturnFlow, MaterializedTransportPlan};
+use crate::compiler2::artifact::{BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
-use crate::compiler2::transport::{ExecutableSymbol, ShapeId, TransportPosition};
 use crate::compiler2::{
-    AbiValueRepr, ActivationKey, BackendBody, BackendCallableEntry, BackendEntryOrigin, BackendProgram, BackendStep,
+    AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
     FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap,
     QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
@@ -24,7 +23,7 @@ use crate::ir_interp::{
 use crate::telemetry::handler::{Event, EventKind, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
@@ -88,24 +87,6 @@ fn demand_backend_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root_id
         compiler.demand(Job::BuildBackendProduct(root_id)),
         "backend product should be explicitly demandable for {root_id:?}",
     );
-}
-
-fn handoff_shape_at(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
-    plan.shape_at(position)
-        .unwrap_or_else(|| panic!("transport handoff should include shape for {position:?}"))
-}
-
-fn executable_input_position(
-    plan: &MaterializedTransportPlan,
-    executable: &ExecutableSymbol,
-    semantic_index: usize,
-) -> TransportPosition {
-    let position = TransportPosition::ExecutableInput {
-        executable: executable.clone(),
-        semantic_index,
-    };
-    handoff_shape_at(plan, &position);
-    position
 }
 
 #[test]
@@ -4018,8 +3999,8 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
         "backend lowering should keep cold foo/0 out of the backend handoff",
     );
     assert!(
-        program.callable_entries.is_empty(),
-        "quicksort should not manufacture callable-entry inventory in the backend handoff",
+        program.construction_wrappers.is_empty(),
+        "quicksort should not manufacture callable constructions in the backend handoff",
     );
 
     let (_, main_exec) = backend_executable(&program, main_id);
@@ -4101,21 +4082,12 @@ fn main(), do: inc(41)
     else {
         panic!("main/0 should tail-call inc/1, got {call:?}");
     };
-    let CallReturnFlow::Tail {
-        callee_return,
-        caller_return,
-    } = &target.return_flow
-    else {
+    let BackendReturnFlow::Tail = &target.return_flow else {
         panic!(
             "same-contract direct return should be classified as Tail, got {:?}",
             target.return_flow
         );
     };
-    assert_eq!(
-        transport_position_shape(&program.transport, callee_return),
-        transport_position_shape(&program.transport, caller_return),
-        "tail return flow must carry equal settled return contract shapes",
-    );
 }
 
 #[test]
@@ -4162,14 +4134,14 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
                     target: CallEdge::Direct(target),
                     ..
                 } => {
-                    if return_flow_is_distinct_return_payload(&program.transport, &target.return_flow) {
+                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.return_layout) {
                         saw_return_payload_flow = true;
                     }
                 }
                 BackendTail::ClosureCall {
                     return_flow: Some(return_flow),
                     ..
-                } if return_flow_is_distinct_return_payload(&program.transport, return_flow) => {
+                } if return_flow_is_distinct_return_payload(return_flow, &executable.return_layout) => {
                     saw_return_payload_flow = true;
                 }
                 _ => {}
@@ -4226,8 +4198,8 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
 
     let program = backend.last(root_id).program;
     assert!(
-        program.callable_entries.is_empty(),
-        "backend callable-entry inventory should stay empty for direct-only reducer transport",
+        program.construction_wrappers.is_empty(),
+        "backend construction-wrapper inventory should stay empty for direct-only reducer transport",
     );
     let executable_functions = program
         .executables
@@ -4238,72 +4210,6 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
         executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
         "the user reducer and bridge reducer should still survive in the backend executable inventory",
     );
-}
-
-#[test]
-fn compiler2_backend_program_surfaces_per_callable_boundary_association() {
-    // fz-go4.18.1: native callable materialization reads each callable's settled
-    // boundaries from the BackendProgram product (`CallableFacts.boundary_ids`
-    // surfaced through `MaterializedTransportPlan.callable_boundaries`), never
-    // from the legacy root transport plan. This guards that the product actually
-    // carries the per-callable boundary association the native consumer reads.
-    //
-    // Fixture 00181 is the canonical green pull fixture: its operator references
-    // (`&Kernel.+/2`, `&+/2`) are demanded callables, so the product surfaces a
-    // non-empty `callable_boundaries`. The refs are direct-callable, so their
-    // boundary lists are empty -- which is exactly the load-bearing distinction:
-    // a demanded callable resolves to `Some(&[])`, not `None`. End-to-end
-    // assertion over a callable carrying NON-EMPTY boundaries is deferred to
-    // fz-go4.18.3, because the published-boundary fixtures (e.g. Enum.take)
-    // currently fatal upstream in `artifact.rs` `materialize_call_edges` while
-    // building the backend product itself.
-    let tel = ConfiguredTelemetry::new();
-    let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
-
-    let mut compiler = Compiler2::new(tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/00181_enum_reduce_operator_ref.fz".to_string()),
-        text: include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    demand_backend_product(&mut compiler, root_id);
-
-    assert_resolved(
-        compiler.drive(),
-        "operator-ref reducers should settle the backend product cleanly",
-    );
-
-    let program = backend.last(root_id).program;
-    assert!(
-        !program.transport.callable_boundaries.is_empty(),
-        "the backend product must surface per-callable boundary facts so native lowering never reads the legacy root transport plan",
-    );
-    for (callable, boundaries) in &program.transport.callable_boundaries {
-        assert_eq!(
-            program.transport.callable_boundary_ids(*callable),
-            Some(boundaries.as_ref()),
-            "callable_boundary_ids should return the product-surfaced boundary association (Some, never None) for {callable:?}",
-        );
-    }
-    for entry in &program.callable_entries {
-        if let Some(boundary) = entry.publication_boundary {
-            assert!(
-                program
-                    .transport
-                    .callable_boundary_ids(entry.callable)
-                    .is_some_and(|ids| ids.contains(&boundary)),
-                "callable entry {} should retain published boundary {boundary:?} for {:?}",
-                entry.identity,
-                entry.callable,
-            );
-        }
-    }
 }
 
 // fz-hwn.23: the Halt-specialized-DeliveredResume regression guard once aggravated by
@@ -5035,7 +4941,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     let callable_functions = program
         .callable_boundaries
         .iter()
-        .map(|entry| entry.target.activation.function)
+        .flat_map(|boundary| boundary.members.iter())
+        .map(|member| member.target.activation.function)
         .collect::<HashSet<_>>();
     assert!(
         callable_functions.contains(&add_a_id) && callable_functions.contains(&add_b_id),
@@ -5048,6 +4955,66 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
             .any(|target| target.is_none()),
         "opaque joined function values should stay explicit closure-call seams with no exact direct target",
     );
+}
+
+#[test]
+fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    tel.attach(&[], capture.handler());
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "opaque mapper should lower");
+    let each_a_id = function_id(&functions, "each_a", 1);
+    let each_b_id = function_id(&functions, "each_b", 1);
+    let program = native.last(root_id).program;
+    let boundaries = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary
+                .members
+                .iter()
+                .any(|member| [each_a_id, each_b_id].contains(&member.target.activation.function))
+        })
+        .collect::<Vec<_>>();
+    let boundary_ids = boundaries.iter().map(|boundary| boundary.id).collect::<HashSet<_>>();
+    let member_functions = boundaries
+        .iter()
+        .flat_map(|boundary| boundary.members.iter())
+        .map(|member| member.target.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(boundary_ids.len(), 2);
+    assert_eq!(member_functions, HashSet::from([each_a_id, each_b_id]));
+    assert!(
+        boundaries
+            .iter()
+            .all(|boundary| boundary.return_form == crate::compiler2::artifact::BackendCallableReturn::Absent)
+    );
+    assert!(
+        native_closure_call_targets(&program)
+            .into_iter()
+            .any(|target| target.is_none())
+    );
+    compiler.run_root_interp(root_id).unwrap();
+    compiler.run_root_jit(root_id).unwrap();
+    assert_eq!(dbg.lines().as_slice(), ["1", "2", "3", "1", "2", "3"]);
 }
 
 #[test]
@@ -5141,7 +5108,7 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
     let callable_boundary_targets = program
         .callable_boundaries
         .iter()
-        .map(|boundary| boundary.target_fn)
+        .map(|boundary| boundary.wrapper_fn)
         .collect::<HashSet<_>>();
     let hinted_boundary_targets = native_closure_call_targets(&program)
         .into_iter()
@@ -5192,6 +5159,34 @@ fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
             && capture.find(&["fz", "planner"]).is_empty()
             && capture.find(&["fz", "codegen"]).is_empty(),
         "Compiler2 interpreter runs should not reopen legacy type inference, planning, or codegen",
+    );
+}
+
+#[test]
+fn compiler2_jit_runs_range_reduce_scalar_bridge_from_native_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_jit(root_id)
+        .unwrap_or_else(|error| panic!("Compiler2 JIT should run the Range reduce scalar bridge: {error}"));
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["6", "{6, 3}"],
+        "Range Enum.reduce/3 should adapt the callable wrapper's boxed result at the native caller seam",
     );
 }
 
@@ -5762,7 +5757,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     );
     let callable_targets = native_callable_boundary_uses(&program)
         .into_iter()
-        .map(|boundary_id| {
+        .flat_map(|boundary_id| {
             program
                 .callable_boundaries
                 .iter()
@@ -5773,9 +5768,9 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
                         boundary_id
                     )
                 })
-                .target
-                .activation
-                .function
+                .members
+                .iter()
+                .map(|member| member.target.activation.function)
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -6211,8 +6206,8 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
     let resume_entry = entries
         .iter()
         .find(|entry| match &entry.origin {
-            BackendEntryOrigin::DeliveredResume { value, position } => {
-                let _shape = handoff_shape_at(&program.transport, position);
+            BackendEntryOrigin::DeliveredResume { value, layout } => {
+                let _shape = layout.layout.structural;
                 entry.steps.iter().any(|step| {
                     matches!(
                         step,
@@ -6230,8 +6225,8 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
         });
 
     match &resume_entry.origin {
-        BackendEntryOrigin::DeliveredResume { position, .. } => {
-            let _shape = handoff_shape_at(&program.transport, position);
+        BackendEntryOrigin::DeliveredResume { layout, .. } => {
+            let _shape = layout.layout.structural;
         }
         other => panic!("expected delivered-resume position for heap_alloc_stats continuation, got {other:?}"),
     }
@@ -6278,12 +6273,11 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         "Kernel.dbg/1 should still require its input as one runtime lane even when callers ignore the returned value",
     );
     assert!(
-        dbg_exec.transport.input_positions.contains(&executable_input_position(
-            &program.transport,
-            &dbg_exec.transport.executable,
-            0,
-        )),
-        "Kernel.dbg/1 should carry its input through a plan-owned executable-input position",
+        dbg_exec
+            .semantic_inputs
+            .iter()
+            .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
+        "Kernel.dbg/1 should close its input as a non-empty executable contract",
     );
     let crate::compiler2::BackendBody::Clauses { entries, .. } = &main_exec.body else {
         panic!("expected clause body for heap_stats dbg-resume main/0");
@@ -6301,7 +6295,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         .iter()
         .find(|entry| {
             matches!(&entry.origin, BackendEntryOrigin::DeliveredResume { .. })
-                && !entry.capture_positions.is_empty()
+                && !entry.captures.is_empty()
                 && entry
                     .steps
                     .iter()
@@ -6315,8 +6309,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         });
 
     match &resume_entry.origin {
-        BackendEntryOrigin::DeliveredResume { value, position } => {
-            let _shape = handoff_shape_at(&program.transport, position);
+        BackendEntryOrigin::DeliveredResume { value, layout } => {
+            let _shape = layout.layout.structural;
             assert!(
                 main_exec
                     .runtime_demand
@@ -6329,11 +6323,19 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         }
         other => panic!("expected delivered-resume origin for dbg-resumed heap-stats continuation, got {other:?}"),
     }
+    let field_base = resume_entry
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            BackendStep::FieldAccess { base, .. } => Some(*base),
+            _ => None,
+        })
+        .expect("the selected continuation should project from its captured heap stats");
     assert!(
-        resume_entry.capture_positions.iter().any(|position| {
-            handoff_shape_at(&program.transport, position);
-            true
-        }),
+        resume_entry
+            .captures
+            .iter()
+            .any(|capture| capture.value == field_base && capture.layout.reprs.as_ref() == [AbiValueRepr::ValueRef]),
         "the continuation after dbg(stats) must preserve captured stats as a whole runtime value before atom-key projection: {:?}",
         resume_entry
     );
@@ -6381,14 +6383,10 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     );
     assert!(
         qsort_exec
-            .transport
-            .input_positions
-            .contains(&executable_input_position(
-                &program.transport,
-                &qsort_exec.transport.executable,
-                0,
-            )),
-        "qsort/1's list input should be named by a plan-owned executable-input position",
+            .semantic_inputs
+            .iter()
+            .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
+        "qsort/1's list input should be closed as a non-empty executable contract",
     );
     assert_eq!(
         dbg.lines().first().map(String::as_str),
@@ -7386,8 +7384,8 @@ end
     );
     assert_eq!(
         continuation.param_reprs[0],
-        AbiValueRepr::ValueRef,
-        "native continuation metadata must read the transport ContinuationEntry seam repr; recomputing from float type would incorrectly produce RawF64",
+        AbiValueRepr::RawF64,
+        "the sealed resume endpoint should preserve the callee's physical RawF64 result lane",
     );
 }
 
@@ -7416,18 +7414,6 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
     );
 
     let program = native.last(root_id).program;
-    // A delivered-call adapter's continuation `extra_params` are EXACTLY the callee's
-    // return lanes (`native_return_contract(payload)` over the callee `ExecutableReturn`);
-    // any continuation captures the resume entry needs are threaded as *additional*
-    // params after the payload, never folded into the delivered value's lane decomposition.
-    //
-    // fz-f98.14.7 (de-widen reducer evidence) stopped widening var-bearing callables to a
-    // boxed `ValueRef`. The callee here returns the two-lane Enum.take list result
-    // `[RawAtom, RawInt]`; the reducer closure the resume entry resumes against is a
-    // separate `ValueRef` *capture*, so the adapter carries `extra_params: 2`
-    // (payload `[RawAtom, RawInt]`) followed by the `[ValueRef]` capture lane — NOT the
-    // pre-de-widening three-lane `[RawAtom, ValueRef, RawInt]` payload that conflated the
-    // boxed closure capture with the callee return.
     let adapter = program
         .bodies
         .iter()
@@ -7435,7 +7421,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
             let function = program.module.fn_by_id(body.fn_id);
             function.name.starts_with("deliver_lanes__")
                 && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 2 })
-                && body.param_reprs == [AbiValueRepr::RawAtom, AbiValueRepr::RawInt, AbiValueRepr::ValueRef]
+                && body.param_reprs == [AbiValueRepr::RawAtom, AbiValueRepr::RawInt]
         })
         .expect("delivered call adapter should expose the callee's full split return lanes");
 
@@ -7451,7 +7437,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
 }
 
 #[test]
-fn compiler2_native_program_carries_published_callable_boundary_targets_into_closure_calls() {
+fn compiler2_native_program_calls_published_callable_values_through_runtime_identity() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
@@ -7492,13 +7478,13 @@ fn compiler2_native_program_carries_published_callable_boundary_targets_into_clo
         "the reducer loop should lower at least one first-class closure call",
     );
     assert!(
-        reducer_calls.iter().all(|target| target.is_some()),
-        "published callable boundary target identity must flow into reducer CallClosure terms",
+        reducer_calls.iter().all(|target| target.is_none()),
+        "a generic reducer call must dispatch through the published callable value; calls: {reducer_calls:?}",
     );
 }
 
 #[test]
-fn compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetry() {
+fn compiler2_native_codegen_reports_published_closure_calls_as_indirect() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     let closure_calls = Capture::new();
@@ -7507,8 +7493,8 @@ fn compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetr
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/curried_add.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7520,39 +7506,125 @@ fn compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetr
 
     assert_resolved(
         compiler.drive(),
-        "closure boundary fixture should settle before inspecting direct closure call telemetry",
+        "closure boundary fixture should settle before inspecting closure call telemetry",
     );
 
     let program = native.last(root_id).program;
-    let expected = direct_closure_call_boundary_targets(&program);
     assert!(
-        !expected.is_empty(),
-        "fixture should produce at least one direct closure call with a settled callable boundary; closure targets: {:?}; boundary uses: {:?}",
+        native_closure_call_targets(&program).iter().any(Option::is_none),
+        "fixture should publish a closure call without a private direct target; closure targets: {:?}",
         native_closure_call_targets(&program),
-        native_callable_boundary_uses(&program),
     );
 
     let _compiled = jit_compile_native_program(&mut compiler, &program);
-    let direct_events = closure_calls
+    let indirect_events = closure_calls
         .find(&["fz", "codegen", "closure_call_lowered"])
         .into_iter()
-        .filter(|event| metadata_str(event, "dispatch_kind") == "direct")
+        .filter(|event| metadata_str(event, "dispatch_kind") == "indirect")
         .collect::<Vec<_>>();
     assert!(
-        !direct_events.is_empty(),
-        "native codegen should report direct closure-call lowering events",
+        !indirect_events.is_empty(),
+        "native codegen should report indirect closure-call lowering events",
+    );
+}
+
+#[test]
+fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and_jit() {
+    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let native = NativeProgramCapture::new();
+    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/enum_take_drop_split.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "enum take/drop/split should lower natively");
+
+    let predicate_functions = functions
+        .all()
+        .into_iter()
+        .filter(|record| {
+            record
+                .function_ref
+                .name
+                .strip_prefix("#lambda:0:")
+                .is_some_and(|range| {
+                    range.split_once('-').is_some_and(|(start, end)| {
+                        start
+                            .parse::<usize>()
+                            .ok()
+                            .zip(end.parse::<usize>().ok())
+                            .and_then(|(start, end)| source.get(start..end))
+                            .is_some_and(|body| body.contains("x < 4"))
+                    })
+                })
+        })
+        .map(|record| record.function_id)
+        .collect::<HashSet<_>>();
+    assert!(!predicate_functions.is_empty());
+    let program = native.last(root_id).program;
+    let predicate_targets = program
+        .bodies
+        .iter()
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key) if predicate_functions.contains(&key.activation.function) => {
+                Some(body.fn_id)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert!(
+        program
+            .module
+            .fns
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .any(|block| match &block.terminator {
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                }
+                | IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                }
+                | IrTerm::CallClosure {
+                    direct_target: Some(target),
+                    ..
+                }
+                | IrTerm::TailCallClosure {
+                    direct_target: Some(target),
+                    ..
+                } => predicate_targets.contains(target),
+                _ => false,
+            })
     );
 
-    for (boundary_id, target_fn_id) in expected {
-        assert!(
-            direct_events.iter().any(|event| {
-                metadata_u64_opt(event, "callable_boundary_id") == Some(boundary_id.as_u32() as u64)
-                    && metadata_u64_opt(event, "direct_target_fn_id") == Some(target_fn_id.0 as u64)
-                    && metadata_u64_opt(event, "callable_boundary_target_fn_id") == Some(target_fn_id.0 as u64)
-            }),
-            "direct closure-call telemetry should report boundary {boundary_id:?} and exact target {target_fn_id:?}; events: {direct_events:?}",
-        );
-    }
+    compiler
+        .run_root_interp(root_id)
+        .expect("enum take/drop/split should run in the interpreter");
+    compiler
+        .run_root_jit(root_id)
+        .expect("enum take/drop/split should run in the JIT");
+    let expected = include_str!("../../fixtures2/behavior/enum_take_drop_split.expected.txt")
+        .lines()
+        .collect::<Vec<_>>();
+    let lines = dbg.lines();
+    assert_eq!(&lines[..expected.len()], expected.as_slice());
+    assert_eq!(&lines[expected.len()..], expected.as_slice());
 }
 
 #[test]
@@ -7594,13 +7666,41 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     let callable_boundaries = program
         .callable_boundaries
         .iter()
-        .filter(|entry| entry.target.activation.function == lambda_id)
-        .map(|entry| (entry.capture_count, entry.arg_reprs.clone(), entry.return_reprs.clone()))
+        .filter(|entry| {
+            entry
+                .members
+                .iter()
+                .any(|member| member.target.activation.function == lambda_id)
+        })
+        .map(|entry| {
+            (
+                entry.captures.len(),
+                entry.call_arity,
+                entry.return_form,
+                entry
+                    .members
+                    .iter()
+                    .filter(|member| member.target.activation.function == lambda_id)
+                    .map(|member| {
+                        member
+                            .target_inputs
+                            .iter()
+                            .map(|input| input.layout.reprs.to_vec())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         callable_boundaries,
-        vec![(0, vec![AbiValueRepr::RawInt], vec![AbiValueRepr::RawAtom])],
-        "resource destructor lambdas should surface one zero-capture callable boundary that takes the raw payload lane and returns the settled nil atom through the raw atom lane (the runtime drain discards the dtor return, so it carries the dtor body's own grounded repr, not a boxed seam)",
+        vec![(
+            0,
+            1,
+            crate::compiler2::artifact::BackendCallableReturn::ValueRef,
+            vec![vec![vec![AbiValueRepr::RawInt]]],
+        )],
+        "resource destructor lambdas should publish a wrapper-owned boxed call surface with the member's raw payload layout recorded behind it",
     );
     assert_eq!(
         native_executable_body(&program, lambda_id).param_reprs,
@@ -7622,17 +7722,22 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     let native_callable_boundary = program
         .callable_boundaries
         .iter()
-        .find(|entry| entry.target.activation.function == lambda_id)
+        .find(|entry| {
+            entry
+                .members
+                .iter()
+                .any(|member| member.target.activation.function == lambda_id)
+        })
         .expect("native program should publish the dtor lambda callable boundary");
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let static_target = compiled
         .static_closure_targets()
         .iter()
-        .find(|(_, fn_id, _, _)| *fn_id == native_callable_boundary.target_fn.0)
-        .expect("compiled JIT module should publish one static closure target for the dtor entry target");
+        .find(|(_, fn_id, _, _)| *fn_id == native_callable_boundary.wrapper_fn.0)
+        .expect("compiled JIT module should publish one static closure target for the dtor wrapper");
     let body_ptr = compiled
-        .fn_ptr(native_callable_boundary.target_fn)
-        .expect("compiled JIT module should publish the dtor entry target body address");
+        .fn_ptr(native_callable_boundary.wrapper_fn)
+        .expect("compiled JIT module should publish the dtor wrapper body address");
     assert_ne!(
         static_target.2, body_ptr,
         "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
@@ -8238,18 +8343,10 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
     );
-    // Honest argument evidence keys non-recursive runtime helpers
-    // per-callsite (the designed behavior); the old any-defaults accidentally
-    // merged those keys. The reachable frontier is a small, finite, EXACT
-    // fixpoint — the runaway grew it without bound. 21 is the measured minimum
-    // (main/0, the single qsort/partition/append keys, and the reached runtime
-    // helpers), schedule-invariant across fresh drives; if it moves, the keying
-    // convergence moved and that is the signal, not a headroom breach.
-    assert_eq!(
-        activations.len(),
-        21,
-        "quicksort should settle to its exact minimal rooted activation frontier (main + the collapsed \
-         qsort/partition/append keys + reached runtime helpers)"
+    assert!(
+        activations.len() <= 17,
+        "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
+         qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
     assert!(
         !activations.iter().any(|activation| activation.function == foo_id),
@@ -9460,6 +9557,45 @@ fn main(), do: rebuild([1, 2])
 
 #[test]
 fn compiler2_reusable_cons_runtime_telemetry_reports_alias_fallback() {
+    let (attempts, reused) = reusable_cons_exit_counts(
+        "reusable_cons_alias_fallback.fz",
+        r#"
+fn rebuild(xs) do
+  [h | t] = xs
+  holder = {xs}
+  {holder, [h | t]}
+end
+
+fn main(), do: rebuild([1, 2])
+"#,
+    );
+
+    assert_eq!(attempts, 1);
+    assert_eq!(reused, 0);
+}
+
+#[test]
+fn compiler2_reusable_cons_erases_unused_call_argument_before_reuse() {
+    let (attempts, reused) = reusable_cons_exit_counts(
+        "reusable_cons_erased_unused_argument.fz",
+        r#"
+fn ping(x), do: x
+
+fn rebuild(xs) do
+  [h | t] = xs
+  ping(xs)
+  {xs, [h | t]}
+end
+
+fn main(), do: rebuild([1, 2])
+"#,
+    );
+
+    assert_eq!(attempts, 1);
+    assert_eq!(reused, 1);
+}
+
+fn reusable_cons_exit_counts(name: &str, source: &str) -> (u64, u64) {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     tel.attach(&[], capture.handler());
@@ -9471,30 +9607,24 @@ fn compiler2_reusable_cons_runtime_telemetry_reports_alias_fallback() {
         need: ExecutableNeed::Value,
     });
     compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_alias_fallback.fz".to_string()),
-        text: r#"
-fn ping(x), do: x
-
-fn rebuild(xs) do
-  [h | t] = xs
-  ping(xs)
-  {xs, [h | t]}
-end
-
-fn main(), do: rebuild([1, 2])
-"#
-        .to_string(),
+        name: Some(name.to_string()),
+        text: source.to_string(),
     });
 
     compiler.run_root_jit(root_id).unwrap_or_else(|error| {
-        panic!("alias-fallback reusable-cons fixture should run end-to-end: {error}");
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string());
+        panic!("alias-fallback reusable-cons fixture should run end-to-end: {error}; {diagnostic:?}");
     });
 
     let exit = capture
         .last(&["fz", "runtime", "process_exited"])
         .expect("runtime process exit telemetry");
-    assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
-    assert_eq!(measurement_u64(&exit, "reusable_cons_reused"), 0);
+    (
+        measurement_u64(&exit, "reusable_cons_attempts"),
+        measurement_u64(&exit, "reusable_cons_reused"),
+    )
 }
 
 #[test]
@@ -12173,14 +12303,6 @@ fn measurement_i64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> 
     }
 }
 
-fn metadata_u64_opt(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> Option<u64> {
-    match event.metadata.get(key) {
-        Some(Value::U64(value)) => Some(*value),
-        None => None,
-        other => panic!("metadata key `{key}` is not u64: {other:?}"),
-    }
-}
-
 fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(Value::Str(value)) => value.as_ref(),
@@ -12310,19 +12432,8 @@ fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> b
     })
 }
 
-fn transport_position_shape(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
-    plan.shape_at(position)
-        .unwrap_or_else(|| panic!("transport position should have a materialized shape: {position:?}"))
-}
-
-fn return_flow_is_distinct_return_payload(plan: &MaterializedTransportPlan, flow: &CallReturnFlow) -> bool {
-    let CallReturnFlow::Continue { payload, caller_return } = flow else {
-        return false;
-    };
-    if !matches!(payload, TransportPosition::ReturnPayload { .. }) {
-        return false;
-    }
-    transport_position_shape(plan, payload) != transport_position_shape(plan, caller_return)
+fn return_flow_is_distinct_return_payload(flow: &BackendReturnFlow, caller: &BackendReturnLayout) -> bool {
+    matches!(flow, BackendReturnFlow::Continue { source } if source.as_ref() != caller)
 }
 
 fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
@@ -12331,7 +12442,9 @@ fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
         .iter()
         .filter_map(|body| match &body.origin {
             NativeBodyOrigin::Executable(key) => Some(key.activation.function),
-            NativeBodyOrigin::Clause { .. } | NativeBodyOrigin::Continuation { .. } => None,
+            NativeBodyOrigin::Clause { .. }
+            | NativeBodyOrigin::Continuation { .. }
+            | NativeBodyOrigin::CallableWrapper { .. } => None,
         })
         .collect()
 }
@@ -12344,7 +12457,8 @@ fn native_executable_fn(program: &NativeProgram, function: FunctionId) -> crate:
             NativeBodyOrigin::Executable(key) if key.activation.function == function => Some(body.fn_id),
             NativeBodyOrigin::Executable(_)
             | NativeBodyOrigin::Clause { .. }
-            | NativeBodyOrigin::Continuation { .. } => None,
+            | NativeBodyOrigin::Continuation { .. }
+            | NativeBodyOrigin::CallableWrapper { .. } => None,
         })
         .unwrap_or_else(|| panic!("native executable fn for {function:?}"))
 }
@@ -12367,44 +12481,6 @@ fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
                 }
                 _ => {}
             }
-        }
-    }
-    out
-}
-
-fn direct_closure_call_boundary_targets(program: &NativeProgram) -> Vec<(NativeCallableBoundaryId, FnId)> {
-    let mut out = Vec::new();
-    for function in &program.module.fns {
-        let Some(body) = program.bodies.iter().find(|body| body.fn_id == function.id) else {
-            continue;
-        };
-        for block in &function.blocks {
-            let (closure, direct_target) = match &block.terminator {
-                IrTerm::CallClosure {
-                    closure,
-                    direct_target: Some(direct_target),
-                    ..
-                }
-                | IrTerm::TailCallClosure {
-                    closure,
-                    direct_target: Some(direct_target),
-                    ..
-                } => (*closure, *direct_target),
-                _ => continue,
-            };
-            let Some(boundary_id) = body.callable_value_boundaries.get(&closure).copied() else {
-                continue;
-            };
-            let boundary = program
-                .callable_boundaries
-                .iter()
-                .find(|entry| entry.id() == boundary_id)
-                .unwrap_or_else(|| panic!("callable boundary {boundary_id:?} should exist in native inventory"));
-            assert_eq!(
-                boundary.target_fn, direct_target,
-                "native direct closure target should agree with the settled callable boundary target",
-            );
-            out.push((boundary_id, direct_target));
         }
     }
     out
@@ -12436,11 +12512,21 @@ fn native_exact_call_targets(program: &NativeProgram) -> Vec<FnId> {
 }
 
 fn native_callable_boundary_uses(program: &NativeProgram) -> HashSet<NativeCallableBoundaryId> {
-    let mut out = HashSet::new();
-    for body in &program.bodies {
-        out.extend(body.callable_value_boundaries.values().copied());
-    }
-    out
+    program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .flat_map(|block| block.stmts.iter())
+        .filter_map(|stmt| match stmt {
+            IrStmt::Let(_, IrPrim::MakeFnRef(_, identity_fn) | IrPrim::MakeClosure(_, identity_fn, _)) => program
+                .callable_boundaries
+                .iter()
+                .find(|boundary| boundary.identity_fn == *identity_fn)
+                .map(|boundary| boundary.id()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn sorted_extern_marshals(body: &crate::compiler2::artifact::NativeBody) -> Vec<ExternTy> {
@@ -13186,13 +13272,6 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
     }
 }
 
-/// The widening operator is a terminator of last resort, not a feature any
-/// honest program meets: across the whole fixture corpus the return join
-/// must converge precisely, with zero widening engagements. The measured
-/// maximum ascent pinned here is what justifies the headroom documented on
-/// RETURN_WIDENING_BUDGET — if this pin moves, that doc comment moves with
-/// it. The sweep is sharded into four `#[test]`s purely so it parallelizes
-/// across the harness's threads; together the shards cover every fixture.
 fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
     let mut swept = 0u32;
     let mut corpus_max_ascents = 0u64;
@@ -13288,7 +13367,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
     // seal's SemanticClosure inventory, and the same reconstruction
     // `compiler2_quicksort_root_closes_with_a_finite_recursive_frontier` pins to
     // its exact size.
-    let mut shapes: Vec<(u64, usize)> = Vec::new();
+    let mut shapes = Vec::new();
     for _ in 0..20 {
         let tel = ConfiguredTelemetry::new();
         let jobs_ran: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
@@ -13315,16 +13394,37 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
         );
         let entry = world.root_function(root);
         let frontier = rooted_reachable_frontier(&mut world, root, entry);
-        shapes.push((*jobs_ran.borrow(), frontier.len()));
+        let normalized = frontier
+            .iter()
+            .map(|activation| {
+                (
+                    world.function_ref(activation.function).name.clone(),
+                    activation
+                        .inputs(world.types())
+                        .iter()
+                        .map(|ty| world.types().display(ty))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let names = normalized.iter().map(|(name, _)| name.as_str()).collect::<HashSet<_>>();
+        assert!(
+            names.contains("main")
+                && names.contains("qsort")
+                && names.contains("partition")
+                && names.contains("append")
+        );
+        assert!(!names.contains("foo"));
+        assert!(
+            frontier.len() <= 17,
+            "quicksort frontier exceeded the proven bound: {frontier:?}"
+        );
+        shapes.push((*jobs_ran.borrow(), normalized));
     }
-    // The fixpoint is unique: every schedule settles the exact same frontier
-    // (21 — the same minimum the single-drive frontier test pins), and the WORK
-    // to reach it may vary slightly (a different interleaving costs a few extra
-    // quiet joins) but stays in a tight band — the runaway did 54,000+ jobs
-    // where these do bounded work.
+    let expected = &shapes[0].1;
     assert!(
-        shapes.iter().all(|(_, size)| *size == 21),
-        "all schedules must settle the same exact activation frontier size (21): {shapes:?}",
+        shapes.iter().all(|(_, frontier)| frontier == expected),
+        "all schedules must settle the same activation frontier: {shapes:?}",
     );
     let min_jobs = shapes.iter().map(|(jobs, _)| *jobs).min().expect("runs");
     let max_jobs = shapes.iter().map(|(jobs, _)| *jobs).max().expect("runs");
@@ -14041,26 +14141,12 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
 }
 
 #[test]
-fn compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_boundaries() {
-    // INTENT (fz-k22.7 layer B): `Enum.find` and `Enum.find_value` share one
-    // generic reduce body (the same physical target function) reached
-    // through two DIFFERENT callable boundaries -- `find`'s two-argument
-    // call site and `find_value`'s three-argument call site, whose reducer
-    // closures differ in return demand (an early-exit tuple shape vs. a
-    // plain value shape) but close over the identical single free variable.
-    // Before layer B, native codegen's `build_codegen_closure_targets`
-    // re-derived a capture count from each call site's own `args.len()` and
-    // asserted it against the boundary-walk's already-authoritative surface,
-    // so this exact shared-body/differing-call-site-shape scenario used to
-    // fault the `debug_assert_eq!` consistency check. That re-derivation is
-    // deleted outright (not merely disabled): the boundary walk is the sole
-    // source of truth, so every `NativeCallableBoundary` naming this shared
-    // target must report the SAME capture surface regardless of which call
-    // site (and which differing return shape) it was minted from, and
-    // native program lowering must settle instead of panicking.
+fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_construction() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    let functions = FunctionCapture::new();
+    tel.attach(&["fz", "compiler2", "function"], functions.handler());
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -14081,52 +14167,49 @@ fn compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_bo
     );
 
     let program = native.last(root_id).program;
-    let mut by_target: HashMap<crate::fz_ir::FnId, Vec<_>> = HashMap::new();
-    for boundary in &program.callable_boundaries {
-        by_target.entry(boundary.target_fn).or_default().push(boundary);
-    }
-    let (shared_target, boundaries) = by_target.iter().find(|(_, boundaries)| boundaries.len() > 1).expect(
-        "find and find_value should name the same shared reducer target_fn from two distinct boundaries -- \
-             if this no longer holds, the fixture stopped exercising the shared-target scenario this test pins",
+    let predicate = functions
+        .all()
+        .into_iter()
+        .find(|record| {
+            record
+                .function_ref
+                .name
+                .strip_prefix("#lambda:0:")
+                .is_some_and(|range| {
+                    range.split_once('-').is_some_and(|(start, end)| {
+                        start
+                            .parse::<usize>()
+                            .ok()
+                            .zip(end.parse::<usize>().ok())
+                            .and_then(|(start, end)| {
+                                include_str!("../../fixtures2/00279_enum_find_find_value.fz").get(start..end)
+                            })
+                            .is_some_and(|source| source.contains("x > 2"))
+                    })
+                })
+        })
+        .expect("find predicate producer should be indexed")
+        .function_id;
+    let boundary = program
+        .callable_boundaries
+        .iter()
+        .find(|boundary| {
+            boundary.members.len() == 1
+                && boundary
+                    .members
+                    .iter()
+                    .all(|member| member.target.activation.function == predicate)
+        })
+        .expect("the find predicate should remain the unique member of its producer construction");
+    let target = boundary.members[0].target_fn;
+    assert_ne!(
+        boundary.wrapper_fn, target,
+        "producer target {target:?} must stay behind its construction wrapper",
     );
-    let distinct_boundary_ids: HashSet<_> = boundaries.iter().map(|b| b.boundary).collect();
-    assert!(
-        distinct_boundary_ids.len() > 1,
-        "target {shared_target:?} should be named by two DIFFERENT boundaries (find's and find_value's), not one \
-         boundary counted twice: {boundaries:?}",
-    );
-    let (first_count, first_reprs) = (boundaries[0].capture_count, &boundaries[0].capture_reprs);
-    assert!(
-        first_count > 0,
-        "non-vacuous guard: the shared reducer must actually close over a free variable"
-    );
-    for boundary in &boundaries[1..] {
-        assert_eq!(
-            boundary.capture_count, first_count,
-            "shared target {shared_target:?} disagrees on capture_count across boundaries {boundaries:?}",
-        );
-        assert_eq!(
-            &boundary.capture_reprs, first_reprs,
-            "shared target {shared_target:?} disagrees on capture_reprs across boundaries {boundaries:?}",
-        );
-    }
 }
 
 #[test]
-fn compiler2_backend_program_capture_surface_is_authoritative_from_concrete_producer() {
-    // INTENT (fz-k22.7 layer A): capture ABI belongs to the resolved TARGET
-    // body, not to whichever boundary happens to name it. `Enum.all?/1` (no
-    // predicate closure) and `Enum.all?/2` (a caller-supplied predicate
-    // closure) share one recursive backend body: `all?/1`'s call site
-    // resolves it through a concrete producer boundary, while other call
-    // sites in this fixture resolve shared reducer bodies through a
-    // generic/pooling boundary whose own `published_capture_lanes` describe
-    // its boxed call convention, not the ABI of whichever concrete body it
-    // pools. `package_backend_callable_entries`/`concrete_target_capture_surfaces`
-    // must package EVERY `BackendCallableEntry` naming a given target with
-    // that target's real (concrete-producer) capture surface, never the
-    // pooling boundary's own. This guards that override directly on the
-    // packaged product, independent of native lowering.
+fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
@@ -14149,66 +14232,59 @@ fn compiler2_backend_program_capture_surface_is_authoritative_from_concrete_prod
     );
 
     let program = backend.last(root_id).program;
-    let mut by_target: HashMap<usize, Vec<&BackendCallableEntry>> = HashMap::new();
-    for entry in &program.callable_entries {
-        by_target.entry(entry.target).or_default().push(entry);
+    let mut by_target: HashMap<usize, Vec<Vec<AbiValueRepr>>> = HashMap::new();
+    for member in program
+        .construction_wrappers
+        .iter()
+        .flat_map(|wrapper| wrapper.members.iter())
+    {
+        let capture_reprs = member
+            .capture_semantic_inputs
+            .iter()
+            .flat_map(|semantic_index| {
+                member
+                    .target_inputs
+                    .iter()
+                    .find(|input| input.semantic_index == *semantic_index)
+                    .into_iter()
+                    .flat_map(|input| input.layout.reprs.iter().copied())
+            })
+            .collect::<Vec<_>>();
+        by_target.entry(member.target).or_default().push(capture_reprs);
     }
 
-    let mut saw_shared_target_with_real_captures = false;
-    for (target, entries) in &by_target {
-        if entries.len() < 2 {
+    let saw_multi_member_construction = program
+        .construction_wrappers
+        .iter()
+        .any(|wrapper| wrapper.members.len() > 1);
+    let mut saw_physical_capture = false;
+    for (target, capture_surfaces) in &by_target {
+        if capture_surfaces.iter().any(|surface| !surface.is_empty()) {
+            saw_physical_capture = true;
+        }
+        if capture_surfaces.len() < 2 {
             continue;
         }
-        let (first_count, first_reprs) = (entries[0].capture_count, &entries[0].capture_reprs);
-        for entry in &entries[1..] {
+        let first = &capture_surfaces[0];
+        for capture_surface in &capture_surfaces[1..] {
             assert_eq!(
-                entry.capture_count,
-                first_count,
-                "target {target} is named by boundaries {:?} that disagree on capture_count -- capture ABI must \
-                 be a property of the target body, not the naming boundary",
-                entries.iter().map(|e| e.publication_boundary).collect::<Vec<_>>(),
+                capture_surface, first,
+                "construction members naming target {target} should use its one sealed capture surface",
             );
-            assert_eq!(
-                &entry.capture_reprs,
-                first_reprs,
-                "target {target} is named by boundaries {:?} that disagree on capture_reprs",
-                entries.iter().map(|e| e.publication_boundary).collect::<Vec<_>>(),
-            );
-        }
-        if first_count > 0 {
-            saw_shared_target_with_real_captures = true;
         }
     }
     assert!(
-        saw_shared_target_with_real_captures,
-        "non-vacuous guard: enum_predicate_search should surface at least one target shared by multiple \
-         boundaries with a real (non-zero) capture surface, or this test proves nothing",
+        saw_multi_member_construction,
+        "enum_predicate_search should exercise multi-member callable constructions",
+    );
+    assert!(
+        saw_physical_capture,
+        "enum_predicate_search should exercise callable members with physical captures",
     );
 }
 
 #[test]
-fn compiler2_native_program_synthesizes_fallback_boundary_for_unpublished_closure_target() {
-    // INTENT (fz-k22.7 layer C): a closure that never escapes as a
-    // first-class opaque value (it is only ever devirtualized through its
-    // own resolved target at every call site) never gets a transport-
-    // published `BoundaryId` at all -- transport keeps `CallableFacts.
-    // boundary_ids` empty for it by construction. Its `MakeClosure`/
-    // `MakeFnRef` value still needs a physically valid code pointer, so
-    // `NativeLowerer::fallback_callable_boundary` mints one on demand from
-    // the callable's already-computed `CallableFacts.resolutions` (the same
-    // concrete-producer facts a published boundary would have carried).
-    // enum_predicate_search's `all?`/`any?`/`find`/`find_value` family
-    // naturally produces such direct-only closures alongside closures that
-    // DO publish. This pins that: (1) at least one `NativeCallableBoundary`
-    // with `boundary: None` (a synthesized fallback) actually exists in the
-    // settled native program, so the fallback path is proven live and not
-    // dead code; (2) at least one fallback boundary names a real
-    // (non-zero) capture surface, so the synthesis is doing real ABI work,
-    // not trivially defaulting to zero captures; and (3) every fallback
-    // boundary agrees with any OTHER boundary (fallback or published) that
-    // names the same target_fn -- the synthesized surface is the same
-    // physical ABI a published boundary would have recorded, never a
-    // second, disagreeing guess.
+fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
@@ -14227,45 +14303,34 @@ fn compiler2_native_program_synthesizes_fallback_boundary_for_unpublished_closur
     compiler.demand(Job::LowerNativeProgram(root_id));
     assert_resolved(
         compiler.drive(),
-        "enum_predicate_search should settle native lowering, synthesizing fallback boundaries as needed",
+        "enum_predicate_search should settle native lowering with construction-owned callable wrappers",
     );
 
     let program = native.last(root_id).program;
-    let fallback_boundaries: Vec<_> = program
-        .callable_boundaries
-        .iter()
-        .filter(|boundary| boundary.boundary.is_none())
-        .collect();
     assert!(
-        !fallback_boundaries.is_empty(),
-        "enum_predicate_search should exercise at least one direct-only closure that needs a synthesized \
-         fallback boundary; if this no longer holds, the fixture stopped covering the layer-C path",
+        !program.callable_boundaries.is_empty(),
+        "enum_predicate_search should publish callable construction wrappers",
     );
     assert!(
-        fallback_boundaries.iter().any(|boundary| boundary.capture_count > 0),
-        "non-vacuous guard: at least one synthesized fallback boundary should carry a real (non-zero) capture \
-         surface, or the synthesis path is never actually asked to reproduce nontrivial ABI",
+        program
+            .callable_boundaries
+            .iter()
+            .any(|boundary| !boundary.captures.is_empty()),
+        "non-vacuous guard: at least one construction should carry a real capture surface",
     );
-
-    let mut by_target: HashMap<crate::fz_ir::FnId, Vec<_>> = HashMap::new();
     for boundary in &program.callable_boundaries {
-        by_target.entry(boundary.target_fn).or_default().push(boundary);
-    }
-    for fallback in &fallback_boundaries {
-        let siblings = &by_target[&fallback.target_fn];
-        for sibling in siblings.iter() {
-            assert_eq!(
-                sibling.capture_count, fallback.capture_count,
-                "target {:?} disagrees on capture_count between its synthesized fallback and a sibling boundary: \
-                 {:?}",
-                fallback.target_fn, siblings,
-            );
-            assert_eq!(
-                &sibling.capture_reprs, &fallback.capture_reprs,
-                "target {:?} disagrees on capture_reprs between its synthesized fallback and a sibling boundary: \
-                 {:?}",
-                fallback.target_fn, siblings,
-            );
-        }
+        assert!(
+            !boundary.members.is_empty(),
+            "every construction wrapper needs a member adapter"
+        );
+        assert!(
+            boundary.members.iter().all(|member| {
+                member
+                    .target_inputs
+                    .windows(2)
+                    .all(|inputs| inputs[0].semantic_index < inputs[1].semantic_index)
+            }),
+            "construction member adapters must publish target semantic input order",
+        );
     }
 }

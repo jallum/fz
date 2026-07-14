@@ -43,7 +43,7 @@ use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
 use dnf::{dnf_intersect_with, tuple_clause_subsumed};
-use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, TupleSig};
+use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, ResourceSig, TupleSig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -1198,6 +1198,19 @@ impl Types {
         has_vars(self.ctx(), self.descr(a))
     }
 
+    pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
+        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
+        self.intern(descr)
+    }
+
+    pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
+        let mut descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
+        if !descr.funcs.is_empty() {
+            descr.funcs = Descr::fun_top().funcs;
+        }
+        self.intern(descr)
+    }
+
     pub fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
         let d = instantiate(self, *a, sigma);
         self.intern(d)
@@ -2029,6 +2042,108 @@ fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
             .chain(c.neg.iter())
             .any(|sig| sig.fields.values().any(|t| has_vars(cx, cx.descr(t))))
     })
+}
+
+#[derive(Clone, Copy)]
+enum RuntimeEnvelopePolarity {
+    Positive,
+    Negative,
+}
+
+impl RuntimeEnvelopePolarity {
+    fn flipped(self) -> Self {
+        match self {
+            Self::Positive => Self::Negative,
+            Self::Negative => Self::Positive,
+        }
+    }
+}
+
+fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity) -> Descr {
+    let mut descr = types.descr(&ty).clone();
+    if !descr.vars.values.is_empty() {
+        match (polarity, descr.vars.cofinite) {
+            (RuntimeEnvelopePolarity::Positive, _) => return Descr::any(),
+            (RuntimeEnvelopePolarity::Negative, true) => return Descr::none(),
+            (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
+        }
+    }
+    descr.tuples = descr
+        .tuples
+        .into_iter()
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_tuple_sig))
+        .collect();
+    descr.lists = descr
+        .lists
+        .into_iter()
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_list_sig))
+        .collect();
+    descr.resources = descr
+        .resources
+        .into_iter()
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_resource_sig))
+        .collect();
+    descr.maps = descr
+        .maps
+        .into_iter()
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_map_sig))
+        .collect();
+    descr
+}
+
+fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity) -> Ty {
+    let descr = runtime_envelope(types, ty, polarity);
+    types.intern(descr)
+}
+
+fn runtime_structural_conj<T>(
+    types: &mut Types,
+    conj: Conj<T>,
+    polarity: RuntimeEnvelopePolarity,
+    transform: fn(&mut Types, T, RuntimeEnvelopePolarity) -> Option<T>,
+) -> Option<Conj<T>> {
+    let mut pos = Vec::with_capacity(conj.pos.len());
+    for sig in conj.pos {
+        pos.push(transform(types, sig, polarity)?);
+    }
+    let neg = conj
+        .neg
+        .into_iter()
+        .filter_map(|sig| transform(types, sig, polarity.flipped()))
+        .collect();
+    Some(Conj { pos, neg })
+}
+
+fn runtime_tuple_sig(types: &mut Types, sig: TupleSig, polarity: RuntimeEnvelopePolarity) -> Option<TupleSig> {
+    let elems = sig
+        .elems
+        .into_iter()
+        .map(|ty| runtime_envelope_ty(types, ty, polarity))
+        .collect::<Vec<_>>();
+    (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
+}
+
+fn runtime_list_sig(types: &mut Types, sig: ListSig, polarity: RuntimeEnvelopePolarity) -> Option<ListSig> {
+    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity));
+    match elem {
+        Some(elem) if types.is_empty(&elem) && !sig.empty => None,
+        Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
+        _ => Some(ListSig { empty: sig.empty, elem }),
+    }
+}
+
+fn runtime_resource_sig(types: &mut Types, sig: ResourceSig, polarity: RuntimeEnvelopePolarity) -> Option<ResourceSig> {
+    let payload = runtime_envelope_ty(types, sig.payload, polarity);
+    (!types.is_empty(&payload)).then_some(ResourceSig { payload })
+}
+
+fn runtime_map_sig(types: &mut Types, sig: sigs::MapSig, polarity: RuntimeEnvelopePolarity) -> Option<sigs::MapSig> {
+    let fields = sig
+        .fields
+        .into_iter()
+        .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity)))
+        .collect::<BTreeMap<_, _>>();
+    (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { fields })
 }
 
 fn arrow_join_return(cx: TyCtx<'_>, d: &Descr) -> Descr {

@@ -1116,12 +1116,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::IsMatcherMapMiss(..) => {
             lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id, block_env)
         }
-        Prim::MakeFnRef(mk_ident, fn_id) => {
-            lower_make_fn_ref(body, env, dest_var, mk_ident, *fn_id, block_id, stmt_idx)
+        Prim::MakeFnRef(mk_ident, fn_id) => lower_make_fn_ref(body, env, mk_ident, *fn_id, block_id, stmt_idx),
+        Prim::MakeClosure(mk_ident, fn_id, captured) => {
+            lower_make_closure(body, env, var_env, mk_ident, *fn_id, captured, block_id, stmt_idx)
         }
-        Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
-            body, env, var_env, dest_var, mk_ident, *fn_id, captured, block_id, stmt_idx,
-        ),
         Prim::RuntimeTypeTest(v, descr) => {
             lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
         }
@@ -1565,6 +1563,14 @@ where
     F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {
+    let a_repr = var_env.get(&a.0).expect("binop lhs").repr();
+    let b_repr = var_env.get(&bv.0).expect("binop rhs").repr();
+    if !matches!(
+        (a_repr, b_repr),
+        (ArgRepr::RawInt, ArgRepr::RawInt) | (ArgRepr::RawF64, ArgRepr::RawF64)
+    ) {
+        return None;
+    }
     if ty_is_float(t, value_types, a) && ty_is_float(t, value_types, bv) {
         let af = body.as_raw_f64(var_env, a.0);
         let bf = body.as_raw_f64(var_env, bv.0);
@@ -1601,18 +1607,12 @@ where
     T: Types<Ty = Ty>,
 {
     let mop = op;
-    let a_float = ty_is_float(t, value_types, a);
-    let b_float = ty_is_float(t, value_types, bv);
-    let a_int = ty_is_int(t, value_types, a);
-    let b_int = ty_is_int(t, value_types, bv);
     let a_repr = var_env.get(&a.0).expect("binop lhs").repr();
     let b_repr = var_env.get(&bv.0).expect("binop rhs").repr();
-    if !matches!(mop, BinOp::Mod)
-        && (((a_float && b_int) || (a_int && b_float))
-            || matches!(
-                (a_repr, b_repr),
-                (ArgRepr::RawF64, ArgRepr::RawInt) | (ArgRepr::RawInt, ArgRepr::RawF64)
-            ))
+    if matches!(
+        (a_repr, b_repr),
+        (ArgRepr::RawF64, ArgRepr::RawInt) | (ArgRepr::RawInt, ArgRepr::RawF64)
+    ) && !matches!(mop, BinOp::Mod)
     {
         let af = as_known_numeric_f64(var_env, body.b, a.0);
         let bf = as_known_numeric_f64(var_env, body.b, bv.0);
@@ -2275,7 +2275,6 @@ fn emit_callable_boundary_materialized(
 
 fn settled_callable_boundary_id(
     env: &CodegenEnv<'_, impl Telemetry>,
-    dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     captured: &[Var],
@@ -2284,16 +2283,15 @@ fn settled_callable_boundary_id(
     materialization_kind: &'static str,
 ) -> Result<u32, CodegenError> {
     let boundary_id = env
-        .active_native_body()
-        .callable_value_boundaries
-        .get(&dest_var)
-        .copied()
+        .surface
+        .callable_boundary_for_identity(fn_id)
         .ok_or_else(|| {
             CodegenError::new(format!(
-                "native callable value Var({}) has no settled callable boundary",
-                dest_var.0
+                "native callable identity FnId({}) has no settled callable boundary",
+                fn_id.0
             ))
         })?
+        .boundary_id
         .as_u32();
     if !env.callable_boundary_fn_ids.contains_key(&boundary_id) {
         return Err(CodegenError::new(format!(
@@ -2320,13 +2318,12 @@ fn settled_callable_boundary_id(
 pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_, impl Telemetry>,
-    dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     block_id: BlockId,
     stmt_idx: usize,
 ) -> Result<LowerOut, CodegenError> {
-    let cl_sid = settled_callable_boundary_id(env, dest_var, mk_ident, fn_id, &[], block_id, stmt_idx, "make_fn_ref")?;
+    let cl_sid = settled_callable_boundary_id(env, mk_ident, fn_id, &[], block_id, stmt_idx, "make_fn_ref")?;
     Ok(LowerOut::ValueRef(fetch_static_closure(
         body.jmod,
         body.b,
@@ -2342,7 +2339,6 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_, impl Telemetry>,
     var_env: &HashMap<u32, CodegenValue>,
-    dest_var: Var,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     captured: &[Var],
@@ -2355,16 +2351,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
             fn_id.0
         )));
     }
-    let cl_sid = settled_callable_boundary_id(
-        env,
-        dest_var,
-        mk_ident,
-        fn_id,
-        captured,
-        block_id,
-        stmt_idx,
-        "make_closure",
-    )?;
+    let cl_sid = settled_callable_boundary_id(env, mk_ident, fn_id, captured, block_id, stmt_idx, "make_closure")?;
     Ok(LowerOut::ValueRef(emit_capturing_closure(
         body,
         var_env,
@@ -2414,17 +2401,12 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
     let cl_ptr = body.alloc_closure(fid_v, nc_v, hk_v, body_addr);
-    // The closure env stores captures as opaque refs. The body's
-    // entry harness coerces each capture to its narrow repr.
     for (i, cv) in captured.iter().enumerate() {
-        let vb = var_env.get(&cv.0).expect("MakeClosure: captured var unbound");
-        if boundary.capture_reprs[i] == ArgRepr::ValueRef {
-            let capture = body.value_as_any_ref(*vb);
-            body.store_closure_capture_ref_word(cl_ptr, i, capture);
-        } else {
-            let mut capture = Vec::with_capacity(1);
-            body.push_binding_as_abi_arg(&mut capture, *vb, ArgRepr::ValueRef);
-            body.store_closure_capture_ref_word(cl_ptr, i, capture[0]);
+        match closure_capture_for_var_as(body, var_env, cv.0, boundary.capture_reprs[i]) {
+            ClosureCapture::RefWord(value) => body.store_closure_capture_ref_word(cl_ptr, i, value),
+            ClosureCapture::RawInt(value) => body.store_closure_capture_i64(cl_ptr, i, value),
+            ClosureCapture::RawF64(value) => body.store_closure_capture_f64(cl_ptr, i, value),
+            ClosureCapture::RawAtom(value) => body.store_closure_capture_atom(cl_ptr, i, value),
         }
     }
     Ok(cl_ptr)

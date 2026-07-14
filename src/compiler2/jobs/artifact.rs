@@ -10,14 +10,14 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::extern_contract::extern_ty_from_name;
-use crate::ground_value::GroundValue;
 use crate::parser::lexer::Tok;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge,
-    DispatchCallArm, DispatchCallEdge, DispatchCallMiss, EffectSummary, ExecutableDispatch, MaterializedCallEdge,
-    MaterializedExecutable, MaterializedExecutableTransport,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendReturnLayout, BackendSemanticInputLayout,
+    BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, DispatchCallEdge,
+    DispatchCallMiss, EffectSummary, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
+    MaterializedExecutableTransport,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -26,7 +26,9 @@ use super::super::body::{
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
-use super::super::pull::{ProductKey, ProductValue, PullOutcome, PullSession, PullWait};
+use super::super::pull::{
+    ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
+};
 use super::super::scheduler::FatalError;
 use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee, ShapeDemand};
 use super::super::transport::{
@@ -45,8 +47,12 @@ pub(crate) fn produce_materialized_executable_product(
     session: &mut PullSession,
     executable: &ExecutableKey,
 ) -> PullOutcome {
+    let revisions = world.executable_artifact_revisions(executable);
     if let Some(materialized) = session.materialized_executable(executable).cloned() {
-        return PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)));
+        if session.materialized_executable_is_fresh(executable, revisions) {
+            return PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)));
+        }
+        session.invalidate_artifact_products_for(executable);
     }
     let mut waits = Vec::new();
     let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
@@ -95,11 +101,23 @@ pub(crate) fn produce_materialized_executable_product(
     let return_ty = world
         .activation_return(&executable.activation)
         .unwrap_or_else(|| world.types_mut().none());
-    let pruned = prune_lowered_body(
-        world.lowered_body(executable.activation.function),
-        &analysis.reachable_clauses,
-        &analysis.reachable_entries,
-    );
+    let lowered = world.lowered_body(executable.activation.function);
+    let (dispatch_outcomes, retained_entries) = match lowered {
+        LoweredBody::Clauses { ref clauses, .. } => {
+            let mut entries = analysis.reachable_entries.clone();
+            entries.extend(
+                analysis
+                    .reachable_clauses
+                    .iter()
+                    .map(|clause| clauses[*clause as usize].entry),
+            );
+            entries.sort_by_key(|entry| entry.as_u32());
+            entries.dedup();
+            (analysis.reachable_clauses.clone(), entries)
+        }
+        LoweredBody::Extern { .. } => (analysis.reachable_clauses.clone(), analysis.reachable_entries.clone()),
+    };
+    let pruned = prune_lowered_body(lowered, &dispatch_outcomes, &retained_entries);
     let body = pruned.body;
     let callsite_args = super::super::body::callsite_call_args(&body);
     waits.extend(required_call_edge_transport_waits(
@@ -129,6 +147,7 @@ pub(crate) fn produce_materialized_executable_product(
         executable,
         &analysis,
         &body,
+        &pruned.original_entry_ids,
         &callsite_args,
     )
     .expect("product materialization should use settled semantic facts")
@@ -150,6 +169,7 @@ pub(crate) fn produce_materialized_executable_product(
         call_edges,
     };
     session.record_materialized_executable(executable.clone(), materialized.clone());
+    session.record_materialized_executable_revisions(executable.clone(), revisions);
     PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)))
 }
 
@@ -375,7 +395,10 @@ pub(crate) fn produce_abi_executable_product(
 #[derive(Debug, Clone)]
 struct ExecutableAbiPlan {
     param_reprs: Vec<AbiValueRepr>,
-    value_reprs: HashMap<ValueId, AbiValueRepr>,
+    semantic_inputs: Box<[BackendSemanticInputLayout]>,
+    return_layout: BackendReturnLayout,
+    return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
+    value_layouts: HashMap<ValueId, BackendValueLayout>,
 }
 
 struct PrunedLoweredBody {
@@ -448,7 +471,7 @@ fn session_materialized_executable_transport(
 /// reads (contrast `MaterializedTransportPlan`, the root-scoped product built
 /// once per root in `jobs/backend.rs`, which carries the fuller shape).
 struct ArtifactTransportLookup<'a> {
-    positions: &'a HashMap<TransportPosition, ShapeId>,
+    positions: &'a HashMap<TransportPosition, TransportLayout>,
     callables: &'a HashMap<CallableId, CallableFacts>,
     boundaries: &'a HashMap<BoundaryId, BoundaryFacts>,
     codegen_seam_facts: &'a [CodegenSeamFact],
@@ -459,7 +482,7 @@ fn session_transport_lookup<'a>(
     codegen_seam_facts: &'a [CodegenSeamFact],
 ) -> ArtifactTransportLookup<'a> {
     ArtifactTransportLookup {
-        positions: session.transport_shapes(),
+        positions: session.transport_layouts(),
         callables: session.callable_facts_inventory(),
         boundaries: session.boundary_facts_inventory(),
         codegen_seam_facts,
@@ -570,19 +593,29 @@ fn codegen_seam_kind_key(seam: &CodegenSeam) -> (u8, CodegenSeamOwnerKey, u32, u
             semantic_index,
         } => (0, executable_owner_key(executable), *semantic_index as u32, 0),
         CodegenSeam::BlockParam { executable, entry } => (1, executable_owner_key(executable), entry.as_u32(), 0),
-        CodegenSeam::ReturnDelivery { executable } => (2, executable_owner_key(executable), 0, 0),
+        CodegenSeam::EntryCapture {
+            executable,
+            entry,
+            capture_index,
+        } => (
+            2,
+            executable_owner_key(executable),
+            entry.as_u32(),
+            *capture_index as u32,
+        ),
+        CodegenSeam::ReturnDelivery { executable } => (3, executable_owner_key(executable), 0, 0),
         CodegenSeam::ContinuationEntry {
             executable,
             callsite,
             entry,
-        } => (3, executable_owner_key(executable), callsite.as_u32(), entry.as_u32()),
+        } => (4, executable_owner_key(executable), callsite.as_u32(), entry.as_u32()),
         CodegenSeam::ReturnContinuation { executable, callsite } => {
-            (4, executable_owner_key(executable), callsite.as_u32(), 0)
+            (5, executable_owner_key(executable), callsite.as_u32(), 0)
         }
-        CodegenSeam::TailCall { executable, callsite } => (5, executable_owner_key(executable), callsite.as_u32(), 0),
-        CodegenSeam::CallableBoundary { boundary } => (6, boundary_owner_key(*boundary), 0, 0),
-        CodegenSeam::ExternBoundary { executable } => (7, executable_owner_key(executable), 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => (8, boundary_owner_key(*boundary), 0, 0),
+        CodegenSeam::TailCall { executable, callsite } => (6, executable_owner_key(executable), callsite.as_u32(), 0),
+        CodegenSeam::CallableBoundary { boundary } => (7, boundary_owner_key(*boundary), 0, 0),
+        CodegenSeam::ExternBoundary { executable } => (8, executable_owner_key(executable), 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => (9, boundary_owner_key(*boundary), 0, 0),
     }
 }
 
@@ -658,11 +691,16 @@ fn push_session_publication_codegen_seam(
             lane,
             repr,
         }),
-        TransportPosition::EntryCapture { executable, entry, .. } => {
+        TransportPosition::EntryCapture {
+            executable,
+            entry,
+            capture_index,
+        } => {
             out.push(CodegenSeamFact {
-                seam: CodegenSeam::BlockParam {
+                seam: CodegenSeam::EntryCapture {
                     executable: executable.clone(),
                     entry: *entry,
+                    capture_index: *capture_index,
                 },
                 shape: None,
                 lane,
@@ -1259,6 +1297,7 @@ fn materialize_call_edges(
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
+    original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
     let mut call_edges = HashMap::new();
@@ -1279,6 +1318,7 @@ fn materialize_call_edges(
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
                     dest,
+                    original_entry_ids,
                     callsite_args,
                 )?
                 else {
@@ -1286,10 +1326,13 @@ fn materialize_call_edges(
                 };
                 call_edges.insert(*callsite, edge);
             }
-            LoweredTail::ClosureCall { callsite, dest, .. } => {
-                let LoweredTail::ClosureCall { callee, .. } = &entry.tail else {
-                    unreachable!("matched closure call above")
-                };
+            LoweredTail::ClosureCall {
+                value,
+                callsite,
+                callee,
+                dest,
+                ..
+            } => {
                 if let Some(edge) = materialize_closure_call_edge(
                     world,
                     tel,
@@ -1300,7 +1343,9 @@ fn materialize_call_edges(
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
                     *callee,
+                    *value,
                     dest,
+                    original_entry_ids,
                     callsite_args,
                 )? {
                     call_edges.insert(*callsite, edge);
@@ -1326,6 +1371,7 @@ fn materialize_direct_call_edge(
     need: ExecutableNeed,
     callsite: CallSiteId,
     dest: &ControlDestination,
+    original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
     let key = CallSiteKey {
@@ -1349,6 +1395,7 @@ fn materialize_direct_call_edge(
             need,
             callsite,
             dest,
+            original_entry_ids,
             callsite_args,
             target,
         )?;
@@ -1357,22 +1404,22 @@ fn materialize_direct_call_edge(
             return_ty,
         }));
     }
-    let Some(dispatch) =
-        super::super::callsite_dispatch::dispatch_from_callsite_summary(&summary).map_err(|error| {
-            incomplete_semantic_plan(
-                tel,
-                root_id,
-                format!(
-                    "materialization could not build dispatch for multi-target direct callsite {}: {error:?}",
-                    callsite.as_u32()
-                ),
-            )
-        })?
+    let dispatch = super::super::callsite_dispatch::dispatch_from_callsite_summary(world.types_mut(), &summary);
+    let Some(dispatch) = dispatch.map_err(|error| {
+        incomplete_semantic_plan(
+            tel,
+            root_id,
+            format!(
+                "materialization could not build dispatch for multi-target direct callsite {}: {error:?}",
+                callsite.as_u32()
+            ),
+        )
+    })?
     else {
         return Ok(None);
     };
     let mut arms = Vec::new();
-    for (body_id, target) in dispatch.targets.into_iter().enumerate() {
+    for (body_id, target) in dispatch.arm_body_ids.into_iter().zip(dispatch.targets) {
         let (direct, _arm_return_ty) = lower_materialized_call_target(
             world,
             tel,
@@ -1383,11 +1430,12 @@ fn materialize_direct_call_edge(
             need,
             callsite,
             dest,
+            original_entry_ids,
             callsite_args,
             target,
         )?;
         arms.push(DispatchCallArm {
-            body_id: body_id as u32,
+            body_id,
             callee: direct.callee,
             return_flow: direct.return_flow,
             extern_marshals: direct.extern_marshals,
@@ -1405,11 +1453,11 @@ fn materialize_direct_call_edge(
     }
     let return_ty = summary.settled_return(world.types_mut());
     Ok(Some(MaterializedCallEdge {
-        target: CallEdge::Dispatch(DispatchCallEdge {
+        target: CallEdge::Dispatch(Box::new(DispatchCallEdge {
             plan: dispatch.plan,
             arms,
             miss: DispatchCallMiss::Unreachable,
-        }),
+        })),
         return_ty,
     }))
 }
@@ -1424,10 +1472,12 @@ fn materialize_closure_call_edge(
     need: ExecutableNeed,
     callsite: CallSiteId,
     callee_value: ValueId,
+    result_value: ValueId,
     dest: &ControlDestination,
+    original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
-    if let Some((direct, return_ty)) = materialize_transport_closure_call_edge(
+    match materialize_transport_closure_call_edge(
         world,
         tel,
         root_id,
@@ -1436,13 +1486,24 @@ fn materialize_closure_call_edge(
         analysis,
         callsite,
         callee_value,
+        result_value,
         dest,
+        original_entry_ids,
         callsite_args,
     )? {
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Direct(direct),
-            return_ty,
-        }));
+        TransportClosureCallEdge::Direct { edge, return_ty } => {
+            return Ok(Some(MaterializedCallEdge {
+                target: CallEdge::Direct(edge),
+                return_ty,
+            }));
+        }
+        TransportClosureCallEdge::PublicIndirect { return_flow, return_ty } => {
+            return Ok(Some(MaterializedCallEdge {
+                target: CallEdge::Indirect(return_flow),
+                return_ty,
+            }));
+        }
+        TransportClosureCallEdge::Absent => {}
     }
     let key = CallSiteKey {
         activation: executable.activation.clone(),
@@ -1459,7 +1520,18 @@ fn materialize_closure_call_edge(
             // shape), rather than silently dropping the edge — a dropped
             // edge is indistinguishable from "not computed yet".
             return Ok(Some(MaterializedCallEdge {
-                target: CallEdge::Indirect,
+                target: CallEdge::Indirect(call_return_flow(
+                    world,
+                    tel,
+                    root_id,
+                    transport_plan,
+                    executable,
+                    None,
+                    callsite,
+                    dest,
+                    original_entry_ids,
+                    true,
+                )?),
                 return_ty: summary.settled_return(world.types_mut()),
             }));
         }
@@ -1475,6 +1547,7 @@ fn materialize_closure_call_edge(
         need,
         callsite,
         dest,
+        original_entry_ids,
         callsite_args,
         target,
     )?;
@@ -1482,6 +1555,18 @@ fn materialize_closure_call_edge(
         target: CallEdge::Direct(direct),
         return_ty,
     }))
+}
+
+enum TransportClosureCallEdge {
+    Direct {
+        edge: DirectCallEdge<ExecutableKey>,
+        return_ty: Ty,
+    },
+    PublicIndirect {
+        return_flow: CallReturnFlow,
+        return_ty: Ty,
+    },
+    Absent,
 }
 
 fn materialize_transport_closure_call_edge(
@@ -1493,23 +1578,29 @@ fn materialize_transport_closure_call_edge(
     analysis: &ActivationAnalysis,
     callsite: CallSiteId,
     callee_value: ValueId,
+    result_value: ValueId,
     dest: &ControlDestination,
+    original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
-) -> Result<Option<(DirectCallEdge<ExecutableKey>, Ty)>, FatalError> {
+) -> Result<TransportClosureCallEdge, FatalError> {
     let caller_symbol = transport_executable_symbol(executable, world.types());
     let callee_position = TransportPosition::Value {
         executable: caller_symbol.clone(),
         value: callee_value,
     };
-    let Some(callee_shape) = transport_plan.positions.get(&callee_position).copied() else {
-        return Ok(None);
+    let Some(callee_shape) = transport_plan
+        .positions
+        .get(&callee_position)
+        .map(|layout| layout.structural)
+    else {
+        return Ok(TransportClosureCallEdge::Absent);
     };
     let ShapeDescr::Callable(callable) = world.shape(callee_shape) else {
-        return Ok(None);
+        return Ok(TransportClosureCallEdge::Absent);
     };
     let callable = *callable;
     let Some(facts) = transport_plan.callables.get(&callable) else {
-        return Ok(None);
+        return Ok(TransportClosureCallEdge::Absent);
     };
     let args = callsite_args.get(&callsite).ok_or_else(|| {
         incomplete_semantic_plan(
@@ -1529,9 +1620,22 @@ fn materialize_transport_closure_call_edge(
         args,
         &facts.boundary_ids,
     );
+    let public_callable = !facts.boundary_ids.is_empty();
     if resolutions.is_empty() {
         if facts.direct_edges.is_empty() {
-            return Ok(None);
+            return materialize_public_indirect_closure_call_edge(
+                world,
+                tel,
+                root_id,
+                transport_plan,
+                executable,
+                analysis,
+                callsite,
+                result_value,
+                dest,
+                original_entry_ids,
+                public_callable,
+            );
         }
         let direct_edges = facts.direct_edges.to_vec();
         let surface_inputs = args
@@ -1555,10 +1659,22 @@ fn materialize_transport_closure_call_edge(
     // it several times. All-equal-to-first is the keyed-set read of that
     // requirement — no sort-for-dedup (sorting is a barrier).
     let Some((resolution, rest)) = resolutions.split_first() else {
-        return Ok(None);
+        return Ok(TransportClosureCallEdge::Absent);
     };
     if rest.iter().any(|candidate| candidate != resolution) {
-        return Ok(None);
+        return materialize_public_indirect_closure_call_edge(
+            world,
+            tel,
+            root_id,
+            transport_plan,
+            executable,
+            analysis,
+            callsite,
+            result_value,
+            dest,
+            original_entry_ids,
+            public_callable,
+        );
     }
     let activation = ActivationKey {
         root: root_id,
@@ -1570,18 +1686,70 @@ fn materialize_transport_closure_call_edge(
         need: resolution.need,
     };
     let callee = CallTarget::Local(target.clone());
-    let return_flow = call_return_flow(world, tel, root_id, transport_plan, executable, &callee, callsite, dest)?;
+    let return_flow = call_return_flow(
+        world,
+        tel,
+        root_id,
+        transport_plan,
+        executable,
+        Some(&callee),
+        callsite,
+        dest,
+        original_entry_ids,
+        public_callable,
+    )?;
     let return_ty = world
         .activation_return(&target.activation)
         .unwrap_or_else(|| world.types_mut().none());
-    Ok(Some((
-        DirectCallEdge {
+    Ok(TransportClosureCallEdge::Direct {
+        edge: DirectCallEdge {
             callee,
             return_flow,
             extern_marshals: None,
         },
         return_ty,
-    )))
+    })
+}
+
+fn materialize_public_indirect_closure_call_edge(
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+    transport_plan: &ArtifactTransportLookup<'_>,
+    executable: &ExecutableKey,
+    analysis: &ActivationAnalysis,
+    callsite: CallSiteId,
+    result_value: ValueId,
+    dest: &ControlDestination,
+    original_entry_ids: &[ControlEntryId],
+    public_callable: bool,
+) -> Result<TransportClosureCallEdge, FatalError> {
+    if !public_callable {
+        return Ok(TransportClosureCallEdge::Absent);
+    }
+    let return_ty = analysis.value_types.get(&result_value).copied().ok_or_else(|| {
+        incomplete_semantic_plan(
+            tel,
+            root_id,
+            format!(
+                "missing semantic result type for public closure callsite {}",
+                callsite.as_u32()
+            ),
+        )
+    })?;
+    let return_flow = call_return_flow(
+        world,
+        tel,
+        root_id,
+        transport_plan,
+        executable,
+        None,
+        callsite,
+        dest,
+        original_entry_ids,
+        true,
+    )?;
+    Ok(TransportClosureCallEdge::PublicIndirect { return_flow, return_ty })
 }
 
 fn boundary_resolutions_for_closure_call(
@@ -1601,7 +1769,7 @@ fn boundary_resolutions_for_closure_call(
                 callsite,
                 semantic_index,
             };
-            transport_plan.positions.get(&position).copied()
+            transport_plan.positions.get(&position).map(|layout| layout.structural)
         })
         .collect::<Option<Vec<_>>>()
     else {
@@ -1646,6 +1814,7 @@ fn lower_materialized_call_target(
     need: ExecutableNeed,
     callsite: CallSiteId,
     dest: &ControlDestination,
+    original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
     target: CallTargetSummary,
 ) -> Result<(DirectCallEdge<ExecutableKey>, Ty), FatalError> {
@@ -1690,7 +1859,18 @@ fn lower_materialized_call_target(
         }
         SelectedCallee::ProviderBoundary(function) => (CallTarget::ProviderBoundary(function), None),
     };
-    let return_flow = call_return_flow(world, tel, root_id, transport_plan, executable, &callee, callsite, dest)?;
+    let return_flow = call_return_flow(
+        world,
+        tel,
+        root_id,
+        transport_plan,
+        executable,
+        Some(&callee),
+        callsite,
+        dest,
+        original_entry_ids,
+        false,
+    )?;
     Ok((
         DirectCallEdge {
             callee,
@@ -1707,26 +1887,43 @@ fn call_return_flow(
     root_id: RootId,
     transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
-    callee: &CallTarget<ExecutableKey>,
+    callee: Option<&CallTarget<ExecutableKey>>,
     callsite: CallSiteId,
     dest: &ControlDestination,
+    original_entry_ids: &[ControlEntryId],
+    public_callable: bool,
 ) -> Result<CallReturnFlow, FatalError> {
     let caller_symbol = transport_executable_symbol(executable, world.types());
     match dest {
         ControlDestination::Deliver(entry) => {
+            let transport_entry = original_entry_ids
+                .get(entry.as_u32() as usize)
+                .copied()
+                .unwrap_or(*entry);
             let resume = TransportPosition::ResumePayload {
                 executable: caller_symbol,
                 callsite: Some(callsite),
-                entry: *entry,
+                entry: transport_entry,
             };
-            let payload = match callee {
-                CallTarget::Local(callee) => TransportPosition::ExecutableReturn {
-                    executable: transport_executable_symbol(callee, world.types()),
-                },
-                CallTarget::ProviderBoundary(_) => resume.clone(),
+            let source = if public_callable {
+                resume.clone()
+            } else {
+                match callee {
+                    Some(CallTarget::Local(callee)) => TransportPosition::ExecutableReturn {
+                        executable: transport_executable_symbol(callee, world.types()),
+                    },
+                    Some(CallTarget::ProviderBoundary(_)) => resume.clone(),
+                    None => {
+                        return Err(incomplete_semantic_plan(
+                            tel,
+                            root_id,
+                            "non-public call return flow has no callee",
+                        ));
+                    }
+                }
             };
             Ok(CallReturnFlow::Deliver {
-                payload,
+                source,
                 resume,
                 entry: *entry,
             })
@@ -1739,39 +1936,48 @@ fn call_return_flow(
                 executable: caller_symbol,
                 callsite,
             };
-            let caller_shape = require_transport_position(world, tel, root_id, transport_plan, &caller_return)?;
-            let payload_shape = require_transport_position(world, tel, root_id, transport_plan, &payload)?;
-            if let CallTarget::Local(callee) = callee {
-                let callee_return = TransportPosition::ExecutableReturn {
+            let source = if public_callable {
+                payload.clone()
+            } else if let Some(CallTarget::Local(callee)) = callee {
+                TransportPosition::ExecutableReturn {
                     executable: transport_executable_symbol(callee, world.types()),
-                };
-                let callee_shape = require_transport_position(world, tel, root_id, transport_plan, &callee_return)?;
-                if matches!(world.shape(callee_shape), ShapeDescr::Nothing)
-                    || (caller_shape == callee_shape && payload_shape == callee_shape)
-                {
-                    return Ok(CallReturnFlow::Tail {
-                        callee_return,
-                        caller_return,
-                    });
                 }
+            } else {
+                payload.clone()
+            };
+            let source_layout = require_transport_layout(tel, root_id, transport_plan, &source)?;
+            let caller_layout = require_transport_layout(tel, root_id, transport_plan, &caller_return)?;
+            let payload_layout = require_transport_layout(tel, root_id, transport_plan, &payload)?;
+            if !public_callable
+                && (matches!(world.shape(source_layout.structural), ShapeDescr::Nothing)
+                    || (source_layout == caller_layout && source_layout == payload_layout))
+            {
+                return Ok(CallReturnFlow::Tail {
+                    source,
+                    payload,
+                    caller_return,
+                });
             }
-            Ok(CallReturnFlow::Continue { payload, caller_return })
+            Ok(CallReturnFlow::Continue {
+                source,
+                payload,
+                caller_return,
+            })
         }
     }
 }
 
-fn require_transport_position(
-    _world: &World,
+fn require_transport_layout(
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     transport_plan: &ArtifactTransportLookup<'_>,
     position: &TransportPosition,
-) -> Result<ShapeId, FatalError> {
+) -> Result<super::super::pull::TransportLayout, FatalError> {
     transport_plan.positions.get(position).copied().ok_or_else(|| {
         incomplete_semantic_plan(
             tel,
             root_id,
-            format!("transport plan is missing required call return-flow position {position:?}"),
+            format!("missing transport layout for return-flow position {position:?}"),
         )
     })
 }
@@ -1789,13 +1995,13 @@ fn callsite_needs_for_body(body: &LoweredBody, need: ExecutableNeed) -> HashMap<
 fn materialize_entry_dispatch(
     world: &World,
     executable: &ExecutableKey,
-    analysis: &ActivationAnalysis,
+    _analysis: &ActivationAnalysis,
 ) -> Option<ExecutableDispatch> {
     match world.lowered_body(executable.activation.function) {
         LoweredBody::Extern { .. } => None,
         LoweredBody::Clauses { .. } => Some(ExecutableDispatch::new(
             world.entry_dispatch(executable.activation.function),
-            analysis.reachable_clauses.clone(),
+            _analysis.reachable_clauses.clone(),
         )),
     }
 }
@@ -2122,7 +2328,7 @@ fn tail_effects(tail: &LoweredTail, call_edges: &HashMap<CallSiteId, Materialize
             // single/dispatch target is not.
             let opaque = match call_edges.get(callsite) {
                 None => true,
-                Some(edge) => matches!(edge.target, CallEdge::Indirect),
+                Some(edge) => matches!(edge.target, CallEdge::Indirect { .. }),
             };
             if opaque {
                 effects.calls_opaque = true;
@@ -2149,7 +2355,7 @@ fn call_edge_calls_provider_boundary(edge: &MaterializedCallEdge) -> bool {
             .arms
             .iter()
             .any(|arm| matches!(arm.callee, CallTarget::ProviderBoundary(_))),
-        CallEdge::Indirect => false,
+        CallEdge::Indirect { .. } => false,
     }
 }
 
@@ -2159,112 +2365,220 @@ fn build_executable_abi_plan(
     executable: &MaterializedExecutable,
     transport_plan: &ArtifactTransportLookup<'_>,
 ) -> ExecutableAbiPlan {
-    let param_reprs = executable
+    let semantic_inputs = executable
         .transport
         .input_positions
         .iter()
-        .flat_map(|position| {
+        .filter_map(|position| {
             let TransportPosition::ExecutableInput {
                 executable: symbol,
                 semantic_index,
             } = position
             else {
-                return Vec::new();
+                return None;
             };
-            let publication_reprs =
-                function_entry_publication_reprs(transport_plan.codegen_seam_facts, symbol, *semantic_index);
-            if !publication_reprs.is_empty() {
-                return publication_reprs;
-            }
-            let shape = *transport_plan
+            let layout = *transport_plan
                 .positions
                 .get(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized input position {position:?}"));
-            shape_leaf_lanes_for_artifact(world, shape)
-                .into_iter()
-                .map(|(leaf_shape, lane)| {
+            if matches!(layout.carrier, TransportCarrier::ValueRef) {
+                return Some(BackendSemanticInputLayout {
+                    semantic_index: *semantic_index,
+                    layout: BackendValueLayout {
+                        structural: layout.structural,
+                        carrier: layout.carrier,
+                        tys: Box::new([world.types_mut().any()]),
+                        reprs: Box::new([AbiValueRepr::ValueRef]),
+                    },
+                });
+            }
+            let publication_contract =
+                function_entry_publication_contract(world, transport_plan.codegen_seam_facts, symbol, *semantic_index);
+            if !publication_contract.is_empty() {
+                return Some(BackendSemanticInputLayout {
+                    semantic_index: *semantic_index,
+                    layout: BackendValueLayout {
+                        structural: layout.structural,
+                        carrier: layout.carrier,
+                        tys: publication_contract.iter().map(|(ty, _)| *ty).collect(),
+                        reprs: publication_contract.iter().map(|(_, repr)| *repr).collect(),
+                    },
+                });
+            }
+            let shape = layout.structural;
+            let demand = executable.runtime_demand.input_demands.get(*semantic_index);
+            let contract = if demand.is_some_and(|demand| demand.is_ignore()) {
+                Vec::new()
+            } else {
+                shape_leaf_lanes_for_artifact(world, shape)
+                    .into_iter()
+                    .map(|(leaf_shape, lane)| {
+                        (
+                            world.lane(lane).ty,
+                            seam_repr_for_lane_or_default(
+                                world,
+                                transport_plan.codegen_seam_facts,
+                                |seam| {
+                                    matches!(
+                                        seam,
+                                        CodegenSeam::FunctionEntry {
+                                            executable,
+                                            semantic_index: index
+                                        } if executable == symbol && index == semantic_index
+                                    )
+                                },
+                                Some(leaf_shape),
+                                lane,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            Some(BackendSemanticInputLayout {
+                semantic_index: *semantic_index,
+                layout: BackendValueLayout {
+                    structural: shape,
+                    carrier: layout.carrier,
+                    tys: contract.iter().map(|(ty, _)| *ty).collect(),
+                    reprs: contract.iter().map(|(_, repr)| *repr).collect(),
+                },
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let param_reprs = semantic_inputs
+        .iter()
+        .flat_map(|input| input.layout.reprs.iter().copied())
+        .collect::<Vec<_>>();
+    let return_position = &executable.transport.return_position;
+    let return_layout = *transport_plan
+        .positions
+        .get(return_position)
+        .unwrap_or_else(|| panic!("transport plan should publish materialized return position {return_position:?}"));
+    let return_contract = if matches!(return_layout.carrier, TransportCarrier::ValueRef) {
+        vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
+    } else {
+        shape_leaf_lanes_for_artifact(world, return_layout.structural)
+            .into_iter()
+            .map(|(leaf_shape, lane)| {
+                (
+                    world.lane(lane).ty,
                     seam_repr_for_lane_or_default(
                         world,
                         transport_plan.codegen_seam_facts,
                         |seam| {
                             matches!(
                                 seam,
-                                CodegenSeam::FunctionEntry {
-                                    executable,
-                                    semantic_index: index
-                                } if executable == symbol && index == semantic_index
+                                CodegenSeam::ReturnDelivery { executable: symbol }
+                                    if symbol == &executable.transport.executable
                             )
                         },
                         Some(leaf_shape),
                         lane,
-                    )
-                })
-                .collect::<Vec<_>>()
+                    ),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut value_layouts: HashMap<ValueId, BackendValueLayout> = executable
+        .transport
+        .value_positions
+        .iter()
+        .filter_map(|position| {
+            let TransportPosition::Value { value, .. } = position else {
+                return None;
+            };
+            let layout = *transport_plan
+                .positions
+                .get(position)
+                .unwrap_or_else(|| panic!("transport plan should publish materialized value position {position:?}"));
+            let contract = if matches!(layout.carrier, TransportCarrier::ValueRef) {
+                vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
+            } else {
+                shape_leaf_lanes_for_artifact(world, layout.structural)
+                    .into_iter()
+                    .map(|(_, lane)| {
+                        let ty = world.lane(lane).ty;
+                        (ty, abi_value_repr(world, ty))
+                    })
+                    .collect()
+            };
+            Some((
+                *value,
+                BackendValueLayout {
+                    structural: layout.structural,
+                    carrier: layout.carrier,
+                    tys: contract.iter().map(|(ty, _)| *ty).collect(),
+                    reprs: contract.iter().map(|(_, repr)| *repr).collect(),
+                },
+            ))
         })
-        .collect::<Vec<_>>();
-    let mut value_reprs = HashMap::new();
-    if let LoweredBody::Clauses { clauses, entries, .. } = &executable.body {
+        .collect();
+    if let LoweredBody::Clauses { clauses, .. } = &executable.body {
         for clause in clauses {
-            for (index, value) in clause.params.iter().copied().enumerate() {
-                let Some(position) = executable.transport.input_positions.iter().find(|position| {
-                    matches!(
-                        position,
-                        TransportPosition::ExecutableInput {
-                            semantic_index,
-                            ..
-                        } if *semantic_index == index
-                    )
-                }) else {
-                    continue;
-                };
-                let shape = *transport_plan.positions.get(position).unwrap_or_else(|| {
-                    panic!("transport plan should publish materialized input position {position:?}")
-                });
-                let leaf_lanes = shape_leaf_lanes_for_artifact(world, shape);
-                if let [(leaf_shape, lane)] = leaf_lanes.as_slice() {
-                    let TransportPosition::ExecutableInput {
-                        executable: symbol,
-                        semantic_index,
-                    } = position
-                    else {
-                        continue;
-                    };
-                    let publication_reprs =
-                        function_entry_publication_reprs(transport_plan.codegen_seam_facts, symbol, *semantic_index);
-                    let repr = if let [repr] = publication_reprs.as_slice() {
-                        *repr
-                    } else {
-                        seam_repr_for_lane_or_default(
-                            world,
-                            transport_plan.codegen_seam_facts,
-                            |seam| {
-                                matches!(
-                                    seam,
-                                    CodegenSeam::FunctionEntry {
-                                        executable,
-                                        semantic_index: index
-                                    } if executable == symbol && index == semantic_index
-                                )
-                            },
-                            Some(*leaf_shape),
-                            *lane,
-                        )
-                    };
-                    value_reprs.insert(value, repr);
+            for (semantic_index, value) in clause.params.iter().copied().enumerate() {
+                if let Some(input) = semantic_inputs
+                    .iter()
+                    .find(|input| input.semantic_index == semantic_index)
+                {
+                    value_layouts.insert(value, input.layout.clone());
                 }
             }
         }
-        for clause in clauses {
-            record_step_reprs(world, executable, &clause.projections, &mut value_reprs);
-        }
-        for entry in entries {
-            record_step_reprs(world, executable, &entry.steps, &mut value_reprs);
-        }
     }
 
+    let return_endpoints = executable
+        .transport
+        .return_payload_positions
+        .iter()
+        .chain(executable.transport.resume_positions.iter())
+        .chain(std::iter::once(return_position))
+        .map(|position| {
+            let layout = *transport_plan
+                .positions
+                .get(position)
+                .unwrap_or_else(|| panic!("transport plan should publish materialized return endpoint {position:?}"));
+            let contract = if matches!(layout.carrier, TransportCarrier::ValueRef) {
+                vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
+            } else {
+                shape_leaf_lanes_for_artifact(world, layout.structural)
+                    .into_iter()
+                    .map(|(leaf_shape, lane)| {
+                        (
+                            world.lane(lane).ty,
+                            endpoint_seam_repr(world, transport_plan.codegen_seam_facts, position, leaf_shape, lane),
+                        )
+                    })
+                    .collect()
+            };
+            (
+                position.clone(),
+                BackendReturnLayout {
+                    layout: BackendValueLayout {
+                        structural: layout.structural,
+                        carrier: layout.carrier,
+                        tys: contract.iter().map(|(ty, _)| *ty).collect(),
+                        reprs: contract.iter().map(|(_, repr)| *repr).collect(),
+                    },
+                    diverges: world.types().is_empty(&executable.return_ty),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
     ExecutableAbiPlan {
         param_reprs,
-        value_reprs,
+        semantic_inputs,
+        return_layout: BackendReturnLayout {
+            layout: BackendValueLayout {
+                structural: return_layout.structural,
+                carrier: return_layout.carrier,
+                tys: return_contract.iter().map(|(ty, _)| *ty).collect(),
+                reprs: return_contract.iter().map(|(_, repr)| *repr).collect(),
+            },
+            diverges: world.types().is_empty(&executable.return_ty),
+        },
+        return_endpoints: return_endpoints.into_boxed_slice(),
+        value_layouts,
     }
 }
 
@@ -2289,23 +2603,27 @@ fn build_abi_executable(
         entry_dispatch: executable.entry_dispatch.clone(),
         return_ty: executable.return_ty,
         param_reprs: plan.param_reprs.clone(),
+        semantic_inputs: plan.semantic_inputs.clone(),
+        return_layout: plan.return_layout.clone(),
+        return_endpoints: plan.return_endpoints.clone(),
         runtime_demand: executable.runtime_demand.clone(),
         transport: executable.transport.clone(),
         original_entry_ids: executable.original_entry_ids.clone(),
         value_types: executable.value_types.clone(),
-        value_reprs: plan.value_reprs.clone(),
+        value_layouts: plan.value_layouts.clone(),
         effects: executable.effects,
         body: executable.body.clone(),
         call_edges,
     })
 }
 
-fn function_entry_publication_reprs(
+fn function_entry_publication_contract(
+    world: &World,
     facts: &[super::super::transport::CodegenSeamFact],
     executable: &ExecutableSymbol,
     semantic_index: usize,
-) -> Vec<AbiValueRepr> {
-    let mut reprs = Vec::new();
+) -> Vec<(Ty, AbiValueRepr)> {
+    let mut contract = Vec::new();
     let mut seen_lanes = HashSet::new();
     for fact in facts.iter().filter(|fact| {
         fact.shape.is_none()
@@ -2318,10 +2636,62 @@ fn function_entry_publication_reprs(
             )
     }) {
         if seen_lanes.insert(fact.lane) {
-            reprs.push(abi_repr_from_codegen(fact.repr));
+            contract.push((world.lane(fact.lane).ty, abi_repr_from_codegen(fact.repr)));
         }
     }
-    reprs
+    contract
+}
+
+fn endpoint_seam_repr(
+    world: &mut World,
+    facts: &[super::super::transport::CodegenSeamFact],
+    position: &TransportPosition,
+    shape: ShapeId,
+    lane: super::super::transport::LaneId,
+) -> AbiValueRepr {
+    seam_repr_for_lane_or_default(
+        world,
+        facts,
+        |seam| match (position, seam) {
+            (
+                TransportPosition::ExecutableReturn { executable },
+                CodegenSeam::ReturnDelivery { executable: candidate },
+            ) => executable == candidate,
+            (
+                TransportPosition::ReturnPayload { executable, callsite },
+                CodegenSeam::ReturnContinuation {
+                    executable: candidate,
+                    callsite: candidate_callsite,
+                },
+            ) => executable == candidate && callsite == candidate_callsite,
+            (
+                TransportPosition::ResumePayload {
+                    executable,
+                    callsite: Some(callsite),
+                    entry,
+                },
+                CodegenSeam::ContinuationEntry {
+                    executable: candidate,
+                    callsite: candidate_callsite,
+                    entry: candidate_entry,
+                },
+            ) => executable == candidate && callsite == candidate_callsite && entry == candidate_entry,
+            (
+                TransportPosition::ResumePayload {
+                    executable,
+                    callsite: None,
+                    entry,
+                },
+                CodegenSeam::BlockParam {
+                    executable: candidate,
+                    entry: candidate_entry,
+                },
+            ) => executable == candidate && entry == candidate_entry,
+            _ => false,
+        },
+        Some(shape),
+        lane,
+    )
 }
 
 fn shape_leaf_lanes_for_artifact(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
@@ -2379,74 +2749,6 @@ fn codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
         CodegenLaneRepr::RawAtom
     } else {
         CodegenLaneRepr::ValueRef
-    }
-}
-
-fn record_step_reprs(
-    world: &mut World,
-    executable: &MaterializedExecutable,
-    steps: &[LoweredStep],
-    value_reprs: &mut HashMap<ValueId, AbiValueRepr>,
-) {
-    for step in steps {
-        match step {
-            LoweredStep::Const { value, literal } => {
-                value_reprs.insert(*value, literal_repr(literal));
-            }
-            LoweredStep::Tuple { value, .. }
-            | LoweredStep::List { value, .. }
-            | LoweredStep::Map { value, .. }
-            | LoweredStep::MapUpdate { value, .. }
-            | LoweredStep::Struct { value, .. }
-            | LoweredStep::Bitstring { value, .. }
-            | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::Lambda { value, .. }
-            | LoweredStep::MapIndex { value, .. }
-            | LoweredStep::FieldAccess { value, .. }
-            | LoweredStep::RequireMapValue { value, .. }
-            | LoweredStep::TupleField { value, .. }
-            | LoweredStep::BitstringInit { reader: value, .. } => {
-                value_reprs.insert(*value, AbiValueRepr::ValueRef);
-            }
-            LoweredStep::BinaryOp { value, .. } | LoweredStep::UnaryOp { value, .. } => {
-                let ty = executable
-                    .value_types
-                    .get(value)
-                    .copied()
-                    .unwrap_or_else(|| world.types_mut().any());
-                value_reprs.insert(*value, abi_value_repr(world, ty));
-            }
-            LoweredStep::SplitList { head, tail, .. } => {
-                value_reprs.insert(*head, AbiValueRepr::ValueRef);
-                value_reprs.insert(*tail, AbiValueRepr::ValueRef);
-            }
-            LoweredStep::BitstringRead {
-                ok, value, next_reader, ..
-            } => {
-                value_reprs.insert(*ok, AbiValueRepr::ValueRef);
-                value_reprs.insert(*value, AbiValueRepr::ValueRef);
-                value_reprs.insert(*next_reader, AbiValueRepr::ValueRef);
-            }
-            LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::AssertTuple { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
-        }
-    }
-}
-
-fn literal_repr(literal: &GroundValue) -> AbiValueRepr {
-    use crate::ground_value::BodyLiteral;
-    match literal
-        .as_body_literal()
-        .expect("literal_repr only ever sees a lowered-body literal")
-    {
-        BodyLiteral::Int(_) => AbiValueRepr::RawInt,
-        BodyLiteral::Float(_) => AbiValueRepr::RawF64,
-        BodyLiteral::Atom(_) | BodyLiteral::Bool(_) | BodyLiteral::Nil => AbiValueRepr::RawAtom,
-        BodyLiteral::Binary(_) => AbiValueRepr::ValueRef,
     }
 }
 
@@ -2564,12 +2866,14 @@ mod tests {
                     callee: SelectedCallee::Function(producer_a),
                     surface_inputs: vec![int, int],
                     activation: None,
+                    activation_inputs: None,
                     return_ty: Some(int),
                 },
                 CallTargetSummary {
                     callee: SelectedCallee::Function(producer_b),
                     surface_inputs: vec![int, int],
                     activation: None,
+                    activation_inputs: None,
                     return_ty: Some(int),
                 },
             ],
@@ -2584,7 +2888,25 @@ mod tests {
             latent_executables: Vec::new(),
             value_types: HashMap::new(),
         };
-        let positions = HashMap::new();
+        let caller_symbol = transport_executable_symbol(&caller, world.types());
+        let caller_return = TransportPosition::ExecutableReturn {
+            executable: caller_symbol.clone(),
+        };
+        let payload = TransportPosition::ReturnPayload {
+            executable: caller_symbol,
+            callsite,
+        };
+        let shape = world.intern_shape(ShapeDescr::Nothing);
+        let positions = HashMap::from([
+            (caller_return, TransportLayout::structural(shape)),
+            (
+                payload,
+                TransportLayout {
+                    structural: shape,
+                    carrier: TransportCarrier::ValueRef,
+                },
+            ),
+        ]);
         let callables = HashMap::new();
         let boundaries = HashMap::new();
         let codegen_seam_facts = Vec::new();
@@ -2607,21 +2929,31 @@ mod tests {
             ExecutableNeed::Value,
             callsite,
             callee_value,
+            ValueId::from_u32(2),
             &ControlDestination::Return,
+            &[],
             &callsite_args,
         )
         .expect("materialization should not fail")
         .expect("ambiguous 2+-producer closure call must produce an edge, not Ok(None)");
 
-        assert!(
-            matches!(edge.target, CallEdge::Indirect),
-            "ambiguous 2+-producer closure call should route through the boxed indirect edge, got {:?}",
-            edge.target
-        );
+        let CallEdge::Indirect(CallReturnFlow::Continue {
+            source,
+            payload,
+            caller_return,
+        }) = edge.target
+        else {
+            panic!(
+                "ambiguous 2+-producer closure call should carry sealed indirect return flow, got {:?}",
+                edge.target
+            )
+        };
+        assert_eq!(source, payload);
+        assert_ne!(source, caller_return);
     }
 
     #[test]
-    fn function_entry_publication_reprs_deduplicates_duplicate_lane_facts() {
+    fn function_entry_publication_contract_deduplicates_duplicate_lane_facts() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         world.submit_code(None, "fn main(x), do: x".to_string());
@@ -2651,8 +2983,8 @@ mod tests {
         };
 
         assert_eq!(
-            function_entry_publication_reprs(&[fact.clone(), fact], &executable, 0),
-            vec![AbiValueRepr::ValueRef],
+            function_entry_publication_contract(&world, &[fact.clone(), fact], &executable, 0),
+            vec![(int, AbiValueRepr::ValueRef)],
             "duplicate publication facts for the same function-entry lane must not widen the executable ABI",
         );
     }

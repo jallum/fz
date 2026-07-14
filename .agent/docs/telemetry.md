@@ -719,14 +719,12 @@ fields and dies with that pipeline.
   `continuation_spec_id`. Metadata: `body_name`, `call_kind`,
   `closure_binding_repr` (`ArgRepr::as_str`), `dispatch_kind` (`direct` when
   the body literal resolves, else `indirect`), optional `direct_target_fn_id`
-  for direct calls, and optional `callable_boundary_id` plus
-  `callable_boundary_target_fn_id` when the closure value carries a settled
-  callable-boundary fact. Non-tail closure calls also report
-  `continuation_storage` (`lazy_descriptor` or `heap_closure`). Absence of
-  `callable_boundary_id` means the call lowered without a known callable
-  boundary id. Direct closure fast paths consume the native call term selected
-  by `CallReturnFlow`; narrowing return delivery is represented by an explicit
-  continuation before codegen.
+  for direct calls. Non-tail closure calls also report `continuation_storage`
+  (`lazy_descriptor` or `heap_closure`). Generic calls carry identity in the
+  runtime callable value; telemetry does not reconstruct a boundary id beside
+  the closure variable. Direct closure fast paths consume the native call term
+  selected by `BackendReturnFlow`; narrowing return delivery is represented by
+  an explicit continuation before codegen.
 
 ## Telemetry In Tests
 

@@ -227,8 +227,17 @@ pub(super) fn call_lowered_extern(
                 return Err(format!("{}/1+ got 0 args", signature.symbol));
             }
             let (fn_id, captured) = super::binop::unpack_callable(args[0], runtime.cur_proc())?;
-            let target = super::backend::callable_entry_target(program, fn_id)?;
-            let pid = runtime.spawn_backend(target, captured)?;
+            let (target, inputs) = super::backend::construction_wrapper_invocation(
+                runtime,
+                types,
+                transport,
+                program,
+                module,
+                fn_id,
+                &captured,
+                &[],
+            )?;
+            let pid = runtime.spawn_backend(target, inputs)?;
             return Ok(AnyValue::Int(pid as i64));
         }
         "fz_self" => {

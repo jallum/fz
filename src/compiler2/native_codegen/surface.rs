@@ -189,6 +189,12 @@ impl<'a> NativeCodegenSurface<'a> {
         self.callable_boundaries.get(&boundary_id)
     }
 
+    pub(crate) fn callable_boundary_for_identity(&self, identity_fn: FnId) -> Option<&NativeCallableBoundarySurface> {
+        self.callable_boundaries
+            .values()
+            .find(|boundary| boundary.identity_fn == identity_fn)
+    }
+
     pub(crate) fn closure_target(&self, target_fn: FnId) -> Option<&NativeClosureTargetSurface> {
         self.closure_targets.get(&target_fn)
     }

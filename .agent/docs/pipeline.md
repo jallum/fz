@@ -391,7 +391,8 @@ per surface would put several boundaries on one boxed value, which has exactly o
 entry. `semantic::ground_dispatch_surfaces` resolves each surface to the ground
 shapes the runtime invokes (templates replaced by their consistent-substitution
 instantiations via `Types::key_list_subsumes`; a genuinely polymorphic escape
-with no ground sibling keeps its template). It is the authoritative surface-set
+with no ground surface in the same carried demand or producer flow keeps its
+template). It is the authoritative surface-set
 operation, applied at the demand→representation seam — `CallableFlowFact`
 first-class surfaces at construction and every callable axis at demand
 finalization (`ExecutableRuntimeDemand::ground_callable_surfaces`) — so transport
@@ -428,26 +429,17 @@ allowed to carry only local facts already proven by semantics:
 - effect summaries
 - frozen extern marshal classes
 
-Transport products own physical layout: `TransportPosition -> ShapeId`, lane
-facts, `CallableId` facts, `BoundaryId` contracts, call result payload positions
-(`ResumePayload` for `Deliver(entry)`, `ReturnPayload` for `Return`), and
-`CodegenSeamFact` rows. `EntryCapture { executable, entry, value }` is a
-`TransportPosition`; `AbiExecutable(E)` pulls those entry-capture shapes when
-the materialized executable's entries capture values. Artifact code must not
-derive another transport shape by scanning local types or lowered bodies after a
-shape product exists.
+Transport planning owns physical layout before packaging:
+`TransportPosition -> TransportLayout`, lane facts, callable and boundary
+facts, call-result payload positions, and `CodegenSeamFact` rows. One
+`TransportLayout` contains both structural shape and carrier presence; later
+stages do not derive either component by rescanning semantic types or lowered
+bodies.
 
-Callable-flow target identity is part of that output contract. Runtime demand
-owns the semantic edge from each callable surface to the executable activation
-that satisfies it. The paired edge is monotone data: direct calls carry
-`CallableDirectEdge { surface_inputs, resolution }`, and first-class
-publication carries the same surface/resolution relation through the `BoundaryId`
-values transport mints. `BoundaryFacts.resolutions` is the authority for the
-executable targets of a published callable boundary, and `CallableFacts.direct_edges`
-is the authority for direct closure-call target selection. ABI-ready, backend,
-and native consumers must read those owned relations; they must not pair every
-callable boundary with every callable resolution or recover targets from
-function id, capture count, lowered bodies, or type shape.
+`CallableFlowFact` is the semantic authority for one producer construction. It
+keeps the producer's function and captures correlated with its resolved members,
+semantic input mappings, direct uses, public uses, and consumer-owned result
+demand. Direct-call compatibility does not erase a value's first-class state.
 
 The next products narrow the contract:
 
@@ -460,68 +452,33 @@ The next products narrow the contract:
 - `BackendExecutable(E)` reads `AbiExecutable(E)` and lowers one symbolic
   backend executable. Direct calls remain symbolic executable keys until final
   packaging.
-- `RootBackendProduct(root)` packages the request-local symbolic executable
-  inventory into dense `BackendProgram` indices. This is the interpreter-ready
-  handoff.
-- The legacy `NativeProgram` path remains a native-specific handoff above the
-  old `BackendProgram(root)` path: a
-  Compiler2-owned CPS/codegen-ready projection carrying direct executable
-  bodies, clause helpers, continuations, callable-boundary refs on closure
-  values, native body return contracts, and extern-marshal facts instead of
-  rebuilt `ModulePlan`, `PlannedProgram`, or `AbiFacts`. Native handoff metadata
-  reads plan-owned seam facts for executable returns, callable boundary returns,
-  delivered continuation payloads, and entry captures; it does not recover those
-  ABI reprs from lane type.
+- `RootBackendProduct(root)` packages the request-local symbolic inventory into
+  dense `BackendProgram` indices and closed `BackendValueLayout` contracts.
+  Symbolic `TransportPosition`s end here. This is the interpreter-ready handoff.
+- `NativeProgram(root)` is the native-specific projection above
+  `BackendProgram(root)`: it carries direct executable bodies, clause helpers,
+  continuations, construction wrappers, native body return contracts, and
+  extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
+  `AbiFacts`.
 
-Callable entry inventory is an artifact fact, not a native-codegen guess.
-`AbiExecutable(E)` and `BackendExecutable(E)` settle callable-boundary
-obligations from the request-local product inventory for
-callable-construction values, returned callable values, and explicit
-callable-boundary arguments. A closure-call callee is a consumer of an already
-materialized callable value, not a constructor obligation.
+`RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
+producer. The wrapper owns all resolved members, retained captures, semantic
+input mappings, private member layouts, member selection, and one public return
+form: `Diverges`, `Absent`, or `ValueRef`. Mixed public return forms are invalid;
+the public form is not copied from one private member or reconstructed from a
+semantic return type.
 
-`RootBackendProduct(root)` assigns every concrete callable entry a dense identity
-and records that identity on the exact `(TransportPosition, CallableId)` pairs
-that publish it. The position key preserves nested callable fields in tuples,
-returns, and continuation payloads without treating their outer carrier as a
-callable. Backend construction and native lowering consume this position-owned
-fact directly; they never recover an entry from a function id, capture count,
-type overlap, or a pooled `BoundaryId`.
+Construction identity is allocation-only. `MakeFnRef` or `MakeClosure` selects
+the producer wrapper when the runtime object is created; the resulting code
+pointer and environment are the callable's identity thereafter. Generic calls
+do not carry a parallel construction ID or per-variable boundary table. Exact
+calls may bypass the public object and use a member's private ABI.
 
-Direct closure-call lowering does not reconstruct ABI from capture-count side
-tables or mixed capture+arg vectors. Native codegen reads the entry-owned
-surfaces:
-
-- callable-boundary surface:
-  `arg_reprs` describe the outward callable ABI lanes in source call order
-  `return_shape` preserves the delivered result shape
-- closure-target surface:
-  `capture_reprs` describe the environment lanes loaded from `self`
-  `arg_reprs` describe the exact executable-body entry lanes
-
-Callable-boundary lanes carry the target body's own grounded repr — never a
-forced `ValueRef`. The boxed closure-apply wrapper is the sole boxing seam: it
-accepts the uniform `i64` closure-apply ABI from any first-class caller and
-unboxes each capture/arg lane to the body's repr before tail-calling it. Because
-the wrapper tail-calls it cannot rebox the return, and it does not need to — the
-continuation that consumes the result is itself derived from the body's grounded
-return repr (`ReturnDelivery` / `ReturnContinuation`). Forcing boundary lanes to
-`ValueRef` would only desynchronize the wrapper's declared return from the body's
-actual return, so the lanes stay grounded and the wrapper does the bridging.
-
-Opaque closure construction materializes the settled callable boundary published
-by native lowering. An opaque closure call uses that runtime code pointer; it
-does not carry a compiler-selected direct target. A published callable field
-uses the exact entry recorded for its own transport position, while a true union
-carrier remains an opaque runtime closure value rather than being arbitrarily
-assigned one of its members' entries.
-That constructor obligation is use-driven: a callable value earns a runtime
-callable boundary when it crosses an explicit callable-boundary argument seam,
-escapes as a value, or is reused opaquely / at multiple visible closure-call
-surfaces. A singleton-known direct closure call does not, by itself, create a
-new constructor obligation.
-Machine closure-target entry stays `(args..., self, cont)`; plain native bodies
-stay `(args..., cont)`.
+Packaged call flow is `Tail`, `Continue { source }`, or
+`Deliver { source, entry }`. Each non-tail form carries the sealed source return
+layout; the caller executable or destination entry already owns its sealed
+layout. Native and interpreter adapters consume those contracts directly and
+never scan endpoints, positions, types, or `World` to rebuild them.
 
 Things that belong in Compiler2 artifact facts:
 
@@ -579,10 +536,10 @@ questions at that rung:
 | --- | --- |
 | prepared `Module` | `NativeProgram.module` |
 | executable / helper inventory | `NativeProgram.entry` plus `NativeProgram.bodies[*].fn_id` and `origin` |
-| `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_abi`, and `effects` |
+| `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_reprs`, and `effects` |
 | `SpecPlan.vars` type queries | `NativeBody.value_types` |
 | `PlannedProgram.callable_entries` | `NativeProgram.callable_boundaries` |
-| callable-boundary lookup through planner state | `NativeBody.callable_value_boundaries` |
+| callable-boundary lookup through planner state | `MakeFnRef` / `MakeClosure` `identity_fn` resolved against `NativeProgram.callable_boundaries` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
 | runtime type-membership questions | explicit `RuntimeTypePredicate` facts |
@@ -607,14 +564,11 @@ Semantic extern facts stay in compiler2-owned structures: `LoweredExtern`,
 backend program facts, and `NativeBody.extern_marshals`.
 
 The same rule applies to native return delivery. `NativeBody.return_reprs` is
-the published result contract for a native body. Native lowering consumes
-`CallReturnFlow`: `Tail` emits a native tail call, while `Continue` emits an
-ordinary call to a generated `ReturnLanes` continuation over the settled
-`ReturnPayload`. `Deliver` carries both the callee's physical return payload
-and the caller's resume-entry payload. Native lowering inserts the adapter when
-those contracts differ, so codegen receives one explicit continuation term and
-must not rediscover or improvise the contract at individual tailcall or
-callable-entry sites.
+the published result contract for a native body. Native lowering consumes the
+packaged `BackendReturnFlow`; `Continue` and `Deliver` carry their sealed source
+layout while the caller executable or destination entry owns the other side of
+the adapter. Codegen does not rediscover ABI at individual tailcall or callable
+entry sites.
 
 The same two-layer split now applies on both sides of the migration seam:
 legacy lowering may still project legacy `Ty` handles into

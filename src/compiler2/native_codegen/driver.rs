@@ -888,42 +888,37 @@ pub(crate) fn compile_with_backend_native_program<
 }
 
 fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
+    _t: &mut T,
     program: &crate::compiler2::NativeProgram,
 ) -> BTreeMap<u32, NativeCallableBoundarySurface> {
     let mut boundaries = BTreeMap::new();
     for boundary in &program.callable_boundaries {
         let boundary_id = boundary.id().as_u32();
-        let full_tys = t
-            .arrow_params(&boundary.target.activation.arrow)
-            .into_iter()
-            // The activation arrow is already addressed (canonical), so erasing the
-            // closure identity leaves a canonical type — no encounter re-normalization
-            // (fz-hwn.27.8).
-            .map(|ty| t.erase_closure_identity(&ty))
-            .collect::<Vec<_>>();
-        let capture_key = crate::types::key_slots_from_tys(full_tys.iter().copied().take(boundary.capture_count));
         let next = NativeCallableBoundarySurface {
             boundary_id: boundary.id(),
             identity_fn: boundary.identity_fn,
-            target_fn: boundary.target_fn,
-            capture_count: boundary.capture_count,
-            capture_key,
+            target_fn: boundary.wrapper_fn,
+            capture_count: boundary.capture_reprs.len(),
+            capture_key: Vec::new(),
             capture_reprs: boundary
                 .capture_reprs
                 .iter()
                 .copied()
                 .map(arg_repr_from_compiler2)
                 .collect(),
-            arg_reprs: boundary
-                .arg_reprs
-                .iter()
-                .copied()
-                .map(arg_repr_from_compiler2)
-                .collect(),
-            return_diverges: t.is_empty(&boundary.return_ty),
-            return_reprs: arg_reprs_from_compiler2(&boundary.return_reprs),
-            return_tuple_arity: boundary.return_tuple_arity,
+            arg_reprs: vec![ArgRepr::ValueRef; boundary.call_arity],
+            return_diverges: matches!(
+                boundary.return_form,
+                crate::compiler2::artifact::BackendCallableReturn::Diverges
+            ),
+            return_reprs: matches!(
+                boundary.return_form,
+                crate::compiler2::artifact::BackendCallableReturn::ValueRef
+            )
+            .then_some(ArgRepr::ValueRef)
+            .into_iter()
+            .collect(),
+            return_tuple_arity: None,
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use crate::compiler2::transport::{ShapeId, TransportPosition, TransportValue};
+use crate::compiler2::transport::ShapeId;
 use crate::exec::runtime::ExitRecord;
 use crate::fz_ir::Module;
 use fz_runtime::any_value::{ValueKind, closure_addr_from_tagged};
@@ -37,7 +37,12 @@ struct BackendContinuation {
     env: HashMap<crate::compiler2::ValueId, BackendBoundValue>,
 }
 
-type BackendBoundValue = TransportValue<AnyValue>;
+#[derive(Debug, Clone)]
+enum BackendBoundValue {
+    Absent,
+    Runtime(AnyValue),
+    Transport { shape: ShapeId, lanes: Vec<AnyValue> },
+}
 
 enum BackendResumeEntry {
     Executable {
@@ -72,25 +77,6 @@ pub(crate) struct IrInterpRuntime {
     backend_parked: HashMap<u32, BackendParkRecord>,
     node: Rc<Node>,
     current_proc: *mut Process,
-    /// Per-executable input-binding facts, memoized once per executable index.
-    ///
-    /// `backend::executable_input_bindings` recovers each callee's semantic
-    /// input layout by scanning the program's global transport-position
-    /// shape table; that table is fixed for the life of the run, so the same
-    /// executable calling itself (or any callee being invoked repeatedly, as
-    /// in a tail-recursive loop) does not need to redo the scan every call.
-    ///
-    /// `executable_index` is already a dense array index into
-    /// `program.executables`, so this is a dense `Vec` (sized to the executable
-    /// count on first use) rather than a `HashMap` — a plain bounds-checked
-    /// index instead of a hash computation on every call.
-    input_bindings_cache: Vec<Option<Rc<Vec<backend::BackendExecutableInputBinding>>>>,
-    /// Lazily-built index over the program's transport-position shape table,
-    /// mirroring `input_bindings_cache`'s reasoning: the table is fixed for
-    /// the life of the run, so every position lookup after the first pays
-    /// O(1) instead of re-scanning the whole table with a deep
-    /// `TransportPosition` equality check.
-    position_shape_index: Option<HashMap<TransportPosition, ShapeId>>,
 }
 
 impl IrInterpRuntime {
@@ -105,8 +91,6 @@ impl IrInterpRuntime {
             backend_parked: HashMap::new(),
             node: Rc::new(Node::empty()),
             current_proc: std::ptr::null_mut(),
-            input_bindings_cache: Vec::new(),
-            position_shape_index: None,
         }
     }
 
