@@ -606,6 +606,34 @@ fn native_enum_take_positive_single_call_survives_reduction_yield() {
 }
 
 #[test]
+fn native_enum_every_functions_reject_negative_intervals_consistently() {
+    for (name, expression) in [
+        ("map_every", "Enum.map_every([1, 2, 3], -1, fn (value) -> value end)"),
+        ("take_every", "Enum.take_every([1, 2, 3], -1)"),
+        ("drop_every", "Enum.drop_every([1, 2, 3], -1)"),
+    ] {
+        let source_path = unique_temp_path(&format!("fz2_enum_{name}_negative"), ".fz");
+        write(&source_path, format!("fn main(), do: {expression}\n"))
+            .unwrap_or_else(|error| panic!("write {}: {error}", source_path.display()));
+
+        let out = run_fz2(&[OsStr::new("run"), source_path.as_os_str()]);
+        assert!(
+            !out.status.success(),
+            "Enum.{name} should reject a negative interval; output={}",
+            output_text(&out)
+        );
+        assert!(out.stdout.is_empty(), "Enum.{name} should not write stdout");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "fz panic: \"Enum.OutOfBoundsError\"\n",
+            "Enum.{name} should use the established out-of-bounds failure"
+        );
+
+        let _ = remove_file(&source_path);
+    }
+}
+
+#[test]
 fn run_and_interp_execute_case_and_with_fixtures() {
     let fixture = "fixtures2/behavior/case_with_total.fz";
     let expected = fixture_expected_stdout(fixture);

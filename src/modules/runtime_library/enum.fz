@@ -158,7 +158,8 @@ defmodule Enum do
   @spec take_every(Enumerable.t(a), integer) :: [a]
   fn take_every(_enumerable, 0), do: []
   fn take_every(enumerable, 1), do: to_list(enumerable)
-  fn take_every(enumerable, nth) when nth > 1 do
+  fn take_every(_enumerable, nth) when nth < 0, do: panic("Enum.OutOfBoundsError")
+  fn take_every(enumerable, nth) do
     take_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
         {:cont, if countdown == 0, do: {[entry | acc], nth - 1}, else: {acc, countdown - 1}}
@@ -188,7 +189,8 @@ defmodule Enum do
   @spec drop_every(Enumerable.t(a), integer) :: [a]
   fn drop_every(_enumerable, 1), do: []
   fn drop_every(enumerable, 0), do: to_list(enumerable)
-  fn drop_every(enumerable, nth) when nth > 1 do
+  fn drop_every(_enumerable, nth) when nth < 0, do: panic("Enum.OutOfBoundsError")
+  fn drop_every(enumerable, nth) do
     drop_every_finish(
       reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
         {:cont, if countdown == 0, do: {acc, nth - 1}, else: {[entry | acc], countdown - 1}}
@@ -257,6 +259,7 @@ defmodule Enum do
     acc
   end
 
+  @spec count_result({:ok, integer} | {:error, any}, Enumerable.t(a)) :: integer
   fnp count_result({:ok, count}, _enumerable), do: count
   fnp count_result({:error, _module}, enumerable), do: count(enumerable, fn (_entry) -> true end)
 
@@ -319,6 +322,7 @@ defmodule Enum do
   fnp with_index_list([], _index, _fun), do: []
   fnp with_index_list([head | tail], index, fun), do: [fun.(head, index) | with_index_list(tail, index + 1, fun)]
 
+  @spec map_every_list([a], integer, integer, (a) -> a) :: [a]
   fnp map_every_list([], _nth, _index, _fun), do: []
   fnp map_every_list([head | tail], nth, index, fun) do
     next = if (index % nth) == 0, do: fun.(head), else: head
@@ -357,6 +361,7 @@ defmodule Enum do
     if value, do: {:halt, {:found, index}}, else: {:cont, {:not_found, index + 1}}
   end
 
+  @spec find_index_finish({:found, integer} | {:not_found, integer}) :: integer | nil
   fnp find_index_finish({:found, index}), do: index
   fnp find_index_finish({:not_found, _index}), do: nil
 
@@ -433,7 +438,9 @@ defmodule Enum do
     split_sort_list(tail, [left_head | left], [right_head | right])
   end
 
+  @spec reverse_list([a]) :: [a]
   fnp reverse_list(list), do: reverse_list(list, [])
+  @spec reverse_list([a], [b]) :: [a | b]
   fnp reverse_list([], acc), do: acc
   fnp reverse_list([head | tail], acc), do: reverse_list(tail, [head | acc])
 

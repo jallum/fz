@@ -13876,6 +13876,43 @@ fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
     );
 }
 
+#[test]
+fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
+    for (source_name, source) in [
+        (
+            "fixtures2/behavior/enum_take_drop_split.fz",
+            include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+        ),
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        ),
+    ] {
+        let runtime_diagnostics = no_matching_clause_diagnostics(source_name, source);
+        assert!(
+            runtime_diagnostics.is_empty(),
+            "Enum and List runtime domains should be exhaustive for {source_name}: {runtime_diagnostics:?}"
+        );
+    }
+
+    let user_diagnostics = no_matching_clause_diagnostics(
+        "user_partial_function.fz",
+        r#"
+@spec partial(:a | :b) :: atom
+fn partial(:a), do: :a
+
+fn main(), do: partial(:a)
+"#,
+    );
+    assert_eq!(
+        user_diagnostics.len(),
+        1,
+        "a genuine user fallthrough must still warn: {user_diagnostics:?}"
+    );
+    assert_eq!(user_diagnostics[0].0, "user_partial_function.fz");
+    assert_eq!(user_diagnostics[0].1.message, "`fn` clauses don't cover every input");
+}
+
 fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(String, Diagnostic)> {
     let tel = ConfiguredTelemetry::new();
     let diagnostics = DiagnosticCapture::new();
