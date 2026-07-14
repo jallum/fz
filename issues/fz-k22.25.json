@@ -4,14 +4,16 @@
     "fz-k22.23"
   ],
   "blocks": [],
+  "closed_at": "2026-07-14T19:52:34Z",
+  "close_reason": "Folded into fz-k22.23 and landed in 8cb9b7a90. One producer construction owns its unique first-class member set and target-owned capture layouts.",
   "created": "2026-07-12T01:33:25Z",
   "description": "Folded into fz-k22.23 before implementation because the producer-scoped member-set repair depends on and completes the uncommitted fz-k22.23 carrier model; neither can be verified green independently.\\n\\nRetained discovery\\nA single callable construction can have several specialized target members sharing CallableId and one capture surface. This differs from BackendCallableDispatchSet, a callsite analysis union that can combine distinct values/environments. fz-k22.23 must carry a producer-scoped member set through transport construction and materialize one boxed callable boundary which dispatches among those validated members.\\n\\nSignal\\ncompiler2_jit_runs_range_reduce2_first_acc_bridge_from_native_artifacts pins Entry1's RawAtom state ABI then invokes the same closure under Entry2's accumulator shape and aborts in fz_unbox_atom.\\n\\nClosure condition\\nClose this ticket as folded when fz-k22.23 lands the coherent carrier/member-set change and passes the range JIT regression.",
   "id": "fz-k22.25",
   "labels": [],
   "parent": "fz-k22",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Represent multi-specialization members on one callable value",
   "type": "bug",
-  "updated_at": "2026-07-12T01:37:28Z"
+  "updated_at": "2026-07-14T19:52:34Z"
 }
