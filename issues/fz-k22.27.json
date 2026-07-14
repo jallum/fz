@@ -4,14 +4,16 @@
     "fz-k22.26"
   ],
   "blocks": [],
+  "closed_at": "2026-07-14T19:52:35Z",
+  "close_reason": "Folded through fz-k22.26 into fz-k22.23 and landed in 8cb9b7a90. Native wrappers materialize only construction-owned/public callable values; no eager phantom direct boundary inventory.",
   "created": "2026-07-12T01:46:06Z",
   "description": "Folded into fz-k22.26 before implementation because the direct registry split and lazy native-boundary derivation cannot be verified green separately.\\n\\nRetained discovery\\nNativeProgram.callable_boundaries must begin from actual BackendCallableEntry publications only. BackendDirectCallableEntry is lookup authority; a direct-only boundary is minted only at a concrete FunctionRef/Lambda materialization fallback. Native's current eager boundary inventory creates phantom boundary: None records and loses published boundary association.\\n\\nSignal\\nAfter the direct/public split, full cargo test --lib shows direct-only enum reducers and typed captures incorrectly present in native boundary inventory, while a published reducer loses its boundary target.\\n\\nClosure condition\\nClose as folded when fz-k22.26 lands the complete direct authority split with lazy direct-boundary derivation and full gates pass.",
   "id": "fz-k22.27",
   "labels": [],
   "parent": "fz-k22",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Derive native direct boundaries at concrete closure producers",
   "type": "bug",
-  "updated_at": "2026-07-12T01:46:33Z"
+  "updated_at": "2026-07-14T19:52:35Z"
 }
