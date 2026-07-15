@@ -8,9 +8,15 @@
   "description": "Surfaced by fz-lfp classification. Golden expects {5,80,9,288,...}/368; run+build produce {5,80,14,448,...}/528; interp produces {5,80,10,320,...}/400. Three-path parity violation (run/build vs interp disagree on ALLOCATION COUNTS) plus an upward drift vs the golden (raises need masked-regression scrutiny per convention -- this may be a real allocation regression from the k22.20-23 entry-ownership work, e.g. extra callable-entry thunks). Do NOT rebless upward without root-cause. Repro: fixture_matrix enum_list_allocations.",
   "id": "fz-66j",
   "labels": [],
+  "comments": [
+    {
+      "text": "ROOT-CAUSED (2026-07-15, report-only -- correct per no-masked-fix): all drift localized to Enum.reduce (count/member? byte-identical to golden at HEAD). Per-commit attribution: k22.20 regressed single-target dispatch to generic indirect (+20 scalar_box native via unconditional box_scalar_for_any); k22.23 mitigated to +5 but added per-call construction-wrapper structs (+5 native/+1 interp) at a single-member site. Classification: AVOIDABLE WASTE both counters; native is the over-allocating side (per-call re-materialization vs interp amortization). NO point patch -- the fix is the folded-but-never-built k22.24-27 capability, now ticketed as fz-k22.29 (blocks this + fz-5vi). Known-good baseline 6ffdddae7 reproduces golden exactly. Do NOT rebless upward.",
+      "timestamp": "2026-07-15T19:10:50Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "enum_list_allocations: THREE-WAY allocation divergence -- run/build vs interp vs golden all disagree",
   "type": "bug",
-  "updated_at": "2026-07-15T19:10:49Z"
+  "updated_at": "2026-07-15T19:10:50Z"
 }
