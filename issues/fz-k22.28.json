@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-15T13:19:53Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-k22",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-k22: residual Ty interning-order divergence in the k22.23 callable-flow actual-use closure",
   "type": "bug",
-  "updated_at": "2026-07-15T13:19:53Z"
+  "updated_at": "2026-07-15T14:49:53Z"
 }
