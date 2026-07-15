@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-06-13T02:06:47Z",
-  "description": "Goal: collapse the old model fully once the new contract is live. Delete obsolete callable-constructor tests, side-table helpers, and comments that describe captures as prepended call arguments. Re-baseline the focused fixture set and verify the full workspace. Acceptance: no compiler2/native test still asserts callable constructor body-id vectors; docs describe callable boundaries, separate arg/capture ABI, and direct-vs-opaque closure calls; cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace pass.",
+  "description": "Goal: remove the alternate native closure-target model that became unreachable after the producer-owned callable construction work landed. Current production evidence: build_codegen_closure_targets returns an empty map; native lowering always writes direct_target=None for CallClosure/TailCallClosure; concrete direct executable calls use DirectCallTarget::Local; public callable values enter through NativeCallableBoundaryId wrappers.\n\nDelete NativeClosureTargetSurface, NativeCodegenSurface.closure_targets, build_codegen_closure_targets, its test-only registry/rebinding model, dead direct-target entry/signature/terminator branches, and stale tests/comments/docs that describe consumer-reconstructed capture+argument surfaces. If the fz-IR direct_target field has no remaining production producer, remove it rather than preserving a permanently-None affordance. Keep static callable-boundary singletons and producer-owned callable member/direct-call facts: those are the live model, not this registry.\n\nTests must retain behavioral intent rather than obsolete mechanics. Acceptance: closure_typed_captures, curried_add, multi_caller_spec_divergent, the two-distinct-Enum.map case, and representative zero-capture/resource destructor closures pass on run/interp/build; cargo test --lib and cargo clippy --all-targets -- -D warnings pass; docs describe producer construction -\u003e public callable boundary -\u003e indirect call without a per-FnId native surface reconstruction step.",
   "id": "fz-9i4.4.4",
   "labels": [],
   "parent": "fz-9i4.4",
@@ -17,7 +17,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Remove legacy callable-constructor reconstruction and retire closure regression debt",
+  "title": "Delete the unreachable native closure-target registry and direct-call branches",
   "type": "task",
-  "updated_at": "2026-07-09T22:19:04Z"
+  "updated_at": "2026-07-15T13:25:17Z"
 }
