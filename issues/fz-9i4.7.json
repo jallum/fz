@@ -3,6 +3,7 @@
   "blocked_by": [
     "fz-bv3",
     "fz-f98",
+    "fz-go4.22",
     "fz-lfp"
   ],
   "blocks": [],
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "Finish the honest fixtures2 matrix after reclassifying current failures",
   "type": "bug",
-  "updated_at": "2026-07-15T13:26:20Z"
+  "updated_at": "2026-07-15T13:26:21Z"
 }
