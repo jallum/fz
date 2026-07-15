@@ -11,9 +11,15 @@
   "id": "fz-k22.29.2",
   "labels": [],
   "parent": "fz-k22.29",
+  "comments": [
+    {
+      "text": "SLICE-2 OUTCOME (2026-07-15): the mechanism was built and committed (8d9d09993, preserved in reflog/this note for salvage) but the coordinator DROPPED it from the epic branch -- it is never exercised by either scoreboard fixture. DECISIVE FINDING: construction_wrappers.len() == 0 for BOTH enum_list_allocations and enum_sort at the epic base -- neither program publishes a callable construction, so single_member_construction is never Some for them; the fz-66j attribution (indirect calls through wrappers cause the waste) is STALE at HEAD. Additional narrowing found by synthetic probing: even where wrappers exist, publication typically forces a continuation split dropping raw captures from scope by call time, and return_flow is planned against the wrapper's boxed contract -- closing either is upstream transport/return-flow work, not native consumption. Slice 1 (the audited fact derivation) STANDS at a9ac3324d. Slices 3/4 BLOCKED pending re-attribution: where do the +5 struct/+5 scalar (ela run/build), +1 struct (ela interp), and +27 scalar (enum_sort run/build) actually originate at current HEAD? Guards/gates were all green on the dropped commit (no correctness issue -- purely unexercised structure).",
+      "timestamp": "2026-07-15T20:42:18Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "fz-k22.29 slice 2: native consumes the fact -- no boxing/closure alloc at single-member construction+call sites",
   "type": "task",
-  "updated_at": "2026-07-15T20:04:14Z"
+  "updated_at": "2026-07-15T20:42:18Z"
 }
