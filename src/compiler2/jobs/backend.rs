@@ -29,8 +29,9 @@ use super::super::facts::FactUse;
 use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
 use super::super::pull::{
-    ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody, SymbolicBackendClause,
-    SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody,
+    SymbolicBackendClause, SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable,
+    SymbolicBackendTail, TransportLayout,
 };
 use super::super::scheduler::FatalError;
 use super::super::transport::{
@@ -137,49 +138,59 @@ fn emit_backend_product_error(
 pub(crate) fn produce_root_backend_product(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     root: RootId,
 ) -> PullOutcome {
     let root_entry = world.root_entry(root);
-    let keying_waits = [
+    let keying_facts = [
         FactKey::RootEntry(root),
         FactKey::DispatchMask(root_entry.function),
         FactKey::Recursive(root_entry.function),
-    ]
-    .into_iter()
-    .filter(|fact| !world.fact_is_settled(fact))
-    .map(|fact| PullWait::Fact(FactUse::settled(fact)))
-    .collect::<Vec<_>>();
+    ];
+    let keying_waits = keying_facts
+        .into_iter()
+        .filter(|fact| !context.read_fact(world, FactUse::settled(fact.clone())))
+        .map(|fact| PullWait::Fact(FactUse::settled(fact)))
+        .collect::<Vec<_>>();
     if !keying_waits.is_empty() {
         return PullOutcome::Waiting(keying_waits);
     }
     let entry = world.root_entry_executable(root);
-    let callable_fact_waits = callable_boundary_fact_waits(session);
+    let (produced_callables, produced_boundaries, callable_fact_waits) = read_callable_boundary_facts(context);
     if !callable_fact_waits.is_empty() {
         return PullOutcome::Waiting(callable_fact_waits);
     }
-    let produced_callables = produced_callable_facts(session);
-    let produced_boundaries = produced_boundary_facts(session);
-    let transport =
-        symbolic_materialized_transport_plan(session, &entry, world, &produced_callables, &produced_boundaries);
+    let transport = symbolic_materialized_transport_plan(
+        context.session(),
+        &entry,
+        world,
+        &produced_callables,
+        &produced_boundaries,
+    );
     let mut reachable = HashSet::new();
     let mut stack = vec![entry.clone()];
     stack.extend(callable_resolution_executables(root, &produced_callables));
     stack.extend(boundary_resolution_executables(root, &produced_boundaries));
     let mut waits = Vec::new();
+    let mut backends = HashMap::new();
     while let Some(current) = stack.pop() {
         if !reachable.insert(current.clone()) {
             continue;
         }
-        let Some(backend) = session.backend_executable(&current) else {
+        let Some(value) = context.read_product(ProductKey::BackendExecutable(current.clone())) else {
             waits.push(PullWait::Product(ProductKey::BackendExecutable(current)));
             continue;
         };
+        let ProductValue::BackendExecutable(backend) = value else {
+            panic!("backend executable product produced unexpected value {value:?}");
+        };
+        let backend = backend.as_ref().clone();
         for target in backend.call_edges.values() {
             for callee in symbolic_call_edge_callees(target) {
                 stack.push(callee.clone());
             }
         }
+        backends.insert(current, backend);
     }
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
@@ -192,6 +203,7 @@ pub(crate) fn produce_root_backend_product(
         .enumerate()
         .map(|(index, executable)| (executable.clone(), index))
         .collect::<std::collections::HashMap<_, _>>();
+    let session = context.session_mut();
     for (executable, index) in &executable_index {
         session.assign_executable_index(executable.clone(), *index);
     }
@@ -201,8 +213,8 @@ pub(crate) fn produce_root_backend_product(
     let return_endpoints = executable_keys
         .iter()
         .flat_map(|key| {
-            session
-                .backend_executable(key)
+            backends
+                .get(key)
                 .into_iter()
                 .flat_map(|backend| backend.abi.return_endpoints.iter().cloned())
         })
@@ -210,8 +222,8 @@ pub(crate) fn produce_root_backend_product(
     let executables = executable_keys
         .iter()
         .map(|executable| {
-            let backend = session
-                .backend_executable(executable)
+            let backend = backends
+                .get(executable)
                 .expect("reachable backend executable should have been checked before packaging");
             package_symbolic_backend_executable(
                 world,
@@ -247,15 +259,17 @@ pub(crate) fn produce_root_backend_product(
 pub(crate) fn produce_backend_executable_product(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    if let Some(backend) = session.backend_executable(executable).cloned() {
-        return PullOutcome::Produced(ProductValue::BackendExecutable(Box::new(backend)));
-    }
-    let Some(abi) = session.abi_executable(executable).cloned() else {
+    let Some(value) = context.read_product(ProductKey::AbiExecutable(executable.clone())) else {
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
+    let ProductValue::AbiExecutable(abi) = value else {
+        panic!("ABI executable product produced unexpected value {value:?}");
+    };
+    let abi = abi.as_ref().clone();
+    let session = context.session_mut();
     let value_shapes = executable_value_shapes(session, &abi);
     let mut lowerer = BackendLowerer::new(world, tel, session.root(), value_shapes);
     let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
@@ -309,48 +323,51 @@ fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&Executab
     }
 }
 
-fn callable_boundary_fact_waits(session: &PullSession) -> Vec<PullWait> {
-    let callable_waits = session
+fn read_callable_boundary_facts(
+    context: &mut ProductReadContext<'_>,
+) -> (
+    HashMap<CallableId, CallableFacts>,
+    HashMap<BoundaryId, BoundaryFacts>,
+    Vec<PullWait>,
+) {
+    let callables = context
+        .session()
         .demanded_callables()
         .iter()
         .copied()
-        .filter(|callable| session.memo().get(&ProductKey::CallableFacts(*callable)).is_none())
-        .map(|callable| PullWait::Product(ProductKey::CallableFacts(callable)));
-    let boundary_waits = session
+        .collect::<Vec<_>>();
+    let boundaries = context
+        .session()
         .demanded_boundaries()
         .iter()
         .copied()
-        .filter(|boundary| session.memo().get(&ProductKey::BoundaryFacts(*boundary)).is_none())
-        .map(|boundary| PullWait::Product(ProductKey::BoundaryFacts(boundary)));
-    callable_waits.chain(boundary_waits).collect()
-}
-
-fn produced_callable_facts(session: &PullSession) -> HashMap<CallableId, CallableFacts> {
-    session
-        .demanded_callables()
-        .iter()
-        .filter_map(
-            |callable| match session.memo().get(&ProductKey::CallableFacts(*callable)) {
-                Some(ProductValue::CallableFacts(Some(facts))) => Some((*callable, facts.clone())),
-                Some(ProductValue::CallableFacts(None)) | None => None,
-                Some(other) => panic!("callable facts product for {callable:?} produced unexpected value {other:?}"),
-            },
-        )
-        .collect()
-}
-
-fn produced_boundary_facts(session: &PullSession) -> HashMap<BoundaryId, BoundaryFacts> {
-    session
-        .demanded_boundaries()
-        .iter()
-        .filter_map(
-            |boundary| match session.memo().get(&ProductKey::BoundaryFacts(*boundary)) {
-                Some(ProductValue::BoundaryFacts(Some(facts))) => Some((*boundary, facts.clone())),
-                Some(ProductValue::BoundaryFacts(None)) | None => None,
-                Some(other) => panic!("boundary facts product for {boundary:?} produced unexpected value {other:?}"),
-            },
-        )
-        .collect()
+        .collect::<Vec<_>>();
+    let mut produced_callables = HashMap::new();
+    let mut produced_boundaries = HashMap::new();
+    let mut waits = Vec::new();
+    for callable in callables {
+        let key = ProductKey::CallableFacts(callable);
+        match context.read_product(key.clone()) {
+            Some(ProductValue::CallableFacts(Some(facts))) => {
+                produced_callables.insert(callable, facts.clone());
+            }
+            Some(ProductValue::CallableFacts(None)) => {}
+            Some(other) => panic!("callable facts product for {callable:?} produced unexpected value {other:?}"),
+            None => waits.push(PullWait::Product(key)),
+        }
+    }
+    for boundary in boundaries {
+        let key = ProductKey::BoundaryFacts(boundary);
+        match context.read_product(key.clone()) {
+            Some(ProductValue::BoundaryFacts(Some(facts))) => {
+                produced_boundaries.insert(boundary, facts.clone());
+            }
+            Some(ProductValue::BoundaryFacts(None)) => {}
+            Some(other) => panic!("boundary facts product for {boundary:?} produced unexpected value {other:?}"),
+            None => waits.push(PullWait::Product(key)),
+        }
+    }
+    (produced_callables, produced_boundaries, waits)
 }
 
 fn boundary_resolution_executables(

@@ -27,7 +27,7 @@ use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{
-    ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
 };
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -46,34 +46,29 @@ const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 pub(crate) fn produce_materialized_executable_product(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    let revisions = world.executable_artifact_revisions(executable);
-    if let Some(materialized) = session.materialized_executable(executable).cloned() {
-        if session.materialized_executable_is_fresh(executable, revisions) {
-            return PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)));
-        }
-        session.invalidate_artifact_products_for(executable);
-    }
     let mut waits = Vec::new();
     let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
-    if !world.fact_is_settled(&activation_fact) {
+    if !context.read_fact(world, FactUse::settled(activation_fact.clone())) {
         waits.push(PullWait::Fact(FactUse::settled(activation_fact)));
     }
     let return_fact = FactKey::ReturnType(executable.activation.clone());
-    if !world.fact_is_settled(&return_fact) {
+    if !context.read_fact(world, FactUse::settled(return_fact.clone())) {
         waits.push(PullWait::Fact(FactUse::settled(return_fact)));
     }
-    if session.memo().runtime_demand(executable).is_none() {
+    let lowered_fact = FactKey::LoweredBody(executable.activation.function);
+    if !context.read_fact(world, FactUse::settled(lowered_fact.clone())) {
+        waits.push(PullWait::Fact(FactUse::settled(lowered_fact)));
+    }
+    let runtime_demand = context.read_runtime_demand(executable);
+    if runtime_demand.is_none() {
         waits.push(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
     }
-    if session
-        .memo()
-        .get(&ProductKey::OutgoingInputEdges(executable.clone()))
-        .is_none()
-    {
-        waits.push(PullWait::Product(ProductKey::OutgoingInputEdges(executable.clone())));
+    let outgoing_key = ProductKey::OutgoingInputEdges(executable.clone());
+    if context.read_product(outgoing_key.clone()).is_none() {
+        waits.push(PullWait::Product(outgoing_key));
     }
     if let Some(analysis) = world.activation_analysis(&executable.activation) {
         for callsite in &analysis.callsites {
@@ -81,7 +76,7 @@ pub(crate) fn produce_materialized_executable_product(
                 activation: executable.activation.clone(),
                 callsite: *callsite,
             });
-            if !world.fact_is_settled(&fact) {
+            if !context.read_fact(world, FactUse::settled(fact.clone())) {
                 waits.push(PullWait::Fact(FactUse::settled(fact)));
             }
         }
@@ -89,7 +84,7 @@ pub(crate) fn produce_materialized_executable_product(
     let return_position = TransportPosition::ExecutableReturn {
         executable: transport_executable_symbol(executable, world.types()),
     };
-    if transport_shape_product_pending(session, &return_position) {
+    if transport_shape_product_pending(context, &return_position) {
         waits.push(PullWait::Product(ProductKey::TransportShape(return_position)));
     }
     if !waits.is_empty() {
@@ -124,7 +119,7 @@ pub(crate) fn produce_materialized_executable_product(
     let callsite_args = super::super::body::callsite_call_args(&body);
     waits.extend(required_call_edge_transport_waits(
         world,
-        session,
+        context,
         executable,
         &analysis,
         &body,
@@ -133,14 +128,12 @@ pub(crate) fn produce_materialized_executable_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    if session.memo().codegen_seam_facts(session.root()).is_none() {
-        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(session.root()))]);
-    }
-    let codegen_seam_facts = session
-        .memo()
-        .codegen_seam_facts(session.root())
-        .expect("codegen seam facts product wait should have been satisfied");
-    let transport_plan = session_transport_lookup(session, codegen_seam_facts);
+    let root = context.session().root();
+    let Some(codegen_seam_facts) = context.read_codegen_seam_facts(root) else {
+        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(root))]);
+    };
+    let session = context.session_mut();
+    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
     let call_edges = materialize_call_edges(
         world,
         tel,
@@ -158,11 +151,7 @@ pub(crate) fn produce_materialized_executable_product(
     let materialized = MaterializedExecutable {
         entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
         return_ty,
-        runtime_demand: session
-            .memo()
-            .runtime_demand(executable)
-            .cloned()
-            .expect("runtime-demand product wait should have been satisfied"),
+        runtime_demand: runtime_demand.expect("runtime-demand product wait should have been satisfied"),
         transport: session_materialized_executable_transport(session, executable, world.types()),
         original_entry_ids: pruned.original_entry_ids,
         value_types: analysis.value_types,
@@ -171,31 +160,32 @@ pub(crate) fn produce_materialized_executable_product(
         call_edges,
     };
     session.record_materialized_executable(executable.clone(), materialized.clone());
-    session.record_materialized_executable_revisions(executable.clone(), revisions);
     PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)))
 }
 
 pub(crate) fn produce_executable_effects_product(
-    _world: &mut World,
     _tel: &impl crate::telemetry::Telemetry,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    if let Some(effects) = session.executable_effects(executable) {
-        return PullOutcome::Produced(ProductValue::ExecutableEffects(effects));
-    }
-    let graph = match collect_effect_cone(session, executable) {
+    let graph = match collect_effect_cone(context, executable) {
         Ok(graph) => graph,
         Err(waits) => return PullOutcome::Waiting(waits),
     };
     let scc = effect_scc_containing(executable, &graph.edges);
-    let waits = effect_scc_external_waits(session, &scc, &graph.edges);
+    let (waits, external_effects) = effect_scc_external_waits(context, &scc, &graph.edges);
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let settled = settle_effect_scc(session, &scc, &graph);
+    let settled = settle_effect_scc(&scc, &graph, &external_effects);
     for (key, effects) in &settled {
-        session.record_executable_effects(key.clone(), *effects);
+        if key != executable {
+            context.publish_product(
+                ProductKey::ExecutableEffects(key.clone()),
+                ProductValue::ExecutableEffects(*effects),
+            );
+        }
+        context.session_mut().record_executable_effects(key.clone(), *effects);
     }
     let effects = settled
         .get(executable)
@@ -209,7 +199,10 @@ struct EffectGraph {
     edges: HashMap<ExecutableKey, Vec<ExecutableKey>>,
 }
 
-fn collect_effect_cone(session: &PullSession, executable: &ExecutableKey) -> Result<EffectGraph, Vec<PullWait>> {
+fn collect_effect_cone(
+    context: &mut ProductReadContext<'_>,
+    executable: &ExecutableKey,
+) -> Result<EffectGraph, Vec<PullWait>> {
     let mut local = HashMap::new();
     let mut edges = HashMap::new();
     let mut seen = HashSet::new();
@@ -219,9 +212,13 @@ fn collect_effect_cone(session: &PullSession, executable: &ExecutableKey) -> Res
         if !seen.insert(current.clone()) {
             continue;
         }
-        let Some(materialized) = session.materialized_executable(&current) else {
-            waits.push(PullWait::Product(ProductKey::MaterializedExecutable(current)));
+        let key = ProductKey::MaterializedExecutable(current.clone());
+        let Some(value) = context.read_product(key.clone()) else {
+            waits.push(PullWait::Product(key));
             continue;
+        };
+        let ProductValue::MaterializedExecutable(materialized) = value else {
+            panic!("materialized executable product produced unexpected value {value:?}");
         };
         local.insert(
             current.clone(),
@@ -234,7 +231,7 @@ fn collect_effect_cone(session: &PullSession, executable: &ExecutableKey) -> Res
             .cloned()
             .collect::<Vec<_>>();
         for callee in &callees {
-            if session.executable_effects(callee).is_none() {
+            if context.session().executable_effects(callee).is_none() {
                 stack.push(callee.clone());
             }
         }
@@ -278,29 +275,35 @@ fn collect_effect_reachable(
 }
 
 fn effect_scc_external_waits(
-    session: &PullSession,
+    context: &mut ProductReadContext<'_>,
     scc: &HashSet<ExecutableKey>,
     edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
-) -> Vec<PullWait> {
+) -> (Vec<PullWait>, HashMap<ExecutableKey, EffectSummary>) {
     let mut waits = Vec::new();
+    let mut effects = HashMap::new();
     for executable in scc {
         for callee in edges.get(executable).into_iter().flatten() {
-            if scc.contains(callee) || session.executable_effects(callee).is_some() {
+            if scc.contains(callee) {
                 continue;
             }
             let key = ProductKey::ExecutableEffects(callee.clone());
-            if !session.product_is_in_progress(&key) {
-                waits.push(PullWait::Product(key));
+            match context.read_product(key.clone()).cloned() {
+                Some(ProductValue::ExecutableEffects(value)) => {
+                    effects.insert(callee.clone(), value);
+                }
+                Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
+                None if !context.session().product_is_in_progress(&key) => waits.push(PullWait::Product(key)),
+                None => {}
             }
         }
     }
-    waits
+    (waits, effects)
 }
 
 fn settle_effect_scc(
-    session: &PullSession,
     scc: &HashSet<ExecutableKey>,
     graph: &EffectGraph,
+    external_effects: &HashMap<ExecutableKey, EffectSummary>,
 ) -> HashMap<ExecutableKey, EffectSummary> {
     let mut settled = scc
         .iter()
@@ -319,7 +322,7 @@ fn settle_effect_scc(
                 if let Some(callee_effects) = snapshot
                     .get(callee)
                     .copied()
-                    .or_else(|| session.executable_effects(callee))
+                    .or_else(|| external_effects.get(callee).copied())
                 {
                     effects.union_with(callee_effects);
                 }
@@ -339,54 +342,50 @@ fn settle_effect_scc(
 pub(crate) fn produce_abi_executable_product(
     world: &mut World,
     _tel: &impl crate::telemetry::Telemetry,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    if let Some(abi) = session.abi_executable(executable).cloned() {
-        return PullOutcome::Produced(ProductValue::AbiExecutable(Box::new(abi)));
-    }
     let mut waits = Vec::new();
-    if session.materialized_executable(executable).is_none() {
-        waits.push(PullWait::Product(ProductKey::MaterializedExecutable(
-            executable.clone(),
-        )));
-    }
-    if session.executable_effects(executable).is_none() {
-        waits.push(PullWait::Product(ProductKey::ExecutableEffects(executable.clone())));
-    }
+    let materialized_key = ProductKey::MaterializedExecutable(executable.clone());
+    let materialized = match context.read_product(materialized_key.clone()) {
+        Some(ProductValue::MaterializedExecutable(materialized)) => Some(materialized.as_ref().clone()),
+        Some(other) => panic!("materialized executable product produced unexpected value {other:?}"),
+        None => {
+            waits.push(PullWait::Product(materialized_key));
+            None
+        }
+    };
+    let effects_key = ProductKey::ExecutableEffects(executable.clone());
+    let effects = match context.read_product(effects_key.clone()) {
+        Some(ProductValue::ExecutableEffects(effects)) => Some(*effects),
+        Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
+        None => {
+            waits.push(PullWait::Product(effects_key));
+            None
+        }
+    };
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
 
-    let mut materialized = session
-        .materialized_executable(executable)
-        .cloned()
-        .expect("materialized executable product wait should have been satisfied");
-    if let Some(effects) = session.executable_effects(executable) {
-        materialized.effects = effects;
-    }
-    materialized.transport = session_materialized_executable_transport(session, executable, world.types());
+    let mut materialized = materialized.expect("materialized executable product wait should have been satisfied");
+    materialized.effects = effects.expect("executable effects product wait should have been satisfied");
+    materialized.transport = session_materialized_executable_transport(context.session(), executable, world.types());
     waits.extend(required_executable_transport_facts_waits(
-        session,
+        world,
+        context,
         executable,
         &materialized,
-        world.types(),
     ));
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    // `required_executable_transport_facts_waits` only reads `session`, so the
-    // transport recorded above is still current: nothing settled in between
-    // that would change it, and recomputing it here would just repeat the same
-    // per-production scan for an identical answer.
-    if session.memo().codegen_seam_facts(session.root()).is_none() {
-        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(session.root()))]);
-    }
-    let codegen_seam_facts = session
-        .memo()
-        .codegen_seam_facts(session.root())
-        .expect("codegen seam facts product wait should have been satisfied");
-    let transport_plan = session_transport_lookup(session, codegen_seam_facts);
+    let root = context.session().root();
+    let Some(codegen_seam_facts) = context.read_codegen_seam_facts(root) else {
+        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(root))]);
+    };
+    let session = context.session_mut();
+    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
     let plan = build_executable_abi_plan(world, executable, &materialized, &transport_plan);
     let abi = build_abi_executable(&materialized, &plan)
         .expect("per-executable ABI derivation should not require root fan-in");
@@ -508,9 +507,10 @@ fn session_transport_lookup<'a>(
 pub(crate) fn produce_codegen_seam_facts_product(
     world: &mut World,
     _tel: &impl crate::telemetry::Telemetry,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     root: RootId,
 ) -> PullOutcome {
+    let session = context.session_mut();
     debug_assert_eq!(
         root,
         session.root(),
@@ -714,15 +714,15 @@ fn push_session_publication_codegen_seam(
 }
 
 fn required_entry_capture_transport_waits(
-    session: &PullSession,
+    world: &World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-    types: &Types,
 ) -> Vec<PullWait> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body else {
         return Vec::new();
     };
-    let symbol = transport_executable_symbol(executable, types);
+    let symbol = transport_executable_symbol(executable, world.types());
     let mut waits = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
         let entry_id = materialized
@@ -736,7 +736,7 @@ fn required_entry_capture_transport_waits(
                 entry: entry_id,
                 capture_index,
             };
-            if transport_shape_product_pending(session, &position) {
+            if transport_shape_product_pending(context, &position) {
                 waits.push(PullWait::Product(ProductKey::TransportShape(position)));
             }
         }
@@ -752,46 +752,46 @@ fn required_entry_capture_transport_waits(
 /// grows the demand closure. The ABI product drives them before building the ABI
 /// struct; the transport-facts-only path drives them without building anything.
 pub(crate) fn required_executable_transport_facts_waits(
-    session: &PullSession,
+    world: &World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-    types: &Types,
 ) -> Vec<PullWait> {
     let mut waits = Vec::new();
     waits.extend(required_executable_input_transport_waits(
-        session,
+        world,
+        context,
         executable,
         materialized,
-        types,
     ));
     waits.extend(required_entry_capture_transport_waits(
-        session,
+        world,
+        context,
         executable,
         materialized,
-        types,
     ));
     waits.extend(required_resume_transport_waits(
-        session,
+        world,
+        context,
         executable,
         materialized,
-        types,
     ));
     waits.extend(required_local_backend_transport_waits(
-        session,
+        world,
+        context,
         executable,
         materialized,
-        types,
     ));
     waits
 }
 
 fn required_executable_input_transport_waits(
-    session: &PullSession,
+    world: &World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-    types: &Types,
 ) -> Vec<PullWait> {
-    let symbol = transport_executable_symbol(executable, types);
+    let symbol = transport_executable_symbol(executable, world.types());
     let callable_carriers = callable_carrier_values(&materialized.body);
     let input_callable_carrier_indexes = input_indexes_for_values(&materialized.body, &callable_carriers);
     materialized
@@ -808,7 +808,7 @@ fn required_executable_input_transport_waits(
                 executable: symbol.clone(),
                 semantic_index,
             };
-            transport_shape_product_pending(session, &position)
+            transport_shape_product_pending(context, &position)
                 .then_some(PullWait::Product(ProductKey::TransportShape(position)))
         })
         .collect()
@@ -860,15 +860,15 @@ fn input_indexes_for_values(body: &LoweredBody, values: &HashSet<ValueId>) -> Ha
 }
 
 fn required_resume_transport_waits(
-    session: &PullSession,
+    world: &World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-    types: &Types,
 ) -> Vec<PullWait> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body else {
         return Vec::new();
     };
-    let symbol = transport_executable_symbol(executable, types);
+    let symbol = transport_executable_symbol(executable, world.types());
     let mut waits = Vec::new();
     let mut deliver_callsites = HashMap::new();
     for entry in entries {
@@ -905,7 +905,7 @@ fn required_resume_transport_waits(
             callsite: deliver_callsites.get(&entry_id).copied(),
             entry: entry_id,
         };
-        if transport_shape_product_pending(session, &position) {
+        if transport_shape_product_pending(context, &position) {
             waits.push(PullWait::Product(ProductKey::TransportShape(position)));
         }
     }
@@ -913,15 +913,15 @@ fn required_resume_transport_waits(
 }
 
 fn required_local_backend_transport_waits(
-    session: &PullSession,
+    world: &World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-    types: &Types,
 ) -> Vec<PullWait> {
     let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body else {
         return Vec::new();
     };
-    let symbol = transport_executable_symbol(executable, types);
+    let symbol = transport_executable_symbol(executable, world.types());
     let mut waits = Vec::new();
     for value in clauses
         .iter()
@@ -933,7 +933,7 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if transport_shape_product_pending(session, &position) {
+        if transport_shape_product_pending(context, &position) {
             waits.push(PullWait::Product(ProductKey::TransportShape(position)));
         }
     }
@@ -955,7 +955,7 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if transport_shape_product_pending(session, &value_position) {
+        if transport_shape_product_pending(context, &value_position) {
             waits.push(PullWait::Product(ProductKey::TransportShape(value_position)));
         }
         for semantic_index in 0..args.len() {
@@ -964,7 +964,7 @@ fn required_local_backend_transport_waits(
                 callsite,
                 semantic_index,
             };
-            if transport_shape_product_pending(session, &position) {
+            if transport_shape_product_pending(context, &position) {
                 waits.push(PullWait::Product(ProductKey::TransportShape(position)));
             }
         }
@@ -972,19 +972,17 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             callsite,
         };
-        if transport_shape_product_pending(session, &return_payload) {
+        if transport_shape_product_pending(context, &return_payload) {
             waits.push(PullWait::Product(ProductKey::TransportShape(return_payload)));
         }
     }
     waits
 }
 
-fn transport_shape_product_pending(session: &PullSession, position: &TransportPosition) -> bool {
-    session.transport_shape_fact(position).is_none()
-        && session
-            .memo()
-            .get(&ProductKey::TransportShape(position.clone()))
-            .is_none()
+fn transport_shape_product_pending(context: &mut ProductReadContext<'_>, position: &TransportPosition) -> bool {
+    context
+        .read_product(ProductKey::TransportShape(position.clone()))
+        .is_none()
 }
 
 fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
@@ -1020,7 +1018,7 @@ fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
 
 fn required_call_edge_transport_waits(
     world: &mut World,
-    session: &PullSession,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
     body: &LoweredBody,
@@ -1050,7 +1048,7 @@ fn required_call_edge_transport_waits(
         match &entry.tail {
             LoweredTail::DirectCall { callsite, dest, .. } => {
                 record_return_flow_transport_waits(
-                    session,
+                    context,
                     &mut waits,
                     &caller_symbol,
                     *callsite,
@@ -1069,13 +1067,13 @@ fn required_call_edge_transport_waits(
             LoweredTail::ClosureCall {
                 callsite, callee, dest, ..
             } => {
-                let has_callable_flow = session
-                    .memo()
-                    .runtime_demand(executable)
+                let has_callable_flow = context
+                    .read_runtime_demand(executable)
+                    .as_ref()
                     .is_some_and(|demand| demand.callable_flows.contains_key(callee));
                 if has_callable_flow {
                     push_optional_transport_shape_wait(
-                        session,
+                        context,
                         &mut waits,
                         TransportPosition::Value {
                             executable: caller_symbol.clone(),
@@ -1084,7 +1082,7 @@ fn required_call_edge_transport_waits(
                     );
                     for (semantic_index, _) in callsite_args.get(callsite).into_iter().flatten().enumerate() {
                         push_optional_transport_shape_wait(
-                            session,
+                            context,
                             &mut waits,
                             TransportPosition::CallArg {
                                 executable: caller_symbol.clone(),
@@ -1106,16 +1104,16 @@ fn required_call_edge_transport_waits(
                         })
                     })
                     .collect::<Vec<_>>();
-                if let Some(shape) = session.transport_shape(&TransportPosition::Value {
+                if let Some(shape) = context.session().transport_shape(&TransportPosition::Value {
                     executable: caller_symbol.clone(),
                     value: *callee,
                 }) && let ShapeDescr::Callable(callable) = world.shape(shape)
-                    && let Some(facts) = session.callable_facts(*callable)
+                    && let Some(facts) = context.session().callable_facts(*callable)
                 {
                     for edge in &facts.direct_edges {
                         callees.push(ExecutableKey {
                             activation: world.activation_key(
-                                session.root(),
+                                context.session().root(),
                                 edge.resolution.activation.function,
                                 edge.resolution.activation.input.as_ref(),
                             ),
@@ -1124,7 +1122,7 @@ fn required_call_edge_transport_waits(
                     }
                 }
                 record_return_flow_transport_waits(
-                    session,
+                    context,
                     &mut waits,
                     &caller_symbol,
                     *callsite,
@@ -1144,7 +1142,7 @@ fn required_call_edge_transport_waits(
 }
 
 fn record_return_flow_transport_waits(
-    session: &PullSession,
+    context: &mut ProductReadContext<'_>,
     waits: &mut HashSet<PullWait>,
     caller_symbol: &ExecutableSymbol,
     callsite: CallSiteId,
@@ -1156,14 +1154,14 @@ fn record_return_flow_transport_waits(
         return;
     };
     push_transport_shape_wait(
-        session,
+        context,
         waits,
         TransportPosition::ExecutableReturn {
             executable: caller_symbol.clone(),
         },
     );
     push_transport_shape_wait(
-        session,
+        context,
         waits,
         TransportPosition::ReturnPayload {
             executable: caller_symbol.clone(),
@@ -1173,14 +1171,14 @@ fn record_return_flow_transport_waits(
     for callee in callees {
         let callee_symbol = transport_executable_symbol(&callee, types);
         push_transport_shape_wait(
-            session,
+            context,
             waits,
             TransportPosition::ExecutableReturn {
                 executable: callee_symbol.clone(),
             },
         );
         push_optional_transport_shape_wait(
-            session,
+            context,
             waits,
             TransportPosition::ReturnPayload {
                 executable: callee_symbol,
@@ -1190,18 +1188,22 @@ fn record_return_flow_transport_waits(
     }
 }
 
-fn push_transport_shape_wait(session: &PullSession, waits: &mut HashSet<PullWait>, position: TransportPosition) {
-    if transport_shape_product_pending(session, &position) {
+fn push_transport_shape_wait(
+    context: &mut ProductReadContext<'_>,
+    waits: &mut HashSet<PullWait>,
+    position: TransportPosition,
+) {
+    if transport_shape_product_pending(context, &position) {
         waits.insert(PullWait::Product(ProductKey::TransportShape(position)));
     }
 }
 
 fn push_optional_transport_shape_wait(
-    session: &PullSession,
+    context: &mut ProductReadContext<'_>,
     waits: &mut HashSet<PullWait>,
     position: TransportPosition,
 ) {
-    if transport_shape_product_pending(session, &position) {
+    if transport_shape_product_pending(context, &position) {
         waits.insert(PullWait::Product(ProductKey::TransportShape(position)));
     }
 }

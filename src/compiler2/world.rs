@@ -11,7 +11,6 @@ use std::any::Any;
 use std::cell::Cell;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 
 use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
@@ -1475,51 +1474,6 @@ impl World {
     #[cfg(test)]
     pub(crate) fn job_reads(&self, job: &Job) -> Option<&HashSet<FactUse<FactKey>>> {
         self.work_graph.reads(job)
-    }
-
-    pub(crate) fn root_artifact_revision(&self, root: RootId) -> u64 {
-        let mut activations = self
-            .activations
-            .keys()
-            .filter(|activation| activation.root == root)
-            .collect::<Vec<_>>();
-        activations.sort();
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for activation in activations {
-            activation.hash(&mut hasher);
-            for fact in [
-                FactKey::ActivationInputs(activation.clone()),
-                FactKey::ActivationAnalyzed(activation.clone()),
-                FactKey::ReturnType(activation.clone()),
-            ] {
-                self.fact_revision(&fact).unwrap_or(0).hash(&mut hasher);
-            }
-            if let Some(analysis) = self.activation_analysis(activation) {
-                for callsite in &analysis.callsites {
-                    callsite.hash(&mut hasher);
-                    self.fact_revision(&FactKey::CallSiteSummary(CallSiteKey {
-                        activation: activation.clone(),
-                        callsite: *callsite,
-                    }))
-                    .unwrap_or(0)
-                    .hash(&mut hasher);
-                }
-            }
-        }
-        hasher.finish()
-    }
-
-    pub(crate) fn executable_artifact_revisions(&self, executable: &ExecutableKey) -> [u64; 3] {
-        let activation = &executable.activation;
-        [
-            self.fact_revision(&FactKey::ActivationInputs(activation.clone()))
-                .unwrap_or(0),
-            self.fact_revision(&FactKey::ActivationAnalyzed(activation.clone()))
-                .unwrap_or(0),
-            self.fact_revision(&FactKey::ReturnType(activation.clone()))
-                .unwrap_or(0),
-        ]
     }
 
     pub fn has_fact(&self, key: &FactKey) -> bool {

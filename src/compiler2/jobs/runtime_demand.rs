@@ -10,7 +10,7 @@ use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
 use super::super::pull::{
-    DemandedCallEdge, IncomingInputRole, IncomingInputSource, ProductKey, ProductValue, PullOutcome, PullSession,
+    IncomingInputRole, IncomingInputSource, InputSlot, ProductKey, ProductReadContext, ProductValue, PullOutcome,
     PullWait,
 };
 use super::super::semantic::{
@@ -22,7 +22,8 @@ use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
 
-struct ExecutableFacts {
+#[derive(Debug, PartialEq)]
+pub struct ExecutableFacts {
     analysis: ActivationAnalysis,
     body: LoweredBody,
     entry_dispatch_inputs: HashSet<usize>,
@@ -30,60 +31,6 @@ struct ExecutableFacts {
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
     local_callable_producers: HashMap<ValueId, LocalCallableProducer>,
-}
-
-/// Session-scoped store of collected [`ExecutableFacts`], validated at read
-/// against the exact settled world facts each entry consumed. Demand-cone
-/// collection is iterative — a pull that waits is retried once the missing
-/// facts settle, and every retry re-walks the cone — so without this store
-/// each retry re-clones every already-collected member's analysis, body and
-/// callsite summaries (quadratic in cone size). An entry is recorded only
-/// for a fully materialized collection and is dropped the moment any of its
-/// fact stamps moved (revision bump) or unsettled, so a reader can never
-/// observe facts a re-published world fact displaced. The store lives and
-/// dies with its [`PullSession`].
-#[derive(Default)]
-pub(crate) struct DemandFactsCache {
-    entries: HashMap<ExecutableKey, CachedExecutableFacts>,
-}
-
-impl std::fmt::Debug for DemandFactsCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DemandFactsCache")
-            .field("entries", &self.entries.len())
-            .finish()
-    }
-}
-
-struct CachedExecutableFacts {
-    stamps: Box<[(FactKey, u64)]>,
-    facts: Rc<ExecutableFacts>,
-}
-
-impl DemandFactsCache {
-    fn validated(&mut self, world: &World, executable: &ExecutableKey) -> Option<Rc<ExecutableFacts>> {
-        let entry = self.entries.get(executable)?;
-        let valid = entry
-            .stamps
-            .iter()
-            .all(|(fact, revision)| world.fact_is_settled(fact) && world.fact_revision(fact) == Some(*revision));
-        if valid {
-            Some(Rc::clone(&entry.facts))
-        } else {
-            self.entries.remove(executable);
-            None
-        }
-    }
-
-    fn record(&mut self, executable: ExecutableKey, stamps: Vec<(FactKey, u64)>, facts: Rc<ExecutableFacts>) {
-        self.entries.insert(
-            executable,
-            CachedExecutableFacts {
-                stamps: stamps.into_boxed_slice(),
-                facts,
-            },
-        );
-    }
 }
 
 struct DerivedExecutableDemand {
@@ -284,16 +231,13 @@ impl CallableFlowBuilder {
 /// joins — so the loop terminates within the finite demanded universe.
 pub(crate) fn produce_runtime_demand_product(
     world: &mut World,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    if let Some(demand) = session.memo().runtime_demand(executable) {
-        return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand.clone())));
-    }
     let mut actual_flow_edges: HashMap<ExecutableKey, HashSet<ExecutableKey>> = HashMap::new();
     let mut retry_guard = None;
     loop {
-        let graph = match collect_demand_cone(world, session, executable, &actual_flow_edges) {
+        let graph = match collect_demand_cone(context, executable, &actual_flow_edges) {
             Ok(graph) => graph,
             Err(waits) => return product_waits(waits),
         };
@@ -316,7 +260,7 @@ pub(crate) fn produce_runtime_demand_product(
             ),
             None => {}
         }
-        let settled = match settle_demand_cone(world, session, &graph) {
+        let settled = match settle_demand_cone(world, context, &graph) {
             Ok(settled) => settled,
             Err(waits) => return product_waits(waits),
         };
@@ -367,12 +311,12 @@ pub(crate) fn produce_runtime_demand_product(
                     input_demand_contributions.insert(target, contribution.input_demands);
                 }
             }
-            displaced.extend(session.replace_settled_return_demand_contributions(
+            displaced.extend(context.session_mut().replace_settled_return_demand_contributions(
                 member.clone(),
                 return_demand_contributions,
                 &members,
             ));
-            displaced.extend(session.replace_settled_input_demand_contributions(
+            displaced.extend(context.session_mut().replace_settled_input_demand_contributions(
                 member,
                 input_demand_contributions,
                 &members,
@@ -396,20 +340,27 @@ pub(crate) fn produce_runtime_demand_product(
             });
             continue;
         }
+        context.remove_product_dependencies(members.iter().cloned().map(ProductKey::RuntimeDemand));
         for (member, edges) in &graph.edges {
-            session.record_settled_demand_callees(member.clone(), edges.clone());
+            context
+                .session_mut()
+                .record_settled_demand_callees(member.clone(), edges.clone());
             for target in edges {
                 if !actual_flow_edges
                     .get(member)
                     .is_some_and(|flow_edges| flow_edges.contains(target))
                 {
-                    session.record_runtime_demand_dependency(target.clone(), member.clone());
+                    context
+                        .session_mut()
+                        .record_runtime_demand_dependency(target.clone(), member.clone());
                 }
             }
         }
         for (member, edges) in &actual_flow_edges {
             for target in edges {
-                session.record_demand_flow_dependency(target.clone(), member.clone());
+                context
+                    .session_mut()
+                    .record_demand_flow_dependency(target.clone(), member.clone());
             }
         }
         let demand = settled
@@ -421,7 +372,10 @@ pub(crate) fn produce_runtime_demand_product(
             if member == *executable {
                 continue;
             }
-            session.record_settled_runtime_demand(member, member_demand);
+            context.publish_product(
+                ProductKey::RuntimeDemand(member.clone()),
+                ProductValue::RuntimeDemand(Box::new(member_demand.clone())),
+            );
         }
         return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand)));
     }
@@ -457,8 +411,7 @@ struct TargetDemandContribution {
 }
 
 fn collect_demand_cone(
-    world: &mut World,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     anchor: &ExecutableKey,
     actual_flow_edges: &HashMap<ExecutableKey, HashSet<ExecutableKey>>,
 ) -> Result<DemandGraph, HashSet<PullWait>> {
@@ -473,18 +426,17 @@ fn collect_demand_cone(
             continue;
         }
         if current != *anchor
-            && let Some(demand) = session.memo().runtime_demand(&current)
+            && let Some(demand) = context.read_runtime_demand(&current)
         {
             external.insert(current, demand.clone());
             continue;
         }
-        let Some(current_facts) =
-            collect_one_executable_facts_product(world, session.demand_facts_mut(), &current, &mut waits)
-        else {
+        let Some(current_facts) = context.read_executable_facts(&current) else {
+            waits.insert(PullWait::Product(ProductKey::ExecutableFacts(current)));
             continue;
         };
         let mut targets = direct_local_targets(&current_facts);
-        if let Some(callees) = session.settled_demand_callees(&current) {
+        if let Some(callees) = context.session().settled_demand_callees(&current) {
             targets.extend(callees.iter().cloned());
         }
         if let Some(callees) = actual_flow_edges.get(&current) {
@@ -503,7 +455,7 @@ fn collect_demand_cone(
 
 fn settle_demand_cone(
     world: &mut World,
-    session: &PullSession,
+    context: &mut ProductReadContext<'_>,
     graph: &DemandGraph,
 ) -> Result<SettledDemandCone, HashSet<PullWait>> {
     // `members` is only ever iterated, never indexed by position: the Jacobi
@@ -527,7 +479,8 @@ fn settle_demand_cone(
     let external_return_demands: HashMap<ExecutableKey, RuntimeDemand> = members
         .iter()
         .filter_map(|member| {
-            session
+            context
+                .session()
                 .external_return_demand(member, &member_set)
                 .map(|demand| (member.clone(), demand))
         })
@@ -539,7 +492,7 @@ fn settle_demand_cone(
     let external_input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = members
         .iter()
         .filter_map(|member| {
-            let demands = session.external_input_demand(member, &member_set);
+            let demands = context.session().external_input_demand(member, &member_set);
             (!demands.is_empty()).then_some((member.clone(), demands))
         })
         .collect();
@@ -656,7 +609,8 @@ fn settle_demand_cone(
                 continue;
             }
             let facts = graph.facts.get(member).expect("every cone member has facts");
-            let (demand, member_contributions) = derive_member_demand(world, member, facts, &reads, &mut waits);
+            let (demand, member_contributions) =
+                derive_member_demand(world, context, member, facts, &reads, &mut waits);
             let demand_changed = iterates.get(member) != Some(&demand);
             if demand_changed {
                 demand_moved.push(member);
@@ -726,6 +680,7 @@ const DEMAND_ASCENT_ROUND_BUDGET: u32 = 32;
 
 fn derive_member_demand(
     world: &mut World,
+    context: &mut ProductReadContext<'_>,
     member: &ExecutableKey,
     facts: &ExecutableFacts,
     reads: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
@@ -738,6 +693,7 @@ fn derive_member_demand(
     let return_demand_contributions = call_return_demand_contributions(facts, derived.call_return_demands);
     derive_callable_flow_facts_for_executable_product(
         world,
+        context,
         member,
         facts,
         &derived.callable_flows,
@@ -768,56 +724,61 @@ fn derive_member_demand(
 
 pub(crate) fn produce_outgoing_input_edges_product(
     world: &mut World,
-    session: &mut PullSession,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
     let mut waits = HashSet::new();
-    let Some(facts) = collect_one_executable_facts_product(world, session.demand_facts_mut(), executable, &mut waits)
-    else {
+    let Some(facts) = context.read_executable_facts(executable) else {
+        waits.insert(PullWait::Product(ProductKey::ExecutableFacts(executable.clone())));
         return product_waits(waits);
     };
-    let Some(runtime_demand) = session.memo().runtime_demand(executable).cloned() else {
+    let Some(runtime_demand) = context.read_runtime_demand(executable) else {
         waits.insert(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
         return product_waits(waits);
     };
 
-    record_callsite_input_edges(world, session, executable, &facts);
-    record_callable_capture_input_edges(session, executable, &runtime_demand);
-    PullOutcome::Produced(ProductValue::Unit)
+    let mut contribution = HashMap::new();
+    collect_callsite_input_sources(world, executable, &facts, &mut contribution);
+    collect_callable_capture_input_sources(executable, &runtime_demand, &mut contribution);
+    PullOutcome::Produced(ProductValue::OutgoingInputEdges(Rc::new(contribution)))
 }
 
 fn product_waits(waits: HashSet<PullWait>) -> PullOutcome {
     PullOutcome::Waiting(waits.into_iter().collect())
 }
 
+pub(crate) fn produce_executable_facts_product(
+    world: &mut World,
+    context: &mut ProductReadContext<'_>,
+    executable: &ExecutableKey,
+) -> PullOutcome {
+    let mut waits = HashSet::new();
+    match collect_one_executable_facts_product(world, context, executable, &mut waits) {
+        Some(facts) => PullOutcome::Produced(ProductValue::ExecutableFacts(facts)),
+        None => product_waits(waits),
+    }
+}
+
 fn collect_one_executable_facts_product(
     world: &mut World,
-    cache: &mut DemandFactsCache,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     waits: &mut HashSet<PullWait>,
 ) -> Option<Rc<ExecutableFacts>> {
-    if let Some(facts) = cache.validated(world, executable) {
-        return Some(facts);
-    }
-    let mut stamps: Vec<(FactKey, u64)> = Vec::new();
     let activation = &executable.activation;
     let analyzed_fact = FactKey::ActivationAnalyzed(activation.clone());
-    if !wait_settled_stamped(world, analyzed_fact, waits, &mut stamps) {
+    if !wait_settled(world, context, analyzed_fact, waits) {
         return None;
     }
     let lowered_fact = FactKey::LoweredBody(activation.function);
-    if !wait_settled_stamped(world, lowered_fact, waits, &mut stamps) {
-        return None;
-    }
-    let return_fact = FactKey::ReturnType(activation.clone());
-    if !wait_settled_stamped(world, return_fact, waits, &mut stamps) {
+    if !wait_settled(world, context, lowered_fact, waits) {
         return None;
     }
     // `executable_dispatch_input_ordinals` below consumes the entry-dispatch
     // plan; stamp it so a re-published plan drops the cache entry even when
     // the analysis itself re-derives byte-identically.
     let dispatch_fact = FactKey::EntryDispatch(activation.function);
-    if !wait_settled_stamped(world, dispatch_fact, waits, &mut stamps) {
+    if !wait_settled(world, context, dispatch_fact, waits) {
         return None;
     }
 
@@ -833,7 +794,7 @@ fn collect_one_executable_facts_product(
             callsite: *callsite,
         };
         let callsite_fact = FactKey::CallSiteSummary(key.clone());
-        if !wait_settled_stamped(world, callsite_fact, waits, &mut stamps) {
+        if !wait_settled(world, context, callsite_fact, waits) {
             continue;
         }
         if let Some(summary) = world.callsite_summary(&key).cloned() {
@@ -858,33 +819,29 @@ fn collect_one_executable_facts_product(
         delivered_value_joins,
         local_callable_producers,
     });
-    cache.record(executable.clone(), stamps, Rc::clone(&facts));
     Some(facts)
 }
 
-fn wait_settled_stamped(
+fn wait_settled(
     world: &World,
+    context: &mut ProductReadContext<'_>,
     fact: FactKey,
     waits: &mut HashSet<PullWait>,
-    stamps: &mut Vec<(FactKey, u64)>,
 ) -> bool {
-    if world.fact_is_settled(&fact) {
-        let revision = world
-            .fact_revision(&fact)
-            .expect("a settled fact has at least one publisher, so it has a revision");
-        stamps.push((fact, revision));
+    let fact_use = FactUse::settled(fact);
+    if context.read_fact(world, fact_use.clone()) {
         true
     } else {
-        waits.insert(PullWait::Fact(FactUse::settled(fact)));
+        waits.insert(PullWait::Fact(fact_use));
         false
     }
 }
 
-fn record_callsite_input_edges(
+fn collect_callsite_input_sources(
     world: &World,
-    session: &mut PullSession,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
+    contribution: &mut HashMap<InputSlot, HashSet<IncomingInputSource>>,
 ) {
     let call_args = callsite_call_args(&facts.body);
     let call_modes = callsite_input_modes(&facts.body);
@@ -905,67 +862,51 @@ fn record_callsite_input_edges(
                 continue;
             };
             let callee = ExecutableKey { activation, need };
-            let inputs = args
-                .iter()
-                .enumerate()
-                .filter_map(|(index, arg)| {
-                    let semantic_index =
-                        mode.semantic_index(callee.activation.input_len(world.types()), args.len(), index)?;
-                    Some((
+            for (index, arg) in args.iter().enumerate() {
+                let Some(semantic_index) =
+                    mode.semantic_index(callee.activation.input_len(world.types()), args.len(), index)
+                else {
+                    continue;
+                };
+                contribution
+                    .entry(InputSlot {
+                        executable: callee.clone(),
                         semantic_index,
-                        IncomingInputSource {
-                            producer: executable.clone(),
-                            value: arg.value,
-                            role: IncomingInputRole::CallArgument,
-                        },
-                    ))
-                })
-                .collect();
-            session.record_call_edge(DemandedCallEdge {
-                caller: executable.clone(),
-                callsite: Some(*callsite),
-                callee,
-                inputs,
-            });
+                    })
+                    .or_default()
+                    .insert(IncomingInputSource {
+                        producer: executable.clone(),
+                        value: arg.value,
+                        role: IncomingInputRole::CallArgument,
+                    });
+            }
         }
     }
 }
 
-fn record_callable_capture_input_edges(
-    session: &mut PullSession,
+fn collect_callable_capture_input_sources(
     executable: &ExecutableKey,
     demand: &ExecutableRuntimeDemand,
+    contribution: &mut HashMap<InputSlot, HashSet<IncomingInputSource>>,
 ) {
     for (&flow_value, flow) in &demand.callable_flows {
         for resolution in &flow.resolutions {
-            let inputs = flow
-                .captures
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, value)| {
-                    (
-                        index,
-                        IncomingInputSource {
-                            producer: executable.clone(),
-                            value,
-                            role: IncomingInputRole::CallableCapture {
-                                construction: flow_value,
-                                capture_index: index,
-                            },
+            for (index, value) in flow.captures.iter().copied().enumerate() {
+                contribution
+                    .entry(InputSlot {
+                        executable: resolution.clone(),
+                        semantic_index: index,
+                    })
+                    .or_default()
+                    .insert(IncomingInputSource {
+                        producer: executable.clone(),
+                        value,
+                        role: IncomingInputRole::CallableCapture {
+                            construction: flow_value,
+                            capture_index: index,
                         },
-                    )
-                })
-                .collect::<Vec<_>>();
-            if inputs.is_empty() {
-                continue;
+                    });
             }
-            session.record_call_edge(DemandedCallEdge {
-                caller: executable.clone(),
-                callsite: None,
-                callee: resolution.clone(),
-                inputs,
-            });
         }
     }
 }
@@ -1042,6 +983,7 @@ fn tuple_return_demand_for_observed_need(need: ExecutableNeed, observed: Runtime
 
 fn derive_callable_flow_facts_for_executable_product(
     world: &mut World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     callable_flows: &CallableFlowBuilder,
@@ -1070,7 +1012,8 @@ fn derive_callable_flow_facts_for_executable_product(
         let producer_surfaces = callable_value_type_demand(world, facts, value)
             .map(|demand| demand.callable.resolved)
             .unwrap_or_default();
-        let direct_edges = callable_flow_edges_for_targets(world, executable, facts, producer, &direct_targets, waits);
+        let direct_edges =
+            callable_flow_edges_for_targets(world, context, executable, facts, producer, &direct_targets, waits);
         let mut ground_source = producer_surfaces;
         ground_source.extend(direct_surfaces.iter().cloned());
         let first_class_surfaces = ground_dispatch_surfaces(
@@ -1078,8 +1021,15 @@ fn derive_callable_flow_facts_for_executable_product(
             &callable_flows.first_class_surfaces(value),
             &ground_source,
         );
-        let first_class_edges =
-            callable_flow_resolution_edges_product(world, executable, facts, producer, &first_class_surfaces, waits);
+        let first_class_edges = callable_flow_resolution_edges_product(
+            world,
+            context,
+            executable,
+            facts,
+            producer,
+            &first_class_surfaces,
+            waits,
+        );
         let mut resolutions = Vec::new();
         extend_unique(
             &mut resolutions,
@@ -1108,13 +1058,14 @@ fn derive_callable_flow_facts_for_executable_product(
 
 fn callable_flow_edges_for_targets(
     world: &World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     producer: &LocalCallableProducer,
     targets: &BTreeSet<CallableTarget>,
     waits: &mut HashSet<PullWait>,
 ) -> Vec<CallableFlowEdge> {
-    if targets.is_empty() || !require_activation_key_facts_product(world, producer.function, waits) {
+    if targets.is_empty() || !require_activation_key_facts_product(world, context, producer.function, waits) {
         return Vec::new();
     }
     let Some(capture_tys) = producer
@@ -2942,6 +2893,7 @@ fn runtime_demand_for_executable_need(need: ExecutableNeed) -> RuntimeDemand {
 
 fn callable_flow_resolution_edges_product(
     world: &mut World,
+    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     facts: &ExecutableFacts,
     producer: &LocalCallableProducer,
@@ -2951,7 +2903,7 @@ fn callable_flow_resolution_edges_product(
     if surfaces.is_empty() {
         return Vec::new();
     }
-    if !require_activation_key_facts_product(world, producer.function, waits) {
+    if !require_activation_key_facts_product(world, context, producer.function, waits) {
         return Vec::new();
     }
     let Some(capture_tys) = producer
@@ -2985,15 +2937,20 @@ fn callable_flow_resolution_edges_product(
         .collect()
 }
 
-fn require_activation_key_facts_product(world: &World, function: FunctionId, waits: &mut HashSet<PullWait>) -> bool {
+fn require_activation_key_facts_product(
+    world: &World,
+    context: &mut ProductReadContext<'_>,
+    function: FunctionId,
+    waits: &mut HashSet<PullWait>,
+) -> bool {
     let recursive = FactKey::Recursive(function);
-    let recursive_ready = world.has_fact(&recursive);
+    let recursive_ready = context.read_fact(world, FactUse::current(recursive.clone()));
     if !recursive_ready {
         waits.insert(PullWait::Fact(FactUse::current(recursive)));
     }
 
     let dispatch_mask = FactKey::DispatchMask(function);
-    let dispatch_mask_ready = world.has_fact(&dispatch_mask);
+    let dispatch_mask_ready = context.read_fact(world, FactUse::current(dispatch_mask.clone()));
     if !dispatch_mask_ready {
         waits.insert(PullWait::Fact(FactUse::current(dispatch_mask)));
     }

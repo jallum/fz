@@ -6,6 +6,7 @@
 //! root frontier.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
@@ -17,9 +18,9 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
 };
 use super::drive::FactKey;
-use super::facts::FactUse;
+use super::facts::{FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, RootId};
-use super::jobs::runtime_demand::DemandFactsCache;
+use super::jobs::runtime_demand::ExecutableFacts;
 use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{
@@ -42,8 +43,11 @@ pub enum ProductKey {
     AbiExecutable(ExecutableKey),
     MaterializedExecutable(ExecutableKey),
     ExecutableEffects(ExecutableKey),
+    ExecutableFacts(ExecutableKey),
     RuntimeDemand(ExecutableKey),
+    OutgoingEdgeFrontier(RootId),
     OutgoingInputEdges(ExecutableKey),
+    IncomingInputRelations(RootId),
     IncomingInputSlot(InputSlot),
     TransportShape(TransportPosition),
     TransportComponent(TransportPosition),
@@ -67,8 +71,11 @@ impl ProductKey {
             Self::AbiExecutable(_) => "abi_executable",
             Self::MaterializedExecutable(_) => "materialized_executable",
             Self::ExecutableEffects(_) => "executable_effects",
+            Self::ExecutableFacts(_) => "executable_facts",
             Self::RuntimeDemand(_) => "runtime_demand",
+            Self::OutgoingEdgeFrontier(_) => "outgoing_edge_frontier",
             Self::OutgoingInputEdges(_) => "outgoing_input_edges",
+            Self::IncomingInputRelations(_) => "incoming_input_relations",
             Self::IncomingInputSlot(_) => "incoming_input_slot",
             Self::TransportShape(_) => "transport_shape",
             Self::TransportComponent(_) => "transport_component",
@@ -84,10 +91,13 @@ impl ProductKey {
             | Self::AbiExecutable(executable)
             | Self::MaterializedExecutable(executable)
             | Self::ExecutableEffects(executable)
+            | Self::ExecutableFacts(executable)
             | Self::RuntimeDemand(executable)
             | Self::OutgoingInputEdges(executable) => Some(executable),
             Self::IncomingInputSlot(slot) => Some(&slot.executable),
             Self::RootBackendProduct(_)
+            | Self::OutgoingEdgeFrontier(_)
+            | Self::IncomingInputRelations(_)
             | Self::TransportShape(_)
             | Self::TransportComponent(_)
             | Self::CallableFacts(_)
@@ -134,8 +144,12 @@ pub enum ProductValue {
     AbiExecutable(Box<AbiReadyExecutable>),
     MaterializedExecutable(Box<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
+    ExecutableFacts(Rc<ExecutableFacts>),
     RuntimeDemand(Box<ExecutableRuntimeDemand>),
-    IncomingInputSlot(Box<[IncomingInputSource]>),
+    OutgoingEdgeFrontier(Rc<HashSet<ExecutableKey>>),
+    OutgoingInputEdges(Rc<HashMap<InputSlot, HashSet<IncomingInputSource>>>),
+    IncomingInputRelations(Rc<HashMap<InputSlot, HashSet<IncomingInputSource>>>),
+    IncomingInputSlot(HashSet<IncomingInputSource>),
     TransportShape(TransportShapeFact),
     TransportComponent(TransportComponentInventory),
     CallableFacts(Option<CallableFacts>),
@@ -256,28 +270,49 @@ impl PullOutcome {
 
 #[derive(Debug, Default)]
 pub struct ProductMemo {
-    produced: HashMap<ProductKey, ProductValue>,
-    displaced: HashMap<ProductKey, ProductValue>,
+    produced: HashMap<ProductKey, ProductEntry>,
+    displaced: HashMap<ProductKey, ProductEntry>,
+    pending_dependencies: HashMap<ProductKey, ProductDependencies>,
+    product_readers: HashMap<ProductKey, HashSet<ProductKey>>,
+    fact_readers: HashMap<FactKey, HashSet<ProductKey>>,
+    fact_stale_dependencies: HashMap<ProductKey, HashSet<FactKey>>,
+    dirty_descendants: HashSet<ProductKey>,
     in_progress: HashSet<ProductKey>,
     invalidated_in_progress: HashSet<ProductKey>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProductFinish {
-    settled: bool,
+#[derive(Debug, Clone, PartialEq)]
+struct ProductEntry {
+    value: ProductValue,
+    generation: u64,
+    dependencies: ProductDependencies,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ProductDependencies {
+    products: HashMap<ProductKey, Option<u64>>,
+    facts: HashMap<FactUse<FactKey>, FactState>,
 }
 
 impl ProductMemo {
     pub fn get(&self, key: &ProductKey) -> Option<&ProductValue> {
-        self.produced.get(key)
+        self.produced.get(key).map(|entry| &entry.value)
+    }
+
+    pub fn generation(&self, key: &ProductKey) -> Option<u64> {
+        self.produced.get(key).map(|entry| entry.generation)
     }
 
     pub fn contains_in_progress(&self, key: &ProductKey) -> bool {
         self.in_progress.contains(key)
     }
 
+    fn is_displaced(&self, key: &ProductKey) -> bool {
+        self.displaced.contains_key(key)
+    }
+
     pub fn runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
-        match self.produced.get(&ProductKey::RuntimeDemand(executable.clone())) {
+        match self.get(&ProductKey::RuntimeDemand(executable.clone())) {
             Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
             Some(
                 ProductValue::Unit
@@ -286,6 +321,10 @@ impl ProductMemo {
                 | ProductValue::AbiExecutable(_)
                 | ProductValue::MaterializedExecutable(_)
                 | ProductValue::ExecutableEffects(_)
+                | ProductValue::ExecutableFacts(_)
+                | ProductValue::OutgoingEdgeFrontier(_)
+                | ProductValue::OutgoingInputEdges(_)
+                | ProductValue::IncomingInputRelations(_)
                 | ProductValue::IncomingInputSlot(_)
                 | ProductValue::TransportShape(_)
                 | ProductValue::TransportComponent(_)
@@ -304,7 +343,7 @@ impl ProductMemo {
     /// `ProductKey::CodegenSeamFacts(root)`, exactly like `runtime_demand`
     /// above.
     pub fn codegen_seam_facts(&self, root: RootId) -> Option<&[CodegenSeamFact]> {
-        match self.produced.get(&ProductKey::CodegenSeamFacts(root)) {
+        match self.get(&ProductKey::CodegenSeamFacts(root)) {
             Some(ProductValue::CodegenSeamFacts(facts)) => Some(facts.as_ref()),
             Some(
                 ProductValue::Unit
@@ -313,7 +352,11 @@ impl ProductMemo {
                 | ProductValue::AbiExecutable(_)
                 | ProductValue::MaterializedExecutable(_)
                 | ProductValue::ExecutableEffects(_)
+                | ProductValue::ExecutableFacts(_)
                 | ProductValue::RuntimeDemand(_)
+                | ProductValue::OutgoingEdgeFrontier(_)
+                | ProductValue::OutgoingInputEdges(_)
+                | ProductValue::IncomingInputRelations(_)
                 | ProductValue::IncomingInputSlot(_)
                 | ProductValue::TransportShape(_)
                 | ProductValue::TransportComponent(_)
@@ -328,29 +371,220 @@ impl ProductMemo {
         self.in_progress.insert(key)
     }
 
-    fn finish(&mut self, key: &ProductKey, value: ProductValue) -> ProductFinish {
+    fn finish(&mut self, key: &ProductKey, value: ProductValue, dependencies: ProductDependencies) -> bool {
         self.in_progress.remove(key);
         if self.invalidated_in_progress.remove(key) {
             self.produced.remove(key);
-            return ProductFinish { settled: false };
+            return false;
         }
-        self.displaced.remove(key);
-        self.produced.insert(key.clone(), value);
-        ProductFinish { settled: true }
+        let previous = self.produced.remove(key).or_else(|| self.displaced.remove(key));
+        self.remove_reader_dependencies(key, previous.as_ref().map(|entry| &entry.dependencies));
+        let pending = self.pending_dependencies.remove(key);
+        self.remove_reader_dependencies(key, pending.as_ref());
+        let changed = previous.as_ref().is_none_or(|entry| entry.value != value);
+        let generation = previous.as_ref().map_or(1, |entry| {
+            if changed {
+                entry.generation + 1
+            } else {
+                entry.generation
+            }
+        });
+        self.install_reader_dependencies(key, &dependencies);
+        self.fact_stale_dependencies.remove(key);
+        self.dirty_descendants.remove(key);
+        self.produced.insert(
+            key.clone(),
+            ProductEntry {
+                value,
+                generation,
+                dependencies,
+            },
+        );
+        if changed {
+            self.invalidate_readers(key);
+        } else {
+            self.refresh_reader_dirtiness(key);
+        }
+        true
     }
 
-    fn unblock(&mut self, key: &ProductKey) {
+    fn unblock(&mut self, key: &ProductKey, dependencies: ProductDependencies) {
         self.in_progress.remove(key);
         self.invalidated_in_progress.remove(key);
+        let previous = self.pending_dependencies.remove(key).unwrap_or_default();
+        self.remove_reader_dependencies(key, Some(&previous));
+        let mut retained = previous;
+        retained.products.extend(dependencies.products);
+        retained.facts.extend(dependencies.facts);
+        self.install_reader_dependencies(key, &retained);
+        self.pending_dependencies.insert(key.clone(), retained);
     }
 
     fn remove(&mut self, key: &ProductKey) {
+        self.displace_for_reproduction(key);
+    }
+
+    fn displace_for_reproduction(&mut self, key: &ProductKey) {
         if self.in_progress.contains(key) {
             self.invalidated_in_progress.insert(key.clone());
         }
-        if let Some(value) = self.produced.remove(key) {
-            self.displaced.insert(key.clone(), value);
+        if let Some(entry) = self.produced.remove(key) {
+            self.remove_reader_dependencies(key, Some(&entry.dependencies));
+            self.displaced.insert(key.clone(), entry);
+            self.mark_readers_dirty(key);
         }
+    }
+
+    fn prepare_stale_for_reproduction(&mut self, key: &ProductKey) {
+        self.fact_stale_dependencies.remove(key);
+        self.displace_for_reproduction(key);
+    }
+
+    fn install_reader_dependencies(&mut self, reader: &ProductKey, dependencies: &ProductDependencies) {
+        for dependency in dependencies.products.keys() {
+            if dependency != reader {
+                self.product_readers
+                    .entry(dependency.clone())
+                    .or_default()
+                    .insert(reader.clone());
+            }
+        }
+        for fact in dependencies.facts.keys() {
+            self.fact_readers
+                .entry(fact.fact().clone())
+                .or_default()
+                .insert(reader.clone());
+        }
+    }
+
+    fn remove_reader_dependencies(&mut self, reader: &ProductKey, dependencies: Option<&ProductDependencies>) {
+        let Some(dependencies) = dependencies else {
+            return;
+        };
+        for dependency in dependencies.products.keys() {
+            let remove_entry = self.product_readers.get_mut(dependency).is_some_and(|readers| {
+                readers.remove(reader);
+                readers.is_empty()
+            });
+            if remove_entry {
+                self.product_readers.remove(dependency);
+            }
+        }
+        for fact in dependencies.facts.keys() {
+            let remove_entry = self.fact_readers.get_mut(fact.fact()).is_some_and(|readers| {
+                readers.remove(reader);
+                readers.is_empty()
+            });
+            if remove_entry {
+                self.fact_readers.remove(fact.fact());
+            }
+        }
+    }
+
+    fn invalidate_readers(&mut self, key: &ProductKey) {
+        let readers = self.product_readers.get(key).cloned().unwrap_or_default();
+        for reader in readers {
+            self.displace_for_reproduction(&reader);
+        }
+    }
+
+    fn reconcile_fact_movements(&mut self, pending: &HashMap<FactKey, FactState>) {
+        for (fact_key, final_state) in pending {
+            let readers = self.fact_readers.get(fact_key).cloned().unwrap_or_default();
+            for reader in readers {
+                let stale = self.produced.get(&reader).is_some_and(|entry| {
+                    entry
+                        .dependencies
+                        .facts
+                        .iter()
+                        .any(|(fact, recorded)| fact.fact() == fact_key && final_state.projected(fact) != *recorded)
+                });
+                let was_stale = self.fact_stale_dependencies.contains_key(&reader);
+                if stale {
+                    self.fact_stale_dependencies
+                        .entry(reader.clone())
+                        .or_default()
+                        .insert(fact_key.clone());
+                } else if let Some(stale_facts) = self.fact_stale_dependencies.get_mut(&reader) {
+                    stale_facts.remove(fact_key);
+                    if stale_facts.is_empty() {
+                        self.fact_stale_dependencies.remove(&reader);
+                    }
+                }
+                let is_stale = self.fact_stale_dependencies.contains_key(&reader);
+                if !was_stale && is_stale {
+                    self.mark_readers_dirty(&reader);
+                } else if was_stale && !is_stale {
+                    self.refresh_reader_dirtiness(&reader);
+                }
+            }
+        }
+    }
+
+    fn mark_readers_dirty(&mut self, key: &ProductKey) {
+        let readers = self.product_readers.get(key).cloned().unwrap_or_default();
+        for reader in readers {
+            if self.dirty_descendants.insert(reader.clone()) {
+                self.mark_readers_dirty(&reader);
+            }
+        }
+    }
+
+    fn refresh_reader_dirtiness(&mut self, key: &ProductKey) {
+        let readers = self.product_readers.get(key).cloned().unwrap_or_default();
+        for reader in readers {
+            let dirty = self.produced.get(&reader).is_some_and(|entry| {
+                entry.dependencies.products.keys().any(|dependency| {
+                    self.displaced.contains_key(dependency)
+                        || self.fact_stale_dependencies.contains_key(dependency)
+                        || self.dirty_descendants.contains(dependency)
+                })
+            });
+            if dirty {
+                self.dirty_descendants.insert(reader.clone());
+            } else if self.dirty_descendants.remove(&reader) {
+                self.refresh_reader_dirtiness(&reader);
+            }
+        }
+    }
+
+    fn stale_dependency(&self, key: &ProductKey) -> Option<ProductKey> {
+        self.stale_dependency_inner(key, &mut HashSet::new())
+    }
+
+    fn stale_dependency_inner(&self, key: &ProductKey, visiting: &mut HashSet<ProductKey>) -> Option<ProductKey> {
+        if self.fact_stale_dependencies.contains_key(key) {
+            return Some(key.clone());
+        }
+        if self.displaced.contains_key(key) {
+            return Some(key.clone());
+        }
+        if !self.dirty_descendants.contains(key) {
+            return None;
+        }
+        let entry = self.produced.get(key)?;
+        if !visiting.insert(key.clone()) {
+            return Some(key.clone());
+        }
+        for (dependency, generation) in &entry.dependencies.products {
+            let current = self.produced.get(dependency).map(|entry| entry.generation);
+            if current != *generation {
+                visiting.remove(key);
+                return Some(if current.is_none() {
+                    dependency.clone()
+                } else {
+                    key.clone()
+                });
+            }
+            if generation.is_some()
+                && let Some(stale) = self.stale_dependency_inner(dependency, visiting)
+            {
+                visiting.remove(key);
+                return Some(stale);
+            }
+        }
+        visiting.remove(key);
+        None
     }
 }
 
@@ -368,14 +602,6 @@ pub enum IncomingInputRole {
         construction: ValueId,
         capture_index: usize,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DemandedCallEdge {
-    pub caller: ExecutableKey,
-    pub callsite: Option<CallSiteId>,
-    pub callee: ExecutableKey,
-    pub inputs: Vec<(usize, IncomingInputSource)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,32 +624,20 @@ pub struct SolvedTransportComponent {
 }
 
 /// The full result of ONE shape-constraint solve over a settled executable
-/// closure: every connected component, indexed by member position, plus the
-/// executable cover the solve projected. A position of a covered executable
-/// that is absent from `component_of` was proven unconstrained by this same
-/// solve -- it needs a singleton component, not a re-solve.
+/// closure: every connected component indexed by member position, the exact
+/// boundary-publication positions it derived, and the executable cover it
+/// projected. A position of a covered executable that is absent from
+/// `component_of` was proven unconstrained by this same solve -- it needs a
+/// singleton component, not a re-solve.
 #[derive(Debug, Default)]
 pub struct SolvedTransportClosure {
     pub executables: HashSet<ExecutableKey>,
     pub component_of: HashMap<TransportPosition, usize>,
     pub components: Vec<SolvedTransportComponent>,
-    /// Every WORLD fact the solve consumed, at the revision it read (0 = the
-    /// fact had never been published when the solve read through its
-    /// accessor). Session-product reads travel the push channel
-    /// (`record_settled_runtime_demand`/`record_call_edge` reach the consult
-    /// ledger); world facts have no push into the session, so a recorded
-    /// solve must be revision-validated against this snapshot before it
-    /// answers a pull -- see `covering_solve_consumed_revisions` and the
-    /// freshness gate in `jobs::transport`.
-    pub consumed_fact_revisions: HashMap<FactKey, u64>,
-    /// Owners of SESSION-product reads (`ClosureConsultLedger::executables`
-    /// in `jobs::transport`) this solve consulted while discovering
-    /// `executables`. Installed into the session's
-    /// `transport_closure_consult_dependents` ledger as the dense product
-    /// `consulted x executables` (see `record_solved_transport_closure`) and
-    /// retracted as that SAME product the moment this closure is dropped
-    /// (`drop_solved_transport_closure`) -- the ledger tracks exactly the
-    /// live closure's discovery graph, never a union of historical solves.
+    pub(crate) boundary_publications: HashSet<TransportPosition>,
+    /// Settled world facts consumed by the solve at their exact states.
+    pub consumed_fact_states: HashMap<FactKey, FactState>,
+    /// Session-product owners consulted while discovering the closure.
     pub consulted: HashSet<ExecutableKey>,
 }
 
@@ -431,9 +645,8 @@ pub struct SolvedTransportClosure {
 pub struct PullSession {
     root: RootId,
     memo: ProductMemo,
+    outgoing_edge_request_set: HashSet<ExecutableKey>,
     demanded_executables: HashSet<ExecutableKey>,
-    call_edges: HashMap<ExecutableKey, Vec<DemandedCallEdge>>,
-    incoming_inputs: HashMap<InputSlot, Vec<IncomingInputSource>>,
     runtime_demand_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     // Reverse callable-flow demand edges `resolution -> producers`, kept apart
     // from `runtime_demand_dependents` (direct callsite reads) so the
@@ -447,10 +660,6 @@ pub struct PullSession {
     // path that retracts settled demand, mirroring how the effect projection
     // gate re-settles effects.
     settled_demand_callees: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // Collected demand-cone facts, validated at read against the exact world
-    // fact revisions each entry consumed (see `DemandFactsCache`); no
-    // invalidation channel is needed, so no other session state touches it.
-    demand_facts: DemandFactsCache,
     // The effect-relevant projection (local effect summary + local callee
     // set) of the latest materialized executable recorded per key. Effect
     // products are invalidated only when this projection moves; re-derived
@@ -489,8 +698,6 @@ pub struct PullSession {
     input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
     materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
-    materialized_world_revisions: HashMap<ExecutableKey, [u64; 3]>,
-    root_artifact_revisions: HashMap<RootId, u64>,
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
     abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
     backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
@@ -515,44 +722,14 @@ pub struct PullSession {
     transport_shapes: HashMap<TransportPosition, ShapeId>,
     transport_shapes_by_symbol: HashMap<ExecutableSymbol, HashSet<TransportPosition>>,
     transport_components: HashMap<TransportPosition, TransportComponentInventory>,
-    // Solved-closure inventory: each shape-constraint solve records every
-    // component it computed, keyed by a session-unique closure id, with
-    // `transport_closure_cover` mapping each projected executable to the solve
-    // that covered it. Closures are valid for exactly one transport-graph
-    // EPOCH: any transport invalidation (a settled-demand change, a new
-    // incoming call edge) clears the whole inventory, so a cover can never
-    // answer from a graph the movement outgrew -- the same events that
-    // displaced per-anchor memos before, now displacing the shared solve.
-    // Within an epoch closures are kept disjoint: recording a solve drops any
-    // prior solve sharing a member.
+    // Live solved closures and the exact reverse indexes for their member,
+    // world-fact, and session-product ownership.
     solved_transport_closures: HashMap<u64, SolvedTransportClosure>,
     transport_closure_cover: HashMap<ExecutableKey, u64>,
+    transport_closure_fact_dependents: HashMap<FactKey, HashSet<u64>>,
     transport_closure_counter: u64,
-    // Reverse consulted-facts edges `consulted -> members`: every closure
-    // solve that reads a session-channel fact (a RuntimeDemand product and
-    // its callable_flows, or an IncomingInputSlot) belonging to `consulted`
-    // installs every member of the resulting closure here, as the dense
-    // product `SolvedTransportClosure::consulted x SolvedTransportClosure::
-    // executables` (see `record_solved_transport_closure`).
-    // `invalidate_transport_products` walks this index transitively so that
-    // ANY invalidation reaching a consulted executable also reaches every
-    // closure that consulted it -- the discovery graph a closure solve reads
-    // and the invalidation graph that retracts stale products are the SAME
-    // graph by construction, not two independently-maintained channels that
-    // can drift out of step with the pull schedule. World facts (activation
-    // analyses, callsite summaries, lowered bodies, return types) have no
-    // push into the session; their movement is caught by the solve's
-    // revision snapshot (`SolvedTransportClosure::consumed_fact_revisions`),
-    // validated whenever a recorded solve answers a pull.
-    //
-    // LIFETIME: kept in lockstep with `solved_transport_closures` -- a
-    // closure installs its edges exactly when it enters the cover
-    // (`record_solved_transport_closure`) and every one of those edges is
-    // retracted exactly when the closure leaves the cover
-    // (`drop_solved_transport_closure`, including the displacement path and
-    // the epoch-wide `clear_solved_transport_closures` sweep). The ledger
-    // therefore always reflects the LIVE closures' discovery graph, never an
-    // accumulation of historical solves whose membership has since moved.
+    // Session-product owner -> covered members. Entries are installed and
+    // retracted with the closure that owns them.
     transport_closure_consult_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
     callable_facts: HashMap<CallableId, CallableFacts>,
@@ -568,6 +745,7 @@ pub struct PullSession {
     /// itself never touches `World`). `unsanctioned_work_starts()` must be zero
     /// on every production-driven path; see `WorkStartReason::Unclassified`.
     work_starts: WorkStartTally,
+    pending_fact_states: HashMap<FactKey, FactState>,
 }
 
 impl PullSession {
@@ -575,13 +753,11 @@ impl PullSession {
         Self {
             root,
             memo: ProductMemo::default(),
+            outgoing_edge_request_set: HashSet::new(),
             demanded_executables: HashSet::new(),
-            call_edges: HashMap::new(),
-            incoming_inputs: HashMap::new(),
             runtime_demand_dependents: HashMap::new(),
             demand_flow_dependents: HashMap::new(),
             settled_demand_callees: HashMap::new(),
-            demand_facts: DemandFactsCache::default(),
             latest_effect_inputs: HashMap::new(),
             effect_dependents: HashMap::new(),
             return_demand_contributions: HashMap::new(),
@@ -591,8 +767,6 @@ impl PullSession {
             input_demand_contributors: HashMap::new(),
             input_demands: HashMap::new(),
             materialized_executables: HashMap::new(),
-            materialized_world_revisions: HashMap::new(),
-            root_artifact_revisions: HashMap::new(),
             executable_effects: HashMap::new(),
             abi_executables: HashMap::new(),
             backend_executables: HashMap::new(),
@@ -605,6 +779,7 @@ impl PullSession {
             transport_components: HashMap::new(),
             solved_transport_closures: HashMap::new(),
             transport_closure_cover: HashMap::new(),
+            transport_closure_fact_dependents: HashMap::new(),
             transport_closure_counter: 0,
             transport_closure_consult_dependents: HashMap::new(),
             transport_positions_by_executable: HashMap::new(),
@@ -616,11 +791,16 @@ impl PullSession {
             executable_index: HashMap::new(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
+            pending_fact_states: HashMap::new(),
         }
     }
 
     pub fn root(&self) -> RootId {
         self.root
+    }
+
+    fn outgoing_edge_requests(&self) -> &HashSet<ExecutableKey> {
+        &self.outgoing_edge_request_set
     }
 
     pub fn memo(&self) -> &ProductMemo {
@@ -633,14 +813,6 @@ impl PullSession {
 
     pub fn demanded_executables(&self) -> &HashSet<ExecutableKey> {
         &self.demanded_executables
-    }
-
-    pub fn call_edges(&self, caller: &ExecutableKey) -> &[DemandedCallEdge] {
-        self.call_edges.get(caller).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    pub fn incoming_input_sources(&self, slot: &InputSlot) -> &[IncomingInputSource] {
-        self.incoming_inputs.get(slot).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn record_runtime_demand_dependency(&mut self, dependency: ExecutableKey, dependent: ExecutableKey) {
@@ -672,17 +844,22 @@ impl PullSession {
     /// member's value invalidates the member's transport and artifact products
     /// (they consumed the displaced demand); an unchanged re-settle leaves them
     /// standing.
+    #[cfg(test)]
     pub fn record_settled_runtime_demand(&mut self, executable: ExecutableKey, demand: ExecutableRuntimeDemand) {
         let key = ProductKey::RuntimeDemand(executable.clone());
         let previous = match self.memo.produced.get(&key).or_else(|| self.memo.displaced.get(&key)) {
-            Some(ProductValue::RuntimeDemand(previous)) => Some(previous.as_ref().clone()),
+            Some(ProductEntry {
+                value: ProductValue::RuntimeDemand(previous),
+                ..
+            }) => Some(previous.as_ref().clone()),
             _ => None,
         };
         let changed = previous.is_some_and(|previous| previous != demand);
-        self.memo.displaced.remove(&key);
-        self.memo
-            .produced
-            .insert(key, ProductValue::RuntimeDemand(Box::new(demand)));
+        self.memo.finish(
+            &key,
+            ProductValue::RuntimeDemand(Box::new(demand)),
+            ProductDependencies::default(),
+        );
         if changed {
             // Artifact products displace inside the transport walk
             // (`invalidate_transport_products` owns them for every reached
@@ -702,12 +879,6 @@ impl PullSession {
     /// fact source for demand-cone discovery.
     pub fn settled_demand_callees(&self, executable: &ExecutableKey) -> Option<&HashSet<ExecutableKey>> {
         self.settled_demand_callees.get(executable)
-    }
-
-    /// The session's collected demand-cone facts store, revision-validated at
-    /// read by its owner (`collect_one_executable_facts_product`).
-    pub(crate) fn demand_facts_mut(&mut self) -> &mut DemandFactsCache {
-        &mut self.demand_facts
     }
 
     /// The joined return demand contributed to `target` by settled contributors
@@ -772,31 +943,6 @@ impl PullSession {
 
     pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&MaterializedExecutable> {
         self.materialized_executables.get(executable)
-    }
-
-    pub fn materialized_executable_is_fresh(&self, executable: &ExecutableKey, revisions: [u64; 3]) -> bool {
-        self.materialized_world_revisions.get(executable) == Some(&revisions)
-    }
-
-    pub fn record_materialized_executable_revisions(&mut self, executable: ExecutableKey, revisions: [u64; 3]) {
-        self.materialized_world_revisions.insert(executable, revisions);
-    }
-
-    fn root_artifacts_are_fresh(&self, root: RootId, revision: u64) -> bool {
-        self.root_artifact_revisions.get(&root) == Some(&revision)
-    }
-
-    fn record_root_artifact_revision(&mut self, root: RootId, revision: u64) {
-        self.root_artifact_revisions.insert(root, revision);
-    }
-
-    fn invalidate_root_artifact_products(&mut self, root: RootId) {
-        self.memo.remove(&ProductKey::RootBackendProduct(root));
-        self.root_artifact_revisions.remove(&root);
-        let executables = self.demanded_executables.iter().cloned().collect::<Vec<_>>();
-        for executable in executables {
-            self.invalidate_artifact_products(&executable);
-        }
     }
 
     pub fn invalidate_artifact_products_for(&mut self, executable: &ExecutableKey) {
@@ -900,6 +1046,17 @@ impl PullSession {
             .map(|index| &closure.components[*index])
     }
 
+    pub(crate) fn solved_transport_closure_publishes(
+        &self,
+        executable: &ExecutableKey,
+        position: &TransportPosition,
+    ) -> bool {
+        self.transport_closure_cover
+            .get(executable)
+            .and_then(|id| self.solved_transport_closures.get(id))
+            .is_some_and(|closure| closure.boundary_publications.contains(position))
+    }
+
     pub fn callable_facts(&self, callable: CallableId) -> Option<&CallableFacts> {
         self.callable_facts.get(&callable)
     }
@@ -950,32 +1107,6 @@ impl PullSession {
     /// `World` reference).
     pub fn record_work_starts(&mut self, tally: WorkStartTally) {
         self.work_starts = tally;
-    }
-
-    pub fn record_call_edge(&mut self, edge: DemandedCallEdge) {
-        self.demanded_executables.insert(edge.caller.clone());
-        self.demanded_executables.insert(edge.callee.clone());
-        let mut changed = false;
-        for (semantic_index, source) in &edge.inputs {
-            let slot = InputSlot {
-                executable: edge.callee.clone(),
-                semantic_index: *semantic_index,
-            };
-            let slot_changed = push_unique(self.incoming_inputs.entry(slot.clone()).or_default(), source.clone());
-            if slot_changed {
-                self.memo.remove(&ProductKey::IncomingInputSlot(slot));
-            }
-            changed |= slot_changed;
-        }
-        let edges = self.call_edges.entry(edge.caller.clone()).or_default();
-        changed |= push_unique(edges, edge.clone());
-        if changed {
-            // A new incoming edge feeds the callee's input SLOTS -- a transport
-            // input, not a demand input (the demand cone derives its edges from
-            // settled facts, not from this session inventory), so settled
-            // demand stands and only shape-consuming products re-derive.
-            self.invalidate_edge_derived_products(&edge.callee);
-        }
     }
 
     pub fn record_producer_pokes(&mut self, count: u64) {
@@ -1312,7 +1443,7 @@ impl PullSession {
         }
     }
 
-    /// Record the full result of one shape-constraint solve. Within the epoch,
+    /// Record the full result of one shape-constraint solve. While live,
     /// closures stay disjoint by construction: any prior closure sharing a
     /// member executable is dropped whole -- cover AND consult edges -- before
     /// the new cover and its own consult edges are installed.
@@ -1330,6 +1461,12 @@ impl PullSession {
         for member in &closure.executables {
             self.transport_closure_cover.insert(member.clone(), id);
         }
+        for fact in closure.consumed_fact_states.keys() {
+            self.transport_closure_fact_dependents
+                .entry(fact.clone())
+                .or_default()
+                .insert(id);
+        }
         self.insert_transport_closure_consult_edges(&closure);
         self.solved_transport_closures.insert(id, closure);
     }
@@ -1343,28 +1480,19 @@ impl PullSession {
                 self.transport_closure_cover.remove(member);
             }
         }
+        for fact in closure.consumed_fact_states.keys() {
+            let remove_entry = self
+                .transport_closure_fact_dependents
+                .get_mut(fact)
+                .is_some_and(|closures| {
+                    closures.remove(&id);
+                    closures.is_empty()
+                });
+            if remove_entry {
+                self.transport_closure_fact_dependents.remove(fact);
+            }
+        }
         self.remove_transport_closure_consult_edges(&closure);
-    }
-
-    /// The transport-graph EPOCH boundary: a solve input moved somewhere, so
-    /// every recorded solve is displaced at once. Product-visible inventories
-    /// (shapes, produced components) stand -- exactly the products the
-    /// pre-movement graph already answered -- and are displaced separately by
-    /// the targeted product invalidation walks.
-    ///
-    /// Consult edges are NOT retracted here: the caller
-    /// (`invalidate_transport_products`) still needs
-    /// `transport_closure_consult_dependents` intact to walk from the moved
-    /// executable to every closure that consulted it. The drained closures
-    /// are handed back so the caller can retract their edges once that walk
-    /// has finished -- deferred pruning, not skipped pruning.
-    #[must_use]
-    fn clear_solved_transport_closures(&mut self) -> Vec<SolvedTransportClosure> {
-        self.transport_closure_cover.clear();
-        self.solved_transport_closures
-            .drain()
-            .map(|(_, closure)| closure)
-            .collect()
     }
 
     pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
@@ -1437,20 +1565,6 @@ impl PullSession {
         self.transport_closure_cover.get(executable).copied()
     }
 
-    /// The world-fact revision snapshot of the solve covering `executable`,
-    /// if a recorded solve covers it. Serving paths compare this snapshot to
-    /// the world's current revisions before trusting the solve: world facts
-    /// never push into the session, so read-time validation is their only
-    /// retraction channel (the same discipline `DemandFactsCache` applies to
-    /// demand-cone facts).
-    pub(crate) fn covering_solve_consumed_revisions(
-        &self,
-        executable: &ExecutableKey,
-    ) -> Option<&HashMap<FactKey, u64>> {
-        let id = self.transport_closure_cover.get(executable)?;
-        Some(&self.solved_transport_closures.get(id)?.consumed_fact_revisions)
-    }
-
     /// Displace the transport products derived from the (stale) solve
     /// covering `executable`: the full invalidation walk, so every member the
     /// solve consulted loses its shape/component/artifact products and the
@@ -1458,6 +1572,41 @@ impl PullSession {
     /// conservative-correct; a member left standing is the stale-verdict bug.
     pub(crate) fn displace_transport_closure_for(&mut self, executable: &ExecutableKey) {
         self.invalidate_transport_products(executable);
+    }
+
+    fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
+        for movement in movements {
+            self.pending_fact_states.insert(movement.key.clone(), movement.state);
+        }
+    }
+
+    fn reconcile_fact_movements(&mut self) {
+        let pending = std::mem::take(&mut self.pending_fact_states);
+        let mut stale_closures = HashSet::new();
+        for (fact, state) in &pending {
+            let Some(dependents) = self.transport_closure_fact_dependents.get(fact) else {
+                continue;
+            };
+            for id in dependents {
+                let consumed = self
+                    .solved_transport_closures
+                    .get(id)
+                    .and_then(|closure| closure.consumed_fact_states.get(fact))
+                    .copied();
+                if consumed != Some(*state) {
+                    stale_closures.insert(*id);
+                }
+            }
+        }
+        let stale_transport = stale_closures
+            .iter()
+            .filter_map(|id| self.solved_transport_closures.get(id))
+            .filter_map(|closure| closure.executables.iter().next().cloned())
+            .collect::<Vec<_>>();
+        for executable in stale_transport {
+            self.displace_transport_closure_for(&executable);
+        }
+        self.memo.reconcile_fact_movements(&pending);
     }
 
     /// The SOLE insertion point into `transport_shapes`: keeps the by-symbol
@@ -1560,30 +1709,10 @@ impl PullSession {
         seen
     }
 
-    /// New incoming call edges change transport inputs, never settled demand:
-    /// wipe the shape/artifact products of the callee and its transitive
-    /// demand readers, leaving every RuntimeDemand memo standing.
-    fn invalidate_edge_derived_products(&mut self, executable: &ExecutableKey) {
-        let mut stack = vec![executable.clone()];
-        let mut seen = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            // The transport walk artifact-invalidates every node it reaches,
-            // `current` included -- no separate artifact wipe is needed here.
-            self.invalidate_transport_products(&current);
-            if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
-                stack.extend(dependents);
-            }
-        }
-    }
-
     fn discard_product_side_effects(&mut self, key: &ProductKey) {
         match key {
             ProductKey::MaterializedExecutable(executable) => {
                 self.materialized_executables.remove(executable);
-                self.materialized_world_revisions.remove(executable);
             }
             ProductKey::ExecutableEffects(executable) => {
                 self.executable_effects.remove(executable);
@@ -1595,15 +1724,22 @@ impl PullSession {
                 self.backend_executables.remove(executable);
             }
             ProductKey::TransportShape(position) => {
-                self.transport_shape_facts.remove(position);
-                self.remove_transport_shape(position);
+                if matches!(
+                    self.transport_shape_facts.get(position),
+                    Some(TransportShapeFact::AbsentForClosure(_))
+                ) {
+                    self.transport_shape_facts.remove(position);
+                }
             }
             ProductKey::TransportComponent(position) => {
                 self.transport_components.remove(position);
             }
             ProductKey::RootBackendProduct(_)
+            | ProductKey::ExecutableFacts(_)
             | ProductKey::RuntimeDemand(_)
+            | ProductKey::OutgoingEdgeFrontier(_)
             | ProductKey::OutgoingInputEdges(_)
+            | ProductKey::IncomingInputRelations(_)
             | ProductKey::IncomingInputSlot(_)
             | ProductKey::CallableFacts(_)
             | ProductKey::BoundaryFacts(_)
@@ -1617,7 +1753,6 @@ impl PullSession {
         self.memo.remove(&ProductKey::AbiExecutable(executable.clone()));
         self.memo.remove(&ProductKey::BackendExecutable(executable.clone()));
         self.materialized_executables.remove(executable);
-        self.materialized_world_revisions.remove(executable);
         self.abi_executables.remove(executable);
         self.backend_executables.remove(executable);
     }
@@ -1678,51 +1813,35 @@ impl PullSession {
         }
     }
 
-    /// The transport-graph EPOCH boundary, extended to the consulted-facts
-    /// ledger: a movement at `executable` displaces every recorded solve
-    /// (`clear_solved_transport_closures`), `executable`'s own shape/component
-    /// products, AND -- transitively, via `transport_closure_consult_dependents`
-    /// -- every closure member whose solve consulted `executable`'s facts even
-    /// when that member never became a `runtime_demand_dependents`/
-    /// `demand_flow_dependents` edge of `executable`. This is what closes the
-    /// premature-absent hole: the discovery graph a closure solve reads and
-    /// this invalidation graph are the SAME graph by construction, so a stale
-    /// verdict can never survive the movement of a fact it was read from.
-    ///
-    /// The consult ledger itself is pruned AFTER the walk below finishes
-    /// reading it (see `clear_solved_transport_closures`): every closure this
-    /// movement displaces is drained up front, walked from as before, and
-    /// only then has its consult edges retracted -- so a closure that gets
-    /// re-solved later with different membership does not leave this
-    /// movement's edges standing forever.
     fn invalidate_transport_products(&mut self, executable: &ExecutableKey) {
-        let displaced_closures = self.clear_solved_transport_closures();
         let mut stack = vec![executable.clone()];
         let mut seen = HashSet::new();
         while let Some(current) = stack.pop() {
             if !seen.insert(current.clone()) {
                 continue;
             }
-            self.invalidate_transport_products_for_one(&current);
-            // This walk OWNS artifact invalidation for every node it reaches
-            // (callers do not double-invalidate): a consult-only member has
-            // no other path back to its artifact products, and without this
-            // its cleared transport positions would never be re-demanded --
-            // the stale MaterializedExecutable/AbiExecutable/BackendExecutable
-            // would keep answering from the pre-movement transport, so the
-            // cleared position would simply vanish instead of re-deriving.
-            self.invalidate_artifact_products(&current);
+            let mut closure_ids = HashSet::new();
+            if let Some(id) = self.transport_closure_cover.get(&current) {
+                closure_ids.insert(*id);
+            }
             if let Some(dependents) = self.transport_closure_consult_dependents.get(&current) {
-                stack.extend(
+                closure_ids.extend(
                     dependents
                         .iter()
-                        .filter(|dependent| !seen.contains(*dependent))
-                        .cloned(),
+                        .filter_map(|dependent| self.transport_closure_cover.get(dependent).copied()),
                 );
             }
-        }
-        for closure in &displaced_closures {
-            self.remove_transport_closure_consult_edges(closure);
+            let displaced_members = closure_ids
+                .iter()
+                .filter_map(|id| self.solved_transport_closures.get(id))
+                .flat_map(|closure| closure.executables.iter().cloned())
+                .collect::<HashSet<_>>();
+            for id in closure_ids {
+                self.drop_solved_transport_closure(id);
+            }
+            stack.extend(displaced_members);
+            self.invalidate_transport_products_for_one(&current);
+            self.invalidate_artifact_products(&current);
         }
     }
 
@@ -1756,6 +1875,11 @@ impl PullSession {
     }
 
     fn note_product_request(&mut self, key: &ProductKey) {
+        if let ProductKey::OutgoingInputEdges(executable) = key
+            && self.outgoing_edge_request_set.insert(executable.clone())
+        {
+            self.memo.remove(&ProductKey::OutgoingEdgeFrontier(self.root));
+        }
         if let Some(executable) = key.executable() {
             self.demanded_executables.insert(executable.clone());
         }
@@ -1788,49 +1912,159 @@ fn effect_relevant_inputs(materialized: &MaterializedExecutable) -> (EffectSumma
     (materialized.effects, callees)
 }
 
-fn push_unique<T>(items: &mut Vec<T>, value: T) -> bool
-where
-    T: PartialEq,
-{
-    if !items.contains(&value) {
-        items.push(value);
-        true
-    } else {
-        false
+pub struct ProductReadContext<'s> {
+    session: &'s mut PullSession,
+    dependencies: ProductDependencies,
+}
+
+impl<'s> ProductReadContext<'s> {
+    pub(crate) fn new(session: &'s mut PullSession) -> Self {
+        Self {
+            session,
+            dependencies: ProductDependencies::default(),
+        }
+    }
+
+    pub fn read_product(&mut self, key: ProductKey) -> Option<&ProductValue> {
+        self.read_product_entry(key)
+    }
+
+    fn read_product_entry(&mut self, key: ProductKey) -> Option<&ProductValue> {
+        if let Some(stale) = self.session.memo.stale_dependency(&key) {
+            self.session.memo.prepare_stale_for_reproduction(&stale);
+            let generation = self.session.memo.generation(&key);
+            self.dependencies.products.insert(key, generation);
+            return None;
+        }
+        let generation = self.session.memo.generation(&key);
+        self.dependencies.products.insert(key.clone(), generation);
+        self.session.memo.get(&key)
+    }
+
+    pub fn read_runtime_demand(&mut self, executable: &ExecutableKey) -> Option<ExecutableRuntimeDemand> {
+        match self.read_product(ProductKey::RuntimeDemand(executable.clone())) {
+            Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref().clone()),
+            Some(other) => panic!("runtime demand product produced unexpected value {other:?}"),
+            None => None,
+        }
+    }
+
+    pub(crate) fn read_executable_facts(&mut self, executable: &ExecutableKey) -> Option<Rc<ExecutableFacts>> {
+        match self.read_product(ProductKey::ExecutableFacts(executable.clone())) {
+            Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
+            Some(other) => panic!("executable facts product produced unexpected value {other:?}"),
+            None => None,
+        }
+    }
+
+    pub fn read_codegen_seam_facts(&mut self, root: RootId) -> Option<Box<[CodegenSeamFact]>> {
+        match self.read_product(ProductKey::CodegenSeamFacts(root)) {
+            Some(ProductValue::CodegenSeamFacts(facts)) => Some(facts.clone()),
+            Some(other) => panic!("codegen seam facts product produced unexpected value {other:?}"),
+            None => None,
+        }
+    }
+
+    pub fn read_fact(&mut self, world: &World, fact: FactUse<FactKey>) -> bool {
+        let state = FactState {
+            revision: match &fact {
+                FactUse::SettledPresence(_) => None,
+                _ => world.fact_revision(fact.fact()),
+            },
+            settled: match &fact {
+                FactUse::Current(_) => false,
+                _ => world.fact_is_settled(fact.fact()),
+            },
+        };
+        let ready = match fact.readiness() {
+            super::facts::FactReadiness::Current => state.revision.is_some(),
+            super::facts::FactReadiness::Settled => state.settled,
+        };
+        self.dependencies.facts.insert(fact, state);
+        ready
+    }
+
+    #[cfg(test)]
+    fn record_fact_state(&mut self, fact: FactUse<FactKey>, state: FactState) {
+        self.dependencies.facts.insert(fact, state);
+    }
+
+    pub(crate) fn publish_product(&mut self, key: ProductKey, value: ProductValue) {
+        self.session.memo.finish(&key, value, self.dependencies.clone());
+    }
+
+    pub(crate) fn remove_product_dependencies(&mut self, dependencies: impl IntoIterator<Item = ProductKey>) {
+        for dependency in dependencies {
+            self.dependencies.products.remove(&dependency);
+        }
+    }
+
+    pub fn session(&self) -> &PullSession {
+        self.session
+    }
+
+    pub fn session_mut(&mut self) -> &mut PullSession {
+        self.session
+    }
+
+    fn into_dependencies(self) -> ProductDependencies {
+        self.dependencies
     }
 }
 
 pub trait ProductProducers {
-    fn transport_executable(&mut self, _root: RootId, _position: &TransportPosition) -> Option<ExecutableKey> {
-        None
-    }
-
-    fn fact_revision(&mut self, _fact: &FactKey) -> u64 {
-        0
-    }
-
-    fn root_artifact_revision(&mut self, _root: RootId) -> Option<u64> {
-        None
-    }
-
-    fn executable_artifact_revisions(&mut self, _executable: &ExecutableKey) -> Option<[u64; 3]> {
-        None
-    }
-
-    fn produce_root_backend_product(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome;
-    fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_abi_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_materialized_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey)
-    -> PullOutcome;
-    fn produce_executable_effects(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_runtime_demand(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_outgoing_input_edges(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome;
-    fn produce_incoming_input_slot(&mut self, session: &mut PullSession, slot: &InputSlot) -> PullOutcome;
-    fn produce_transport_shape(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome;
-    fn produce_transport_component(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome;
-    fn produce_callable_facts(&mut self, session: &mut PullSession, callable: CallableId) -> PullOutcome;
-    fn produce_boundary_facts(&mut self, session: &mut PullSession, boundary: BoundaryId) -> PullOutcome;
-    fn produce_codegen_seam_facts(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome;
+    fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
+    fn produce_backend_executable(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome;
+    fn produce_abi_executable(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome;
+    fn produce_materialized_executable(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome;
+    fn produce_executable_effects(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome;
+    fn produce_executable_facts(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome;
+    fn produce_runtime_demand(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome;
+    fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
+    fn produce_outgoing_input_edges(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome;
+    fn produce_incoming_input_relations(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
+    fn produce_incoming_input_slot(&mut self, context: &mut ProductReadContext<'_>, slot: &InputSlot) -> PullOutcome;
+    fn produce_transport_shape(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        position: &TransportPosition,
+    ) -> PullOutcome;
+    fn produce_transport_component(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        position: &TransportPosition,
+    ) -> PullOutcome;
+    fn produce_callable_facts(&mut self, context: &mut ProductReadContext<'_>, callable: CallableId) -> PullOutcome;
+    fn produce_boundary_facts(&mut self, context: &mut ProductReadContext<'_>, boundary: BoundaryId) -> PullOutcome;
+    fn produce_codegen_seam_facts(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
 }
 
 pub struct WorldProductProducers<'w, 'a, T: crate::telemetry::Telemetry> {
@@ -1845,81 +2079,141 @@ impl<'w, 'a, T: crate::telemetry::Telemetry> WorldProductProducers<'w, 'a, T> {
 }
 
 impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
-    fn transport_executable(&mut self, root: RootId, position: &TransportPosition) -> Option<ExecutableKey> {
-        Some(super::jobs::backend::executable_key_for_symbol(
-            root,
-            position.executable(),
-        ))
+    fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
+        super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, context, root)
     }
 
-    fn fact_revision(&mut self, fact: &FactKey) -> u64 {
-        self.world.fact_revision(fact).unwrap_or(0)
+    fn produce_backend_executable(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome {
+        super::jobs::backend::produce_backend_executable_product(self.world, self.telemetry, context, executable)
     }
 
-    fn root_artifact_revision(&mut self, root: RootId) -> Option<u64> {
-        Some(self.world.root_artifact_revision(root))
-    }
-
-    fn executable_artifact_revisions(&mut self, executable: &ExecutableKey) -> Option<[u64; 3]> {
-        Some(self.world.executable_artifact_revisions(executable))
-    }
-
-    fn produce_root_backend_product(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome {
-        super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, session, root)
-    }
-
-    fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::backend::produce_backend_executable_product(self.world, self.telemetry, session, executable)
-    }
-
-    fn produce_abi_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::artifact::produce_abi_executable_product(self.world, self.telemetry, session, executable)
+    fn produce_abi_executable(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome {
+        super::jobs::artifact::produce_abi_executable_product(self.world, self.telemetry, context, executable)
     }
 
     fn produce_materialized_executable(
         &mut self,
-        session: &mut PullSession,
+        context: &mut ProductReadContext<'_>,
         executable: &ExecutableKey,
     ) -> PullOutcome {
-        super::jobs::artifact::produce_materialized_executable_product(self.world, self.telemetry, session, executable)
+        super::jobs::artifact::produce_materialized_executable_product(self.world, self.telemetry, context, executable)
     }
 
-    fn produce_executable_effects(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::artifact::produce_executable_effects_product(self.world, self.telemetry, session, executable)
+    fn produce_executable_effects(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome {
+        super::jobs::artifact::produce_executable_effects_product(self.telemetry, context, executable)
     }
 
-    fn produce_runtime_demand(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::runtime_demand::produce_runtime_demand_product(self.world, session, executable)
+    fn produce_executable_facts(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome {
+        super::jobs::runtime_demand::produce_executable_facts_product(self.world, context, executable)
     }
 
-    fn produce_outgoing_input_edges(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-        super::jobs::runtime_demand::produce_outgoing_input_edges_product(self.world, session, executable)
+    fn produce_runtime_demand(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome {
+        super::jobs::runtime_demand::produce_runtime_demand_product(self.world, context, executable)
     }
 
-    fn produce_incoming_input_slot(&mut self, session: &mut PullSession, slot: &InputSlot) -> PullOutcome {
-        PullOutcome::Produced(ProductValue::IncomingInputSlot(
-            session.incoming_input_sources(slot).to_vec().into_boxed_slice(),
+    fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, _root: RootId) -> PullOutcome {
+        PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(
+            context.session().outgoing_edge_requests().clone(),
+        )))
+    }
+
+    fn produce_outgoing_input_edges(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        executable: &ExecutableKey,
+    ) -> PullOutcome {
+        super::jobs::runtime_demand::produce_outgoing_input_edges_product(self.world, context, executable)
+    }
+
+    fn produce_incoming_input_relations(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
+        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
+        let publishers = match context.read_product(frontier_key.clone()) {
+            Some(ProductValue::OutgoingEdgeFrontier(publishers)) => Rc::clone(publishers),
+            Some(value) => panic!("outgoing edge frontier produced unexpected value {value:?}"),
+            None => return PullOutcome::wait_on_product(frontier_key),
+        };
+        let mut slots: HashMap<InputSlot, HashSet<IncomingInputSource>> = HashMap::new();
+        let mut waits = Vec::new();
+        for publisher in publishers.iter() {
+            let key = ProductKey::OutgoingInputEdges(publisher.clone());
+            match context.read_product(key.clone()) {
+                Some(ProductValue::OutgoingInputEdges(contribution)) => {
+                    for (slot, published) in contribution.iter() {
+                        slots.entry(slot.clone()).or_default().extend(published.iter().cloned());
+                    }
+                }
+                Some(value) => panic!("outgoing input product produced unexpected value {value:?}"),
+                None => waits.push(PullWait::Product(key)),
+            }
+        }
+        if waits.is_empty() {
+            PullOutcome::Produced(ProductValue::IncomingInputRelations(Rc::new(slots)))
+        } else {
+            PullOutcome::Waiting(waits)
+        }
+    }
+
+    fn produce_incoming_input_slot(&mut self, context: &mut ProductReadContext<'_>, slot: &InputSlot) -> PullOutcome {
+        let relations_key = ProductKey::IncomingInputRelations(context.session().root());
+        match context.read_product(relations_key.clone()) {
+            Some(ProductValue::IncomingInputRelations(relations)) => PullOutcome::Produced(
+                ProductValue::IncomingInputSlot(relations.get(slot).cloned().unwrap_or_default()),
+            ),
+            Some(value) => panic!("incoming input relations produced unexpected value {value:?}"),
+            None => PullOutcome::wait_on_product(relations_key),
+        }
+    }
+
+    fn produce_transport_shape(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        position: &TransportPosition,
+    ) -> PullOutcome {
+        super::jobs::transport::produce_transport_shape_product(context, position)
+    }
+
+    fn produce_transport_component(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        position: &TransportPosition,
+    ) -> PullOutcome {
+        super::jobs::transport::produce_transport_component_product(self.world, self.telemetry, context, position)
+    }
+
+    fn produce_callable_facts(&mut self, context: &mut ProductReadContext<'_>, callable: CallableId) -> PullOutcome {
+        PullOutcome::Produced(ProductValue::CallableFacts(
+            context.session().callable_facts(callable).cloned(),
         ))
     }
 
-    fn produce_transport_shape(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
-        super::jobs::transport::produce_transport_shape_product(session, position)
+    fn produce_boundary_facts(&mut self, context: &mut ProductReadContext<'_>, boundary: BoundaryId) -> PullOutcome {
+        PullOutcome::Produced(ProductValue::BoundaryFacts(
+            context.session().boundary_facts(boundary).cloned(),
+        ))
     }
 
-    fn produce_transport_component(&mut self, session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
-        super::jobs::transport::produce_transport_component_product(self.world, self.telemetry, session, position)
-    }
-
-    fn produce_callable_facts(&mut self, session: &mut PullSession, callable: CallableId) -> PullOutcome {
-        PullOutcome::Produced(ProductValue::CallableFacts(session.callable_facts(callable).cloned()))
-    }
-
-    fn produce_boundary_facts(&mut self, session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
-        PullOutcome::Produced(ProductValue::BoundaryFacts(session.boundary_facts(boundary).cloned()))
-    }
-
-    fn produce_codegen_seam_facts(&mut self, session: &mut PullSession, root: RootId) -> PullOutcome {
-        super::jobs::artifact::produce_codegen_seam_facts_product(self.world, self.telemetry, session, root)
+    fn produce_codegen_seam_facts(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
+        super::jobs::artifact::produce_codegen_seam_facts_product(self.world, self.telemetry, context, root)
     }
 }
 
@@ -1956,102 +2250,78 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.session.emit_finished(self.tel);
     }
 
+    pub(crate) fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
+        self.session.apply_fact_movements(movements);
+    }
+
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
+        self.session.reconcile_fact_movements();
         self.session.note_product_request(&key);
-        let stale_transport_executable = key.transport_position().and_then(|position| {
-            let executable = producers.transport_executable(self.session.root(), position)?;
-            self.session
-                .covering_solve_consumed_revisions(&executable)
-                .is_some_and(|snapshot| {
-                    snapshot
-                        .iter()
-                        .any(|(fact, revision)| producers.fact_revision(fact) != *revision)
-                })
-                .then_some(executable)
-        });
-        if let Some(executable) = stale_transport_executable {
-            self.session.displace_transport_closure_for(&executable);
-        }
-        let root_artifact_revision = match &key {
-            ProductKey::RootBackendProduct(root) => producers.root_artifact_revision(*root),
-            _ => None,
-        };
-        let executable_artifact_revisions = match &key {
-            ProductKey::BackendExecutable(executable)
-            | ProductKey::AbiExecutable(executable)
-            | ProductKey::MaterializedExecutable(executable) => producers.executable_artifact_revisions(executable),
-            _ => None,
-        };
-        if let (ProductKey::RootBackendProduct(root), Some(revision)) = (&key, root_artifact_revision)
-            && self.session.memo.get(&key).is_some()
-            && !self.session.root_artifacts_are_fresh(*root, revision)
-        {
-            self.session.invalidate_root_artifact_products(*root);
-        }
-        if let (
-            ProductKey::BackendExecutable(executable)
-            | ProductKey::AbiExecutable(executable)
-            | ProductKey::MaterializedExecutable(executable),
-            Some(revisions),
-        ) = (&key, executable_artifact_revisions)
-            && self.session.memo.get(&key).is_some()
-            && !self.session.materialized_executable_is_fresh(executable, revisions)
-        {
-            self.session.invalidate_artifact_products(executable);
+        if let Some(stale) = self.session.memo.stale_dependency(&key) {
+            self.session.memo.prepare_stale_for_reproduction(&stale);
+            if stale != key {
+                return PullOutcome::wait_on_product(stale);
+            }
         }
         if let Some(value) = self.session.memo.get(&key) {
             self.emit("cache_hit", &key);
             return PullOutcome::Produced(value.clone());
+        }
+        if self.session.memo.is_displaced(&key) {
+            self.session.discard_product_side_effects(&key);
         }
         if !self.session.memo.begin(key.clone()) {
             self.emit("reentered", &key);
             return PullOutcome::Waiting(vec![PullWait::Product(key)]);
         }
 
+        let mut context = ProductReadContext::new(&mut self.session);
         let outcome = match &key {
-            ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(&mut self.session, *root),
-            ProductKey::BackendExecutable(executable) => {
-                producers.produce_backend_executable(&mut self.session, executable)
-            }
-            ProductKey::AbiExecutable(executable) => producers.produce_abi_executable(&mut self.session, executable),
+            ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(&mut context, *root),
+            ProductKey::BackendExecutable(executable) => producers.produce_backend_executable(&mut context, executable),
+            ProductKey::AbiExecutable(executable) => producers.produce_abi_executable(&mut context, executable),
             ProductKey::MaterializedExecutable(executable) => {
-                producers.produce_materialized_executable(&mut self.session, executable)
+                producers.produce_materialized_executable(&mut context, executable)
             }
-            ProductKey::ExecutableEffects(executable) => {
-                producers.produce_executable_effects(&mut self.session, executable)
-            }
-            ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(&mut self.session, executable),
+            ProductKey::ExecutableEffects(executable) => producers.produce_executable_effects(&mut context, executable),
+            ProductKey::ExecutableFacts(executable) => producers.produce_executable_facts(&mut context, executable),
+            ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(&mut context, executable),
+            ProductKey::OutgoingEdgeFrontier(root) => producers.produce_outgoing_edge_frontier(&mut context, *root),
             ProductKey::OutgoingInputEdges(executable) => {
-                producers.produce_outgoing_input_edges(&mut self.session, executable)
+                producers.produce_outgoing_input_edges(&mut context, executable)
             }
-            ProductKey::IncomingInputSlot(slot) => producers.produce_incoming_input_slot(&mut self.session, slot),
-            ProductKey::TransportShape(position) => producers.produce_transport_shape(&mut self.session, position),
-            ProductKey::TransportComponent(position) => {
-                producers.produce_transport_component(&mut self.session, position)
-            }
-            ProductKey::CallableFacts(callable) => producers.produce_callable_facts(&mut self.session, *callable),
-            ProductKey::BoundaryFacts(boundary) => producers.produce_boundary_facts(&mut self.session, *boundary),
-            ProductKey::CodegenSeamFacts(root) => producers.produce_codegen_seam_facts(&mut self.session, *root),
+            ProductKey::IncomingInputRelations(root) => producers.produce_incoming_input_relations(&mut context, *root),
+            ProductKey::IncomingInputSlot(slot) => producers.produce_incoming_input_slot(&mut context, slot),
+            ProductKey::TransportShape(position) => producers.produce_transport_shape(&mut context, position),
+            ProductKey::TransportComponent(position) => producers.produce_transport_component(&mut context, position),
+            ProductKey::CallableFacts(callable) => producers.produce_callable_facts(&mut context, *callable),
+            ProductKey::BoundaryFacts(boundary) => producers.produce_boundary_facts(&mut context, *boundary),
+            ProductKey::CodegenSeamFacts(root) => producers.produce_codegen_seam_facts(&mut context, *root),
         };
+        let dependencies = context.into_dependencies();
+        if let PullOutcome::Waiting(waits) = &outcome {
+            for wait in waits {
+                if let PullWait::Product(product) = wait {
+                    self.session.note_product_request(product);
+                }
+            }
+        }
 
         match outcome {
             PullOutcome::Produced(value) => {
-                let finish = self.session.memo.finish(&key, value.clone());
-                if !finish.settled {
+                let settled = self.session.memo.finish(&key, value.clone(), dependencies);
+                if !settled {
                     self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
                     PullOutcome::Waiting(waits)
                 } else {
-                    if let (ProductKey::RootBackendProduct(root), Some(revision)) = (&key, root_artifact_revision) {
-                        self.session.record_root_artifact_revision(*root, revision);
-                    }
                     self.tel
                         .raw_event2(&["fz", "compiler2", "pull", "product", "settled"], &key, &value);
                     PullOutcome::Produced(value)
                 }
             }
             PullOutcome::Waiting(waits) => {
-                self.session.memo.unblock(&key);
+                self.session.memo.unblock(&key, dependencies);
                 PullOutcome::Waiting(waits)
             }
         }
@@ -2070,9 +2340,17 @@ mod tests {
 
     use crate::telemetry::ConfiguredTelemetry;
 
+    use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
     use super::super::transport::{ActivationSymbol, ExecutableSymbol};
     use super::*;
+
+    fn fact_movement(key: FactKey, revision: Option<u64>, settled: bool) -> FactMovement<FactKey> {
+        FactMovement {
+            key,
+            state: FactState { revision, settled },
+        }
+    }
 
     struct ProductTelemetryCapture {
         produced: Rc<Cell<u64>>,
@@ -2105,12 +2383,30 @@ mod tests {
         calls: Vec<ProductKey>,
         reenter: Option<ProductKey>,
         root_entry: Option<ExecutableKey>,
-        artifact_revisions: Option<[u64; 3]>,
+        root_prerequisites: Vec<ProductKey>,
+        facts: HashMap<FactKey, FactState>,
+        runtime_fact: Option<FactUse<FactKey>>,
+        runtime_value: Option<ProductValue>,
+        runtime_child: Option<ProductKey>,
+        backend_fact: Option<FactUse<FactKey>>,
+        backend_value: Option<ProductValue>,
+        fact_state_reads: usize,
     }
 
     impl FakeProducers {
+        fn fact_state(&mut self, fact: &FactUse<FactKey>) -> FactState {
+            self.fact_state_reads += 1;
+            self.facts.get(fact.fact()).copied().unwrap_or(FactState {
+                revision: None,
+                settled: false,
+            })
+        }
+
         fn produce(&mut self, key: ProductKey) -> PullOutcome {
             self.calls.push(key.clone());
+            if self.reenter.as_ref() == Some(&key) {
+                return PullOutcome::wait_on_product(key);
+            }
             match key {
                 ProductKey::RootBackendProduct(root) => {
                     let prerequisite =
@@ -2129,9 +2425,6 @@ mod tests {
                 ProductKey::BackendExecutable(_) => {
                     PullOutcome::wait_on_fact(FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO)))
                 }
-                ProductKey::ExecutableEffects(_) if self.reenter.as_ref() == Some(&key) => {
-                    PullOutcome::wait_on_product(key)
-                }
                 _ => {
                     self.produced.insert(key);
                     PullOutcome::Produced(ProductValue::Unit)
@@ -2141,32 +2434,64 @@ mod tests {
     }
 
     impl ProductProducers for FakeProducers {
-        fn executable_artifact_revisions(&mut self, _executable: &ExecutableKey) -> Option<[u64; 3]> {
-            self.artifact_revisions
-        }
-
-        fn produce_root_backend_product(&mut self, _session: &mut PullSession, root: RootId) -> PullOutcome {
-            self.produce(ProductKey::RootBackendProduct(root))
-        }
-
-        fn produce_backend_executable(&mut self, session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-            if let Some(revisions) = self.artifact_revisions {
-                session.record_materialized_executable_revisions(executable.clone(), revisions);
-                let key = ProductKey::BackendExecutable(executable.clone());
-                self.calls.push(key.clone());
-                self.produced.insert(key);
-                return PullOutcome::Produced(ProductValue::Unit);
+        fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
+            let key = ProductKey::RootBackendProduct(root);
+            self.calls.push(key.clone());
+            if !self.root_prerequisites.is_empty() {
+                let waits = self
+                    .root_prerequisites
+                    .iter()
+                    .filter(|prerequisite| context.read_product_entry((*prerequisite).clone()).is_none())
+                    .cloned()
+                    .map(PullWait::Product)
+                    .collect::<Vec<_>>();
+                if !waits.is_empty() {
+                    return PullOutcome::Waiting(waits);
+                }
             }
-            self.produce(ProductKey::BackendExecutable(executable.clone()))
+            let prerequisite =
+                ProductKey::RuntimeDemand(self.root_entry.clone().expect("fake root entry should be set"));
+            if context.read_product_entry(prerequisite.clone()).is_some() {
+                self.produced.insert(key);
+                PullOutcome::Produced(ProductValue::Unit)
+            } else {
+                PullOutcome::wait_on_product(prerequisite)
+            }
         }
 
-        fn produce_abi_executable(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
+        fn produce_backend_executable(
+            &mut self,
+            context: &mut ProductReadContext<'_>,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
+            let key = ProductKey::BackendExecutable(executable.clone());
+            self.calls.push(key.clone());
+            if let Some(fact) = self.backend_fact.clone() {
+                let state = self.fact_state(&fact);
+                let ready = match fact.readiness() {
+                    FactReadiness::Current => state.revision.is_some(),
+                    FactReadiness::Settled => state.settled,
+                };
+                context.record_fact_state(fact.clone(), state);
+                if !ready {
+                    return PullOutcome::wait_on_fact(fact);
+                }
+            }
+            self.produced.insert(key);
+            PullOutcome::Produced(self.backend_value.clone().unwrap_or(ProductValue::Unit))
+        }
+
+        fn produce_abi_executable(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
             self.produce(ProductKey::AbiExecutable(executable.clone()))
         }
 
         fn produce_materialized_executable(
             &mut self,
-            _session: &mut PullSession,
+            _context: &mut ProductReadContext<'_>,
             executable: &ExecutableKey,
         ) -> PullOutcome {
             self.produce(ProductKey::MaterializedExecutable(executable.clone()))
@@ -2174,49 +2499,112 @@ mod tests {
 
         fn produce_executable_effects(
             &mut self,
-            _session: &mut PullSession,
+            _context: &mut ProductReadContext<'_>,
             executable: &ExecutableKey,
         ) -> PullOutcome {
             self.produce(ProductKey::ExecutableEffects(executable.clone()))
         }
 
-        fn produce_runtime_demand(&mut self, _session: &mut PullSession, executable: &ExecutableKey) -> PullOutcome {
-            self.produce(ProductKey::RuntimeDemand(executable.clone()))
+        fn produce_executable_facts(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
+            self.produce(ProductKey::ExecutableFacts(executable.clone()))
+        }
+
+        fn produce_runtime_demand(
+            &mut self,
+            context: &mut ProductReadContext<'_>,
+            executable: &ExecutableKey,
+        ) -> PullOutcome {
+            let key = ProductKey::RuntimeDemand(executable.clone());
+            self.calls.push(key.clone());
+            if let Some(fact) = self.runtime_fact.clone() {
+                let state = self.fact_state(&fact);
+                let ready = match fact.readiness() {
+                    FactReadiness::Current => state.revision.is_some(),
+                    FactReadiness::Settled => state.settled,
+                };
+                context.record_fact_state(fact.clone(), state);
+                if !ready {
+                    return PullOutcome::wait_on_fact(fact);
+                }
+            }
+            if let Some(child) = self.runtime_child.clone()
+                && context.read_product_entry(child.clone()).is_none()
+            {
+                return PullOutcome::wait_on_product(child);
+            }
+            self.produced.insert(key);
+            PullOutcome::Produced(self.runtime_value.clone().unwrap_or(ProductValue::Unit))
+        }
+
+        fn produce_outgoing_edge_frontier(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            root: RootId,
+        ) -> PullOutcome {
+            self.produce(ProductKey::OutgoingEdgeFrontier(root))
         }
 
         fn produce_outgoing_input_edges(
             &mut self,
-            _session: &mut PullSession,
+            _context: &mut ProductReadContext<'_>,
             executable: &ExecutableKey,
         ) -> PullOutcome {
             self.produce(ProductKey::OutgoingInputEdges(executable.clone()))
         }
 
-        fn produce_incoming_input_slot(&mut self, _session: &mut PullSession, slot: &InputSlot) -> PullOutcome {
+        fn produce_incoming_input_relations(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            root: RootId,
+        ) -> PullOutcome {
+            self.produce(ProductKey::IncomingInputRelations(root))
+        }
+
+        fn produce_incoming_input_slot(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            slot: &InputSlot,
+        ) -> PullOutcome {
             self.produce(ProductKey::IncomingInputSlot(slot.clone()))
         }
 
-        fn produce_transport_shape(&mut self, _session: &mut PullSession, position: &TransportPosition) -> PullOutcome {
+        fn produce_transport_shape(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            position: &TransportPosition,
+        ) -> PullOutcome {
             self.produce(ProductKey::TransportShape(position.clone()))
         }
 
         fn produce_transport_component(
             &mut self,
-            _session: &mut PullSession,
+            _context: &mut ProductReadContext<'_>,
             position: &TransportPosition,
         ) -> PullOutcome {
             self.produce(ProductKey::TransportComponent(position.clone()))
         }
 
-        fn produce_callable_facts(&mut self, _session: &mut PullSession, callable: CallableId) -> PullOutcome {
+        fn produce_callable_facts(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            callable: CallableId,
+        ) -> PullOutcome {
             self.produce(ProductKey::CallableFacts(callable))
         }
 
-        fn produce_boundary_facts(&mut self, _session: &mut PullSession, boundary: BoundaryId) -> PullOutcome {
+        fn produce_boundary_facts(
+            &mut self,
+            _context: &mut ProductReadContext<'_>,
+            boundary: BoundaryId,
+        ) -> PullOutcome {
             self.produce(ProductKey::BoundaryFacts(boundary))
         }
 
-        fn produce_codegen_seam_facts(&mut self, _session: &mut PullSession, root: RootId) -> PullOutcome {
+        fn produce_codegen_seam_facts(&mut self, _context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
             self.produce(ProductKey::CodegenSeamFacts(root))
         }
     }
@@ -2256,33 +2644,373 @@ mod tests {
     }
 
     #[test]
-    fn product_driver_rebuilds_cached_artifacts_after_semantic_revision_moves() {
+    fn product_driver_refreshes_deepest_stale_child_without_waking_equal_value_readers() {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(7);
         let executable = fake_executable(root);
-        let key = ProductKey::BackendExecutable(executable);
+        let parent = ProductKey::RootBackendProduct(root);
+        let child = ProductKey::RuntimeDemand(executable.clone());
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let mut producers = FakeProducers {
-            artifact_revisions: Some([1, 1, 1]),
+            root_entry: Some(executable),
+            runtime_fact: Some(fact.clone()),
+            facts: HashMap::from([(
+                fact.fact().clone(),
+                FactState {
+                    revision: Some(1),
+                    settled: false,
+                },
+            )]),
             ..FakeProducers::default()
         };
         let mut driver = ProductDriver::new(&tel, root);
 
         assert_eq!(
-            driver.pull(&mut producers, key.clone()),
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::wait_on_product(child.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, child.clone()),
             PullOutcome::Produced(ProductValue::Unit)
         );
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(driver.session().memo().generation(&child), Some(1));
+        assert_eq!(driver.session().memo().generation(&parent), Some(1));
+
+        producers.facts.insert(
+            fact.fact().clone(),
+            FactState {
+                revision: Some(2),
+                settled: false,
+            },
+        );
+        driver.apply_fact_movements(&[fact_movement(fact.fact().clone(), Some(2), true)]);
+        let reads_before_cache_pull = producers.fact_state_reads;
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::wait_on_product(child.clone())
+        );
+        assert_eq!(producers.fact_state_reads, reads_before_cache_pull);
+        assert_eq!(driver.session().memo().generation(&parent), Some(1));
+        assert_eq!(driver.session().memo().generation(&child), None);
+        assert_eq!(
+            driver.pull(&mut producers, child.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(driver.session().memo().generation(&child), Some(1));
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(driver.session().memo().generation(&parent), Some(1));
+
+        producers.facts.insert(
+            fact.fact().clone(),
+            FactState {
+                revision: Some(3),
+                settled: false,
+            },
+        );
+        driver.apply_fact_movements(&[fact_movement(fact.fact().clone(), Some(3), true)]);
+        producers.runtime_value = Some(ProductValue::CallableFacts(None));
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::wait_on_product(child.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, child.clone()),
+            PullOutcome::Produced(ProductValue::CallableFacts(None))
+        );
+        assert_eq!(driver.session().memo().generation(&child), Some(2));
+        assert_eq!(driver.session().memo().generation(&parent), None);
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(driver.session().memo().generation(&parent), Some(1));
+        assert_eq!(producers.calls.iter().filter(|called| **called == parent).count(), 3);
+    }
+
+    #[test]
+    fn readiness_movement_invalidates_a_mixed_current_and_settled_fact_reader() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(70);
+        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().memo.finish(
+            &key,
+            ProductValue::Unit,
+            ProductDependencies {
+                products: HashMap::new(),
+                facts: HashMap::from([
+                    (
+                        FactUse::current(fact.clone()),
+                        FactState {
+                            revision: Some(1),
+                            settled: false,
+                        },
+                    ),
+                    (
+                        FactUse::settled(fact.clone()),
+                        FactState {
+                            revision: Some(1),
+                            settled: true,
+                        },
+                    ),
+                ]),
+            },
+        );
+
+        driver.apply_fact_movements(&[fact_movement(fact, Some(1), false)]);
+
+        assert!(driver.session().memo().get(&key).is_some());
+        let mut producers = FakeProducers::default();
         assert_eq!(
             driver.pull(&mut producers, key.clone()),
             PullOutcome::Produced(ProductValue::Unit)
         );
+        assert_eq!(producers.calls, vec![key]);
+    }
 
-        producers.artifact_revisions = Some([1, 2, 1]);
+    #[test]
+    fn settled_reader_coalesces_dirty_and_equal_resettlement() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(71);
+        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().memo.finish(
+            &key,
+            ProductValue::Unit,
+            ProductDependencies {
+                products: HashMap::new(),
+                facts: HashMap::from([(
+                    FactUse::settled(fact.clone()),
+                    FactState {
+                        revision: Some(1),
+                        settled: true,
+                    },
+                )]),
+            },
+        );
+        for _ in 0..100 {
+            driver.apply_fact_movements(&[fact_movement(fact.clone(), Some(1), false)]);
+            driver.apply_fact_movements(&[fact_movement(fact.clone(), Some(1), true)]);
+        }
+        assert_eq!(driver.session().pending_fact_states.len(), 1);
+        assert!(driver.session().memo.fact_stale_dependencies.is_empty());
+        assert!(driver.session().memo.dirty_descendants.is_empty());
+
+        let mut producers = FakeProducers::default();
+        assert_eq!(
+            driver.pull(&mut producers, key),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert!(producers.calls.is_empty());
+    }
+
+    #[test]
+    fn settled_reader_reproduces_after_changed_resettlement() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(72);
+        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().memo.finish(
+            &key,
+            ProductValue::Unit,
+            ProductDependencies {
+                products: HashMap::new(),
+                facts: HashMap::from([(
+                    FactUse::settled(fact.clone()),
+                    FactState {
+                        revision: Some(1),
+                        settled: true,
+                    },
+                )]),
+            },
+        );
+        driver.apply_fact_movements(&[fact_movement(fact, Some(2), true)]);
+
+        let mut producers = FakeProducers::default();
         assert_eq!(
             driver.pull(&mut producers, key.clone()),
             PullOutcome::Produced(ProductValue::Unit)
         );
+        assert_eq!(producers.calls, vec![key]);
+    }
 
-        assert_eq!(producers.calls.iter().filter(|called| **called == key).count(), 2);
+    #[test]
+    fn settled_presence_reader_ignores_content_only_movement() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(73);
+        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().memo.finish(
+            &key,
+            ProductValue::Unit,
+            ProductDependencies {
+                products: HashMap::new(),
+                facts: HashMap::from([(
+                    FactUse::settled_presence(fact.clone()),
+                    FactState {
+                        revision: None,
+                        settled: true,
+                    },
+                )]),
+            },
+        );
+        driver.apply_fact_movements(&[fact_movement(fact, Some(2), true)]);
+
+        let mut producers = FakeProducers::default();
+        assert_eq!(
+            driver.pull(&mut producers, key),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert!(producers.calls.is_empty());
+    }
+
+    #[test]
+    fn settled_presence_reader_reproduces_after_same_key_publication_then_dirtying() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(74);
+        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
+        let missing = FactKey::RootEntry(root);
+        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.session_mut().memo.finish(
+            &key,
+            ProductValue::Unit,
+            ProductDependencies {
+                products: HashMap::new(),
+                facts: HashMap::from([(
+                    FactUse::settled_presence(fact.clone()),
+                    FactState {
+                        revision: None,
+                        settled: true,
+                    },
+                )]),
+            },
+        );
+        let mut scheduler = super::super::scheduler::Scheduler::<u32, FactKey>::new();
+        scheduler.complete(
+            &1,
+            HashSet::new(),
+            HashSet::new(),
+            vec![fact.clone()],
+            vec![fact.clone()],
+        );
+        let blocked = scheduler.complete(
+            &1,
+            HashSet::new(),
+            HashSet::from([FactUse::current(missing)]),
+            vec![fact.clone()],
+            vec![fact],
+        );
+        driver.apply_fact_movements(&blocked.movements);
+
+        let mut producers = FakeProducers::default();
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(producers.calls, vec![key]);
+    }
+
+    #[test]
+    fn equal_parent_reproduction_does_not_invalidate_its_grandparent() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(17);
+        let executable = fake_executable(root);
+        let grandparent = ProductKey::RootBackendProduct(root);
+        let parent = ProductKey::RuntimeDemand(executable.clone());
+        let child = ProductKey::BackendExecutable(executable);
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
+        let mut producers = FakeProducers {
+            root_entry: match &parent {
+                ProductKey::RuntimeDemand(executable) => Some(executable.clone()),
+                _ => unreachable!(),
+            },
+            runtime_child: Some(child.clone()),
+            backend_fact: Some(fact.clone()),
+            facts: HashMap::from([(
+                fact.fact().clone(),
+                FactState {
+                    revision: Some(1),
+                    settled: false,
+                },
+            )]),
+            ..FakeProducers::default()
+        };
+        let mut driver = ProductDriver::new(&tel, root);
+
+        assert_eq!(
+            driver.pull(&mut producers, grandparent.clone()),
+            PullOutcome::wait_on_product(parent.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::wait_on_product(child.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, child.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, grandparent.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+
+        producers.facts.insert(
+            fact.fact().clone(),
+            FactState {
+                revision: Some(2),
+                settled: false,
+            },
+        );
+        producers.backend_value = Some(ProductValue::CallableFacts(None));
+        driver.apply_fact_movements(&[fact_movement(fact.fact().clone(), Some(2), false)]);
+        assert_eq!(
+            driver.pull(&mut producers, grandparent.clone()),
+            PullOutcome::wait_on_product(child.clone())
+        );
+        assert_eq!(driver.session().memo().generation(&grandparent), Some(1));
+        assert_eq!(driver.session().memo().generation(&parent), Some(1));
+        assert_eq!(
+            driver.pull(&mut producers, child),
+            PullOutcome::Produced(ProductValue::CallableFacts(None))
+        );
+        assert_eq!(driver.session().memo().generation(&parent), None);
+        assert_eq!(driver.session().memo().generation(&grandparent), Some(1));
+        assert_eq!(
+            driver.pull(&mut producers, grandparent.clone()),
+            PullOutcome::wait_on_product(parent.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, parent.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(driver.session().memo().generation(&parent), Some(1));
+        assert_eq!(driver.session().memo().generation(&grandparent), Some(1));
+        let grandparent_calls = producers.calls.iter().filter(|called| **called == grandparent).count();
+        assert_eq!(
+            driver.pull(&mut producers, grandparent.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            producers.calls.iter().filter(|called| **called == grandparent).count(),
+            grandparent_calls
+        );
+        assert_eq!(driver.session().memo().generation(&grandparent), Some(1));
     }
 
     #[test]
@@ -2292,7 +3020,10 @@ mod tests {
         let root = RootId::for_test(1);
         let executable = fake_executable(root);
         let key = ProductKey::BackendExecutable(executable);
-        let mut producers = FakeProducers::default();
+        let mut producers = FakeProducers {
+            backend_fact: Some(FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO))),
+            ..FakeProducers::default()
+        };
         let mut driver = ProductDriver::new(&tel, root);
 
         let outcome = driver.pull(&mut producers, key.clone());
@@ -2304,6 +3035,30 @@ mod tests {
         assert!(driver.session().memo().get(&key).is_none());
         assert!(!driver.session().memo().contains_in_progress(&key));
         assert_eq!(capture.produced.get(), 0);
+    }
+
+    #[test]
+    fn first_pull_of_an_absent_product_does_not_discard_session_side_effects() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(18);
+        let position = TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&fake_executable(root)),
+        };
+        let shape = ShapeId::for_test(0);
+        let key = ProductKey::TransportShape(position.clone());
+        let mut session = PullSession::new(root);
+        session.record_transport_shape(position.clone(), shape);
+        let mut driver = ProductDriver::with_session(&tel, session);
+        let mut producers = FakeProducers::default();
+
+        assert_eq!(
+            driver.pull(&mut producers, key),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.session().transport_shape_fact(&position),
+            Some(&TransportShapeFact::Layout(TransportLayout::structural(shape)))
+        );
     }
 
     #[test]
@@ -2325,41 +3080,112 @@ mod tests {
     }
 
     #[test]
-    fn pull_session_records_outgoing_edges_into_exact_incoming_input_slots() {
-        let caller = fake_executable(RootId::for_test(3));
-        let callee = fake_executable(RootId::for_test(4));
-        let source = IncomingInputSource {
-            producer: caller.clone(),
-            value: ValueId::from_u32(7),
-            role: IncomingInputRole::CallArgument,
-        };
-        let edge = DemandedCallEdge {
-            caller: caller.clone(),
-            callsite: Some(CallSiteId::from_u32(2)),
-            callee: callee.clone(),
-            inputs: vec![(1, source.clone())],
-        };
-        let mut session = PullSession::new(RootId::for_test(3));
-        session.memo.finish(
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
-        );
+    fn outgoing_edge_frontier_tracks_actual_publisher_requests_as_a_set() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(3);
+        let first = fake_executable(root);
+        let second = fake_executable_with_function(root, 4);
+        let frontier = ProductKey::OutgoingEdgeFrontier(root);
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut fake = FakeProducers::default();
+        let mut world = World::new();
 
-        session.record_call_edge(edge.clone());
-
-        assert_eq!(session.call_edges(&caller), std::slice::from_ref(&edge));
+        driver.pull(&mut fake, ProductKey::OutgoingInputEdges(first.clone()));
+        let first_frontier = {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            driver.pull(&mut producers, frontier.clone())
+        };
         assert_eq!(
-            session.incoming_input_sources(&InputSlot {
-                executable: callee.clone(),
-                semantic_index: 1,
-            }),
-            std::slice::from_ref(&source)
+            first_frontier,
+            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
+                first.clone(),
+            ]))))
         );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_some(),
-            "recording an incoming edge feeds transport input slots and must leave settled demand standing"
+        let first_generation = driver.session().memo().generation(&frontier);
+
+        driver.pull(&mut fake, ProductKey::OutgoingInputEdges(first.clone()));
+        driver.pull(&mut fake, ProductKey::BackendExecutable(first.clone()));
+        assert_eq!(driver.session().memo().generation(&frontier), first_generation);
+
+        fake.reenter = Some(ProductKey::OutgoingInputEdges(second.clone()));
+        assert_eq!(
+            driver.pull(&mut fake, ProductKey::OutgoingInputEdges(second.clone())),
+            PullOutcome::wait_on_product(ProductKey::OutgoingInputEdges(second.clone()))
         );
-        assert_eq!(session.producer_pokes(), 0);
+        let expanded = {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            driver.pull(&mut producers, frontier.clone())
+        };
+        assert_eq!(
+            expanded,
+            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
+                first, second,
+            ]))))
+        );
+        assert_ne!(driver.session().memo().generation(&frontier), first_generation);
+    }
+
+    #[test]
+    fn publisher_frontier_moves_once_for_an_atomic_sibling_wait_set() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(5);
+        let first = fake_executable(root);
+        let second = fake_executable_with_function(root, 6);
+        let later = fake_executable_with_function(root, 7);
+        let first_key = ProductKey::OutgoingInputEdges(first.clone());
+        let second_key = ProductKey::OutgoingInputEdges(second.clone());
+        let later_key = ProductKey::OutgoingInputEdges(later.clone());
+        let root_key = ProductKey::RootBackendProduct(root);
+        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
+        let mut driver = ProductDriver::new(&tel, root);
+        let mut fake = FakeProducers {
+            root_prerequisites: vec![first_key.clone(), second_key.clone()],
+            ..Default::default()
+        };
+        let mut world = World::new();
+
+        assert_eq!(
+            driver.pull(&mut fake, root_key.clone()),
+            PullOutcome::Waiting(vec![
+                PullWait::Product(first_key.clone()),
+                PullWait::Product(second_key.clone())
+            ])
+        );
+        let initial = {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            driver.pull(&mut producers, frontier_key.clone())
+        };
+        assert_eq!(
+            initial,
+            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
+                first, second,
+            ]))))
+        );
+        let initial_generation = driver.session().memo().generation(&frontier_key);
+
+        driver.pull(&mut fake, second_key);
+        driver.pull(&mut fake, first_key);
+        driver.pull(&mut fake, ProductKey::BackendExecutable(later));
+        assert_eq!(driver.session().memo().generation(&frontier_key), initial_generation);
+
+        fake.root_prerequisites.push(later_key.clone());
+        assert_eq!(
+            driver.pull(&mut fake, root_key),
+            PullOutcome::wait_on_product(later_key)
+        );
+        let expanded = {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            driver.pull(&mut producers, frontier_key.clone())
+        };
+        assert_eq!(
+            expanded,
+            PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(Rc::new(HashSet::from([
+                fake_executable_with_function(root, 7),
+                fake_executable_with_function(root, 6),
+                fake_executable(root),
+            ]))))
+        );
+        assert_ne!(driver.session().memo().generation(&frontier_key), initial_generation);
     }
 
     #[test]
@@ -2378,6 +3204,7 @@ mod tests {
         session.memo.finish(
             &ProductKey::CodegenSeamFacts(session.root()),
             ProductValue::CodegenSeamFacts(Box::default()),
+            ProductDependencies::default(),
         );
 
         session.record_boundary_facts(boundary, facts);
@@ -2407,6 +3234,7 @@ mod tests {
         session.memo.finish(
             &ProductKey::CodegenSeamFacts(session.root()),
             ProductValue::CodegenSeamFacts(Box::default()),
+            ProductDependencies::default(),
         );
         assert!(session.memo().codegen_seam_facts(session.root()).is_some());
 
@@ -2424,6 +3252,7 @@ mod tests {
         session.memo.finish(
             &ProductKey::CodegenSeamFacts(session.root()),
             ProductValue::CodegenSeamFacts(Box::default()),
+            ProductDependencies::default(),
         );
         let mut world = crate::compiler2::World::new();
         let arrow = world.types_mut().any();
@@ -2457,6 +3286,7 @@ mod tests {
         session.memo.finish(
             &ProductKey::RuntimeDemand(callee.clone()),
             ProductValue::RuntimeDemand(Box::default()),
+            ProductDependencies::default(),
         );
 
         session.replace_settled_return_demand_contributions(
@@ -2501,6 +3331,7 @@ mod tests {
         session.memo.finish(
             &ProductKey::RuntimeDemand(callee.clone()),
             ProductValue::RuntimeDemand(Box::default()),
+            ProductDependencies::default(),
         );
         session.replace_settled_return_demand_contributions(
             caller.clone(),
@@ -2534,6 +3365,7 @@ mod tests {
         session.memo.finish(
             &ProductKey::RuntimeDemand(callee.clone()),
             ProductValue::RuntimeDemand(Box::default()),
+            ProductDependencies::default(),
         );
 
         session.replace_settled_input_demand_contributions(
@@ -2576,6 +3408,7 @@ mod tests {
         session.memo.finish(
             &ProductKey::RuntimeDemand(callee.clone()),
             ProductValue::RuntimeDemand(Box::default()),
+            ProductDependencies::default(),
         );
         session.replace_settled_input_demand_contributions(
             caller.clone(),
@@ -2607,13 +3440,14 @@ mod tests {
     }
 
     #[test]
-    fn world_product_reads_incoming_input_slot_from_session_inventory() {
+    fn incoming_input_relations_follow_frontier_generations_and_slots_project_exact_values() {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(6);
         let caller = fake_executable(root);
-        let callee = fake_executable(root);
+        let unrelated = fake_executable_with_function(root, 7);
+        let callee = fake_executable_with_function(root, 8);
         let slot = InputSlot {
-            executable: callee.clone(),
+            executable: callee,
             semantic_index: 0,
         };
         let source = IncomingInputSource {
@@ -2622,65 +3456,86 @@ mod tests {
             role: IncomingInputRole::CallArgument,
         };
         let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().record_call_edge(DemandedCallEdge {
-            caller,
-            callsite: Some(CallSiteId::from_u32(1)),
-            callee,
-            inputs: vec![(slot.semantic_index, source.clone())],
-        });
+        let mut fake = FakeProducers::default();
         let mut world = World::new();
-        let mut producers = WorldProductProducers::new(&mut world, &tel);
-
-        let outcome = driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot));
-
-        assert_eq!(
-            outcome,
-            PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([source])))
-        );
-        assert_eq!(driver.session().producer_pokes(), 0);
-    }
-
-    #[test]
-    fn incoming_input_slot_product_invalidates_when_outgoing_edge_records_source() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(61);
-        let caller = fake_executable(root);
-        let callee = fake_executable_with_function(root, 62);
-        let slot = InputSlot {
-            executable: callee.clone(),
-            semantic_index: 0,
-        };
-        let source = IncomingInputSource {
-            producer: caller.clone(),
-            value: ValueId::from_u32(11),
-            role: IncomingInputRole::CallArgument,
-        };
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut world = World::new();
-
-        let empty = {
-            let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot.clone()))
-        };
-        assert_eq!(
-            empty,
-            PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([])))
+        let caller_key = ProductKey::OutgoingInputEdges(caller);
+        driver.pull(&mut fake, caller_key.clone());
+        driver.session.memo.remove(&caller_key);
+        driver.session.memo.finish(
+            &caller_key,
+            ProductValue::OutgoingInputEdges(Rc::new(HashMap::from([(
+                slot.clone(),
+                HashSet::from([source.clone()]),
+            )]))),
+            ProductDependencies::default(),
         );
 
-        driver.session_mut().record_call_edge(DemandedCallEdge {
-            caller,
-            callsite: Some(CallSiteId::from_u32(1)),
-            callee,
-            inputs: vec![(slot.semantic_index, source.clone())],
-        });
-        let updated = {
+        let incoming_key = ProductKey::IncomingInputSlot(slot);
+        let relations_key = ProductKey::IncomingInputRelations(root);
+        let frontier_key = ProductKey::OutgoingEdgeFrontier(root);
+        {
             let mut producers = WorldProductProducers::new(&mut world, &tel);
-            driver.pull(&mut producers, ProductKey::IncomingInputSlot(slot))
-        };
+            assert_eq!(
+                driver.pull(&mut producers, incoming_key.clone()),
+                PullOutcome::wait_on_product(relations_key.clone())
+            );
+            assert_eq!(
+                driver.pull(&mut producers, relations_key.clone()),
+                PullOutcome::wait_on_product(frontier_key.clone())
+            );
+            driver.pull(&mut producers, frontier_key.clone());
+            driver.pull(&mut producers, relations_key.clone());
+            assert_eq!(
+                driver.pull(&mut producers, incoming_key.clone()),
+                PullOutcome::Produced(ProductValue::IncomingInputSlot(HashSet::from([source.clone()])))
+            );
+        }
+        let source_generation = driver.session.memo.generation(&incoming_key);
+        let relations_generation = driver.session.memo.generation(&relations_key);
 
+        let unrelated_key = ProductKey::OutgoingInputEdges(unrelated);
+        driver.pull(&mut fake, unrelated_key.clone());
+        driver.session.memo.remove(&unrelated_key);
+        driver.session.memo.finish(
+            &unrelated_key,
+            ProductValue::OutgoingInputEdges(Rc::new(HashMap::new())),
+            ProductDependencies::default(),
+        );
+        {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            assert_eq!(
+                driver.pull(&mut producers, incoming_key.clone()),
+                PullOutcome::wait_on_product(frontier_key.clone())
+            );
+            driver.pull(&mut producers, frontier_key);
+            driver.pull(&mut producers, relations_key.clone());
+            assert_eq!(
+                driver.pull(&mut producers, incoming_key.clone()),
+                PullOutcome::Produced(ProductValue::IncomingInputSlot(HashSet::from([source])))
+            );
+        }
+        assert_eq!(driver.session.memo.generation(&incoming_key), source_generation);
+        assert_eq!(driver.session.memo.generation(&relations_key), relations_generation);
+
+        driver.session.memo.remove(&caller_key);
+        driver.session.memo.finish(
+            &caller_key,
+            ProductValue::OutgoingInputEdges(Rc::new(HashMap::new())),
+            ProductDependencies::default(),
+        );
+        let withdrawn_wait = {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            driver.pull(&mut producers, incoming_key.clone())
+        };
+        assert_eq!(withdrawn_wait, PullOutcome::wait_on_product(relations_key.clone()));
+        let withdrawn = {
+            let mut producers = WorldProductProducers::new(&mut world, &tel);
+            driver.pull(&mut producers, relations_key);
+            driver.pull(&mut producers, incoming_key)
+        };
         assert_eq!(
-            updated,
-            PullOutcome::Produced(ProductValue::IncomingInputSlot(Box::new([source])))
+            withdrawn,
+            PullOutcome::Produced(ProductValue::IncomingInputSlot(HashSet::new()))
         );
     }
 
@@ -2704,7 +3559,54 @@ mod tests {
     }
 
     #[test]
-    fn world_product_transport_artifacts_are_session_backed_not_self_waits() {
+    fn world_product_transport_shape_projects_layout_owned_by_a_live_cover() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(64);
+        let executable = fake_executable(root);
+        let position = TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&executable),
+        };
+        let mut world = World::new();
+        let shape = ShapeId::for_test(0);
+        let mut driver = ProductDriver::new(&tel, root);
+        driver
+            .session_mut()
+            .record_solved_transport_closure(SolvedTransportClosure {
+                executables: HashSet::from([executable.clone()]),
+                component_of: HashMap::from([(position.clone(), 0)]),
+                components: vec![SolvedTransportComponent {
+                    representative: position.clone(),
+                    positions: vec![position.clone()],
+                    shape: Some(shape),
+                }],
+                boundary_publications: HashSet::new(),
+                consumed_fact_states: HashMap::new(),
+                consulted: HashSet::new(),
+            });
+        driver.session_mut().record_transport_layout_for(
+            &executable,
+            position.clone(),
+            TransportLayout::structural(shape),
+        );
+        let mut producers = WorldProductProducers::new(&mut world, &tel);
+
+        assert_eq!(
+            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Layout(
+                TransportLayout::structural(shape),
+            )))
+        );
+        assert!(
+            driver
+                .session()
+                .memo()
+                .get(&ProductKey::TransportComponent(position))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn world_product_transport_artifacts_require_product_entries_not_only_session_inventory() {
         use super::super::transport::{
             ActivationSymbol, CallableDescr, CallableFacts, ExecutableSymbol, LaneDescr, ShapeDescr, TransportClass,
         };
@@ -2743,13 +3645,13 @@ mod tests {
         };
         let mut driver = ProductDriver::new(&tel, root);
         driver.session_mut().record_transport_shape(position.clone(), shape);
-        driver.session_mut().record_transport_component(
-            position.clone(),
-            TransportComponentInventory {
-                representative: position.clone(),
-                positions: vec![position.clone()],
-            },
-        );
+        let component = TransportComponentInventory {
+            representative: position.clone(),
+            positions: vec![position.clone()],
+        };
+        driver
+            .session_mut()
+            .record_transport_component(position.clone(), component.clone());
         driver
             .session_mut()
             .record_callable_facts(callable, callable_facts.clone());
@@ -2757,16 +3659,22 @@ mod tests {
 
         assert_eq!(
             driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
+            PullOutcome::wait_on_product(ProductKey::TransportComponent(position.clone()))
+        );
+        driver.session_mut().memo.finish(
+            &ProductKey::TransportComponent(position.clone()),
+            ProductValue::TransportComponent(component.clone()),
+            ProductDependencies::default(),
+        );
+        assert_eq!(
+            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
             PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Layout(
                 TransportLayout::structural(shape),
             )))
         );
         assert_eq!(
-            driver.pull(&mut producers, ProductKey::TransportComponent(position.clone())),
-            PullOutcome::Produced(ProductValue::TransportComponent(TransportComponentInventory {
-                representative: position.clone(),
-                positions: vec![position],
-            }))
+            driver.pull(&mut producers, ProductKey::TransportComponent(position)),
+            PullOutcome::Produced(ProductValue::TransportComponent(component))
         );
         assert_eq!(
             driver.pull(&mut producers, ProductKey::CallableFacts(callable)),
@@ -2794,7 +3702,8 @@ mod tests {
         let first_symbol = executable_symbol_for_test(&first);
         let second_symbol = executable_symbol_for_test(&second);
         let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().record_materialized_executable(
+        record_materialized_product(
+            driver.session_mut(),
             first.clone(),
             fake_materialized_executable(
                 allocating_body(),
@@ -2806,7 +3715,8 @@ mod tests {
                 )),
             ),
         );
-        driver.session_mut().record_materialized_executable(
+        record_materialized_product(
+            driver.session_mut(),
             second.clone(),
             fake_materialized_executable(
                 empty_body(),
@@ -2963,7 +3873,8 @@ mod tests {
         driver
             .session_mut()
             .record_runtime_demand_dependency(callee.clone(), caller.clone());
-        driver.session_mut().record_materialized_executable(
+        record_materialized_product(
+            driver.session_mut(),
             caller.clone(),
             fake_materialized(
                 caller_symbol.clone(),
@@ -2976,9 +3887,7 @@ mod tests {
             Some(fake_edge(caller.clone(), callee_symbol, caller_symbol)),
             EffectSummary::default(),
         );
-        driver
-            .session_mut()
-            .record_materialized_executable(callee.clone(), callee_materialized.clone());
+        record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized.clone());
         let mut world = World::new();
         let mut producers = WorldProductProducers::new(&mut world, &tel);
         assert!(matches!(
@@ -2987,9 +3896,7 @@ mod tests {
         ));
         let produced_after_settle = capture.produced.get();
 
-        driver
-            .session_mut()
-            .record_materialized_executable(callee.clone(), callee_materialized.clone());
+        record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized.clone());
 
         assert!(
             driver.session().executable_effects(&callee).is_some()
@@ -3011,9 +3918,7 @@ mod tests {
             scheduler_visible: true,
             ..EffectSummary::default()
         };
-        driver
-            .session_mut()
-            .record_materialized_executable(callee.clone(), changed);
+        record_materialized_product(driver.session_mut(), callee.clone(), changed);
 
         assert!(
             driver.session().executable_effects(&callee).is_none(),
@@ -3143,7 +4048,8 @@ mod tests {
         let caller_symbol = executable_symbol_for_test(&caller);
         let callee_symbol = executable_symbol_for_test(&callee);
         let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().record_materialized_executable(
+        record_materialized_product(
+            driver.session_mut(),
             grand.clone(),
             fake_materialized(
                 grand_symbol.clone(),
@@ -3151,7 +4057,8 @@ mod tests {
                 EffectSummary::default(),
             ),
         );
-        driver.session_mut().record_materialized_executable(
+        record_materialized_product(
+            driver.session_mut(),
             caller.clone(),
             fake_materialized(
                 caller_symbol.clone(),
@@ -3159,7 +4066,8 @@ mod tests {
                 EffectSummary::default(),
             ),
         );
-        driver.session_mut().record_materialized_executable(
+        record_materialized_product(
+            driver.session_mut(),
             callee.clone(),
             fake_materialized(callee_symbol, None, EffectSummary::default()),
         );
@@ -3180,9 +4088,7 @@ mod tests {
                 ..EffectSummary::default()
             },
         );
-        driver
-            .session_mut()
-            .record_materialized_executable(callee.clone(), changed);
+        record_materialized_product(driver.session_mut(), callee.clone(), changed);
 
         assert!(
             driver.session().executable_effects(&callee).is_none(),
@@ -3347,6 +4253,19 @@ mod tests {
         }
     }
 
+    fn record_materialized_product(
+        session: &mut PullSession,
+        executable: ExecutableKey,
+        materialized: MaterializedExecutable,
+    ) {
+        session.record_materialized_executable(executable.clone(), materialized.clone());
+        session.memo.finish(
+            &ProductKey::MaterializedExecutable(executable),
+            ProductValue::MaterializedExecutable(Box::new(materialized)),
+            ProductDependencies::default(),
+        );
+    }
+
     fn executable_symbol_for_test(executable: &ExecutableKey) -> super::super::transport::ExecutableSymbol {
         super::super::transport::ExecutableSymbol {
             activation: super::super::transport::ActivationSymbol {
@@ -3362,7 +4281,7 @@ mod tests {
     /// component -- any member's lookup through the executable cover reaches
     /// its component (with the canonical representative), and a covered
     /// position absent from the solve is proven unconstrained (`None`), so no
-    /// pull path ever needs a second solve within the epoch.
+    /// pull path ever needs a second solve without an input movement.
     #[test]
     fn solved_transport_closure_serves_every_member_position() {
         let root = RootId::for_test(21);
@@ -3410,11 +4329,9 @@ mod tests {
         );
     }
 
-    /// INTENT: the SOLVE is the coherent epoch unit. A settled-demand change on
-    /// ANY member executable drops the whole recorded closure, so no other
-    /// member keeps answering component pulls from the displaced solve.
+    /// A demand movement on one member retracts its owning closure for every member.
     #[test]
-    fn solved_transport_closure_drops_whole_on_any_member_epoch_event() {
+    fn member_demand_movement_retracts_its_owning_transport_closure() {
         let root = RootId::for_test(22);
         let first = fake_executable_with_function(root, 220);
         let second = fake_executable_with_function(root, 221);
@@ -3444,7 +4361,7 @@ mod tests {
 
         assert!(
             !session.transport_closure_covers(&first),
-            "the epoch member's cover must drop"
+            "the moved member's cover must drop"
         );
         assert!(
             !session.transport_closure_covers(&second),
@@ -3554,45 +4471,146 @@ mod tests {
         );
     }
 
-    /// INTENT (fz-go4.18.28.13): the epoch-wide invalidation
-    /// (`invalidate_transport_products`) displaces every recorded closure at
-    /// once via `clear_solved_transport_closures`. The consult ledger must
-    /// track that SAME epoch boundary -- once the invalidation walk that
-    /// still needs the pre-clear edges has finished, every displaced
-    /// closure's edges must be retracted, not left to accumulate release
-    /// over release for the rest of the session (the `.28.5` audit's
-    /// "monotonically grows for the whole session" finding).
     #[test]
-    fn transport_closure_consult_ledger_prunes_on_epoch_invalidation() {
+    fn transport_invalidation_retracts_only_closures_that_own_the_moved_input() {
         let root = RootId::for_test(25);
         let consulted = fake_executable_with_function(root, 250);
         let member = fake_executable_with_function(root, 251);
+        let unrelated = fake_executable_with_function(root, 252);
         let mut closure = SolvedTransportClosure::default();
         closure.executables.insert(member.clone());
         closure.consulted.insert(consulted);
+        let mut unrelated_closure = SolvedTransportClosure::default();
+        unrelated_closure.executables.insert(unrelated.clone());
         let mut session = PullSession::new(root);
         session.record_solved_transport_closure(closure);
+        session.record_solved_transport_closure(unrelated_closure);
         assert_eq!(session.transport_closure_consult_edge_count(), 1);
 
-        // The epoch trigger: `member`'s settled demand moves, which routes
-        // through `invalidate_transport_products` -> `clear_solved_transport_
-        // closures`. The walk it drives still needs the pre-clear ledger (to
-        // reach `member` itself, a self-consult skip aside, and any other
-        // closure `consulted` fed into); once that walk finishes, the
-        // displaced closure's edges must be gone.
         let settled = ExecutableRuntimeDemand::default();
         let mut moved = ExecutableRuntimeDemand::default();
         moved.input_demands.push(RuntimeDemand::default());
         session.record_settled_runtime_demand(member.clone(), settled);
-        session.record_settled_runtime_demand(member, moved);
+        session.record_settled_runtime_demand(member.clone(), moved);
 
         assert_eq!(
             session.transport_closure_consult_edge_count(),
             0,
-            "an epoch-wide invalidation must retract the displaced closure's consult edges too, \
-             not just clear its cover -- otherwise the ledger keeps growing forever across \
-             epochs even though no closure is left to justify the edge"
+            "the displaced closure must retract the consult edge it owned"
         );
+        assert!(!session.transport_closure_covers(&member));
+        assert!(
+            session.transport_closure_covers(&unrelated),
+            "a movement cannot retract a closure that neither covers nor consulted the moved executable"
+        );
+    }
+
+    #[test]
+    fn fact_movement_batch_retracts_every_affected_transport_closure() {
+        let root = RootId::for_test(26);
+        let first = fake_executable_with_function(root, 260);
+        let second = fake_executable_with_function(root, 261);
+        let untouched = fake_executable_with_function(root, 262);
+        let first_fact = FactKey::LoweredBody(FunctionId::for_test(260));
+        let second_fact = FactKey::LoweredBody(FunctionId::for_test(261));
+        let mut session = PullSession::new(root);
+        for (executable, consumed) in [
+            (
+                first.clone(),
+                HashMap::from([(
+                    first_fact.clone(),
+                    FactState {
+                        revision: Some(1),
+                        settled: true,
+                    },
+                )]),
+            ),
+            (
+                second.clone(),
+                HashMap::from([(
+                    second_fact.clone(),
+                    FactState {
+                        revision: Some(4),
+                        settled: true,
+                    },
+                )]),
+            ),
+            (untouched.clone(), HashMap::new()),
+        ] {
+            session.record_solved_transport_closure(SolvedTransportClosure {
+                executables: HashSet::from([executable]),
+                consumed_fact_states: consumed,
+                ..Default::default()
+            });
+        }
+
+        session.apply_fact_movements(&[
+            fact_movement(first_fact, Some(2), true),
+            fact_movement(second_fact, Some(5), true),
+        ]);
+        session.reconcile_fact_movements();
+
+        assert!(!session.transport_closure_covers(&first));
+        assert!(!session.transport_closure_covers(&second));
+        assert!(session.transport_closure_covers(&untouched));
+    }
+
+    #[test]
+    fn same_revision_dirty_fact_movement_retracts_cover_and_component_product() {
+        let root = RootId::for_test(28);
+        let executable = fake_executable_with_function(root, 280);
+        let fact = FactKey::LoweredBody(FunctionId::for_test(280));
+        let position = TransportPosition::ExecutableReturn {
+            executable: executable_symbol_for_test(&executable),
+        };
+        let component = TransportComponentInventory {
+            representative: position.clone(),
+            positions: vec![position.clone()],
+        };
+        let key = ProductKey::TransportComponent(position.clone());
+        let mut session = PullSession::new(root);
+        session.record_solved_transport_closure(SolvedTransportClosure {
+            executables: HashSet::from([executable.clone()]),
+            consumed_fact_states: HashMap::from([(
+                fact.clone(),
+                FactState {
+                    revision: Some(1),
+                    settled: true,
+                },
+            )]),
+            ..Default::default()
+        });
+        session.record_transport_shape_for(&executable, position.clone(), ShapeId::for_test(0));
+        session.record_transport_component(position, component.clone());
+        session.memo.finish(
+            &key,
+            ProductValue::TransportComponent(component),
+            ProductDependencies::default(),
+        );
+        let mut scheduler = super::super::scheduler::Scheduler::<u32, FactKey>::new();
+        scheduler.complete(
+            &1,
+            HashSet::new(),
+            HashSet::new(),
+            vec![fact.clone()],
+            vec![fact.clone()],
+        );
+        let blocked = scheduler.complete(
+            &1,
+            HashSet::new(),
+            HashSet::from([FactUse::current(FactKey::RootEntry(root))]),
+            vec![fact],
+            Vec::new(),
+        );
+        assert_eq!(blocked.movements.len(), 1);
+        assert_eq!(blocked.movements[0].state.revision, Some(1));
+        assert!(!blocked.movements[0].state.settled);
+
+        session.apply_fact_movements(&blocked.movements);
+        session.reconcile_fact_movements();
+
+        assert!(!session.transport_closure_covers(&executable));
+        assert!(session.memo().get(&key).is_none());
     }
 
     /// INTENT: the by-symbol transport-shape index is a second KEYING of
@@ -3638,7 +4656,7 @@ mod tests {
     /// when its recorder's epoch ends, and positions recorded by an
     /// untouched executable must keep standing.
     #[test]
-    fn transport_shape_index_dies_with_its_recorder_epoch() {
+    fn transport_shape_index_dies_with_its_owning_closure() {
         let root = RootId::for_test(32);
         let invalidated = fake_executable_with_function(root, 320);
         let untouched = fake_executable_with_function(root, 321);
@@ -3663,7 +4681,7 @@ mod tests {
         session.record_transport_shape_for(&invalidated, cross_position.clone(), shape);
         session.record_transport_shape_for(&untouched, standing_position.clone(), shape);
 
-        // The production epoch event: settled demand for `invalidated` moves.
+        // Settled demand for `invalidated` moves.
         let settled = ExecutableRuntimeDemand::default();
         let mut moved = ExecutableRuntimeDemand::default();
         moved.input_demands.push(RuntimeDemand::default());

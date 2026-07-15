@@ -144,7 +144,7 @@ pub(super) fn drive_root_backend_product_with_budgets<
                         PullWait::Product(product) => stack.push(product),
                         PullWait::Fact(fact) => {
                             let producer_pokes =
-                                drive_product_fact_wait::<T, E>(world, tel, root, fact, fact_wait_budget)?;
+                                drive_product_fact_wait::<T, E>(world, tel, root, &mut driver, fact, fact_wait_budget)?;
                             driver.session_mut().record_producer_pokes(producer_pokes);
                         }
                     }
@@ -162,6 +162,7 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: 
     world: &mut World,
     tel: &T,
     root: RootId,
+    driver: &mut ProductDriver<'_, T>,
     fact: FactUse<FactKey>,
     fact_wait_budget: u64,
 ) -> Result<u64, E> {
@@ -183,6 +184,7 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: 
             Ok(effects) => {
                 jobs_ran += 1;
                 let completion = super::drive::ExecutionContext::new(world, tel).complete_job(job, effects);
+                driver.apply_fact_movements(&completion.step.movements);
                 super::drive::stop_job_span(job_span, world, &completion);
             }
             Err(err) => {

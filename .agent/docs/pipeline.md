@@ -307,46 +307,56 @@ Backend-required transport positions wait for an actual produced
 `PullSession.demanded_transport_positions`. `TransportComponent(position)` can
 name equivalent positions before every shape has been produced; backend and ABI
 products consume shapes, so their waits must test `PullSession::transport_shape`.
-Because transport shapes are demand-derived, a changed executable demand or
-incoming-input edge invalidates that executable's cached transport
-shapes/components along with its materialized/ABI/backend products.
+Product entries retain exact product generations and fact-use states. Producers
+record dependencies at the read site; waits name those reads without restamping
+or rereading the world. Scheduler movements are reconciled to their final exact
+states before the next pull.
+
+Outgoing input publication is request-local and order-free.
+`OutgoingEdgeFrontier(root)` is the immutable set of executables whose
+`OutgoingInputEdges(E)` product has actually been requested. Each outgoing
+product is an immutable `InputSlot -> Set<IncomingInputSource>` contribution.
+`IncomingInputRelations(root)` derives the immutable request-relative relation
+for the exact current frontier generation. `IncomingInputSlot(slot)`
+projects one exact value from it. Replacement, withdrawal, and equal reproduction use the
+ordinary product-generation rules; there is no append-only call-edge inventory.
 
 The shape-constraint graph behind those products is solved ONCE per settled
 executable closure, not once per pulled position. The first component pull
 whose executable has no covering solve expands the closure, projects every
 member, solves the whole union, and records the complete result — every
 connected component (member positions, canonical representative, agreed
-shape) plus all callable/boundary facts — as a `SolvedTransportClosure` in
-the session, emitting `pull.transport_component.closure_solved`. Every later
+shape), its boundary-publication positions, and all callable/boundary facts —
+as a `SolvedTransportClosure` in the session, emitting
+`pull.transport_component.closure_solved`. Every later
 `TransportComponent(position)` pull for a covered executable materializes its
 component from that record (a covered position absent from the solve is
-proven unconstrained and gets a singleton), so solve count tracks closure
-EPOCHS, not positions. The singleton proof rests on a load-bearing lemma:
-within an epoch a materialized body is a position-preserving PRUNE of the
+proven unconstrained and gets a singleton), so solve count tracks live closures,
+not positions. The singleton proof rests on a load-bearing lemma:
+a materialized body is a position-preserving PRUNE of the
 lowered body in original-id space (`prune_lowered_body` keeps value/callsite
 ids and maps entries through `original_entry_ids`), so a body swap can only
-REMOVE positions and edges, never add them — absence from the epoch's solve
+REMOVE positions and edges, never add them — absence from the covering solve
 therefore stays a proof of unconstrained. If pruning ever renumbers values or
-synthesizes positions, this proof breaks. Any transport invalidation (a
-settled-demand change, a new incoming call edge) is an epoch boundary: it
-clears all recorded solves, and the next pull re-solves against the moved
-graph.
+synthesizes positions, this proof breaks.
 
 Plan completeness is order-independent by construction. Every fact a closure
 solve reads is recorded in a consulted-facts ledger at the read site, split by
 retraction channel. Session-product reads (RuntimeDemand values,
 IncomingInputSlot values) register their owning executable; on completion the
 solve cross-registers those owners against its membership
-(`PullSession::record_transport_closure_consult`), and
-`invalidate_transport_products` walks that reverse index transitively — so a
-session-side movement (`record_settled_runtime_demand`, `record_call_edge`)
-displaces every member of every solve that consulted the moved executable's
-facts, including that member's artifact products, which the walk owns. World
-facts (activation analyses, callsite summaries, lowered bodies, return types)
-have no push channel into the session; the solve snapshots each one's
-revision into `SolvedTransportClosure::consumed_fact_revisions`, and the
-shape/component producers validate the snapshot before a recorded solve
-answers a pull, displacing the whole solve on any mismatch. A position the
+and exact world-fact reverse indexes. A moved session-product owner retracts
+closures containing that member or registered as readers of that owner; an
+exact world-fact movement retracts closures registered against that fact.
+Unrelated closures remain valid.
+World movements arrive from the scheduler as borrowed `FactMovement` values:
+one exact final `FactState` per moved key, read directly from the scheduler's
+`FactTable` after propagation. Product reconciliation therefore depends on
+neither transition-stack order nor a world reread. Boundary-publication carrier
+evidence is read only from the covering solved closure and dies when that
+closure is replaced or retracted. Intrinsic callable callsite mode is read from
+the authoritative `LoweredBody`, never from an optional pruned materialization.
+A position the
 solve fails to ground records `TransportShapeFact::AbsentForClosure(id)` —
 provenance naming the solve, never a bare terminal absence — so the verdict
 dies with the solve that produced it. Because the discovery graph and the

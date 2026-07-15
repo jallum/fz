@@ -67,7 +67,7 @@ pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub(crate) use drive::JobEffects;
 pub use drive::{FactKey, Job, WorkGraph};
-pub use facts::{FactChange, FactReadiness, FactReplace, FactTable, FactUse};
+pub use facts::{FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse};
 #[cfg(test)]
 pub use fixture_metadata::fixture_frontmatter_prefix_bytes;
 pub use fixture_metadata::{

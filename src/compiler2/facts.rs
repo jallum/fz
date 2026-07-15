@@ -75,6 +75,34 @@ impl<F> FactChange<F> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FactState {
+    pub revision: Option<u64>,
+    pub settled: bool,
+}
+
+impl FactState {
+    pub fn projected<F>(self, fact: &FactUse<F>) -> Self {
+        match fact {
+            FactUse::Current(_) => Self {
+                revision: self.revision,
+                settled: false,
+            },
+            FactUse::Settled(_) => self,
+            FactUse::SettledPresence(_) => Self {
+                revision: None,
+                settled: self.settled,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactMovement<F> {
+    pub key: F,
+    pub state: FactState,
+}
+
 #[derive(Debug, Clone)]
 pub struct FactReplace<F> {
     pub changed: Vec<FactChange<F>>,
@@ -145,6 +173,19 @@ where
 
     pub fn is_settled(&self, key: &F) -> bool {
         self.slots.get(key).is_some_and(FactSlot::is_settled)
+    }
+
+    pub fn state(&self, key: &F) -> FactState {
+        let Some(slot) = self.slots.get(key) else {
+            return FactState {
+                revision: None,
+                settled: false,
+            };
+        };
+        FactState {
+            revision: slot.revision(),
+            settled: slot.is_settled(),
+        }
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &F> {

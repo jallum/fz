@@ -661,16 +661,31 @@ MaterializedExecutable(E)
         session and does not scan all semantic facts to rediscover membership.
       </p>
       <p>
+        Product freshness is revisioned by exact product generations and exact fact uses. A producer
+        records each dependency at the read site; a wait only names that already-recorded dependency.
+        The scheduler passes one final fact movement per moved key to the pull session by reference;
+        each movement carries the exact state from the scheduler's fact table after propagation, so
+        reconciliation neither relies on transition order nor rescans the world. Outgoing input publication is request-local and
+        order-free: an immutable publisher frontier names requested executables, each publisher owns
+        an immutable map from input slots to source sets, and
+        <code>IncomingInputRelations(root)</code> derives the immutable request-relative relation
+        for the exact current frontier generation. <code>IncomingInputSlot(slot)</code> projects one exact value from that relation.
+        Equal reproduction preserves generations.
+      </p>
+      <p>
         Backend-required transport positions wait for produced
         <code>TransportShape(position)</code> values, not just demanded position membership.
         Transport shapes are demand-derived. <code>RuntimeDemand(E)</code> settles its demand
         SCC inside one producer (the <code>ExecutableEffects</code> pattern): the cone is
         discovered from settled call-edge facts, a bottom-start monotone ascent solves every
         member together, and only the settled fixpoint is memoized — there is no whole-by-need
-        mid-ascent seed, no consumed-return floor, and no in-flight retraction. New incoming
-        call edges invalidate an executable's cached transport shapes/components (and the
-        materialized, ABI, and backend products built on them) but leave settled demand
-        standing; settled demand retracts only when re-materialization resolves a call edge
+        mid-ascent seed, no consumed-return floor, and no in-flight retraction. A moved transport
+        input retracts only live closures containing that member or registered as readers of that
+        session-product owner. Exact world-fact movement retracts closures registered against that
+        fact. Boundary-publication carrier evidence belongs to the solved closure that produced it,
+        and intrinsic callable callsite mode comes from the authoritative lowered body rather than
+        an optional pruned materialization. Unrelated live closures remain valid. Settled demand retracts only
+        when re-materialization resolves a call edge
         outside the settlement's callee inventory, which re-keys and re-settles the affected
         cone. Actual
         call arguments inherit the selected callee input demand during transport projection, so a

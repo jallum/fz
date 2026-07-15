@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
-use super::facts::{ClaimShape, FactChange, FactTable, FactUse};
+use super::facts::{ClaimShape, FactChange, FactMovement, FactTable, FactUse};
 
 /// Why a job entered the agenda. This is observation-only: it never changes
 /// which job runs or in what order, it only tags each work-start so a running
@@ -83,6 +83,7 @@ impl WorkStartTally {
 pub struct AppliedStep<J, F> {
     pub outputs: HashSet<F>,
     pub changed: Vec<FactChange<F>>,
+    pub movements: Vec<FactMovement<F>>,
     pub enqueued: Vec<J>,
     /// Jobs this wave woke that were already pending in the agenda from an
     /// earlier wake this same `complete` call (agenda dedupe: `Agenda::enqueue`
@@ -300,6 +301,7 @@ where
         let mut coalesced_seen = HashSet::new();
         let mut pending_changes = replaced.changed.clone();
         pending_changes.extend(dirtied);
+        let mut moved_keys = HashSet::new();
         while let Some(change) = pending_changes.pop() {
             if change.content_changed() {
                 // Classify the wave. An ascent re-runs readers, who join. A
@@ -354,10 +356,19 @@ where
                     &mut coalesced_seen,
                 );
             }
+            moved_keys.insert(change.key);
         }
+        let movements = moved_keys
+            .into_iter()
+            .map(|key| FactMovement {
+                state: self.facts.state(&key),
+                key,
+            })
+            .collect();
         AppliedStep {
             outputs: replaced.output_keys,
             changed: replaced.changed,
+            movements,
             enqueued,
             coalesced,
             blocked,

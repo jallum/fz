@@ -154,26 +154,21 @@ fixpoint for every member at once. Members no contributor names at the fixpoint
 whole-by-need bootstrap at settle time — absence is a distinct settled cell.
 No mid-ascent value is ever observable outside the producer: there is no
 active-SCC seed, no consumed-return contribution floor, and no in-flight
-retraction. Settled demand retracts only on an epoch event — materialization
-resolving a call edge outside the settled callee inventory re-keys and
+retraction. Settled demand retracts when materialization resolves a call edge
+outside the settled callee inventory, which re-keys and
 re-settles the affected cone.
 
-Two mechanical stores keep the producer's cost linear in the movement, without
-changing the iterates. Cone collection reads member facts through the
-session's `DemandFactsCache`: each entry is stamped with the exact settled
-world-fact revisions it consumed (activation analysis, lowered body, return
-type, entry dispatch, callsite summaries) and is validated at read — a moved
-or unsettled stamp drops the entry — so the retry-per-wait re-walk stops
-re-cloning every already-collected member. Inside the ascent, a round
-re-derives only the members whose reads moved: a member reads its own joined
+Exact products keep retries proportional to movement without changing the
+iterates. `ExecutableFacts(E)` owns the activation analysis, lowered body,
+entry dispatch, and callsite summaries consumed for one executable; exact
+fact movement displaces that product and its readers. Inside the ascent, a
+round re-derives only the members whose reads moved: a member reads its own joined
 return demand, its cone-edge targets' demands, and (for a lambda producer)
 every executable of the produced function — the two reverse indexes over
 exactly those reads mark the dirty set when a member's iterate moves, and
-every skipped member would have derived an identical value. Both closures
-carry a maintenance obligation: a new world-fact read in the collect must be
-stamped, and a new mutable-round-state read in the derive must extend the
-reverse indexes — otherwise a cache entry or a skipped member silently serves
-a stale value.
+every skipped member would have derived an identical value. A new world-fact
+read must enter the producing product's dependencies, and a new mutable-round
+read must extend the reverse indexes.
 
 Publication closes the stale-caller window: when a settling cone's
 contributions grow the joined return demand of an executable settled earlier

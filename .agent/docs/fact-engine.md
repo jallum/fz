@@ -177,8 +177,11 @@ ProductKey =
   AbiExecutable(E)
   MaterializedExecutable(E)
   ExecutableEffects(E)
+  ExecutableFacts(E)
   RuntimeDemand(E)
+  OutgoingEdgeFrontier(root)
   OutgoingInputEdges(E)
+  IncomingInputRelations(root)
   IncomingInputSlot(slot)
   TransportShape(position)
   TransportComponent(position)
@@ -194,10 +197,11 @@ A producer may say "I need `AbiExecutable(E)`" or "I need settled
 Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
 and `RuntimeDemand(E)` each discover the dependency group containing `E` from
 settled call-edge facts, run a bottom-start monotone ascent to the fixpoint,
-and memoize the settled value for every member at once. A memoized product is
-served from the session cache; settled demand retracts only on an epoch event
-(re-materialization resolving a call edge outside the settlement's callee
-inventory) or when a settlement's own publication grows the join of an
+and memoize the settled value for every member at once. Each memo entry carries
+its immutable value, generation, exact product generations, and exact fact-use
+states. Equal reproduction preserves its generation. Settled demand retracts
+when re-materialization resolves a call edge outside the settlement's callee
+inventory, or when a settlement's own publication grows the join of an
 external input it consumed — then the producer re-collects with the displaced
 external absorbed and re-settles the grown cone before memoizing. Fact
 waits are satisfied at the Compiler2 front door by driving only the direct fact
@@ -206,15 +210,17 @@ jobs for the submitted root.
 
 `PullSession` is request-local product state. It memoizes produced products and
 records the symbolic inventory discovered by demanded products: materialized,
-ABI, and backend executables; runtime demand; incoming input sources; transport
+ABI, and backend executables; runtime demand; transport
 shapes/components; callable/boundary facts; and the final dense executable
 index. The final dense `BackendProgram` packaging is the only root-wide assembly
 step. It packages the symbolic backend executables already present in the
 session; it does not scan the fact table to rediscover artifact membership.
-Transport products are demand-derived session state: when an executable's
-runtime demand or incoming input sources change, the session invalidates that
-executable's cached transport shapes/components before rebuilding downstream
-materialized, ABI, or backend products.
+Outgoing publication is an order-free requested-publisher set plus immutable
+per-publisher slot-source maps. `IncomingInputRelations(root)` derives the
+immutable request-relative slot/source relation for the exact current frontier
+generation; each `IncomingInputSlot(slot)` projects one exact value. Transport closure
+indexes retract only closures owned by a moved
+member, session-product owner, or exact world fact.
 Runtime-demand products also record the other runtime-demand products they read.
 When one settles to a changed value, only those recorded dependents are
 invalidated; if a product is invalidated while in progress, the pull driver

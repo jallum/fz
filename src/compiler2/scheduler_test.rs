@@ -191,6 +191,98 @@ fn compiler2_scheduler_wakes_on_content_change_suppresses_stable_republication()
 }
 
 #[test]
+fn compiler2_scheduler_reports_the_full_fact_movement_wave() {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        1,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["source"],
+        vec!["source"],
+    );
+    complete(
+        &mut scheduler,
+        2,
+        HashSet::from([settled("source")]),
+        HashSet::new(),
+        vec!["derived"],
+        vec!["derived"],
+    );
+    complete(
+        &mut scheduler,
+        3,
+        HashSet::from([settled("derived")]),
+        HashSet::new(),
+        vec!["leaf"],
+        vec!["leaf"],
+    );
+
+    let movement = complete(
+        &mut scheduler,
+        1,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["source"],
+        vec!["source"],
+    );
+
+    assert_eq!(movement.changed.len(), 1);
+    assert!(movement.changed.iter().any(|change| change.key == "source"));
+    assert!(
+        movement
+            .movements
+            .iter()
+            .any(|movement| movement.key == "derived" && !movement.state.settled)
+    );
+    assert!(
+        movement
+            .movements
+            .iter()
+            .any(|movement| movement.key == "leaf" && !movement.state.settled)
+    );
+}
+
+#[test]
+fn compiler2_scheduler_reports_final_state_after_same_key_publication_then_dirtying() {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        1,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["claim"],
+        vec!["claim"],
+    );
+
+    let blocked = complete(
+        &mut scheduler,
+        1,
+        HashSet::new(),
+        HashSet::from([current("missing")]),
+        vec!["claim"],
+        vec!["claim"],
+    );
+    let reported = blocked
+        .movements
+        .iter()
+        .find(|movement| movement.key == "claim")
+        .expect("the moved claim should be reported");
+    assert_eq!(
+        blocked
+            .movements
+            .iter()
+            .filter(|movement| movement.key == "claim")
+            .count(),
+        1
+    );
+
+    assert_eq!(reported.state, scheduler.facts().state(&"claim"));
+    assert_eq!(reported.state.revision, Some(2));
+    assert!(!reported.state.settled);
+}
+
+#[test]
 fn compiler2_scheduler_retracts_outputs_a_job_stops_publishing() {
     let mut scheduler = TestScheduler::new();
     let fact = "foo";
