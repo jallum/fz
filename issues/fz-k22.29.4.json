@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T19:36:25Z",
+  "description": "Final: both fixtures green all 3 legs at their EXISTING goldens (no rebless); full lib 0 failed; matrix name-set only-removals; determinism green. Update .agent docs present-tense: the single-member-direct mechanism; note k22.24-27 vocabulary (BackendDirectCallableEntry / lazy boundary registry) was NOT needed -- existing construction/member facts sufficed once consulted. Close fz-66j + fz-5vi (unblocked). Terminal whole-stack audit precedes the fold.",
+  "id": "fz-k22.29.4",
+  "labels": [],
+  "parent": "fz-k22.29",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-k22.29 slice 4: scoreboard, unblock fz-66j/fz-5vi, docs, close-out",
+  "type": "task",
+  "updated_at": "2026-07-15T19:36:25Z"
+}
