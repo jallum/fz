@@ -14,11 +14,15 @@
     {
       "text": "SLICE-0 SCOPING COMPLETE (plan in the slice tickets .29.1-.4; full map in the agent report). KEY: k22.24/25 SUBSUMED by k22.23 (wrappers already publications-only; member sets exist). Remaining need is NARROWER than the folded k22.26/27 design: a consumption-side read of members.len()==1 \u0026\u0026 selection.is_none() at emit_callable_construction (native) + construction_callable_value (interp), gated by SSA-local construction-field resolution (branch-merged multi-producer falls through naturally -- no single construction identity). Shape-based select_callable_input_shape_for_demand explicitly UNSOUND for this (shape != producer) and out of scope. NON-GOALS ticketed separately if wanted: box_scalar_for_any small-int fast path; cross-callsite union direct dispatch. Baseline scoreboard recorded: ela 528/400/528 vs golden 368; enum_sort scalar {27,432} run/build, interp clean.",
       "timestamp": "2026-07-15T19:36:27Z"
+    },
+    {
+      "text": "EPIC COURSE-CORRECTION: the slice-0 plan's attribution (BackendConstructionWrapper / indirect-call boxing) is provably stale for the two scoreboard fixtures at HEAD (zero wrappers published). Dated-tickets rule applies: fz-66j's bisect ran against the 975821da3-era tree; landings since (demand-floor widenings, k22.28 pins, sibling work) changed the terrain. NEXT: counter-level re-attribution AT the epic base -- instrument the allocation sites (HeapAllocKind provenance for struct + scalar_box) on both fixtures, diff against the known-good 6ffdddae7 values, name the allocating mechanism file:line. Slices 3/4 re-scoped after that. Slice 1's fact stands (cheap, audited, may serve the corrected design).",
+      "timestamp": "2026-07-15T20:42:18Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "fz-k22: derive lazy direct callable boundaries at concrete single-member producers -- un-fold the k22.24-27 design that was folded into k22.23 without implementation",
   "type": "bug",
-  "updated_at": "2026-07-15T19:36:27Z"
+  "updated_at": "2026-07-15T20:42:18Z"
 }
