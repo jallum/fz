@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-9i4.7"
-  ],
+  "blocks": [],
   "created": "2026-06-21T18:47:39Z",
   "description": "Goal\nMake struct dispatch test nominal identity before structural map shape so a plain map cleanly misses a struct clause.\n\nCurrent signal\nfixtures2/behavior/membership_operator.fz is still deferred on fz-bv3. Direct repro:\n- fz2 interp fixtures2/behavior/membership_operator.fz prints the first four booleans, then fails with match_error: expected struct Range when map membership reaches the Range arm.\n- fz2 run fixtures2/behavior/membership_operator.fz exits 0 but only prints the first four of six expected lines.\n\nRoot cause\nWorld::struct_value_ty represents a struct as nominal impl-target identity union tuple evidence union map evidence. Region::Type dispatch currently treats the structural map arm as enough to enter a struct clause. For a receiver that can be Range|Map, a plain map can satisfy the structural map test and then panic during Range field extraction.\n\nRequired work\n- Extend dispatch/type lowering so Region::Type over a struct value tests the nominal opaque tag before any tuple/map field projection.\n- A non-matching map must take the miss edge, not enter the struct arm and fail later.\n- Re-enable membership_operator and enumerable_protocol_dispatch defers only after interp/run/build agree with the goldens.\n\nChecks\n- Focused struct-vs-map regression: %Box{} arm followed by wildcard must return the wildcard for a plain map.\n- cargo test --test fixture_matrix membership_operator enumerable_protocol_dispatch -- --nocapture, or equivalent focused matrix runs.\n- cargo test --lib and cargo clippy --workspace --all-targets -- -D warnings.",
   "id": "fz-bv3",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "Struct dispatch must test nominal tag before map shape",
   "type": "bug",
-  "updated_at": "2026-07-15T13:26:20Z"
+  "updated_at": "2026-07-15T14:38:57Z"
 }
