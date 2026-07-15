@@ -1,0 +1,36 @@
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> fixtures2/behavior/list_primitives.fz:2:1
+   |
+2 | fn length([_ | t]), do: 1 + length(t)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> fixtures2/behavior/list_primitives.fz:6:1
+   |
+6 | fn reverse_acc([h | t], acc), do: reverse_acc(t, [h | acc])
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> fixtures2/behavior/list_primitives.fz:9:1
+   |
+9 | fn map(f, [h | t]), do: [f.(h) | map(f, t)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
+warning[type/no-matching-clause]: `fn` clauses don't cover every input
+  --> fixtures2/behavior/list_primitives.fz:12:1
+   |
+12 | fn foldl(f, acc, [h | t]), do: foldl(f, f.(acc, h), t)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the last clause is here
+   |
+   = note: an input matched by no clause halts with `:function_clause` at runtime
+   = help: add a wildcard clause `_ -> ...` to cover any remaining input
+
