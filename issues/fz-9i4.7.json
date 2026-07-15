@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-15T23:11:27Z",
-  "description": "Goal\nTriage the current broad `cargo test --all-targets` fixture_matrix failures observed while landing fz-hwn.20.7.\n\nObserved signal\n`cargo test --all-targets` passed lib tests, bin tests, aot_variadic_open, and cli_help, then failed `--test fixture_matrix` with 119 fixture failures. The first failure was `production_and_guides_have_no_old_value_format_gate_names`: `src/compiler2/jobs/artifact.rs` still contains removed value-format gate name `value_slot`. Other failures included fixture output mismatches, old artifact panics at `src/compiler2/jobs/artifact.rs:1475`, and an enum_map_family drive timeout.\n\nScope\nDo not fold this into transport-boundary work unless it is proven caused by the new transport calculator. Reproduce from a clean worktree and split into narrower tickets if the failures have independent causes.",
+  "description": "Goal: make the unified fixtures2 behavioral matrix an honest, green statement of current language behavior. The original 119-failure observation is historical; most buckets were resolved or split. Current direct audit finds four deferred fixtures (11 path deferrals): enumerable_protocol_dispatch remains blocked by fz-bv3; enum_tier0 and fz_f98_map_reduce remain blocked by fz-f98; enum_map_family's old fz-9i4.7.3 direct-target defect is fixed but two newly minimized native defects now block re-enablement (fz-9i4.7.10/.11).\n\nThe non-deferred debug matrix currently has a broad diagnostics-golden class tracked by fz-lfp; do not blindly bless warnings, weaken the empty-diagnostics contract, or add wildcard clauses without reviewing each fixture's intended language behavior. fz-go4.22 owns the remaining cross-epic matrix-red census. This umbrella closes only when those current blockers are resolved, all stale defers are removed, the single-threaded matrix is green, resource invalid-field behavior is source-diagnostic rather than a host abort, and the proven coverage floor is restored.\n\nCurrent leaf work under this ticket: fz-9i4.7.5.1, .7.8, .7.10, and .7.11. External blockers are explicit DAG dependencies so the ready frontier remains truthful.",
   "id": "fz-9i4.7",
   "labels": [],
   "parent": "fz-9i4",
@@ -15,7 +15,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Fixture matrix currently fails outside targeted transport boundary work",
+  "title": "Finish the honest fixtures2 matrix after reclassifying current failures",
   "type": "bug",
-  "updated_at": "2026-06-18T03:30:05Z"
+  "updated_at": "2026-07-15T13:26:04Z"
 }
