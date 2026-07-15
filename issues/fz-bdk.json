@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T19:02:41Z",
+  "description": "Surfaced by fz-t93 (2026-07-15) once the missing frontmatter let the fixture run. fixtures2/behavior/opaque_fn_all_divergent.fz: dbg(:bad + 1) (ill-typed atom+int add). interp: aborts with function_clause: no backend entry clause matched for executable 1 (correct-ish: loud). run+build: exit 0 with COMPLETELY EMPTY stdout/stderr -- the expression is silently swallowed, no output, no diagnostic, no abort. Three-path parity break AND a silent-failure class: native producing silent nothing for code that must either diagnose at compile time or crash loudly at runtime. Likely the native lowering prunes the divergent/absent-return path entirely (all clauses divergent -\u003e body pruned -\u003e main emits nothing) where interp still dispatches and faults. Decide the CONTRACT first (compile-time diagnostic? runtime function_clause abort like interp?) then make all three paths agree. Repro: fixture_matrix opaque_fn_all_divergent (interp red = honest signal; run/build green-but-wrong).",
+  "id": "fz-bdk",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "native run/build SILENTLY swallow ill-typed expression (exit 0, empty output) where interp aborts function_clause -- opaque_fn_all_divergent parity + silent-failure bug",
+  "type": "bug",
+  "updated_at": "2026-07-15T19:02:41Z"
+}
