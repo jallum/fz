@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T20:46:24Z",
+  "description": "Goal\n\nDerive IncomingInputSlot(slot) exactly from the current OutgoingEdgeFrontier(root) and immutable OutgoingInputEdges publisher values.\n\nSignal\n\n- A requested pending publisher is an exact wait; the last current publisher completes the slot.\n- A later publisher request stales the old slot before observation and waits for the new child.\n- A new publisher with no matching edge refreshes dependencies but preserves slot value/generation.\n- Publisher replacement withdraws missing sources.\n- Forward/reverse publisher production yields identical source value, generation, and dependency metadata.\n\nStrategy\n\nRead the frontier through the generic context, then read every named outgoing child and filter its immutable edges for the slot. Store only the immutable derived source list as ProductValue; frontier and publisher stamps remain memo metadata.\n\nRemovals\n\nDelete append-only incoming_inputs/call_edges completion, snapshot-only slot production, push invalidation as compensation, and any transport closure probe used only to force publishers before slot reads.\n\nAcceptance\n\nPermanent production-driver tests cover the complete lifecycle and paired drop_while observes both exact sources. No World scan, semantic seal, no-change loop, or transport-specific freshness cache. cargo test --lib and deny-warning clippy pass.",
+  "id": "fz-k22.5.4",
+  "labels": [],
+  "parent": "fz-k22.5",
+  "priority": 2,
+  "status": "open",
+  "title": "Derive incoming input slots from frontier and outgoing products",
+  "type": "bug",
+  "updated_at": "2026-07-15T20:46:24Z"
+}
