@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-15T13:22:53Z",
@@ -13,8 +13,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "the remaining ~56 debug matrix reds may be ONE class: type/no-matching-clause warnings on stderr vs fixtures with no/empty diagnostics golden -- investigate and resolve the class",
   "type": "bug",
-  "updated_at": "2026-07-15T14:38:58Z"
+  "updated_at": "2026-07-15T14:49:53Z"
 }
