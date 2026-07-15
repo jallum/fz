@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-06-15T23:11:27Z",
-  "description": "Goal: make the unified fixtures2 behavioral matrix an honest, green statement of current language behavior. The original 119-failure observation is historical; most buckets were resolved or split. Current direct audit finds four deferred fixtures (11 path deferrals): enumerable_protocol_dispatch remains blocked by fz-bv3; enum_tier0 and fz_f98_map_reduce remain blocked by fz-f98; enum_map_family's old fz-9i4.7.3 direct-target defect is fixed but two newly minimized native defects now block re-enablement (fz-9i4.7.10/.11).\n\nThe non-deferred debug matrix currently has a broad diagnostics-golden class tracked by fz-lfp; do not blindly bless warnings, weaken the empty-diagnostics contract, or add wildcard clauses without reviewing each fixture's intended language behavior. fz-go4.22 owns the remaining cross-epic matrix-red census. This umbrella closes only when those current blockers are resolved, all stale defers are removed, the single-threaded matrix is green, resource invalid-field behavior is source-diagnostic rather than a host abort, and the proven coverage floor is restored.\n\nCurrent leaf work under this ticket: fz-9i4.7.5.1, .7.8, .7.10, and .7.11. External blockers are explicit DAG dependencies so the ready frontier remains truthful.",
+  "description": "Goal\n\nClassify failures exposed when the migrated fixtures2 corpus first ran honestly across compiler2 frontdoors. Reproduce each distinct failure, group only defects with a proven common root, and transfer live work to the compiler subsystem that owns the first incorrect fact.\n\nCompleted result\n\nThe original 119-failure observation was a migration-time census, not one compiler defect. Its buckets were either fixed by the closed children or split into focused tickets. The remaining live issues are now owned outside this triage node:\n\n- Callable-boundary cleanup and the Enum.with_index mapper-demand defect are children of fz-k22.\n- Impossible resource field access is a standalone semantic-diagnostic defect.\n- Protocol, shared Enum.reduce, branch-wide matrix, and diagnostic-warning work remains with fz-bv3, fz-f98, fz-go4.22, and fz-lfp.\n- The former cross-call Enum list-helper ABI defect is satisfied by fz-k22.21.\n- Coverage-floor restoration moved directly under fz-9i4 because it is migration scaffolding removal.\n\nCompletion boundary\n\nThis ticket owns classification, not perpetual matrix health. Every reproduced live defect has a focused owner and acceptance signal; external compiler epics no longer block fixture migration.",
   "id": "fz-9i4.7",
   "labels": [],
   "parent": "fz-9i4",
@@ -15,7 +15,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Finish the honest fixtures2 matrix after reclassifying current failures",
+  "title": "Classify and split failures exposed by the unified fixtures2 matrix",
   "type": "bug",
-  "updated_at": "2026-07-15T14:38:58Z"
+  "updated_at": "2026-07-15T14:39:16Z"
 }
