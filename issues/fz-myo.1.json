@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-myo.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-myo",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-myo: bisect 0aa8dc0eb..2479a69fd to name the exact commit that reshaped the SCC partition (quicksort reductions 66-\u003e94)",
   "type": "bug",
-  "updated_at": "2026-07-09T19:48:09Z"
+  "updated_at": "2026-07-15T14:49:54Z"
 }
