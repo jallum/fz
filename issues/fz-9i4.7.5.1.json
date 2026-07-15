@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-09T22:32:31Z",
-  "description": "Audit of fz-9i4.7.5 found that non-.value resource dot access is rejected, but native/AOT abort via runtime/src/ir_runtime.rs expect(\"fz_struct_get_named_field_ref\") while backend interp returns a clean error. Acceptance: h.foo on a resource fails consistently with a controlled diagnostic/runtime error on run/interp/build and does not expose payloads; resource .value remains the only payload path; cargo test --lib and clippy pass.",
+  "description": "Goal: reject impossible field access at the semantic boundary where the receiver type and source span are still authoritative. Current root: LoweredStep::FieldAccess asks map_field_lookup; when a known resource(T) has no atom field named foo, semantic analysis replaces that failed lookup with any. The invalid operation then reaches backend interp as a string error and JIT/AOT as a Rust expect abort in fz_struct_get_named_field_ref.\n\nDo not solve this primarily in the runtime. A known resource has exactly the language-defined .value projection (subject to opaque visibility); h.foo is not a dynamic struct lookup and must not be converted to any. Emit a stable source diagnostic with the field-access span when the settled receiver domain cannot support that field. Preserve conservative behavior only where the receiver genuinely may be a map/struct with an unknown field set. The runtime expect may remain an unreachable compiler-invariant guard once invalid source cannot reach it.\n\nAcceptance: the minimal in-module resource probe fn bad(h), do: h.foo is rejected during run, interp, and build with the same telemetry-observable diagnostic and a source span; no JIT/AOT binary is executed or host-aborts; h.value remains the sole payload projection and resource_lifecycle, file_resource_lifecycle, file_handle, and resource_index_payload_private remain green; lib and clippy pass.",
   "id": "fz-9i4.7.5.1",
   "labels": [],
   "parent": "fz-9i4.7",
   "priority": 3,
   "status": "open",
-  "title": "Native resource non-value field access reports a controlled error instead of aborting",
+  "title": "Reject impossible resource field access before backend lowering",
   "type": "bug",
-  "updated_at": "2026-07-09T22:35:13Z"
+  "updated_at": "2026-07-15T13:25:18Z"
 }
