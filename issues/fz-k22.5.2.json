@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-k22.5.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-k22.5.4"
+  ],
   "created": "2026-07-15T20:46:23Z",
   "description": "Goal\n\nExpose the exact request-local outgoing-edge publisher frontier as one immutable product view of ProductDriver-owned request state.\n\nSignal\n\n- First request for OutgoingInputEdges(E) adds E once and advances the frontier value/generation.\n- Duplicate requests and unrelated ProductKeys do not move it.\n- Requested-but-waiting publishers remain present after producer unblock.\n- OutgoingEdgeFrontier(root) contains only the stable ordered requested keys and no edge data, World-derived metadata, or production-created demand.\n- Later first request revises the frontier and generically stales readers before they can return cached partial answers.\n\nStrategy\n\nRecord actual requests at ProductDriver::pull, where demand becomes real. Store the exact outgoing key set in driver/session request state and expose it through ProductKey::OutgoingEdgeFrontier(root) using the generic product dependency/generation contract. The product is a view of the driver authority, not a second mutable inventory.\n\nRemovals\n\nDelete use of demanded_executables or produced call-edge inventories as publisher-completion authority. Add no World census, target reconstruction, no-change loop, or transport-specific validity stamp.\n\nAcceptance\n\nReal-driver lifecycle/order tests pass with value-sensitive generations and exact dependencies. Documentation names all requested outgoing publishers as the smallest honest currently-carried domain.",
   "id": "fz-k22.5.2",
