@@ -5,6 +5,7 @@
     "fz-5vi",
     "fz-66j"
   ],
+  "closed_at": "2026-07-15T21:31:11Z",
   "created": "2026-07-15T19:10:49Z",
   "description": "From the fz-66j root-cause investigation (2026-07-15, per-commit per-counter attribution on enum_list_allocations). THE WASTE: a statically SINGLE-TARGET protocol dispatch (Enum.reduce reducer bridge + user fn) regressed at k22.20 (2c407c16d) from fully-direct dispatch (golden: ZERO closure_call_lowered/callable_boundary events) to the generic indirect boxed-callable ABI -- every indirect call boxes its raw-int accumulator (box_scalar_for_any, ir_runtime.rs:310-322, unconditional ScalarBox, no small-int fast path) = +20 scalar_box native. k22.23 (8cb9b7a90) partially mitigated (+20-\u003e+5) but introduced BackendConstructionWrapper/construction_wrapper_for_fn (ir_interp/backend.rs; native mirror emit_capturing_closure/closure_capture_for_var_as in native_codegen/prim.rs) materializing a per-call heap struct for member selection AT A SITE WITH EXACTLY ONE CONCRETE MEMBER (+5 struct native, +1 interp). No polymorphism exists at these sites -- pure overhead. PARITY: native re-materializes per call in the loop; interp amortizes (1 extra struct total) -- architectural divergence, native is the over-allocating side.\n\nTHE CAPABILITY (designed, never built): fz-k22.24/25/26/27 were closed \"folded into fz-k22.23 before implementation\" -- their retained-discovery text specifies lazy native direct-boundary derivation from concrete FunctionRef/Lambda producers, separating direct-call authority from the published indirect callable inventory. Implement that: when a callable position has exactly one concrete resolved entry, dispatch DIRECT (no boxing, no wrapper); the indirect ABI is only for genuine multi-member/opaque flow. ACCEPTANCE: enum_list_allocations returns to its golden floor {5,80,9,288,0,0,3,48,0,0}/368 with run/interp/build PARITY, and enum_sort run/build scalar boxing returns to zero (fz-5vi) -- both fixtures green all legs; no other fixture counters move; goldens NOT reblessed upward. Baseline good commit for reference: 6ffdddae7 reproduces the golden exactly.",
   "id": "fz-k22.29",
@@ -25,8 +26,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-k22: derive lazy direct callable boundaries at concrete single-member producers -- un-fold the k22.24-27 design that was folded into k22.23 without implementation",
   "type": "bug",
-  "updated_at": "2026-07-15T21:14:59Z"
+  "updated_at": "2026-07-15T21:31:11Z"
 }
