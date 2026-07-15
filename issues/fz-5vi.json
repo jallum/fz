@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-88t",
     "fz-k22.29"
   ],
   "blocks": [],
@@ -12,5 +13,5 @@
   "status": "open",
   "title": "enum_sort run/build only: extra scalar boxing {27,432} where golden and interp have zero",
   "type": "bug",
-  "updated_at": "2026-07-15T19:10:50Z"
+  "updated_at": "2026-07-15T21:31:10Z"
 }
