@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [
     "fz-k22.29.1"
   ],
@@ -18,8 +18,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "fz-k22.29 slice 2: native consumes the fact -- no boxing/closure alloc at single-member construction+call sites",
   "type": "task",
-  "updated_at": "2026-07-15T21:14:59Z"
+  "updated_at": "2026-07-15T21:15:00Z"
 }
