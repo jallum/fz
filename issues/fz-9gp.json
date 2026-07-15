@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T19:35:39Z",
+  "description": "From the fz-bdk diagnosis + user direction (2026-07-15): :bad + 1 is compile-time detectable -- the type layer already computes the empty return; the resolution is to CORRECT THE DATA: add @spec contracts to Kernel arithmetic in src/modules/runtime_library/kernel.fz (+ - * / div rem, unary minus; audit the operator family and neighbors like abs for the same gap), e.g. @spec +(number, number) :: number, so a demanded call site with non-number operands emits the FATAL spec-violation diagnostic through the machinery landed in fz-9i4.7.1.3 (fixtures spec_violation/spec_mixed_protocol_concrete_violation show the pattern; Map @specs show the library convention). PARITY BY CONSTRUCTION: a compile diagnostic cannot diverge across run/interp/build.\n\nRE-PIN the affected surfaces: fixtures2/behavior/opaque_fn_all_divergent becomes a compile-diagnostic fixture (all legs expect the spec-violation error -- honest red becomes honest compile error); the drive_test that pins halt_value=function_clause via JIT (compiler2_all_divergent_public_callable_has_no_result_continuation) re-pinned to the new contract; promote the fz-bdk spike p7 fixture (branch wt/bdk-spike @ 99071ece8, fixtures2/spikes/fz-bdk/) as a compile-diagnostic fixture too. SWEEP: verify no legitimate corpus/library code trips the new specs (Enum/List internals use arithmetic on numbers -- should be clean; any trip is a real finding). NOTE the strictness choice: statically-doomed code in an untaken branch becomes a compile ERROR (fz spec violations are fatal, stricter than Elixir warn) -- consistent with the 9i4.7.1.3 contract.",
+  "id": "fz-9gp",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "spec Kernel arithmetic (+/2 and friends): ill-typed operands become fatal compile-time spec violations through the landed contract machinery",
+  "type": "bug",
+  "updated_at": "2026-07-15T19:35:39Z"
+}
