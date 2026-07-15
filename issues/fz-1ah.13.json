@@ -9,9 +9,15 @@
   "id": "fz-1ah.13",
   "labels": [],
   "parent": "fz-1ah",
+  "comments": [
+    {
+      "text": "Spike and implementation proof: the receive outcome contract is sound. The post-receive arithmetic dispatch has one returning numeric member and one settled-empty no-matching-clause member. The defect was sealing both as Deliver, which forced native lowering to construct a result continuation for a target that cannot return. The implementation now publishes exact settled-empty targets as NoReturn, verifies local endpoint divergence during backend sealing, rejects NoReturn/Deliver contradictions before NativeProgram, and emits NoReturn as a tail call without an adapter. Shape-Nothing and backend-layout divergence no longer infer Tail; exact direct closure calls share the direct-call flow consumer. Production is net -13 lines excluding tests/docs. Verified: cargo test --lib 1418 passed/0 failed/6 ignored; fz2_cli 19/19; all-target/all-feature check and strict clippy; release original fixture run/interp/AOT all print 3; minimal numeric run/interp print 3; selected timeout reaches function_clause in interp and native.",
+      "timestamp": "2026-07-15T05:05:45Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Restore selective-receive continuation delivery contract",
   "type": "bug",
-  "updated_at": "2026-07-15T04:40:29Z"
+  "updated_at": "2026-07-15T05:05:45Z"
 }
