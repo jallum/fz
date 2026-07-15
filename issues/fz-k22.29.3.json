@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.29.2"
+  ],
   "blocks": [],
   "created": "2026-07-15T19:36:25Z",
   "description": "ir_interp/backend.rs (construction_wrapper_for_fn/construction_callable_value + the Lambda/FunctionRef step). Skip make_closure_on_proc ONLY where slice-1 fact applies AND the value is consumed solely by direct call sites in the same executable (escaping first-class values stay boxed -- scope from the slice-1 fact, no re-derivation). Scoreboard: enum_list_allocations interp {5,80,10,320,0,0,3,48}/400 -\u003e golden 368 exactly (struct 10-\u003e9); enum_sort interp stays green (non-regression pin).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-k22.29 slice 3: interp consumes the fact -- no wrapper heap object at single-member positions",
   "type": "task",
-  "updated_at": "2026-07-15T19:36:25Z"
+  "updated_at": "2026-07-15T19:36:26Z"
 }
