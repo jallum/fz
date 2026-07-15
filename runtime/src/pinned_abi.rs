@@ -25,6 +25,15 @@ pub unsafe fn call1(func: *const u8, process: *mut Process, a0: u64) -> i64 {
             func = in(reg) func,
             process = in(reg) process,
             inout("x0") a0 => ret,
+            // x21 is hardcoded scratch inside the template (it carries the
+            // pinned-register value across the `blr`); it must be reserved
+            // here so the allocator can't also hand it to `func`/`process`.
+            // Left unreserved, `func` can land in x21 and the `mov x21,
+            // {process}` clobbers it before `blr {func}` substitutes to
+            // `blr x21` — jumping through the process pointer instead of
+            // the callee, a release-only miscompile (register choice is
+            // optimization-level-dependent).
+            out("x21") _,
             clobber_abi("C"),
         );
     }
@@ -49,6 +58,10 @@ pub unsafe fn call2(func: *const u8, process: *mut Process, a0: u64, a1: u64) ->
             process = in(reg) process,
             inout("x0") a0 => ret,
             in("x1") a1,
+            // See call1: x21 is hardcoded scratch in the template and must
+            // be reserved so `func`/`process` can't be allocated there and
+            // get clobbered by `mov x21, {process}` before the `blr`.
+            out("x21") _,
             clobber_abi("C"),
         );
     }
@@ -75,6 +88,10 @@ pub unsafe fn call1(func: *const u8, process: *mut Process, a0: u64) -> i64 {
             process = in(reg) process,
             inout("rdi") a0 => _,
             lateout("rax") ret,
+            // r15 is hardcoded scratch in the template; reserve it so the
+            // allocator can't hand it to `func`/`process` too (see call1's
+            // aarch64 twin for the collision this prevents).
+            out("r15") _,
             clobber_abi("C"),
         );
     }
@@ -102,6 +119,8 @@ pub unsafe fn call2(func: *const u8, process: *mut Process, a0: u64, a1: u64) ->
             inout("rdi") a0 => _,
             inout("rsi") a1 => _,
             lateout("rax") ret,
+            // See call1: r15 is hardcoded scratch and must be reserved.
+            out("r15") _,
             clobber_abi("C"),
         );
     }
