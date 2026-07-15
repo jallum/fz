@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-f98",
     "fz-go4.22",
     "fz-lfp"
   ],
@@ -21,5 +20,5 @@
   "status": "open",
   "title": "Finish the honest fixtures2 matrix after reclassifying current failures",
   "type": "bug",
-  "updated_at": "2026-07-15T14:38:57Z"
+  "updated_at": "2026-07-15T14:38:58Z"
 }

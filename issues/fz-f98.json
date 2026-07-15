@@ -2,7 +2,6 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-9i4.7",
     "fz-bfh.1",
     "fz-bfh.2",
     "fz-bfh.3",
@@ -36,5 +35,5 @@
   "status": "open",
   "title": "Root: shared Enum.reduce* bridge callable surface is not a convergent, identity-correlated fixed point over non-List Enumerables",
   "type": "bug",
-  "updated_at": "2026-07-15T13:26:20Z"
+  "updated_at": "2026-07-15T14:38:58Z"
 }
