@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.29"
+  ],
   "blocks": [],
   "created": "2026-07-15T15:10:41Z",
   "description": "Surfaced by fz-lfp classification. Golden expects {5,80,9,288,...}/368; run+build produce {5,80,14,448,...}/528; interp produces {5,80,10,320,...}/400. Three-path parity violation (run/build vs interp disagree on ALLOCATION COUNTS) plus an upward drift vs the golden (raises need masked-regression scrutiny per convention -- this may be a real allocation regression from the k22.20-23 entry-ownership work, e.g. extra callable-entry thunks). Do NOT rebless upward without root-cause. Repro: fixture_matrix enum_list_allocations.",
@@ -10,5 +12,5 @@
   "status": "in_progress",
   "title": "enum_list_allocations: THREE-WAY allocation divergence -- run/build vs interp vs golden all disagree",
   "type": "bug",
-  "updated_at": "2026-07-15T18:49:41Z"
+  "updated_at": "2026-07-15T19:10:49Z"
 }
