@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T20:46:22Z",
+  "description": "Goal\n\nMake pull products ordinary revisioned derived values: every producer answer is fresh by construction from exact product and fact reads, including cache hits, without custom freshness caches.\n\nSignal\n\n- A producer read context records produced child generations, missing child waits, and fact revisions/readiness under the current parent key.\n- Waiting retains dependency edges; a concluding production replaces them.\n- Product generations advance only when immutable ProductValue changes.\n- A moved child/fact makes exactly its readers stale before cache-hit return; unchanged re-production preserves parent generations and does not wake dependents.\n- Forward/reverse wait service yields identical values, generations, and dependencies.\n\nStrategy\n\n1. Replace ProductMemo value-only entries with immutable value, generation, and exact dependency metadata plus reverse readers.\n2. Route all production product/fact reads through one producer context; direct production access to memo values or unstamped World authorities becomes impossible.\n3. Treat returned waits as scheduling output from the same recorded missing reads, not as the dependency store.\n4. Validate dependencies before every cache hit and re-produce stale entries. Preserve value generation across equal recomputation.\n5. Migrate current product producers and delete superseded special freshness paths rather than keeping parallel mechanisms.\n\nRequired removals\n\n- root_artifact_revisions and materialized_world_revisions freshness side channels;\n- ProductProducers fact_revision/root_artifact_revision/executable_artifact_revisions cache-hit hooks;\n- transport consumed_fact_revisions cache-hit validation once its reads are recorded generically;\n- product-specific dependency stamps that duplicate the new context;\n- production session.memo().get reads outside the context.\n\nAcceptance\n\nPermanent real-driver tests prove cache-hit and missing child dependencies, fact revision movement, retraction, equal-value stability, exact reverse invalidation, waiting/conclusion replacement, cycle/reentry behavior, and schedule independence. cargo test --lib and deny-warning clippy pass. Documentation explains the product dependency contract. No transport frontier or callable behavior is implemented here.",
+  "id": "fz-k22.5.1",
+  "labels": [],
+  "parent": "fz-k22.5",
+  "priority": 1,
+  "status": "open",
+  "title": "Make pull products revisioned values with exact dependency reads",
+  "type": "bug",
+  "updated_at": "2026-07-15T20:46:22Z"
+}
