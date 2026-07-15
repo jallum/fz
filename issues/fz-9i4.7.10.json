@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T13:25:19Z",
+  "description": "Intent: a callable-mapper overload must preserve the mapper input from its producer through activation, demand, transport, and native lowering. Minimal current repro: Enum.with_index([\"a\", \"b\"], fn (x, _index) -\u003e x \u003c\u003e \"!\" end). Interpreter succeeds with [\"a!\", \"b!\"], while run and build fail before execution: native clause dispatch required omitted semantic input 1 for the with_index activation.\n\nTrace backward from the omitted BackendExecutable input to the first fact that classified the mapper as non-runtime. Repair that authoritative demand/transport conclusion; do not add a native fallback, recalculate a source shape, or force all inputs live. Preserve omission for genuinely unused overload inputs.\n\nAcceptance: the single-call repro and the string/int/tuple mapper variants from enum_map_family pass interp/run/build with oracle output; telemetry or a focused production-path test pins the mapper input as present at the first model boundary that previously dropped it; no new fallback exists; lib and clippy pass.",
+  "id": "fz-9i4.7.10",
+  "labels": [],
+  "parent": "fz-9i4.7",
+  "priority": 1,
+  "status": "open",
+  "title": "Preserve Enum.with_index callable mapper input through native lowering",
+  "type": "bug",
+  "updated_at": "2026-07-15T13:25:19Z"
+}
