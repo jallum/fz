@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-15T13:25:18Z",
+  "close_reason": "Obsolete after the integrated producer-owned callable construction model (8cb9b7a90, folded in a20f29ab3). Production now builds an empty FnId closure-target registry and lowers every CallClosure/TailCallClosure with direct_target=None; public closures are already keyed and entered by NativeCallableBoundaryId. Replacing the empty registry with boundary-keyed entries would recreate the alternate model that fz-k22.23 removed. Verified at 939fdacdf: the exact two-distinct-Enum.map repro returns [2,4,6,8] then [100,200,300,400] on interp and run; closure_typed_captures, curried_add, and multi_caller_spec_divergent each pass run/interp/build. Remaining work is deletion under fz-9i4.4.4.",
   "created": "2026-07-09T22:19:03Z",
   "description": "Cleanup of legacy callable reconstruction is blocked by a model assumption: NativeCodegenSurface currently treats closure target surfaces as unique by target FnId, but shared Enum.find/find_value-style helpers can have multiple callable-boundary surfaces for the same target FnId. Acceptance: native codegen carries boundary-keyed/direct-surface-keyed closure target surfaces; direct closure-call resolution selects the callable-boundary surface when the closure var has a boundary id; no-boundary singleton direct calls still use a direct-only fallback; then build_codegen_closure_targets and its stale expected-failure regression can be deleted in fz-9i4.4.4.",
   "id": "fz-9i4.4.4.1",
   "labels": [],
   "parent": "fz-9i4.4.4",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Native closure target surfaces are keyed by callable boundary identity, not only target FnId",
   "type": "bug",
-  "updated_at": "2026-07-09T22:19:03Z"
+  "updated_at": "2026-07-15T13:25:18Z"
 }
