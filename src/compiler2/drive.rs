@@ -78,18 +78,8 @@ impl StableSortKey<Types> for Job {
     /// the key does not depend on which run happened to intern it first.
     fn stable_sort_key(&self, types: &Types) -> String {
         match self {
-            Job::SeedActivation(key) => format!(
-                "SeedActivation(ActivationKey {{ root: {:?}, function: {:?}, arrow: {} }})",
-                key.root,
-                key.function,
-                types.display(&key.arrow)
-            ),
-            Job::AnalyzeActivation(key) => format!(
-                "AnalyzeActivation(ActivationKey {{ root: {:?}, function: {:?}, arrow: {} }})",
-                key.root,
-                key.function,
-                types.display(&key.arrow)
-            ),
+            Job::SeedActivation(key) => format!("SeedActivation({})", key.stable_sort_key(types)),
+            Job::AnalyzeActivation(key) => format!("AnalyzeActivation({})", key.stable_sort_key(types)),
             other => format!("{other:?}"),
         }
     }
@@ -366,7 +356,18 @@ impl World {
     /// set stays bounded. Returns how many analyses were demanded.
     pub(crate) fn demand_activation_frontier_analyses(&mut self) -> u64 {
         let mut demanded = 0_u64;
-        for key in self.activation_frontier_keys() {
+        let mut keys = self.activation_frontier_keys();
+        // `activation_frontier` is a `HashSet<ActivationKey>` (`world.rs`):
+        // its iteration order is `RandomState`-dependent. `AnalyzeActivation`
+        // mints fresh `Ty` combinations (interned call-site arrows) as a side
+        // effect of running, so demanding two ready callee activations in a
+        // different relative order between runs mints their arrows in a
+        // different relative order too. Sort by `StableSortKey`
+        // (`Types::display`, not raw `Ty`/`{:?}`) so the demand order is a
+        // function of the activations' own structure, not of which run's
+        // hasher happened to bucket them first.
+        keys.sort_by_cached_key(|key| key.stable_sort_key(self.types()));
+        for key in keys {
             if self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
                 self.retire_activation_frontier(&key);
                 continue;

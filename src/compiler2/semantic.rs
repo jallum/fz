@@ -598,6 +598,34 @@ pub trait StableSortKey<Ctx> {
     fn stable_sort_key(&self, ctx: &Ctx) -> String;
 }
 
+impl StableSortKey<Types> for ActivationKey {
+    /// `root`/`function` are ids assigned by deterministic parse/scope
+    /// traversal; `arrow` is the one field that is a bare interned `Ty`, so it
+    /// renders through `Types::display` (the same idiom `Job` uses for its
+    /// `SeedActivation`/`AnalyzeActivation` variants) instead of `{:?}`.
+    fn stable_sort_key(&self, types: &Types) -> String {
+        format!(
+            "ActivationKey {{ root: {:?}, function: {:?}, arrow: {} }}",
+            self.root,
+            self.function,
+            types.display(&self.arrow)
+        )
+    }
+}
+
+impl StableSortKey<Types> for ExecutableKey {
+    /// `need` carries no `Ty` (`ExecutableNeed` is `Value` or
+    /// `TupleFields(usize)`), so only `activation` needs the `Ty`-blind
+    /// rendering above.
+    fn stable_sort_key(&self, types: &Types) -> String {
+        format!(
+            "ExecutableKey {{ activation: {}, need: {:?} }}",
+            self.activation.stable_sort_key(types),
+            self.need
+        )
+    }
+}
+
 /// A value that composes by monotone join within a context. The contribution
 /// store joins every publisher's entry for one key into a single aggregate;
 /// `Ctx` carries whatever the join needs — the type store for input vectors,

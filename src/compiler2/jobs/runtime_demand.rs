@@ -15,7 +15,8 @@ use super::super::pull::{
 };
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowEdge, CallableFlowFact,
-    CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand, ground_dispatch_surfaces,
+    CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand, StableSortKey,
+    ground_dispatch_surfaces,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -508,11 +509,18 @@ fn settle_demand_cone(
     // `members` is only ever iterated, never indexed by position: the Jacobi
     // ascent below reads it purely as a round-processing order, and every
     // round derives from a frozen previous-round snapshot joined via
-    // commutative `join_assign`, so the settled fixpoint and round count are
-    // order-invariant by construction (see the ascent's doc comment below).
-    // HashMap-insertion order is exactly as good as any sorted order here —
-    // sorting it would decide nothing and feed no output.
-    let members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
+    // commutative `join_assign`, so the settled DEMAND VALUES and round count
+    // are order-invariant by construction (see the ascent's doc comment
+    // below). But `derive_member_demand` (via
+    // `derive_callable_flow_facts_for_executable_product`) mints fresh `Ty`
+    // combinations as a side effect of deriving a dirty member's callable-flow
+    // facts, and `graph.facts` is a `HashMap`: folding its keys in
+    // `RandomState` order makes that minting a function of hash-iteration,
+    // not of anything the body itself numbers. Sort by `StableSortKey`
+    // (`Types::display`, not raw `Ty`/`{:?}`) so members with a fresh-minted
+    // arrow between runs still fold in the same relative order both runs.
+    let mut members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
+    members.sort_by_cached_key(|member| member.stable_sort_key(world.types()));
     let member_set: HashSet<ExecutableKey> = members.iter().cloned().collect();
     // The external caller evidence is settled session state the ascent never
     // mutates: join it once, not per member per round.
@@ -1167,7 +1175,15 @@ fn callable_boundary_input_demand_contributions_product(
     demand: &ExecutableRuntimeDemand,
 ) -> Vec<(ExecutableKey, usize, RuntimeDemand)> {
     let mut required = Vec::new();
-    for flow in demand.callable_flows.values() {
+    // `callable_flows` is a `HashMap<ValueId, _>`: folding it via `.values()`
+    // makes every fresh `Ty` minted below (`own_surface`,
+    // `informative_boundary_demand`) a function of `RandomState` iteration.
+    // Sort by the producing `ValueId` first, the same idiom
+    // `derive_callable_flow_facts_for_executable_product` uses for the same
+    // hazard.
+    let mut flows = demand.callable_flows.iter().collect::<Vec<_>>();
+    flows.sort_by_key(|(value, _)| **value);
+    for (_, flow) in flows {
         if flow.first_class_surfaces.is_empty() {
             continue;
         }

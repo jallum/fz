@@ -99,25 +99,24 @@ fn compiling_the_same_root_twice_through_the_jit_reaches_the_same_outcome() {
     }
 }
 
-/// fz-k22.21 instrument: the JIT-outcome check above only proves the two
-/// compiles agree on which `FnId` to run -- it says nothing about whether the
-/// *set of executables* published for the root (which function/need pairs
-/// got compiled, and how many activations each has) is itself invariant.
-/// This strengthens the check one level past bare success/failure without
-/// asserting raw-`Ty` equality: a full `BackendProgram` struct comparison
-/// (tried as an instrument while auditing this gap) shows the interner
-/// (`types/mod.rs::TypeInterner::intern`, first-intern-order `u32` ids) does
-/// still mint a handful of types in a different relative order between two
-/// in-process compiles -- traced to an unaudited unordered fold inside the
-/// fz-k22.23 callable-flow actual-use closure (reduce/predicate continuation
-/// construction), a source distinct from -- and discovered later than -- the
-/// two determinism sort keys this ticket closes below. That residual
-/// renumbering never reaches a sort key or CLI-observable output (the JIT
-/// outcome above, and the repeated `fz2 run` fixture check, stay
-/// byte-identical), but it does mean raw `BackendProgram` equality is not
-/// yet provable here; tracked separately rather than folded into this fix.
+/// fz-k22.21 raised this one level past bare success/failure (the JIT-outcome
+/// check above): it proved the *set of executables* published for the root
+/// (which function/need pairs got compiled) was invariant, but stopped short
+/// of full `BackendProgram` struct equality because the interner
+/// (`types/mod.rs::TypeInterner::intern`, first-intern-order `u32` ids) still
+/// minted a handful of types in a different relative order between two
+/// in-process compiles -- an unaudited unordered fold inside the fz-k22.23
+/// callable-flow actual-use closure (reduce/predicate continuation
+/// construction). fz-k22.28 traced and pinned every remaining unordered fold
+/// on that path (`jobs/runtime_demand.rs`'s per-cone member list and
+/// per-value callable-flow list, both `HashMap` folds sorted by `ValueId`/
+/// `ExecutableKey` now instead of native iteration order, plus
+/// `World::demand_activation_frontier_analyses`'s `HashSet<ActivationKey>`
+/// frontier sorted by `StableSortKey`), so raw `BackendProgram` equality --
+/// including every `Ty` an executable's signature or body carries -- is now
+/// provable, not just the executable inventory's shape.
 #[test]
-fn compiling_the_same_root_twice_publishes_the_same_executable_inventory() {
+fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
     fn compile_enum_predicate_search() -> super::BackendProgram {
         let tel = ConfiguredTelemetry::new();
         let mut compiler = Compiler2::new(tel);
@@ -140,20 +139,10 @@ fn compiling_the_same_root_twice_publishes_the_same_executable_inventory() {
     let program_a = compile_enum_predicate_search();
     let program_b = compile_enum_predicate_search();
 
-    let fingerprint = |program: &super::BackendProgram| {
-        let mut keys = program
-            .executables
-            .iter()
-            .map(|exe| (exe.key.activation.function, exe.key.need))
-            .collect::<Vec<_>>();
-        keys.sort();
-        keys
-    };
     assert_eq!(
-        fingerprint(&program_a),
-        fingerprint(&program_b),
-        "compiling the same root twice must publish the same (function, need) executable \
-         inventory, independent of which raw Ty numbers its arrows happen to intern to"
+        program_a, program_b,
+        "compiling the same root twice must publish a byte-identical BackendProgram -- \
+         including raw Ty numbering, not just the same executable inventory"
     );
 }
 
