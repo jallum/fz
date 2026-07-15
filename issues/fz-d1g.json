@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-15T12:59:17Z",
@@ -7,7 +7,7 @@
   "id": "fz-d1g",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "tree::{run,interp,build} newly red vs the 74-name baseline -- regression or red-landed fixture in the fz-1ah range (3e1d2d62b..a20f29ab3)",
   "type": "bug",
   "updated_at": "2026-07-15T12:59:17Z"
