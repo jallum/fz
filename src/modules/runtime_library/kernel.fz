@@ -71,8 +71,8 @@ defmodule Kernel do
   @spec self() :: pid
   fn self(), do: fz_self()
 
-  @doc "Sends a message to a process and returns the message."
-  @spec send(pid, t) :: t when t: any
+  @doc "Sends a message to a process and returns the message. The receiver is a pid or its raw integer index; the runtime addresses processes by index and has no registry."
+  @spec send(pid | integer, t) :: t when t: any
   fn send(pid, msg), do: fz_send(pid, msg)
 
   @doc "Returns a fresh opaque reference."

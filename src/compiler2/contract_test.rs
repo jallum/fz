@@ -824,3 +824,70 @@ fn derive_function_contract_carries_protocol_domain_obligation_through_transitiv
         "transitive @type aliases should expand to the protocol marker before contract classification"
     );
 }
+
+#[test]
+fn ground_union_input_covered_by_the_arrow_set_satisfies_the_contract() {
+    // `+/2` shape: no single arrow accepts (int | float, int), but the SET
+    // {(int, int) -> int, (float, int) -> float} covers every ground member.
+    // Coverage by the set is satisfaction; the result is the union of the
+    // per-member results.
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let arrows = vec![
+        ResolvedSpecDecl {
+            params: vec![int, int],
+            result: int,
+            constraints: HashMap::new(),
+        },
+        ResolvedSpecDecl {
+            params: vec![float, int],
+            result: float,
+            constraints: HashMap::new(),
+        },
+    ];
+    let contract = FunctionContract::from_resolved(&mut types, arrows);
+
+    let number = types.union(int, float);
+    let applied = contract.apply(&mut types, &[number, int]);
+    assert!(
+        applied.enforceable_satisfied,
+        "a ground union covered member-by-member by the arrow set must satisfy the contract"
+    );
+    let expected = types.union(int, float);
+    let result = applied.result.expect("set coverage should still produce a result");
+    assert!(
+        types.is_equivalent(&result, &expected),
+        "the covered union's result should join the per-member results: {}",
+        types.display(&result),
+    );
+}
+
+#[test]
+fn ground_union_input_with_an_uncovered_member_still_violates() {
+    // (:bad | int, int) has a member (:bad) no arrow accepts: still a violation.
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let arrows = vec![
+        ResolvedSpecDecl {
+            params: vec![int, int],
+            result: int,
+            constraints: HashMap::new(),
+        },
+        ResolvedSpecDecl {
+            params: vec![float, int],
+            result: float,
+            constraints: HashMap::new(),
+        },
+    ];
+    let contract = FunctionContract::from_resolved(&mut types, arrows);
+
+    let bad = types.atom_lit("bad");
+    let bad_or_int = types.union(bad, int);
+    let applied = contract.apply(&mut types, &[bad_or_int, int]);
+    assert!(
+        !applied.enforceable_satisfied,
+        "a union member no arrow covers is a violation, set coverage must not mask it"
+    );
+}

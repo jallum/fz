@@ -16,6 +16,12 @@ impl CodeId {
     pub fn as_u32(self) -> u32 {
         self.0
     }
+
+    /// The code addressed by a span: `CodeMap::define` asserts code and
+    /// source ids advance together, so a span's source id names the same slot.
+    pub fn from_source(id: crate::source::Id) -> Self {
+        Self(id.0)
+    }
 }
 
 #[derive(Debug, Clone)]

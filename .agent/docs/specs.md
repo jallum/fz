@@ -32,6 +32,35 @@ Compiler2 owns the active contract path:
   arrows with obligations are skipped for fatal
   `spec/violation` decisions until protocol-domain validation is implemented;
   concrete arrows in the same overload set remain enforceable.
+- Contract satisfaction is arrow-SET coverage, not just single-arrow
+  subsumption: when no single arrow accepts a ground argument row,
+  `FunctionContract::apply` checks whether the tuple of arguments is a subtype
+  of the union of the enforceable clause-domain tuples (the Types calculator
+  decomposes unions across positions). Covered rows satisfy the contract and
+  their result is the union of per-clause results on positionally narrowed
+  arguments — `(int | float, int)` satisfies `+/2`'s `(int, int)` and
+  `(float, int)` arrows jointly and yields `int | float`.
+- Arrow matching (`Types::match_arrow`) handles union parameters structurally:
+  a union of tuples with DIFFERENT arities matches a witness against the
+  alternative of the witness's own width, and a kind collector (tuple, list,
+  resource, map, arrow) vetoes a signature unless the witness intersects the
+  pattern with that kind's component cleared (`witness_escapes_kind`) — a
+  cross-kind union like `:first | {:acc, a}` accepts `:first` through its
+  atom member but still rejects `:third`, which no member accepts.
+- Fatal `spec/violation` diagnostics fire only at USER callsites
+  (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). Library
+  (bootstrap) callsites are validated for refinement but never diagnosed:
+  shared library bodies carry joined activation evidence that can pair
+  uncorrelated users into phantom argument combinations, so a correct matcher
+  verdict there would be a false diagnostic with a span inside library source.
+  The gate keys on the violation span's code and retires when activation
+  evidence becomes correlation-sound.
+- Kernel arithmetic (`+ - * / %`) is fully specced in
+  `src/modules/runtime_library/kernel.fz`, so provably non-numeric operands at
+  a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
+  every path. `send/2` is specced `(pid | integer, t)`: the runtime addresses
+  processes by raw integer index (`fz_send_ref` takes `receiver_pid_bits`) and
+  has no registry, so integer addressing is part of the callee's real domain.
 
 The old `src/specs` operations were removed with the old-world compiler:
 scheme matching, overload-set application, structural correspondence grouping,
@@ -44,7 +73,12 @@ Current proof points:
 ```text
 cargo test --lib compiler2::world_test::compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_captured_namespace
 cargo test --lib compiler2::types::arrow_match
+cargo test --lib -- ground_union_input mixed_arity_tuple_union cross_kind_union
 cargo test --test fixture_matrix spec_ok
+cargo test --test fixture_matrix spec_violation
+cargo test --test fixture_matrix opaque_fn_all_divergent
+cargo test --test fixture_matrix spec_violation_between_side_effects
+cargo test --test fixture_matrix spec_violation_cross_kind_union
 cargo test --test fixture_matrix spec_boundary
 cargo test --test fixture_matrix spec_mixed_protocol_concrete_violation
 ```

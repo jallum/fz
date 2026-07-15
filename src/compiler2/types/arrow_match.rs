@@ -23,6 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::descr::Descr;
 use super::{Sigma, Ty, TypeVarId, Types};
 
 /// The three-way verdict of matching a signature against an argument list.
@@ -198,15 +199,15 @@ impl Types {
         {
             return MatchWitness::Unknown;
         }
+        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, sigma) {
+            return outcome;
+        }
         if self.max_tuple_arity(witness) < arity {
-            return if self.has_vars(witness) {
+            return if self.has_vars(witness) || self.witness_escapes_kind(pattern, witness, |d| d.tuples.clear()) {
                 MatchWitness::Unknown
             } else {
                 MatchWitness::Invalid
             };
-        }
-        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, arity, sigma) {
-            return outcome;
         }
         let pattern_fields = self.tuple_projections(pattern, arity);
         let witness_fields = self.tuple_projections(witness, arity);
@@ -221,15 +222,17 @@ impl Types {
         &mut self,
         pattern: &Ty,
         witness: &Ty,
-        arity: usize,
         sigma: &mut Sigma<Ty>,
     ) -> Option<MatchWitness> {
-        let pattern_alternatives = self.tuple_positive_alternatives(pattern, arity)?;
-        let witness_alternatives = self.tuple_positive_alternatives(witness, arity)?;
+        let pattern_alternatives = self.tuple_positive_alternatives(pattern)?;
+        let witness_alternatives = self.tuple_positive_alternatives(witness)?;
         let mut matched_any = false;
         let mut outcome = MatchWitness::Unknown;
         for pattern_fields in &pattern_alternatives {
             for witness_fields in &witness_alternatives {
+                if pattern_fields.len() != witness_fields.len() {
+                    continue;
+                }
                 if !self.tuple_fields_overlap(pattern_fields, witness_fields) {
                     continue;
                 }
@@ -249,12 +252,40 @@ impl Types {
         }
         if matched_any {
             Some(outcome)
+        } else if self.has_vars(witness) || self.witness_escapes_kind(pattern, witness, |d| d.tuples.clear()) {
+            Some(MatchWitness::Unknown)
         } else {
             Some(MatchWitness::Invalid)
         }
     }
 
-    fn tuple_positive_alternatives(&mut self, ty: &Ty, arity: usize) -> Option<Vec<Vec<Ty>>> {
+    /// True when the witness can still be accepted by the pattern OUTSIDE the
+    /// vetoing collector's kind: the witness intersects the pattern with that
+    /// kind's component cleared. A kind collector defers (`Unknown`) instead
+    /// of vetoing exactly when this holds — `:first | {:acc, a}` accepts
+    /// `:first` through its atom member, but `:third` intersects nothing once
+    /// the tuple component is cleared, so the veto stands. Whether the
+    /// pattern merely HAS other-kind content is not the question; the witness
+    /// must land in it.
+    fn witness_escapes_kind(&mut self, pattern: &Ty, witness: &Ty, clear: fn(&mut Descr)) -> bool {
+        let mut residual = self.descr(pattern).clone();
+        clear(&mut residual);
+        if residual == Descr::none() {
+            return false;
+        }
+        let residual = self.intern(residual);
+        let overlap = self.intersect(residual, *witness);
+        !self.is_empty(&overlap)
+    }
+
+    /// Positive tuple alternatives of a type, each with its own arity — a
+    /// union of tuples yields one field row per member, so a mixed-arity
+    /// union (`{:done, a} | {:suspended, a, cont}`) matches each witness
+    /// against the alternative of the witness's own width. `None` when the
+    /// type has no tuple component or a component is not a plain positive
+    /// product (negations or mixed arities inside one conjunction fall back
+    /// to the caller's projection path).
+    fn tuple_positive_alternatives(&mut self, ty: &Ty) -> Option<Vec<Vec<Ty>>> {
         let conjs = self.descr(ty).tuples.clone();
         if conjs.is_empty() {
             return None;
@@ -264,11 +295,12 @@ impl Types {
             if !conj.neg.is_empty() || conj.pos.is_empty() {
                 return None;
             }
+            let arity = conj.pos[0].elems.len();
+            if conj.pos.iter().any(|sig| sig.elems.len() != arity) {
+                return None;
+            }
             let mut fields: Option<Vec<Ty>> = None;
             for sig in conj.pos {
-                if sig.elems.len() != arity {
-                    continue;
-                }
                 fields = Some(match fields {
                     Some(current) => current
                         .iter()
@@ -311,7 +343,7 @@ impl Types {
             return MatchWitness::Unknown;
         }
         if !self.has_list_shape(witness) {
-            return if self.has_vars(witness) {
+            return if self.has_vars(witness) || self.witness_escapes_kind(pattern, witness, |d| d.lists.clear()) {
                 MatchWitness::Unknown
             } else {
                 MatchWitness::Invalid
@@ -329,7 +361,7 @@ impl Types {
             return MatchWitness::Unknown;
         }
         let Some(witness_payload) = self.resource_payload_type(witness) else {
-            return if self.has_vars(witness) {
+            return if self.has_vars(witness) || self.witness_escapes_kind(pattern, witness, |d| d.resources.clear()) {
                 MatchWitness::Unknown
             } else {
                 MatchWitness::Invalid
@@ -349,7 +381,7 @@ impl Types {
                 continue;
             }
             if !witness_keys.contains(&key) {
-                if !self.has_vars(witness) {
+                if !self.has_vars(witness) && !self.witness_escapes_kind(pattern, witness, |d| d.maps.clear()) {
                     outcome = outcome.merge(MatchWitness::Invalid);
                 }
                 continue;
@@ -372,7 +404,7 @@ impl Types {
             return MatchWitness::Unknown;
         }
         let Some(witness_clauses) = self.callable_clauses(witness) else {
-            return if self.has_vars(witness) {
+            return if self.has_vars(witness) || self.witness_escapes_kind(pattern, witness, |d| d.funcs.clear()) {
                 MatchWitness::Unknown
             } else {
                 MatchWitness::Invalid
@@ -395,6 +427,8 @@ impl Types {
         }
         if saw_compatible_arity {
             outcome
+        } else if self.has_vars(witness) || self.witness_escapes_kind(pattern, witness, |d| d.funcs.clear()) {
+            MatchWitness::Unknown
         } else {
             MatchWitness::Invalid
         }
@@ -612,6 +646,204 @@ mod tests {
                 assert!(t.has_vars(&result), "a must stay free when pinned only by []");
             }
             other => panic!("expected Underconstrained for empty-list binding, got {other:?}"),
+        }
+    }
+
+    // A union-of-tuples pattern whose alternatives have DIFFERENT arities must
+    // match a ground witness against the alternative of the witness's own
+    // arity, not demand the widest arity of the union. This is the
+    // `Enum.reduce_finish` shape: `{:done, a} | {:halted, a} | {:suspended, a,
+    // () -> any}` applied to `{:done, int}` grounds a = int.
+    #[test]
+    fn mixed_arity_tuple_union_pattern_matches_by_alternative_arity() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let done = t.atom_lit("done");
+        let halted = t.atom_lit("halted");
+        let suspended = t.atom_lit("suspended");
+        let any = t.any();
+        let continuation = t.arrow(&[], any);
+        let done_pat = t.tuple(&[done, a]);
+        let halted_pat = t.tuple(&[halted, a]);
+        let suspended_pat = t.tuple(&[suspended, a, continuation]);
+        let pat = t.union(done_pat, halted_pat);
+        let pat = t.union(pat, suspended_pat);
+        let int = t.int();
+        let witness = t.tuple(&[done, int]);
+        match t.match_arrow(&[pat], &a, &no_bounds(), &[witness]) {
+            ArrowMatch::Known { result, .. } => assert_eq!(result, int),
+            other => panic!("expected Known with a = int, got {other:?}"),
+        }
+    }
+
+    // The same shape must still reject a witness no alternative accepts.
+    #[test]
+    fn mixed_arity_tuple_union_pattern_rejects_uncovered_witness() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let done = t.atom_lit("done");
+        let suspended = t.atom_lit("suspended");
+        let any = t.any();
+        let continuation = t.arrow(&[], any);
+        let done_pat = t.tuple(&[done, a]);
+        let suspended_pat = t.tuple(&[suspended, a, continuation]);
+        let pat = t.union(done_pat, suspended_pat);
+        let other_tag = t.atom_lit("other");
+        let int = t.int();
+        let witness = t.tuple(&[other_tag, int]);
+        assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[witness]), ArrowMatch::Invalid);
+    }
+
+    // A pattern that unions ACROSS kinds (`:first | {:acc, a}`) accepts a
+    // witness through its non-tuple member: the tuple collector must not veto
+    // the signature for a witness the atom member covers. This is the
+    // `Enum.reduce_first_acc` shape: applied to `:first` the signature fits
+    // and `a` stays free.
+    #[test]
+    fn cross_kind_union_pattern_accepts_a_non_tuple_witness() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let first = t.atom_lit("first");
+        let acc_tag = t.atom_lit("acc");
+        let acc_pat = t.tuple(&[acc_tag, a]);
+        let pat = t.union(first, acc_pat);
+        match t.match_arrow(&[pat], &a, &no_bounds(), &[first]) {
+            ArrowMatch::Underconstrained { result, .. } => {
+                assert!(t.has_vars(&result), "a must stay free for the :first member");
+            }
+            other => panic!("expected Underconstrained, got {other:?}"),
+        }
+    }
+
+    // The same cross-kind union nested inside a tuple field: `{:done, :first |
+    // {:acc, a}}` applied to `{:done, :first}` (the `reduce_first_finish`
+    // shape) fits with `a` free.
+    #[test]
+    fn cross_kind_union_nested_in_a_tuple_field_accepts_the_atom_member() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let done = t.atom_lit("done");
+        let first = t.atom_lit("first");
+        let acc_tag = t.atom_lit("acc");
+        let acc_pat = t.tuple(&[acc_tag, a]);
+        let state_pat = t.union(first, acc_pat);
+        let pat = t.tuple(&[done, state_pat]);
+        let witness_field = t.atom_lit("first");
+        let witness = t.tuple(&[done, witness_field]);
+        match t.match_arrow(&[pat], &a, &no_bounds(), &[witness]) {
+            ArrowMatch::Underconstrained { result, .. } => {
+                assert!(t.has_vars(&result), "a must stay free for the {{:done, :first}} member");
+            }
+            other => panic!("expected Underconstrained, got {other:?}"),
+        }
+    }
+
+    // A cross-kind union still rejects a TUPLE witness that no tuple member
+    // accepts: `{:other, int}` cannot be `:first` (kind-disjoint) and matches
+    // no tuple alternative.
+    #[test]
+    fn cross_kind_union_pattern_rejects_an_uncovered_tuple_witness() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let first = t.atom_lit("first");
+        let acc_tag = t.atom_lit("acc");
+        let acc_pat = t.tuple(&[acc_tag, a]);
+        let pat = t.union(first, acc_pat);
+        let other_tag = t.atom_lit("other");
+        let int = t.int();
+        let witness = t.tuple(&[other_tag, int]);
+        assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[witness]), ArrowMatch::Invalid);
+    }
+
+    // The veto question is whether the WITNESS lands in the pattern's
+    // other-kind content, not whether such content exists: `:third` is
+    // accepted by neither `:first` nor `{:acc, a}`, so the signature is
+    // Invalid even though the pattern is a cross-kind union.
+    #[test]
+    fn cross_kind_union_pattern_rejects_a_witness_no_member_accepts() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let first = t.atom_lit("first");
+        let acc_tag = t.atom_lit("acc");
+        let acc_pat = t.tuple(&[acc_tag, a]);
+        let pat = t.union(first, acc_pat);
+        let third = t.atom_lit("third");
+        assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[third]), ArrowMatch::Invalid);
+    }
+
+    // The same acceptance question per kind collector: a cross-kind union
+    // whose non-<kind> member does not accept the witness is Invalid; one
+    // whose non-<kind> member does accept it defers with the variable free.
+    #[test]
+    fn cross_kind_union_with_list_member_vetoes_by_witness_acceptance() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let list_pat = t.list(a);
+        let empty_tag = t.atom_lit("empty");
+        let pat = t.union(list_pat, empty_tag);
+        let third = t.atom_lit("third");
+        assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[third]), ArrowMatch::Invalid);
+        let empty_witness = t.atom_lit("empty");
+        match t.match_arrow(&[pat], &a, &no_bounds(), &[empty_witness]) {
+            ArrowMatch::Underconstrained { result, .. } => {
+                assert!(t.has_vars(&result), "a must stay free for the :empty member");
+            }
+            other => panic!("expected Underconstrained, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_kind_union_with_resource_member_vetoes_by_witness_acceptance() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let resource_pat = t.resource(a);
+        let none_tag = t.atom_lit("none");
+        let pat = t.union(resource_pat, none_tag);
+        let third = t.atom_lit("third");
+        assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[third]), ArrowMatch::Invalid);
+        let none_witness = t.atom_lit("none");
+        match t.match_arrow(&[pat], &a, &no_bounds(), &[none_witness]) {
+            ArrowMatch::Underconstrained { result, .. } => {
+                assert!(t.has_vars(&result), "a must stay free for the :none member");
+            }
+            other => panic!("expected Underconstrained, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_kind_union_with_map_member_vetoes_by_witness_acceptance() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let key = MapKey::Atom("k".to_string());
+        let map_pat = t.map(&[(key, a)]);
+        let none_tag = t.atom_lit("none");
+        let pat = t.union(map_pat, none_tag);
+        let third = t.atom_lit("third");
+        assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[third]), ArrowMatch::Invalid);
+        let none_witness = t.atom_lit("none");
+        match t.match_arrow(&[pat], &a, &no_bounds(), &[none_witness]) {
+            ArrowMatch::Underconstrained { result, .. } => {
+                assert!(t.has_vars(&result), "a must stay free for the :none member");
+            }
+            other => panic!("expected Underconstrained, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_kind_union_with_arrow_member_vetoes_by_witness_acceptance() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let arrow_pat = t.arrow(&[a], a);
+        let none_tag = t.atom_lit("none");
+        let pat = t.union(arrow_pat, none_tag);
+        let third = t.atom_lit("third");
+        assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[third]), ArrowMatch::Invalid);
+        let none_witness = t.atom_lit("none");
+        match t.match_arrow(&[pat], &a, &no_bounds(), &[none_witness]) {
+            ArrowMatch::Underconstrained { result, .. } => {
+                assert!(t.has_vars(&result), "a must stay free for the :none member");
+            }
+            other => panic!("expected Underconstrained, got {other:?}"),
         }
     }
 

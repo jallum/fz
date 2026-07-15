@@ -151,6 +151,30 @@ impl FunctionContract {
                 ArrowMatch::Invalid => {}
             }
         }
+        if enforceable && !enforceable_matched && self.arrow_set_covers(types, arg_tys) {
+            enforceable_matched = true;
+            matched_any = true;
+            for clause in &self.arrows {
+                let Some(narrowed) = self.narrow_args_to_clause(types, clause, arg_tys) else {
+                    continue;
+                };
+                let params = types.arrow_params(&clause.arrow);
+                let clause_result = types
+                    .arrow_result(&clause.arrow)
+                    .expect("a contract clause is an arrow with a result slot");
+                if let ArrowMatch::Known {
+                    params,
+                    result: matched,
+                } = types.match_arrow(&params, &clause_result, &clause.bounds, &narrowed)
+                {
+                    result = Some(match result {
+                        Some(current) => types.union(current, matched),
+                        None => matched,
+                    });
+                    matched_arrows.push(params);
+                }
+            }
+        }
         AppliedFunctionContract {
             matched_arrows,
             result,
@@ -158,6 +182,64 @@ impl FunctionContract {
             enforceable,
             enforceable_satisfied: !enforceable || enforceable_matched,
         }
+    }
+
+    /// Arrow-SET coverage of a ground argument row: no single arrow accepted
+    /// the arguments, but the arguments may still be covered member-by-member
+    /// by different arrows (e.g. `(int | float, int)` against `+/2`'s
+    /// `(int, int)` and `(float, int)` clauses). The argument product is a
+    /// tuple type and each enforceable ground clause domain is a tuple type,
+    /// so coverage is exactly tuple subsumption against the domain union —
+    /// the Types calculator decides it set-theoretically, decomposing unions
+    /// across positions. Clause domains that still carry variables after
+    /// closing their bounds are skipped (conservative: skipping never widens
+    /// coverage), and non-ground arguments never reach a violation anyway.
+    fn arrow_set_covers(&self, types: &mut Types, arg_tys: &[Ty]) -> bool {
+        if arg_tys.iter().any(|ty| types.has_vars(ty)) {
+            return false;
+        }
+        let mut domain: Option<Ty> = None;
+        for clause in &self.arrows {
+            if !clause.protocol_domain_obligations.is_empty() {
+                continue;
+            }
+            let row = clause.input_domain_row(types);
+            if row.len() != arg_tys.len() || row.iter().any(|param| types.has_vars(param)) {
+                continue;
+            }
+            let row_tuple = types.tuple(&row);
+            domain = Some(match domain {
+                Some(current) => types.union(current, row_tuple),
+                None => row_tuple,
+            });
+        }
+        let Some(domain) = domain else {
+            return false;
+        };
+        let observed = types.tuple(arg_tys);
+        types.is_subtype(&observed, &domain)
+    }
+
+    /// The argument row narrowed positionally into one clause's domain, or
+    /// `None` when the clause overlaps no member of the arguments.
+    fn narrow_args_to_clause(&self, types: &mut Types, clause: &ContractArrow, arg_tys: &[Ty]) -> Option<Vec<Ty>> {
+        let row = clause.input_domain_row(types);
+        if row.len() != arg_tys.len() {
+            return None;
+        }
+        let mut narrowed = Vec::with_capacity(arg_tys.len());
+        for (arg, param) in arg_tys.iter().zip(row.iter()) {
+            if types.has_vars(param) {
+                narrowed.push(*arg);
+                continue;
+            }
+            let overlap = types.intersect(*arg, *param);
+            if types.is_empty(&overlap) {
+                return None;
+            }
+            narrowed.push(overlap);
+        }
+        Some(narrowed)
     }
 }
 

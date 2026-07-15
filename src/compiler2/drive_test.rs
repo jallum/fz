@@ -40,7 +40,15 @@ type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
 
+// The receive-after join is `int | :timeout`; `bump`'s atom clause diverges
+// through `panic`, so the post-receive call lowers as a two-member dispatch
+// with one delivering and one no-return member. (Ill-typed arithmetic can no
+// longer play the divergent member: `:timeout + 2` is a fatal compile-time
+// spec violation now.)
 const RECEIVE_AFTER_DIVERGENT_DISPATCH: &str = r#"
+fn bump(x :: integer), do: x + 2
+fn bump(:timeout), do: panic(:timeout)
+
 fn main() do
   me = self()
   send(me, 1)
@@ -49,7 +57,7 @@ fn main() do
   after
     10 -> :timeout
   end
-  dbg(value + 2)
+  dbg(bump(value))
 end
 "#;
 
@@ -5075,81 +5083,39 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
     assert_eq!(dbg.lines().as_slice(), ["1", "2", "3", "1", "2", "3"]);
 }
 
+// This test used to pin the all-divergent callable boundary's lowering and
+// runtime fate (Diverges return form, no continuation, function_clause halt).
+// Kernel arithmetic contracts reject the program outright now: every join
+// member's body adds `1`/`2` to `:bad`, each a provable spec violation at a
+// user callsite, so compilation fails before lowering and no output escapes
+// on any path.
 #[test]
-fn compiler2_all_divergent_public_callable_has_no_result_continuation() {
+fn compiler2_all_divergent_public_callable_is_rejected_at_compile_time() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    let exits = ProcessExitCapture::new();
-    exits.install(&tel);
-    let native = NativeProgramCapture::new();
-    native.install(&tel);
-    let functions = FunctionCapture::new();
-    functions.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/opaque_fn_all_divergent.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/opaque_fn_all_divergent.fz").to_string(),
     });
-    let root_id = compiler.submit_root(RootSubmission {
+    compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler.demand(Job::LowerNativeProgram(root_id));
-    assert_resolved(compiler.drive(), "all-divergent public callable should lower");
-
-    let stop_functions = HashSet::from([
-        function_id(&functions, "stop_a", 1),
-        function_id(&functions, "stop_b", 1),
-    ]);
-    let program = native.last(root_id).program;
-    let boundaries = program
-        .callable_boundaries
-        .iter()
-        .filter(|boundary| {
-            boundary
-                .members
-                .iter()
-                .any(|member| stop_functions.contains(&member.target.activation.function))
-        })
-        .collect::<Vec<_>>();
-    assert!(!boundaries.is_empty());
-    assert!(boundaries.iter().all(|boundary| {
-        boundary.return_form == crate::compiler2::artifact::BackendCallableReturn::Diverges
-            && boundary.members.iter().all(|member| member.target_return.diverges)
-    }));
-    for boundary in boundaries {
-        let wrapper = program
-            .module
-            .fns
-            .iter()
-            .find(|function| function.id == boundary.wrapper_fn)
-            .expect("divergent callable wrapper");
-        assert!(!program.bodies.iter().any(|body| {
-            matches!(&body.origin, NativeBodyOrigin::Continuation { owner, .. } if *owner == boundary.wrapper_fn)
-        }));
-        assert!(wrapper.blocks.iter().all(|block| {
-            matches!(
-                block.terminator,
-                IrTerm::TailCall {
-                    callee: crate::fz_ir::DirectCallTarget::Local(_),
-                    ..
-                }
-            )
-        }));
-    }
-    let error = compiler
-        .run_root_interp(root_id)
-        .expect_err("selected divergent callable should halt");
-    assert!(error.contains("function_clause"), "unexpected halt: {error}");
-    compiler.run_root_jit(root_id).unwrap();
-    let exit = exits.last().expect("divergent callable should publish a process exit");
-    assert_eq!(program.module.atom_names[exit.halt_value as usize], "function_clause");
-    assert!(dbg.lines().is_empty());
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "an all-divergent callable built from ill-typed arithmetic must reject at compile time"
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the ill-typed join members should surface as a diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::SPEC_VIOLATION.0);
+    assert!(dbg.lines().is_empty(), "no output may escape a rejected program");
 }
 
 #[test]
@@ -7202,13 +7168,13 @@ fn compiler2_native_receive_after_divergent_member_runs_numeric_path() {
     assert_eq!(dbg.lines().as_slice(), ["3"]);
 
     let program = native.last(root_id).program;
-    let plus = function_id(&functions, "+", 2);
+    let bump = function_id(&functions, "bump", 1);
     let no_return_targets = program
         .bodies
         .iter()
         .filter_map(|body| match &body.origin {
             NativeBodyOrigin::Executable(key)
-                if key.activation.function == plus && compiler.world().types().is_empty(&body.return_ty) =>
+                if key.activation.function == bump && compiler.world().types().is_empty(&body.return_ty) =>
             {
                 Some(body.fn_id)
             }
@@ -7242,8 +7208,14 @@ fn compiler2_native_receive_after_divergent_member_runs_numeric_path() {
     );
 }
 
+// This test used to pin the RUNTIME fate of the doomed member (interp
+// function_clause abort, JIT function_clause halt). Kernel arithmetic
+// contracts settle that fate at COMPILE time now: the receive-after join
+// makes `value` exactly `:timeout` on the after path, `(:timeout, int)` is
+// provably outside every `+/2` arrow, and the program is rejected before any
+// backend runs — the same verdict on every path by construction.
 #[test]
-fn compiler2_receive_after_divergent_member_reaches_function_clause() {
+fn compiler2_receive_after_doomed_timeout_arithmetic_is_rejected_at_compile_time() {
     let source = r#"
 fn main() do
   value = receive do
@@ -7255,45 +7227,28 @@ fn main() do
 end
 "#;
 
-    let interp_tel = ConfiguredTelemetry::new();
-    let mut interp = Compiler2::new(interp_tel);
-    interp.submit_code(CodeSubmission {
-        name: Some("receive_after_timeout_interp.fz".to_string()),
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_after_timeout.fz".to_string()),
         text: source.to_string(),
     });
-    let interp_root = interp.submit_root(RootSubmission {
+    compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    let interp_error = interp
-        .run_root_interp(interp_root)
-        .expect_err("the selected timeout value should not match a numeric addition clause");
-    assert!(interp_error.starts_with("function_clause:"), "{interp_error}");
-
-    let jit_tel = ConfiguredTelemetry::new();
-    let exits = ProcessExitCapture::new();
-    exits.install(&jit_tel);
-    let native = NativeProgramCapture::new();
-    native.install(&jit_tel);
-    let mut jit = Compiler2::new(jit_tel);
-    jit.submit_code(CodeSubmission {
-        name: Some("receive_after_timeout_jit.fz".to_string()),
-        text: source.to_string(),
-    });
-    let jit_root = jit.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    jit.run_root_jit(jit_root)
-        .expect("the selected divergent target should compile and halt without a continuation ABI failure");
-
-    let program = native.last(jit_root).program;
-    let exit = exits.last().expect("native timeout path should publish a process exit");
-    assert_eq!(program.module.atom_names[exit.halt_value as usize], "function_clause");
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Fatal { .. }),
+        "the statically doomed :timeout member must reject the program at compile time"
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .expect("the doomed timeout arithmetic should surface as a diagnostic");
+    assert_eq!(metadata_str(&diagnostic, "code"), codes::SPEC_VIOLATION.0);
 }
 
 #[test]

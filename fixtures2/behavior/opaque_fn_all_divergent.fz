@@ -1,6 +1,16 @@
 #---
-# purpose: "opaque join of zero-capture function values where every branch diverges at runtime"
+# purpose: "an opaque join of function values whose every branch is ill-typed arithmetic is rejected at compile time"
+# expect: diagnostic
+# diagnostic.code: spec/violation
 #---
+#
+# # opaque_fn_all_divergent
+#
+# Both join members add `1`/`2` to the atom `:bad`. Kernel's arithmetic
+# `@spec`s accept only numbers, so each body is a provable spec violation at
+# a user callsite and compilation fails with `spec/violation` before any
+# backend runs. The verdict is a compile-time fact shared by run, interp, and
+# build, so the three paths agree by construction.
 fn stop_a(_), do: :bad + 1
 fn stop_b(_), do: :bad + 2
 fn invoke(f), do: f.(1)

@@ -1562,7 +1562,7 @@ fn apply_function_contract(
 ) -> Result<(Vec<Ty>, Option<Ty>), FatalError> {
     let application = contract.apply(world.types_mut(), &input_types);
     if !application.enforceable_satisfied
-        && function_contract_is_enforced(world, function)
+        && function_contract_is_enforced(world, function, violation_span)
         && spec_violation_is_actionable(world, &input_types)
     {
         return Err(emit_spec_violation(tel, world, function, &input_types, violation_span));
@@ -1577,9 +1577,19 @@ fn apply_function_contract(
     ))
 }
 
-fn function_contract_is_enforced(world: &World, function: FunctionId) -> bool {
-    let (source, surface) = world.function_definition(function);
-    !world.is_bootstrap(source.code) && surface.extern_abi.is_none()
+/// A spec violation is enforced (fatal) only at USER callsites. Calls written
+/// inside library code are validated for refinement but never diagnosed:
+/// shared library bodies currently carry JOINED activation evidence — one
+/// evidence row unioned across uncorrelated users — so a callsite there can
+/// observe a phantom argument combination no runtime call makes (one user's
+/// callable paired with another user's element type). The matcher verdict on
+/// that row is correct, but as a diagnostic it is false, and its span points
+/// into library source where the user can act on nothing. The gate retires
+/// when activation evidence becomes correlation-sound. The violation span is
+/// the callsite, so its source identifies the calling side.
+fn function_contract_is_enforced(world: &World, function: FunctionId, violation_span: Span) -> bool {
+    let (_source, surface) = world.function_definition(function);
+    surface.extern_abi.is_none() && !world.is_bootstrap(super::super::CodeId::from_source(violation_span.code_id))
 }
 
 fn spec_violation_is_actionable(world: &mut World, input_types: &[Ty]) -> bool {
