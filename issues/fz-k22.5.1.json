@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-k22.5.2",
     "fz-k22.5.3"
   ],
   "created": "2026-07-15T20:46:22Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Make pull products revisioned values with exact dependency reads",
   "type": "bug",
-  "updated_at": "2026-07-15T20:46:39Z"
+  "updated_at": "2026-07-15T20:46:40Z"
 }
