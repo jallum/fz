@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-15T13:25:20Z",
-  "description": "Intent: independent Enum calls must not contaminate one another's list element ABI. Current minimal pairs are individually discriminating: Enum.scan over [integer] followed by Enum.with_index over [string], Enum.intersperse over [integer] followed by Enum.with_index over [string], and Enum.map_every over [integer] followed by Enum.map_join over [string]. Each operation passes alone and every pair is oracle-correct in interp; native run and AOT execute the first call, then abort in fz_list_head_int_ref when the second string-list helper is entered through a RawInt element ABI.\n\nThis is not a runtime tag-check problem. Trace activation/executable identity and its input/return transport facts to the first point where two semantically distinct list surfaces share or select one physical representative. Preserve/refine the distinct authoritative surfaces or collapse only if they are observably equivalent; do not select by Ty id, order, or downstream payload inspection.\n\nAcceptance: all three minimal pairs pass interp/run/build, each helper still passes alone, and full enum_map_family matches its oracle on all paths without a runtime defensive coercion; a focused production-path test proves the two helper activations retain the correct list element ABIs; lib and clippy pass.",
+  "description": "Goal\n\nSemantically distinct Enum list-helper activations must retain their own structural element ABI. Their physical representative may be shared only when the settled surfaces are observably equivalent; raw Ty ids, debug text, or publication order cannot decide the representative.\n\nResolution\n\nfz-k22.21 replaced Ty-id and debug-derived determinism tie-breaks with structural keys and structurally ordered local callable producers. That removed the representative-selection instability which allowed an integer-list helper to lend its RawInt element ABI to a later string-list helper.\n\nVerification at edb0478a9\n\nThe previously discriminating pairs all pass the backend interpreter, JIT, and AOT:\n\n- Enum.scan over integers followed by Enum.with_index over strings.\n- Enum.map_every over integers followed by Enum.map_join over strings.\n\nBoth pairs produce the correct values and no longer abort in fz_list_head_int_ref. The remaining Enum.with_index callback failure is independent and tracked by fz-9i4.7.10.",
   "id": "fz-9i4.7.11",
   "labels": [],
   "parent": "fz-k22",
   "priority": 1,
   "status": "open",
-  "title": "Keep independent Enum list-helper activations from sharing the wrong element ABI",
+  "title": "Keep independent Enum list-helper activations on their structural element ABIs",
   "type": "bug",
-  "updated_at": "2026-07-15T14:38:09Z"
+  "updated_at": "2026-07-15T14:38:47Z"
 }
