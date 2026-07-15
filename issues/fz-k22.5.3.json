@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.5.1"
+  ],
   "blocks": [],
   "created": "2026-07-15T20:46:23Z",
   "description": "Goal\n\nMake OutgoingInputEdges(E) own one immutable, replacement-safe full edge contribution derived from exact named authorities.\n\nSignal\n\n- ProductValue carries the complete edge set for E instead of Unit.\n- Every RuntimeDemand and World fact read is recorded through the generic producer context.\n- Equal re-production preserves generation.\n- Added, changed, and withdrawn edges replace the prior full contribution and move generation only when the value changes.\n- Consumers read the product value; no append-only session call-edge side effect is semantic authority.\n\nStrategy\n\nDerive the edge set locally from RuntimeDemand(E), LoweredBody, ActivationAnalyzed, ReturnType, EntryDispatch, and CallSiteSummary through exact reads. Return a stable immutable ordering. Migrate forward-edge consumers to the value or a purely derived replaceable index whose ownership and invalidation come from the product.\n\nRemovals\n\nRemove ProductValue::Unit for this key, append-if-unique record_call_edge publication, stale outgoing memos surviving demand/fact movement, and custom DemandFactsCache stamping where the generic context owns the same reads.\n\nAcceptance\n\nReal-driver tests cover source fact/runtime-demand revisions, equal recomputation, full withdrawal, stable order, and no stale session edge. cargo test --lib and deny-warning clippy pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Return outgoing input edges as immutable replacement contributions",
   "type": "bug",
-  "updated_at": "2026-07-15T20:46:23Z"
+  "updated_at": "2026-07-15T20:46:39Z"
 }
