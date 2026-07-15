@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9i4.7"
+  ],
   "created": "2026-07-15T13:22:53Z",
   "description": "Surfaced during fz-gdf (2026-07-15): the agent observed that the 59 (now 56 post-fz-d1g) debug-matrix reds at a20f29ab3 are ALL diagnostics-golden mismatches -- stdout matches, but a type/no-matching-clause warning now lands on stderr where the fixture expects none. fz-d1g fixed the one fixture with a NON-EMPTY expected.diagnostics (tree); fixtures with NO golden that now emit the warning fail on unexpected stderr. HYPOTHESIS to verify: most of the historical known-red baseline (74 at eae19c725) was already this class (the fz-9i4 unification landed many fixtures whose fns are legitimately non-exhaustive), and the fz-1ah.2 span-rendering made it more visible. INVESTIGATE: classify all ~56 failing names by failure mode (diagnostics-only vs functional); then resolve the CLASS -- options: (a) the warning is correct and fixtures should declare expected.diagnostics (bless sweep with per-fixture review); (b) the fixtures should be exhaustive (add wildcard clauses -- changes fixture semantics, scrutinize); (c) harness policy: warnings-on-stderr compared only when a golden exists (weakens the gate -- scrutinize against no-silent-red). This directly feeds the fz-rh2.16.6 keystone coverage decision: if ~56 reds are one mechanical class, the true functional known-red count is near zero and the coverage question becomes answerable.",
   "id": "fz-lfp",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "the remaining ~56 debug matrix reds may be ONE class: type/no-matching-clause warnings on stderr vs fixtures with no/empty diagnostics golden -- investigate and resolve the class",
   "type": "bug",
-  "updated_at": "2026-07-15T13:22:53Z"
+  "updated_at": "2026-07-15T13:26:20Z"
 }
