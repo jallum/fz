@@ -9,9 +9,15 @@
   "id": "fz-myo.2",
   "labels": [],
   "parent": "fz-myo",
+  "comments": [
+    {
+      "text": "UNBLOCKED by fz-myo.1's completed bisect. The decision input is now factual: the duplication that caused jump #2 is already fixed at HEAD (1 activation each) while the elevated counts persist as a property of correct back-edge classification (per-iteration yield-check on self-recursive loops). FIX-THEN-LOWER IS OFF THE TABLE -- no waste remains. Implement the de-pin: remove reductions_remaining from the strict goldens for append/quicksort/reverse (their contract is output+allocations) and add EITHER a derived invariant (burned = f(recursive iterations) -- quicksort 94 = 29 partition + 22 qsort + constants at the fixed input) OR telemetry-only with an upward-drift alarm. Current pinned values (quicksort 3906/94, append 3997/3, reverse 3990/10) are the baseline. PROCESS NOTE worth carrying: the culprit was an un-ticketed 2949-line WIP checkpoint -- the attribution cost of landing un-ticketed WIP on the integration branch is now measured (two reblesses + three investigations).",
+      "timestamp": "2026-07-15T15:09:06Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-myo: stop pinning raw reductions_remaining as a strict golden for output+allocation-contract fixtures -- derive it or make it telemetry-only",
   "type": "bug",
-  "updated_at": "2026-07-09T19:48:09Z"
+  "updated_at": "2026-07-15T15:09:06Z"
 }
