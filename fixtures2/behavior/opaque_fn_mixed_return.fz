@@ -1,3 +1,6 @@
+#---
+# purpose: "opaque call through a multi-clause function value whose selected clause depends on the argument's runtime type"
+#---
 fn mapper(x :: integer), do: x + 1
 fn mapper(x :: atom), do: x + 1
 fn invoke(f, x), do: f.(x)

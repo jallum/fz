@@ -1,3 +1,6 @@
+#---
+# purpose: "opaque join of zero-capture function values where every branch diverges at runtime"
+#---
 fn stop_a(_), do: :bad + 1
 fn stop_b(_), do: :bad + 2
 fn invoke(f), do: f.(1)
