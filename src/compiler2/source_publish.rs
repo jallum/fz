@@ -13,8 +13,7 @@ use crate::diag::{Diagnostic, codes};
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::ModuleName;
 use crate::source::Span;
-use crate::telemetry::{TelemetryExt as _, opaque};
-use crate::{measurements, metadata};
+use crate::telemetry::TelemetryExt as _;
 
 use super::code::CodeId;
 use super::drive::{FactKey, JobEffects, current_uses};
@@ -198,7 +197,7 @@ pub(crate) fn publish_protocol_surface(
             continue;
         };
         let function = world.reference_function(module_id, callback.name.clone(), callback.arity);
-        super::drive::ExecutionContext::new(world, tel).define_protocol_callback(function, module_id);
+        super::drive::ExecutionContext::new(world, tel).define_protocol_callback(&function, &module_id);
         let symbol = NamespaceSymbol::Function(function);
         scope = world.bind_namespace(scope, callback.name.clone(), symbol.clone());
         callables.push(ModuleInterfaceCallable {
@@ -408,7 +407,7 @@ pub(crate) fn record_function_type_refs(
             collect_body_struct_obligations(world, tel, namespace, annotation, code, module, &mut struct_refs)?;
         }
     }
-    super::drive::ExecutionContext::new(world, tel).record_function_type_refs(function, refs);
+    super::drive::ExecutionContext::new(world, tel).record_function_type_refs(&function, refs);
     world.record_function_type_struct_refs(function, struct_refs);
     Ok(())
 }
@@ -682,7 +681,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         {
             let mut refs = Vec::new();
             collect_type_refs(self.world, self.namespace, &body.inner, &mut refs);
-            super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(name.clone(), refs);
+            super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(&name, refs);
 
             // The struct-record half of the same walk: every `%Mod{field:
             // ...}` this `@type` body names records an `A.field` obligation
@@ -702,7 +701,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             self.world.record_type_def_struct_refs(name.clone(), struct_refs);
 
             super::drive::ExecutionContext::new(self.world, self.telemetry).note_type_decl(
-                name,
+                &name,
                 NotedTypeDecl {
                     params,
                     body,
@@ -1428,8 +1427,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             });
         }
         super::drive::ExecutionContext::new(self.world, self.telemetry).define_protocol_impl(
-            source.protocol,
-            source.target,
+            &source.protocol,
+            &source.target,
             callbacks,
         );
         self.outputs.push(FactKey::ProtocolDispatch(source.protocol));
@@ -1579,7 +1578,7 @@ fn publish_function_source(
         variadic: function.variadic,
         source: function.source.clone(),
     };
-    emit_compiler_service_define(world, tel, function_id, &source);
+    emit_compiler_service_define(world, tel, &function_id, &source);
     let stashed_changed = super::drive::ExecutionContext::new(world, tel).stash_function_source(function_id, source);
 
     let callable = (export_public && !function.is_private).then(|| ModuleInterfaceCallable {
@@ -1602,25 +1601,15 @@ fn publish_function_source(
 fn emit_compiler_service_define(
     world: &World,
     tel: &impl crate::telemetry::Telemetry,
-    function: FunctionId,
+    function: &FunctionId,
     source: &FunctionSource,
 ) {
-    let function_ref = world.function_ref(function);
-    tel.execute_lazy(&["fz", "compiler2", "compiler_service", "define"], || {
-        (
-            measurements! {
-                code_id: source.code.as_u32() as u64,
-                module_id: function_ref.module.as_u32() as u64,
-                owner_module_id: source.owner_module.as_u32() as u64,
-                function_id: function.as_u32() as u64,
-                namespace: source.namespace.as_u32() as u64,
-            },
-            metadata! {
-                origin: "fz_compiler",
-                function_ref: opaque(function_ref),
-            },
-        )
-    });
+    tel.raw_event3(
+        &["fz", "compiler2", "compiler_service", "define"],
+        world,
+        function,
+        source,
+    );
 }
 
 /// Walks a parsed type expression a second time, recording each `%Mod{...}`
@@ -1790,7 +1779,7 @@ fn note_protocol_domain_type(
     params: Vec<String>,
 ) {
     super::drive::ExecutionContext::new(world, tel).note_type_decl(
-        name.clone(),
+        &name,
         NotedTypeDecl {
             params,
             body: TypeDefBody {
@@ -1801,7 +1790,7 @@ fn note_protocol_domain_type(
             span: Span::DUMMY,
         },
     );
-    super::drive::ExecutionContext::new(world, tel).record_type_def_refs(name, Vec::new());
+    super::drive::ExecutionContext::new(world, tel).record_type_def_refs(&name, Vec::new());
 }
 
 fn find_callable<'a>(

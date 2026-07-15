@@ -5,8 +5,7 @@ use fz_runtime::any_value::{AnyValueRef, ValueKind};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
-use crate::telemetry::{TelemetryExt as _, opaque};
-use crate::{measurements, metadata};
+use crate::telemetry::TelemetryExt as _;
 
 use super::drive::{FactKey, JobEffects};
 use super::identity::{FunctionId, ModuleId};
@@ -166,7 +165,7 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
 
-        if let Some(result) = self.expand_remote_ast_call(owner, node, scope, depth, cursor.root(), &args)? {
+        if let Some(result) = self.expand_remote_ast_call(owner, node, scope, depth, &args)? {
             return Ok(Some(result));
         }
 
@@ -198,7 +197,7 @@ pub(crate) trait QuotedExpansionCtx {
             | NamespaceSymbol::Type(_)
             | NamespaceSymbol::Splice(_) => return Ok(None),
         };
-        self.expand_macro_invocation(owner, cursor.root(), function, scope, depth, &args)
+        self.expand_macro_invocation(owner, function, scope, depth, &args)
             .map(Some)
     }
 
@@ -208,7 +207,6 @@ pub(crate) trait QuotedExpansionCtx {
         node: &QuotedAstNode,
         scope: ScopeSnapshot,
         depth: usize,
-        input_root: AnyValueRef,
         args: &[QuotedSourceCursor],
     ) -> Result<Option<ExpandedValue>, super::scheduler::FatalError> {
         let Some(head_node) = node.head.ast_node().map_err(|error| {
@@ -254,7 +252,6 @@ pub(crate) trait QuotedExpansionCtx {
                 owner,
                 scope,
                 depth,
-                input_root,
                 args,
                 &function_name,
                 &module_path,
@@ -301,7 +298,7 @@ pub(crate) trait QuotedExpansionCtx {
                 call_span,
             ));
         }
-        self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
+        self.expand_macro_invocation(owner, function, scope, depth, args)
             .map(Some)
     }
 
@@ -310,7 +307,6 @@ pub(crate) trait QuotedExpansionCtx {
         owner: &QuotedSourceRoot,
         scope: ScopeSnapshot,
         depth: usize,
-        input_root: AnyValueRef,
         args: &[QuotedSourceCursor],
         function_name: &str,
         module_path: &[String],
@@ -328,14 +324,13 @@ pub(crate) trait QuotedExpansionCtx {
                 call_span,
             ));
         }
-        self.expand_macro_invocation(owner, input_root, function, scope, depth, args)
+        self.expand_macro_invocation(owner, function, scope, depth, args)
             .map(Some)
     }
 
     fn expand_macro_invocation(
         &mut self,
         owner: &QuotedSourceRoot,
-        input_root: AnyValueRef,
         function: FunctionId,
         scope: ScopeSnapshot,
         depth: usize,
@@ -365,17 +360,7 @@ pub(crate) trait QuotedExpansionCtx {
             .map_err(|error| {
                 emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, Span::DUMMY))
             })?;
-        let function_ref = world.function_ref(function).clone();
-        emit_macro_expanded(
-            &function_ref,
-            tel,
-            function,
-            owner,
-            input_root,
-            &expanded,
-            depth,
-            args.len(),
-        );
+        emit_macro_expanded(world, tel, &function, &expanded);
         match self.expand_root(expanded, scope, depth + 1)? {
             ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
             ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
@@ -515,7 +500,6 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
     } else {
         ctx.expand_macro_invocation(
             owner,
-            invocation.input_root,
             invocation
                 .function
                 .expect("grouped item macro should resolve a compiler macro"),
@@ -564,7 +548,6 @@ fn item_macro_fragment_root(
 struct ItemMacroInvocation {
     function: Option<FunctionId>,
     args: Vec<QuotedSourceCursor>,
-    input_root: AnyValueRef,
     display_name: String,
     node: Option<QuotedAstNode>,
 }
@@ -595,7 +578,6 @@ fn item_macro_invocation(
                 return Ok(ItemMacroInvocation {
                     function: None,
                     args: Vec::new(),
-                    input_root: cursor.root(),
                     display_name: head,
                     node: Some(node),
                 });
@@ -606,7 +588,6 @@ fn item_macro_invocation(
             return Ok(ItemMacroInvocation {
                 function: Some(function),
                 args,
-                input_root: cursor.root(),
                 display_name: head,
                 node: None,
             });
@@ -614,7 +595,6 @@ fn item_macro_invocation(
         return Ok(ItemMacroInvocation {
             function: None,
             args: Vec::new(),
-            input_root: cursor.root(),
             display_name: item_macro_display_name(&node),
             node: Some(node),
         });
@@ -645,7 +625,6 @@ fn item_macro_invocation(
             return Ok(ItemMacroInvocation {
                 function: None,
                 args: Vec::new(),
-                input_root: owner.root(),
                 display_name,
                 node: Some(node),
             });
@@ -656,7 +635,6 @@ fn item_macro_invocation(
         return Ok(ItemMacroInvocation {
             function: Some(function),
             args: vec![owner.cursor()],
-            input_root: owner.root(),
             display_name,
             node: None,
         });
@@ -689,29 +667,12 @@ fn read_surface_root_with(
 }
 
 pub(crate) fn emit_macro_expanded(
-    function_ref: &super::FunctionRef,
+    world: &super::World,
     tel: &impl crate::telemetry::Telemetry,
-    function: FunctionId,
-    _input: &QuotedSourceRoot,
-    _input_root: AnyValueRef,
-    _output: &QuotedSourceRoot,
-    depth: usize,
-    arg_count: usize,
+    function: &FunctionId,
+    output: &QuotedSourceRoot,
 ) {
-    tel.execute_lazy(&["fz", "compiler2", "macro", "expanded"], || {
-        (
-            measurements! {
-                function_id: function.as_u32() as u64,
-                module_id: function_ref.module.as_u32() as u64,
-                depth: depth as u64,
-                depth_budget: MAX_MACRO_EXPANSION_DEPTH as u64,
-                arg_count: arg_count as u64,
-            },
-            metadata! {
-                function_ref: opaque(function_ref),
-            },
-        )
-    });
+    tel.raw_event3(&["fz", "compiler2", "macro", "expanded"], world, function, output);
 }
 
 pub(crate) fn emit_job_diagnostic(

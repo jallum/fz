@@ -9,7 +9,7 @@ use crate::telemetry::{Capture, ConfiguredTelemetry};
 fn runtime_prelude_exact_imports_record_kernel_expectations_without_waiting() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut world = World::new();
     let prelude = world.runtime_prelude();
     let kernel = world.reference_module("Kernel".to_string());

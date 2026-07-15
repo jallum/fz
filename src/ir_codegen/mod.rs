@@ -22,6 +22,4 @@ pub(crate) use support::*;
 pub use backend::AotArtifact;
 pub use compiled::{CompiledMetadata, CompiledModule};
 pub use error::CodegenError;
-pub use support::{ir_text_record_enable, ir_text_record_enabled, ir_text_record_take};
-
 pub use fz_runtime::process::{PidId, Process, ProcessState};

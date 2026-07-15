@@ -6,7 +6,6 @@ use super::drive_test::{CallsiteCapture, FunctionCapture, assert_resolved, funct
 use super::job_budget_guard::JobBudgetGuard;
 use super::{CallSiteSummary, ExecutableKey, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
 use crate::telemetry::ConfiguredTelemetry;
-use crate::telemetry::handler::{Event, EventKind, Handler};
 
 /// Captures the executable behind every `executable_transport.projected`
 /// event: the set of executables whose transport component was freshly
@@ -25,10 +24,12 @@ impl TransportProjectedCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(TransportProjectedCaptureHandler {
-            executables: self.executables.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let executables = Rc::clone(&self.executables);
+        telemetry.attach_raw_event2::<ExecutableKey, super::pull::TransportComponentInventory, _>(
+            &["fz", "compiler2", "executable_transport", "projected"],
+            move |_, _, _, executable, _| executables.borrow_mut().push(executable.clone()),
+        );
     }
 
     fn clear(&self) {
@@ -37,26 +38,6 @@ impl TransportProjectedCapture {
 
     fn executables(&self) -> Vec<ExecutableKey> {
         self.executables.borrow().clone()
-    }
-}
-
-struct TransportProjectedCaptureHandler {
-    executables: Rc<RefCell<Vec<ExecutableKey>>>,
-}
-
-impl Handler for TransportProjectedCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "executable_transport", "projected"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(executable) = event
-            .metadata
-            .get("executable")
-            .and_then(|value| value.downcast_ref::<ExecutableKey>())
-        else {
-            return;
-        };
-        self.executables.borrow_mut().push(executable.clone());
     }
 }
 
@@ -522,9 +503,9 @@ fn summary_has_function(summary: &CallSiteSummary, function: FunctionId) -> bool
 fn compiler2_semantic_analysis_does_not_reach_continuation_after_never_return() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
     let mut world = World::new();
     world.submit_code(
@@ -620,16 +601,13 @@ end
 fn compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let transport = TransportProjectedCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "executable_transport", "projected"],
-        transport.handler(),
-    );
+    transport.install(&tel);
     // Livelock backstop: if cone-scoped re-derivation ever loops, this names the
     // runaway job kind instead of hanging the drive.
     let job_guard = JobBudgetGuard::new();
-    tel.attach(&["fz", "compiler2", "job"], job_guard.handler());
+    job_guard.install(&tel);
 
     let mut world = World::new();
     world.submit_code(
@@ -701,9 +679,9 @@ end
 fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
     let mut world = World::new();
     world.submit_code(
@@ -742,7 +720,7 @@ fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
 fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
     let mut world = World::new();
     world.submit_code(

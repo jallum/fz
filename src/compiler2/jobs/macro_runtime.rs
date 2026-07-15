@@ -16,7 +16,7 @@ use super::super::world::World;
 
 pub(super) fn build_macro_executable(
     world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
+    tel: &impl crate::telemetry::RawSpanTelemetry,
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
     let Some(_) = world.function_defined_revision(function) else {

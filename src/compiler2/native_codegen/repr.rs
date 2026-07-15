@@ -30,16 +30,6 @@ pub(crate) enum ArgRepr {
 }
 
 impl ArgRepr {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            ArgRepr::ValueRef => "ValueRef",
-            ArgRepr::RawInt => "RawInt",
-            ArgRepr::RawF64 => "RawF64",
-            ArgRepr::RawAtom => "RawAtom",
-            ArgRepr::Condition => "Condition",
-        }
-    }
-
     pub(crate) fn cl_type(&self) -> types::Type {
         match self {
             ArgRepr::RawF64 => types::F64,

@@ -110,14 +110,50 @@ fn default_jsonl_backend_retains_internal_compiler_events() {
     for name in [
         &["fz", "compiler2", "work_graph", "applied"][..],
         &["fz", "compiler2", "drive", "timed_out"][..],
-        &["fz", "compiler2", "dump", "types"][..],
     ] {
         backend.handle(&make_event(name, EventKind::Event, &measurements, &metadata));
     }
     let output = String::from_utf8(buf.borrow().clone()).unwrap();
     assert!(output.contains("\"work_graph\",\"applied\""));
     assert!(output.contains("\"drive\",\"timed_out\""));
-    assert!(output.contains("\"dump\",\"types\""));
+}
+
+#[test]
+fn compiler_drive_and_job_spans_render_raw_authorities() {
+    let telemetry = ConfiguredTelemetry::new();
+    let (buf, writer) = vec_writer();
+    JsonlBackend::new_writer(writer).install(&telemetry);
+    let mut compiler = crate::compiler2::Compiler2::new(telemetry);
+    compiler.submit_code(crate::compiler2::CodeSubmission {
+        name: Some("raw_span.fz".to_string()),
+        text: "fn main(), do: 0\n".to_string(),
+    });
+
+    let outcome = compiler.drive();
+
+    assert!(matches!(outcome, crate::compiler2::DriveOutcome::Resolved));
+    let output = String::from_utf8(buf.borrow().clone()).unwrap();
+    let drive = output
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"compiler2\",\"drive\"]"))
+        .collect::<Vec<_>>();
+    let jobs = output
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"compiler2\",\"job\"]"))
+        .collect::<Vec<_>>();
+    assert_eq!(drive.len(), 2);
+    assert!(drive[0].contains("\"kind\":\"span_start\""));
+    assert!(drive[1].contains("\"kind\":\"span_stop\""));
+    assert!(drive[1].contains("\"outcome\":{\"opaque_type\":"));
+    assert!(drive[1].contains("\"status\":\"resolved\""));
+    assert!(!drive[1].contains("jobs_ran"));
+    assert_eq!(jobs.len(), 2);
+    assert!(jobs[0].contains("\"kind\":\"span_start\""));
+    assert!(jobs[0].contains("\"job\":{\"opaque_type\":"));
+    assert!(jobs[1].contains("\"kind\":\"span_stop\""));
+    assert!(jobs[1].contains("\"world\":{\"opaque_type\":"));
+    assert!(jobs[1].contains("\"completion\":{\"opaque_type\":"));
+    assert_ne!(jobs[0].split("\"parent_span_id\":").nth(1), Some("0"));
 }
 
 #[test]
@@ -285,7 +321,7 @@ fn time_ns_increases_across_events() {
 fn through_configured_telemetry_roundtrips() {
     let (buf, w) = vec_writer();
     let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], Box::new(JsonlBackend::new_writer(w)));
+    JsonlBackend::new_writer(w).install(&tel);
 
     tel.dispatch(
         &["fz", "lexer", "pass"],
@@ -305,6 +341,23 @@ fn through_configured_telemetry_roundtrips() {
 }
 
 #[test]
+fn pull_product_settled_renders_the_value_authority() {
+    let (buf, writer) = vec_writer();
+    let telemetry = ConfiguredTelemetry::new();
+    JsonlBackend::new_writer(writer).install(&telemetry);
+    let product = crate::compiler2::pull::ProductKey::RootBackendProduct(crate::compiler2::RootId::for_test(9));
+    let value = crate::compiler2::pull::ProductValue::Unit;
+    telemetry.raw_event2(&["fz", "compiler2", "pull", "product", "settled"], &product, &value);
+    drop(telemetry);
+
+    let output = String::from_utf8(buf.borrow().clone()).unwrap();
+    assert_eq!(output.lines().count(), 1);
+    assert!(output.contains("\"value\""), "{output}");
+    assert!(!output.contains("\"product\",\"produced\""), "{output}");
+    assert!(!output.contains("\"product\",\"waited\""), "{output}");
+}
+
+#[test]
 fn file_backend_flushes_when_telemetry_owner_drops() {
     let path = temp_dir().join(format!(
         "fz_jsonl_flush_{}_{}.jsonl",
@@ -315,7 +368,7 @@ fn file_backend_flushes_when_telemetry_owner_drops() {
             .as_nanos()
     ));
     let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], Box::new(JsonlBackend::new_file(&path).expect("open jsonl")));
+    JsonlBackend::new_file(&path).expect("open jsonl").install(&tel);
 
     tel.event_lazy(&["fz", "diag", "error"], || crate::metadata! { code: "spec/violation" });
 

@@ -56,7 +56,7 @@ fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
 /// reopen semantic closure, type inference, or planner discovery.
 pub(super) fn lower_native_program(
     world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
+    tel: &impl crate::telemetry::RawSpanTelemetry,
     root_id: RootId,
 ) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
@@ -68,18 +68,17 @@ pub(super) fn lower_native_program(
     let backend = world.backend_program(root_id);
     let program = NativeLowerer::new(world, tel, root_id, &backend)?.lower()?;
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_native_program(root_id, program);
-    tel.execute_lazy(&["fz", "compiler2", "native_program", "reusable_cons"], || {
-        (
-            crate::measurements! { root_id: root_id.as_u32() },
-            crate::metadata! { program: crate::telemetry::opaque(&backend) },
-        )
-    });
+    emit_reusable_cons(tel, &root_id, &backend);
     Ok(JobEffects {
         reads: settled_uses([backend_fact]),
         outputs: vec![FactKey::NativeProgram(root_id)],
         changed: changed.then_some(FactKey::NativeProgram(root_id)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+fn emit_reusable_cons(tel: &impl crate::telemetry::Telemetry, root: &RootId, program: &BackendProgram) {
+    tel.raw_event2(&["fz", "compiler2", "native_program", "reusable_cons"], root, program);
 }
 
 struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {

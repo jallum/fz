@@ -12,9 +12,6 @@
 //! inventory); the backend job publishes the `BackendProgram` fact behind a
 //! `FatalError` and finishes the session itself. `ProductDriveError`
 //! parameterizes exactly that seam so the loop body lives once.
-use crate::telemetry::{TelemetryExt as _, opaque};
-use crate::{measurements, metadata};
-
 use super::drive::{ExecutionContext, FactKey};
 use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
@@ -22,6 +19,7 @@ use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait
 use super::scheduler::{FatalError, WorkStartReason};
 use super::world::World;
 use super::{BackendProgram, Job};
+use crate::telemetry::RawSpanGuard as _;
 
 /// A retry-budgeted stack expansion of this size backs both the outer product
 /// pull and the inner fact-wait job drive, matching the pre-unification
@@ -76,7 +74,7 @@ pub(crate) trait ProductDriveError: Sized {
 /// finished-but-not-yet-emitted driver so a caller can read the accumulated
 /// session (e.g. the materialized executable inventory) before calling
 /// `ProductDriver::finish_session`.
-pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::Telemetry, E: ProductDriveError>(
+pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &'a T,
     root: RootId,
@@ -91,7 +89,11 @@ pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::Telemetry, E: 
 /// to before the split. Tests pass a small budget to force
 /// `did_not_settle`/`fact_wait_budget_exceeded` on a genuine drive without
 /// spending the real 50,000-job budget doing it.
-pub(super) fn drive_root_backend_product_with_budgets<'a, T: crate::telemetry::Telemetry, E: ProductDriveError>(
+pub(super) fn drive_root_backend_product_with_budgets<
+    'a,
+    T: crate::telemetry::RawSpanTelemetry,
+    E: ProductDriveError,
+>(
     world: &mut World,
     tel: &'a T,
     root: RootId,
@@ -156,7 +158,7 @@ pub(super) fn drive_root_backend_product_with_budgets<'a, T: crate::telemetry::T
 /// The inner per-fact-wait job loop run while expanding a `PullWait::Fact`.
 /// `pub(super)` so test scaffolding driving a `ProductKey` this module has no
 /// dedicated runner for can still share this loop instead of forking it.
-pub(super) fn drive_product_fact_wait<T: crate::telemetry::Telemetry, E: ProductDriveError>(
+pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
     root: RootId,
@@ -176,26 +178,15 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::Telemetry, E: Product
                 job
             }
         };
-        let job_span = tel.span_lazy(&["fz", "compiler2", "job"], || {
-            metadata! {
-                job: opaque(&job),
-            }
-        });
+        let job_span = super::drive::start_job_span(tel, &job);
         match super::jobs::run(&mut super::drive::ExecutionContext::new(world, tel), &job) {
             Ok(effects) => {
                 jobs_ran += 1;
-                job_span.stop_with_lazy(|| {
-                    (
-                        measurements! {},
-                        metadata! {
-                            effects: opaque(&effects),
-                        },
-                    )
-                });
-                super::drive::ExecutionContext::new(world, tel).complete_job(job, effects);
+                let completion = super::drive::ExecutionContext::new(world, tel).complete_job(job, effects);
+                super::drive::stop_job_span(job_span, world, &completion);
             }
             Err(err) => {
-                job_span.stop_with_lazy(|| (measurements! {}, metadata! {}));
+                job_span.exception();
                 return Err(E::job_failed(world, tel, root, &fact, &job, err));
             }
         }

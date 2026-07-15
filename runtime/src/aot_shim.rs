@@ -262,6 +262,7 @@ pub extern "C" fn fz_aot_setup(
         resume_addr: null(),
         timers: TimerWheel::new(),
         ctx: ExecCtx {
+            output: Some(crate::output::STDOUT_OUTPUT_HOOK),
             spawn: Some(aot_spawn_hook),
             spawn_opt: Some(aot_spawn_opt_hook),
             send: Some(aot_send_hook),

@@ -2,7 +2,7 @@
 use super::drive_test::assert_resolved;
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
 use crate::diag::codes;
-use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 // Ported from src/frontend/spec_check_test.rs: @spec param type matching inferred callsite type passes validation
 #[test]
@@ -50,7 +50,7 @@ fn spec_wider_than_inferred_passes_success_typing() {
 fn spec_disjoint_from_inferred_produces_subtype_violation() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00142_spec_float_disjoint.fz".to_string()),
@@ -69,11 +69,11 @@ fn spec_disjoint_from_inferred_produces_subtype_violation() {
     let diagnostic = capture
         .last(&["fz", "diag", "error"])
         .expect("the disjoint @spec must surface as a diagnostic");
-    let Some(Value::Str(code)) = diagnostic.metadata.get("code") else {
+    let Some(diagnostic) = diagnostic.diagnostic.as_ref() else {
         panic!("diagnostic code missing: {diagnostic:?}");
     };
     assert_eq!(
-        code.as_ref(),
+        diagnostic.code.0,
         codes::SPEC_VIOLATION.0,
         "diagnostic should be a spec violation: {diagnostic:?}",
     );
@@ -185,7 +185,7 @@ fn protocol_domain_spec_rejects_type_without_impl() {
 fn spec_with_unknown_type_alias_produces_diagnostic() {
     let tel = ConfiguredTelemetry::new();
     let capture = crate::telemetry::Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00148_spec_unknown_type_alias.fz".to_string()),
@@ -208,12 +208,13 @@ fn spec_with_unknown_type_alias_produces_diagnostic() {
     let diagnostic = capture
         .last(&["fz", "diag", "error"])
         .expect("the unknown spec type must surface as a diagnostic");
-    let Some(crate::telemetry::Value::Str(message)) = diagnostic.metadata.get("message") else {
+    let Some(diagnostic) = diagnostic.diagnostic.as_ref() else {
         panic!("diagnostic message missing");
     };
     assert!(
-        message.contains("unknown type name `unknown_thing`"),
-        "diagnostic names the unknown type: {message}",
+        diagnostic.message.contains("unknown type name `unknown_thing`"),
+        "diagnostic names the unknown type: {}",
+        diagnostic.message,
     );
 }
 

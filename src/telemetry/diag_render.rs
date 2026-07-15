@@ -16,6 +16,7 @@ use crate::diag::render::Renderer as DiagRenderImpl;
 use crate::diag::style::ColorMode;
 use crate::source::SourceMap;
 
+use super::ConfiguredTelemetry;
 use super::handler::{Event, Handler};
 
 pub struct DiagRenderer {
@@ -63,6 +64,24 @@ impl DiagRenderer {
             saw_error: status.saw_error,
         }
     }
+
+    pub fn install(self, telemetry: &ConfiguredTelemetry) {
+        telemetry.attach_raw_event1::<Diagnostic, _>(&["fz", "diag"], move |_, _, _, diagnostic| {
+            self.render(diagnostic);
+        });
+    }
+
+    fn render(&self, diagnostic: &Diagnostic) {
+        if matches!(diagnostic.severity, crate::diag::diagnostic::Severity::Error) {
+            self.saw_error.set(true);
+        }
+        let mut writer = self.writer.borrow_mut();
+        if let Some(source_map) = &self.fallback_source_map {
+            let source_map = source_map.borrow();
+            let renderer = DiagRenderImpl::new(&source_map).with_color(self.color);
+            let _ = renderer.emit(diagnostic, &mut **writer);
+        }
+    }
 }
 
 impl Handler for DiagRenderer {
@@ -74,15 +93,7 @@ impl Handler for DiagRenderer {
         else {
             return;
         };
-        if matches!(d.severity, crate::diag::diagnostic::Severity::Error) {
-            self.saw_error.set(true);
-        }
-        let mut w = self.writer.borrow_mut();
-        if let Some(sm) = &self.fallback_source_map {
-            let sm = sm.borrow();
-            let renderer = DiagRenderImpl::new(&sm).with_color(self.color);
-            let _ = renderer.emit(d, &mut **w);
-        }
+        self.render(d);
     }
 }
 

@@ -18,7 +18,6 @@ use crate::compiler2::{
     BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ControlDestination,
     ExecutableDispatch, ValueId, required_dispatch_input_ordinals,
 };
-use crate::exec::runtime::output_hook_thunk;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::matches_runtime_type_predicate;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
@@ -33,6 +32,7 @@ use fz_runtime::ir_runtime::{
     fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
     fz_struct_get_named_field_ref,
 };
+use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::procbin::mso_drop_all_deferred;
 use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Process, ProcessState};
 
@@ -65,10 +65,11 @@ type DispatchMatch = (u32, Vec<(String, AnyValue)>);
 
 /// Runs one closed Compiler2 backend program through the shared interpreter
 /// runtime without reopening planner or type-resolution work.
-pub(crate) fn run_backend_main(
+pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
+    output: &dyn OutputSink,
     program: &BackendProgram,
 ) -> Result<i64, String> {
     let mut runtime = IrInterpRuntime::fresh_with_atoms(program.atom_names.clone());
@@ -78,7 +79,7 @@ pub(crate) fn run_backend_main(
         ..Module::default()
     };
     runtime.enqueue_backend_entry(1, program.entry, Vec::new())?;
-    let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, program, &module, None)?;
+    let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, None)?;
     let halt_val = completions
         .iter()
         .rev()
@@ -94,10 +95,11 @@ pub(crate) fn run_backend_main(
     Ok(halt_val)
 }
 
-pub(crate) fn run_backend_entry_on_process(
+pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
+    output: &dyn OutputSink,
     program: &BackendProgram,
     process: Process,
     args: Vec<AnyValue>,
@@ -115,7 +117,8 @@ pub(crate) fn run_backend_entry_on_process(
     };
     let result = (|| {
         runtime.enqueue_backend_entry(1, program.entry, args)?;
-        let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, program, &module, Some(1))?;
+        let completions =
+            drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, Some(1))?;
         completions
             .into_iter()
             .rev()
@@ -203,18 +206,18 @@ impl IrInterpRuntime {
         Ok(pid)
     }
 
-    pub(super) fn send_opaque(
+    pub(super) fn send_opaque<T: Telemetry + ?Sized>(
         &mut self,
         types: &mut crate::compiler2::Types,
         transport: &TransportStore,
-        tel: &dyn Telemetry,
+        tel: &T,
         program: &BackendProgram,
         module: &Module,
-        receiver_pid: u32,
+        receiver_pid: &u32,
         msg: AnyValue,
     ) -> Result<(), String> {
         let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
-        if let Some(park) = self.backend_parked.remove(&receiver_pid) {
+        if let Some(park) = self.backend_parked.remove(receiver_pid) {
             if let Some((clause_index, bound_values)) = try_match_backend_receive(
                 self,
                 types,
@@ -241,17 +244,20 @@ impl IrInterpRuntime {
                     .get(clause_index)
                     .ok_or_else(|| format!("backend parked receive clause {} is out of bounds", clause_index))?;
                 let env = delivered_env(self, transport, entries, &park.env, clause.entry, None, &bound_values)?;
-                self.enqueue_backend_local_entry(receiver_pid, park.executable, clause.entry, env, park.continuations)?;
+                self.enqueue_backend_local_entry(
+                    *receiver_pid,
+                    park.executable,
+                    clause.entry,
+                    env,
+                    park.continuations,
+                )?;
                 return Ok(());
             }
-            self.backend_parked.insert(receiver_pid, park);
+            self.backend_parked.insert(*receiver_pid, park);
         }
         let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
-        let Some(task) = self.tasks.get_mut(&receiver_pid) else {
-            tel.event_lazy(
-                &["fz", "runtime", "send_to_unknown_pid"],
-                || crate::metadata! { pid: receiver_pid as u64 },
-            );
+        let Some(task) = self.tasks.get_mut(receiver_pid) else {
+            tel.raw_event1(&["fz", "runtime", "send_to_unknown_pid"], receiver_pid);
             return Ok(());
         };
 
@@ -262,20 +268,22 @@ impl IrInterpRuntime {
     }
 }
 
-fn drive_backend_until_idle(
+fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
+    output: &dyn OutputSink,
     program: &BackendProgram,
     module: &Module,
     keepalive_pid: Option<u32>,
 ) -> Result<Vec<(u32, AnyValue)>, String> {
     let mut completions = Vec::new();
+    let output = OutputContext::new(output);
     let mut exec_ctx = ExecCtx {
         scheduler: runtime as *mut IrInterpRuntime as *mut (),
-        tel: (&tel) as *const &dyn Telemetry as *const (),
-        output: Some(output_hook_thunk),
+        output_context: output.as_ptr(),
+        output: Some(OUTPUT_HOOK),
         module: module as *const Module as *const (),
         ..ExecCtx::empty()
     };
@@ -303,15 +311,10 @@ fn drive_backend_until_idle(
                 unsafe {
                     mso_drop_all_deferred(&mut (*proc_ptr).heap);
                 }
-                if let Err(e) = drain_pending_dtors_backend(runtime, types, transport, tel, program, module) {
-                    tel.event_lazy(
-                        &["fz", "runtime", "dtor_drain_failed"],
-                        || crate::metadata! { error: e },
-                    );
-                }
+                drain_pending_dtors_backend(runtime, types, transport, tel, program, module)?;
                 unsafe {
                     (*proc_ptr).halt_value = value_to_halt(proc_ptr, value);
-                    ExitRecord::emit(tel, pid, &*proc_ptr);
+                    ExitRecord::emit(tel, &pid, &*proc_ptr);
                 }
                 runtime.set_process_state(pid, ProcessState::Exited);
             }
@@ -324,11 +327,11 @@ fn drive_backend_until_idle(
     Ok(completions)
 }
 
-fn run_backend_resume(
+fn run_backend_resume<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
     program: &BackendProgram,
     module: &Module,
     resume: BackendResumeEntry,
@@ -450,11 +453,11 @@ fn continue_backend_value(
     }))
 }
 
-fn step_backend_executable(
+fn step_backend_executable<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
     program: &BackendProgram,
     module: &Module,
     executable_index: usize,
@@ -627,11 +630,11 @@ fn select_dispatch_match(
     ))
 }
 
-fn step_eval_entry(
+fn step_eval_entry<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
     program: &BackendProgram,
     module: &Module,
     executable_index: usize,
@@ -1038,10 +1041,10 @@ fn try_match_backend_receive(
     Ok(Some((clause_index, bound_values)))
 }
 
-fn eval_steps(
+fn eval_steps<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     _types: &mut crate::compiler2::Types,
-    _tel: &dyn Telemetry,
+    _tel: &T,
     transport: &TransportStore,
     program: &BackendProgram,
     module: &Module,
@@ -1516,11 +1519,11 @@ fn delivered_env(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn eval_backend_direct_call_edge(
+fn eval_backend_direct_call_edge<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
     program: &BackendProgram,
     module: &Module,
     callee: &CallTarget<usize>,
@@ -1554,11 +1557,11 @@ fn eval_backend_direct_call_edge(
     }
 }
 
-fn eval_direct_call(
+fn eval_direct_call<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
     program: &BackendProgram,
     module: &Module,
     callee: usize,
@@ -2715,11 +2718,11 @@ fn make_closure(runtime: &mut IrInterpRuntime, code: u32, captures: Vec<AnyValue
     make_closure_on_proc(runtime.cur_proc(), code, captures)
 }
 
-fn drain_pending_dtors_backend(
+fn drain_pending_dtors_backend<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
     program: &BackendProgram,
     module: &Module,
 ) -> Result<(), String> {
@@ -2739,16 +2742,7 @@ fn drain_pending_dtors_backend(
                 .map_err(|err| format!("backend dtor drain: ref is not a closure: {err:?}"))?,
             ValueKind::CLOSURE,
         );
-        let (fn_id, captures) = match unpack_closure(closure) {
-            Ok(parts) => parts,
-            Err(err) => {
-                tel.event_lazy(
-                    &["fz", "runtime", "bad_dtor_closure"],
-                    || crate::metadata! { error: err },
-                );
-                continue;
-            }
-        };
+        let (fn_id, captures) = unpack_pending_dtor_closure(closure)?;
         let payload = interp_value_from_ref_word(payload_ref, "backend dtor drain payload")?;
         let (target, args) =
             construction_wrapper_invocation(runtime, types, transport, program, module, fn_id, &captures, &[payload])?;
@@ -2767,6 +2761,10 @@ fn drain_pending_dtors_backend(
         )?;
     }
     Ok(())
+}
+
+fn unpack_pending_dtor_closure(closure: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
+    unpack_closure(closure).map_err(|error| format!("backend dtor drain: invalid closure: {error}"))
 }
 
 fn is_tuple_arity(runtime: &mut IrInterpRuntime, value: AnyValue, arity: usize) -> Result<bool, String> {
@@ -2927,4 +2925,15 @@ fn backend_unop(op: crate::ast::UnOp) -> Result<IrUnOp, String> {
         crate::ast::UnOp::Neg => IrUnOp::Neg,
         crate::ast::UnOp::Not => IrUnOp::Not,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_destructor_closure_unpack_errors_propagate() {
+        let error = unpack_pending_dtor_closure(RuntimeAnyValue::null()).expect_err("non-closure destructor must fail");
+        assert!(error.contains("backend dtor drain: invalid closure"), "{error}");
+    }
 }

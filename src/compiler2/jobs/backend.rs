@@ -45,7 +45,7 @@ const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
 pub(crate) fn build_backend_product(
     world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
+    tel: &impl crate::telemetry::RawSpanTelemetry,
     root_id: RootId,
 ) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);

@@ -1,4 +1,4 @@
-use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::telemetry::{RawSpanTelemetry, Telemetry, TelemetryExt as _};
 use std::time::Duration;
 
 use super::NativeProgram;
@@ -22,6 +22,8 @@ use super::{FactKey, Job};
 pub struct Compiler2<T: Telemetry> {
     world: World,
     telemetry: T,
+    output: Box<dyn fz_runtime::output::OutputSink>,
+    requested_output: Box<dyn super::dump::RequestedOutputSink>,
     drive_timeout: Option<Duration>,
 }
 
@@ -39,17 +41,27 @@ pub struct RootSubmission {
     pub need: ExecutableNeed,
 }
 
-impl<T: Telemetry> Compiler2<T> {
+impl<T: RawSpanTelemetry> Compiler2<T> {
     pub fn new(telemetry: T) -> Self {
         Self {
             world: World::new(),
             telemetry,
+            output: Box::new(fz_runtime::output::StdoutOutput),
+            requested_output: Box::new(super::dump::NullRequestedOutput),
             drive_timeout: None,
         }
     }
 
     pub fn set_drive_timeout(&mut self, timeout: Duration) {
         self.drive_timeout = Some(timeout);
+    }
+
+    pub fn set_output(&mut self, output: Box<dyn fz_runtime::output::OutputSink>) {
+        self.output = output;
+    }
+
+    pub(crate) fn set_requested_output(&mut self, output: Box<dyn super::dump::RequestedOutputSink>) {
+        self.requested_output = output;
     }
 
     pub(crate) fn telemetry(&self) -> &T {
@@ -148,26 +160,26 @@ impl<T: Telemetry> Compiler2<T> {
 
     fn compile_native_backend<B>(
         &mut self,
-        root: RootId,
         program: &NativeProgram,
         backend: B,
     ) -> Result<B::Output, super::native_codegen::CodegenError>
     where
         B: super::native_codegen::Backend,
     {
-        let backend_kind = backend.kind();
-        let tel = &self.telemetry;
-        let _span = tel.span_lazy(&["fz", "compiler2", "native_backend", "compile"], || {
-            crate::metadata! {
-                root_id: root.as_u32() as u64,
-                backend_revision: program.backend_revision,
-                entry_fn_id: program.entry.0 as u64,
-                body_count: program.bodies.len() as u64,
-                callable_boundary_count: program.callable_boundaries.len() as u64,
-                backend: backend_kind,
-            }
-        });
-        super::native_codegen::compile_with_backend_native_program(self.world.types_mut(), program, backend, tel)
+        let Self {
+            world,
+            telemetry,
+            requested_output,
+            ..
+        } = self;
+        let _span = telemetry.raw_span1_0(&["fz", "compiler2", "native_backend", "compile"], program);
+        super::native_codegen::compile_with_backend_native_program(
+            world.types_mut(),
+            program,
+            backend,
+            telemetry,
+            &mut **requested_output,
+        )
     }
 
     pub(crate) fn drive_root_to_dump_stage(&mut self, root: RootId, stage: DumpStage) -> Result<(), String> {
@@ -193,8 +205,12 @@ impl<T: Telemetry> Compiler2<T> {
     /// content sourced entirely from demanded products.
     pub(crate) fn emit_product_semantic_dumps(&mut self, root: RootId) -> Result<(), String> {
         let activations = self.product_activation_inventory(root)?;
-        super::dump::emit_product_semantic_dump_events(&self.world, &self.telemetry, root, &activations);
+        self.requested_output.semantic(&self.world, root, &activations);
         Ok(())
+    }
+
+    pub(crate) fn emit_requested_program_dumps(&mut self, root: RootId) {
+        self.requested_output.program(&self.world, root);
     }
 
     /// Drives one root to its backend product and returns the settled
@@ -262,7 +278,7 @@ impl<T: Telemetry> Compiler2<T> {
         let program = self.product_backend_program_for_root(root)?;
         let tel = &self.telemetry;
         let (types, transport) = self.world.types_mut_and_transport();
-        crate::ir_interp::run_backend_main(types, transport, tel, &program)
+        crate::ir_interp::run_backend_main(types, transport, tel, self.output.as_ref(), &program)
     }
 
     fn product_backend_program_for_root(&mut self, root: RootId) -> Result<BackendProgram, String> {
@@ -293,7 +309,7 @@ impl<T: Telemetry> Compiler2<T> {
         let program = self.native_program_for_root(root)?;
         let entry = program.entry;
         let compiled = self
-            .compile_native_backend(root, &program, super::native_codegen::JitBackend::new())
+            .compile_native_backend(&program, super::native_codegen::JitBackend::new())
             .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         Ok((compiled, entry))
     }
@@ -303,10 +319,12 @@ impl<T: Telemetry> Compiler2<T> {
     pub fn run_root_jit(&mut self, root: RootId) -> Result<(), String> {
         let program = self.native_program_for_root(root)?;
         let compiled = self
-            .compile_native_backend(root, &program, super::native_codegen::JitBackend::new())
+            .compile_native_backend(&program, super::native_codegen::JitBackend::new())
             .map_err(|err| format!("compiler2 root {} JIT compile failed: {err}", root.as_u32()))?;
         let tel = &self.telemetry;
-        let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel).with_module(&program.module);
+        let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel)
+            .with_module(&program.module)
+            .with_output(self.output.as_ref());
         let _root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();
         Ok(())
@@ -335,6 +353,7 @@ impl<T: Telemetry> Compiler2<T> {
             program,
             super::native_codegen::JitBackend::new(),
             tel,
+            &mut super::dump::NullRequestedOutput,
         )
         .map_err(|err| format!("compiler2 native program JIT compile failed: {err}"))
     }
@@ -363,7 +382,7 @@ impl<T: Telemetry> Compiler2<T> {
     /// shared native backend.
     pub fn compile_root_aot(&mut self, root: RootId, obj_name: &str) -> Result<crate::ir_codegen::AotArtifact, String> {
         let program = self.native_program_for_root(root)?;
-        self.compile_native_backend(root, &program, super::native_codegen::AotBackend::new(obj_name))
+        self.compile_native_backend(&program, super::native_codegen::AotBackend::new(obj_name))
             .map_err(|err| format!("compiler2 root {} AOT compile failed: {err}", root.as_u32()))
     }
 }

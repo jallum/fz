@@ -10,9 +10,9 @@ use crate::telemetry::ConfiguredTelemetry;
 /// function's return type by name.
 fn attach_return_captures(tel: &ConfiguredTelemetry) -> (FunctionCapture, ReturnTypeCapture) {
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(tel);
     (functions, returns)
 }
 
@@ -24,7 +24,7 @@ fn attach_return_captures_with_modules(
 ) -> (FunctionCapture, ModuleCapture, ReturnTypeCapture) {
     let (functions, returns) = attach_return_captures(tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(tel);
     (functions, modules, returns)
 }
 
@@ -330,9 +330,9 @@ fn enum_reduce_range_settles_to_int() {
 fn enum_reduce_operator_refs_settle_through_kernel_specs() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(&tel);
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {

@@ -1,11 +1,64 @@
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::telemetry::capture::vec_writer;
-use crate::telemetry::{Capture, ConfiguredTelemetry, JsonlBackend, TelemetryExt as _};
+use crate::telemetry::{ConfiguredTelemetry, JsonlBackend};
 
-use super::dump::{DumpKind, DumpSpec, install_dump_handlers};
+use super::dump::{DumpKind, DumpSpec, FileRequestedOutput, NullRequestedOutput, RequestedOutputSink};
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
+
+#[test]
+fn null_requested_output_is_inert() {
+    let mut output = NullRequestedOutput;
+    let world = super::World::new();
+    let root = super::RootId::for_test(1);
+
+    assert!(!output.wants_clif());
+    output.semantic(&world, root, &[]);
+    output.program(&world, root);
+}
+
+#[test]
+fn clif_output_observes_populated_functions() {
+    struct ClifCapture(Rc<RefCell<Vec<String>>>);
+
+    impl RequestedOutputSink for ClifCapture {
+        fn wants_clif(&self) -> bool {
+            true
+        }
+
+        fn clif(
+            &mut self,
+            _: &crate::fz_ir::Module,
+            _: crate::fz_ir::FnId,
+            function: &cranelift_codegen::ir::Function,
+        ) {
+            self.0.borrow_mut().push(function.display().to_string());
+        }
+    }
+
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.set_requested_output(Box::new(ClifCapture(Rc::clone(&observed))));
+    compiler.submit_code(CodeSubmission {
+        name: Some("clif_output.fz".to_string()),
+        text: "fn main(), do: 0\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.compile_root_jit(root).expect("JIT compile");
+
+    let observed = observed.borrow();
+    assert!(!observed.is_empty());
+    assert!(observed.iter().all(|function| function.contains("block0")));
+}
 
 /// The user-facing `types`/`activations` dumps are served from the PRODUCT-PATH
 /// activation inventory (`emit_product_semantic_dumps`). There is no legacy
@@ -14,9 +67,7 @@ use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmiss
 /// that they carry the real root-owned activation facts.
 #[test]
 fn semantic_dumps_serve_from_the_product_path() {
-    let capture = Capture::new();
     let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], capture.handler());
 
     // Wire the real CLI dump sinks so the assertion exercises the full
     // production chain: product drive -> dump events -> file handlers.
@@ -37,8 +88,7 @@ fn semantic_dumps_serve_from_the_product_path() {
         need: ExecutableNeed::Value,
     });
 
-    install_dump_handlers(
-        compiler.telemetry(),
+    compiler.set_requested_output(Box::new(FileRequestedOutput::new(
         root,
         &[
             DumpSpec {
@@ -50,21 +100,11 @@ fn semantic_dumps_serve_from_the_product_path() {
                 path: activations_path.clone(),
             },
         ],
-    );
+    )));
 
     compiler
         .emit_product_semantic_dumps(root)
         .expect("product-path semantic dumps should resolve");
-
-    // The dump events fire — the feature is served.
-    assert!(
-        capture.contains(&["fz", "compiler2", "dump", "types"]),
-        "the types dump event should be emitted from the product path"
-    );
-    assert!(
-        capture.contains(&["fz", "compiler2", "dump", "activations"]),
-        "the activations dump event should be emitted from the product path"
-    );
 
     // The activation SET came from the product inventory, so the dump carries
     // the real per-activation facts (here: the root-owned quicksort activations).
@@ -89,7 +129,7 @@ fn semantic_dumps_serve_from_the_product_path() {
 fn dump_quicksort_compiler2_telemetry_to_jsonl() {
     let path = Path::new("/tmp/fz-compiler2-quicksort.jsonl");
     let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], Box::new(JsonlBackend::new_file(path).expect("open log file")));
+    JsonlBackend::new_file(path).expect("open log file").install(&tel);
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -114,7 +154,7 @@ fn dump_quicksort_compiler2_telemetry_to_jsonl() {
 fn dump_enum_reduce_compiler2_telemetry_to_jsonl() {
     let path = Path::new("/tmp/fz-compiler2-enum-reduce.jsonl");
     let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], Box::new(JsonlBackend::new_file(path).expect("open log file")));
+    JsonlBackend::new_file(path).expect("open log file").install(&tel);
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -138,7 +178,7 @@ fn dump_enum_reduce_compiler2_telemetry_to_jsonl() {
 fn jsonl_backend_shows_precipitating_compiler2_actions() {
     let (buf, writer) = vec_writer();
     let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], Box::new(JsonlBackend::new_writer(writer)));
+    JsonlBackend::new_writer(writer).install(&tel);
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_root(RootSubmission {
@@ -163,12 +203,12 @@ fn jsonl_backend_shows_precipitating_compiler2_actions() {
         "compiler2 jsonl log should name the job that triggered the unresolved drive:\n{log}"
     );
     assert!(
-        log.contains("\"step\":{\"opaque_type\"") && log.contains("FunctionDefined"),
+        log.contains("\"completion\":{\"opaque_type\"") && log.contains("FunctionDefined"),
         "compiler2 jsonl log should show the blocking fact in the applied step:\n{log}"
     );
     assert!(
-        log.contains("\"waits\":{\"opaque_type\""),
-        "compiler2 jsonl log should surface the unresolved wait frontier on the drive span:\n{log}"
+        log.contains("\"status\":\"unresolved\"") && log.contains("\"wait_count\":"),
+        "compiler2 jsonl log should surface the unresolved drive outcome and wait count:\n{log}"
     );
     assert!(
         log.contains("\"world\":{\"opaque_type\":\"fz::compiler2::world::World\",\"codes\":")
@@ -178,25 +218,10 @@ fn jsonl_backend_shows_precipitating_compiler2_actions() {
 }
 
 #[test]
-fn dump_harness_uses_the_same_jsonl_backend_as_cli_logging() {
-    let (buf, writer) = vec_writer();
-    let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], Box::new(JsonlBackend::new_writer(writer)));
-
-    tel.event_lazy(&["fz", "compiler2", "ping"], || crate::metadata! {});
-
-    let log = String::from_utf8(buf.borrow().clone()).expect("jsonl log should stay utf-8");
-    assert!(
-        log.contains("\"name\":[\"fz\",\"compiler2\",\"ping\"]"),
-        "the manual dump harness should rely on the stock jsonl backend format:\n{log}"
-    );
-}
-
-#[test]
 fn jsonl_backend_records_compiler2_drive_timeouts() {
     let (buf, writer) = vec_writer();
     let tel = ConfiguredTelemetry::new();
-    tel.attach(&[], Box::new(JsonlBackend::new_writer(writer)));
+    JsonlBackend::new_writer(writer).install(&tel);
 
     let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(Duration::ZERO);

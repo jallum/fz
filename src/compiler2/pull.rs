@@ -7,8 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::telemetry::{Telemetry, TelemetryExt as _, opaque};
-use crate::{measurements, metadata};
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::artifact::{
     AbiReadyExecutable, BackendCallArg, BackendProgram, BackendReceive, BackendStep, CallEdge, CallReturnFlow,
@@ -258,10 +257,6 @@ impl PullOutcome {
 #[derive(Debug, Default)]
 pub struct ProductMemo {
     produced: HashMap<ProductKey, ProductValue>,
-    // Last value each invalidated key held, kept (moved, not cloned) until the
-    // key re-produces. Lets the driver report whether a re-production was
-    // byte-identical to the value the invalidation displaced -- the minimality
-    // signal for invalidation hygiene.
     displaced: HashMap<ProductKey, ProductValue>,
     in_progress: HashSet<ProductKey>,
     invalidated_in_progress: HashSet<ProductKey>,
@@ -270,7 +265,6 @@ pub struct ProductMemo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProductFinish {
     settled: bool,
-    identical: bool,
 }
 
 impl ProductMemo {
@@ -338,18 +332,11 @@ impl ProductMemo {
         self.in_progress.remove(key);
         if self.invalidated_in_progress.remove(key) {
             self.produced.remove(key);
-            return ProductFinish {
-                settled: false,
-                identical: false,
-            };
+            return ProductFinish { settled: false };
         }
-        let displaced = self.displaced.remove(key);
-        let identical = self.produced.get(key) == Some(&value) || displaced.as_ref() == Some(&value);
+        self.displaced.remove(key);
         self.produced.insert(key.clone(), value);
-        ProductFinish {
-            settled: true,
-            identical,
-        }
+        ProductFinish { settled: true }
     }
 
     fn unblock(&mut self, key: &ProductKey) {
@@ -1787,26 +1774,7 @@ impl PullSession {
     }
 
     fn emit_finished(&self, tel: &impl Telemetry) {
-        tel.execute_lazy(&["fz", "compiler2", "pull", "session", "finished"], || {
-            (
-                measurements! {
-                    root_id: self.root.as_u32(),
-                    executables: self.demanded_executables.len(),
-                    transport_positions: self.demanded_transport_positions.len(),
-                    callables: self.demanded_callables.len(),
-                    boundaries: self.demanded_boundaries.len(),
-                    producer_pokes: self.producer_pokes,
-                    work_starts_ignition: self.work_starts.ignition,
-                    work_starts_changed_revision_wake: self.work_starts.changed_revision_wake,
-                    work_starts_standing_root_frontier: self.work_starts.standing_root_frontier,
-                    work_starts_activation_frontier: self.work_starts.activation_frontier,
-                    work_starts_blocked_waiter_expansion: self.work_starts.blocked_waiter_expansion,
-                    unsanctioned_work_starts: self.work_starts.unclassified,
-                    root_scans: self.work_starts.root_scans,
-                },
-                metadata! {},
-            )
-        });
+        tel.raw_event1(&["fz", "compiler2", "pull", "session", "finished"], self);
     }
 }
 
@@ -1989,7 +1957,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
-        self.emit("requested", &key, 0);
         self.session.note_product_request(&key);
         let stale_transport_executable = key.transport_position().and_then(|position| {
             let executable = producers.transport_executable(self.session.root(), position)?;
@@ -2033,11 +2000,11 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             self.session.invalidate_artifact_products(executable);
         }
         if let Some(value) = self.session.memo.get(&key) {
-            self.emit("cache_hit", &key, 0);
+            self.emit("cache_hit", &key);
             return PullOutcome::Produced(value.clone());
         }
         if !self.session.memo.begin(key.clone()) {
-            self.emit("reentered", &key, 1);
+            self.emit("reentered", &key);
             return PullOutcome::Waiting(vec![PullWait::Product(key)]);
         }
 
@@ -2073,80 +2040,64 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 if !finish.settled {
                     self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
-                    self.emit_waited(&key, &waits);
-                    return PullOutcome::Waiting(waits);
+                    PullOutcome::Waiting(waits)
+                } else {
+                    if let (ProductKey::RootBackendProduct(root), Some(revision)) = (&key, root_artifact_revision) {
+                        self.session.record_root_artifact_revision(*root, revision);
+                    }
+                    self.tel
+                        .raw_event2(&["fz", "compiler2", "pull", "product", "settled"], &key, &value);
+                    PullOutcome::Produced(value)
                 }
-                self.emit_produced(&key, finish.identical);
-                if let (ProductKey::RootBackendProduct(root), Some(revision)) = (&key, root_artifact_revision) {
-                    self.session.record_root_artifact_revision(*root, revision);
-                }
-                PullOutcome::Produced(value)
             }
             PullOutcome::Waiting(waits) => {
                 self.session.memo.unblock(&key);
-                self.emit_waited(&key, &waits);
                 PullOutcome::Waiting(waits)
             }
         }
     }
 
-    fn emit_produced(&self, key: &ProductKey, identical: bool) {
-        self.tel
-            .execute_lazy(&["fz", "compiler2", "pull", "product", "produced"], || {
-                (
-                    measurements! {
-                        wait_count: 0_usize,
-                        identical: identical,
-                    },
-                    metadata! {
-                        kind: key.kind(),
-                        product: opaque(key),
-                    },
-                )
-            });
-    }
-
-    fn emit(&self, event: &'static str, key: &ProductKey, wait_count: usize) {
-        self.tel
-            .execute_lazy(&["fz", "compiler2", "pull", "product", event], || {
-                (
-                    measurements! {
-                        wait_count: wait_count,
-                    },
-                    metadata! {
-                        kind: key.kind(),
-                        product: opaque(key),
-                    },
-                )
-            });
-    }
-
-    fn emit_waited(&self, key: &ProductKey, waits: &Vec<PullWait>) {
-        self.tel
-            .execute_lazy(&["fz", "compiler2", "pull", "product", "waited"], || {
-                (
-                    measurements! {
-                        wait_count: waits.len(),
-                    },
-                    metadata! {
-                        kind: key.kind(),
-                        product: opaque(key),
-                        waits: opaque(waits),
-                    },
-                )
-            });
+    fn emit(&self, event: &'static str, key: &ProductKey) {
+        self.tel.raw_event1(&["fz", "compiler2", "pull", "product", event], key);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::HashSet;
+    use std::rc::Rc;
 
-    use crate::telemetry::{Capture, ConfiguredTelemetry};
+    use crate::telemetry::ConfiguredTelemetry;
 
     use super::super::identity::{ExecutableNeed, FunctionId};
     use super::super::transport::{ActivationSymbol, ExecutableSymbol};
     use super::*;
+
+    struct ProductTelemetryCapture {
+        produced: Rc<Cell<u64>>,
+        cache_hits: Rc<Cell<u64>>,
+    }
+
+    impl ProductTelemetryCapture {
+        fn install(telemetry: &ConfiguredTelemetry) -> Self {
+            let capture = Self {
+                produced: Rc::new(Cell::new(0)),
+                cache_hits: Rc::new(Cell::new(0)),
+            };
+            let cache_hits = Rc::clone(&capture.cache_hits);
+            telemetry.attach_raw_event1::<ProductKey, _>(
+                &["fz", "compiler2", "pull", "product", "cache_hit"],
+                move |_, _, _, _| cache_hits.set(cache_hits.get() + 1),
+            );
+            let produced = Rc::clone(&capture.produced);
+            telemetry.attach_raw_event2::<ProductKey, ProductValue, _>(
+                &["fz", "compiler2", "pull", "product", "settled"],
+                move |_, _, _, _, _| produced.set(produced.get() + 1),
+            );
+            capture
+        }
+    }
 
     #[derive(Debug, Default)]
     struct FakeProducers {
@@ -2273,8 +2224,7 @@ mod tests {
     #[test]
     fn product_driver_names_prerequisites_without_follow_up_jobs() {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
+        let capture = ProductTelemetryCapture::install(&tel);
         let root = RootId::for_test(0);
         let executable = fake_executable(root);
         let root_key = ProductKey::RootBackendProduct(root);
@@ -2301,9 +2251,8 @@ mod tests {
         );
 
         assert_eq!(producers.calls.iter().filter(|key| **key == root_key).count(), 2);
-        assert_eq!(capture.count(&["fz", "compiler2", "pull", "product", "waited"]), 1);
-        assert_eq!(capture.count(&["fz", "compiler2", "pull", "product", "produced"]), 2);
-        assert_eq!(capture.count(&["fz", "compiler2", "pull", "product", "cache_hit"]), 1);
+        assert_eq!(capture.produced.get(), 2);
+        assert_eq!(capture.cache_hits.get(), 1);
     }
 
     #[test]
@@ -2339,8 +2288,7 @@ mod tests {
     #[test]
     fn product_driver_reports_fact_waits_as_waits_not_scheduler_work() {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
+        let capture = ProductTelemetryCapture::install(&tel);
         let root = RootId::for_test(1);
         let executable = fake_executable(root);
         let key = ProductKey::BackendExecutable(executable);
@@ -2355,7 +2303,7 @@ mod tests {
         );
         assert!(driver.session().memo().get(&key).is_none());
         assert!(!driver.session().memo().contains_in_progress(&key));
-        assert_eq!(capture.count(&["fz", "compiler2", "pull", "product", "waited"]), 1);
+        assert_eq!(capture.produced.get(), 0);
     }
 
     #[test]
@@ -3004,8 +2952,7 @@ mod tests {
         use crate::source::Span;
 
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
+        let capture = ProductTelemetryCapture::install(&tel);
         let root = RootId::for_test(90);
         let caller = fake_executable_with_function(root, 90);
         let callee = fake_executable_with_function(root, 91);
@@ -3038,7 +2985,7 @@ mod tests {
             driver.pull(&mut producers, effects_key.clone()),
             PullOutcome::Produced(ProductValue::ExecutableEffects(_))
         ));
-        let produced_after_settle = capture.count(&["fz", "compiler2", "pull", "product", "produced"]);
+        let produced_after_settle = capture.produced.get();
 
         driver
             .session_mut()
@@ -3054,7 +3001,7 @@ mod tests {
             PullOutcome::Produced(ProductValue::ExecutableEffects(_))
         ));
         assert_eq!(
-            capture.count(&["fz", "compiler2", "pull", "product", "produced"]),
+            capture.produced.get(),
             produced_after_settle,
             "an unchanged effect projection must not re-produce the effects product"
         );
@@ -3081,7 +3028,7 @@ mod tests {
             PullOutcome::Produced(ProductValue::ExecutableEffects(_))
         ));
         assert!(
-            capture.count(&["fz", "compiler2", "pull", "product", "produced"]) > produced_after_settle,
+            capture.produced.get() > produced_after_settle,
             "a changed effect projection must re-produce the effects product"
         );
 
@@ -3361,87 +3308,16 @@ mod tests {
     }
 
     #[test]
-    fn product_memo_finish_classifies_identical_vs_changed_reproductions() {
-        // The displaced value an invalidation removes is kept so the next
-        // production of the same key can be classified byte-identical vs
-        // changed -- the minimality signal for invalidation hygiene.
-        let key = ProductKey::RuntimeDemand(fake_executable(RootId::for_test(92)));
-        let mut memo = ProductMemo::default();
-
-        memo.begin(key.clone());
-        assert_eq!(
-            memo.finish(&key, ProductValue::Unit),
-            ProductFinish {
-                settled: true,
-                identical: false,
-            },
-            "a first production has nothing to be identical to"
-        );
-
-        memo.remove(&key);
-        memo.begin(key.clone());
-        assert_eq!(
-            memo.finish(&key, ProductValue::Unit),
-            ProductFinish {
-                settled: true,
-                identical: true,
-            },
-            "re-producing the displaced value after invalidation is identical"
-        );
-
-        memo.remove(&key);
-        memo.begin(key.clone());
-        assert_eq!(
-            memo.finish(&key, ProductValue::RuntimeDemand(Box::default())),
-            ProductFinish {
-                settled: true,
-                identical: false,
-            },
-            "re-producing a different value after invalidation is a change"
-        );
-    }
-
-    #[test]
-    fn produced_telemetry_measures_identical_reproductions() {
-        let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let root = RootId::for_test(93);
-        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut producers = FakeProducers::default();
-
-        assert_eq!(
-            driver.pull(&mut producers, key.clone()),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        let first = capture
-            .last(&["fz", "compiler2", "pull", "product", "produced"])
-            .expect("first production should emit produced telemetry");
-        assert!(
-            !measurement_bool(&first, "identical"),
-            "a first production carries identical=false"
-        );
-
-        driver.session.memo.remove(&key);
-        assert_eq!(
-            driver.pull(&mut producers, key),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        let second = capture
-            .last(&["fz", "compiler2", "pull", "product", "produced"])
-            .expect("re-production should emit produced telemetry");
-        assert!(
-            measurement_bool(&second, "identical"),
-            "an invalidation that re-produces the displaced value carries identical=true"
-        );
-    }
-
-    #[test]
     fn pull_session_finished_telemetry_reports_producer_pokes() {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
+        let observed = Rc::new(Cell::new(None));
+        let sink = Rc::clone(&observed);
+        tel.attach_raw_event1::<PullSession, _>(
+            &["fz", "compiler2", "pull", "session", "finished"],
+            move |_, _, _, session| {
+                sink.set(Some((session.demanded_executables.len(), session.producer_pokes)));
+            },
+        );
         let root = RootId::for_test(5);
         let executable = fake_executable(root);
         let mut driver = ProductDriver::new(&tel, root);
@@ -3454,11 +3330,7 @@ mod tests {
         driver.session_mut().record_producer_pokes(2);
         driver.finish_session();
 
-        let finished = capture
-            .last(&["fz", "compiler2", "pull", "session", "finished"])
-            .expect("pull session should emit final inventory telemetry");
-        assert_eq!(measurement_u64(&finished, "executables"), 1);
-        assert_eq!(measurement_u64(&finished, "producer_pokes"), 2);
+        assert_eq!(observed.get(), Some((1, 2)));
     }
 
     fn fake_executable(root: RootId) -> ExecutableKey {
@@ -3883,19 +3755,5 @@ mod tests {
             _ => 1,
         });
         assert_eq!(indexed, vec![capture, resume]);
-    }
-
-    fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
-        match event.measurements.get(key) {
-            Some(crate::telemetry::Value::U64(value)) => *value,
-            other => panic!("expected u64 measurement {key}, got {other:?}"),
-        }
-    }
-
-    fn measurement_bool(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> bool {
-        match event.measurements.get(key) {
-            Some(crate::telemetry::Value::Bool(value)) => *value,
-            other => panic!("expected bool measurement {key}, got {other:?}"),
-        }
     }
 }

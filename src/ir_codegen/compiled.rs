@@ -185,10 +185,19 @@ impl CompiledModule {
         &self.static_closure_targets
     }
 
-    pub fn run(&self, tel: &dyn crate::telemetry::Telemetry, fn_id: FnId) -> i64 {
+    pub fn run(&self, tel: &crate::telemetry::ConfiguredTelemetry, fn_id: FnId) -> i64 {
+        self.run_with_output(tel, &fz_runtime::output::STDOUT_OUTPUT, fn_id)
+    }
+
+    pub fn run_with_output(
+        &self,
+        tel: &crate::telemetry::ConfiguredTelemetry,
+        output: &dyn fz_runtime::output::OutputSink,
+        fn_id: FnId,
+    ) -> i64 {
         let exits = ProcessExitCapture::new();
-        tel.attach(&[], exits.handler());
-        let mut rt = Runtime::new(self, 1, tel);
+        exits.install(tel);
+        let mut rt = Runtime::new(self, 1, tel).with_output(output);
         let root_pid = rt.spawn(fn_id);
         rt.run_until_idle();
         exits.by_pid(root_pid).expect("root process_exited captured").halt_value

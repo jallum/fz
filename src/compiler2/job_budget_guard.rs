@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::drive::Job;
-use crate::telemetry::handler::{Event, EventKind, Handler};
+use crate::telemetry::ConfiguredTelemetry;
 
 /// Generous per-kind ceiling. Any single job kind running this many times in one
 /// drive is a re-derivation loop, not a converging fixpoint. Uniform on purpose:
@@ -42,35 +42,27 @@ impl JobBudgetGuard {
         }
     }
 
-    pub(super) fn handler(&self) -> Box<dyn Handler> {
-        Box::new(JobBudgetGuardHandler {
-            counts: self.counts.clone(),
-        })
-    }
-}
-
-struct JobBudgetGuardHandler {
-    counts: Rc<RefCell<HashMap<&'static str, u64>>>,
-}
-
-impl Handler for JobBudgetGuardHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "job"] || event.kind != EventKind::SpanStart {
-            return;
-        }
-        let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
-            return;
-        };
-        let kind = job_kind_name(job);
-        let mut counts = self.counts.borrow_mut();
-        let count = counts.entry(kind).or_default();
-        *count += 1;
-        assert!(
-            *count <= LIVELOCK_CAP,
-            "runaway recalculation: job kind `{kind}` ran {count} times (cap {LIVELOCK_CAP}) -- \
-             a re-derivation loop, not a converging fixpoint",
+    pub(super) fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let counts = Rc::clone(&self.counts);
+        telemetry.attach_raw_span1_2::<Job, super::World, super::JobCompletion, _, _, _>(
+            &["fz", "compiler2", "job"],
+            move |_, _, _, job| record_job(&counts, job),
+            |_, _, _, _, _, _| {},
+            |_, _, _, _| {},
         );
     }
+}
+
+fn record_job(counts: &Rc<RefCell<HashMap<&'static str, u64>>>, job: &Job) {
+    let kind = job_kind_name(job);
+    let mut counts = counts.borrow_mut();
+    let count = counts.entry(kind).or_default();
+    *count += 1;
+    assert!(
+        *count <= LIVELOCK_CAP,
+        "runaway recalculation: job kind `{kind}` ran {count} times (cap {LIVELOCK_CAP}) -- \
+         a re-derivation loop, not a converging fixpoint",
+    );
 }
 
 /// Stable, allocation-free discriminant name for a `Job` (its payload dropped),

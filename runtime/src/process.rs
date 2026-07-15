@@ -65,7 +65,7 @@ impl Drop for AlignedClosureStorage {
 pub struct Process {
     pub heap: Heap,
     /// Execution-context dispatch table for this task: scheduler services,
-    /// telemetry sink, and IR module, reached explicitly by BIFs instead of
+    /// output context, and IR module, reached explicitly by BIFs instead of
     /// through thread-local singletons. Set by the owning scheduler (JIT
     /// `Runtime`, interpreter, or AOT shim) at each quantum entry; the pointee
     /// outlives any FFI call made under this process. Null until a scheduler

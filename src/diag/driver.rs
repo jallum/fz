@@ -1,30 +1,17 @@
-//! fz-ndf.9 — diagnostics now flow through the telemetry bus:
-//! - `report_through(tel, diags)` emits each diagnostic as a
-//!   `[fz, diag, error|warning]` event with the `Diagnostic`
-//!   in metadata. Printing is the renderer-handler's responsibility.
+//! Diagnostics flow through exact raw telemetry callbacks. Printing is the
+//! renderer-handler's responsibility.
 
 use super::diagnostic::{Diagnostic, Severity};
-use crate::telemetry::value::opaque;
-use crate::telemetry::{Metadata, Value};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
-/// Emit each diagnostic as a telemetry event in the `[fz, diag, *]`
-/// family. Printing is delegated to whatever renderer-handler the bus
-/// has attached. No exit decision: callers inspect the slice themselves.
-pub fn emit_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
+/// Emit each diagnostic by reference in the `[fz, diag, *]` family.
+pub fn emit_through<T: Telemetry + ?Sized>(tel: &T, diags: &[Diagnostic]) {
     for d in diags {
-        let (name, severity): (&'static [&'static str], &'static str) = match d.severity {
-            Severity::Error => (&["fz", "diag", "error"], "error"),
-            Severity::Warning => (&["fz", "diag", "warning"], "warning"),
+        let name: &'static [&'static str] = match d.severity {
+            Severity::Error => &["fz", "diag", "error"],
+            Severity::Warning => &["fz", "diag", "warning"],
         };
-        tel.event_lazy(name, || {
-            Metadata::from_pairs([
-                ("severity", Value::from(severity)),
-                ("code", Value::from(d.code.0)),
-                ("message", Value::from(d.message.as_str())),
-                ("diagnostic", opaque(d)),
-            ])
-        });
+        tel.raw_event1(name, d);
     }
 }
 

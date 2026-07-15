@@ -40,6 +40,7 @@ pub enum Value<'a> {
     Str(Cow<'a, str>),
     StrSeq(Arc<[String]>),
     Bytes(Arc<[u8]>),
+    BorrowedBytes(&'a [u8]),
     Opaque(OpaqueRef<'a>),
 }
 
@@ -65,6 +66,7 @@ impl<'a> Value<'a> {
             Value::Str(v) => Some(Value::Str(Cow::Owned(v.clone().into_owned()))),
             Value::StrSeq(v) => Some(Value::StrSeq(v.clone())),
             Value::Bytes(v) => Some(Value::Bytes(v.clone())),
+            Value::BorrowedBytes(v) => Some(Value::Bytes(Arc::from(*v))),
             Value::Opaque(_) => None,
         }
     }
@@ -88,6 +90,7 @@ impl<'a> Value<'a> {
             Value::Str(_) => "str",
             Value::StrSeq(_) => "str_seq",
             Value::Bytes(_) => "bytes",
+            Value::BorrowedBytes(_) => "borrowed_bytes",
             Value::Opaque(_) => "opaque",
         }
     }
@@ -167,6 +170,11 @@ impl From<Arc<[u8]>> for Value<'_> {
 impl From<Vec<u8>> for Value<'_> {
     fn from(v: Vec<u8>) -> Self {
         Value::Bytes(Arc::from(v))
+    }
+}
+impl<'a> From<&'a [u8]> for Value<'a> {
+    fn from(v: &'a [u8]) -> Self {
+        Value::BorrowedBytes(v)
     }
 }
 

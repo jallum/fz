@@ -1,14 +1,7 @@
-use std::cell::Cell;
-use std::fmt::Debug;
 use std::fs::{OpenOptions, write};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
-use crate::telemetry::handler::EventKind;
-use crate::telemetry::{ConfiguredTelemetry, Handler, TelemetryExt as _, Value, opaque};
-
-use super::artifact::{BackendProgram, NativeProgram};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
 use super::world::World;
 
@@ -69,173 +62,97 @@ pub(crate) fn parse_dump_spec(spec: &str) -> Result<DumpSpec, String> {
     Ok(DumpSpec { kind, path })
 }
 
-pub(crate) fn install_dump_handlers(tel: &ConfiguredTelemetry, root: RootId, specs: &[DumpSpec]) {
-    for spec in specs {
-        match spec.kind {
-            DumpKind::Types => {
-                tel.attach(
-                    &["fz", "compiler2", "dump", "types"],
-                    boxed_semantic_dump_handler(&spec.path, root, DumpKind::Types),
-                );
-            }
-            DumpKind::Activations => {
-                tel.attach(
-                    &["fz", "compiler2", "dump", "activations"],
-                    boxed_semantic_dump_handler(&spec.path, root, DumpKind::Activations),
-                );
-            }
-            DumpKind::Backend => {
-                tel.attach(
-                    &["fz", "compiler2", "backend_program", "defined"],
-                    boxed_debug_dump_handler::<BackendProgram>(&spec.path, root, "program"),
-                );
-            }
-            DumpKind::Native => {
-                tel.attach(
-                    &["fz", "compiler2", "native_program", "defined"],
-                    boxed_debug_dump_handler::<NativeProgram>(&spec.path, root, "program"),
-                );
-            }
-            DumpKind::Fnir => {
-                tel.attach(
-                    &["fz", "compiler2", "native_program", "defined"],
-                    boxed_fnir_dump_handler(&spec.path, root),
-                );
-            }
-            DumpKind::Clif => {
-                tel.attach(
-                    &["fz", "compiler2", "dump", "clif"],
-                    boxed_clif_dump_handler(&spec.path),
-                );
-            }
+pub(crate) trait RequestedOutputSink {
+    fn wants_clif(&self) -> bool {
+        false
+    }
+    fn semantic(&mut self, _world: &World, _root: RootId, _activations: &[ActivationKey]) {}
+    fn program(&mut self, _world: &World, _root: RootId) {}
+    fn clif(
+        &mut self,
+        _module: &crate::fz_ir::Module,
+        _fn_id: crate::fz_ir::FnId,
+        _function: &cranelift_codegen::ir::Function,
+    ) {
+    }
+}
+
+pub(crate) struct NullRequestedOutput;
+impl RequestedOutputSink for NullRequestedOutput {}
+
+pub(crate) struct FileRequestedOutput {
+    root: RootId,
+    specs: Vec<DumpSpec>,
+    clif_cleared: bool,
+}
+
+impl FileRequestedOutput {
+    pub(crate) fn new(root: RootId, specs: &[DumpSpec]) -> Self {
+        Self {
+            root,
+            specs: specs.to_vec(),
+            clif_cleared: false,
         }
     }
 }
 
-/// Emits the per-activation types/activations dump events sourced from the
-/// product-path activation inventory (the demanded executables' activations).
-pub(crate) fn emit_product_semantic_dump_events(
-    world: &World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    activations: &Vec<ActivationKey>,
-) {
-    emit_dump_events(world, tel, root, activations);
-}
+impl RequestedOutputSink for FileRequestedOutput {
+    fn wants_clif(&self) -> bool {
+        self.specs.iter().any(|spec| spec.kind == DumpKind::Clif)
+    }
 
-fn emit_dump_events(
-    world: &World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    activations: &Vec<ActivationKey>,
-) {
-    tel.execute_lazy_with(&["fz", "compiler2", "dump", "types"], |emit| {
-        let measurements = crate::measurements! { root_id: root.as_u32() };
-        let metadata = crate::metadata! { world: opaque(world), activations: opaque(activations) };
-        emit(&measurements, &metadata);
-    });
-
-    tel.execute_lazy_with(&["fz", "compiler2", "dump", "activations"], |emit| {
-        let measurements = crate::measurements! { root_id: root.as_u32() };
-        let metadata = crate::metadata! { world: opaque(world), activations: opaque(activations) };
-        emit(&measurements, &metadata);
-    });
-}
-
-fn boxed_semantic_dump_handler(path: &Path, root: RootId, kind: DumpKind) -> Box<dyn Handler> {
-    let path = path.to_path_buf();
-    let wrote = Rc::new(Cell::new(false));
-    Box::new(move |ev: &crate::telemetry::Event<'_, '_, '_>| {
-        if ev.kind != EventKind::Event || wrote.get() || !event_matches_root(ev, root) {
+    fn semantic(&mut self, world: &World, root: RootId, activations: &[ActivationKey]) {
+        if root != self.root {
             return;
         }
-        let Some(world) = ev.metadata.get("world").and_then(Value::downcast_ref::<World>) else {
-            return;
-        };
-        let Some(activations) = ev
-            .metadata
-            .get("activations")
-            .and_then(Value::downcast_ref::<Vec<ActivationKey>>)
-        else {
-            return;
-        };
         let activations = root_owned_activations(world, root, activations.iter().cloned());
-        let text = match kind {
-            DumpKind::Types => render_types_dump(world, &activations),
-            DumpKind::Activations => render_activations_dump(world, &activations),
-            DumpKind::Backend | DumpKind::Native | DumpKind::Fnir | DumpKind::Clif => return,
-        };
-        write_dump_file(&path, &text);
-        wrote.set(true);
-    })
-}
+        for spec in &self.specs {
+            let text = match spec.kind {
+                DumpKind::Types => render_types_dump(world, &activations),
+                DumpKind::Activations => render_activations_dump(world, &activations),
+                _ => continue,
+            };
+            write_dump_file(&spec.path, &text);
+        }
+    }
 
-fn boxed_debug_dump_handler<T: 'static + Debug>(
-    path: &Path,
-    root: RootId,
-    metadata_key: &'static str,
-) -> Box<dyn Handler> {
-    let path = path.to_path_buf();
-    let wrote = Rc::new(Cell::new(false));
-    Box::new(move |ev: &crate::telemetry::Event<'_, '_, '_>| {
-        if ev.kind != EventKind::Event || wrote.get() || !event_matches_root(ev, root) {
+    fn program(&mut self, world: &World, root: RootId) {
+        if root != self.root {
             return;
         }
-        let Some(value) = ev.metadata.get(metadata_key).and_then(Value::downcast_ref::<T>) else {
-            return;
-        };
-        write_dump_file(&path, &format!("{value:#?}\n"));
-        wrote.set(true);
-    })
-}
+        for spec in &self.specs {
+            let text = match spec.kind {
+                DumpKind::Backend => format!("{:#?}\n", world.backend_program(root)),
+                DumpKind::Native => format!("{:#?}\n", world.native_program(root)),
+                DumpKind::Fnir => format!("{:#?}\n", world.native_program(root).module),
+                _ => continue,
+            };
+            write_dump_file(&spec.path, &text);
+        }
+    }
 
-fn boxed_fnir_dump_handler(path: &Path, root: RootId) -> Box<dyn Handler> {
-    let path = path.to_path_buf();
-    let wrote = Rc::new(Cell::new(false));
-    Box::new(move |ev: &crate::telemetry::Event<'_, '_, '_>| {
-        if ev.kind != EventKind::Event || wrote.get() || !event_matches_root(ev, root) {
-            return;
+    fn clif(
+        &mut self,
+        module: &crate::fz_ir::Module,
+        fn_id: crate::fz_ir::FnId,
+        function: &cranelift_codegen::ir::Function,
+    ) {
+        for spec in self.specs.iter().filter(|spec| spec.kind == DumpKind::Clif) {
+            if !self.clif_cleared {
+                clear_dump_file(&spec.path);
+            }
+            append_dump_file(
+                &spec.path,
+                &format!(
+                    "; fn {} ({})\n{}\n",
+                    module.fn_by_id(fn_id).name,
+                    fn_id.0,
+                    function.display()
+                ),
+            );
         }
-        let Some(program) = ev
-            .metadata
-            .get("program")
-            .and_then(Value::downcast_ref::<NativeProgram>)
-        else {
-            return;
-        };
-        write_dump_file(&path, &format!("{:#?}\n", program.module));
-        wrote.set(true);
-    })
-}
-
-fn boxed_clif_dump_handler(path: &Path) -> Box<dyn Handler> {
-    let path = path.to_path_buf();
-    let cleared = Rc::new(Cell::new(false));
-    Box::new(move |ev: &crate::telemetry::Event<'_, '_, '_>| {
-        if ev.kind != EventKind::Event {
-            return;
-        }
-        let Some(function) = ev
-            .metadata
-            .get("function")
-            .and_then(Value::downcast_ref::<cranelift_codegen::ir::Function>)
-        else {
-            return;
-        };
-        let Some(Value::Str(fn_name)) = ev.metadata.get("fn_name") else {
-            return;
-        };
-        let Some(Value::U64(fn_id)) = ev.measurements.get("fn_id") else {
-            return;
-        };
-        if !cleared.replace(true) {
-            clear_dump_file(&path);
-        }
-        append_dump_file(
-            &path,
-            &format!("; fn {} ({})\n{}\n", fn_name, fn_id, function.display()),
-        );
-    })
+        self.clif_cleared = true;
+    }
 }
 
 fn parse_dump_kind_name(name: &str) -> Result<DumpKind, String> {
@@ -250,10 +167,6 @@ fn parse_dump_kind_name(name: &str) -> Result<DumpKind, String> {
             "unsupported dump kind `{other}`; expected one of activations, types, backend, native, fnir, clif"
         )),
     }
-}
-
-fn event_matches_root(ev: &crate::telemetry::Event<'_, '_, '_>, root: RootId) -> bool {
-    matches!(ev.measurements.get("root_id"), Some(Value::U64(value)) if *value == root.as_u32() as u64)
 }
 
 fn render_types_dump(world: &World, activations: &[ActivationKey]) -> String {

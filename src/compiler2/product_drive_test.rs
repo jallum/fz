@@ -39,7 +39,15 @@ use super::product_drive::ProductDriveError;
 use super::pull::{ProductKey, PullWait};
 use super::scheduler::{DriveOutcome, FatalError};
 use super::{CodeSubmission, Compiler2, RootSubmission};
-use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry};
+
+fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
+    event
+        .diagnostic
+        .as_ref()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .expect("diagnostic event missing diagnostic payload")
+}
 
 fn some_fact() -> FactUse<FactKey> {
     FactUse::settled(FactKey::BackendProgram(RootId::for_test(7)))
@@ -145,7 +153,7 @@ fn string_error_reports_did_not_settle_with_last_wait() {
 fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let world = World::new();
     let root = RootId::for_test(7);
     let fact = some_fact();
@@ -155,10 +163,7 @@ fn fatal_error_diagnostic_reports_fact_wait_budget_exceeded() {
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("fact-wait budget exhaustion should emit an error diagnostic");
-    let message = match event.metadata.get("message") {
-        Some(Value::Str(message)) => message.clone(),
-        other => panic!("diagnostic event missing message metadata: {other:?}"),
-    };
+    let message = diagnostic_message(&event);
     assert_eq!(
         message,
         format!(
@@ -218,7 +223,7 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
 fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut world = World::new();
     let root = world.submit_root(None, "totally_undefined_entry".to_string(), 0, ExecutableNeed::Value);
 
@@ -233,10 +238,7 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("no-ready-producer should emit an error diagnostic");
-    let message = match event.metadata.get("message") {
-        Some(Value::Str(message)) => message.clone(),
-        other => panic!("diagnostic event missing message metadata: {other:?}"),
-    };
+    let message = diagnostic_message(&event);
     assert_eq!(
         message,
         format!(
@@ -283,7 +285,7 @@ fn string_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
 fn fatal_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let (mut world, root) = add1_world(&tel);
 
     let result = super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
@@ -302,10 +304,7 @@ fn fatal_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("fact-wait budget exhaustion should emit an error diagnostic");
-    let message = match event.metadata.get("message") {
-        Some(Value::Str(message)) => message.clone(),
-        other => panic!("diagnostic event missing message metadata: {other:?}"),
-    };
+    let message = diagnostic_message(&event);
     assert!(
         message.starts_with(&format!(
             "compiler2 backend product for root {} exceeded fact-wait budget for",
@@ -401,7 +400,7 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
 fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut world = World::new();
     world.submit_code(
         Some("macro_only_root.fz".to_string()),
@@ -427,10 +426,7 @@ fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("SeedRoot's macro rejection should emit an error diagnostic");
-    let message = match event.metadata.get("message") {
-        Some(Value::Str(message)) => message.clone(),
-        other => panic!("diagnostic event missing message metadata: {other:?}"),
-    };
+    let message = diagnostic_message(&event);
     assert_eq!(
         message, "compiler2 runtime root cannot target macro `inc/1`",
         "should surface SeedRoot's own rejection message unchanged"
@@ -441,7 +437,7 @@ fn fatal_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
 fn fatal_error_end_to_end_did_not_settle_on_a_real_drive() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let (mut world, root) = add1_world(&tel);
 
     let result = super::product_drive::drive_root_backend_product_with_budgets::<_, FatalError>(
@@ -460,10 +456,7 @@ fn fatal_error_end_to_end_did_not_settle_on_a_real_drive() {
     let event = capture
         .last(&["fz", "diag", "error"])
         .expect("did-not-settle should emit an error diagnostic");
-    let message = match event.metadata.get("message") {
-        Some(Value::Str(message)) => message.clone(),
-        other => panic!("diagnostic event missing message metadata: {other:?}"),
-    };
+    let message = diagnostic_message(&event);
     // Unlike the interp front door's `String` error, the backend job's
     // diagnostic never carries the `last_wait` detail -- preserved as-is.
     assert_eq!(

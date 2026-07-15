@@ -8,9 +8,7 @@ use crate::compiler2::NativeEntryAbi;
 use crate::fz_ir::{
     self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
 };
-use crate::telemetry::{TelemetryExt as _, Value};
 use crate::types::{ClosureTypes, Types};
-use crate::{measurements, metadata};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
@@ -22,7 +20,7 @@ use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use std::collections::HashMap;
 
-fn resolve_cont_sid(env: &CodegenEnv<'_, impl Telemetry>, blk: &fz_ir::Block) -> u32 {
+fn resolve_cont_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> u32 {
     let cont_fn_id = match &blk.terminator {
         Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => continuation.fn_id,
         _ => panic!(
@@ -38,7 +36,7 @@ fn resolve_cont_sid(env: &CodegenEnv<'_, impl Telemetry>, blk: &fz_ir::Block) ->
     })
 }
 
-fn resolve_callee_sid(env: &CodegenEnv<'_, impl Telemetry>, blk: &fz_ir::Block, slot: EmitSlot) -> u32 {
+fn resolve_callee_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block, slot: EmitSlot) -> u32 {
     let callee_fn_id = match (&blk.terminator, slot) {
         (Term::Call { callee, .. } | Term::TailCall { callee, .. }, EmitSlot::Direct) => match callee {
             DirectCallTarget::Local(callee) => *callee,
@@ -58,7 +56,7 @@ fn resolve_callee_sid(env: &CodegenEnv<'_, impl Telemetry>, blk: &fz_ir::Block, 
         .unwrap_or_else(|| panic!("native callee fn {} has no registered codegen body id", callee_fn_id.0))
 }
 
-fn resolve_native_closure_sid(env: &CodegenEnv<'_, impl Telemetry>, blk: &fz_ir::Block) -> Option<u32> {
+fn resolve_native_closure_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> Option<u32> {
     let target_fn = match &blk.terminator {
         Term::CallClosure { direct_target, .. } | Term::TailCallClosure { direct_target, .. } => *direct_target,
         _ => None,
@@ -67,7 +65,7 @@ fn resolve_native_closure_sid(env: &CodegenEnv<'_, impl Telemetry>, blk: &fz_ir:
 }
 
 fn resolve_direct_closure_surface<'a>(
-    env: &'a CodegenEnv<'a, impl Telemetry>,
+    env: &'a CodegenEnv<'a>,
     direct_target_sid: u32,
 ) -> Result<Option<(FnId, &'a NativeClosureTargetSurface)>, CodegenError> {
     let target_fn = env.body_fn_id(direct_target_sid);
@@ -89,38 +87,19 @@ fn resolve_direct_closure_surface<'a>(
     Ok(Some((target_fn, target)))
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ClosureCallTelemetryTarget {
-    direct_target_fn_id: Option<u32>,
-}
-
-fn closure_call_telemetry_target(direct_target_fn: Option<FnId>) -> ClosureCallTelemetryTarget {
-    ClosureCallTelemetryTarget {
-        direct_target_fn_id: direct_target_fn.map(|fn_id| fn_id.0),
-    }
-}
-
-fn add_closure_call_target_metadata(metadata: &mut crate::telemetry::Metadata<'_>, target: ClosureCallTelemetryTarget) {
-    if let Some(direct_target_fn_id) = target.direct_target_fn_id {
-        metadata
-            .0
-            .push(("direct_target_fn_id", Value::from(direct_target_fn_id as u64)));
-    }
-}
-
-fn callee_is_native(env: &CodegenEnv<'_, impl Telemetry>, id: u32) -> bool {
+fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
     env.native_abi_fns.contains(&FnId(id))
 }
 
-fn spec_fn_id(env: &CodegenEnv<'_, impl Telemetry>, sid: u32) -> FnId {
+fn spec_fn_id(env: &CodegenEnv<'_>, sid: u32) -> FnId {
     env.body_fn_id(sid)
 }
 
-fn spec_is_native(env: &CodegenEnv<'_, impl Telemetry>, sid: u32) -> bool {
+fn spec_is_native(env: &CodegenEnv<'_>, sid: u32) -> bool {
     callee_is_native(env, spec_fn_id(env, sid).0)
 }
 
-fn continuation_entry_reprs(env: &CodegenEnv<'_, impl Telemetry>, cont_sid: u32) -> Vec<ArgRepr> {
+fn continuation_entry_reprs(env: &CodegenEnv<'_>, cont_sid: u32) -> Vec<ArgRepr> {
     let extras = continuation_entry_extra_count(env.body_native(cont_sid));
     let reprs = &env.param_reprs[cont_sid as usize];
     reprs.iter().copied().take(extras).collect()
@@ -159,7 +138,7 @@ fn push_direct_closure_args<M: cranelift_module::Module>(
 fn emit_native_continuation_tail_delivery<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     is_cont_fn: bool,
@@ -276,7 +255,7 @@ struct ContinuationPayload {
 
 impl ContinuationPayload {
     fn from_parts(
-        env: &CodegenEnv<'_, impl Telemetry>,
+        env: &CodegenEnv<'_>,
         cont_sid: u32,
         semantic_cap_bindings: Vec<ClosureCapture>,
         physical_ref_captures: Vec<ir::Value>,
@@ -294,7 +273,7 @@ impl ContinuationPayload {
 
     fn from_capture_vars<M: cranelift_module::Module>(
         body: &mut CodegenFn<'_, '_, '_, M>,
-        env: &CodegenEnv<'_, impl Telemetry>,
+        env: &CodegenEnv<'_>,
         var_env: &HashMap<u32, CodegenValue>,
         cont_sid: u32,
         captures: &[Var],
@@ -404,7 +383,7 @@ fn plan_closure_shaped_continuation(payload: ContinuationPayload, use_lazy: bool
 // refs (zero-capture callable boundaries) do not force the heap.
 fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     cv: &Var,
 ) -> bool {
     let Some(ty) = env.active_value_types().get(cv) else {
@@ -428,7 +407,7 @@ fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
 // yield spills it via `materialize_cont`.
 fn continuation_uses_lazy_descriptor<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     capture_vars: &[Var],
 ) -> bool {
     !capture_vars
@@ -447,17 +426,17 @@ fn native_call_result_value<M: cranelift_module::Module>(
     }
 }
 
-fn return_diverges(env: &CodegenEnv<'_, impl Telemetry>, body_sid: u32) -> bool {
+fn return_diverges(env: &CodegenEnv<'_>, body_sid: u32) -> bool {
     env.return_diverges[body_sid as usize]
 }
 
-fn scalar_body_return_repr(env: &CodegenEnv<'_, impl Telemetry>, body_sid: u32) -> Option<ArgRepr> {
+fn scalar_body_return_repr(env: &CodegenEnv<'_>, body_sid: u32) -> Option<ArgRepr> {
     let native_body = env.body_native(body_sid);
     let reprs = env.body_return_reprs(body_sid);
     single_scalar_return_repr(return_diverges(env, body_sid), &reprs, native_body.return_tuple_arity)
 }
 
-fn scalar_or_never_body_return_halt_repr(env: &CodegenEnv<'_, impl Telemetry>, body_sid: u32) -> Option<ArgRepr> {
+fn scalar_or_never_body_return_halt_repr(env: &CodegenEnv<'_>, body_sid: u32) -> Option<ArgRepr> {
     if return_diverges(env, body_sid) {
         Some(ArgRepr::ValueRef)
     } else {
@@ -469,7 +448,7 @@ fn scalar_or_never_body_return_halt_repr(env: &CodegenEnv<'_, impl Telemetry>, b
 pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
@@ -697,7 +676,7 @@ fn emit_halt<M: cranelift_module::Module>(
 
 fn emit_return_lanes<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     is_cont_fn: bool,
@@ -750,7 +729,7 @@ fn emit_return_lanes<M: cranelift_module::Module>(
 fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     _t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     _var_types: &HashMap<Var, Ty>,
     _block_env: Option<&HashMap<Var, Ty>>,
@@ -818,7 +797,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
 fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
@@ -887,7 +866,7 @@ fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>
 fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
@@ -1023,7 +1002,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
 fn emit_tail_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     schemas: &[Schema],
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
@@ -1074,7 +1053,7 @@ fn emit_tail_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureT
 fn emit_native_tail_call<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     is_cont_fn: bool,
@@ -1263,7 +1242,7 @@ fn expected_native_tail_arg_count(callee_param_reprs: &[ArgRepr], has_static_sel
 // Otherwise fall through to the caller's normal TCO path.
 fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     callee_sid: u32,
     mid_flight_arg_shapes: &[MidFlightArgShape],
     native_args: &[ir::Value],
@@ -1344,7 +1323,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
 fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
     is_native: bool,
@@ -1387,32 +1366,6 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         let can_use_lazy_cont = is_native && continuation_uses_lazy_descriptor(t, env, &continuation.captured);
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
         let cf = continuation_plan.emit_value(body, runtime, env.halt_reprs, is_cont_fn, cont_param, frame_ptr);
-        let continuation_storage = if continuation_plan.uses_lazy_descriptor() {
-            "lazy_descriptor"
-        } else {
-            "heap_closure"
-        };
-        env.telemetry
-            .execute_lazy(&["fz", "codegen", "closure_call_lowered"], || {
-                let telemetry_target =
-                    closure_call_telemetry_target(lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn));
-                let mut telemetry_metadata = metadata! {
-                    body_name: env.active_body_name,
-                    call_kind: "call_closure",
-                    closure_binding_repr: closure_binding.repr().as_str(),
-                    dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
-                    continuation_storage: continuation_storage,
-                };
-                add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
-                (
-                    measurements! {
-                    spec_id: env.active_spec_id as u64,
-                    closure_var: closure.0 as u64,
-                    continuation_spec_id: cont_sid as u64,
-                    },
-                    telemetry_metadata,
-                )
-            });
         if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args =
@@ -1479,7 +1432,7 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
 #[allow(clippy::too_many_arguments)]
 fn emit_tail_call_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
     is_native: bool,
@@ -1533,26 +1486,6 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
                 Ok((body_sid, body_fid, target_fn, target))
             })
             .transpose()?;
-        env.telemetry
-            .execute_lazy(&["fz", "codegen", "closure_call_lowered"], || {
-                let telemetry_target =
-                    closure_call_telemetry_target(lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn));
-                let mut telemetry_metadata = metadata! {
-                    body_name: env.active_body_name,
-                    call_kind: "tail_call_closure",
-                    closure_binding_repr: closure_binding.repr().as_str(),
-                    dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
-                };
-                add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
-                (
-                    measurements! {
-                    spec_id: env.active_spec_id as u64,
-                    closure_var: closure.0 as u64,
-                    },
-                    telemetry_metadata,
-                )
-            });
-
         if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(
@@ -1635,7 +1568,7 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
 #[allow(clippy::too_many_arguments)]
 fn emit_receive_matched<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
     is_cont_fn: bool,
@@ -1678,7 +1611,7 @@ fn emit_receive_matched<M: cranelift_module::Module>(
 #[allow(clippy::too_many_arguments)]
 fn build_park_record<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_, impl Telemetry>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_cont_fn: bool,
     frame_ptr: Option<ir::Value>,

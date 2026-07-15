@@ -24,7 +24,7 @@ mod source_test;
 pub(crate) mod transport;
 mod types;
 
-pub(crate) fn run<T: crate::telemetry::Telemetry>(
+pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     context: &mut ExecutionContext<'_, T>,
     job: &Job,
 ) -> Result<JobEffects, FatalError> {

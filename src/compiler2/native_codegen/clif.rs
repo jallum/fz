@@ -48,16 +48,6 @@ pub(crate) fn emit_fn_body<M: Module>(
     func_id: FuncId,
     body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
 ) -> Result<(), Box<ModuleError>> {
-    emit_fn_body_stats(module, fbctx, sig, func_id, body).map(|_| ())
-}
-
-pub(crate) fn emit_fn_body_stats<M: Module>(
-    module: &mut M,
-    fbctx: &mut FunctionBuilderContext,
-    sig: Signature,
-    func_id: FuncId,
-    body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
-) -> Result<(usize, usize), Box<ModuleError>> {
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
     {
@@ -65,10 +55,9 @@ pub(crate) fn emit_fn_body_stats<M: Module>(
         body(module, &mut b);
         b.finalize();
     }
-    let stats = cranelift_body_stats(&ctx.func);
     module.define_function(func_id, &mut ctx).map_err(Box::new)?;
     module.clear_context(&mut ctx);
-    Ok(stats)
+    Ok(())
 }
 
 /// Pack a Span into a Cranelift SourceLoc (u32): 8 bits code_id + 24

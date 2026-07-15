@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -22,10 +22,62 @@ use super::{
 };
 use crate::compiler2::drive::JobEffects;
 use crate::exec::runtime::DbgCapture;
-use crate::telemetry::handler::{Event, EventKind, Handler};
-use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 const EVENT_NAME: &[&str] = &["fz", "compiler2", "transport_flow", "defined"];
+
+type SettledProducts = Rc<RefCell<Vec<(ProductKey, Option<usize>)>>>;
+
+struct PullTelemetryCapture {
+    produced: SettledProducts,
+    closure_solves: Rc<Cell<u64>>,
+}
+
+impl PullTelemetryCapture {
+    fn install(telemetry: &ConfiguredTelemetry) -> Self {
+        let capture = Self {
+            produced: Rc::new(RefCell::new(Vec::new())),
+            closure_solves: Rc::new(Cell::new(0)),
+        };
+        let produced = Rc::clone(&capture.produced);
+        telemetry.attach_raw_event2::<ProductKey, ProductValue, _>(
+            &["fz", "compiler2", "pull", "product", "settled"],
+            move |_, _, _, product, value| {
+                let component_size = match value {
+                    ProductValue::TransportComponent(component) => Some(component.positions.len()),
+                    _ => None,
+                };
+                produced.borrow_mut().push((product.clone(), component_size));
+            },
+        );
+        let closure_solves = Rc::clone(&capture.closure_solves);
+        telemetry.attach_raw_event1::<super::pull::SolvedTransportClosure, _>(
+            &["fz", "compiler2", "pull", "transport_component", "closure_solved"],
+            move |_, _, _, _| closure_solves.set(closure_solves.get() + 1),
+        );
+        capture
+    }
+
+    fn produced_count(&self) -> usize {
+        self.produced.borrow().len()
+    }
+
+    fn produced_kind(&self, kind: &str) -> bool {
+        self.produced.borrow().iter().any(|(product, _)| product.kind() == kind)
+    }
+
+    fn transport_component_count(&self) -> usize {
+        self.produced
+            .borrow()
+            .iter()
+            .filter(|(product, _)| matches!(product, ProductKey::TransportComponent(_)))
+            .count()
+    }
+
+    fn component_sizes(&self) -> Vec<usize> {
+        self.produced.borrow().iter().filter_map(|(_, size)| *size).collect()
+    }
+}
 
 const MEASUREMENT_FIELDS: &[&str] = &[
     "root_id",
@@ -228,8 +280,6 @@ fn main(), do: inc(1.0)
 "#;
 
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
     let mut world = World::new();
     world.submit_code(
         Some("transport_codegen_seam_tail_call.fz".to_string()),
@@ -266,16 +316,14 @@ fn main() do
 end
 "#;
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    let pull_events = PullTelemetryCapture::install(&tel);
     let mut world = World::new();
     world.submit_code(Some("transport_once_per_closure.fz".to_string()), source.to_string());
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
 
-    const CLOSURE_SOLVED: &[&str] = &["fz", "compiler2", "pull", "transport_component", "closure_solved"];
-    let solves = capture.count(CLOSURE_SOLVED);
-    let produced = capture.count(&["fz", "compiler2", "pull", "transport_component", "produced"]);
+    let solves = pull_events.closure_solves.get();
+    let produced = pull_events.transport_component_count() as u64;
     assert_eq!(
         solves, 2,
         "one shape-graph solve per closure EPOCH: this drive has exactly two -- the pre-edge seed \
@@ -303,7 +351,7 @@ end
         );
     }
     assert_eq!(
-        capture.count(CLOSURE_SOLVED),
+        pull_events.closure_solves.get(),
         solves,
         "member pulls after the solve must never re-solve the closure"
     );
@@ -458,7 +506,7 @@ fn compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement() 
 fn compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_movement() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    capture.install(&tel, &["fz", "compiler2", "pull"]);
     const CLOSURE_SOLVED: &[&str] = &["fz", "compiler2", "pull", "transport_component", "closure_solved"];
     let mut world = World::new();
     world.submit_code(
@@ -1869,8 +1917,8 @@ end
 
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
     let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("transport_enumerable_reduce_suspend_continuation_runtime.fz".to_string()),
         text: r#"
@@ -2502,8 +2550,8 @@ end
 #[serial_test::serial]
 fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    let pull_events = PullTelemetryCapture::install(&tel);
+    let finished_producer_pokes = capture_finished_producer_pokes(&tel);
     let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_runtime_enum_reduce_operator_refs.fz");
     let driver = drive_transport_facts_for_test(&tel, &mut world, root);
@@ -2533,17 +2581,10 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
     );
     assert_eq!(driver.session().producer_pokes(), 0);
     assert!(
-        capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
-        "product path should emit product request telemetry"
+        pull_events.produced_count() > 0,
+        "product path should emit finished produced outcomes"
     );
-    assert!(
-        capture.count(&["fz", "compiler2", "pull", "product", "produced"]) > 0,
-        "product path should emit product production telemetry"
-    );
-    let finished = capture
-        .last(&["fz", "compiler2", "pull", "session", "finished"])
-        .expect("product path should emit final session telemetry");
-    assert_eq!(measurement_u64(&finished, "producer_pokes"), 0);
+    assert_eq!(*finished_producer_pokes.borrow(), Some(0));
 }
 
 // ---------------------------------------------------------------------------
@@ -3168,8 +3209,7 @@ end
 #[serial_test::serial]
 fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&["fz", "compiler2", "pull"], capture.handler());
+    let pull_events = PullTelemetryCapture::install(&tel);
     let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_transport_enum_reduce_operator_refs.fz");
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
@@ -3222,8 +3262,8 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     );
     assert_eq!(driver.session().producer_pokes(), 0);
     assert!(
-        capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
-        "product transport path should emit product request telemetry"
+        pull_events.produced_count() > 0,
+        "product transport path should emit finished produced outcomes"
     );
 }
 
@@ -3356,6 +3396,7 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
 #[serial_test::serial]
 fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_refs() {
     let tel = ConfiguredTelemetry::new();
+    let finished_producer_pokes = capture_finished_producer_pokes(&tel);
     let (_interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
     let no_dump_job_fires = no_dump_jobs.total_stops();
     assert!(
@@ -3365,10 +3406,9 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
 
     let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_root_backend_enum_reduce_operator_refs.fz");
-    let capture = Capture::new();
+    let pull_events = PullTelemetryCapture::install(&tel);
     let product_jobs = JobTelemetry::new();
-    tel.attach(&[], capture.handler());
-    tel.attach(&["fz", "compiler2", "job"], product_jobs.handler());
+    product_jobs.install(&tel);
     assert!(
         ProductDriver::new(&tel, root).session().executable_index().is_empty(),
         "dense executable indices should not exist before final backend packaging"
@@ -3408,31 +3448,18 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         "cold root product demand should drive exact fact prerequisites without legacy pre-settle"
     );
     assert!(
-        capture.count(&["fz", "compiler2", "pull", "product", "requested"]) > 0,
-        "root backend product path should emit product request telemetry"
+        pull_events.produced_count() > 0,
+        "root backend product path should emit finished produced outcomes"
     );
     assert!(
-        capture.count(&["fz", "compiler2", "pull", "product", "produced"]) > 0,
-        "root backend product path should emit product production telemetry"
+        pull_events.produced_kind("callable_facts"),
+        "root backend product path should finish callable facts products"
     );
     assert!(
-        capture.events().iter().any(
-            |event| event.name == ["fz", "compiler2", "pull", "product", "requested"]
-                && metadata_str(event, "kind") == "callable_facts"
-        ),
-        "root backend product path should explicitly request callable facts products"
-    );
-    let component_event = capture
-        .last(&["fz", "compiler2", "pull", "transport_component", "produced"])
-        .expect("transport component product should emit component-size telemetry");
-    assert!(
-        measurement_u64(&component_event, "component_size") > 0,
+        pull_events.component_sizes().iter().any(|size| *size > 0),
         "transport component telemetry should report the demanded component size"
     );
-    let finished = capture
-        .last(&["fz", "compiler2", "pull", "session", "finished"])
-        .expect("root backend product path should emit final session telemetry");
-    assert_eq!(measurement_u64(&finished, "producer_pokes"), 0);
+    assert_eq!(*finished_producer_pokes.borrow(), Some(0));
 
     assert!(
         no_dump_job_fires > 0,
@@ -5548,24 +5575,22 @@ fn assert_no_trash_authority(facts: Vec<&str>) {
     }
 }
 
-fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
-    let Some(Value::U64(value)) = event.measurements.get(key) else {
-        panic!("expected u64 measurement {key} in {:?}", event.measurements)
-    };
-    *value
-}
-
-fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
-    let Some(Value::Str(value)) = event.metadata.get(key) else {
-        panic!("expected string metadata {key} in {:?}", event.metadata)
-    };
-    value
+fn capture_finished_producer_pokes(tel: &ConfiguredTelemetry) -> Rc<RefCell<Option<u64>>> {
+    let observed = Rc::new(RefCell::new(None));
+    let sink = Rc::clone(&observed);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            *sink.borrow_mut() = Some(session.producer_pokes());
+        },
+    );
+    observed
 }
 
 fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTelemetry) {
     let tel = ConfiguredTelemetry::new();
     let jobs = JobTelemetry::new();
-    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
+    jobs.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("current_no_dump_00181_enum_reduce_operator_ref.fz".to_string()),
@@ -5584,53 +5609,28 @@ fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTele
 }
 
 struct JobTelemetry {
-    live: Rc<RefCell<HashMap<u64, Job>>>,
     stops: Rc<RefCell<Vec<Job>>>,
 }
 
 impl JobTelemetry {
     fn new() -> Self {
         Self {
-            live: Rc::new(RefCell::new(HashMap::new())),
             stops: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(JobTelemetryHandler {
-            live: self.live.clone(),
-            stops: self.stops.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let stops = Rc::clone(&self.stops);
+        telemetry.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
+            &["fz", "compiler2", "job"],
+            |_, _, _, _| {},
+            move |_, _, _, _, _, completion| stops.borrow_mut().push(completion.job.clone()),
+            |_, _, _, _| {},
+        );
     }
 
     fn total_stops(&self) -> usize {
         self.stops.borrow().len()
-    }
-}
-
-struct JobTelemetryHandler {
-    live: Rc<RefCell<HashMap<u64, Job>>>,
-    stops: Rc<RefCell<Vec<Job>>>,
-}
-
-impl Handler for JobTelemetryHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "job"] {
-            return;
-        }
-        match event.kind {
-            EventKind::SpanStart => {
-                if let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) {
-                    self.live.borrow_mut().insert(event.span_id, job.clone());
-                }
-            }
-            EventKind::SpanStop => {
-                if let Some(job) = self.live.borrow_mut().remove(&event.span_id) {
-                    self.stops.borrow_mut().push(job);
-                }
-            }
-            EventKind::Event | EventKind::SpanException => {}
-        }
     }
 }
 

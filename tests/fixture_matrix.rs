@@ -1198,8 +1198,6 @@ fn required_json_u64_field(line: &str, key: &str, context: &str) -> usize {
 struct ReusableConsTelemetryStats {
     birth_count: usize,
     transport_count: usize,
-    codegen_candidate_count: usize,
-    codegen_consumed_count: usize,
     runtime_attempted_count: usize,
     runtime_reused_count: usize,
 }
@@ -1238,13 +1236,6 @@ fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableC
                 .unwrap_or_else(|| panic!("{} telemetry missing birth_count", fixture.display_path().display()));
             stats.transport_count = parse_json_u64_field(line, "transport_count")
                 .unwrap_or_else(|| panic!("{} telemetry missing transport_count", fixture.display_path().display()));
-            continue;
-        }
-        if line.contains("\"name\":[\"fz\",\"codegen\",\"function_lowered\"]")
-            && line.contains("\"body_kind\":\"fz_spec\"")
-        {
-            stats.codegen_candidate_count += parse_json_u64_field(line, "reusable_cons_candidate_count").unwrap_or(0);
-            stats.codegen_consumed_count += parse_json_u64_field(line, "reusable_cons_consumed_count").unwrap_or(0);
             continue;
         }
         if line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]") {
@@ -1444,8 +1435,6 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         ReusableConsTelemetryStats {
             birth_count: 6,
             transport_count: 0,
-            codegen_candidate_count: 0,
-            codegen_consumed_count: 0,
             runtime_attempted_count: 0,
             runtime_reused_count: 0,
         },
@@ -1472,12 +1461,10 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         ReusableConsTelemetryStats {
             birth_count: 14,
             transport_count: 20,
-            codegen_candidate_count: 14,
-            codegen_consumed_count: 14,
             runtime_attempted_count: 132,
             runtime_reused_count: 132,
         },
-        "enum_sort should make reusable-cons birth, transport, and consumption visible in compiler2 telemetry",
+        "enum_sort should make reusable-cons birth, transport, and runtime reuse visible in telemetry",
     );
     assert_eq!(stats.runtime_fallback_count(), 0);
 }

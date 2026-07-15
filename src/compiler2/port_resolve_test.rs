@@ -10,12 +10,21 @@ use super::{
 use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::{DirectCallTarget, Term};
 use crate::source::Span;
-use crate::telemetry::handler::{Event, Handler};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(crate::telemetry::Value::Str(value)) => value.as_ref(),
+        None if key == "code" => event
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.code.0)
+            .unwrap_or_else(|| panic!("diagnostic missing for metadata key `{key}`")),
+        None if key == "message" => event
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .unwrap_or_else(|| panic!("diagnostic missing for metadata key `{key}`")),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
     }
 }
@@ -29,18 +38,11 @@ struct LastErrorSpan {
     span: Rc<RefCell<Option<Span>>>,
 }
 
-impl Handler for LastErrorSpan {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "diag", "error"] {
-            return;
-        }
-        if let Some(diagnostic) = event
-            .metadata
-            .get("diagnostic")
-            .and_then(|value| value.downcast_ref::<Diagnostic>())
-        {
+impl LastErrorSpan {
+    fn install(self, telemetry: &ConfiguredTelemetry) {
+        telemetry.attach_raw_event1::<Diagnostic, _>(&["fz", "diag", "error"], move |_, _, _, diagnostic| {
             *self.span.borrow_mut() = Some(diagnostic.primary.span);
-        }
+        });
     }
 }
 
@@ -285,7 +287,7 @@ fn local_fn_definition_shadows_imported_name() {
 fn import_undefined_module_is_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00065_import_undefined_module.fz".to_string()),
@@ -332,7 +334,7 @@ fn alias_undefined_module_is_error() {
 fn import_wrong_arity_is_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00067_import_wrong_arity.fz".to_string()),
@@ -360,7 +362,7 @@ fn import_wrong_arity_is_error() {
 fn import_except_wrong_arity_is_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00068_import_except_wrong_arity.fz".to_string()),
@@ -531,7 +533,7 @@ fn runtime_module_with_protocol_impl_loads_both_interfaces() {
 fn import_non_exported_name_is_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00074_import_non_exported_name.fz".to_string()),
@@ -777,7 +779,7 @@ fn spec_zero_arity_parses_correctly() {
 fn spec_arity_mismatch_is_parse_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00086_spec_arity_mismatch.fz".to_string()),
@@ -805,7 +807,7 @@ fn spec_arity_mismatch_is_parse_error() {
 fn spec_name_mismatch_is_parse_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00087_spec_name_mismatch.fz".to_string()),
@@ -838,7 +840,7 @@ fn spec_name_mismatch_is_parse_error() {
 fn spec_missing_return_type_is_parse_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00554_spec_syntax_missing_return_type.fz".to_string()),
@@ -871,7 +873,7 @@ fn spec_missing_return_type_is_parse_error() {
 fn bitstring_bad_modifier_is_parse_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00555_bitstring_bad_modifier.fz".to_string()),
@@ -908,7 +910,7 @@ fn bitstring_bad_modifier_is_parse_error() {
 fn bitstring_float_modifier_is_parse_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00556_bitstring_float_modifier.fz".to_string()),
@@ -943,12 +945,10 @@ fn bitstring_float_modifier_is_parse_error() {
 fn bitstring_float_modifier_error_span_brackets_the_modifier() {
     let tel = ConfiguredTelemetry::new();
     let last_span = Rc::new(RefCell::new(None));
-    tel.attach(
-        &[],
-        Box::new(LastErrorSpan {
-            span: last_span.clone(),
-        }),
-    );
+    LastErrorSpan {
+        span: last_span.clone(),
+    }
+    .install(&tel);
     let mut compiler = Compiler2::new(tel);
     let source = include_str!("../../fixtures2/00556_bitstring_float_modifier.fz");
     compiler.submit_code(CodeSubmission {
@@ -1009,14 +1009,12 @@ fn bitstring_float_modifier_error_span_brackets_the_modifier() {
 fn bitstring_bad_size_error_span_brackets_the_size_modifier() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let last_span = Rc::new(RefCell::new(None));
-    tel.attach(
-        &[],
-        Box::new(LastErrorSpan {
-            span: last_span.clone(),
-        }),
-    );
+    LastErrorSpan {
+        span: last_span.clone(),
+    }
+    .install(&tel);
     let mut compiler = Compiler2::new(tel);
     let source = include_str!("../../fixtures2/00557_bitstring_bad_size.fz");
     compiler.submit_code(CodeSubmission {
@@ -1079,14 +1077,12 @@ fn bitstring_bad_size_error_span_brackets_the_size_modifier() {
 fn malformed_type_alias_in_second_file_points_at_that_files_span() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let last_span = Rc::new(RefCell::new(None));
-    tel.attach(
-        &[],
-        Box::new(LastErrorSpan {
-            span: last_span.clone(),
-        }),
-    );
+    LastErrorSpan {
+        span: last_span.clone(),
+    }
+    .install(&tel);
     let mut compiler = Compiler2::new(tel);
 
     compiler.submit_code(CodeSubmission {
@@ -1148,7 +1144,7 @@ fn malformed_type_alias_in_second_file_points_at_that_files_span() {
 fn spec_without_following_fn_is_a_source_surface_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00088_spec_without_fn.fz".to_string()),
@@ -1201,7 +1197,7 @@ fn multiple_spec_overloads_attach_in_order() {
 fn spec_unknown_type_is_resolve_error() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00090_spec_unknown_type.fz".to_string()),

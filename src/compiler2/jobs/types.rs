@@ -72,7 +72,7 @@ pub(super) fn derive_type_def(
         .map(|referenced| FactKey::TypeDefined(referenced.clone()))
         .collect();
     reads.extend(struct_refs.iter().map(|module| FactKey::StructDefined(*module)));
-    let changed = super::super::drive::ExecutionContext::new(world, tel).define_type_def(name.clone(), def);
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_type_def(name, def);
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::TypeDefined(name.clone())],

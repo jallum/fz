@@ -14,7 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
-use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::telemetry::{RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt as _};
 
 /// Escape hatch that lets an operator name the `fz-runtime` staticlib
 /// directly, bypassing the build-time runtime archive.
@@ -42,16 +42,6 @@ pub(crate) enum RuntimeArchiveSource {
     EnvOverride,
     Embedded,
     IsolatedCoverageBuild,
-}
-
-impl RuntimeArchiveSource {
-    fn name(self) -> &'static str {
-        match self {
-            Self::EnvOverride => "override",
-            Self::Embedded => "embedded",
-            Self::IsolatedCoverageBuild => "isolated_coverage_build",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -91,23 +81,15 @@ enum RuntimeArchivePlan {
     },
 }
 
-pub(crate) fn resolve_runtime_archive<T: Telemetry>(tel: &T) -> Result<RuntimeArchive, RuntimeArchiveError> {
-    let archive_span = tel.span_lazy(
-        &["fz", "compiler2", "aot", "resolve_runtime_archive"],
-        crate::telemetry::Metadata::new,
-    );
+pub(crate) fn resolve_runtime_archive<T: RawSpanTelemetry>(tel: &T) -> Result<RuntimeArchive, RuntimeArchiveError> {
+    let archive_span = tel.raw_span0_1::<RuntimeArchiveSource>(&["fz", "compiler2", "aot", "resolve_runtime_archive"]);
     let override_path = env::var_os(RUNTIME_ARCHIVE_OVERRIDE_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let exe = env::current_exe().map_err(|e| RuntimeArchiveError::new(format!("locating current executable: {e}")))?;
     let plan = runtime_archive_plan(&exe, override_path, coverage_env_present());
     let archive = resolve_runtime_archive_plan(plan)?;
-    archive_span.stop_with_lazy(|| {
-        (
-            crate::telemetry::Measurements::new(),
-            crate::metadata! { source: archive.source.name() },
-        )
-    });
+    archive_span.stop1(&archive.source);
     Ok(archive)
 }
 
@@ -137,15 +119,12 @@ impl std::error::Error for LinkAotError {}
 /// Link one AOT object into a native executable next to `output_path`.
 ///
 /// The intermediate object is left behind on failure and removed on success.
-pub(crate) fn link_aot_artifact<T: Telemetry>(
+pub(crate) fn link_aot_artifact<T: RawSpanTelemetry>(
     artifact: &crate::ir_codegen::AotArtifact,
     output_path: &Path,
     tel: &T,
 ) -> Result<(), LinkAotError> {
-    let object_span = tel.span_lazy(
-        &["fz", "compiler2", "aot", "write_object"],
-        crate::telemetry::Metadata::new,
-    );
+    let object_span = tel.raw_span1_0(&["fz", "compiler2", "aot", "write_object"], artifact);
     let obj_temp = PathBuf::from(format!("{}.o", output_path.display()));
     write(&obj_temp, &artifact.object).map_err(|error| LinkAotError::WriteObject {
         path: obj_temp.clone(),
@@ -160,7 +139,7 @@ pub(crate) fn link_aot_artifact<T: Telemetry>(
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
 
-    let _link_span = tel.span_lazy(&["fz", "compiler2", "aot", "link"], crate::telemetry::Metadata::new);
+    let _link_span = tel.raw_span1_0(&["fz", "compiler2", "aot", "link"], artifact);
     let status = cc.status().map_err(|error| LinkAotError::InvokeCc { error })?;
     if !status.success() {
         return Err(LinkAotError::CcExit { status });

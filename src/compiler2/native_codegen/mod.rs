@@ -17,7 +17,7 @@
 //! from ArgRepr (see `repr.rs`).
 
 pub(crate) use crate::compiler2::Ty;
-use crate::telemetry::Telemetry;
+use crate::telemetry::RawSpanTelemetry;
 pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types, VisibilityTypes};
 
 mod call;
@@ -25,7 +25,6 @@ mod clif;
 pub(crate) mod closure;
 mod delivery;
 pub(crate) mod driver;
-pub(crate) mod dump;
 pub(crate) mod entry;
 pub(crate) mod env;
 mod fn_ctx;
@@ -45,7 +44,6 @@ pub(crate) use call::*;
 pub(crate) use clif::*;
 pub(crate) use closure::*;
 pub(crate) use delivery::*;
-pub(crate) use dump::*;
 pub(crate) use entry::*;
 pub(crate) use env::*;
 pub(crate) use fn_ctx::*;
@@ -70,7 +68,8 @@ pub(crate) fn compile_with_backend_native_program<
     t: &mut T,
     program: &crate::compiler2::NativeProgram,
     backend: B,
-    tel: &impl Telemetry,
+    tel: &impl RawSpanTelemetry,
+    output: &mut dyn super::dump::RequestedOutputSink,
 ) -> Result<B::Output, CodegenError> {
-    driver::compile_with_backend_native_program(t, program, backend, tel)
+    driver::compile_with_backend_native_program(t, program, backend, tel, output)
 }

@@ -23,7 +23,7 @@ use super::super::{QuotedCodeSource, parse_quoted_program};
 /// bodies, or pull in imports.
 pub(super) fn index_code(
     world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
+    tel: &impl crate::telemetry::RawSpanTelemetry,
     code_id: CodeId,
 ) -> Result<JobEffects, FatalError> {
     let source_name = world

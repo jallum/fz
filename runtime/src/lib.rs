@@ -15,6 +15,7 @@ pub mod extern_binary;
 pub mod extern_variadic;
 pub mod heap;
 pub mod ir_runtime;
+pub mod output;
 pub mod park;
 pub mod pinned_abi;
 pub mod procbin;
@@ -36,17 +37,12 @@ use std::process::abort;
 // ---------------------------------------------------------------------------
 
 pub(crate) fn emit_print_line(process: *mut Process, s: String) {
-    println!("{}", s);
-    // Beyond production stdout, forward the line to the running task's telemetry
-    // sink as an observation channel. The sink + callback live on the task's
-    // ExecCtx (per-context, not a thread-global); reached via the process the
-    // print BIF carries (the value already in the pinned register).
     if !process.is_null() {
         let ctx = unsafe { &*process }.ctx;
         if !ctx.is_null() {
             let ctx = unsafe { &*ctx };
             if let Some(output) = ctx.output {
-                output(ctx.tel, s.as_ptr(), s.len());
+                unsafe { output(ctx.output_context, s.as_ptr(), s.len()) };
             }
         }
     }

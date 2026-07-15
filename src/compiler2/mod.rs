@@ -81,12 +81,13 @@ pub use identity::{
     ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
     RootMap, TypeName,
 };
+pub(crate) use keying::DispatchDemand;
 pub use module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable,
     ReadyOrPending,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
-pub(crate) use pull::{ProductKey, PullWait};
+pub(crate) use pull::{ProductKey, PullSession};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler, WorkStartReason, WorkStartTally};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
@@ -102,6 +103,7 @@ pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
     Ty, TypeVarId, Types,
 };
+pub(crate) use world::JobCompletion;
 pub use world::World;
 
 #[cfg(test)]

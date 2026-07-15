@@ -26,8 +26,7 @@ use super::super::transport::{
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
-use crate::telemetry::{TelemetryExt as _, opaque};
-use crate::{measurements, metadata};
+use crate::telemetry::TelemetryExt as _;
 
 #[derive(Debug, Clone)]
 struct ExecutableContext {
@@ -712,19 +711,6 @@ pub(crate) fn produce_transport_shape_product(session: &mut PullSession, positio
     )))
 }
 
-fn emit_transport_component_produced(tel: &impl crate::telemetry::Telemetry, component: &TransportComponentInventory) {
-    tel.execute_lazy(&["fz", "compiler2", "pull", "transport_component", "produced"], || {
-        (
-            measurements! {
-                component_size: component.positions.len() as u64,
-            },
-            metadata! {
-                representative: opaque(&component.representative),
-            },
-        )
-    });
-}
-
 /// Fires exactly when an executable's transport component is freshly
 /// materialized from a covering solve -- i.e. this pull was NOT served from
 /// the session's `transport_components` product cache (the early-return
@@ -738,31 +724,17 @@ fn emit_transport_component_materialized(
     executable: &ExecutableKey,
     component: &TransportComponentInventory,
 ) {
-    tel.execute_lazy(&["fz", "compiler2", "executable_transport", "projected"], || {
-        (
-            measurements! {
-                component_size: component.positions.len() as u64,
-            },
-            metadata! {
-                executable: opaque(executable),
-            },
-        )
-    });
+    tel.raw_event2(
+        &["fz", "compiler2", "executable_transport", "projected"],
+        executable,
+        component,
+    );
 }
 
 fn emit_transport_closure_solved(tel: &impl crate::telemetry::Telemetry, closure: &SolvedTransportClosure) {
-    tel.execute_lazy(
+    tel.raw_event1(
         &["fz", "compiler2", "pull", "transport_component", "closure_solved"],
-        || {
-            (
-                measurements! {
-                    executables: closure.executables.len(),
-                    components: closure.components.len(),
-                    positions: closure.component_of.len(),
-                },
-                metadata! {},
-            )
-        },
+        closure,
     );
 }
 
@@ -774,7 +746,6 @@ pub(crate) fn produce_transport_component_product(
 ) -> PullOutcome {
     let executable = executable_key_for_transport_position(session.root(), position);
     if let Some(component) = session.transport_component(position).cloned() {
-        emit_transport_component_produced(tel, &component);
         return PullOutcome::Produced(ProductValue::TransportComponent(component));
     }
     if !session.transport_closure_covers(&executable)
@@ -783,7 +754,6 @@ pub(crate) fn produce_transport_component_product(
         return PullOutcome::Waiting(waits);
     }
     let component = materialize_transport_component(world, session, &executable, position);
-    emit_transport_component_produced(tel, &component);
     emit_transport_component_materialized(tel, &executable, &component);
     PullOutcome::Produced(ProductValue::TransportComponent(component))
 }

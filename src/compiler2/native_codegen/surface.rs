@@ -141,9 +141,6 @@ pub(crate) struct NativeCodegenSurface<'a> {
     pub module: &'a Module,
     pub diagnostics: Diagnostics,
     pub main_fn_id: Option<FnId>,
-    /// Number of populated body slots, fixed at construction so telemetry
-    /// reads stored state instead of re-counting at emit points.
-    pub spec_count: usize,
     pub body_slots: Vec<Option<NativeCodegenBody<'a>>>,
     pub callable_boundaries: BTreeMap<u32, NativeCallableBoundarySurface>,
     pub closure_targets: HashMap<FnId, NativeClosureTargetSurface>,

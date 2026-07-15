@@ -32,6 +32,34 @@ fn ext_span_is_callable_through_concrete() {
 }
 
 #[test]
+fn detached_span_does_not_construct_payload_without_a_handler() {
+    let tel = NullTelemetry;
+    let projections = Cell::new(0);
+    let span = tel.start_span_lazy(&["fz", "x"], || {
+        projections.set(projections.get() + 1);
+        Metadata::new()
+    });
+    tel.stop_span_lazy(span, || {
+        projections.set(projections.get() + 1);
+        (Measurements::new(), Metadata::new())
+    });
+    assert_eq!(projections.get(), 0);
+}
+
+#[test]
+fn detached_span_preserves_parent_linkage_until_stop() {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let capture = crate::telemetry::Capture::new();
+    capture.install(&tel, &[]);
+    let span = tel.start_span_lazy(&["fz", "parent"], Metadata::new);
+    tel.event_lazy(&["fz", "child"], Metadata::new);
+    tel.stop_span_lazy(span, || (Measurements::new(), Metadata::new()));
+    let parent = capture.last(&["fz", "parent"]).expect("parent stop");
+    let child = capture.last(&["fz", "child"]).expect("child event");
+    assert_eq!(child.span_id, parent.span_id);
+}
+
+#[test]
 fn dyn_telemetry_attach_and_detach_dispatch_to_configured_bus() {
     let bus = crate::telemetry::ConfiguredTelemetry::new();
     let t: &dyn Telemetry = &bus;
@@ -313,38 +341,6 @@ fn span_drop_reports_nonzero_elapsed_ns() {
         sleep(Duration::from_micros(50));
     }
     assert!(c.elapsed.get() > 0, "expected nonzero elapsed_ns");
-}
-
-#[test]
-fn span_close_with_lazy_attaches_payload_to_stop_event() {
-    let bus = crate::telemetry::ConfiguredTelemetry::new();
-    let cap = crate::telemetry::Capture::new();
-    bus.attach(&[], cap.handler());
-
-    {
-        let mut span = bus.span_lazy(&["fz", "x"], Metadata::new);
-        span.close_with_lazy(|| {
-            (
-                crate::measurements! { jobs_ran: 3u64 },
-                crate::metadata! { outcome: "ok" },
-            )
-        });
-    }
-
-    let stop = cap
-        .events()
-        .iter()
-        .find(|event| matches!(event.kind, crate::telemetry::EventKind::SpanStop))
-        .cloned()
-        .expect("expected span stop event");
-    assert!(matches!(
-        stop.measurements.get("jobs_ran"),
-        Some(crate::telemetry::Value::U64(3))
-    ));
-    assert!(matches!(
-        stop.metadata.get("outcome"),
-        Some(crate::telemetry::Value::Str(value)) if value.as_ref() == "ok"
-    ));
 }
 
 #[test]

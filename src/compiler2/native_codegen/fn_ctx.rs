@@ -39,7 +39,7 @@ where
 
 impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
     pub(crate) fn new(
-        env: &'env CodegenEnv<'_, impl Telemetry>,
+        env: &'env CodegenEnv<'_>,
         b: &'a mut FunctionBuilder<'fb>,
         jmod: &'a mut M,
         cache: &'a mut CodegenCache,

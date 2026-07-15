@@ -12,8 +12,7 @@ use super::super::keying::DispatchDemand;
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
-use crate::telemetry::{TelemetryExt as _, opaque};
-use crate::{measurements, metadata};
+use crate::telemetry::TelemetryExt as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEdge {
@@ -89,17 +88,7 @@ pub(super) fn derive_dispatch_mask(
 
     let plan = world.entry_dispatch(function);
     let mask = dispatch_input_mask(&plan);
-    tel.execute_lazy(&["fz", "compiler2", "dispatch_mask", "derived"], || {
-        (
-            measurements! {
-                function_id: function.as_u32(),
-                arity: mask.len(),
-            },
-            metadata! {
-                mask: opaque(&mask),
-            },
-        )
-    });
+    emit_dispatch_mask_derived(tel, &function, &mask);
     let changed = world.define_dispatch_mask(function, mask);
     Ok(JobEffects {
         reads: current_uses([FactKey::EntryDispatch(function)]),
@@ -107,6 +96,14 @@ pub(super) fn derive_dispatch_mask(
         changed: changed.then_some(FactKey::DispatchMask(function)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+fn emit_dispatch_mask_derived(
+    tel: &impl crate::telemetry::Telemetry,
+    function: &FunctionId,
+    mask: &Vec<DispatchDemand>,
+) {
+    tel.raw_event2(&["fz", "compiler2", "dispatch_mask", "derived"], function, mask);
 }
 
 fn collect_static_graph(
