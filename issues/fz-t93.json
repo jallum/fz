@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T15:10:42Z",
+  "description": "Surfaced by fz-lfp classification. Three fixtures2 files have no #--- frontmatter block at all, so tests/fixture_matrix.rs parse_header errors (the header leg fails; no run/interp/build ever executes). Add the standard frontmatter (purpose + oracle/timeout as appropriate) per the corpus convention. Pure fixture-infra.",
+  "id": "fz-t93",
+  "labels": [],
+  "priority": 4,
+  "status": "open",
+  "title": "opaque_fn_all_divergent/each_absent_return/mixed_return: missing #--- frontmatter -- parse_header fails before any path runs",
+  "type": "bug",
+  "updated_at": "2026-07-15T15:10:42Z"
+}
