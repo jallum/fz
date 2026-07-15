@@ -13,11 +13,15 @@
     {
       "text": "Spike and implementation proof: the receive outcome contract is sound. The post-receive arithmetic dispatch has one returning numeric member and one settled-empty no-matching-clause member. The defect was sealing both as Deliver, which forced native lowering to construct a result continuation for a target that cannot return. The implementation now publishes exact settled-empty targets as NoReturn, verifies local endpoint divergence during backend sealing, rejects NoReturn/Deliver contradictions before NativeProgram, and emits NoReturn as a tail call without an adapter. Shape-Nothing and backend-layout divergence no longer infer Tail; exact direct closure calls share the direct-call flow consumer. Production is net -13 lines excluding tests/docs. Verified: cargo test --lib 1418 passed/0 failed/6 ignored; fz2_cli 19/19; all-target/all-feature check and strict clippy; release original fixture run/interp/AOT all print 3; minimal numeric run/interp print 3; selected timeout reaches function_clause in interp and native.",
       "timestamp": "2026-07-15T05:05:45Z"
+    },
+    {
+      "text": "Audit completion atop a5982c7: the same return-flow loss existed at public-indirect closure calls, the 2+-target fallback, callable boundary publication, and native construction wrappers. Settled CallSiteSummary return evidence is now consumed before result-value lookup: settled empty publishes NoReturn with no local source; settled nonempty still requires and equivalence-checks ActivationAnalysis result authority; a missing summary remains an opaque/unknown call and is not conflated with empty. First-class surface existence now publishes callable boundaries independently of return emptiness; the deleted publish flag/vector and publish_empty_resolved_returns exception had caused all-divergent constructions to be mislabeled direct-only. BackendCallableReturn remains the sole Diverges/Absent/ValueRef authority. Native validates wrapper/member divergence agreement and divergent members share the NoReturn direct tail-call emitter, minting no return adapter; mixed returning members and returning zero-lane Absent members retain Call+adapter. Proof: all-divergent public callable interp reaches function_clause; JIT process exit atom is function_clause and unreachable output is absent; release AOT has no unreachable output. Mixed public callable interp/JIT/AOT prints 2. Existing zero-lane Enum.each remains Absent and prints 1/2/3. Original receive fixture interp/JIT/AOT prints 3. Gates: lib 1427 total/6 ignored green; CLI 19/19; all-target/all-feature check; strict clippy -D warnings; release build and focused artifact/backend/transport/native tests. Production net +42 lines across artifact/native/transport; transport removes 21 net. Disposable spikes removed; two behavior fixtures retained as regression contracts. No fold/close.",
+      "timestamp": "2026-07-15T05:42:11Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Restore selective-receive continuation delivery contract",
   "type": "bug",
-  "updated_at": "2026-07-15T05:05:45Z"
+  "updated_at": "2026-07-15T05:42:11Z"
 }
