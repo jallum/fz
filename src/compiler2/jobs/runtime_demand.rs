@@ -1041,7 +1041,16 @@ fn derive_callable_flow_facts_for_executable_product(
     waits: &mut HashSet<PullWait>,
 ) {
     demand.callable_flows.clear();
-    for (&value, producer) in &facts.local_callable_producers {
+    // `local_callable_producers` is a `HashMap<ValueId, _>`: folding it in its
+    // native order makes every fresh `Ty` minted while deriving a value's
+    // callable-flow facts (edge resolutions, ground dispatch surfaces) a
+    // function of `RandomState` iteration, not of the body's own value
+    // numbering. `ValueId` is assigned by deterministic body construction (not
+    // by the type interner), so sorting by it pins the fold order without
+    // depending on the very ids this loop mints.
+    let mut producers = facts.local_callable_producers.iter().collect::<Vec<_>>();
+    producers.sort_by_key(|(value, _)| **value);
+    for (&value, producer) in producers {
         let Some(value_demand) = demand.value_demands.get(&value) else {
             continue;
         };

@@ -585,6 +585,19 @@ pub struct ActivationMap {
     slots: HashMap<ActivationKey, ActivationSlot>,
 }
 
+/// A publisher identity rendered deterministically for fold-order tie-breaks,
+/// without leaking a bare interned `Ty`'s first-intern-order number. `Job`
+/// embeds `ActivationKey.arrow` (`types/mod.rs::Ty(u32)`) in `SeedActivation`/
+/// `AnalyzeActivation`; sorting those by `{:?}` would fold two runs' equal-but-
+/// differently-interned arrows in different orders, reintroducing exactly the
+/// order-dependence the determinism-pinning work (`ContributionMap::apply`)
+/// exists to remove. `Ctx` carries whatever the rendering needs — the shared
+/// type store, so `arrow` renders through `Types::display`, the interner's own
+/// canonical renderer, not a second hand-rolled one.
+pub trait StableSortKey<Ctx> {
+    fn stable_sort_key(&self, ctx: &Ctx) -> String;
+}
+
 /// A value that composes by monotone join within a context. The contribution
 /// store joins every publisher's entry for one key into a single aggregate;
 /// `Ctx` carries whatever the join needs — the type store for input vectors,
@@ -779,7 +792,7 @@ impl ActivationMap {
 impl<K, P, V> ContributionMap<K, P, V>
 where
     K: Clone + Eq + Hash,
-    P: Clone + Eq + Hash + std::fmt::Debug,
+    P: Clone + Eq + Hash + std::fmt::Debug + StableSortKey<V::Ctx>,
     V: JoinContribution,
 {
     pub fn new() -> Self {
@@ -908,10 +921,19 @@ where
         // representative-stable across fold order — two runs that fold the
         // same contributor set in a different order can settle on
         // equivalent-but-differently-interned `Ty`s — so pin the fold order
-        // itself to a deterministic, publisher-identity-derived key (`Debug`
-        // is pure data here: ids and enum tags, no addresses or hashes).
+        // itself to a deterministic, publisher-identity-derived key.
+        // `StableSortKey` (not raw `Debug`) is load-bearing here: `Job` embeds
+        // `ActivationKey.arrow`, a bare interned `Ty`, and two runs can settle
+        // on an equal-but-differently-numbered arrow for the same activation —
+        // sorting by its raw id would reintroduce the very order-dependence
+        // this fold order exists to remove.
+        // On a sort-key collision the (stable) sort preserves `HashMap`
+        // iteration order — nondeterministic — so the key is relied on to be
+        // injective over live publishers (proven by
+        // `types_display_distinguishes_structurally_close_types`); a genuine
+        // collision would need a secondary structural discriminator here.
         let mut ordered_contributors = slot.contributors.iter().collect::<Vec<_>>();
-        ordered_contributors.sort_by_cached_key(|(publisher, _)| format!("{publisher:?}"));
+        ordered_contributors.sort_by_cached_key(|(publisher, _)| publisher.stable_sort_key(&*ctx));
         let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
         let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
         if !slot.contributors.is_empty() {

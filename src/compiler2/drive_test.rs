@@ -14000,3 +14000,121 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
         );
     }
 }
+
+/// fz-k22.21 regression: `ContributionMap::apply` pins its fold order by
+/// sorting contributing publishers on a deterministic key
+/// (`semantic::StableSortKey`). `Job::SeedActivation`/`AnalyzeActivation`
+/// carry an `ActivationKey` whose `arrow` is a bare interned `Ty` --
+/// `types/mod.rs::Ty(u32)`, assigned by first-intern order -- so sorting on
+/// its raw `Debug` text would make the fold order (and therefore which
+/// equivalent-but-differently-interned representative a union settles on) a
+/// function of *which run interned the arrow first*, reintroducing exactly
+/// the nondeterminism this fold order exists to remove. This proves the fix:
+/// two `Types` stores that intern the same semantic arrow to two different
+/// raw ids still produce the identical `stable_sort_key` string, because it
+/// renders `arrow` through `Types::display` (the interner's own canonical
+/// renderer) instead of its numeric id.
+#[test]
+fn job_stable_sort_key_is_immune_to_which_run_interned_the_arrow_first() {
+    use crate::compiler2::semantic::StableSortKey;
+
+    let root = crate::compiler2::RootId::for_test(0);
+    let function = FunctionId::for_test(0);
+
+    // Store A: intern the activation's own input type first.
+    let mut types_a = Types::new();
+    let int_a = types_a.int();
+    let key_a = ActivationKey::from_inputs(root, function, &[int_a], &mut types_a);
+
+    // Store B: burn a few unrelated ids first, so the same semantic arrow
+    // lands on a different raw `Ty` number than in store A.
+    let mut types_b = Types::new();
+    let _filler_1 = types_b.atom_lit("filler_one");
+    let _filler_2 = types_b.atom_lit("filler_two");
+    let _filler_3 = types_b.none();
+    let int_b = types_b.int();
+    let key_b = ActivationKey::from_inputs(root, function, &[int_b], &mut types_b);
+
+    assert_ne!(
+        key_a.arrow, key_b.arrow,
+        "the guard fixture must actually exercise two different raw arrow ids"
+    );
+
+    let sort_key_a = Job::SeedActivation(key_a).stable_sort_key(&types_a);
+    let sort_key_b = Job::SeedActivation(key_b).stable_sort_key(&types_b);
+    assert_eq!(
+        sort_key_a, sort_key_b,
+        "stable_sort_key must render the same activation identically regardless of which \
+         store interned its arrow to which raw id"
+    );
+}
+
+/// fz-k22.21 companion to the immunity test above: that test proves the SAME
+/// arrow renders the same sort key across intern orders; this one proves the
+/// converse -- DISTINCT types render DISTINCT `Types::display` strings, the
+/// injectivity `ContributionMap::apply`'s fold-order tie-break relies on (a
+/// display collision between two live publisher keys would silently fall
+/// back to `HashMap` iteration order). Each pair is structurally close by
+/// construction, differing in exactly one of the rendering components the
+/// key leans on: a leaf basic type inside an addressed arrow, a closure
+/// literal's capture type or target under one function id, an address-var's
+/// parameter slot (`a0` vs `a1`), the result-position leaf, and a free
+/// (non-address) variable's declaration id.
+#[test]
+fn types_display_distinguishes_structurally_close_types() {
+    use crate::types::ClosureTarget;
+
+    let mut types = Types::new();
+    let root = crate::compiler2::RootId::for_test(0);
+    let function = FunctionId::for_test(0);
+
+    let arrow = |types: &mut Types, inputs: &[Ty]| ActivationKey::from_inputs(root, function, inputs, types).arrow;
+
+    // One leaf differs inside the same arrow shape: (int) -> r0 vs (float) -> r0.
+    let int = types.int();
+    let float = types.float();
+    let int_arrow = arrow(&mut types, &[int]);
+    let float_arrow = arrow(&mut types, &[float]);
+
+    // Same function id, closure lits differing only in the capture type.
+    let atom = types.atom_lit("captured");
+    let closure_int_capture = types.closure_lit(ClosureTarget(7), vec![int], 1);
+    let closure_atom_capture = types.closure_lit(ClosureTarget(7), vec![atom], 1);
+
+    // Same shape, different closure target (the `#N` lit suffix).
+    let closure_other_target = types.closure_lit(ClosureTarget(8), vec![int], 1);
+
+    // Arrows differing only in which address-var slot the input names: the
+    // `a0`/`a1` path rendering, not any concrete leaf.
+    let a0 = types.param_alpha(0);
+    let a1 = types.param_alpha(1);
+    let result = types.result_alpha();
+    let a0_arrow = types.arrow(&[a0], result);
+    let a1_arrow = types.arrow(&[a1], result);
+
+    // Arrows differing only in the result position.
+    let int_ret_arrow = types.arrow(&[a0], int);
+    let float_ret_arrow = types.arrow(&[a0], float);
+
+    // Free (non-address) vars differing only in declaration id.
+    let free_var_3 = types.type_var(TypeVarId(3));
+    let free_var_4 = types.type_var(TypeVarId(4));
+
+    let pairs: [(&str, Ty, Ty); 6] = [
+        ("arg leaf int vs float", int_arrow, float_arrow),
+        ("closure capture type", closure_int_capture, closure_atom_capture),
+        ("closure lit target suffix", closure_int_capture, closure_other_target),
+        ("address-var slot a0 vs a1", a0_arrow, a1_arrow),
+        ("result leaf int vs float", int_ret_arrow, float_ret_arrow),
+        ("free var declaration id", free_var_3, free_var_4),
+    ];
+    for (what, left, right) in pairs {
+        assert_ne!(left, right, "{what}: the fixture pair must be genuinely distinct types");
+        assert_ne!(
+            types.display(&left),
+            types.display(&right),
+            "{what}: distinct types must render distinct display strings, or the \
+             stable sort key degenerates to a hash-order tie"
+        );
+    }
+}

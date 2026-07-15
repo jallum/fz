@@ -12,7 +12,8 @@ use super::code::CodeId;
 use super::facts::{ClaimShape, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
-use super::semantic::CallSiteKey;
+use super::semantic::{CallSiteKey, StableSortKey};
+use super::types::Types;
 use super::world::World;
 
 pub(crate) struct ExecutionContext<'a, T: crate::telemetry::Telemetry> {
@@ -66,6 +67,32 @@ pub enum Job {
     AnalyzeActivation(ActivationKey),
     BuildBackendProduct(RootId),
     LowerNativeProgram(RootId),
+}
+
+impl StableSortKey<Types> for Job {
+    /// Every variant but `SeedActivation`/`AnalyzeActivation` carries only
+    /// ids assigned by deterministic parse/scope traversal (`CodeId`,
+    /// `ModuleId`, `FunctionId`, `RootId`), so their `Debug` text is already a
+    /// stable key. Those two carry an `ActivationKey`, whose `arrow` is a bare
+    /// interned `Ty` — rendered through `Types::display` instead of `{:?}` so
+    /// the key does not depend on which run happened to intern it first.
+    fn stable_sort_key(&self, types: &Types) -> String {
+        match self {
+            Job::SeedActivation(key) => format!(
+                "SeedActivation(ActivationKey {{ root: {:?}, function: {:?}, arrow: {} }})",
+                key.root,
+                key.function,
+                types.display(&key.arrow)
+            ),
+            Job::AnalyzeActivation(key) => format!(
+                "AnalyzeActivation(ActivationKey {{ root: {:?}, function: {:?}, arrow: {} }})",
+                key.root,
+                key.function,
+                types.display(&key.arrow)
+            ),
+            other => format!("{other:?}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
