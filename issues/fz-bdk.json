@@ -16,11 +16,15 @@
     {
       "text": "RE-SCOPED per user direction: the STATIC class (this fixture family) resolves via fz-9gp -- @spec on Kernel arithmetic turns provably-ill-typed operands into fatal compile-time spec violations (parity by construction). fz-bdk itself now narrows to the RUNTIME exit-boundary hole, which remains real and necessary independent of specs: dynamically-arising faults (opaque/any-boundary values, dynamic dispatch function_clause, match_error) reach native's kept traps and STILL exit 0 silently today. Fix = the ExitKind design already spiked (Process.exit_kind set at emit_halt source; run_root_jit + fz_aot_run_main read it; p7-class runtime probes as tests). The two are complementary: specs close what is provable; ExitKind guarantees no runtime fault ever reports success.",
       "timestamp": "2026-07-15T19:35:39Z"
+    },
+    {
+      "text": "SECOND REPRO CLASS for the runtime exit-boundary hole (from the fz-9gp audit, 2026-07-15): an UNMATCHED DISPATCH ARM at runtime (spec-carrying fn whose clauses don't cover the dynamic witness, no fnp catch-all) makes JIT/AOT print prior output then SILENTLY EXIT 0, while interp panics function_clause loudly. This is exactly the ExitKind design's territory (the kept trap fires -- or in this case dispatch falls through -- and the drivers report success). The p7 arithmetic case became compile-time under fz-9gp; THIS case is dynamically-arising and cannot be static. Repro: @spec f(:first | {:acc, a}) :: a with clauses for both members, call f(:third) behind an opaque value. Also note: whether native dispatch FALL-THROUGH (vs a materialized trap) is itself sound needs checking when this ticket is worked -- silent fall-through would be a codegen gap on top of the driver gap.",
+      "timestamp": "2026-07-15T21:02:23Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "native run/build SILENTLY swallow ill-typed expression (exit 0, empty output) where interp aborts function_clause -- opaque_fn_all_divergent parity + silent-failure bug",
   "type": "bug",
-  "updated_at": "2026-07-15T19:35:39Z"
+  "updated_at": "2026-07-15T21:02:23Z"
 }
