@@ -14,27 +14,19 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
+use crate::telemetry::{RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt as _};
+
 /// Escape hatch that lets an operator name the `fz-runtime` staticlib
-/// directly, bypassing the `cargo build -p fz-runtime --message-format=json`
-/// invocation `locate_runtime_staticlib` otherwise performs.
+/// directly, bypassing the build-time runtime archive.
 ///
-/// Ordinary AOT `::build` resolves the runtime archive by invoking Cargo,
-/// which requires:
-/// - a `cargo` binary reachable via `$CARGO` or `PATH`;
-/// - the `fz` source tree present on disk at the absolute
-///   `CARGO_MANIFEST_DIR` baked into the `fz2` binary at compile time (Cargo
-///   is invoked with `--manifest-path` pointed at that tree, not the
-///   caller's current directory).
+/// Ordinary AOT `::build` uses the exact `fz-runtime` staticlib produced in
+/// the isolated Cargo build-script target directory. It neither invokes Cargo
+/// nor depends on the caller's current directory.
 ///
 /// Set `FZ_AOT_RUNTIME_STATICLIB` to an absolute path to a prebuilt
-/// `libfz_runtime*.a` to skip both requirements — for example, when running
-/// `fz2 build` from a packaged/installed binary with no Cargo toolchain or
-/// source checkout nearby. When set to a non-empty value, this short-circuits
-/// straight to `RuntimeArchivePlan::EnvOverride` (see `runtime_archive_plan`)
-/// and no cargo process is spawned; the path must already exist on disk
-/// (`existing_archive` rejects a missing file with a named error) and its ABI
-/// must match the linking `fz2`'s target/profile — nothing here checks that
-/// for you.
+/// `libfz_runtime*.a` to replace that path — for example, when packaging a
+/// binary independently of Cargo's build directory. The path must be
+/// absolute, name an existing file, and match the linking `fz2` ABI.
 const RUNTIME_ARCHIVE_OVERRIDE_ENV: &str = "FZ_AOT_RUNTIME_STATICLIB";
 const LLVM_COV_TARGET_COMPONENT: &str = "llvm-cov-target";
 const ISOLATED_AOT_TARGET_DIR: &str = "fz-aot-clean-runtime";
@@ -48,7 +40,7 @@ pub(crate) struct RuntimeArchive {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeArchiveSource {
     EnvOverride,
-    Sibling,
+    Embedded,
     IsolatedCoverageBuild,
 }
 
@@ -82,22 +74,23 @@ enum CargoProfile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RuntimeArchivePlan {
     EnvOverride(PathBuf),
-    Sibling {
-        target_dir: PathBuf,
-    },
+    Embedded(PathBuf),
     IsolatedCoverageBuild {
         target_root: PathBuf,
         profile: CargoProfile,
     },
 }
 
-pub(crate) fn resolve_runtime_archive() -> Result<RuntimeArchive, RuntimeArchiveError> {
+pub(crate) fn resolve_runtime_archive<T: RawSpanTelemetry>(tel: &T) -> Result<RuntimeArchive, RuntimeArchiveError> {
+    let archive_span = tel.raw_span0_1::<RuntimeArchiveSource>(&["fz", "compiler2", "aot", "resolve_runtime_archive"]);
     let override_path = env::var_os(RUNTIME_ARCHIVE_OVERRIDE_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let exe = env::current_exe().map_err(|e| RuntimeArchiveError::new(format!("locating current executable: {e}")))?;
     let plan = runtime_archive_plan(&exe, override_path, coverage_env_present());
-    resolve_runtime_archive_plan(plan)
+    let archive = resolve_runtime_archive_plan(plan)?;
+    archive_span.stop1(&archive.source);
+    Ok(archive)
 }
 
 #[derive(Debug)]
@@ -126,23 +119,27 @@ impl std::error::Error for LinkAotError {}
 /// Link one AOT object into a native executable next to `output_path`.
 ///
 /// The intermediate object is left behind on failure and removed on success.
-pub(crate) fn link_aot_artifact(
+pub(crate) fn link_aot_artifact<T: RawSpanTelemetry>(
     artifact: &crate::ir_codegen::AotArtifact,
     output_path: &Path,
+    tel: &T,
 ) -> Result<(), LinkAotError> {
+    let object_span = tel.raw_span1_0(&["fz", "compiler2", "aot", "write_object"], artifact);
     let obj_temp = PathBuf::from(format!("{}.o", output_path.display()));
     write(&obj_temp, &artifact.object).map_err(|error| LinkAotError::WriteObject {
         path: obj_temp.clone(),
         error,
     })?;
+    drop(object_span);
 
-    let runtime_archive = resolve_runtime_archive().map_err(LinkAotError::RuntimeArchive)?;
+    let runtime_archive = resolve_runtime_archive(tel).map_err(LinkAotError::RuntimeArchive)?;
     let mut cc = Command::new("cc");
     cc.arg("-o").arg(output_path).arg(&obj_temp).arg(&runtime_archive.path);
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
 
+    let _link_span = tel.raw_span1_0(&["fz", "compiler2", "aot", "link"], artifact);
     let status = cc.status().map_err(|error| LinkAotError::InvokeCc { error })?;
     if !status.success() {
         return Err(LinkAotError::CcExit { status });
@@ -155,14 +152,7 @@ pub(crate) fn link_aot_artifact(
 fn resolve_runtime_archive_plan(plan: RuntimeArchivePlan) -> Result<RuntimeArchive, RuntimeArchiveError> {
     match plan {
         RuntimeArchivePlan::EnvOverride(path) => existing_archive(path, RuntimeArchiveSource::EnvOverride),
-        RuntimeArchivePlan::Sibling { target_dir } => {
-            let target_root = target_dir.parent().unwrap_or(&target_dir).to_path_buf();
-            let profile = profile_from_target_dir(&target_dir);
-            locate_runtime_staticlib(&target_root, profile, false).map(|path| RuntimeArchive {
-                path,
-                source: RuntimeArchiveSource::Sibling,
-            })
-        }
+        RuntimeArchivePlan::Embedded(path) => existing_archive(path, RuntimeArchiveSource::Embedded),
         RuntimeArchivePlan::IsolatedCoverageBuild { target_root, profile } => {
             let isolated_target_root = target_root.join(ISOLATED_AOT_TARGET_DIR);
             locate_runtime_staticlib(&isolated_target_root, profile, true).map(|path| RuntimeArchive {
@@ -174,12 +164,18 @@ fn resolve_runtime_archive_plan(plan: RuntimeArchivePlan) -> Result<RuntimeArchi
 }
 
 fn existing_archive(path: PathBuf, source: RuntimeArchiveSource) -> Result<RuntimeArchive, RuntimeArchiveError> {
+    if source == RuntimeArchiveSource::EnvOverride && !path.is_absolute() {
+        return Err(RuntimeArchiveError::new(format!(
+            "{} must be an absolute runtime archive path: {}",
+            RUNTIME_ARCHIVE_OVERRIDE_ENV,
+            path.display()
+        )));
+    }
     if path.is_file() {
         Ok(RuntimeArchive { path, source })
     } else {
         Err(RuntimeArchiveError::new(format!(
-            "{} points at missing runtime archive {}",
-            RUNTIME_ARCHIVE_OVERRIDE_ENV,
+            "runtime archive is missing: {}",
             path.display()
         )))
     }
@@ -198,7 +194,7 @@ fn runtime_archive_plan(exe: &Path, override_path: Option<PathBuf>, coverage_env
         };
     }
 
-    RuntimeArchivePlan::Sibling { target_dir }
+    RuntimeArchivePlan::Embedded(PathBuf::from(env!("FZ_AOT_EMBEDDED_RUNTIME_STATICLIB")))
 }
 
 fn executable_target_dir(exe: &Path) -> PathBuf {

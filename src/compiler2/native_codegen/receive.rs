@@ -39,7 +39,7 @@ use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_I
 use fz_runtime::ir_runtime::fz_bs_field_spec;
 use std::collections::HashMap;
 
-use super::{CodegenError, SLOT_BYTES, emit_fn_body_stats};
+use super::{CodegenError, SLOT_BYTES, emit_fn_body};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
 type ReceiveRegion = Region<RuntimeTypePredicate>;
@@ -136,7 +136,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     clauses: &[ReceiveClause],
     dispatch: &ReceiveDispatchPlan,
     helpers: &DispatchRuntimeHelpers,
-) -> Result<(usize, usize), CodegenError> {
+) -> Result<(), CodegenError> {
     let DispatchRuntimeHelpers {
         value_eq_typed_id,
         matcher_eq_bytes_id,
@@ -185,7 +185,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     }
 
     let mut compile_err: Option<CodegenError> = None;
-    let stats = emit_fn_body_stats(module, fbctx, receive_dispatch_signature(), dispatch_id, |m, b| {
+    emit_fn_body(module, fbctx, receive_dispatch_signature(), dispatch_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -255,7 +255,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     if let Some(e) = compile_err {
         return Err(e);
     }
-    Ok(stats)
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

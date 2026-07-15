@@ -85,6 +85,10 @@ where
         Self::default()
     }
 
+    pub fn reads(&self, job: &J) -> Option<&HashSet<FactUse<F>>> {
+        self.reads.get(job)
+    }
+
     /// Add reads without dropping existing subscriptions. A partial (waiting)
     /// run reads less than the job's last full conclusion did, but its
     /// standing claims still depend on those earlier reads — replacing would

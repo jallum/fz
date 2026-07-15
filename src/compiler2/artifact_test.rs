@@ -3,13 +3,12 @@ use std::collections::HashMap;
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, Types};
 use crate::compiler2::artifact::{
-    EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeEntryAbi,
-    NativeProgram,
+    BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
+    BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
+    NativeConstructionMember, NativeEntryAbi, NativeProgram,
 };
-use crate::compiler2::transport::{
-    ActivationSymbol, BoundaryDescr, BoundaryId, CallableDescr, ExecutableSymbol, LaneDescr, LaneId, ShapeDescr,
-    ShapeId, TransportClass, TransportPosition, TransportStore,
-};
+use crate::compiler2::pull::TransportCarrier;
+use crate::compiler2::transport::{LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore};
 use crate::compiler2::types::Ty;
 use crate::fz_ir::{
     Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
@@ -29,25 +28,40 @@ fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (Roo
     (root, function, activation)
 }
 
-fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
-    ExecutableSymbol {
-        activation: ActivationSymbol {
-            function: executable.activation.function,
-            input: executable.activation.inputs(types).into_boxed_slice(),
-        },
-        need: executable.need,
-    }
-}
-
-fn executable_return_position(executable: &ExecutableKey, types: &Types) -> TransportPosition {
-    TransportPosition::ExecutableReturn {
-        executable: executable_symbol(executable, types),
-    }
-}
-
 #[derive(Default)]
 struct TestTransportShapes {
     transport: TransportStore,
+}
+
+#[test]
+fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
+    fn assert_closed(program: BackendProgram) {
+        let BackendProgram {
+            backend_revision: _,
+            entry: _,
+            atom_names: _,
+            struct_schemas: _,
+            executables,
+            construction_wrappers: _,
+        } = program;
+        for executable in executables {
+            let BackendExecutable {
+                key: _,
+                entry_dispatch: _,
+                return_ty: _,
+                param_reprs: _,
+                semantic_inputs: _,
+                return_layout: _,
+                runtime_demand: _,
+                value_types: _,
+                value_layouts: _,
+                effects: _,
+                body: _,
+            } = executable;
+        }
+    }
+
+    let _ = assert_closed as fn(BackendProgram);
 }
 
 impl TestTransportShapes {
@@ -58,28 +72,6 @@ impl TestTransportShapes {
         });
         let shape = self.transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
         (shape, lane)
-    }
-
-    /// Mint a `BoundaryId` for a hand-built native callable boundary fixture.
-    /// These contract tests exercise downstream consumption of the native
-    /// boundary inventory, not transport-plan selection, so the boundary's
-    /// published lanes are a minimal stand-in over the fixture's return shape.
-    fn boundary_id(&mut self, return_shape: ShapeId, return_lane: LaneId) -> BoundaryId {
-        let callable = self.transport.interners_mut().intern_callable(CallableDescr {
-            function: None,
-            capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
-        });
-        self.transport.interners_mut().intern_boundary(BoundaryDescr {
-            callable,
-            surface_arg_shapes: Box::default(),
-            published_value_lane: return_lane,
-            published_capture_lanes: Box::default(),
-            published_arg_lanes: Box::default(),
-            published_return_shape: return_shape,
-            published_return_lanes: Box::new([return_lane]),
-        })
     }
 }
 
@@ -104,13 +96,14 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let int = types.int();
     let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
     let mut shapes = TestTransportShapes::default();
-    let (return_shape, return_lane) = shapes.scalar_shape(int);
+    let (return_shape, _) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
         activation,
         need: ExecutableNeed::Value,
     };
     let entry_fn = FnId(0);
     let identity_fn = FnId(1);
+    let wrapper_fn = FnId(2);
 
     let mut module = Module::default();
     module.fns.push(FnIr {
@@ -150,27 +143,47 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_position: executable_return_position(&executable, &types),
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
             block_param_reprs: HashMap::new(),
             value_types: HashMap::from([(Var(0), int)]),
-            callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
             extern_marshals: marshals.clone(),
             effects: EffectSummary::default(),
         }],
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
-            boundary: Some(shapes.boundary_id(return_shape, return_lane)),
             identity_fn,
-            target_fn: entry_fn,
-            target: executable.clone(),
-            capture_count: 0,
-            capture_reprs: Vec::new(),
-            arg_reprs: vec![AbiValueRepr::RawInt],
-            return_ty: int,
-            return_reprs: vec![AbiValueRepr::RawInt],
-            return_tuple_arity: None,
+            wrapper_fn,
+            captures: Box::default(),
+            capture_reprs: Box::default(),
+            call_arity: 1,
+            return_form: BackendCallableReturn::ValueRef,
+            members: Box::new([NativeConstructionMember {
+                target_fn: entry_fn,
+                target: executable.clone(),
+                surface_inputs: Box::new([int]),
+                capture_semantic_inputs: Box::default(),
+                surface_semantic_inputs: Box::new([0]),
+                target_inputs: Box::new([BackendSemanticInputLayout {
+                    semantic_index: 0,
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                }]),
+                target_return: BackendReturnLayout {
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                    diverges: false,
+                },
+            }]),
+            selection: None,
         }],
     };
 
@@ -189,11 +202,6 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         "the body contract should say whether a body is a direct entry or a continuation entry",
     );
     assert_eq!(
-        program.bodies[0].callable_value_boundaries.get(&Var(0)),
-        Some(&NativeCallableBoundaryId(0)),
-        "closure-producing vars should point at the closed callable-boundary inventory instead of hiding that resolution in codegen",
-    );
-    assert_eq!(
         program.bodies[0].extern_marshals, marshals,
         "the body contract should carry concrete extern marshal classes inline for native codegen",
     );
@@ -202,8 +210,8 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         "callable boundaries should carry a callable identity for closure construction sites",
     );
     assert_eq!(
-        program.callable_boundaries[0].target, executable,
-        "callable boundaries should point straight at the executable they expose",
+        program.callable_boundaries[0].members[0].target, executable,
+        "callable boundary members should name the executable they adapt",
     );
 }
 
@@ -213,7 +221,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let int = types.int();
     let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
     let mut shapes = TestTransportShapes::default();
-    let (return_shape, return_lane) = shapes.scalar_shape(int);
+    let (return_shape, _) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
         activation,
         need: ExecutableNeed::Value,
@@ -221,6 +229,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let entry_fn = FnId(0);
     let cont_fn = FnId(1);
     let identity_fn = FnId(2);
+    let wrapper_fn = FnId(3);
 
     let mut module = Module::default();
     module.externs.push(ExternDecl {
@@ -285,12 +294,10 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Direct,
                 param_reprs: vec![AbiValueRepr::RawInt],
                 return_ty: int,
-                return_position: executable_return_position(&executable, &types),
                 return_reprs: vec![AbiValueRepr::RawInt],
                 return_tuple_arity: None,
                 block_param_reprs: HashMap::new(),
                 value_types: HashMap::from([(Var(0), int)]),
-                callable_value_boundaries: HashMap::from([(Var(0), NativeCallableBoundaryId(0))]),
                 extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
                 effects: EffectSummary::default(),
             },
@@ -303,28 +310,48 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
                 entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
-                return_position: executable_return_position(&executable, &types),
                 return_reprs: vec![AbiValueRepr::ValueRef],
                 return_tuple_arity: None,
                 block_param_reprs: HashMap::new(),
                 value_types: HashMap::from([(Var(1), int)]),
-                callable_value_boundaries: HashMap::new(),
                 extern_marshals: HashMap::new(),
                 effects: EffectSummary::default(),
             },
         ],
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
-            boundary: Some(shapes.boundary_id(return_shape, return_lane)),
             identity_fn,
-            target_fn: entry_fn,
-            target: executable.clone(),
-            capture_count: 0,
-            capture_reprs: Vec::new(),
-            arg_reprs: vec![AbiValueRepr::RawInt],
-            return_ty: int,
-            return_reprs: vec![AbiValueRepr::RawInt],
-            return_tuple_arity: None,
+            wrapper_fn,
+            captures: Box::default(),
+            capture_reprs: Box::default(),
+            call_arity: 1,
+            return_form: BackendCallableReturn::ValueRef,
+            members: Box::new([NativeConstructionMember {
+                target_fn: entry_fn,
+                target: executable.clone(),
+                surface_inputs: Box::new([int]),
+                capture_semantic_inputs: Box::default(),
+                surface_semantic_inputs: Box::new([0]),
+                target_inputs: Box::new([BackendSemanticInputLayout {
+                    semantic_index: 0,
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                }]),
+                target_return: BackendReturnLayout {
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                    diverges: false,
+                },
+            }]),
+            selection: None,
         }],
     };
 
@@ -352,13 +379,8 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         "native codegen should read per-value type answers from NativeBody.value_types instead of SpecPlan.vars",
     );
     assert_eq!(
-        program.bodies[0].callable_value_boundaries.get(&Var(0)),
-        Some(&NativeCallableBoundaryId(0)),
-        "native codegen should read callable-boundary obligations from NativeBody.callable_value_boundaries instead of planner-side callable lookup",
-    );
-    assert_eq!(
-        program.callable_boundaries[0].target, executable,
-        "native codegen should read callable-boundary inventory from NativeProgram.callable_boundaries instead of PlannedProgram.callable_entries",
+        program.callable_boundaries[0].members[0].target, executable,
+        "native codegen should read callable-member inventory from NativeProgram.callable_boundaries",
     );
     assert_eq!(
         program.module.externs[0].symbol, "open",
@@ -435,16 +457,14 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         module,
         bodies: vec![NativeBody {
             fn_id: entry_fn,
-            origin: NativeBodyOrigin::Executable(executable.clone()),
+            origin: NativeBodyOrigin::Executable(executable),
             entry_abi: NativeEntryAbi::Direct,
             param_reprs: vec![AbiValueRepr::RawInt],
             return_ty: int,
-            return_position: executable_return_position(&executable, &types),
             return_reprs: vec![AbiValueRepr::RawInt],
             return_tuple_arity: None,
             block_param_reprs: HashMap::new(),
             value_types: HashMap::from([(Var(0), int)]),
-            callable_value_boundaries: HashMap::new(),
             extern_marshals: HashMap::from([(marshal_site, ExternTy::CString)]),
             effects: EffectSummary::default(),
         }],

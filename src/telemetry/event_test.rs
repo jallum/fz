@@ -32,6 +32,12 @@ fn metadata_macro_handles_strings_and_bools() {
 }
 
 #[test]
+#[should_panic(expected = "duplicate telemetry key")]
+fn metadata_macro_rejects_duplicate_keys() {
+    let _ = metadata! { world: "first", world: "second" };
+}
+
+#[test]
 fn metadata_macro_owned_string_expression() {
     let n: String = format!("fn_{}", 42);
     let m = metadata! { fn_name: n };

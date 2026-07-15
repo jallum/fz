@@ -148,14 +148,14 @@ fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 #[test]
 fn a_decoded_token_span_carries_its_own_files_baked_code_id() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = super::Compiler2::new(&tel);
+    let mut compiler = super::Compiler2::new(tel);
     let file_code = compiler.submit_code(super::CodeSubmission {
         name: Some("macro_file.fz".to_string()),
         text: String::new(),
     });
 
     let source = "fn tmpl(), do: x :: integer\n";
-    let root = parse_quoted_program("macro_file.fz", source, file_code, &tel).expect("quoted parse");
+    let root = parse_quoted_program("macro_file.fz", source, file_code, compiler.telemetry()).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     let grouped = root
@@ -193,14 +193,14 @@ fn a_decoded_token_span_carries_its_own_files_baked_code_id() {
 #[test]
 fn a_decoded_ast_node_meta_span_carries_its_own_files_baked_code_id() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = super::Compiler2::new(&tel);
+    let mut compiler = super::Compiler2::new(tel);
     let file_code = compiler.submit_code(super::CodeSubmission {
         name: Some("macro_file.fz".to_string()),
         text: String::new(),
     });
 
     let source = "fn tmpl(), do: x :: integer\n";
-    let root = parse_quoted_program("macro_file.fz", source, file_code, &tel).expect("quoted parse");
+    let root = parse_quoted_program("macro_file.fz", source, file_code, compiler.telemetry()).expect("quoted parse");
     let items = root.cursor().list_items().expect("top-level items");
     let item_roots = items.into_iter().map(|item| item.root()).collect::<Vec<_>>();
     let grouped = root

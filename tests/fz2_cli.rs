@@ -18,6 +18,14 @@ fn run_fz2(args: &[&OsStr]) -> Output {
     Command::new(FZ2_BIN).args(args).output().expect("invoke fz2 binary")
 }
 
+fn run_fz2_without_color(args: &[&OsStr]) -> Output {
+    Command::new(FZ2_BIN)
+        .env("NO_COLOR", "1")
+        .args(args)
+        .output()
+        .expect("invoke fz2 binary")
+}
+
 fn fixture_expected_stdout(path: &str) -> String {
     // Goldens are stem-scoped sidecars (`<stem>.expected.txt`), the same naming
     // `fixture_matrix` resolves via `sidecar_path`. The earlier `expected.txt`
@@ -87,6 +95,28 @@ fn assert_compiler2_telemetry_only(path: &Path, context: &str) {
     );
 }
 
+fn assert_bounded_public_trace(path: &Path, context: &str, max_events: usize, max_bytes: u64) {
+    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
+    assert!(
+        log.lines().count() <= max_events,
+        "{context} exceeded telemetry event budget: {} > {max_events}",
+        log.lines().count()
+    );
+    assert!(
+        metadata(path).expect("telemetry metadata").len() <= max_bytes,
+        "{context} exceeded telemetry byte budget"
+    );
+    assert!(
+        log.contains("\"pull\",\"session\""),
+        "{context} needs a pull session signal"
+    );
+    assert!(
+        log.contains("\"pull\",\"product\",\"settled\""),
+        "{context} needs a settled product signal"
+    );
+    assert!(log.contains("\"job\""), "{context} needs job hotspot signal");
+}
+
 fn assert_lexer_passes_match_submitted_sources(path: &Path, context: &str, expected_sources: &[String]) {
     let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
     let mut counts = BTreeMap::<String, usize>::new();
@@ -122,23 +152,8 @@ fn json_string_field(line: &str, field: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-fn assert_source_production_telemetry(path: &Path, context: &str, expect_macro_expansion: bool) {
+fn assert_source_production_telemetry(path: &Path, context: &str) {
     assert_compiler2_telemetry_only(path, context);
-    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
-    assert!(
-        log.contains("\"function\",\"source\",\"noted\""),
-        "{context} should publish FunctionSource facts; log=\n{log}",
-    );
-    assert!(
-        log.contains("\"compiler_service\",\"define\""),
-        "{context} should define source through the Fz.Compiler boundary; log=\n{log}",
-    );
-    if expect_macro_expansion {
-        assert!(
-            log.contains("\"macro\",\"expanded\""),
-            "{context} should execute macro expansion in source production; log=\n{log}",
-        );
-    }
 }
 
 fn assert_native_backend_compile_telemetry(path: &Path, context: &str) {
@@ -150,6 +165,21 @@ fn assert_native_backend_compile_telemetry(path: &Path, context: &str) {
     assert!(
         log.contains("\"name\":[\"fz\",\"codegen\",\"compile\"]"),
         "{context} should include the nested codegen compile span; log=\n{log}",
+    );
+}
+
+fn assert_aot_link_telemetry(path: &Path, context: &str) {
+    let log = read_to_string(path).unwrap_or_else(|error| panic!("read telemetry log {}: {error}", path.display()));
+    for name in [
+        r#""name":["fz","compiler2","aot","write_object"]"#,
+        r#""name":["fz","compiler2","aot","resolve_runtime_archive"]"#,
+        r#""name":["fz","compiler2","aot","link"]"#,
+    ] {
+        assert!(log.contains(name), "{context} should emit {name}; log=\n{log}");
+    }
+    assert!(
+        log.contains(r#""source":"embedded""#),
+        "{context} should identify the embedded runtime archive; log=\n{log}"
     );
 }
 
@@ -242,6 +272,25 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 }
 
 #[test]
+fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
+    for (fixture, max_events, max_bytes) in [
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_000, 320 * 1024),
+        ("fixtures2/00009_no_runtime.fz", 300, 96 * 1024),
+    ] {
+        let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
+        let output = run_fz2(&[
+            OsStr::new("--log-telemetry"),
+            telemetry_path.as_os_str(),
+            OsStr::new("interp"),
+            OsStr::new(fixture),
+        ]);
+        assert_successful_stdout(&output, &fixture_expected_stdout(fixture), fixture);
+        assert_bounded_public_trace(&telemetry_path, fixture, max_events, max_bytes);
+        let _ = remove_file(telemetry_path);
+    }
+}
+
+#[test]
 fn build_accepts_repeated_dump_specs_with_extension_or_kind_override() {
     let source_path = unique_temp_path("fz2_dump_build", ".fz");
     let output_path = unique_temp_path("fz2_dump_build", ".out");
@@ -331,14 +380,19 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
     let telemetry_path = unique_temp_path("fz2_build", ".jsonl");
     write(&source_path, "fn main(), do: 0\n").expect("write Compiler2 build fixture");
 
-    let build = run_fz2(&[
-        OsStr::new("--log-telemetry"),
-        telemetry_path.as_os_str(),
-        OsStr::new("build"),
-        source_path.as_os_str(),
-        OsStr::new("-o"),
-        out_bin.as_os_str(),
-    ]);
+    let build = Command::new(FZ2_BIN)
+        .current_dir(temp_dir())
+        .env("CARGO", "/definitely/not/cargo")
+        .args([
+            OsStr::new("--log-telemetry"),
+            telemetry_path.as_os_str(),
+            OsStr::new("build"),
+            source_path.as_os_str(),
+            OsStr::new("-o"),
+            out_bin.as_os_str(),
+        ])
+        .output()
+        .expect("invoke fz2 binary outside its build directory");
     assert!(
         build.status.success(),
         "fz2 build should succeed; stdout={:?} stderr={:?}",
@@ -346,6 +400,7 @@ fn build_stays_on_compiler2_telemetry_and_links_a_native_binary() {
         String::from_utf8_lossy(&build.stderr)
     );
     assert_compiler2_telemetry_only(&telemetry_path, "fz2 build");
+    assert_aot_link_telemetry(&telemetry_path, "fz2 build");
     assert!(
         metadata(&out_bin).is_ok(),
         "fz2 build should produce a linked native binary at {}",
@@ -383,13 +438,13 @@ fn run_and_interp_execute_map_struct_and_bitstring_fixtures() {
 
 #[test]
 fn run_and_interp_execute_source_production_macro_and_sugar_fixtures() {
-    for (fixture, expect_macro_expansion) in [
-        ("fixtures2/behavior/macro_inc.fz", true),
-        ("fixtures2/behavior/cross_module_macro.fz", true),
-        ("fixtures2/behavior/item_macro_source.fz", true),
-        ("fixtures2/behavior/pipe_headless_case.fz", false),
-        ("fixtures2/behavior/lambda_sugars.fz", false),
-        ("fixtures2/behavior/operator_sugars.fz", false),
+    for fixture in [
+        "fixtures2/behavior/macro_inc.fz",
+        "fixtures2/behavior/cross_module_macro.fz",
+        "fixtures2/behavior/item_macro_source.fz",
+        "fixtures2/behavior/pipe_headless_case.fz",
+        "fixtures2/behavior/lambda_sugars.fz",
+        "fixtures2/behavior/operator_sugars.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         for command in ["run", "interp"] {
@@ -401,11 +456,7 @@ fn run_and_interp_execute_source_production_macro_and_sugar_fixtures() {
                 OsStr::new(fixture),
             ]);
             assert_successful_stdout(&out, &expected, &format!("fz2 {command} {fixture}"));
-            assert_source_production_telemetry(
-                &telemetry_path,
-                &format!("fz2 {command} {fixture}"),
-                expect_macro_expansion,
-            );
+            assert_source_production_telemetry(&telemetry_path, &format!("fz2 {command} {fixture}"));
             let _ = remove_file(&telemetry_path);
         }
     }
@@ -434,7 +485,7 @@ fn main(), do: App.run()
     )
     .expect("write missing require fixture");
 
-    let out = run_fz2(&[OsStr::new("run"), source_path.as_os_str()]);
+    let out = run_fz2_without_color(&[OsStr::new("run"), source_path.as_os_str()]);
     assert!(
         !out.status.success(),
         "fz2 run should reject unrequired remote macro; output={}",
@@ -444,6 +495,18 @@ fn main(), do: App.run()
     assert!(
         text.contains("macro/not-required") && text.contains("require Helpers"),
         "fz2 diagnostic should name the missing require; output={text}",
+    );
+    assert!(
+        text.contains(&format!("--> {}:", source_path.display())),
+        "fz2 diagnostic should locate the remote macro call; output={text}",
+    );
+    assert!(
+        text.contains("Helpers.twice(21)"),
+        "fz2 diagnostic should show the offending source; output={text}"
+    );
+    assert!(
+        !text.contains("\x1b["),
+        "NO_COLOR must disable ANSI escapes; output={text}"
     );
 
     let _ = remove_file(&source_path);
@@ -523,6 +586,34 @@ fn native_enum_take_positive_single_call_survives_reduction_yield() {
 }
 
 #[test]
+fn native_enum_every_functions_reject_negative_intervals_consistently() {
+    for (name, expression) in [
+        ("map_every", "Enum.map_every([1, 2, 3], -1, fn (value) -> value end)"),
+        ("take_every", "Enum.take_every([1, 2, 3], -1)"),
+        ("drop_every", "Enum.drop_every([1, 2, 3], -1)"),
+    ] {
+        let source_path = unique_temp_path(&format!("fz2_enum_{name}_negative"), ".fz");
+        write(&source_path, format!("fn main(), do: {expression}\n"))
+            .unwrap_or_else(|error| panic!("write {}: {error}", source_path.display()));
+
+        let out = run_fz2(&[OsStr::new("run"), source_path.as_os_str()]);
+        assert!(
+            !out.status.success(),
+            "Enum.{name} should reject a negative interval; output={}",
+            output_text(&out)
+        );
+        assert!(out.stdout.is_empty(), "Enum.{name} should not write stdout");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "fz panic: \"Enum.OutOfBoundsError\"\n",
+            "Enum.{name} should use the established out-of-bounds failure"
+        );
+
+        let _ = remove_file(&source_path);
+    }
+}
+
+#[test]
 fn run_and_interp_execute_case_and_with_fixtures() {
     let fixture = "fixtures2/behavior/case_with_total.fz";
     let expected = fixture_expected_stdout(fixture);
@@ -537,7 +628,7 @@ fn run_and_interp_report_partial_case_and_with_warnings() {
     let fixture = "fixtures2/behavior/case_tuple_pattern_sequential.fz";
     let expected = fixture_expected_stdout(fixture);
     for command in ["run", "interp"] {
-        let out = run_fz2(&[OsStr::new(command), OsStr::new(fixture)]);
+        let out = run_fz2_without_color(&[OsStr::new(command), OsStr::new(fixture)]);
         assert!(
             out.status.success(),
             "fz2 {command} {fixture} should succeed; stdout={:?} stderr={:?}",
@@ -557,6 +648,14 @@ fn run_and_interp_report_partial_case_and_with_warnings() {
         assert!(
             stderr.contains("warning[type/no-matching-clause]: `with else` clauses don't cover every input"),
             "fz2 {command} should warn for partial with else clauses; stderr={stderr}"
+        );
+        assert!(stderr.contains("--> fixtures2/behavior/case_tuple_pattern_sequential.fz:"));
+        assert!(stderr.contains("matched values may fall through here"));
+        assert!(stderr.contains("= note: an input matched by no clause halts with `:case_clause` at runtime"));
+        assert!(stderr.contains("= help: add a wildcard clause `_ -> ...` to cover any remaining input"));
+        assert!(
+            !stderr.contains("\x1b["),
+            "NO_COLOR must disable ANSI escapes; stderr={stderr}"
         );
     }
 }

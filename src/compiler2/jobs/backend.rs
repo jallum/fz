@@ -14,9 +14,11 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyExecutable, BackendBody, BackendCallArg, BackendCallableEntry, BackendClause, BackendEntry,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendStep, BackendTail, CallEdge, CallTarget,
-    DirectCallEdge, DispatchCallArm, EmissionReadyExecutable, MaterializedTransportPlan,
+    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableCapture, BackendCallableConstruction,
+    BackendCallableConstructionMember, BackendClause, BackendConstructionCapture, BackendConstructionMemberAdapter,
+    BackendConstructionWrapper, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
+    BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep, BackendTail, CallEdge, CallReturnFlow,
+    CallTarget, DirectCallEdge, DispatchCallArm, EmissionReadyExecutable, MaterializedTransportPlan,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -28,7 +30,7 @@ use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
 use super::super::pull::{
     ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendBody, SymbolicBackendClause,
-    SymbolicBackendEntry, SymbolicBackendExecutable, SymbolicBackendTail,
+    SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportLayout,
 };
 use super::super::scheduler::FatalError;
 use super::super::transport::{
@@ -41,9 +43,14 @@ use super::artifact::{codegen_seam_fact_sort_key, transport_position_global_sort
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
-pub(crate) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> Result<JobEffects, FatalError> {
+pub(crate) fn build_backend_product(
+    world: &mut World,
+    tel: &impl crate::telemetry::RawSpanTelemetry,
+    root_id: RootId,
+) -> Result<JobEffects, FatalError> {
     let backend_fact = FactKey::BackendProgram(root_id);
-    let (_program, driver) = super::super::product_drive::drive_root_backend_product::<FatalError>(world, root_id)?;
+    let (_program, driver) =
+        super::super::product_drive::drive_root_backend_product::<_, FatalError>(world, tel, root_id)?;
     driver.finish_session();
     Ok(JobEffects {
         outputs: vec![backend_fact.clone()],
@@ -58,13 +65,25 @@ pub(crate) fn build_backend_product(world: &mut World<'_>, root_id: RootId) -> R
 /// that fails through `jobs::run` has already emitted its own diagnostic, so
 /// this boundary must not emit a second one for the same failure.
 impl super::super::product_drive::ProductDriveError for FatalError {
-    fn job_failed(_world: &World<'_>, _root: RootId, _fact: &FactUse<FactKey>, _job: &Job, source: FatalError) -> Self {
+    fn job_failed<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        _tel: &T,
+        _root: RootId,
+        _fact: &FactUse<FactKey>,
+        _job: &Job,
+        source: FatalError,
+    ) -> Self {
         source
     }
 
-    fn no_ready_producer(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+    fn no_ready_producer<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        tel: &T,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self {
         emit_backend_product_error(
-            world,
+            tel,
             Span::DUMMY,
             format!(
                 "compiler2 backend product for root {} waited on {:?} with no ready producer",
@@ -74,9 +93,14 @@ impl super::super::product_drive::ProductDriveError for FatalError {
         )
     }
 
-    fn fact_wait_budget_exceeded(world: &World<'_>, root: RootId, fact: &FactUse<FactKey>) -> Self {
+    fn fact_wait_budget_exceeded<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        tel: &T,
+        root: RootId,
+        fact: &FactUse<FactKey>,
+    ) -> Self {
         emit_backend_product_error(
-            world,
+            tel,
             Span::DUMMY,
             format!(
                 "compiler2 backend product for root {} exceeded fact-wait budget for {:?}",
@@ -86,23 +110,33 @@ impl super::super::product_drive::ProductDriveError for FatalError {
         )
     }
 
-    fn did_not_settle(world: &World<'_>, root: RootId, _last_wait: Option<(ProductKey, Vec<PullWait>)>) -> Self {
+    fn did_not_settle<T: crate::telemetry::Telemetry>(
+        _world: &World,
+        tel: &T,
+        root: RootId,
+        _last_wait: Option<(ProductKey, Vec<PullWait>)>,
+    ) -> Self {
         emit_backend_product_error(
-            world,
+            tel,
             Span::DUMMY,
             format!("compiler2 backend product for root {} did not settle", root.as_u32()),
         )
     }
 }
 
-fn emit_backend_product_error(world: &World<'_>, span: Span, message: impl Into<String>) -> FatalError {
+fn emit_backend_product_error(
+    tel: &impl crate::telemetry::Telemetry,
+    span: Span,
+    message: impl Into<String>,
+) -> FatalError {
     let diagnostic = Diagnostic::error(codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN, message.into(), span);
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }
 
 pub(crate) fn produce_root_backend_product(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     session: &mut PullSession,
     root: RootId,
 ) -> PullOutcome {
@@ -126,12 +160,12 @@ pub(crate) fn produce_root_backend_product(
     }
     let produced_callables = produced_callable_facts(session);
     let produced_boundaries = produced_boundary_facts(session);
-    let mut transport =
+    let transport =
         symbolic_materialized_transport_plan(session, &entry, world, &produced_callables, &produced_boundaries);
     let mut reachable = HashSet::new();
     let mut stack = vec![entry.clone()];
-    stack.extend(callable_resolution_executables(world, root, &produced_callables));
-    stack.extend(boundary_resolution_executables(world, root, &produced_boundaries));
+    stack.extend(callable_resolution_executables(root, &produced_callables));
+    stack.extend(boundary_resolution_executables(root, &produced_boundaries));
     let mut waits = Vec::new();
     while let Some(current) = stack.pop() {
         if !reachable.insert(current.clone()) {
@@ -161,23 +195,34 @@ pub(crate) fn produce_root_backend_product(
     for (executable, index) in &executable_index {
         session.assign_executable_index(executable.clone(), *index);
     }
-    let callable_entries = package_backend_callable_entries(
-        world,
-        root,
-        session,
-        &executable_index,
-        &produced_callables,
-        &produced_boundaries,
-    )
-    .expect("root backend product should have complete callable-entry inventory");
-    materialize_callable_entry_positions(world, &mut transport, &callable_entries);
+    let (construction_wrappers, construction_identities) =
+        package_backend_construction_wrappers(world, tel, root, session, &transport, &executable_index)
+            .expect("root backend product should have complete construction wrapper inventory");
+    let return_endpoints = executable_keys
+        .iter()
+        .flat_map(|key| {
+            session
+                .backend_executable(key)
+                .into_iter()
+                .flat_map(|backend| backend.abi.return_endpoints.iter().cloned())
+        })
+        .collect::<HashMap<_, _>>();
     let executables = executable_keys
         .iter()
         .map(|executable| {
             let backend = session
                 .backend_executable(executable)
                 .expect("reachable backend executable should have been checked before packaging");
-            package_symbolic_backend_executable(world, root, backend, &executable_index, &transport, &callable_entries)
+            package_symbolic_backend_executable(
+                world,
+                tel,
+                root,
+                backend,
+                &executable_index,
+                &transport,
+                &construction_identities,
+                &return_endpoints,
+            )
         })
         .collect::<Result<Vec<_>, _>>()
         .unwrap_or_else(|error| {
@@ -189,20 +234,19 @@ pub(crate) fn produce_root_backend_product(
         .expect("root entry should be in packaged executable inventory");
     let program = BackendProgram {
         backend_revision: 0,
-        transport_revision: 0,
         entry: entry_index,
-        transport,
         atom_names: collect_backend_atom_names(world, &executables),
         struct_schemas: world.struct_def_schemas(),
         executables,
-        callable_entries,
+        construction_wrappers,
     };
-    world.define_backend_program(root, program.clone());
+    super::super::drive::ExecutionContext::new(world, tel).define_backend_program(root, program.clone());
     PullOutcome::Produced(ProductValue::RootBackendProduct(Box::new(program)))
 }
 
 pub(crate) fn produce_backend_executable_product(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     session: &mut PullSession,
     executable: &ExecutableKey,
 ) -> PullOutcome {
@@ -213,7 +257,7 @@ pub(crate) fn produce_backend_executable_product(
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
     let value_shapes = executable_value_shapes(session, &abi);
-    let mut lowerer = BackendLowerer::new(world, session.root(), value_shapes);
+    let mut lowerer = BackendLowerer::new(world, tel, session.root(), value_shapes);
     let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
     let lowered = lower_symbolic_body(&mut lowerer, &emission, &abi)
         .expect("symbolic backend lowering should be complete after ABI product exists");
@@ -261,7 +305,7 @@ fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&Executab
     match target {
         CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         CallEdge::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
-        CallEdge::Indirect => Vec::new(),
+        CallEdge::Indirect { .. } => Vec::new(),
     }
 }
 
@@ -310,82 +354,84 @@ fn produced_boundary_facts(session: &PullSession) -> HashMap<BoundaryId, Boundar
 }
 
 fn boundary_resolution_executables(
-    world: &mut World<'_>,
     root: RootId,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Vec<ExecutableKey> {
     let mut out = Vec::new();
     for facts in boundaries.values() {
         for target in facts.resolutions.iter() {
-            out.push(executable_key_for_symbol(root, target, world.types_mut()));
+            out.push(executable_key_for_symbol(root, target));
         }
     }
     out
 }
 
-fn callable_resolution_executables(
-    world: &mut World<'_>,
-    root: RootId,
-    callables: &HashMap<CallableId, CallableFacts>,
-) -> Vec<ExecutableKey> {
+fn callable_resolution_executables(root: RootId, callables: &HashMap<CallableId, CallableFacts>) -> Vec<ExecutableKey> {
     callables
         .values()
         .flat_map(|facts| facts.resolutions.iter())
-        .map(|target| executable_key_for_symbol(root, target, world.types_mut()))
+        .map(|target| executable_key_for_symbol(root, target))
         .collect()
 }
 
-pub(crate) fn executable_key_for_symbol(
-    root: RootId,
-    symbol: &ExecutableSymbol,
-    types: &mut super::super::Types,
-) -> ExecutableKey {
+pub(crate) fn executable_key_for_symbol(root: RootId, symbol: &ExecutableSymbol) -> ExecutableKey {
     ExecutableKey {
-        activation: ActivationKey::from_inputs(root, symbol.activation.function, &symbol.activation.input, types),
+        activation: ActivationKey {
+            root,
+            function: symbol.activation.function,
+            arrow: symbol.activation.arrow,
+        },
         need: symbol.need,
     }
 }
 
 fn package_symbolic_backend_executable(
-    world: &World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     backend: &SymbolicBackendExecutable,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
     transport: &MaterializedTransportPlan,
-    callable_entries: &[BackendCallableEntry],
+    construction_identities: &HashMap<TransportPosition, u32>,
+    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
 ) -> Result<BackendExecutable, FatalError> {
     let resolved_entries =
-        resolved_callable_entries_for_values(world, &backend.abi.transport.value_positions, transport)?;
+        resolved_constructions_for_values(&backend.abi.transport.value_positions, construction_identities);
     Ok(BackendExecutable {
         key: backend.key.clone(),
         entry_dispatch: backend.abi.entry_dispatch.clone(),
         return_ty: backend.abi.return_ty,
         param_reprs: backend.abi.param_reprs.clone(),
+        semantic_inputs: backend.abi.semantic_inputs.clone(),
+        return_layout: backend.abi.return_layout.clone(),
         runtime_demand: backend.abi.runtime_demand.clone(),
-        transport: backend.abi.transport.clone(),
         value_types: backend.abi.value_types.clone(),
-        value_reprs: backend.abi.value_reprs.clone(),
+        value_layouts: backend.abi.value_layouts.clone(),
         effects: backend.abi.effects,
         body: package_symbolic_backend_body(
             world,
+            tel,
             root,
             &backend.key,
             &backend.body,
             executable_index,
             &resolved_entries,
-            callable_entries,
+            transport,
+            return_endpoints,
         )?,
     })
 }
 
 fn package_symbolic_backend_body(
-    world: &World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     body: &SymbolicBackendBody,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
     resolved_entries: &HashMap<ValueId, u32>,
-    callable_entries: &[BackendCallableEntry],
+    transport: &MaterializedTransportPlan,
+    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
 ) -> Result<BackendBody, FatalError> {
     Ok(match body {
         SymbolicBackendBody::Extern { signature } => BackendBody::Extern {
@@ -401,7 +447,7 @@ fn package_symbolic_backend_body(
                 .map(|clause| BackendClause {
                     span: clause.span,
                     params: clause.params.clone(),
-                    projections: package_backend_steps(&clause.projections, resolved_entries, callable_entries),
+                    projections: package_backend_steps(&clause.projections, resolved_entries),
                     entry: clause.entry,
                 })
                 .collect(),
@@ -410,12 +456,14 @@ fn package_symbolic_backend_body(
                 .map(|entry| {
                     package_symbolic_backend_entry(
                         world,
+                        tel,
                         root,
                         caller,
                         entry,
                         executable_index,
                         resolved_entries,
-                        callable_entries,
+                        transport,
+                        return_endpoints,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -425,126 +473,177 @@ fn package_symbolic_backend_body(
 }
 
 fn package_symbolic_backend_entry(
-    world: &World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     entry: &SymbolicBackendEntry,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
     resolved_entries: &HashMap<ValueId, u32>,
-    callable_entries: &[BackendCallableEntry],
+    transport: &MaterializedTransportPlan,
+    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
 ) -> Result<BackendEntry, FatalError> {
     Ok(BackendEntry {
         span: entry.span,
-        origin: entry.origin.clone(),
+        origin: package_backend_entry_origin(&entry.origin, return_endpoints)?,
         params: entry.params.clone(),
-        captures: entry.captures.clone(),
-        capture_positions: entry.capture_positions.clone(),
+        captures: package_backend_entry_captures(world, transport, entry)?,
         reusable_cons_captures: entry.reusable_cons_captures.clone(),
-        steps: package_backend_steps(&entry.steps, resolved_entries, callable_entries),
-        tail: package_symbolic_backend_tail(world, root, caller, &entry.tail, executable_index, resolved_entries)?,
+        steps: package_backend_steps(&entry.steps, resolved_entries),
+        tail: package_symbolic_backend_tail(
+            world,
+            tel,
+            root,
+            caller,
+            &entry.tail,
+            executable_index,
+            resolved_entries,
+            return_endpoints,
+        )?,
     })
 }
 
-fn resolved_callable_entries_for_values(
-    world: &World<'_>,
-    positions: &[TransportPosition],
+fn package_backend_entry_origin(
+    origin: &SymbolicBackendEntryOrigin,
+    endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
+) -> Result<BackendEntryOrigin, FatalError> {
+    Ok(match origin {
+        SymbolicBackendEntryOrigin::Clause => BackendEntryOrigin::Clause,
+        SymbolicBackendEntryOrigin::Branch => BackendEntryOrigin::Branch,
+        SymbolicBackendEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
+        SymbolicBackendEntryOrigin::DeliveredResume { value, position } => BackendEntryOrigin::DeliveredResume {
+            value: *value,
+            layout: endpoints.get(position).cloned().ok_or(FatalError)?,
+        },
+    })
+}
+
+fn package_backend_entry_captures(
+    world: &mut World,
     transport: &MaterializedTransportPlan,
-) -> Result<HashMap<ValueId, u32>, FatalError> {
+    entry: &SymbolicBackendEntry,
+) -> Result<Vec<BackendEntryCapture>, FatalError> {
+    if entry.captures.len() != entry.capture_positions.len() {
+        return Err(FatalError);
+    }
+    entry
+        .captures
+        .iter()
+        .copied()
+        .zip(entry.capture_positions.iter().cloned())
+        .map(|(value, position)| {
+            let layout = transport.layout_at(&position).ok_or(FatalError)?;
+            let contract = backend_entry_capture_contract(world, transport, &position, layout.structural)?;
+            Ok(BackendEntryCapture {
+                value,
+                layout: super::super::artifact::BackendValueLayout {
+                    structural: layout.structural,
+                    carrier: layout.carrier,
+                    tys: contract.iter().map(|(ty, _)| *ty).collect(),
+                    reprs: contract.iter().map(|(_, repr)| *repr).collect(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn backend_entry_capture_contract(
+    world: &mut World,
+    transport: &MaterializedTransportPlan,
+    position: &TransportPosition,
+    shape: ShapeId,
+) -> Result<Vec<(Ty, AbiValueRepr)>, FatalError> {
+    if transport.carries_runtime_value(position) {
+        return Ok(vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]);
+    }
+    match world.shape(shape).clone() {
+        ShapeDescr::Tuple(fields) => fields
+            .iter()
+            .copied()
+            .map(|field| backend_entry_capture_contract(world, transport, position, field))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|fields| fields.into_iter().flatten().collect()),
+        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
+            backend_entry_capture_leaf_contracts(world, transport, position, shape)
+        }
+    }
+}
+
+fn backend_entry_capture_leaf_contracts(
+    world: &mut World,
+    transport: &MaterializedTransportPlan,
+    position: &TransportPosition,
+    shape: ShapeId,
+) -> Result<Vec<(Ty, AbiValueRepr)>, FatalError> {
+    Ok(world
+        .shape_leaf_lanes(shape)
+        .into_iter()
+        .filter_map(|(leaf_shape, lane)| {
+            transport
+                .codegen_seam_facts
+                .iter()
+                .find(|fact| {
+                    fact.shape == Some(leaf_shape)
+                        && fact.lane == lane
+                        && backend_entry_capture_seam_matches(position, &fact.seam)
+                })
+                .map(|fact| {
+                    let repr = match fact.repr {
+                        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
+                        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
+                        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
+                        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
+                    };
+                    (world.lane(lane).ty, repr)
+                })
+        })
+        .collect())
+}
+
+fn backend_entry_capture_seam_matches(position: &TransportPosition, seam: &CodegenSeam) -> bool {
+    let TransportPosition::EntryCapture {
+        executable,
+        entry,
+        capture_index,
+    } = position
+    else {
+        return false;
+    };
+    matches!(
+        seam,
+        CodegenSeam::EntryCapture {
+            executable: seam_executable,
+            entry: seam_entry,
+            capture_index: seam_capture_index,
+        } if seam_executable == executable && seam_entry == entry && seam_capture_index == capture_index
+    )
+}
+
+fn resolved_constructions_for_values(
+    positions: &[TransportPosition],
+    identities: &HashMap<TransportPosition, u32>,
+) -> HashMap<ValueId, u32> {
     let mut resolved = HashMap::new();
     for position in positions {
         let TransportPosition::Value { value, .. } = position else {
             continue;
         };
-        let Some(shape) = transport.shape_at(position) else {
-            continue;
-        };
-        let ShapeDescr::Callable(callable) = world.shape(shape) else {
-            continue;
-        };
-        if let Some(identity) = transport.callable_entry_at(position, *callable) {
-            resolved.insert(*value, identity);
+        if let Some(identity) = identities.get(position) {
+            resolved.insert(*value, *identity);
         }
     }
-    Ok(resolved)
+    resolved
 }
 
-fn materialize_callable_entry_positions(
-    world: &World<'_>,
-    transport: &mut MaterializedTransportPlan,
-    entries: &[BackendCallableEntry],
-) {
-    let mut positions = Vec::new();
-    for (position, boundary) in &transport.publication_boundaries {
-        let callable = world.boundary(*boundary).callable;
-        let matching = entries
-            .iter()
-            .filter(|entry| entry.callable == callable && entry.publication_boundary == Some(*boundary))
-            .collect::<Vec<_>>();
-        if let [entry] = matching.as_slice()
-            && !positions
-                .iter()
-                .any(|(candidate, candidate_callable, _)| candidate == position && *candidate_callable == callable)
-        {
-            positions.push((position.clone(), callable, entry.identity));
-        }
-    }
-    for (position, shape) in &transport.position_shapes {
-        let ShapeDescr::Callable(callable) = world.shape(*shape) else {
-            continue;
-        };
-        if positions
-            .iter()
-            .any(|(candidate, candidate_callable, _)| candidate == position && candidate_callable == callable)
-        {
-            continue;
-        }
-        if world.callable(*callable).function.is_none() {
-            continue;
-        }
-        let publication_boundaries = transport
-            .publication_boundaries
-            .iter()
-            .filter_map(|(candidate, boundary)| (candidate == position).then_some(*boundary))
-            .collect::<Vec<_>>();
-        let matching = entries
-            .iter()
-            .filter(|entry| entry.callable == *callable)
-            .filter(|entry| {
-                publication_boundaries.is_empty()
-                    || entry
-                        .publication_boundary
-                        .is_some_and(|boundary| publication_boundaries.contains(&boundary))
-            })
-            .collect::<Vec<_>>();
-        if let [entry] = matching.as_slice() {
-            positions.push((position.clone(), *callable, entry.identity));
-        }
-    }
-    positions.sort_by_cached_key(|(position, callable, identity)| {
-        (
-            transport_position_global_sort_key(position),
-            callable.as_u32(),
-            *identity,
-        )
-    });
-    transport.callable_entry_positions = positions;
-}
-
-fn package_backend_steps(
-    steps: &[BackendStep],
-    resolved_entries: &HashMap<ValueId, u32>,
-    callable_entries: &[BackendCallableEntry],
-) -> Vec<BackendStep> {
+fn package_backend_steps(steps: &[BackendStep], resolved_entries: &HashMap<ValueId, u32>) -> Vec<BackendStep> {
     let resolved_entry_for = |value: &ValueId| resolved_entries.get(value).copied();
-    let entry_for = |identity| callable_entries.iter().find(|entry| entry.identity == identity);
     steps
         .iter()
         .map(|step| match step {
             BackendStep::FunctionRef { value, function, .. } => BackendStep::FunctionRef {
                 value: *value,
                 function: *function,
-                resolved_entry: resolved_entry_for(value)
-                    .filter(|identity| entry_for(*identity).is_some_and(|entry| entry.capture_count == 0)),
+                construction: resolved_entry_for(value),
             },
             BackendStep::Lambda {
                 value,
@@ -555,7 +654,7 @@ fn package_backend_steps(
                 value: *value,
                 function: *function,
                 captures: captures.clone(),
-                resolved_entry: resolved_entry_for(value),
+                construction: resolved_entry_for(value),
             },
             _ => step.clone(),
         })
@@ -563,12 +662,14 @@ fn package_backend_steps(
 }
 
 fn package_symbolic_backend_tail(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     tail: &SymbolicBackendTail,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    resolved_entries: &HashMap<ValueId, u32>,
+    _resolved_entries: &HashMap<ValueId, u32>,
+    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
 ) -> Result<BackendTail, FatalError> {
     Ok(match tail {
         SymbolicBackendTail::Value { value, dest } => BackendTail::Value {
@@ -584,7 +685,7 @@ fn package_symbolic_backend_tail(
         } => BackendTail::DirectCall {
             value: *value,
             callsite: *callsite,
-            target: package_call_edge(world, root, caller, target, executable_index)?,
+            target: package_call_edge(world, tel, root, caller, target, executable_index, return_endpoints)?,
             args: args.clone(),
             dest: dest.clone(),
         },
@@ -605,7 +706,7 @@ fn package_symbolic_backend_tail(
                 .map(|target| {
                     executable_index.get(target).copied().ok_or_else(|| {
                         incomplete_backend_program(
-                            world,
+                            tel,
                             root,
                             format!(
                                 "symbolic closure target {:?} -> {:?} is missing from final inventory",
@@ -615,10 +716,12 @@ fn package_symbolic_backend_tail(
                     })
                 })
                 .transpose()?,
-            resolved_entry: resolved_entries.get(callee).copied(),
             args: args.clone(),
             dest: dest.clone(),
-            return_flow: return_flow.clone(),
+            return_flow: return_flow
+                .as_ref()
+                .map(|flow| seal_return_flow(flow, return_endpoints))
+                .transpose()?,
         },
         SymbolicBackendTail::If {
             cond,
@@ -644,19 +747,21 @@ fn package_symbolic_backend_tail(
 }
 
 fn package_call_edge(
-    world: &World<'_>,
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     target: &CallEdge<ExecutableKey>,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-) -> Result<CallEdge<usize>, FatalError> {
+    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
+) -> Result<CallEdge<usize, BackendReturnFlow>, FatalError> {
     Ok(match target {
         CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
-            callee: package_call_target(world, root, caller, &direct.callee, executable_index)?,
-            return_flow: direct.return_flow.clone(),
+            callee: package_call_target(world, tel, root, caller, &direct.callee, executable_index)?,
+            return_flow: seal_return_flow(&direct.return_flow, return_endpoints)?,
             extern_marshals: direct.extern_marshals.clone(),
         }),
-        CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(super::super::artifact::DispatchCallEdge {
+        CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(Box::new(super::super::artifact::DispatchCallEdge {
             plan: dispatch.plan.clone(),
             arms: dispatch
                 .arms
@@ -664,20 +769,21 @@ fn package_call_edge(
                 .map(|arm| {
                     Ok(DispatchCallArm {
                         body_id: arm.body_id,
-                        callee: package_call_target(world, root, caller, &arm.callee, executable_index)?,
-                        return_flow: arm.return_flow.clone(),
+                        callee: package_call_target(world, tel, root, caller, &arm.callee, executable_index)?,
+                        return_flow: seal_return_flow(&arm.return_flow, return_endpoints)?,
                         extern_marshals: arm.extern_marshals.clone(),
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             miss: dispatch.miss,
-        }),
-        CallEdge::Indirect => CallEdge::Indirect,
+        })),
+        CallEdge::Indirect(return_flow) => CallEdge::Indirect(seal_return_flow(return_flow, return_endpoints)?),
     })
 }
 
 fn package_call_target(
-    world: &World<'_>,
+    _world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     caller: &ExecutableKey,
     target: &CallTarget<ExecutableKey>,
@@ -686,7 +792,7 @@ fn package_call_target(
     Ok(match target {
         CallTarget::Local(callee) => CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
             incomplete_backend_program(
-                world,
+                tel,
                 root,
                 format!(
                     "symbolic backend call edge {:?} -> {:?} points outside final executable inventory",
@@ -698,104 +804,206 @@ fn package_call_target(
     })
 }
 
-fn package_backend_callable_entries(
-    world: &World<'_>,
+fn seal_return_flow(
+    flow: &super::super::artifact::CallReturnFlow,
+    endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
+) -> Result<BackendReturnFlow, FatalError> {
+    let layout = |position: &TransportPosition| endpoints.get(position).ok_or(FatalError);
+    Ok(match flow {
+        CallReturnFlow::NoReturn { local_source } => {
+            if let Some(local_source) = local_source
+                && !layout(local_source)?.diverges
+            {
+                return Err(FatalError);
+            }
+            BackendReturnFlow::NoReturn
+        }
+        super::super::artifact::CallReturnFlow::Tail {
+            source,
+            payload,
+            caller_return,
+        } => {
+            if layout(source)? == layout(payload)? && layout(source)? == layout(caller_return)? {
+                BackendReturnFlow::Tail
+            } else {
+                BackendReturnFlow::Continue {
+                    source: Box::new(layout(source)?.clone()),
+                }
+            }
+        }
+        super::super::artifact::CallReturnFlow::Continue { source, .. } => BackendReturnFlow::Continue {
+            source: Box::new(layout(source)?.clone()),
+        },
+        super::super::artifact::CallReturnFlow::Deliver { source, entry, .. } => {
+            let source = layout(source)?;
+            if source.diverges {
+                return Err(FatalError);
+            }
+            BackendReturnFlow::Deliver {
+                source: Box::new(source.clone()),
+                entry: *entry,
+            }
+        }
+    })
+}
+
+fn package_backend_construction_wrappers(
+    world: &World,
+    tel: &impl crate::telemetry::Telemetry,
     root: RootId,
     session: &PullSession,
+    transport: &MaterializedTransportPlan,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    callables: &HashMap<CallableId, CallableFacts>,
-    boundaries: &HashMap<BoundaryId, BoundaryFacts>,
-) -> Result<Vec<BackendCallableEntry>, FatalError> {
-    let mut entries = Vec::new();
-    for (callable, facts) in callables {
-        let callable_descr = world.callable(*callable);
-        if callable_descr.function.is_none() {
-            continue;
-        }
-        for target_symbol in &facts.resolutions {
-            let Some(target) = executable_key_for_symbol_in_index(target_symbol, executable_index, world.types())
-            else {
+) -> Result<(Vec<BackendConstructionWrapper>, HashMap<TransportPosition, u32>), FatalError> {
+    let mut constructions = transport
+        .callable_constructions
+        .iter()
+        .filter_map(|construction| {
+            let boundaries = transport
+                .publication_boundaries
+                .iter()
+                .filter_map(|(position, boundary)| (position == &construction.producer).then_some(*boundary))
+                .collect::<Vec<_>>();
+            (!boundaries.is_empty()).then_some((construction, boundaries))
+        })
+        .collect::<Vec<_>>();
+    constructions.sort_by_cached_key(|(construction, _)| transport_position_global_sort_key(&construction.producer));
+    let identities = constructions
+        .iter()
+        .enumerate()
+        .map(|(identity, (construction, _))| (construction.producer.clone(), identity as u32))
+        .collect();
+    let wrappers = constructions
+        .into_iter()
+        .enumerate()
+        .map(|(identity, (construction, boundaries))| {
+            let call_arity = construction.members.first().map_or_else(
+                || world.boundary(boundaries[0]).surface_arg_shapes.len(),
+                |member| member.surface_inputs.len(),
+            );
+            if construction
+                .members
+                .iter()
+                .any(|member| member.surface_inputs.len() != call_arity)
+                || boundaries
+                    .iter()
+                    .any(|boundary| world.boundary(*boundary).surface_arg_shapes.len() != call_arity)
+            {
                 return Err(incomplete_backend_program(
-                    world,
+                    tel,
                     root,
                     format!(
-                        "callable {callable:?} resolution {target_symbol:?} is missing from final executable inventory"
+                        "callable construction {:?} has members with incompatible semantic call arities",
+                        construction.producer
+                    ),
+                ));
+            }
+            let members = construction
+                .members
+                .iter()
+                .map(|member| {
+                    let target_key = executable_key_for_symbol_in_index(&member.resolution, executable_index);
+                    let target = target_key
+                        .as_ref()
+                        .and_then(|key| executable_index.get(key).copied())
+                        .ok_or_else(|| {
+                            incomplete_backend_program(
+                                tel,
+                                root,
+                                format!(
+                                    "callable construction {:?} member {:?} is missing from final executable inventory",
+                                    construction.producer, member.resolution
+                                ),
+                            )
+                        })?;
+                    Ok(BackendConstructionMemberAdapter {
+                        surface_inputs: member.surface_inputs.clone(),
+                        surface_arg_shapes: member.surface_arg_shapes.clone(),
+                        target,
+                        capture_semantic_inputs: member.capture_semantic_inputs.clone(),
+                        surface_semantic_inputs: member.surface_semantic_inputs.clone(),
+                        target_inputs: session
+                            .backend_executable(
+                                target_key
+                                    .as_ref()
+                                    .expect("resolved construction member should name an executable"),
+                            )
+                            .expect("resolved construction member should have backend ABI")
+                            .abi
+                            .semantic_inputs
+                            .clone(),
+                        target_return: session
+                            .backend_executable(
+                                target_key
+                                    .as_ref()
+                                    .expect("resolved construction member should name an executable"),
+                            )
+                            .expect("resolved construction member should have backend ABI")
+                            .abi
+                            .return_layout
+                            .clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, FatalError>>()?;
+            let return_form = if members.iter().all(|member| member.target_return.diverges) {
+                super::super::artifact::BackendCallableReturn::Diverges
+            } else if members
+                .iter()
+                .filter(|member| !member.target_return.diverges)
+                .map(|member| member.target_return.layout.reprs.is_empty())
+                .collect::<std::collections::BTreeSet<_>>()
+                == std::collections::BTreeSet::from([false])
+            {
+                super::super::artifact::BackendCallableReturn::ValueRef
+            } else if members
+                .iter()
+                .filter(|member| !member.target_return.diverges)
+                .all(|member| member.target_return.layout.reprs.is_empty())
+            {
+                super::super::artifact::BackendCallableReturn::Absent
+            } else {
+                return Err(incomplete_backend_program(
+                    tel,
+                    root,
+                    format!(
+                        "callable construction {:?} mixes absent and value member returns",
+                        construction.producer
                     ),
                 ));
             };
-            let Some(target_index) = executable_index.get(&target).copied() else {
-                return Err(incomplete_backend_program(
-                    world,
-                    root,
-                    format!("callable {callable:?} target {target:?} is missing from final executable inventory"),
-                ));
-            };
-            let Some(target_backend) = session.backend_executable(&target) else {
-                return Err(incomplete_backend_program(
-                    world,
-                    root,
-                    format!("callable {callable:?} target {target:?} is missing from backend products"),
-                ));
-            };
-            let capture_count = callable_descr.capture_lanes.len();
-            let (capture_reprs, arg_reprs) = target_backend
-                .abi
-                .param_reprs
-                .split_at_checked(capture_count)
-                .ok_or_else(|| {
-                    incomplete_backend_program(
-                        world,
-                        root,
-                        format!(
-                            "callable {callable:?} target {target:?} has {capture_count} capture lane(s), but only {} parameter representation(s)",
-                            target_backend.abi.param_reprs.len()
-                        ),
-                    )
-                })?;
-            entries.push(BackendCallableEntry {
-                identity: 0,
-                callable: *callable,
-                publication_boundary: facts.boundary_ids.iter().copied().find(|boundary| {
-                    boundaries
-                        .get(boundary)
-                        .is_some_and(|facts| facts.resolutions.contains(target_symbol))
-                }),
-                target: target_index,
-                capture_count,
-                capture_reprs: capture_reprs.to_vec(),
-                arg_reprs: arg_reprs.to_vec(),
-                return_ty: target_backend.abi.return_ty,
-            });
-        }
-    }
-    entries.sort_by(compare_backend_callable_entries);
-    entries.dedup();
-    for (identity, entry) in entries.iter_mut().enumerate() {
-        entry.identity = identity as u32;
-    }
-    Ok(entries)
+            let captures = construction
+                .captures
+                .iter()
+                .map(|capture| BackendConstructionCapture {
+                    carrier: capture.layout.carrier,
+                })
+                .collect::<Box<_>>();
+            Ok(BackendConstructionWrapper {
+                identity: identity as u32,
+                callable: construction.callable,
+                captures,
+                call_arity,
+                return_form,
+                members: members.into_boxed_slice(),
+                selection: construction.selection.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((wrappers, identities))
 }
 
 fn executable_key_for_symbol_in_index(
     symbol: &ExecutableSymbol,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    types: &super::super::Types,
 ) -> Option<ExecutableKey> {
     executable_index
         .keys()
         .find(|key| {
             key.need == symbol.need
                 && key.activation.function == symbol.activation.function
-                && key.activation.inputs(types).as_slice() == symbol.activation.input.as_ref()
+                && key.activation.arrow == symbol.activation.arrow
         })
         .cloned()
-}
-
-fn compare_backend_callable_entries(left: &BackendCallableEntry, right: &BackendCallableEntry) -> std::cmp::Ordering {
-    left.target
-        .cmp(&right.target)
-        .then_with(|| left.callable.as_u32().cmp(&right.callable.as_u32()))
-        .then_with(|| left.capture_count.cmp(&right.capture_count))
 }
 
 fn compare_executable_keys(
@@ -827,7 +1035,7 @@ fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std:
 }
 
 fn lower_symbolic_body(
-    lowerer: &mut BackendLowerer<'_, '_>,
+    lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
 ) -> Result<SymbolicBackendBody, FatalError> {
@@ -866,7 +1074,7 @@ fn lower_symbolic_body(
 }
 
 fn lower_symbolic_entry(
-    lowerer: &mut BackendLowerer<'_, '_>,
+    lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     entry_index: usize,
@@ -895,7 +1103,7 @@ fn lower_symbolic_entry(
 }
 
 fn lower_symbolic_tail(
-    lowerer: &mut BackendLowerer<'_, '_>,
+    lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     tail: &LoweredTail,
@@ -914,7 +1122,7 @@ fn lower_symbolic_tail(
         } => {
             let edge = abi.call_edges.get(callsite).ok_or_else(|| {
                 incomplete_backend_program(
-                    lowerer.world,
+                    lowerer.telemetry,
                     lowerer.root_id,
                     format!("missing symbolic direct-call edge for callsite {}", callsite.as_u32()),
                 )
@@ -945,8 +1153,8 @@ fn lower_symbolic_tail(
                 args: lowerer.lower_call_args(emission, *callsite, Some(*callee), args)?,
                 dest: dest.clone(),
                 return_flow: edge
-                    .and_then(|edge| symbolic_direct_call_edge(&edge.target))
-                    .map(|edge| edge.return_flow.clone()),
+                    .and_then(|edge| symbolic_call_edge_return_flow(&edge.target))
+                    .cloned(),
             }
         }
         LoweredTail::If {
@@ -983,7 +1191,15 @@ fn lower_symbolic_tail(
 fn symbolic_direct_call_edge(target: &CallEdge<ExecutableKey>) -> Option<&DirectCallEdge<ExecutableKey>> {
     match target {
         CallEdge::Direct(direct) => Some(direct),
-        CallEdge::Dispatch(_) | CallEdge::Indirect => None,
+        CallEdge::Dispatch(_) | CallEdge::Indirect(_) => None,
+    }
+}
+
+fn symbolic_call_edge_return_flow(target: &CallEdge<ExecutableKey>) -> Option<&CallReturnFlow> {
+    match target {
+        CallEdge::Direct(direct) => Some(&direct.return_flow),
+        CallEdge::Indirect(return_flow) => Some(return_flow),
+        CallEdge::Dispatch(_) => None,
     }
 }
 
@@ -993,11 +1209,13 @@ fn symbolic_emission_ready_executable(key: ExecutableKey, abi: &AbiReadyExecutab
         entry_dispatch: abi.entry_dispatch.clone(),
         return_ty: abi.return_ty,
         param_reprs: abi.param_reprs.clone(),
+        semantic_inputs: abi.semantic_inputs.clone(),
+        return_layout: abi.return_layout.clone(),
         runtime_demand: abi.runtime_demand.clone(),
         transport: abi.transport.clone(),
         original_entry_ids: abi.original_entry_ids.clone(),
         value_types: abi.value_types.clone(),
-        value_reprs: abi.value_reprs.clone(),
+        value_layouts: abi.value_layouts.clone(),
         effects: abi.effects,
         body: abi.body.clone(),
         call_edges: Vec::new(),
@@ -1007,38 +1225,66 @@ fn symbolic_emission_ready_executable(key: ExecutableKey, abi: &AbiReadyExecutab
 pub(crate) fn symbolic_materialized_transport_plan(
     session: &PullSession,
     executable: &ExecutableKey,
-    world: &World<'_>,
+    world: &World,
     callables: &HashMap<CallableId, CallableFacts>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> MaterializedTransportPlan {
-    let mut position_shapes = session
-        .transport_shapes()
+    let mut position_layouts = session
+        .transport_layouts()
         .iter()
-        .map(|(position, shape)| (position.clone(), *shape))
+        .map(|(position, layout)| (position.clone(), *layout))
         .collect::<Vec<_>>();
     // Structural keys, not `format!("{position:?}")` comparators: these are
     // final-packaging sorts over the GLOBAL position set, and Debug-string
     // keys recomputed per comparison were ~21% of the release compile. Cached
     // because the key allocates (interned input types).
-    position_shapes.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
+    position_layouts.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
     let mut publication_boundaries = boundaries
         .iter()
         .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
         .collect::<Vec<_>>();
     publication_boundaries
         .sort_by_cached_key(|(position, boundary)| (transport_position_global_sort_key(position), boundary.as_u32()));
-    let codegen_seam_facts = symbolic_codegen_seam_facts(session, &position_shapes, world, boundaries);
+    let codegen_seam_facts = symbolic_codegen_seam_facts(session, &position_layouts, world, boundaries);
     MaterializedTransportPlan {
         entry: ExecutableSymbol {
             activation: ActivationSymbol {
                 function: executable.activation.function,
+                arrow: executable.activation.arrow,
                 input: executable.activation.inputs(world.types()).into_boxed_slice(),
             },
             need: executable.need,
         },
         executable_membership: Box::default(),
-        position_shapes,
-        callable_entry_positions: Vec::new(),
+        position_layouts,
+        callable_constructions: session
+            .callable_constructions()
+            .values()
+            .map(|construction| BackendCallableConstruction {
+                callable: construction.callable,
+                producer: construction.producer.clone(),
+                captures: construction
+                    .captures
+                    .iter()
+                    .map(|capture| BackendCallableCapture {
+                        source: capture.source.clone(),
+                        layout: capture.layout,
+                    })
+                    .collect(),
+                members: construction
+                    .members
+                    .iter()
+                    .map(|member| BackendCallableConstructionMember {
+                        surface_inputs: member.surface_inputs.clone(),
+                        surface_arg_shapes: member.surface_arg_shapes.clone(),
+                        resolution: member.resolution.clone(),
+                        capture_semantic_inputs: member.capture_semantic_inputs.clone(),
+                        surface_semantic_inputs: member.surface_semantic_inputs.clone(),
+                    })
+                    .collect(),
+                selection: construction.selection.clone(),
+            })
+            .collect(),
         callable_boundaries: {
             let mut rows = callables
                 .iter()
@@ -1059,13 +1305,17 @@ pub(crate) fn symbolic_materialized_transport_plan(
 
 fn symbolic_codegen_seam_facts(
     session: &PullSession,
-    position_shapes: &[(TransportPosition, ShapeId)],
-    world: &World<'_>,
+    position_layouts: &[(TransportPosition, TransportLayout)],
+    world: &World,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> Box<[CodegenSeamFact]> {
     let mut out = Vec::new();
-    for (position, shape) in position_shapes {
-        for (leaf_shape, lane) in lanes_for_codegen_seam_shape(world, *shape) {
+    for (position, layout) in position_layouts {
+        let shape = layout.structural;
+        if symbolic_position_structural_lanes_are_ignored(session, position, world) {
+            continue;
+        }
+        for (leaf_shape, lane) in lanes_for_codegen_seam_shape(world, shape) {
             match position {
                 TransportPosition::ExecutableInput {
                     executable,
@@ -1156,12 +1406,17 @@ fn symbolic_codegen_seam_facts(
                         repr: codegen_repr_for_lane(world, lane),
                     });
                 }
-                TransportPosition::EntryCapture { executable, entry, .. } => {
+                TransportPosition::EntryCapture {
+                    executable,
+                    entry,
+                    capture_index,
+                } => {
                     let repr = block_param_codegen_repr_for_lane(world, lane);
                     out.push(CodegenSeamFact {
-                        seam: CodegenSeam::BlockParam {
+                        seam: CodegenSeam::EntryCapture {
                             executable: executable.clone(),
                             entry: *entry,
+                            capture_index: *capture_index,
                         },
                         shape: Some(leaf_shape),
                         lane,
@@ -1213,9 +1468,37 @@ fn symbolic_codegen_seam_facts(
     out.into_boxed_slice()
 }
 
+fn symbolic_position_structural_lanes_are_ignored(
+    session: &PullSession,
+    position: &TransportPosition,
+    world: &World,
+) -> bool {
+    match position {
+        TransportPosition::ExecutableInput {
+            executable,
+            semantic_index,
+        } => symbolic_backend_for_executable(session, executable, world)
+            .and_then(|backend| backend.abi.runtime_demand.input_demands.get(*semantic_index))
+            .is_some_and(|demand| demand.is_ignore()),
+        TransportPosition::EntryCapture {
+            executable,
+            entry,
+            capture_index,
+        } => symbolic_backend_for_executable(session, executable, world)
+            .and_then(|backend| backend.abi.runtime_demand.entry_capture_demands.get(entry))
+            .and_then(|demands| demands.get(*capture_index))
+            .is_some_and(|demand| demand.is_ignore()),
+        TransportPosition::ExecutableReturn { .. }
+        | TransportPosition::ResumePayload { .. }
+        | TransportPosition::ReturnPayload { .. }
+        | TransportPosition::CallArg { .. }
+        | TransportPosition::Value { .. } => false,
+    }
+}
+
 fn push_symbolic_boundary_codegen_seams(
     session: &PullSession,
-    world: &World<'_>,
+    world: &World,
     boundary: BoundaryId,
     out: &mut Vec<CodegenSeamFact>,
 ) {
@@ -1253,7 +1536,7 @@ fn push_symbolic_boundary_codegen_seams(
 
 fn push_symbolic_publication_codegen_seam(
     session: &PullSession,
-    world: &World<'_>,
+    world: &World,
     boundary: BoundaryId,
     publication: &TransportPosition,
     lane: LaneId,
@@ -1317,11 +1600,16 @@ fn push_symbolic_publication_codegen_seam(
             lane,
             repr,
         }),
-        TransportPosition::EntryCapture { executable, entry, .. } => {
+        TransportPosition::EntryCapture {
+            executable,
+            entry,
+            capture_index,
+        } => {
             out.push(CodegenSeamFact {
-                seam: CodegenSeam::BlockParam {
+                seam: CodegenSeam::EntryCapture {
                     executable: executable.clone(),
                     entry: *entry,
+                    capture_index: *capture_index,
                 },
                 shape: None,
                 lane,
@@ -1349,7 +1637,7 @@ fn push_symbolic_publication_codegen_seam(
 fn symbolic_backend_for_executable<'a>(
     session: &'a PullSession,
     executable: &ExecutableSymbol,
-    world: &World<'_>,
+    world: &World,
 ) -> Option<&'a SymbolicBackendExecutable> {
     session
         .backend_executables()
@@ -1357,10 +1645,11 @@ fn symbolic_backend_for_executable<'a>(
         .find(|backend| executable_symbol(&backend.key, world) == *executable)
 }
 
-fn executable_symbol(executable: &ExecutableKey, world: &World<'_>) -> ExecutableSymbol {
+fn executable_symbol(executable: &ExecutableKey, world: &World) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
             function: executable.activation.function,
+            arrow: executable.activation.arrow,
             input: executable.activation.inputs(world.types()).into_boxed_slice(),
         },
         need: executable.need,
@@ -1371,7 +1660,7 @@ fn symbolic_entry_capture_owner_callsite(
     session: &PullSession,
     executable: &ExecutableSymbol,
     position: &TransportPosition,
-    world: &World<'_>,
+    world: &World,
 ) -> Option<CallSiteId> {
     let backend = symbolic_backend_for_executable(session, executable, world)?;
     let SymbolicBackendBody::Clauses { entries, .. } = &backend.body else {
@@ -1381,7 +1670,7 @@ fn symbolic_entry_capture_owner_callsite(
         .iter()
         .filter(|entry| entry.capture_positions.iter().any(|candidate| candidate == position))
         .find_map(|entry| match &entry.origin {
-            BackendEntryOrigin::DeliveredResume {
+            SymbolicBackendEntryOrigin::DeliveredResume {
                 position:
                     TransportPosition::ResumePayload {
                         callsite: Some(callsite),
@@ -1412,7 +1701,7 @@ fn symbolic_callsite_dest(backend: &SymbolicBackendExecutable, callsite: CallSit
     })
 }
 
-fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
+fn lanes_for_codegen_seam_shape(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
     match world.shape(shape) {
         ShapeDescr::Nothing => Vec::new(),
         ShapeDescr::Lane(lane) => vec![(shape, *lane)],
@@ -1431,7 +1720,7 @@ fn lanes_for_codegen_seam_shape(world: &World<'_>, shape: ShapeId) -> Vec<(Shape
     }
 }
 
-fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenLaneRepr> {
+fn raw_codegen_repr_for_lane(world: &World, lane: LaneId) -> Option<CodegenLaneRepr> {
     let ty = world.lane(lane).ty;
     if world.types().is_floating(&ty) {
         Some(CodegenLaneRepr::RawF64)
@@ -1444,27 +1733,29 @@ fn raw_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> Option<CodegenL
     }
 }
 
-fn codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+fn codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
     raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
 }
 
-fn block_param_codegen_repr_for_lane(world: &World<'_>, lane: LaneId) -> CodegenLaneRepr {
+fn block_param_codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
     match raw_codegen_repr_for_lane(world, lane) {
         Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
         Some(CodegenLaneRepr::RawF64 | CodegenLaneRepr::ValueRef) | None => CodegenLaneRepr::ValueRef,
     }
 }
 
-struct BackendLowerer<'a, 'tel> {
-    world: &'a mut World<'tel>,
+struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
+    world: &'a mut World,
+    telemetry: &'tel T,
     root_id: RootId,
     value_shapes: HashMap<ValueId, ShapeId>,
 }
 
-impl<'a, 'tel> BackendLowerer<'a, 'tel> {
-    fn new(world: &'a mut World<'tel>, root_id: RootId, value_shapes: HashMap<ValueId, ShapeId>) -> Self {
+impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
+    fn new(world: &'a mut World, telemetry: &'tel T, root_id: RootId, value_shapes: HashMap<ValueId, ShapeId>) -> Self {
         Self {
             world,
+            telemetry,
             root_id,
             value_shapes,
         }
@@ -1493,7 +1784,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             .collect::<Vec<_>>();
         if positions.len() != entry.captures.len() {
             return Err(incomplete_backend_program(
-                self.world,
+                self.telemetry,
                 self.root_id,
                 format!(
                     "entry {} has {} captures but {} transport capture positions",
@@ -1558,7 +1849,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
             LoweredStep::FunctionRef { value, function } => BackendStep::FunctionRef {
                 value: *value,
                 function: *function,
-                resolved_entry: None,
+                construction: None,
             },
             LoweredStep::Lambda {
                 value,
@@ -1568,7 +1859,7 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
                 value: *value,
                 function: *function,
                 captures: captures.clone(),
-                resolved_entry: None,
+                construction: None,
             },
             LoweredStep::BinaryOp { value, op, left, right } => BackendStep::BinaryOp {
                 value: *value,
@@ -1658,31 +1949,12 @@ impl<'a, 'tel> BackendLowerer<'a, 'tel> {
 
     fn lower_call_args(
         &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
-        callsite: CallSiteId,
+        _executable: &super::super::artifact::EmissionReadyExecutable,
+        _callsite: CallSiteId,
         _closure_callee: Option<super::super::body::ValueId>,
         args: &[CallArg],
     ) -> Result<Vec<BackendCallArg>, FatalError> {
-        let executable_symbol = ExecutableSymbol {
-            activation: ActivationSymbol {
-                function: executable.key.activation.function,
-                input: executable.key.activation.inputs(self.world.types()).into_boxed_slice(),
-            },
-            need: executable.key.need,
-        };
-        args.iter()
-            .enumerate()
-            .map(|(semantic_index, arg)| {
-                Ok(BackendCallArg {
-                    value: arg.value,
-                    position: TransportPosition::CallArg {
-                        executable: executable_symbol.clone(),
-                        callsite,
-                        semantic_index,
-                    },
-                })
-            })
-            .collect()
+        args.iter().map(|arg| Ok(BackendCallArg { value: arg.value })).collect()
     }
 }
 
@@ -1690,7 +1962,7 @@ fn lower_entry_origin(
     executable: &super::super::artifact::EmissionReadyExecutable,
     entry_index: usize,
     entry: &LoweredEntry,
-) -> BackendEntryOrigin {
+) -> SymbolicBackendEntryOrigin {
     let entry_id = original_entry_id(executable, entry_index);
     if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
         if let Some(position) = executable
@@ -1708,20 +1980,20 @@ fn lower_entry_origin(
             })
             .cloned()
         {
-            return BackendEntryOrigin::DeliveredResume { value, position };
+            return SymbolicBackendEntryOrigin::DeliveredResume { value, position };
         }
         if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
-            return BackendEntryOrigin::Branch;
+            return SymbolicBackendEntryOrigin::Branch;
         }
         panic!("resume entry {entry_index} should have a settled transport position: {entry:?}");
     }
     if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
-        return BackendEntryOrigin::Branch;
+        return SymbolicBackendEntryOrigin::Branch;
     }
     match entry.origin {
-        ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
-        ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
-        ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
+        ControlEntryOrigin::Clause => SymbolicBackendEntryOrigin::Clause,
+        ControlEntryOrigin::Branch => SymbolicBackendEntryOrigin::Branch,
+        ControlEntryOrigin::ReceiveOutcome => SymbolicBackendEntryOrigin::ReceiveOutcome,
         ControlEntryOrigin::DeliveredResume { .. } => unreachable!("delivered resumes return before branch fallback"),
     }
 }
@@ -1737,7 +2009,7 @@ fn original_entry_id(
         .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
 }
 
-fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecutable]) -> Vec<String> {
+fn collect_backend_atom_names(world: &mut World, executables: &[BackendExecutable]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut atoms = Vec::new();
     for name in ["nil", "true", "false"] {
@@ -1750,7 +2022,7 @@ fn collect_backend_atom_names(world: &mut World<'_>, executables: &[BackendExecu
 }
 
 fn collect_executable_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     executable: &BackendExecutable,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1771,22 +2043,12 @@ fn collect_executable_atoms(
     }
 }
 
-fn collect_entry_atoms(
-    world: &mut World<'_>,
-    entry: &BackendEntry,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_entry_atoms(world: &mut World, entry: &BackendEntry, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     collect_step_atoms(world, &entry.steps, seen, atoms);
     collect_tail_atoms(world, &entry.tail, seen, atoms);
 }
 
-fn collect_step_atoms(
-    _world: &mut World<'_>,
-    steps: &[BackendStep],
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     for step in steps {
         match step {
             BackendStep::Const { literal, .. } | BackendStep::AssertLiteral { literal, .. } => {
@@ -1825,7 +2087,7 @@ fn collect_step_atoms(
     }
 }
 
-fn collect_tail_atoms(world: &mut World<'_>, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
+fn collect_tail_atoms(world: &mut World, tail: &BackendTail, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match tail {
         BackendTail::DirectCall {
             target: CallEdge::Dispatch(dispatch),
@@ -1851,7 +2113,7 @@ fn collect_literal_atoms(literal: &GroundValue, seen: &mut HashSet<String>, atom
 }
 
 fn collect_dispatch_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     plan: &PatternDispatchPlan<Ty>,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1876,7 +2138,7 @@ fn collect_dispatch_atoms(
 }
 
 fn collect_dispatch_graph_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     plan: &PatternDispatchPlan<Ty>,
     node_id: crate::dispatch_matrix::GraphNodeId,
     seen: &mut HashSet<String>,
@@ -1899,12 +2161,7 @@ fn collect_dispatch_graph_atoms(
     }
 }
 
-fn collect_region_atoms(
-    world: &mut World<'_>,
-    region: &Region<Ty>,
-    seen: &mut HashSet<String>,
-    atoms: &mut Vec<String>,
-) {
+fn collect_region_atoms(world: &mut World, region: &Region<Ty>, seen: &mut HashSet<String>, atoms: &mut Vec<String>) {
     match region {
         Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
             collect_dispatch_const_atoms(value, seen, atoms);
@@ -1924,7 +2181,7 @@ fn collect_region_atoms(
 }
 
 fn collect_guard_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     expr: &PatternGuardExpr<Ty>,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1947,7 +2204,7 @@ fn collect_guard_atoms(
 }
 
 fn collect_guard_dispatch_atoms(
-    world: &mut World<'_>,
+    world: &mut World,
     dispatch: &PatternGuardDispatch<Ty>,
     seen: &mut HashSet<String>,
     atoms: &mut Vec<String>,
@@ -1970,13 +2227,76 @@ fn push_atom(seen: &mut HashSet<String>, atoms: &mut Vec<String>, name: &str) {
     }
 }
 
-fn incomplete_backend_program(world: &World<'_>, root_id: RootId, message: impl Into<String>) -> FatalError {
+fn incomplete_backend_program(
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+    message: impl Into<String>,
+) -> FatalError {
     let message = message.into();
     let diagnostic = Diagnostic::error(
         codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         format!("compiler2 backend lowering for root {}: {}", root_id.as_u32(), message),
         Span::DUMMY,
     );
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler2::FunctionId;
+    use crate::compiler2::artifact::BackendValueLayout;
+    use crate::compiler2::pull::TransportCarrier;
+    use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol};
+
+    #[test]
+    fn seal_return_flow_rejects_divergence_contradictions() {
+        let mut world = World::new();
+        let ty = world.types_mut().int();
+        let shape = world.intern_shape(ShapeDescr::Nothing);
+        let position = TransportPosition::ExecutableReturn {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: FunctionId::for_test(1),
+                    arrow: ty,
+                    input: Box::default(),
+                },
+                need: ExecutableNeed::Value,
+            },
+        };
+        let layout = |diverges| BackendReturnLayout {
+            layout: BackendValueLayout {
+                structural: shape,
+                carrier: TransportCarrier::Absent,
+                tys: Box::default(),
+                reprs: Box::default(),
+            },
+            diverges,
+        };
+
+        let returning = HashMap::from([(position.clone(), layout(false))]);
+        assert!(
+            seal_return_flow(
+                &CallReturnFlow::NoReturn {
+                    local_source: Some(position.clone()),
+                },
+                &returning,
+            )
+            .is_err()
+        );
+
+        let divergent = HashMap::from([(position.clone(), layout(true))]);
+        assert!(
+            seal_return_flow(
+                &CallReturnFlow::Deliver {
+                    source: position.clone(),
+                    resume: position,
+                    entry: ControlEntryId::from_u32(0),
+                },
+                &divergent,
+            )
+            .is_err()
+        );
+    }
 }

@@ -18,6 +18,9 @@ use std::cell::{Ref, RefCell};
 use std::io::Write;
 use std::rc::Rc;
 
+use crate::diag::Diagnostic;
+
+use super::ConfiguredTelemetry;
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler};
 
@@ -29,6 +32,7 @@ pub struct OwnedEvent {
     pub kind: EventKind,
     pub measurements: Measurements<'static>,
     pub metadata: Metadata<'static>,
+    pub diagnostic: Option<Diagnostic>,
     pub span_id: u64,
     pub parent_span_id: u64,
 }
@@ -40,8 +44,37 @@ impl OwnedEvent {
             kind: ev.kind,
             measurements: ev.measurements.durable_owned(),
             metadata: ev.metadata.durable_owned(),
+            diagnostic: ev
+                .metadata
+                .get("diagnostic")
+                .and_then(|value| value.downcast_ref::<Diagnostic>())
+                .cloned(),
             span_id: ev.span_id,
             parent_span_id: ev.parent_span_id,
+        }
+    }
+
+    fn from_lifecycle(name: &[&'static str], kind: EventKind, span_id: u64, parent_span_id: u64) -> Self {
+        Self {
+            name: name.to_vec(),
+            kind,
+            measurements: Measurements::new(),
+            metadata: Metadata::new(),
+            diagnostic: None,
+            span_id,
+            parent_span_id,
+        }
+    }
+
+    fn from_diagnostic(name: &[&'static str], span_id: u64, parent_span_id: u64, diagnostic: &Diagnostic) -> Self {
+        Self {
+            name: name.to_vec(),
+            kind: EventKind::Event,
+            measurements: Measurements::new(),
+            metadata: Metadata::new(),
+            diagnostic: Some(diagnostic.clone()),
+            span_id,
+            parent_span_id,
         }
     }
 }
@@ -66,6 +99,24 @@ impl Capture {
         Box::new(CaptureHandler {
             events: self.events.clone(),
         })
+    }
+
+    pub fn install(&self, telemetry: &ConfiguredTelemetry, prefix: &[&'static str]) {
+        telemetry.attach(prefix, self.handler());
+        let events = Rc::clone(&self.events);
+        telemetry.attach_raw_lifecycle(prefix, move |name, kind, span_id, parent_span_id, _| {
+            if !name.starts_with(&["fz", "diag"]) {
+                events
+                    .borrow_mut()
+                    .push(OwnedEvent::from_lifecycle(name, kind, span_id, parent_span_id));
+            }
+        });
+        let events = Rc::clone(&self.events);
+        telemetry.attach_raw_event1::<Diagnostic, _>(prefix, move |name, span_id, parent_span_id, diagnostic| {
+            events
+                .borrow_mut()
+                .push(OwnedEvent::from_diagnostic(name, span_id, parent_span_id, diagnostic));
+        });
     }
 
     /// Borrow the full event stream.

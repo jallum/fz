@@ -96,7 +96,7 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     let widened = ReturnWideningCounter::default();
     tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.path.display().to_string()),
         text: fixture.source.clone(),

@@ -757,9 +757,9 @@ impl TypeRefMap {
         self.by_function.get(&function).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn record_type(&mut self, name: TypeName, refs: Vec<TypeName>) -> bool {
-        let changed = self.by_type.get(&name) != Some(&refs);
-        self.by_type.insert(name, refs);
+    pub fn record_type(&mut self, name: &TypeName, refs: Vec<TypeName>) -> bool {
+        let changed = self.by_type.get(name) != Some(&refs);
+        self.by_type.insert(name.clone(), refs);
         changed
     }
 

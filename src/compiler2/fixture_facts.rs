@@ -36,7 +36,7 @@ pub struct CanonicalCallTargetFact {
 }
 
 pub(crate) fn canonical_call_edge_facts(
-    world: &World<'_>,
+    world: &World,
     root: RootId,
     inventory: &[ActivationKey],
 ) -> Vec<CanonicalCallEdgeFact> {
@@ -99,7 +99,7 @@ pub(crate) fn render_canonical_call_edge_snapshot(facts: &[CanonicalCallEdgeFact
 }
 
 fn canonical_call_edge_fact(
-    world: &World<'_>,
+    world: &World,
     activation: &ActivationKey,
     callsite: super::body::CallSiteId,
     summary: &CallSiteSummary,
@@ -182,7 +182,7 @@ fn callsite_kinds(body: &LoweredBody) -> HashMap<CallSiteId, CallsiteDispatchKin
 }
 
 fn activation_sort_key(
-    world: &World<'_>,
+    world: &World,
     activation: &ActivationKey,
     labels: &mut HashMap<FunctionId, String>,
 ) -> (String, Vec<String>) {
@@ -196,7 +196,7 @@ fn activation_sort_key(
     )
 }
 
-fn activation_label(world: &World<'_>, activation: &ActivationKey, labels: &mut HashMap<FunctionId, String>) -> String {
+fn activation_label(world: &World, activation: &ActivationKey, labels: &mut HashMap<FunctionId, String>) -> String {
     format!(
         "{}[{}]",
         canonical_function_label(world, activation.function, labels),
@@ -209,7 +209,7 @@ fn activation_label(world: &World<'_>, activation: &ActivationKey, labels: &mut 
     )
 }
 
-fn target_label(world: &World<'_>, callee: SelectedCallee, labels: &mut HashMap<FunctionId, String>) -> String {
+fn target_label(world: &World, callee: SelectedCallee, labels: &mut HashMap<FunctionId, String>) -> String {
     match callee {
         SelectedCallee::Function(function) => canonical_function_label(world, function, labels),
         SelectedCallee::ProviderBoundary(function) => {
@@ -218,11 +218,7 @@ fn target_label(world: &World<'_>, callee: SelectedCallee, labels: &mut HashMap<
     }
 }
 
-fn canonical_function_label(
-    world: &World<'_>,
-    function: FunctionId,
-    labels: &mut HashMap<FunctionId, String>,
-) -> String {
+fn canonical_function_label(world: &World, function: FunctionId, labels: &mut HashMap<FunctionId, String>) -> String {
     if let Some(label) = labels.get(&function) {
         return label.clone();
     }
@@ -319,7 +315,7 @@ fn drop_closure_capture_tag(chars: &mut std::iter::Peekable<std::str::Chars<'_>>
     *chars = probe;
 }
 
-fn stable_type_text(world: &World<'_>, rendered: String) -> String {
+fn stable_type_text(world: &World, rendered: String) -> String {
     let mut out = String::with_capacity(rendered.len());
     let mut chars = rendered.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -367,7 +363,7 @@ fn stable_type_text(world: &World<'_>, rendered: String) -> String {
 /// it keeps the bare `αN`. (A future keying change that tags closure-surface
 /// vars distinctly — as structural addresses already are — would remove that
 /// residual ambiguity; this decoder is the seam such a change would refine.)
-fn stable_var_label(world: &World<'_>, var_id: u32) -> String {
+fn stable_var_label(world: &World, var_id: u32) -> String {
     let bare = || format!("α{var_id}");
     let Some((fn_id, position)) = decode_closure_surface_var(TypeVarId(var_id)) else {
         return bare();
@@ -455,8 +451,8 @@ mod capture_tag_tests {
         // Mirrors the real shape a call-edge snapshot renders: a volatile
         // `#<id>` suffix immediately followed by the closure literal's
         // capture tag, both of which `stable_type_text` treats as noise.
-        let tel = ConfiguredTelemetry::new();
-        let world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let world = World::new();
         let rendered = "(a0_p0) -> a0_r#14closure[int, atom] => int".to_string();
         assert_eq!(stable_type_text(&world, rendered), "(a0_p0) -> a0_r => int");
     }

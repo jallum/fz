@@ -7,9 +7,11 @@ empties, compilation is done.
 
 The engine is domain-free. `Scheduler<J, F>` knows nothing about types, modules,
 or fz — it moves jobs (`J`) and fact keys (`F`) around. The fz vocabulary lives
-one layer up in `drive.rs` as the `Job` and `FactKey` enums; the type world and
-telemetry live in `World`. Keeping the engine ignorant is what lets the same
-loop drive parsing, lowering, type inference, and artifact emission.
+one layer up in `drive.rs` as the `Job` and `FactKey` enums. Semantic state
+lives in the lifetime-free `World`; `Compiler2` owns telemetry separately and
+a short-lived `ExecutionContext` borrows both while driving. Keeping the engine
+ignorant is what lets the same loop drive parsing, lowering, type inference,
+and artifact emission.
 
 ## The pieces
 
@@ -27,7 +29,8 @@ loop drive parsing, lowering, type inference, and artifact emission.
   `waits`↔`waiters`, and `outputs`. Waking a fact's interested jobs is an O(1)
   lookup, not a scan.
 - **`Scheduler`** — owns the agenda, facts, and deps, and exposes `complete`.
-- **`World::drive`** — pops a job, runs it, applies its effects, repeats.
+- **`ExecutionContext::drive`** — split-borrows semantic state and telemetry,
+  then pops a job, runs it, applies its effects, and repeats.
 
 ## Jobs are rules; effects are their contract
 
@@ -299,8 +302,17 @@ AnalyzeActivation(a) re-runs against the new body.
 
 - **Engine** (`scheduler`/`agenda`/`facts`/`deps`): generic fixpoint over
   `(J, F)`. No types, no telemetry, no fz.
-- **`World`**: owns the type interner and threads `&mut Types` into `complete`
-  so the join can widen; owns the typed stores behind the facts.
-- **Telemetry**: emitted at the `World` seam from the returned `AppliedStep`
-  (`changed`, `enqueued`, `coalesced`, `blocked`), so observability is a
-  consequence of the engine's output rather than a chore inside each rule.
+- **`World`**: lifetime-free semantic state that owns the type interner and
+  threads `&mut Types` into `complete` so the join can widen; owns the typed
+  stores behind the facts. Semantic operations neither accept nor dispatch
+  telemetry. A typed context may sequence observation after one of these
+  operations, but mutation authority remains in `World`.
+- **`ExecutionContext`**: a short-lived split borrow of `&mut World` and
+  `&T` for the compiler's concrete `T: Telemetry`. It completes the scheduler
+  mutation first, then emits activation-input and `AppliedStep` observations
+  from raw borrows of the settled `World`. Thus handlers see the published
+  fact and revision, and a `NullTelemetry` instantiation remains
+  monomorphizable to no observation work. Its other observer wrappers follow
+  the same rule: call one observer-free `World` semantic core, then emit from
+  the returned decision and immutable `World` getters; the context never owns
+  store mutation or invariants.

@@ -8,9 +8,7 @@ use crate::compiler2::NativeEntryAbi;
 use crate::fz_ir::{
     self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, ReceiveAfter, ReceiveClause, Term, Var,
 };
-use crate::telemetry::Value;
 use crate::types::{ClosureTypes, Types};
-use crate::{measurements, metadata};
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
@@ -69,24 +67,8 @@ fn resolve_native_closure_sid(env: &CodegenEnv<'_>, blk: &fz_ir::Block) -> Optio
 fn resolve_direct_closure_surface<'a>(
     env: &'a CodegenEnv<'a>,
     direct_target_sid: u32,
-    closure: Var,
 ) -> Result<Option<(FnId, &'a NativeClosureTargetSurface)>, CodegenError> {
     let target_fn = env.body_fn_id(direct_target_sid);
-    if let Some(boundary_id) = env
-        .active_native_body()
-        .callable_value_boundaries
-        .get(&closure)
-        .copied()
-    {
-        let boundary = env
-            .surface
-            .callable_boundary(boundary_id.as_u32())
-            .expect("materialized callable boundary must exist in the codegen surface");
-        assert_eq!(
-            boundary.target_fn, target_fn,
-            "direct closure target should agree with the closure value's settled callable boundary",
-        );
-    }
     let Some(target) = env.surface.closure_target(target_fn) else {
         return Ok(None);
     };
@@ -103,61 +85,6 @@ fn resolve_direct_closure_surface<'a>(
         &env.param_reprs[direct_target_sid as usize],
     )?;
     Ok(Some((target_fn, target)))
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ClosureCallTelemetryTarget {
-    direct_target_fn_id: Option<u32>,
-    callable_boundary_id: Option<u32>,
-    callable_boundary_target_fn_id: Option<u32>,
-}
-
-fn closure_call_telemetry_target(
-    env: &CodegenEnv<'_>,
-    direct_target_fn: Option<FnId>,
-    closure: Var,
-) -> ClosureCallTelemetryTarget {
-    let boundary_id = env
-        .active_native_body()
-        .callable_value_boundaries
-        .get(&closure)
-        .copied();
-    let boundary_target_fn = boundary_id.map(|boundary_id| {
-        env.surface
-            .callable_boundary(boundary_id.as_u32())
-            .expect("closure callable boundary must exist in the codegen surface")
-            .target_fn
-    });
-    if let (Some(direct_target_fn), Some(boundary_target_fn)) = (direct_target_fn, boundary_target_fn) {
-        assert_eq!(
-            boundary_target_fn, direct_target_fn,
-            "direct closure target should agree with the closure value's settled callable boundary",
-        );
-    }
-    ClosureCallTelemetryTarget {
-        direct_target_fn_id: direct_target_fn.map(|fn_id| fn_id.0),
-        callable_boundary_id: boundary_id.map(|boundary_id| boundary_id.as_u32()),
-        callable_boundary_target_fn_id: boundary_target_fn.map(|fn_id| fn_id.0),
-    }
-}
-
-fn add_closure_call_target_metadata(metadata: &mut crate::telemetry::Metadata<'_>, target: ClosureCallTelemetryTarget) {
-    if let Some(direct_target_fn_id) = target.direct_target_fn_id {
-        metadata
-            .0
-            .push(("direct_target_fn_id", Value::from(direct_target_fn_id as u64)));
-    }
-    if let Some(callable_boundary_id) = target.callable_boundary_id {
-        metadata
-            .0
-            .push(("callable_boundary_id", Value::from(callable_boundary_id as u64)));
-    }
-    if let Some(callable_boundary_target_fn_id) = target.callable_boundary_target_fn_id {
-        metadata.0.push((
-            "callable_boundary_target_fn_id",
-            Value::from(callable_boundary_target_fn_id as u64),
-        ));
-    }
 }
 
 fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
@@ -465,13 +392,12 @@ fn capture_forces_heap_continuation<T: Types<Ty = Ty> + ClosureTypes>(
     if t.callable_clauses(ty).is_none() {
         return false;
     }
-    let native_body = env.active_native_body();
-    let Some(candidate) = native_body.callable_value_boundaries.get(cv) else {
-        return true;
-    };
-    env.surface
-        .callable_boundary(candidate.as_u32())
-        .is_none_or(|boundary| boundary.capture_count > 0)
+    !env.module.fn_by_id(env.active_body_fn_id).blocks.iter().any(|block| {
+        block
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt, fz_ir::Stmt::Let(var, fz_ir::Prim::MakeFnRef(..)) if var == cv))
+    })
 }
 
 // A newly-built continuation may live on the stack unless one of its captures
@@ -1415,7 +1341,7 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         // Closure invocation is opaque to the caller: read code_ptr
         // through the runtime ABI and call it with args, self, and cont.
         let closure_binding = *var_env.get(&closure.0).expect("unbound callclosure closure");
-        let cl_val = closure_binding.value();
+        let cl_val = body.value_as_any_ref(closure_binding);
         let arg_vals: Vec<ir::Value> = args
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
@@ -1431,7 +1357,7 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
             .map(|body_sid| -> Result<_, CodegenError> {
                 let target_fn = env.body_fn_id(body_sid);
                 let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-                let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)?
+                let (_, target) = resolve_direct_closure_surface(env, body_sid)?
                     .expect("direct closure target should publish an exact closure-target surface");
                 Ok((body_sid, body_fid, target_fn, target))
             })
@@ -1440,33 +1366,6 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         let can_use_lazy_cont = is_native && continuation_uses_lazy_descriptor(t, env, &continuation.captured);
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
         let cf = continuation_plan.emit_value(body, runtime, env.halt_reprs, is_cont_fn, cont_param, frame_ptr);
-        let continuation_storage = if continuation_plan.uses_lazy_descriptor() {
-            "lazy_descriptor"
-        } else {
-            "heap_closure"
-        };
-        let telemetry_target = closure_call_telemetry_target(
-            env,
-            lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn),
-            *closure,
-        );
-        let mut telemetry_metadata = metadata! {
-            body_name: env.active_body_name,
-            call_kind: "call_closure",
-            closure_binding_repr: closure_binding.repr().as_str(),
-            dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
-            continuation_storage: continuation_storage,
-        };
-        add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
-        env.telemetry.execute(
-            &["fz", "codegen", "closure_call_lowered"],
-            &measurements! {
-                spec_id: env.active_spec_id as u64,
-                closure_var: closure.0 as u64,
-                continuation_spec_id: cont_sid as u64,
-            },
-            &telemetry_metadata,
-        );
         if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args =
@@ -1558,7 +1457,7 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
         // bypassing the runtime code-pointer read. Falls back to the
         // indirect path on union-of-lits, plain arrows, unresolved keys.
         let closure_binding = *var_env.get(&closure.0).expect("unbound tailcallclosure closure");
-        let cl_val = closure_binding.value();
+        let cl_val = body.value_as_any_ref(closure_binding);
         let arg_vals: Vec<ir::Value> = args
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound tailcallclosure arg").value())
@@ -1582,32 +1481,11 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
             .map(|body_sid| -> Result<_, CodegenError> {
                 let target_fn = env.body_fn_id(body_sid);
                 let body_fid = *fn_ids.get(&body_sid).expect("native closure target fn_id missing");
-                let (_, target) = resolve_direct_closure_surface(env, body_sid, *closure)?
+                let (_, target) = resolve_direct_closure_surface(env, body_sid)?
                     .expect("direct closure target should publish an exact closure-target surface");
                 Ok((body_sid, body_fid, target_fn, target))
             })
             .transpose()?;
-        let telemetry_target = closure_call_telemetry_target(
-            env,
-            lit_resolved.as_ref().map(|(_, _, target_fn, _)| *target_fn),
-            *closure,
-        );
-        let mut telemetry_metadata = metadata! {
-            body_name: env.active_body_name,
-            call_kind: "tail_call_closure",
-            closure_binding_repr: closure_binding.repr().as_str(),
-            dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
-        };
-        add_closure_call_target_metadata(&mut telemetry_metadata, telemetry_target);
-        env.telemetry.execute(
-            &["fz", "codegen", "closure_call_lowered"],
-            &measurements! {
-                spec_id: env.active_spec_id as u64,
-                closure_var: closure.0 as u64,
-            },
-            &telemetry_metadata,
-        );
-
         if let Some((body_sid, body_fid, target_fn, target)) = lit_resolved {
             let body_fref = body.jmod.declare_func_in_func(body_fid, body.b.func);
             let mut direct_args = push_direct_closure_args(

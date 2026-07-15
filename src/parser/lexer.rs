@@ -2,9 +2,8 @@ use std::fmt;
 use std::rc::Rc;
 use std::str::from_utf8;
 
-use crate::measurements;
 use crate::source::{Id as CodeId, Span};
-use crate::telemetry::{Metadata, Telemetry, Value};
+use crate::telemetry::{RawSpanTelemetry, Telemetry};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -728,10 +727,6 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    /// Opens a `[fz, lexer, pass]` span and emits a
-    /// `[fz, lexer, tokens_built]` event with the final token count on
-    /// success. The span's stop event records elapsed_ns.
-    ///
     /// Owns the eol/continuation decision at tokenize time (Elixir model:
     /// elixir_tokenizer.erl's `add_token_with_eol`/`previous_was_eol`). A
     /// physical newline is emitted as a first-class `Tok::Newline`. When
@@ -746,10 +741,8 @@ impl<'a> Lexer<'a> {
     /// continuation of the previous one — this is what lets the parser's
     /// Pratt loop stop at a bare `Newline` by construction, with no
     /// lookahead heuristic required downstream.
-    pub fn tokenize(mut self, tel: &dyn Telemetry) -> Result<Vec<Token>, LexError> {
-        use crate::telemetry::TelemetryExt;
-        let metadata = self.telemetry_metadata();
-        let _span = tel.span(LEX_PASS_NAME, metadata.clone());
+    pub fn tokenize<T: RawSpanTelemetry + ?Sized>(mut self, tel: &T) -> Result<Vec<Token>, LexError> {
+        let _span = start_lexer_pass(tel, &self.code_id, &self.source_name);
         let mut out: Vec<Token> = Vec::new();
         loop {
             let t = self.next_token()?;
@@ -761,20 +754,30 @@ impl<'a> Lexer<'a> {
             }
             out.push(t);
             if done {
-                tel.execute(TOKENS_BUILT_NAME, &measurements! { count: out.len() }, &metadata);
+                emit_tokens_built(tel, &self.code_id, &self.source_name, &out);
                 return Ok(out);
             }
         }
     }
+}
 
-    fn telemetry_metadata(&self) -> Metadata<'static> {
-        let mut metadata = Metadata::new();
-        metadata.0.push(("code_id", Value::from(self.code_id.0)));
-        if let Some(source_name) = &self.source_name {
-            metadata.0.push(("source_name", Value::from(source_name.to_string())));
-        }
-        metadata
-    }
+fn start_lexer_pass<'a, T: RawSpanTelemetry + ?Sized>(
+    tel: &'a T,
+    code: &CodeId,
+    source_name: &Option<Rc<str>>,
+) -> <T as RawSpanTelemetry>::Span2_0<'a, CodeId, Option<Rc<str>>> {
+    use crate::telemetry::TelemetryExt;
+    tel.raw_span2_0(LEX_PASS_NAME, code, source_name)
+}
+
+fn emit_tokens_built<T: Telemetry + ?Sized>(
+    tel: &T,
+    code: &CodeId,
+    source_name: &Option<Rc<str>>,
+    tokens: &Vec<Token>,
+) {
+    use crate::telemetry::TelemetryExt;
+    tel.raw_event3(TOKENS_BUILT_NAME, code, source_name, tokens);
 }
 
 const LEX_PASS_NAME: &[&str] = &["fz", "lexer", "pass"];

@@ -5,7 +5,7 @@ use std::rc::Rc;
 use super::drive_test::{CallsiteCapture, FunctionCapture, assert_resolved, function_id};
 use super::job_budget_guard::JobBudgetGuard;
 use super::{CallSiteSummary, ExecutableKey, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
-use crate::telemetry::handler::{Event, EventKind, Handler};
+use crate::telemetry::ConfiguredTelemetry;
 
 /// Captures the executable behind every `executable_transport.projected`
 /// event: the set of executables whose transport component was freshly
@@ -24,10 +24,12 @@ impl TransportProjectedCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(TransportProjectedCaptureHandler {
-            executables: self.executables.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let executables = Rc::clone(&self.executables);
+        telemetry.attach_raw_event2::<ExecutableKey, super::pull::TransportComponentInventory, _>(
+            &["fz", "compiler2", "executable_transport", "projected"],
+            move |_, _, _, executable, _| executables.borrow_mut().push(executable.clone()),
+        );
     }
 
     fn clear(&self) {
@@ -36,26 +38,6 @@ impl TransportProjectedCapture {
 
     fn executables(&self) -> Vec<ExecutableKey> {
         self.executables.borrow().clone()
-    }
-}
-
-struct TransportProjectedCaptureHandler {
-    executables: Rc<RefCell<Vec<ExecutableKey>>>,
-}
-
-impl Handler for TransportProjectedCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "executable_transport", "projected"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(executable) = event
-            .metadata
-            .get("executable")
-            .and_then(|value| value.downcast_ref::<ExecutableKey>())
-        else {
-            return;
-        };
-        self.executables.borrow_mut().push(executable.clone());
     }
 }
 
@@ -79,7 +61,7 @@ impl Handler for TransportProjectedCaptureHandler {
 #[test]
 fn compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("protocol_escaped_continuation.fz".to_string()),
         r#"
@@ -103,6 +85,7 @@ fn main(), do: make(fn x -> x + 1 end)
 
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root,
         "protocol-dispatched escaped continuation should close its captured callable activation",
     );
@@ -116,7 +99,7 @@ fn main(), do: make(fn x -> x + 1 end)
 #[test]
 fn compiler2_protocol_impl_resolves_to_concat_module_not_host() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("impl_concat_module.fz".to_string()),
         r#"
@@ -137,7 +120,12 @@ fn main(), do: Greet.hello([1, 2, 3])
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(&mut world, root, "nested defimpl should resolve via its concat module");
+    drive_until_semantic_closure(
+        &mut world,
+        &tel,
+        root,
+        "nested defimpl should resolve via its concat module",
+    );
 
     let impl_module = world.reference_module("Greet.List".to_string());
     let host_module = world.reference_module("Mini".to_string());
@@ -167,7 +155,7 @@ fn main(), do: Greet.hello([1, 2, 3])
 #[test]
 fn compiler2_protocol_impl_target_struct_is_not_classified_by_last_segment_name() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("impl_target_struct_not_stringly.fz".to_string()),
         r#"
@@ -197,6 +185,7 @@ fn main(), do: Peek.first(Shadow.List.new(1, 2))
 
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root,
         "a struct target whose last segment shadows a built-in family name should still \
          dispatch: fact-backed classification must not misroute it to the built-in list shape",
@@ -277,7 +266,7 @@ fn compiler2_forward_referenced_struct_impl_target_reclassifies_when_structdefin
     use super::super::types::MapKey;
 
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     // A `%{val: any}` probe type: disjoint from a struct's opaque nominal tag,
     // overlapping its structural map evidence. This is what tells the two
@@ -305,7 +294,7 @@ fn main(x), do: Peek.first(x)
     );
     let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "drive 1: the protocol and caller settle even though Boxy's defstruct has not landed",
     );
 
@@ -341,7 +330,7 @@ fn probe(), do: Boxy.ident(1)
     );
     world.submit_root(None, "probe".to_string(), 0, ExecutableNeed::Value);
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "drive 2: defining Boxy publishes StructDefined(Boxy), which must re-wake main's classifier",
     );
 
@@ -366,7 +355,7 @@ fn probe(), do: Boxy.ident(1)
 #[test]
 fn compiler2_root_colocated_protocol_impl_registers_on_scope() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("colocated_impl.fz".to_string()),
         r#"
@@ -387,6 +376,7 @@ fn main(), do: Greet.hello([1, 2, 3])
 
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root,
         "co-located defimpl should resolve via its concat module",
     );
@@ -419,7 +409,7 @@ fn main(), do: Greet.hello([1, 2, 3])
 #[test]
 fn compiler2_captured_callable_closure_call_keeps_resolved_return() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("captured_callable_return.fz".to_string()),
         r#"
@@ -433,6 +423,7 @@ fn main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
 
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root,
         "captured-callable closure call should close semantic analysis",
     );
@@ -458,7 +449,7 @@ fn main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
 #[test]
 fn compiler2_unused_protocol_impl_stays_cold() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("unused_protocol_impl.fz".to_string()),
         r#"
@@ -479,7 +470,12 @@ fn main(), do: 1
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(&mut world, root, "a program with an unused `defimpl` must still close");
+    drive_until_semantic_closure(
+        &mut world,
+        &tel,
+        root,
+        "a program with an unused `defimpl` must still close",
+    );
     let mini = world.reference_module("Mini".to_string());
     assert!(
         world.module_defined_revision(mini).is_none(),
@@ -491,9 +487,9 @@ fn main(), do: 1
 /// the demand-driven pull that now stands where the legacy seal did: its
 /// internal pull loop settles every reachable activation's analysis before it
 /// packages the product, so a resolved drive proves the closure converged.
-fn drive_until_semantic_closure(world: &mut World<'_>, root: RootId, message: &str) {
+fn drive_until_semantic_closure(world: &mut World, tel: &ConfiguredTelemetry, root: RootId, message: &str) {
     world.demand(Job::BuildBackendProduct(root));
-    assert_resolved(world.drive(), message);
+    assert_resolved(super::drive::ExecutionContext::new(world, tel).drive(), message);
 }
 
 fn summary_has_function(summary: &CallSiteSummary, function: FunctionId) -> bool {
@@ -507,11 +503,11 @@ fn summary_has_function(summary: &CallSiteSummary, function: FunctionId) -> bool
 fn compiler2_semantic_analysis_does_not_reach_continuation_after_never_return() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("never_continuation.fz".to_string()),
         r#"
@@ -526,6 +522,7 @@ end
 
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root_id,
         "a never-returning call should not keep its pipe continuation semantically live",
     );
@@ -567,7 +564,7 @@ end
 #[test]
 fn compiler2_coalesced_closure_target_keeps_its_capture_slot() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("coalesced_closure_capture.fz".to_string()),
         r#"
@@ -583,6 +580,7 @@ end
 
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root,
         "a closure capturing a branch-joined value must settle without truncating its activation",
     );
@@ -603,18 +601,15 @@ end
 fn compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let transport = TransportProjectedCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "executable_transport", "projected"],
-        transport.handler(),
-    );
+    transport.install(&tel);
     // Livelock backstop: if cone-scoped re-derivation ever loops, this names the
     // runaway job kind instead of hanging the drive.
     let job_guard = JobBudgetGuard::new();
-    tel.attach(&["fz", "compiler2", "job"], job_guard.handler());
+    job_guard.install(&tel);
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("blast_radius_v1.fz".to_string()),
         r#"
@@ -646,7 +641,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::LowerNativeProgram(root));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "drive 1 with one Shout impl should settle the transport plan",
     );
 
@@ -669,7 +664,7 @@ end
     );
     world.demand(Job::LowerNativeProgram(root));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "drive 2 adding the String impl should re-settle the transport plan",
     );
 
@@ -684,11 +679,11 @@ end
 fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
@@ -696,6 +691,7 @@ fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root_id,
         "reducer function refs should retain every grounded semantic specialization before artifact",
     );
@@ -724,9 +720,9 @@ fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
 fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     world.submit_code(
         Some("repr_seam_enum_count_after_reduce2.fz".to_string()),
         include_str!("../../fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz").to_string(),
@@ -734,6 +730,7 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     drive_until_semantic_closure(
         &mut world,
+        &tel,
         root_id,
         "the retained list must keep reduce and count ground callable activations distinct",
     );

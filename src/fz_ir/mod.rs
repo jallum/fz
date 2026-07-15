@@ -811,10 +811,6 @@ pub struct Module {
 }
 
 impl Module {
-    pub fn module_path(&self) -> &str {
-        &self.module_path
-    }
-
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
         &self.externs[*self.extern_idx.get(&eid).expect("unknown extern id")]
     }

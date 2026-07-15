@@ -64,10 +64,6 @@ pub trait Backend {
     /// Finalize the backend into its Output. JIT finalizes the JITModule
     /// and resolves fn pointers. AOT emits the object-file bytes.
     fn finalize(self, meta: CompiledMetadata) -> Result<Self::Output, CodegenError>;
-
-    /// Short, stable tag for telemetry — distinguishes the backends whose
-    /// finalize costs diverge sharply (JIT mmap+reloc vs AOT object emit).
-    fn kind(&self) -> &'static str;
 }
 
 /// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
@@ -337,10 +333,6 @@ impl Backend for JitBackend {
     type Module = JITModule;
     type Output = CompiledModule;
 
-    fn kind(&self) -> &'static str {
-        "jit"
-    }
-
     fn module_mut(&mut self) -> &mut JITModule {
         &mut self.jmod
     }
@@ -434,10 +426,6 @@ impl AotBackend {
 impl Backend for AotBackend {
     type Module = ObjectModule;
     type Output = AotArtifact;
-
-    fn kind(&self) -> &'static str {
-        "aot"
-    }
 
     fn module_mut(&mut self) -> &mut ObjectModule {
         &mut self.omod

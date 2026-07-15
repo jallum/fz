@@ -3,13 +3,199 @@ use super::keying::DispatchDemand;
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
-use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Value};
+use crate::telemetry::sink::NullTelemetry;
+use crate::telemetry::{Capture, ConfiguredTelemetry};
+use std::cell::Cell;
+use std::rc::Rc;
+
+#[test]
+fn production_telemetry_boundaries_are_raw_and_allocation_free() {
+    let sources = [
+        include_str!("drive.rs"),
+        include_str!("compiler.rs"),
+        include_str!("quoted_expander.rs"),
+        include_str!("source_publish.rs"),
+        include_str!("jobs/keying.rs"),
+        include_str!("native_codegen/driver.rs"),
+        include_str!("../aot_link.rs"),
+        include_str!("../diag/driver.rs"),
+        include_str!("../exec/runtime.rs"),
+        include_str!("../ir_interp/backend.rs"),
+        include_str!("../ir_interp/extern_call.rs"),
+        include_str!("../parser/lexer.rs"),
+    ];
+    for source in sources {
+        for rejected in [
+            ".execute_lazy(",
+            ".execute_lazy_with(",
+            ".event_lazy(",
+            ".span_lazy(",
+            ".start_span_lazy(",
+            ".stop_span_lazy(",
+            ".stop_with_lazy(",
+            "[\"fz\", \"compiler2\", \"dump\"",
+        ] {
+            assert!(!source.contains(rejected), "production telemetry contains {rejected}");
+        }
+        for line in source
+            .lines()
+            .filter(|line| line.contains("raw_event") || line.contains("raw_span"))
+        {
+            for rejected in [
+                "metadata!",
+                "measurements!",
+                "format!(",
+                ".collect(",
+                ".to_string(",
+                "Vec::",
+            ] {
+                assert!(!line.contains(rejected), "raw boundary transforms data: {line}");
+            }
+        }
+        for line in source.lines().filter(|line| line.contains("Telemetry")) {
+            assert!(
+                !line.contains("dyn "),
+                "production telemetry erases its concrete type: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compiler2_world_is_lifetime_free_semantic_state() {
+    fn requires_static_any<T: std::any::Any>() {}
+
+    requires_static_any::<World>();
+    let _world = World::new();
+}
+
+#[test]
+fn compiler2_world_core_mutates_without_an_observer() {
+    let mut world = World::new();
+    let code = world.submit_code(
+        Some("observer_free_world.fz".to_string()),
+        "fn main(), do: 0\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+
+    assert_eq!(world.code_text(code), "fn main(), do: 0\n");
+    assert_eq!(
+        world.root_entry(root).function,
+        world.reference_function(ModuleId::GLOBAL, "main", 0)
+    );
+}
+
+#[test]
+fn compiler2_execution_context_retains_the_concrete_telemetry_type() {
+    fn requires_null(_: &super::drive::ExecutionContext<'_, NullTelemetry>) {}
+
+    let tel = NullTelemetry;
+    let mut world = World::new();
+    let context = super::drive::ExecutionContext::new(&mut world, &tel);
+    requires_null(&context);
+    assert_eq!(std::mem::size_of_val(context.telemetry), 0);
+}
+
+#[test]
+fn compiler2_telemetry_does_not_observe_world_when_no_handler_matches() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["unmatched"]);
+
+    let mut world = World::new();
+    world.submit_code(
+        Some("unmatched_telemetry.fz".to_string()),
+        "fn main(), do: 0\n".to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+
+    let type_name = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "unobserved".to_string(),
+        arity: 0,
+    };
+    let function = world.reference_function(ModuleId::GLOBAL, "unobserved_fn", 0);
+    let queries_before = world.telemetry_query_count();
+    super::drive::ExecutionContext::new(&mut world, &tel).record_function_type_refs(&function, vec![type_name.clone()]);
+    super::drive::ExecutionContext::new(&mut world, &tel).record_type_def_refs(&type_name, Vec::new());
+    assert_eq!(
+        world.telemetry_query_count(),
+        queries_before,
+        "disabled telemetry must not query World to prepare type-reference events"
+    );
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    assert!(capture.is_empty());
+}
+
+#[test]
+fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borrow() {
+    let tel = ConfiguredTelemetry::new();
+    let saw_post_mutation = Rc::new(Cell::new(false));
+    let saw_activation_inputs = Rc::new(Cell::new(false));
+    let saw_stashed_source = Rc::new(Cell::new(false));
+    let applied_sink = Rc::clone(&saw_post_mutation);
+    let activation_sink = Rc::clone(&saw_activation_inputs);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2"],
+        move |name, _, _, world, completion| {
+            if name == ["fz", "compiler2", "activation_inputs", "defined"] {
+                for activation in &completion.activation_input_changed {
+                    let fact = FactKey::ActivationInputs(activation.clone());
+                    assert!(world.has_fact(&fact));
+                    assert!(world.fact_revision(&fact).is_some());
+                    assert!(world.activation_inputs_ref(activation).is_some());
+                }
+                activation_sink.set(true);
+            } else if name == ["fz", "compiler2", "work_graph", "applied"] {
+                for change in &completion.step.changed {
+                    assert_eq!(world.has_fact(&change.key), change.new_revision.is_some());
+                }
+                applied_sink.set(true);
+            }
+        },
+    );
+    let stashed_sink = Rc::clone(&saw_stashed_source);
+    tel.attach_raw_event2::<World, super::FunctionId, _>(
+        &["fz", "compiler2", "function", "source", "stashed"],
+        move |_, _, _, world, function| {
+            assert!(world.pending_function_source(*function).is_some());
+            stashed_sink.set(true);
+        },
+    );
+
+    let mut world = World::new();
+    world.submit_code(
+        Some("post_mutation_world.fz".to_string()),
+        "fn main(), do: 0\n".to_string(),
+    );
+    world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    assert!(
+        saw_post_mutation.get(),
+        "an applied event should expose post-mutation semantic state"
+    );
+    assert!(
+        saw_activation_inputs.get(),
+        "activation-input telemetry should expose the published fact and revision"
+    );
+    assert!(
+        saw_stashed_source.get(),
+        "source-stash telemetry should expose the source already stored in World"
+    );
+}
 
 #[test]
 #[should_panic(expected = "modules should be scoped before definition")]
 fn compiler2_world_define_module_panics_for_unscoped_module() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let module = world.reference_module("Unscoped");
 
     let _ = world.define_module(module, Namespace::default(), ModuleInterface::default());
@@ -18,8 +204,8 @@ fn compiler2_world_define_module_panics_for_unscoped_module() {
 #[test]
 #[should_panic(expected = "module interface should only be read when it exists")]
 fn compiler2_world_module_interface_panics_for_unscoped_module() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let module = world.reference_module("Unscoped");
 
     let _ = world.module_interface(module);
@@ -28,14 +214,17 @@ fn compiler2_world_module_interface_panics_for_unscoped_module() {
 #[test]
 fn compiler2_world_submitted_module_interface_is_available_without_module_definition() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let module = world.submit_module_interface("IfaceOnly".to_string(), ModuleInterface::default());
 
     assert_eq!(world.module_interface(module), ModuleInterface::default());
     assert!(world.module_defined_revision(module).is_none());
     assert!(world.module_interface_revision(module).is_none());
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "publishing an interface-only module should settle without body definition",
     );
     assert!(world.module_interface_revision(module).is_some());
@@ -44,8 +233,8 @@ fn compiler2_world_submitted_module_interface_is_available_without_module_defini
 #[test]
 #[should_panic(expected = "modules should be indexed before scoping")]
 fn compiler2_world_scope_module_panics_for_unindexed_module() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let module = world.reference_module("Unindexed");
 
     world.scope_module(module, Namespace::default());
@@ -54,18 +243,24 @@ fn compiler2_world_scope_module_panics_for_unindexed_module() {
 #[test]
 fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_captured_namespace() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(
         Some("spec.fz".to_string()),
         include_str!("../../fixtures2/00049_resolve_spec.fz").to_string(),
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "indexing should resolve"
     );
     assert!(world.demand(Job::ScopeCode(code)), "scoping should be demandable");
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "scoping should resolve"
     );
 
@@ -84,7 +279,10 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
     assert!(world.demand(Job::DeriveTypeDef(elem)));
     assert!(world.demand(Job::DeriveTypeDef(boxed)));
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "the referenced types should resolve"
     );
 
@@ -99,7 +297,7 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
         world.pending_function_source(function).is_some(),
         "scoping should stash the grouped quoted function source before define",
     );
-    let outcome = world.drive();
+    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive();
     assert!(
         matches!(outcome, DriveOutcome::Resolved),
         "demanding the function should derive its function surface on demand",
@@ -172,15 +370,21 @@ fn compiler2_resolve_spec_resolves_types_shapes_and_constraints_against_the_capt
 #[test]
 fn compiler2_define_function_stages_expanded_source_before_definition() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(Some("staged_source.fz".to_string()), "fn main(), do: 42\n".to_string());
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "indexing should resolve"
     );
     assert!(world.demand(Job::ScopeCode(code)), "scoping should be demandable");
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "scoping should resolve"
     );
 
@@ -201,7 +405,10 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
         "DefineFunction should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
         "demanding the function should stage expanded source and then define it",
     );
 
@@ -221,8 +428,8 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
 
 #[test]
 fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
     assert!(world.define_recursive(function, true));
@@ -261,8 +468,8 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
 
 #[test]
 fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "partition", 4);
     assert!(world.define_recursive(function, true));
@@ -297,8 +504,8 @@ fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
 
 #[test]
 fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "split_while_cont", 3);
     assert!(world.define_recursive(function, true));
@@ -343,8 +550,8 @@ fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
 
 #[test]
 fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "subtract", 1);
     assert!(world.define_recursive(function, false));
@@ -401,8 +608,8 @@ fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
 
 #[test]
 fn compiler2_activation_analysis_preserves_prior_input_frontier() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
     let callee = world.reference_function(ModuleId::GLOBAL, "callee", 1);
@@ -454,8 +661,8 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
 
 #[test]
 fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "delete_first", 2);
     assert!(world.define_recursive(function, true));
@@ -482,8 +689,8 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
 
 #[test]
 fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
     assert!(world.define_recursive(function, false));
@@ -527,8 +734,8 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
 
 #[test]
 fn compiler2_waiting_job_keeps_activation_input_contributions() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
     assert!(world.define_recursive(function, false));
@@ -569,24 +776,17 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
 fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&["fz", "compiler2", "drive", "demand_on_stall"], capture.handler());
-    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<Vec<FactKey>>>> =
+    capture.install(&tel, &["fz", "compiler2", "drive", "demand_on_stall"]);
+    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<std::collections::HashSet<FactKey>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let demanded_facts_sink = std::rc::Rc::clone(&demanded_facts);
-    tel.attach(
+    tel.attach_raw_event2::<u64, std::collections::HashSet<FactKey>, _>(
         &["fz", "compiler2", "drive", "demand_on_stall"],
-        Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(facts) = event
-                .metadata
-                .get("demanded_facts")
-                .and_then(Value::downcast_ref::<Vec<FactKey>>)
-            else {
-                return;
-            };
+        move |_, _, _, _, facts| {
             demanded_facts_sink.borrow_mut().push(facts.clone());
-        }),
+        },
     );
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     // Take the submit-root ignition out of the agenda: this test isolates the
     // stall pass, so nothing may be ready when the drive starts.
@@ -603,7 +803,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     world.demand(Job::DeriveRecursive(function));
     world.demand(Job::DeriveDispatchMask(function));
     assert_eq!(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         DriveOutcome::Resolved,
         "echoval/1's own facts should settle before the isolated stall-pass setup",
     );
@@ -623,7 +823,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     assert_eq!(world.work_graph.pending_jobs(), 0);
 
     assert_eq!(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         DriveOutcome::Resolved,
         "the stall pass should demand the blocked fact's mapped producer and complete the drive",
     );
@@ -655,7 +855,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
 #[test]
 fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let function = world.reference_function(ModuleId::GLOBAL, "main", 0);
     world.complete_job(
         Job::DeriveRecursive(function),
@@ -665,7 +865,7 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
         },
     );
 
-    let DriveOutcome::Unresolved { waits } = world.drive() else {
+    let DriveOutcome::Unresolved { waits } = super::drive::ExecutionContext::new(&mut world, &tel).drive() else {
         panic!("a blocked fact with no mapped producer must surface as the genuine stall");
     };
     assert!(
@@ -685,14 +885,14 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
 #[test]
 fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     world.submit_code(
         Some("protocol.fz".to_string()),
         "defprotocol Integerish do\n  fn id(value)\nend\n\nfn main(), do: Integerish.id(41)\n".to_string(),
     );
     assert_eq!(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         DriveOutcome::Resolved,
         "the protocol and its callsite should settle even with zero impls indexed",
     );
@@ -712,7 +912,7 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
         "defimpl Integerish, for: Integer do\n  fn id(value), do: value + 1\nend\n".to_string(),
     );
     assert_eq!(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         DriveOutcome::Resolved,
         "indexing the later-discovered impl should settle without stalling",
     );
@@ -734,7 +934,7 @@ fn compiler2_protocol_impl_discovered_after_first_pass_rewakes_the_callsite() {
 #[test]
 fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code_id = world.submit_code(
         Some("global_fn.fz".to_string()),
         "fn greet(name), do: name\n".to_string(),
@@ -756,7 +956,10 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         "the pending code should be named as a CodeIndexed candidate, got {waits:?}"
     );
 
-    super::drive_test::assert_resolved(world.drive(), "indexing the sole code unit should settle");
+    super::drive_test::assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "indexing the sole code unit should settle",
+    );
 
     // Now that the code is indexed and it is the function's home, the wait
     // narrows to the found home alone.
@@ -777,7 +980,10 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
         world.demand(Job::IndexCode(prelude)),
         "the prelude should be demandable"
     );
-    super::drive_test::assert_resolved(world.drive(), "indexing the prelude should settle");
+    super::drive_test::assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "indexing the prelude should settle",
+    );
 
     // A function no code publishes is the terminal dangling case: every code
     // is Indexed and none is the home, so the wait is legitimately empty
@@ -809,7 +1015,7 @@ fn compiler2_demand_function_scope_never_empties_on_a_pending_global_home() {
 #[test]
 fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     // Reference the function and demand its source BEFORE the code exists, so
     // the job is agenda-ahead of the submission's IndexCode and runs first
@@ -825,7 +1031,7 @@ fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() 
     );
 
     super::drive_test::assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "indexing the pending home must wake PublishFunctionSource and settle, not relocate the deadlock",
     );
     assert!(

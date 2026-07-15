@@ -4,9 +4,8 @@
 //! the implementation bodies for current jobs and keeps their helper functions
 //! private to the relevant job family.
 
-use super::drive::{Job, JobEffects};
+use super::drive::{ExecutionContext, Job, JobEffects};
 use super::scheduler::FatalError;
-use super::world::World;
 
 pub(crate) mod artifact;
 pub(crate) mod backend;
@@ -25,27 +24,32 @@ mod source_test;
 pub(crate) mod transport;
 mod types;
 
-pub(crate) fn run(world: &mut World<'_>, job: &Job) -> Result<JobEffects, FatalError> {
+pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut ExecutionContext<'_, T>,
+    job: &Job,
+) -> Result<JobEffects, FatalError> {
+    let ExecutionContext { world, telemetry } = context;
+    let tel = *telemetry;
     match job {
-        Job::IndexCode(code_id) => source::index_code(world, *code_id),
-        Job::ScopeCode(code_id) => source::scope_code(world, *code_id),
-        Job::DefineModule(module_id) => source::define_module(world, *module_id),
-        Job::DefineModuleInterface(module_id) => source::define_module_interface(world, *module_id),
-        Job::PublishFunctionSource(function_id) => source::publish_function_source_job(world, *function_id),
-        Job::ExpandFunctionSource(function_id) => source::expand_function_source(world, *function_id),
-        Job::DefineFunction(function_id) => source::define_function(world, *function_id),
-        Job::DeriveTypeDef(type_name) => types::derive_type_def(world, type_name),
-        Job::DeriveFunctionContract(function_id) => contract::derive_function_contract(world, *function_id),
-        Job::LowerFunction(function_id) => body::lower_function(world, *function_id),
-        Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, *function_id),
-        Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, *function_id),
-        Job::BuildMacroExecutable(function_id) => macro_runtime::build_macro_executable(world, *function_id),
-        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, *function_id),
-        Job::DeriveDispatchMask(function_id) => keying::derive_dispatch_mask(world, *function_id),
-        Job::SeedRoot(root_id) => root::seed_root(world, *root_id),
-        Job::SeedActivation(activation) => root::seed_activation(world, activation),
-        Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, activation),
-        Job::BuildBackendProduct(root_id) => backend::build_backend_product(world, *root_id),
-        Job::LowerNativeProgram(root_id) => native::lower_native_program(world, *root_id),
+        Job::IndexCode(code_id) => source::index_code(world, tel, *code_id),
+        Job::ScopeCode(code_id) => source::scope_code(world, tel, *code_id),
+        Job::DefineModule(module_id) => source::define_module(world, tel, *module_id),
+        Job::DefineModuleInterface(module_id) => source::define_module_interface(world, tel, *module_id),
+        Job::PublishFunctionSource(function_id) => source::publish_function_source_job(world, tel, *function_id),
+        Job::ExpandFunctionSource(function_id) => source::expand_function_source(world, tel, *function_id),
+        Job::DefineFunction(function_id) => source::define_function(world, tel, *function_id),
+        Job::DeriveTypeDef(type_name) => types::derive_type_def(world, tel, type_name),
+        Job::DeriveFunctionContract(function_id) => contract::derive_function_contract(world, tel, *function_id),
+        Job::LowerFunction(function_id) => body::lower_function(world, tel, *function_id),
+        Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, tel, *function_id),
+        Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, tel, *function_id),
+        Job::BuildMacroExecutable(function_id) => macro_runtime::build_macro_executable(world, tel, *function_id),
+        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, tel, *function_id),
+        Job::DeriveDispatchMask(function_id) => keying::derive_dispatch_mask(world, tel, *function_id),
+        Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
+        Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
+        Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, tel, activation),
+        Job::BuildBackendProduct(root_id) => backend::build_backend_product(world, tel, *root_id),
+        Job::LowerNativeProgram(root_id) => native::lower_native_program(world, tel, *root_id),
     }
 }

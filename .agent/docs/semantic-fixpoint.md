@@ -36,6 +36,15 @@ ActivationInputs(key) # joined caller evidence (cumulative; per-publisher
 live. A clause whose params outnumber the joined evidence yields no evidence
 that round — incomplete inputs never default to a type.
 
+Clause reachability is a pure compiler2 calculation over the entry
+`PatternDispatchPlan`, the shared `Types`, and that joined input row. Branch
+states retain only root input `Ty` values and are memoized by graph node plus
+root row. Edge proofs refine those roots; projected subjects are always derived
+again through `PatternSubjectRef`, so no independently cached field/head type
+can lose correlation or leak one list position into another. The result names
+sorted reachable outcomes and whether graph failure remains reachable; it does
+not publish a fact or consult `World`.
+
 ## Executable demand is local semantic output
 
 `AnalyzeActivation(a)` follows `a`'s reachable clauses, infers value and return

@@ -43,7 +43,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
     ];
 
     for (name, expect_ty) in cases {
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let resolved = resolve(&tel, &mut world, name).expect("nullary builtin resolves");
 
         let mut expect = Types::new();
@@ -65,7 +65,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
 #[test]
 fn a_nullary_builtin_applied_with_arguments_reports_the_uniform_arity_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let error = resolve(&tel, &mut world, "integer(nil)")
         .expect_err("a nullary builtin applied with an argument should fail to resolve");
@@ -80,7 +80,7 @@ fn a_nullary_builtin_applied_with_arguments_reports_the_uniform_arity_error() {
 fn list_bracket_and_named_forms_resolve_to_the_same_ty() {
     let tel = ConfiguredTelemetry::new();
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let bracket = resolve(&tel, &mut world, "[integer]").expect("[T] resolves");
     let named = resolve(&tel, &mut world, "list(integer)").expect("list(T) resolves");
     assert_eq!(
@@ -89,7 +89,7 @@ fn list_bracket_and_named_forms_resolve_to_the_same_ty() {
         "`[integer]` and `list(integer)` should resolve to the same Ty"
     );
 
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let bracket_any = resolve(&tel, &mut world, "[any]").expect("[any] resolves");
     let bare = resolve(&tel, &mut world, "list").expect("bare list resolves");
     assert_eq!(
@@ -106,7 +106,7 @@ fn list_bracket_and_named_forms_resolve_to_the_same_ty() {
 #[test]
 fn empty_list_brackets_resolve_to_the_empty_list_type_not_nil() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let resolved = resolve(&tel, &mut world, "[]").expect("`[]` resolves");
 
@@ -119,7 +119,7 @@ fn empty_list_brackets_resolve_to_the_empty_list_type_not_nil() {
         "`[]` in type position should resolve to `Types::empty_list()`",
     );
 
-    let mut nil_world = World::new(&tel);
+    let mut nil_world = World::new();
     let nil_ty = nil_world.types_mut().nil();
     assert_ne!(
         world.types_mut().display(&resolved),
@@ -133,7 +133,7 @@ fn empty_list_brackets_resolve_to_the_empty_list_type_not_nil() {
 #[test]
 fn resource_with_one_argument_resolves_as_before() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let resolved = resolve(&tel, &mut world, "resource(integer)").expect("resource(T) resolves");
 
@@ -155,7 +155,7 @@ fn resource_with_one_argument_resolves_as_before() {
 #[test]
 fn resource_with_two_arguments_now_errors_instead_of_silently_dropping_the_second() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let error = resolve(&tel, &mut world, "resource(integer, bool)")
         .expect_err("resource with two type arguments should now fail to resolve");
@@ -170,7 +170,7 @@ fn resource_with_two_arguments_now_errors_instead_of_silently_dropping_the_secon
 #[test]
 fn bare_resource_resolves_with_an_any_payload() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let resolved = resolve(&tel, &mut world, "resource").expect("bare resource resolves");
 
@@ -191,7 +191,7 @@ fn a_structural_map_type_resolves_to_the_same_ty_as_a_hand_built_exact_map() {
     // structural map form must land on the exact same `Ty` as constructing
     // the map directly through `Types::map`.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let resolved = resolve(&tel, &mut world, "%{ok: integer, err: atom}").expect("structural map resolves");
 
@@ -216,7 +216,7 @@ fn an_int_keyed_map_type_resolves_using_the_literal_int_key() {
     // (the lattice keeps no numeric singletons, so this cannot round-trip
     // through a resolved `Ty`).
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let resolved = resolve(&tel, &mut world, "%{1 => atom}").expect("int-keyed map resolves");
 
@@ -238,7 +238,7 @@ fn a_non_literal_map_key_is_a_clean_resolution_error() {
     // widen to `map_top`; a real homogeneous-map axis is a separate,
     // unauthorized question.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let error =
         resolve(&tel, &mut world, "%{integer => atom}").expect_err("a non-literal map key should fail to resolve");
@@ -255,7 +255,7 @@ fn an_empty_map_type_resolves_to_the_exact_empty_map() {
     // `%{}` — chosen to denote the exact empty-map type (parity with how
     // `%{}` denotes the empty map value), not the unconstrained `map_top`.
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let resolved = resolve(&tel, &mut world, "%{}").expect("empty map resolves");
 
@@ -276,7 +276,7 @@ fn an_empty_map_type_resolves_to_the_exact_empty_map() {
 #[test]
 fn map_with_a_type_argument_reports_the_uniform_arity_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let error =
         resolve(&tel, &mut world, "map(integer)").expect_err("nullary `map` applied with an argument should fail");
@@ -294,7 +294,7 @@ fn map_with_a_type_argument_reports_the_uniform_arity_error() {
 #[test]
 fn bare_tuple_is_not_a_registered_constructor_name() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let error = resolve(&tel, &mut world, "tuple").expect_err("`tuple` is not a builtin constructor name");
 
@@ -304,7 +304,7 @@ fn bare_tuple_is_not_a_registered_constructor_name() {
 #[test]
 fn applied_tuple_is_not_a_registered_constructor_name() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
 
     let error =
         resolve(&tel, &mut world, "tuple(integer, atom)").expect_err("`tuple(...)` is not a builtin constructor form");

@@ -2,13 +2,13 @@
 use super::drive_test::assert_resolved;
 use super::{CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, RootSubmission};
 use crate::diag::codes;
-use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+use crate::telemetry::{Capture, ConfiguredTelemetry};
 
 // Ported from src/frontend/spec_check_test.rs: @spec param type matching inferred callsite type passes validation
 #[test]
 fn spec_param_type_matches_inferred_callsite() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00141_spec_param_type_match.fz".to_string()),
         text: include_str!("../../fixtures2/00141_spec_param_type_match.fz").to_string(),
@@ -27,7 +27,7 @@ fn spec_param_type_matches_inferred_callsite() {
 #[test]
 fn spec_wider_than_inferred_passes_success_typing() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00141_spec_param_type_match.fz".to_string()),
         text: include_str!("../../fixtures2/00141_spec_param_type_match.fz").to_string(),
@@ -50,8 +50,8 @@ fn spec_wider_than_inferred_passes_success_typing() {
 fn spec_disjoint_from_inferred_produces_subtype_violation() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00142_spec_float_disjoint.fz".to_string()),
         text: include_str!("../../fixtures2/00142_spec_float_disjoint.fz").to_string(),
@@ -69,11 +69,11 @@ fn spec_disjoint_from_inferred_produces_subtype_violation() {
     let diagnostic = capture
         .last(&["fz", "diag", "error"])
         .expect("the disjoint @spec must surface as a diagnostic");
-    let Some(Value::Str(code)) = diagnostic.metadata.get("code") else {
+    let Some(diagnostic) = diagnostic.diagnostic.as_ref() else {
         panic!("diagnostic code missing: {diagnostic:?}");
     };
     assert_eq!(
-        code.as_ref(),
+        diagnostic.code.0,
         codes::SPEC_VIOLATION.0,
         "diagnostic should be a spec violation: {diagnostic:?}",
     );
@@ -83,7 +83,7 @@ fn spec_disjoint_from_inferred_produces_subtype_violation() {
 #[test]
 fn multi_spec_overload_arrows_cover_each_inferred_shape() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00143_spec_multi_overload_echo.fz".to_string()),
         text: include_str!("../../fixtures2/00143_spec_multi_overload_echo.fz").to_string(),
@@ -105,7 +105,7 @@ fn multi_spec_overload_arrows_cover_each_inferred_shape() {
 #[test]
 fn multi_spec_validation_preserves_param_result_correlation() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00144_spec_swapped_overload_echo.fz".to_string()),
         text: include_str!("../../fixtures2/00144_spec_swapped_overload_echo.fz").to_string(),
@@ -124,7 +124,7 @@ fn multi_spec_validation_preserves_param_result_correlation() {
 #[test]
 fn spec_resolves_against_module_type_alias() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00145_spec_type_alias.fz".to_string()),
         text: include_str!("../../fixtures2/00145_spec_type_alias.fz").to_string(),
@@ -143,7 +143,7 @@ fn spec_resolves_against_module_type_alias() {
 #[test]
 fn protocol_domain_spec_accepts_known_impl_target() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00146_protocol_spec_known_impl.fz".to_string()),
         text: include_str!("../../fixtures2/00146_protocol_spec_known_impl.fz").to_string(),
@@ -165,7 +165,7 @@ fn protocol_domain_spec_accepts_known_impl_target() {
 #[test]
 fn protocol_domain_spec_rejects_type_without_impl() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00147_protocol_spec_no_impl.fz".to_string()),
         text: include_str!("../../fixtures2/00147_protocol_spec_no_impl.fz").to_string(),
@@ -185,8 +185,8 @@ fn protocol_domain_spec_rejects_type_without_impl() {
 fn spec_with_unknown_type_alias_produces_diagnostic() {
     let tel = ConfiguredTelemetry::new();
     let capture = crate::telemetry::Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00148_spec_unknown_type_alias.fz".to_string()),
         text: include_str!("../../fixtures2/00148_spec_unknown_type_alias.fz").to_string(),
@@ -208,12 +208,13 @@ fn spec_with_unknown_type_alias_produces_diagnostic() {
     let diagnostic = capture
         .last(&["fz", "diag", "error"])
         .expect("the unknown spec type must surface as a diagnostic");
-    let Some(crate::telemetry::Value::Str(message)) = diagnostic.metadata.get("message") else {
+    let Some(diagnostic) = diagnostic.diagnostic.as_ref() else {
         panic!("diagnostic message missing");
     };
     assert!(
-        message.contains("unknown type name `unknown_thing`"),
-        "diagnostic names the unknown type: {message}",
+        diagnostic.message.contains("unknown type name `unknown_thing`"),
+        "diagnostic names the unknown type: {}",
+        diagnostic.message,
     );
 }
 
@@ -221,7 +222,7 @@ fn spec_with_unknown_type_alias_produces_diagnostic() {
 #[test]
 fn fn_without_spec_produces_no_validation_diagnostics() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00149_fn_without_spec.fz".to_string()),
         text: include_str!("../../fixtures2/00149_fn_without_spec.fz").to_string(),
@@ -243,7 +244,7 @@ fn fn_without_spec_produces_no_validation_diagnostics() {
 #[test]
 fn spec_on_top_level_fn_uses_builtin_env() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00150_spec_top_level_fn.fz".to_string()),
         text: include_str!("../../fixtures2/00150_spec_top_level_fn.fz").to_string(),
@@ -265,7 +266,7 @@ fn spec_on_top_level_fn_uses_builtin_env() {
 #[test]
 fn wildcard_before_specific_clause_makes_it_unreachable() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00151_wildcard_makes_unreachable.fz".to_string()),
         text: include_str!("../../fixtures2/00151_wildcard_makes_unreachable.fz").to_string(),
@@ -287,7 +288,7 @@ fn wildcard_before_specific_clause_makes_it_unreachable() {
 #[test]
 fn case_wildcard_arm_makes_subsequent_arms_unreachable() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00152_case_wildcard_unreachable.fz".to_string()),
         text: include_str!("../../fixtures2/00152_case_wildcard_unreachable.fz").to_string(),
@@ -309,7 +310,7 @@ fn case_wildcard_arm_makes_subsequent_arms_unreachable() {
 #[test]
 fn specific_clause_before_wildcard_produces_no_warning() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00153_specific_then_wildcard.fz".to_string()),
         text: include_str!("../../fixtures2/00153_specific_then_wildcard.fz").to_string(),
@@ -331,7 +332,7 @@ fn specific_clause_before_wildcard_produces_no_warning() {
 #[test]
 fn fn_with_only_literal_clauses_is_inexhaustive() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00154_inexhaustive_literal_clauses.fz".to_string()),
         text: include_str!("../../fixtures2/00154_inexhaustive_literal_clauses.fz").to_string(),
@@ -353,7 +354,7 @@ fn fn_with_only_literal_clauses_is_inexhaustive() {
 #[test]
 fn case_with_only_literal_arms_is_inexhaustive() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00155_inexhaustive_case.fz".to_string()),
         text: include_str!("../../fixtures2/00155_inexhaustive_case.fz").to_string(),
@@ -375,7 +376,7 @@ fn case_with_only_literal_arms_is_inexhaustive() {
 #[test]
 fn wildcard_clause_makes_pattern_set_exhaustive() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00153_specific_then_wildcard.fz".to_string()),
         text: include_str!("../../fixtures2/00153_specific_then_wildcard.fz").to_string(),
@@ -397,7 +398,7 @@ fn wildcard_clause_makes_pattern_set_exhaustive() {
 #[test]
 fn inexhaustive_pattern_match_produces_no_matching_clause_warning() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00154_inexhaustive_literal_clauses.fz".to_string()),
         text: include_str!("../../fixtures2/00154_inexhaustive_literal_clauses.fz").to_string(),
@@ -419,7 +420,7 @@ fn inexhaustive_pattern_match_produces_no_matching_clause_warning() {
 #[test]
 fn unbound_name_in_expression_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00156_unbound_name_error.fz".to_string()),
         text: include_str!("../../fixtures2/00156_unbound_name_error.fz").to_string(),
@@ -442,7 +443,7 @@ fn unbound_name_in_expression_is_compile_error() {
 #[test]
 fn cross_module_import_resolves_external_call_edges() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00157_cross_module_import.fz".to_string()),
         text: include_str!("../../fixtures2/00157_cross_module_import.fz").to_string(),

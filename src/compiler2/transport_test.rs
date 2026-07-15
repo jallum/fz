@@ -55,6 +55,7 @@ fn transport_descriptors_share_across_root_positions() {
     let executable = ExecutableSymbol {
         activation: ActivationSymbol {
             function: add,
+            arrow: int,
             input: vec![int, int].into_boxed_slice(),
         },
         need: ExecutableNeed::Value,

@@ -3,8 +3,7 @@ use super::surface::NativeClosureTargetSurface;
 use super::*;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{BlockId, FnId, Module, Prim, Stmt, Term};
-use crate::telemetry::value::opaque;
-use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::telemetry::{RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt as _};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types, VisibilityTypes};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
@@ -243,8 +242,6 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     fn_ids: &HashMap<u32, FuncId>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
     surface: &NativeCodegenSurface<'_>,
-    tel: &dyn Telemetry,
-    module_path: &str,
 ) -> Result<(), CodegenError> {
     for (&boundary_id, boundary) in &surface.callable_boundaries {
         let body_sid = surface.body_id_for_fn(boundary.target_fn).ok_or_else(|| {
@@ -266,21 +263,6 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
         }
         let sig = build_callable_boundary_signature(arg_reprs.len());
         let boundary_name = format!("callable_boundary_b{boundary_id}");
-        tel.execute(
-            &["fz", "codegen", "callable_boundary_lowered"],
-            &crate::measurements! {
-                spec_id: body_sid as u64,
-                arg_count: arg_reprs.len() as u64,
-                capture_count: boundary.capture_count as u64,
-                callable_boundary_id: boundary_id as u64,
-            },
-            &crate::metadata! {
-                module_path: module_path,
-                fn_name: boundary_name.as_str(),
-                boundary_target_fn_id: boundary.target_fn.0 as u64,
-                boundary_identity_fn_id: boundary.identity_fn.0 as u64,
-            },
-        );
         emit_fn_body(m, fbctx, sig, callable_boundary_id, |m, b| {
             let entry_block = b.create_block();
             b.append_block_params_for_function_params(entry_block);
@@ -308,41 +290,6 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("define {boundary_name}: {e}")))?;
     }
     Ok(())
-}
-
-fn emit_codegen_abi_contracts(surface: &NativeCodegenSurface<'_>, tel: &dyn Telemetry) {
-    for body_slot in &surface.body_slots {
-        let Some(body_slot) = body_slot.as_ref() else {
-            continue;
-        };
-        let sid = body_slot.codegen_id as usize;
-        let f = &surface.module.fns[body_slot.fn_idx];
-        tel.execute(
-            &["fz", "codegen", "abi_contract"],
-            &crate::measurements! {
-                spec_id: sid as u64,
-                fn_id: f.id.0 as u64,
-                param_count: surface.param_reprs[sid].len() as u64,
-                capture_count: surface
-                    .closure_target(f.id)
-                    .map(|target| target.capture_count)
-                    .unwrap_or(0) as u64,
-            },
-            &crate::metadata! {
-                module_path: surface.module.module_path(),
-                fn_name: f.name.as_str(),
-                body_origin: crate::telemetry::opaque_debug(&body_slot.native_body.origin),
-                entry_abi: crate::telemetry::opaque_debug(&body_slot.native_body.entry_abi),
-                param_reprs: crate::telemetry::opaque_debug(&surface.param_reprs[sid]),
-                halt_repr: surface.halt_reprs[sid].as_str(),
-                return_reprs: crate::telemetry::opaque_debug(&body_slot.native_body.return_reprs),
-                return_tuple_arity: crate::telemetry::opaque_debug(&body_slot.native_body.return_tuple_arity),
-                is_native: surface.native_abi_fns.contains(&f.id),
-                is_cont_fn: surface.cont_fns.contains(&f.id),
-                is_closure_target: surface.closure_targets.contains_key(&f.id),
-            },
-        );
-    }
 }
 
 /// Emit fz_main_trampoline. The closure-target body for a main-style
@@ -627,46 +574,18 @@ type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), FuncId>;
 fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
     m: &mut M,
     module: &Module,
-    tel: &dyn Telemetry,
 ) -> Result<(ReceiveDispatchFnIds, ReceiveMatchedSites), CodegenError> {
     let mut dispatch_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
     let mut receive_matched_sites: Vec<(FnId, BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
-            let Term::ReceiveMatched {
-                clauses,
-                dispatch,
-                after,
-                pinned,
-                captures,
-                ..
-            } = &blk.terminator
-            else {
+            let Term::ReceiveMatched { .. } = &blk.terminator else {
                 continue;
             };
             let name = format!("fz_receive_dispatch_fn_{}_b{}", f.id.0, blk.id.0);
             let m_id = declare_receive_dispatch(m, &name)?;
             dispatch_fn_ids.insert((f.id.0, blk.id.0), m_id);
             receive_matched_sites.push((f.id, blk.id));
-            tel.execute(
-                &["fz", "codegen", "receive", "site"],
-                &crate::measurements! {
-                    fn_id: f.id.0 as u64,
-                    block_id: blk.id.0 as u64,
-                    clause_count: clauses.len() as u64,
-                    after_count: if after.is_some() { 1u64 } else { 0u64 },
-                    pinned_count: pinned.len() as u64,
-                    capture_count: captures.len() as u64,
-                    dispatch_input_count: dispatch.input_count as u64,
-                    dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
-                    dispatch_node_count: dispatch.graph.nodes.len() as u64,
-                },
-                &crate::metadata! {
-                    module_path: module.module_path(),
-                    fn_name: f.name.as_str(),
-                    dispatch: opaque(dispatch),
-                },
-            );
         }
     }
     Ok((dispatch_fn_ids, receive_matched_sites))
@@ -687,7 +606,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     named_schema_ids: &HashMap<String, u32>,
     dispatch_fn_ids: &HashMap<(u32, u32), FuncId>,
     receive_matched_sites: &[(FnId, BlockId)],
-    tel: &dyn Telemetry,
+    tel: &impl RawSpanTelemetry,
 ) -> Result<(), CodegenError> {
     for (fn_id, blk_id) in receive_matched_sites {
         let f = module.fn_by_id(*fn_id);
@@ -702,18 +621,8 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
         let m_id = dispatch_fn_ids[&(fn_id.0, blk_id.0)];
-        let display_name = format!("fz_receive_dispatch_fn_{}_b{}", fn_id.0, blk_id.0);
-        let (block_count, instruction_count) = {
-            let _span = tel.span(
-                &["fz", "codegen", "lower_function"],
-                crate::metadata! {
-                    body_kind: "receive_dispatch",
-                    module_path: module.module_path(),
-                    fn_name: display_name.as_str(),
-                    fn_id: fn_id.0 as u64,
-                    block_id: blk_id.0 as u64,
-                },
-            );
+        {
+            let _span = tel.raw_span2_0(&["fz", "codegen", "lower_function"], module, fn_id);
             emit_receive_dispatch_body(
                 m,
                 fbctx,
@@ -745,28 +654,8 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                     list_head_id: Some(runtime.list_head_fallback_id),
                     list_tail_id: Some(runtime.list_tail_fallback_id),
                 },
-            )?
-        };
-        tel.execute(
-            &["fz", "codegen", "function_lowered"],
-            &crate::measurements! {
-                fn_id: fn_id.0 as u64,
-                block_id: blk_id.0 as u64,
-                block_count: block_count as u64,
-                instruction_count: instruction_count as u64,
-                clause_count: clauses.len() as u64,
-                pinned_count: pinned.len() as u64,
-                dispatch_input_count: dispatch.input_count as u64,
-                dispatch_prepared_key_count: dispatch.prepared_keys.len() as u64,
-                dispatch_node_count: dispatch.graph.nodes.len() as u64,
-            },
-            &crate::metadata! {
-                body_kind: "receive_dispatch",
-                module_path: module.module_path(),
-                fn_name: display_name,
-                dispatch: opaque(dispatch),
-            },
-        );
+            )?;
+        }
     }
     Ok(())
 }
@@ -878,49 +767,45 @@ pub(crate) fn compile_with_backend_native_program<
     t: &mut T,
     program: &crate::compiler2::NativeProgram,
     backend: B,
-    tel: &dyn Telemetry,
+    tel: &impl RawSpanTelemetry,
+    output: &mut dyn super::super::dump::RequestedOutputSink,
 ) -> Result<B::Output, CodegenError> {
     let surface = prepare_native_codegen_surface_from_native_program(t, program)?;
-    compile_with_backend_surface(t, &surface, backend, tel)
+    compile_with_backend_surface(t, &surface, backend, tel, output)
 }
 
 fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
+    _t: &mut T,
     program: &crate::compiler2::NativeProgram,
 ) -> BTreeMap<u32, NativeCallableBoundarySurface> {
     let mut boundaries = BTreeMap::new();
     for boundary in &program.callable_boundaries {
         let boundary_id = boundary.id().as_u32();
-        let full_tys = t
-            .arrow_params(&boundary.target.activation.arrow)
-            .into_iter()
-            // The activation arrow is already addressed (canonical), so erasing the
-            // closure identity leaves a canonical type — no encounter re-normalization
-            // (fz-hwn.27.8).
-            .map(|ty| t.erase_closure_identity(&ty))
-            .collect::<Vec<_>>();
-        let capture_key = crate::types::key_slots_from_tys(full_tys.iter().copied().take(boundary.capture_count));
         let next = NativeCallableBoundarySurface {
             boundary_id: boundary.id(),
             identity_fn: boundary.identity_fn,
-            target_fn: boundary.target_fn,
-            capture_count: boundary.capture_count,
-            capture_key,
+            target_fn: boundary.wrapper_fn,
+            capture_count: boundary.capture_reprs.len(),
+            capture_key: Vec::new(),
             capture_reprs: boundary
                 .capture_reprs
                 .iter()
                 .copied()
                 .map(arg_repr_from_compiler2)
                 .collect(),
-            arg_reprs: boundary
-                .arg_reprs
-                .iter()
-                .copied()
-                .map(arg_repr_from_compiler2)
-                .collect(),
-            return_diverges: t.is_empty(&boundary.return_ty),
-            return_reprs: arg_reprs_from_compiler2(&boundary.return_reprs),
-            return_tuple_arity: boundary.return_tuple_arity,
+            arg_reprs: vec![ArgRepr::ValueRef; boundary.call_arity],
+            return_diverges: matches!(
+                boundary.return_form,
+                crate::compiler2::artifact::BackendCallableReturn::Diverges
+            ),
+            return_reprs: matches!(
+                boundary.return_form,
+                crate::compiler2::artifact::BackendCallableReturn::ValueRef
+            )
+            .then_some(ArgRepr::ValueRef)
+            .into_iter()
+            .collect(),
+            return_tuple_arity: None,
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);
@@ -1094,7 +979,6 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         module: &program.module,
         diagnostics: Diagnostics::new(),
         main_fn_id: Some(program.entry),
-        spec_count: program.bodies.len(),
         body_slots,
         callable_boundaries,
         closure_targets,
@@ -1116,24 +1000,15 @@ pub(crate) fn compile_with_backend_surface<
     t: &mut T,
     surface: &NativeCodegenSurface<'_>,
     mut backend: B,
-    tel: &dyn Telemetry,
+    tel: &impl RawSpanTelemetry,
+    output: &mut dyn super::super::dump::RequestedOutputSink,
 ) -> Result<B::Output, CodegenError> {
     // Enclosing span: the denominator that makes codegen wall time account as
     // compile = declare + per-spec(lower + define) + emit_runtime + finalize.
     // Parent linkage is threaded by the bus from the open-span stack, so every
     // phase span below nests under this one automatically.
-    let _compile_span = tel.span(
-        &["fz", "codegen", "compile"],
-        crate::metadata! {
-            module_path: surface.module.module_path(),
-            backend: backend.kind(),
-            spec_count: surface.spec_count as u64,
-        },
-    );
-    let declare_span = tel.span(
-        &["fz", "codegen", "declare"],
-        crate::metadata! { module_path: surface.module.module_path() },
-    );
+    let _compile_span = tel.raw_span1_0(&["fz", "codegen", "compile"], surface.module);
+    let declare_span = tel.raw_span1_0(&["fz", "codegen", "declare"], surface.module);
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
@@ -1163,8 +1038,6 @@ pub(crate) fn compile_with_backend_surface<
     let schemas = build_per_spec_schemas(body_slots);
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
 
-    emit_codegen_abi_contracts(surface, tel);
-
     let fn_sigs = build_fn_sigs(module, surface);
 
     let linkage = backend.fn_linkage();
@@ -1174,8 +1047,7 @@ pub(crate) fn compile_with_backend_surface<
         declare_mid_flight_conts(backend.module_mut(), surface)?;
 
     let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::new());
-    let (receive_dispatch_fn_ids, receive_matched_sites) =
-        declare_receive_dispatch_fns(backend.module_mut(), module, tel)?;
+    let (receive_dispatch_fn_ids, receive_matched_sites) = declare_receive_dispatch_fns(backend.module_mut(), module)?;
     let verifier_isa = host_isa();
     drop(declare_span);
 
@@ -1193,7 +1065,6 @@ pub(crate) fn compile_with_backend_surface<
 
         let display_name = &body_slot.display_name;
         let cg_env = CodegenEnv {
-            telemetry: tel,
             runtime: &runtime,
             surface,
             module,
@@ -1214,19 +1085,9 @@ pub(crate) fn compile_with_backend_surface<
             cont_fns: &surface.cont_fns,
             receive_dispatch_fn_ids: &receive_dispatch_fn_ids,
         };
-        let cranelift_instruction_count;
         {
-            let _span = tel.span(
-                &["fz", "codegen", "lower_function"],
-                crate::metadata! {
-                    body_kind: "fz_spec",
-                    module_path: module.module_path(),
-                    fn_name: display_name.as_str(),
-                    fn_id: body_slot.fn_id.0 as u64,
-                    spec_id: sid as u64,
-                },
-            );
-            let stats = compile_fn(
+            let _span = tel.raw_span2_0(&["fz", "codegen", "lower_function"], module, &body_slot.fn_id);
+            compile_fn(
                 backend.module_mut(),
                 t,
                 &mut ctx,
@@ -1237,57 +1098,15 @@ pub(crate) fn compile_with_backend_surface<
                 sid,
                 &module.source,
             )?;
-            let (block_count, instruction_count) = cranelift_body_stats(&ctx.func);
-            cranelift_instruction_count = instruction_count;
-            tel.execute(
-                &["fz", "codegen", "function_lowered"],
-                &crate::measurements! {
-                    fn_id: body_slot.fn_id.0 as u64,
-                    spec_id: sid as u64,
-                    block_count: block_count as u64,
-                    instruction_count: instruction_count as u64,
-                    fz_block_count: f.blocks.len() as u64,
-                    reusable_cons_candidate_count: stats.reusable_cons_candidate_count,
-                    reusable_cons_consumed_count: stats.reusable_cons_consumed_count,
-                },
-                &crate::metadata! {
-                    body_kind: "fz_spec",
-                    module_path: module.module_path(),
-                    fn_name: display_name.as_str(),
-                },
-            );
         }
         let fn_span = module.source.fn_span_of(f.id);
         // The native-compile step: verify the lowered Cranelift IR, then hand it
         // to the backend to produce machine code. This is the dominant per-spec
         // cost and was previously the unattributed gap between `lower_function`
         // spans; its stop payload carries the emitted code size.
-        let define_span = tel.span(
-            &["fz", "codegen", "define_function"],
-            crate::metadata! {
-                body_kind: "fz_spec",
-                module_path: module.module_path(),
-                fn_name: display_name.as_str(),
-                fn_id: body_slot.fn_id.0 as u64,
-                spec_id: sid as u64,
-            },
-        );
-        if crate::ir_codegen::ir_text_record_enabled() {
-            let entry = crate::compiler2::dump::ClifDumpEntry {
-                fn_id: body_slot.fn_id.0,
-                fn_name: display_name.clone(),
-                text: ctx.func.display().to_string(),
-            };
-            tel.execute(
-                &["fz", "compiler2", "dump", "clif"],
-                &crate::measurements! {
-                    fn_id: body_slot.fn_id.0 as u64,
-                    spec_id: sid as u64,
-                },
-                &crate::metadata! {
-                    entry: crate::telemetry::opaque(&entry),
-                },
-            );
+        let define_span = tel.raw_span1_1(&["fz", "codegen", "define_function"], &body_slot.fn_id);
+        if output.wants_clif() {
+            output.clif(module, body_slot.fn_id, &ctx.func);
         }
         cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(|e| {
             CodegenError::new(format!(
@@ -1302,27 +1121,11 @@ pub(crate) fn compile_with_backend_surface<
             .module_mut()
             .define_function(func_id, &mut ctx)
             .map_err(|e| CodegenError::new(format!("define {}: {}", display_name, e)).with_span(fn_span))?;
-        let code_bytes = ctx.compiled_code().map(|cc| cc.code_buffer().len() as u64).unwrap_or(0);
-        define_span.stop_with(
-            &crate::measurements! {
-                fn_id: body_slot.fn_id.0 as u64,
-                spec_id: sid as u64,
-                instruction_count: cranelift_instruction_count as u64,
-                code_bytes: code_bytes,
-            },
-            &crate::metadata! {
-                body_kind: "fz_spec",
-                module_path: module.module_path(),
-                fn_name: display_name.as_str(),
-            },
-        );
+        define_span.stop1(&ctx);
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    let emit_runtime_span = tel.span(
-        &["fz", "codegen", "emit_runtime"],
-        crate::metadata! { module_path: module.module_path() },
-    );
+    let emit_runtime_span = tel.raw_span1_0(&["fz", "codegen", "emit_runtime"], module);
     emit_receive_dispatch_bodies(
         backend.module_mut(),
         &mut fbctx,
@@ -1352,8 +1155,6 @@ pub(crate) fn compile_with_backend_surface<
         &fn_ids,
         &callable_boundary_fn_ids,
         surface,
-        tel,
-        module.module_path(),
     )?;
     let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &runtime)?;
     drop(emit_runtime_span);
@@ -1387,10 +1188,7 @@ pub(crate) fn compile_with_backend_surface<
         resume_id,
     };
 
-    let finalize_span = tel.span(
-        &["fz", "codegen", "finalize"],
-        crate::metadata! { module_path: module.module_path() },
-    );
+    let finalize_span = tel.raw_span1_0(&["fz", "codegen", "finalize"], module);
     backend.emit_metadata_carriers(&mut fbctx, &metadata)?;
     let output = backend.finalize(metadata)?;
     drop(finalize_span);

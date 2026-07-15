@@ -7,7 +7,7 @@ use crate::telemetry::ConfiguredTelemetry;
 #[test]
 fn macro_quote_unquote_arithmetic() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00111_macro_quote_unquote.fz".to_string()),
         text: include_str!("../../fixtures2/00111_macro_quote_unquote.fz").to_string(),
@@ -26,7 +26,7 @@ fn macro_quote_unquote_arithmetic() {
 #[test]
 fn macro_called_multiple_times_in_body() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00112_macro_multiple_calls.fz".to_string()),
         text: include_str!("../../fixtures2/00112_macro_multiple_calls.fz").to_string(),
@@ -45,7 +45,7 @@ fn macro_called_multiple_times_in_body() {
 #[test]
 fn macro_expansion_splices_regular_fn_call() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00113_macro_splices_fn_call.fz".to_string()),
         text: include_str!("../../fixtures2/00113_macro_splices_fn_call.fz").to_string(),
@@ -64,7 +64,7 @@ fn macro_expansion_splices_regular_fn_call() {
 #[test]
 fn nested_macro_expander_re_expands_result() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00114_nested_macro_expansion.fz".to_string()),
         text: include_str!("../../fixtures2/00114_nested_macro_expansion.fz").to_string(),
@@ -83,7 +83,7 @@ fn nested_macro_expander_re_expands_result() {
 #[test]
 fn macro_args_received_as_quoted_ast() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00115_macro_args_quoted_ast.fz".to_string()),
         text: include_str!("../../fixtures2/00115_macro_args_quoted_ast.fz").to_string(),
@@ -102,7 +102,7 @@ fn macro_args_received_as_quoted_ast() {
 #[test]
 fn runaway_macro_hits_depth_limit() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00116_runaway_macro_loop.fz".to_string()),
         text: include_str!("../../fixtures2/00116_runaway_macro_loop.fz").to_string(),
@@ -121,7 +121,7 @@ fn runaway_macro_hits_depth_limit() {
 #[test]
 fn macro_hygiene_local_does_not_shadow_caller() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00117_macro_hygiene_local.fz".to_string()),
         text: include_str!("../../fixtures2/00117_macro_hygiene_local.fz").to_string(),
@@ -140,7 +140,7 @@ fn macro_hygiene_local_does_not_shadow_caller() {
 #[test]
 fn macro_hygiene_unquoted_var_splices_caller_value() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00118_macro_hygiene_unquote.fz".to_string()),
         text: include_str!("../../fixtures2/00118_macro_hygiene_unquote.fz").to_string(),
@@ -159,7 +159,7 @@ fn macro_hygiene_unquoted_var_splices_caller_value() {
 #[test]
 fn macro_hygiene_consistent_gensym_within_invocation() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00119_macro_hygiene_gensym.fz".to_string()),
         text: include_str!("../../fixtures2/00119_macro_hygiene_gensym.fz").to_string(),
@@ -181,7 +181,7 @@ fn macro_hygiene_consistent_gensym_within_invocation() {
 #[test]
 fn cross_module_macro_qualifies_names_against_home_module() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00120_cross_module_macro.fz".to_string()),
         text: include_str!("../../fixtures2/00120_cross_module_macro.fz").to_string(),
@@ -203,7 +203,7 @@ fn cross_module_macro_qualifies_names_against_home_module() {
 #[test]
 fn imported_macro_callable_unqualified() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00121_imported_macro_unqualified.fz".to_string()),
         text: include_str!("../../fixtures2/00121_imported_macro_unqualified.fz").to_string(),
@@ -222,7 +222,7 @@ fn imported_macro_callable_unqualified() {
 #[test]
 fn item_macro_compiler_ast_splices_callable_fn() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00122_item_macro_compiler_ast.fz".to_string()),
         text: include_str!("../../fixtures2/00122_item_macro_compiler_ast.fz").to_string(),
@@ -244,7 +244,7 @@ fn item_macro_compiler_ast_splices_callable_fn() {
 #[test]
 fn item_macro_list_of_compiler_ast_functions_splices_multiple_fns() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00123_item_macro_list_of_compiler_ast_functions.fz".to_string()),
         text: include_str!("../../fixtures2/00123_item_macro_list_of_compiler_ast_functions.fz").to_string(),
@@ -266,7 +266,7 @@ fn item_macro_list_of_compiler_ast_functions_splices_multiple_fns() {
 #[test]
 fn item_macro_in_module_qualifies_spliced_fn_names() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00124_item_macro_compiler_ast_in_module.fz".to_string()),
         text: include_str!("../../fixtures2/00124_item_macro_compiler_ast_in_module.fz").to_string(),
@@ -288,7 +288,7 @@ fn item_macro_in_module_qualifies_spliced_fn_names() {
 #[test]
 fn expansion_pipeline_noop_without_macros() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00125_plain_arithmetic.fz".to_string()),
         text: include_str!("../../fixtures2/00125_plain_arithmetic.fz").to_string(),
@@ -307,7 +307,7 @@ fn expansion_pipeline_noop_without_macros() {
 #[test]
 fn pipe_operator_rewrites_to_regular_call() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00126_pipe_operator.fz".to_string()),
         text: include_str!("../../fixtures2/00126_pipe_operator.fz").to_string(),
@@ -326,7 +326,7 @@ fn pipe_operator_rewrites_to_regular_call() {
 #[test]
 fn operator_sugars_desugar_to_stdlib_calls() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00127_operator_sugar_rewrites.fz".to_string()),
         text: include_str!("../../fixtures2/00127_operator_sugar_rewrites.fz").to_string(),
@@ -348,7 +348,7 @@ fn operator_sugars_desugar_to_stdlib_calls() {
 #[test]
 fn membership_operators_desugar_to_enum_member() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00128_membership_sugar_rewrites.fz".to_string()),
         text: include_str!("../../fixtures2/00128_membership_sugar_rewrites.fz").to_string(),
@@ -370,7 +370,7 @@ fn membership_operators_desugar_to_enum_member() {
 #[test]
 fn capture_shorthand_desugars_to_callable_lambda() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00129_capture_shorthand_lambda.fz".to_string()),
         text: include_str!("../../fixtures2/00129_capture_shorthand_lambda.fz").to_string(),
@@ -392,7 +392,7 @@ fn capture_shorthand_desugars_to_callable_lambda() {
 #[test]
 fn bare_capture_arg_desugars_to_identity_lambda() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00130_bare_capture_identity.fz".to_string()),
         text: include_str!("../../fixtures2/00130_bare_capture_identity.fz").to_string(),
@@ -411,7 +411,7 @@ fn bare_capture_arg_desugars_to_identity_lambda() {
 #[test]
 fn multi_clause_lambda_desugars_to_case_dispatch() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00131_multi_clause_lambda.fz".to_string()),
         text: include_str!("../../fixtures2/00131_multi_clause_lambda.fz").to_string(),

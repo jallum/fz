@@ -6,8 +6,8 @@ use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
 fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
     let module = world.reference_module("App.Tools");
     let function = world.reference_function(module, "run", 2);
     let namespace = world.bind_namespace(world.prelude_head(), "Tools", NamespaceSymbol::Module(module));
@@ -79,12 +79,15 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
 #[test]
 fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(
         Some("scoped.fz".to_string()),
         include_str!("../../fixtures2/00050_empty.fz").to_string(),
     );
-    assert!(matches!(world.drive(), super::DriveOutcome::Resolved));
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        super::DriveOutcome::Resolved
+    ));
 
     let module = world.reference_module("Scoped");
     let parent = world.reference_module("Parent");
@@ -111,18 +114,24 @@ fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
 #[test]
 fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = World::new(&tel);
+    let mut world = World::new();
     let code = world.submit_code(
         Some("app.fz".to_string()),
         include_str!("../../fixtures2/00051_module_app_run.fz").to_string(),
     );
     assert!(
-        matches!(world.drive(), super::DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::DriveOutcome::Resolved
+        ),
         "indexing should resolve before scoping"
     );
     assert!(world.demand(Job::ScopeCode(code)), "code scope should be demandable");
     assert!(
-        matches!(world.drive(), super::DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::DriveOutcome::Resolved
+        ),
         "top-level scope should resolve"
     );
 
@@ -132,7 +141,10 @@ fn compiler2_source_scoping_threads_function_scope_through_module_definition() {
         "module definition should be demandable"
     );
     assert!(
-        matches!(world.drive(), super::DriveOutcome::Resolved),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            super::DriveOutcome::Resolved
+        ),
         "module definition should resolve"
     );
 

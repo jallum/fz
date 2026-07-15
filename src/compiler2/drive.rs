@@ -6,8 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::telemetry::{TelemetryExt, opaque_debug};
-use crate::{measurements, metadata};
+use crate::telemetry::{RawSpanGuard, RawSpanStop1 as _, RawSpanStop2, RawSpanTelemetry, TelemetryExt};
 
 use super::code::CodeId;
 use super::facts::{ClaimShape, FactUse};
@@ -15,6 +14,35 @@ use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
 use super::semantic::CallSiteKey;
 use super::world::World;
+
+pub(crate) struct ExecutionContext<'a, T: crate::telemetry::Telemetry> {
+    pub(crate) world: &'a mut World,
+    pub(crate) telemetry: &'a T,
+}
+
+impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
+    pub(crate) fn new(world: &'a mut World, telemetry: &'a T) -> Self {
+        Self { world, telemetry }
+    }
+
+    pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
+        let completion = self.world.complete_job(job, effects);
+        self.emit_job_completion(&completion);
+        completion
+    }
+
+    fn emit_job_completion(&self, completion: &super::world::JobCompletion) {
+        if !completion.activation_input_changed.is_empty() {
+            self.telemetry.raw_event2(
+                &["fz", "compiler2", "activation_inputs", "defined"],
+                &*self.world,
+                completion,
+            );
+        }
+        self.telemetry
+            .raw_event2(&["fz", "compiler2", "work_graph", "applied"], &*self.world, completion);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Job {
@@ -112,7 +140,7 @@ pub(crate) fn settled_uses<F>(facts: impl IntoIterator<Item = F>) -> Vec<FactUse
     facts.into_iter().map(FactUse::settled).collect()
 }
 
-impl World<'_> {
+impl World {
     /// Expands a demanded fact to its single producer and demands that
     /// producer when a run could say something new.
     ///
@@ -344,7 +372,9 @@ impl World<'_> {
         }
         None
     }
+}
 
+impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
     pub(crate) fn drive_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
         let deadline = timeout.map(|limit| Instant::now() + limit);
         self.drive_until(deadline, timeout)
@@ -356,18 +386,16 @@ impl World<'_> {
     /// borrowed in place; the applied graph step rides the separate
     /// `work_graph.applied` event that `complete_job` emits. A fatal job closes
     /// its span, closes the drive span as fatal, and stops the loop.
+    #[cfg(test)]
     pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
         self.drive_until(None, None)
     }
 
     fn drive_until(&mut self, deadline: Option<Instant>, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
-        self.clear_reported_warnings();
-        let mut span = self.tel().span(
-            &["fz", "compiler2", "drive"],
-            metadata! {
-                pending_jobs: self.work_graph.pending_jobs(),
-            },
-        );
+        let ExecutionContext { world, telemetry } = self;
+        let tel = *telemetry;
+        world.clear_reported_warnings();
+        let span = tel.raw_span0_1::<DriveOutcome<Job, FactKey>>(&["fz", "compiler2", "drive"]);
         let mut jobs_ran = 0_u64;
         // Facts whose producers were already demanded at a stall with no fact
         // change since: re-demanding them would re-run byte-identical jobs.
@@ -375,122 +403,106 @@ impl World<'_> {
         // demand productive again.
         let mut stall_demanded: std::collections::HashSet<FactKey> = std::collections::HashSet::new();
         let mut changed_since_stall = true;
-        'drive: loop {
-            while self.work_graph.pending_jobs() > 0 {
-                if deadline.is_some_and(|limit| Instant::now() >= limit) {
-                    let pending_jobs = self.work_graph.pending_jobs();
-                    let timeout_ms = timeout.map_or(0, |limit| limit.as_millis().min(u64::MAX as u128) as u64);
-                    self.tel().event(
-                        &["fz", "compiler2", "drive", "timed_out"],
-                        metadata! {
-                            pending_jobs: pending_jobs as u64,
-                            jobs_ran: jobs_ran,
-                            timeout_ms: timeout_ms,
-                        },
-                    );
-                    self.clear_unresolved_diagnostics();
-                    self.flush_reported_warnings();
-                    span.stop_with(
-                        &measurements! { jobs_ran: jobs_ran },
-                        &metadata! {
-                            pending_jobs: pending_jobs as u64,
-                            timeout_ms: timeout_ms,
-                        },
-                    );
-                    return DriveOutcome::TimedOut { jobs_ran, pending_jobs };
+        let outcome = 'outcome: {
+            'drive: loop {
+                while world.work_graph.pending_jobs() > 0 {
+                    if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                        let pending_jobs = world.work_graph.pending_jobs();
+                        emit_drive_timed_out(tel, &timeout);
+                        world.clear_unresolved_diagnostics();
+                        ExecutionContext::new(world, tel).flush_reported_warnings();
+                        break 'outcome DriveOutcome::TimedOut { jobs_ran, pending_jobs };
+                    }
+                    let Some(job) = world.work_graph.pop() else {
+                        break;
+                    };
+                    let job_span = start_job_span(tel, &job);
+                    let result = super::jobs::run(&mut ExecutionContext::new(world, tel), &job);
+                    match result {
+                        Ok(effects) => {
+                            jobs_ran += 1;
+                            let completion = ExecutionContext::new(world, tel).complete_job(job, effects);
+                            stop_job_span(job_span, world, &completion);
+                            changed_since_stall |= !completion.changed.is_empty();
+                        }
+                        Err(_) => {
+                            job_span.exception();
+                            world.clear_unresolved_diagnostics();
+                            ExecutionContext::new(world, tel).flush_reported_warnings();
+                            break 'outcome DriveOutcome::Fatal { job };
+                        }
+                    }
                 }
-                let Some(job) = self.work_graph.pop() else {
-                    break;
-                };
-                let job_span = self.tel().span(
-                    &["fz", "compiler2", "job"],
-                    metadata! {
-                        job: opaque_debug(&job),
-                    },
+                // The agenda drained. Three standing demand sources remain, all
+                // pulls: every submitted root demands its entry analysis, every
+                // discovered callee activation not yet analyzed demands its own
+                // analysis (`demand_activation_frontier_analyses`), and every
+                // blocked waiter's fact names its single producer through the
+                // fact->producer map — the same expansion the product drivers
+                // perform when a fact wait finds an empty agenda. Only a genuine
+                // drain reaches this pass, so it is event-driven, never a
+                // per-iteration sweep. Demanding producers is commutative for
+                // *which* facts get a producer job enqueued, but not for the
+                // *order* those jobs then run in — the agenda is a FIFO, and a
+                // job that observes another's published fact can join it under
+                // a keep-first merge, so the order this loop pokes producers in
+                // is still observable downstream. `unresolved()` is built from a
+                // `HashMap`, so its order is a per-process `RandomState`
+                // artifact; sort by `Debug` (pure data) to pin it.
+                if std::mem::take(&mut changed_since_stall) {
+                    stall_demanded.clear();
+                }
+                let mut producer_pokes =
+                    world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
+                let mut unresolved = world.work_graph.unresolved();
+                unresolved.sort_by_cached_key(|wait| format!("{:?}", wait.fact.fact()));
+                for wait in &unresolved {
+                    if stall_demanded.insert(wait.fact.fact().clone()) {
+                        producer_pokes +=
+                            world.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);
+                    }
+                }
+                if producer_pokes == 0 {
+                    // Nothing left to demand: either resolved, or a genuine stall.
+                    break 'drive;
+                }
+                tel.raw_event2(
+                    &["fz", "compiler2", "drive", "demand_on_stall"],
+                    &producer_pokes,
+                    &stall_demanded,
                 );
-                let result = super::jobs::run(self, &job);
-                match result {
-                    Ok(effects) => {
-                        jobs_ran += 1;
-                        job_span.stop_with(
-                            &measurements! {},
-                            &metadata! {
-                                effects: opaque_debug(&effects),
-                            },
-                        );
-                        let step = self.complete_job(job, effects);
-                        changed_since_stall |= !step.changed.is_empty();
-                    }
-                    Err(_) => {
-                        job_span.stop_with(&measurements! {}, &metadata! {});
-                        self.clear_unresolved_diagnostics();
-                        self.flush_reported_warnings();
-                        span.stop_with(
-                            &measurements! { jobs_ran: jobs_ran },
-                            &metadata! { job: opaque_debug(&job) },
-                        );
-                        return DriveOutcome::Fatal { job };
-                    }
-                }
             }
-            // The agenda drained. Three standing demand sources remain, all
-            // pulls: every submitted root demands its entry analysis, every
-            // discovered callee activation not yet analyzed demands its own
-            // analysis (`demand_activation_frontier_analyses`), and every
-            // blocked waiter's fact names its single producer through the
-            // fact->producer map — the same expansion the product drivers
-            // perform when a fact wait finds an empty agenda. Only a genuine
-            // drain reaches this pass, so it is event-driven, never a
-            // per-iteration sweep. Demanding producers is commutative for
-            // *which* facts get a producer job enqueued, but not for the
-            // *order* those jobs then run in — the agenda is a FIFO, and a
-            // job that observes another's published fact can join it under
-            // a keep-first merge, so the order this loop pokes producers in
-            // is still observable downstream. `unresolved()` is built from a
-            // `HashMap`, so its order is a per-process `RandomState`
-            // artifact; sort by `Debug` (pure data) to pin it.
-            if std::mem::take(&mut changed_since_stall) {
-                stall_demanded.clear();
+            if !world.work_graph.has_unresolved() {
+                world.clear_unresolved_diagnostics();
+                ExecutionContext::new(world, tel).flush_reported_warnings();
+                DriveOutcome::Resolved
+            } else {
+                let waits = world.work_graph.unresolved();
+                ExecutionContext::new(world, tel).emit_unresolved_diagnostics(&waits);
+                ExecutionContext::new(world, tel).flush_reported_warnings();
+                DriveOutcome::Unresolved { waits }
             }
-            let mut producer_pokes = self.demand_root_entry_analyses() + self.demand_activation_frontier_analyses();
-            let mut demanded_facts: Vec<FactKey> = Vec::new();
-            let mut unresolved = self.work_graph.unresolved();
-            unresolved.sort_by_cached_key(|wait| format!("{:?}", wait.fact.fact()));
-            for wait in unresolved {
-                if stall_demanded.insert(wait.fact.fact().clone()) {
-                    producer_pokes +=
-                        self.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);
-                    demanded_facts.push(wait.fact.fact().clone());
-                }
-            }
-            if producer_pokes == 0 {
-                // Nothing left to demand: either resolved, or a genuine stall.
-                break 'drive;
-            }
-            self.tel().event(
-                &["fz", "compiler2", "drive", "demand_on_stall"],
-                metadata! {
-                    producer_pokes: producer_pokes,
-                    demanded_facts: opaque_debug(&demanded_facts),
-                },
-            );
-        }
-        if !self.work_graph.has_unresolved() {
-            self.clear_unresolved_diagnostics();
-            self.flush_reported_warnings();
-            span.close_with(measurements! { jobs_ran: jobs_ran }, metadata! {});
-            DriveOutcome::Resolved
-        } else {
-            let unresolved = self.work_graph.unresolved();
-            self.emit_unresolved_diagnostics(&unresolved);
-            self.flush_reported_warnings();
-            span.stop_with(
-                &measurements! { jobs_ran: jobs_ran },
-                &metadata! {
-                    waits: opaque_debug(&unresolved),
-                },
-            );
-            DriveOutcome::Unresolved { waits: unresolved }
-        }
+        };
+        span.stop1(&outcome);
+        outcome
     }
+}
+
+fn emit_drive_timed_out(tel: &impl crate::telemetry::Telemetry, timeout: &Option<Duration>) {
+    tel.raw_event1(&["fz", "compiler2", "drive", "timed_out"], timeout);
+}
+
+pub(super) fn start_job_span<'a, T: RawSpanTelemetry>(
+    tel: &'a T,
+    job: &Job,
+) -> <T as RawSpanTelemetry>::Span1_2<'a, Job, World, super::JobCompletion> {
+    tel.raw_span1_2::<Job, World, super::JobCompletion>(&["fz", "compiler2", "job"], job)
+}
+
+pub(super) fn stop_job_span(
+    span: impl RawSpanStop2<World, super::JobCompletion>,
+    world: &World,
+    completion: &super::JobCompletion,
+) {
+    span.stop2(world, completion);
 }

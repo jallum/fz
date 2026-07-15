@@ -9,11 +9,6 @@ use std::collections::{BTreeMap, HashMap, HashSet, hash_map::Entry};
 use crate::ast::{BinOp, UnOp};
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::pattern::PatternDispatchPlan;
-use crate::dispatch_matrix::{
-    ComparisonValue, DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, Region, RegionPredicate, SubjectId,
-    SubjectSource,
-};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
 
@@ -22,6 +17,7 @@ use super::super::body::{
     ValueId,
 };
 use super::super::contract::FunctionContract;
+use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
@@ -34,7 +30,6 @@ use super::super::semantic::{
 use super::super::types::{ClosureTarget, Ty};
 use super::super::world::World;
 
-type DispatchPlan = PatternDispatchPlan<Ty>;
 type SemanticValues = HashMap<ValueId, Ty>;
 type ValueTypes = HashMap<ValueId, Ty>;
 type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
@@ -67,7 +62,11 @@ struct CoalescedCallEmission {
 /// The job waits until the activation, lowered body, and entry dispatch all
 /// exist. It then walks only the dispatch-reachable clauses, publishes direct
 /// callsite summaries, and settles the activation's current return type.
-pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationKey) -> Result<JobEffects, FatalError> {
+pub(super) fn analyze_activation(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    activation: &ActivationKey,
+) -> Result<JobEffects, FatalError> {
     let activation_fact = FactKey::Activation(activation.clone());
     if !world.has_fact(&activation_fact) {
         // Mirrors the `ActivationInputs` gate just below: absence of the seed
@@ -116,7 +115,12 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
-    let reachable_clauses = reachable_clause_ids(world, &entry_dispatch, &inputs);
+    let clause_inputs = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &inputs)
+        .outcome_inputs
+        .into_iter()
+        .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
+        .collect::<Vec<_>>();
+    let reachable_clauses = clause_inputs.iter().map(|(clause, _)| *clause).collect::<Vec<_>>();
 
     let mut analysis_calls = Vec::new();
     let mut reachable_entries = HashSet::new();
@@ -136,17 +140,17 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
             ref entries,
             ..
         } => {
-            for clause_id in &reachable_clauses {
+            for (clause_id, clause_inputs) in &clause_inputs {
                 let clause = &clauses[*clause_id as usize];
                 // Input evidence that has not caught up to the clause's
                 // arity cannot bind its params. Like an absent capture,
                 // incomplete evidence yields no evidence — the analysis
                 // re-runs when the joined inputs grow. Never `any`.
-                if clause.params.len() > inputs.len() {
+                if clause.params.len() > clause_inputs.len() {
                     continue;
                 }
                 let mut values = HashMap::new();
-                for (value, ty) in clause.params.iter().copied().zip(inputs.iter().cloned()) {
+                for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
                     values.insert(value, ty);
                 }
                 apply_steps(
@@ -161,6 +165,7 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
                 merge_value_types(world, &mut value_types, &values);
                 let clause_return = analyze_entry(
                     world,
+                    tel,
                     entries.as_slice(),
                     clause.entry,
                     &values,
@@ -176,14 +181,15 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         }
     }
 
-    if let Some(contract_return_ty) = activation_contract_return(world, function, &inputs, &mut reads, &mut waits)? {
+    if let Some(contract_return_ty) = activation_contract_return(world, tel, function, &inputs, &mut reads, &mut waits)?
+    {
         return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
     }
 
     // Waits no longer bail: a waiting completion extends the job's standing
     // claims (it cannot retract), so partial evidence publishes safely and
     // the waits simply ride the final effects.
-    analysis_calls = coalesce_call_emissions(world, activation, analysis_calls, &mut reads, &mut waits)?;
+    analysis_calls = coalesce_call_emissions(world, tel, activation, analysis_calls, &mut reads, &mut waits)?;
 
     let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
@@ -191,7 +197,8 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
     for call in &analysis_calls {
         if let Some(summary) = &call.summary {
             let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
-            let callsite_changed = world.define_callsite_summary(call.key.clone(), summary.clone());
+            let callsite_changed = super::super::drive::ExecutionContext::new(world, tel)
+                .define_callsite_summary(call.key.clone(), summary.clone());
             outputs.push(callsite_fact.clone());
             if callsite_changed {
                 changed.push(callsite_fact);
@@ -225,14 +232,15 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
         }
     }
 
-    let return_changed = world.define_activation_return(activation, return_evidence);
+    let return_changed =
+        super::super::drive::ExecutionContext::new(world, tel).define_activation_return(activation, return_evidence);
     let return_fact = FactKey::ReturnType(activation.clone());
     outputs.push(return_fact.clone());
     if return_changed {
         changed.push(return_fact);
     }
 
-    let analysis_changed = world.define_activation_analysis(
+    let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
             reachable_clauses,
@@ -268,7 +276,8 @@ pub(super) fn analyze_activation(world: &mut World<'_>, activation: &ActivationK
 }
 
 fn analyze_entry(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
     values: &SemanticValues,
@@ -286,6 +295,7 @@ fn analyze_entry(
     merge_value_types(world, value_types, &local);
     analyze_tail(
         world,
+        tel,
         entries,
         &entry.tail,
         &local,
@@ -299,7 +309,7 @@ fn analyze_entry(
 }
 
 fn apply_steps(
-    world: &mut World<'_>,
+    world: &mut World,
     steps: &[LoweredStep],
     values: &mut SemanticValues,
     calls: &mut Vec<CallEmission>,
@@ -314,7 +324,7 @@ fn apply_steps(
 }
 
 fn apply_step(
-    world: &mut World<'_>,
+    world: &mut World,
     step: &LoweredStep,
     values: &mut SemanticValues,
     _calls: &mut Vec<CallEmission>,
@@ -546,7 +556,7 @@ fn apply_step(
 
 /// Join two path results. `None` ("no evidence on this path yet") is the
 /// identity; evidence joins by union, which preserves closure identities.
-fn join_evidence(world: &mut World<'_>, a: Option<Ty>, b: Option<Ty>) -> Option<Ty> {
+fn join_evidence(world: &mut World, a: Option<Ty>, b: Option<Ty>) -> Option<Ty> {
     match (a, b) {
         (None, x) | (x, None) => x,
         (Some(a), Some(b)) if a == b => Some(a),
@@ -557,7 +567,8 @@ fn join_evidence(world: &mut World<'_>, a: Option<Ty>, b: Option<Ty>) -> Option<
 /// Analyze one entry reached as a plain branch (no delivered value).
 #[allow(clippy::too_many_arguments)]
 fn analyze_branch(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
     entry_id: super::super::body::ControlEntryId,
     values: &SemanticValues,
@@ -572,6 +583,7 @@ fn analyze_branch(
     let scope = entry_scope(entries, entry_id, values, None, params);
     analyze_entry(
         world,
+        tel,
         entries,
         entry_id,
         &scope,
@@ -586,7 +598,8 @@ fn analyze_branch(
 
 #[allow(clippy::too_many_arguments)]
 fn analyze_tail(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
     tail: &LoweredTail,
     values: &SemanticValues,
@@ -600,6 +613,7 @@ fn analyze_tail(
     match tail {
         LoweredTail::Value { value, dest } => deliver_tail_value(
             world,
+            tel,
             entries,
             dest,
             *value,
@@ -626,7 +640,7 @@ fn analyze_tail(
                 return Ok(None);
             };
             let (emission, return_ty) =
-                resolve_direct_call(world, activation, *callsite, *callee, arg_types, reads, waits)?;
+                resolve_direct_call(world, tel, activation, *callsite, *callee, arg_types, reads, waits)?;
             if let Some(emission) = emission {
                 calls.push(emission);
             }
@@ -638,6 +652,7 @@ fn analyze_tail(
             merge_value_types(world, value_types, &delivered);
             deliver_tail_value(
                 world,
+                tel,
                 entries,
                 dest,
                 *value,
@@ -666,7 +681,7 @@ fn analyze_tail(
                 return Ok(None);
             };
             let (emission, return_ty) =
-                resolve_closure_call(world, activation, *callsite, callee_ty, arg_types, reads, waits)?;
+                resolve_closure_call(world, tel, activation, *callsite, callee_ty, arg_types, reads, waits)?;
             if let Some(emission) = emission {
                 calls.push(emission);
             }
@@ -678,6 +693,7 @@ fn analyze_tail(
             merge_value_types(world, value_types, &delivered);
             deliver_tail_value(
                 world,
+                tel,
                 entries,
                 dest,
                 *value,
@@ -695,6 +711,7 @@ fn analyze_tail(
         } => {
             let then_ty = analyze_branch(
                 world,
+                tel,
                 entries,
                 *then_entry,
                 values,
@@ -708,6 +725,7 @@ fn analyze_tail(
             )?;
             let else_ty = analyze_branch(
                 world,
+                tel,
                 entries,
                 *else_entry,
                 values,
@@ -729,18 +747,30 @@ fn analyze_tail(
             else {
                 return Ok(None);
             };
-            let reachable = reachable_clause_ids(world, &dispatch.plan, &input_tys);
+            let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
             let mut merged = None;
-            for body_id in reachable {
+            for (outcome, refined_inputs) in reachability.outcome_inputs {
+                let body_id = dispatch
+                    .plan
+                    .outcomes
+                    .iter()
+                    .find(|candidate| candidate.outcome == outcome)
+                    .expect("reachable dispatch outcome should have an arm")
+                    .body_id;
                 let arm_entry = *dispatch
                     .arm_entries
                     .get(body_id as usize)
                     .unwrap_or_else(|| panic!("compiler2 local dispatch arm {} is out of bounds", body_id));
+                let mut refined_values = values.clone();
+                for (input, ty) in inputs.iter().copied().zip(refined_inputs) {
+                    refined_values.insert(input, ty);
+                }
                 let arm_ty = analyze_branch(
                     world,
+                    tel,
                     entries,
                     arm_entry,
-                    values,
+                    &refined_values,
                     &[],
                     reachable_entries,
                     value_types,
@@ -753,6 +783,7 @@ fn analyze_tail(
             }
             let miss_ty = analyze_branch(
                 world,
+                tel,
                 entries,
                 dispatch.miss_entry,
                 values,
@@ -779,6 +810,7 @@ fn analyze_tail(
                     .collect::<Vec<_>>();
                 let clause_ty = analyze_branch(
                     world,
+                    tel,
                     entries,
                     clause.entry,
                     values,
@@ -795,6 +827,7 @@ fn analyze_tail(
             if let Some(after) = &receive.after {
                 let after_ty = analyze_branch(
                     world,
+                    tel,
                     entries,
                     after.entry,
                     values,
@@ -817,7 +850,8 @@ fn analyze_tail(
 
 #[allow(clippy::too_many_arguments)]
 fn deliver_tail_value(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     entries: &[LoweredEntry],
     dest: &ControlDestination,
     value: ValueId,
@@ -844,6 +878,7 @@ fn deliver_tail_value(
             let scope = entry_scope(entries, *entry_id, values, Some((value, delivered)), &[]);
             analyze_entry(
                 world,
+                tel,
                 entries,
                 *entry_id,
                 &scope,
@@ -892,7 +927,8 @@ fn entry_scope(
 }
 
 fn resolve_direct_call(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     callsite: CallSiteId,
     function: FunctionId,
@@ -908,7 +944,7 @@ fn resolve_direct_call(
     }
 
     let (summary, activations, return_ty) =
-        resolve_function_call(world, caller, function, arg_types, callsite.span(), reads, waits)?;
+        resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), reads, waits)?;
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -929,7 +965,7 @@ fn resolve_direct_call(
 /// `add_a` on one arm and `add_b` on the other must publish both closure
 /// identities — `refine_widen` merges the arrows into an anonymous clause
 /// and is reserved for the activation-key plane (`merge_call_input_vec`).
-fn merge_value_types(world: &mut World<'_>, merged: &mut ValueTypes, observed: &SemanticValues) {
+fn merge_value_types(world: &mut World, merged: &mut ValueTypes, observed: &SemanticValues) {
     for (&value, &ty) in observed {
         match merged.get(&value).copied() {
             Some(current) if current != ty => {
@@ -945,7 +981,8 @@ fn merge_value_types(world: &mut World<'_>, merged: &mut ValueTypes, observed: &
 }
 
 fn coalesce_call_emissions(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     calls: Vec<CallEmission>,
     reads: &mut Vec<FactKey>,
@@ -978,6 +1015,7 @@ fn coalesce_call_emissions(
         }
         coalesced.push(rebuild_coalesced_call_emission(
             world,
+            tel,
             caller,
             grouped.call,
             reads,
@@ -988,7 +1026,7 @@ fn coalesce_call_emissions(
 }
 
 fn merge_call_emission(
-    world: &mut World<'_>,
+    world: &mut World,
     current: &mut CallEmission,
     observed: CallEmission,
 ) -> Result<(), FatalError> {
@@ -1006,7 +1044,8 @@ fn merge_call_emission(
 }
 
 fn rebuild_coalesced_call_emission(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     call: CallEmission,
     reads: &mut Vec<FactKey>,
@@ -1049,26 +1088,29 @@ fn rebuild_coalesced_call_emission(
                     .unwrap_or_default();
                 input_types.truncate(captures_len);
                 input_types.extend(target.surface_inputs.iter().copied());
-                let Some(rebuilt) =
-                    call_emission_for_function(world, caller, call.key.clone(), function, input_types, reads, waits)?
+                let Some(rebuilt) = call_emission_for_function(
+                    world,
+                    tel,
+                    caller,
+                    call.key.clone(),
+                    function,
+                    input_types,
+                    reads,
+                    waits,
+                )?
                 else {
                     return Ok(call);
                 };
                 let Some(rebuilt_summary) = rebuilt.summary else {
                     return Ok(call);
                 };
-                let Some(mut rebuilt_target) = rebuilt_summary.single_target().cloned() else {
-                    return Ok(call);
-                };
-                // `call_emission_for_function` published `surface_inputs` as
-                // the full vector it was handed; strip the capture prefix
-                // back off so the published surface stays capture-free, as
-                // every other producer of `CallTargetSummary` guarantees.
-                if captures_len > 0 {
-                    rebuilt_target.surface_inputs.drain(..captures_len);
+                for mut rebuilt_target in rebuilt_summary.targets {
+                    if captures_len > 0 {
+                        rebuilt_target.surface_inputs.drain(..captures_len);
+                    }
+                    rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
+                    merge_call_targets(world, &mut rebuilt_targets, vec![rebuilt_target])?;
                 }
-                rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
-                rebuilt_targets.push(rebuilt_target);
                 rebuilt_activations.extend(rebuilt.activations);
                 rebuilt_latent.extend(rebuilt.latent_executables);
             }
@@ -1093,7 +1135,8 @@ fn rebuild_coalesced_call_emission(
 }
 
 fn call_emission_for_function(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     key: CallSiteKey,
     function: FunctionId,
@@ -1102,7 +1145,7 @@ fn call_emission_for_function(
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<CallEmission>, FatalError> {
     let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types, key.callsite.span(), reads, waits)?
+        refine_function_call_surface(world, tel, function, input_types, key.callsite.span(), reads, waits)?
     else {
         return Ok(None);
     };
@@ -1116,6 +1159,7 @@ fn call_emission_for_function(
                     callee: SelectedCallee::ProviderBoundary(function),
                     surface_inputs: input_types,
                     activation: None,
+                    activation_inputs: None,
                     return_ty,
                 }],
                 return_ty,
@@ -1138,8 +1182,9 @@ fn call_emission_for_function(
         summary: Some(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
-                surface_inputs: input_types,
+                surface_inputs: input_types.clone(),
                 activation: Some(activation),
+                activation_inputs: Some(input_types),
                 return_ty,
             }],
             return_ty,
@@ -1150,7 +1195,8 @@ fn call_emission_for_function(
 }
 
 fn resolve_function_call(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     function: FunctionId,
     input_types: Vec<Ty>,
@@ -1161,6 +1207,7 @@ fn resolve_function_call(
     if let Some(callback) = world.protocol_callback(function) {
         return resolve_protocol_call(
             world,
+            tel,
             caller,
             function,
             callback.protocol,
@@ -1174,7 +1221,7 @@ fn resolve_function_call(
         return Ok((None, Vec::new(), None));
     }
     let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types, call_span, reads, waits)?
+        refine_function_call_surface(world, tel, function, input_types, call_span, reads, waits)?
     else {
         return Ok((None, Vec::new(), None));
     };
@@ -1187,6 +1234,7 @@ fn resolve_function_call(
                 targets: vec![call_target_summary(
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
+                    None,
                     None,
                     Some(return_ty),
                 )],
@@ -1204,12 +1252,13 @@ fn resolve_function_call(
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     Ok((
         Some(CallSiteSummary {
-            targets: vec![call_target_summary(
-                SelectedCallee::Function(function),
-                input_types.clone(),
-                Some(activation.clone()),
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::Function(function),
+                surface_inputs: input_types.clone(),
+                activation: Some(activation.clone()),
+                activation_inputs: Some(input_types.clone()),
                 return_ty,
-            )],
+            }],
             return_ty,
         }),
         vec![ActivationContribution {
@@ -1221,7 +1270,8 @@ fn resolve_function_call(
 }
 
 fn resolve_protocol_call(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     callback_function: FunctionId,
     protocol: ModuleId,
@@ -1237,7 +1287,7 @@ fn resolve_protocol_call(
     // it is not a stand-in for ModuleInterface.
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
-        wait_for_protocol_module(world, protocol, waits);
+        wait_for_protocol_module(world, tel, protocol, waits);
         return Ok((None, Vec::new(), None));
     }
     reads.push(protocol_fact);
@@ -1319,7 +1369,7 @@ fn resolve_protocol_call(
 
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let Some((refined_inputs, contract_return_ty)) =
-            refine_function_call_surface(world, selected.function, refined_inputs, call_span, reads, waits)?
+            refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span, reads, waits)?
         else {
             return Ok((None, Vec::new(), None));
         };
@@ -1334,6 +1384,7 @@ fn resolve_protocol_call(
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
             Some(activation.clone()),
+            Some(refined_inputs.clone()),
             target_return,
         ));
         activations.push(ActivationContribution {
@@ -1344,7 +1395,7 @@ fn resolve_protocol_call(
     Ok((Some(CallSiteSummary { targets, return_ty }), activations, return_ty))
 }
 
-fn protocol_receiver_target_overlaps(world: &mut World<'_>, receiver_ty: Ty, target_ty: Ty) -> bool {
+fn protocol_receiver_target_overlaps(world: &mut World, receiver_ty: Ty, target_ty: Ty) -> bool {
     let receiver = world.types().runtime_type_predicate(&receiver_ty);
     let target = world.types().runtime_type_predicate(&target_ty);
     receiver.overlaps(&target) && {
@@ -1354,7 +1405,7 @@ fn protocol_receiver_target_overlaps(world: &mut World<'_>, receiver_ty: Ty, tar
 }
 
 fn merge_protocol_matches_by_function(
-    world: &mut World<'_>,
+    world: &mut World,
     matches: Vec<(ProtocolCallbackImpl, Ty)>,
 ) -> Vec<(ProtocolCallbackImpl, Ty)> {
     let mut merged = Vec::<(ProtocolCallbackImpl, Ty)>::new();
@@ -1372,7 +1423,8 @@ fn merge_protocol_matches_by_function(
 }
 
 fn resolve_closure_call(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     caller: &ActivationKey,
     callsite: CallSiteId,
     callee_ty: Ty,
@@ -1416,24 +1468,27 @@ fn resolve_closure_call(
         let mut inputs = closure.captures;
         inputs.extend(refined_args.clone());
         let (summary, clause_activations, observed_return) =
-            resolve_function_call(world, caller, function, inputs, callsite.span(), reads, waits)?;
-        let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
-        return_ty = join_evidence(world, return_ty, clause_return);
+            resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
 
         if let Some(summary) = summary {
-            let Some(target) = summary.single_target() else {
-                return Err(FatalError);
-            };
-            let rebuilt_target = call_target_summary(
-                target.callee.clone(),
-                refined_args.clone(),
-                target.activation.clone(),
-                clause_return,
-            );
-            if !selected_targets.contains(&rebuilt_target) {
-                selected_targets.push(rebuilt_target.clone());
+            for target in summary.targets {
+                let target_return = refine_call_return(world, target.return_ty, Some(clause.ret));
+                return_ty = join_evidence(world, return_ty, target_return);
+                let rebuilt_target = call_target_summary(
+                    target.callee,
+                    refined_args.clone(),
+                    target.activation,
+                    target.activation_inputs,
+                    target_return,
+                );
+                if !selected_targets.contains(&rebuilt_target) {
+                    selected_targets.push(rebuilt_target);
+                }
             }
             activations.extend(clause_activations);
+        } else {
+            let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
+            return_ty = join_evidence(world, return_ty, clause_return);
         }
     }
 
@@ -1466,7 +1521,8 @@ fn resolve_closure_call(
 }
 
 fn refine_function_call_surface(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     input_types: Vec<Ty>,
     violation_span: Span,
@@ -1488,6 +1544,7 @@ fn refine_function_call_surface(
         .expect("function contract fact should resolve to a stored contract");
     Ok(Some(apply_function_contract(
         world,
+        tel,
         function,
         &contract,
         input_types,
@@ -1496,7 +1553,8 @@ fn refine_function_call_surface(
 }
 
 fn apply_function_contract(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     contract: &FunctionContract,
     input_types: Vec<Ty>,
@@ -1507,7 +1565,7 @@ fn apply_function_contract(
         && function_contract_is_enforced(world, function)
         && spec_violation_is_actionable(world, &input_types)
     {
-        return Err(emit_spec_violation(world, function, &input_types, violation_span));
+        return Err(emit_spec_violation(tel, world, function, &input_types, violation_span));
     }
     Ok((
         refine_contract_inputs(
@@ -1519,12 +1577,12 @@ fn apply_function_contract(
     ))
 }
 
-fn function_contract_is_enforced(world: &World<'_>, function: FunctionId) -> bool {
+fn function_contract_is_enforced(world: &World, function: FunctionId) -> bool {
     let (source, surface) = world.function_definition(function);
     !world.is_bootstrap(source.code) && surface.extern_abi.is_none()
 }
 
-fn spec_violation_is_actionable(world: &mut World<'_>, input_types: &[Ty]) -> bool {
+fn spec_violation_is_actionable(world: &mut World, input_types: &[Ty]) -> bool {
     let any = world.types_mut().any();
     input_types
         .iter()
@@ -1532,7 +1590,8 @@ fn spec_violation_is_actionable(world: &mut World<'_>, input_types: &[Ty]) -> bo
 }
 
 fn activation_contract_return(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     input_types: &[Ty],
     reads: &mut Vec<FactKey>,
@@ -1540,14 +1599,20 @@ fn activation_contract_return(
 ) -> Result<Option<Ty>, FatalError> {
     let violation_span = world.function_surface(function).span;
     let Some((_, contract_return_ty)) =
-        refine_function_call_surface(world, function, input_types.to_vec(), violation_span, reads, waits)?
+        refine_function_call_surface(world, tel, function, input_types.to_vec(), violation_span, reads, waits)?
     else {
         return Ok(None);
     };
     Ok(contract_return_ty)
 }
 
-fn emit_spec_violation(world: &World<'_>, function: FunctionId, input_types: &[Ty], span: Span) -> FatalError {
+fn emit_spec_violation(
+    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
+    function: FunctionId,
+    input_types: &[Ty],
+    span: Span,
+) -> FatalError {
     let function_ref = world.function_ref(function);
     let observed = input_types
         .iter()
@@ -1555,7 +1620,7 @@ fn emit_spec_violation(world: &World<'_>, function: FunctionId, input_types: &[T
         .collect::<Vec<_>>()
         .join(", ");
     emit_through(
-        world.tel(),
+        tel,
         &[Diagnostic::error(
             codes::SPEC_VIOLATION,
             format!(
@@ -1569,11 +1634,7 @@ fn emit_spec_violation(world: &World<'_>, function: FunctionId, input_types: &[T
     FatalError
 }
 
-fn refine_contract_inputs<'a>(
-    world: &mut World<'_>,
-    observed: Vec<Ty>,
-    arrows: impl Iterator<Item = &'a [Ty]>,
-) -> Vec<Ty> {
+fn refine_contract_inputs<'a>(world: &mut World, observed: Vec<Ty>, arrows: impl Iterator<Item = &'a [Ty]>) -> Vec<Ty> {
     let mut joined = Vec::<Option<Ty>>::new();
     for params in arrows {
         if joined.len() < params.len() {
@@ -1603,7 +1664,7 @@ fn refine_contract_inputs<'a>(
         .collect()
 }
 
-fn refine_call_return(world: &mut World<'_>, observed: Option<Ty>, contract: Option<Ty>) -> Option<Ty> {
+fn refine_call_return(world: &mut World, observed: Option<Ty>, contract: Option<Ty>) -> Option<Ty> {
     let Some(observed) = observed else {
         // No body evidence yet: a contract bounds the eventual value but
         // does not witness that the call returns at all. Nothing is
@@ -1613,7 +1674,7 @@ fn refine_call_return(world: &mut World<'_>, observed: Option<Ty>, contract: Opt
     Some(refine_observed_return(world, observed, contract))
 }
 
-fn refine_observed_return(world: &mut World<'_>, observed: Ty, contract: Option<Ty>) -> Ty {
+fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>) -> Ty {
     let Some(contract) = contract else {
         return observed;
     };
@@ -1640,7 +1701,7 @@ fn refine_observed_return(world: &mut World<'_>, observed: Ty, contract: Option<
 }
 
 fn prepare_function_call(
-    world: &mut World<'_>,
+    world: &mut World,
     caller: &ActivationKey,
     function: FunctionId,
     arg_types: &[Ty],
@@ -1665,8 +1726,13 @@ fn prepare_function_call(
 /// register during its definition, so a receiver type implying an unloaded
 /// runtime module genuinely needs DefineModule — this is demand
 /// bootstrapping, not a ModuleInterface stand-in.
-fn wait_for_protocol_module(world: &mut World<'_>, protocol: ModuleId, waits: &mut HashSet<FactKey>) {
-    if let Some(code_id) = world.ensure_runtime_module(protocol) {
+fn wait_for_protocol_module(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    protocol: ModuleId,
+    waits: &mut HashSet<FactKey>,
+) {
+    if let Some(code_id) = super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(protocol) {
         let indexed_fact = FactKey::CodeIndexed(code_id);
         if !world.has_fact(&indexed_fact) {
             waits.insert(indexed_fact);
@@ -1679,11 +1745,7 @@ fn wait_for_protocol_module(world: &mut World<'_>, protocol: ModuleId, waits: &m
 /// and needs its DEFINITION, which module scope publication produces; the
 /// exported-callable surface (ModuleInterface) answers a different question
 /// and is consumed where names resolve — body lowering — not here.
-fn wait_for_unresolved_function_module(
-    world: &mut World<'_>,
-    function: FunctionId,
-    waits: &mut HashSet<FactKey>,
-) -> bool {
+fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, waits: &mut HashSet<FactKey>) -> bool {
     if world.function_defined_revision(function).is_some() {
         return false;
     }
@@ -1709,7 +1771,7 @@ fn wait_for_unresolved_function_module(
 }
 
 fn merge_call_targets(
-    world: &mut World<'_>,
+    world: &mut World,
     current: &mut Vec<CallTargetSummary>,
     observed: Vec<CallTargetSummary>,
 ) -> Result<(), FatalError> {
@@ -1722,6 +1784,11 @@ fn merge_call_targets(
                 world,
                 &mut current_target.surface_inputs,
                 &observed_target.surface_inputs,
+            );
+            merge_optional_summary_input_vec(
+                world,
+                &mut current_target.activation_inputs,
+                observed_target.activation_inputs.as_deref(),
             );
             current_target.activation =
                 merge_target_activation(world, current_target.activation.take(), observed_target.activation)?;
@@ -1741,7 +1808,7 @@ fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool
 }
 
 fn merge_target_activation(
-    _world: &mut World<'_>,
+    _world: &mut World,
     current: Option<ActivationKey>,
     observed: Option<ActivationKey>,
 ) -> Result<Option<ActivationKey>, FatalError> {
@@ -1761,7 +1828,7 @@ fn merge_target_activation(
 /// activation-key plane. They must preserve every shape the callsite can send,
 /// so later materialization can see the full semantic call surface. Key
 /// coarsening belongs in `ActivationInputs`, not in published call summaries.
-fn merge_summary_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observed: &[Ty]) {
+fn merge_summary_input_vec(world: &mut World, current: &mut Vec<Ty>, observed: &[Ty]) {
     if current.len() < observed.len() {
         current.resize_with(observed.len(), || any_ty(world));
     }
@@ -1777,7 +1844,15 @@ fn merge_summary_input_vec(world: &mut World<'_>, current: &mut Vec<Ty>, observe
     }
 }
 
-fn refine_protocol_target_inputs(world: &mut World<'_>, input_types: &[Ty], receiver_ty: Ty, target_ty: Ty) -> Vec<Ty> {
+fn merge_optional_summary_input_vec(world: &mut World, current: &mut Option<Vec<Ty>>, observed: Option<&[Ty]>) {
+    match (current, observed) {
+        (Some(current), Some(observed)) => merge_summary_input_vec(world, current, observed),
+        (current @ None, Some(observed)) => *current = Some(observed.to_vec()),
+        _ => {}
+    }
+}
+
+fn refine_protocol_target_inputs(world: &mut World, input_types: &[Ty], receiver_ty: Ty, target_ty: Ty) -> Vec<Ty> {
     let mut refined = input_types.to_vec();
     if let Some(receiver) = refined.first_mut() {
         *receiver = world.types_mut().intersect(receiver_ty, target_ty);
@@ -1789,249 +1864,15 @@ fn call_target_summary(
     callee: SelectedCallee,
     surface_inputs: Vec<Ty>,
     activation: Option<ActivationKey>,
+    activation_inputs: Option<Vec<Ty>>,
     return_ty: Option<Ty>,
 ) -> CallTargetSummary {
     CallTargetSummary {
         callee,
         surface_inputs,
         activation,
+        activation_inputs,
         return_ty,
-    }
-}
-
-fn reachable_clause_ids(world: &mut World<'_>, plan: &DispatchPlan, inputs: &[Ty]) -> Vec<u32> {
-    let mut subjects = HashMap::new();
-    for ordinal in 0..plan.input_count {
-        let input = inputs.get(ordinal).cloned().unwrap_or_else(|| any_ty(world));
-        let Some(subject_id) = plan.matrix.subjects.iter().find_map(|subject| match subject.source {
-            SubjectSource::Input { ordinal: input_ordinal } if input_ordinal as usize == ordinal => Some(subject.id),
-            _ => None,
-        }) else {
-            continue;
-        };
-        subjects.insert(subject_id, input);
-    }
-    let mut outcomes = HashSet::new();
-    collect_reachable_outcomes(world, plan, plan.graph.root, &subjects, &mut outcomes);
-    let mut reachable = plan
-        .outcomes
-        .iter()
-        .filter(|outcome| outcomes.contains(&outcome.outcome))
-        .map(|outcome| outcome.body_id)
-        .collect::<Vec<_>>();
-    reachable.sort_unstable();
-    reachable
-}
-
-fn collect_reachable_outcomes(
-    world: &mut World<'_>,
-    plan: &DispatchPlan,
-    node_id: GraphNodeId,
-    subjects: &HashMap<SubjectId, Ty>,
-    outcomes: &mut HashSet<crate::dispatch_matrix::OutcomeId>,
-) {
-    let Some(node) = plan.graph.node(node_id) else {
-        return;
-    };
-    match node {
-        DispatchNode::Fail => {}
-        DispatchNode::Outcome { outcome, .. } => {
-            outcomes.insert(*outcome);
-        }
-        DispatchNode::Test {
-            predicate,
-            on_match,
-            on_miss,
-        } => {
-            let source = subjects
-                .get(&predicate.subject)
-                .cloned()
-                .unwrap_or_else(|| any_ty(world));
-            if branch_possible(world, predicate, &source, true) {
-                let mut next = subjects.clone();
-                apply_evidence(world, plan, &mut next, &source, predicate, &on_match.evidence, true);
-                collect_reachable_outcomes(world, plan, on_match.target, &next, outcomes);
-            }
-            if branch_possible(world, predicate, &source, false) {
-                let mut next = subjects.clone();
-                apply_evidence(world, plan, &mut next, &source, predicate, &on_miss.evidence, false);
-                collect_reachable_outcomes(world, plan, on_miss.target, &next, outcomes);
-            }
-        }
-    }
-}
-
-fn branch_possible(world: &mut World<'_>, predicate: &RegionPredicate<Ty>, source: &Ty, is_match: bool) -> bool {
-    match &predicate.region {
-        Region::Type(ty) => {
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, *ty);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, ty)
-            }
-        }
-        Region::Equal(value) => {
-            let target = comparison_ty(world, value);
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, target);
-                !world.types().is_empty(&overlap)
-            } else {
-                match value {
-                    // No type can witness "the scrutinee always equals this
-                    // constant" for numbers and strings: string literals
-                    // have no singleton types at all (the old subtype check
-                    // wrongly pruned live miss edges), and numeric literal
-                    // types are leaving the lattice. Equality is a VALUE
-                    // test the matcher performs at runtime; its miss edge
-                    // is always statically possible. Atoms, bools, nil and
-                    // the empty list keep their exact singleton proofs.
-                    ComparisonValue::Const(
-                        GroundValue::Int(_) | GroundValue::Float(_) | GroundValue::Utf8Binary(_),
-                    ) => true,
-                    _ => !world.types().is_subtype(source, &target),
-                }
-            }
-        }
-        Region::TupleArity(arity) => {
-            let any = world.types_mut().any();
-            let fields = world.types_mut().repeat(any, *arity as usize);
-            let tuple = world.types_mut().tuple(&fields);
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, tuple);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &tuple)
-            }
-        }
-        Region::List(ListRegion::Empty) => {
-            let empty = world.types_mut().empty_list();
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, empty);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &empty)
-            }
-        }
-        Region::List(ListRegion::Cons) => {
-            let any = world.types_mut().any();
-            let cons = world.types_mut().non_empty_list(any);
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, cons);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &cons)
-            }
-        }
-        Region::MapKind => {
-            let map = world.types_mut().map_top();
-            if is_match {
-                let overlap = world.types_mut().intersect(*source, map);
-                !world.types().is_empty(&overlap)
-            } else {
-                !world.types().is_subtype(source, &map)
-            }
-        }
-        Region::Guard(_) => true,
-        Region::MapKeyPresent { key } => {
-            // A map literal's sig is an open-record LOWER bound: "at least
-            // these keys, with these value types" (`types/sigs.rs`'s
-            // `MapSig` doc). So `source <: map({key: any})` is exactly the
-            // proof that every value of `source` carries `key` — the same
-            // shape-overlap/subtype pair `Region::Type` and `Region::TupleArity`
-            // already use above, just phrased over one required field instead
-            // of a whole type or arity. Reusing `intersect`/`is_subtype` here
-            // (rather than the previous unconditional `true`) lets a
-            // known-closed map (built from a literal `%{...}` at this
-            // callsite) prune the impossible "key is absent" miss edge,
-            // exactly as an atom literal already prunes its miss edge below.
-            //
-            // The prune only applies when the key resolves to a form the map
-            // lattice can carry as a required field: an atom singleton. The
-            // `nil` key resolves here — it is the atom `:nil`, so a `%{nil =>
-            // ...}` pattern prunes its miss edge exactly like any other atom
-            // key. `map_key` also accepts int/float/string map-pattern keys
-            // (`dispatch_matrix/pattern.rs`), but the lattice erases numeric
-            // literals to their kind (`Types::int_lit`/`as_int_singleton` is a
-            // permanent stub) and has no singleton for float/string keys, so
-            // `as_map_key` returns `None` for them. Absence of a resolvable
-            // key is absence of proof: we cannot show the key is present, so
-            // we must not prune either edge — falling back to the old
-            // unconditional `true` keeps those (valid, working) programs
-            // dispatching both ways.
-            let key_ty = dispatch_const_ty(world, key);
-            if let Some(map_key) = world.types().as_map_key(&key_ty) {
-                let any = world.types_mut().any();
-                let required = world.types_mut().map(&[(map_key, any)]);
-                if is_match {
-                    let overlap = world.types_mut().intersect(*source, required);
-                    !world.types().is_empty(&overlap)
-                } else {
-                    !world.types().is_subtype(source, &required)
-                }
-            } else {
-                true
-            }
-        }
-        Region::Bitstring(_) => true,
-    }
-}
-
-fn apply_evidence(
-    world: &mut World<'_>,
-    plan: &DispatchPlan,
-    subjects: &mut HashMap<SubjectId, Ty>,
-    source: &Ty,
-    predicate: &RegionPredicate<Ty>,
-    evidence: &EdgeEvidence<Ty>,
-    is_match: bool,
-) {
-    let refined = match &predicate.region {
-        Region::Type(ty) if is_match => world.types_mut().intersect(*source, *ty),
-        Region::Equal(value) if is_match => {
-            let target = comparison_ty(world, value);
-            world.types_mut().intersect(*source, target)
-        }
-        Region::TupleArity(arity) if is_match => {
-            let any = world.types_mut().any();
-            let fields = world.types_mut().repeat(any, *arity as usize);
-            let tuple = world.types_mut().tuple(&fields);
-            world.types_mut().intersect(*source, tuple)
-        }
-        Region::List(ListRegion::Empty) if is_match => {
-            let empty = world.types_mut().empty_list();
-            world.types_mut().intersect(*source, empty)
-        }
-        Region::List(ListRegion::Cons) if is_match => {
-            let any = world.types_mut().any();
-            let cons = world.types_mut().non_empty_list(any);
-            world.types_mut().intersect(*source, cons)
-        }
-        _ => *source,
-    };
-    subjects.insert(predicate.subject, refined);
-
-    for projection in &evidence.projections {
-        let base = subjects.get(&projection.source).cloned().unwrap_or(*source);
-        let projected = match &projection.kind {
-            crate::dispatch_matrix::ProjectionKind::TupleField(index) => {
-                world.types_mut().tuple_field_type(&base, *index as usize)
-            }
-            crate::dispatch_matrix::ProjectionKind::ListHead => world.types_mut().list_element_type(&base),
-            crate::dispatch_matrix::ProjectionKind::ListTail => {
-                let elem = world.types_mut().list_element_type(&base);
-                world.types_mut().list(elem)
-            }
-            crate::dispatch_matrix::ProjectionKind::MapValue { .. } => any_ty(world),
-            crate::dispatch_matrix::ProjectionKind::BitstringField(_) => any_ty(world),
-        };
-        subjects.insert(projection.result, projected);
-    }
-
-    for proof in &evidence.proofs {
-        if proof.predicate.subject != predicate.subject {
-            let _ = plan.subject_ref(proof.predicate.subject);
-        }
     }
 }
 
@@ -2203,7 +2044,7 @@ fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
     values.get(&value).copied()
 }
 
-fn literal_ty(world: &mut World<'_>, literal: &GroundValue) -> Ty {
+fn literal_ty(world: &mut World, literal: &GroundValue) -> Ty {
     use crate::ground_value::BodyLiteral;
     match literal
         .as_body_literal()
@@ -2218,35 +2059,7 @@ fn literal_ty(world: &mut World<'_>, literal: &GroundValue) -> Ty {
     }
 }
 
-fn comparison_ty(world: &mut World<'_>, value: &ComparisonValue) -> Ty {
-    match value {
-        ComparisonValue::Const(value) => dispatch_const_ty(world, value),
-        ComparisonValue::Pinned(_) => any_ty(world),
-    }
-}
-
-fn dispatch_const_ty(world: &mut World<'_>, value: &GroundValue) -> Ty {
-    use crate::ground_value::DispatchShape;
-    match value
-        .as_dispatch_shape()
-        .expect("dispatch_const_ty only ever sees a dispatch-matrix const")
-    {
-        DispatchShape::Int(value) => world.types_mut().int_lit(value),
-        DispatchShape::Float(value) => world.types_mut().float_lit(f64::from_bits(value)),
-        DispatchShape::Atom(name) => world.types_mut().atom_lit(name),
-        DispatchShape::Bool(value) => world.types_mut().bool_lit(value),
-        // The `nil` keyword is the atom `nil` in every position, expression
-        // or pattern (Elixir parity: `is_nil(nil)` holds, `nil == []` does
-        // not). `[]` is the empty list, but it never reaches this function:
-        // `[]` patterns lower to `Region::List(ListRegion::Empty)` instead
-        // (see `dispatch_matrix::pattern::append_list_pattern`), a
-        // structurally distinct region with no `GroundValue` counterpart.
-        DispatchShape::Nil => world.types_mut().nil(),
-        DispatchShape::Utf8Binary(_) => world.types_mut().str_t(),
-    }
-}
-
-fn list_ty(world: &mut World<'_>, values: &SemanticValues, items: &[ValueId], tail: Option<ValueId>) -> Option<Ty> {
+fn list_ty(world: &mut World, values: &SemanticValues, items: &[ValueId], tail: Option<ValueId>) -> Option<Ty> {
     let mut elem_ty = none_ty(world);
     for item in items {
         let item_ty = value_ty(values, *item)?;
@@ -2288,7 +2101,7 @@ fn list_ty(world: &mut World<'_>, values: &SemanticValues, items: &[ValueId], ta
     Some(list)
 }
 
-fn map_ty(world: &mut World<'_>, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
+fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
     let mut fields = BTreeMap::new();
     for (key, value) in entries {
         let Some(key) = lowered_map_key(world, values, key)? else {
@@ -2305,7 +2118,7 @@ fn map_ty(world: &mut World<'_>, values: &SemanticValues, entries: &[(LoweredMap
 /// compile-time constant when the source wrote a literal (keys are values),
 /// falling back to the observed singleton type.
 fn lowered_map_key(
-    world: &mut World<'_>,
+    world: &mut World,
     values: &SemanticValues,
     key: &LoweredMapKey,
 ) -> Option<Option<super::super::types::MapKey>> {
@@ -2317,7 +2130,7 @@ fn lowered_map_key(
 }
 
 fn struct_assertion_ty(
-    world: &mut World<'_>,
+    world: &mut World,
     module: ModuleId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -2368,7 +2181,7 @@ fn struct_assertion_ty(
     world.struct_module_value_ty(module, &field_names, &field_tys)
 }
 
-fn map_key_from_ty(world: &World<'_>, ty: Ty) -> Option<super::super::types::MapKey> {
+fn map_key_from_ty(world: &World, ty: Ty) -> Option<super::super::types::MapKey> {
     world.types().as_map_key(&ty)
 }
 
@@ -2384,7 +2197,7 @@ fn literal_map_key(literal: &GroundValue) -> Option<super::super::types::MapKey>
     }
 }
 
-fn bitfield_value_ty(world: &mut World<'_>, spec: &super::super::body::LoweredBitFieldSpec) -> Ty {
+fn bitfield_value_ty(world: &mut World, spec: &super::super::body::LoweredBitFieldSpec) -> Ty {
     match spec.ty {
         crate::ast::BitType::Integer
         | crate::ast::BitType::Utf8
@@ -2395,7 +2208,7 @@ fn bitfield_value_ty(world: &mut World<'_>, spec: &super::super::body::LoweredBi
     }
 }
 
-fn lowered_binop_ty(world: &mut World<'_>, op: BinOp, _left: Ty, _right: Ty) -> Ty {
+fn lowered_binop_ty(world: &mut World, op: BinOp, _left: Ty, _right: Ty) -> Ty {
     match op {
         BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn => world.types_mut().bool(),
         BinOp::Pipe
@@ -2419,7 +2232,7 @@ fn lowered_binop_ty(world: &mut World<'_>, op: BinOp, _left: Ty, _right: Ty) -> 
     }
 }
 
-fn lowered_unop_ty(world: &mut World<'_>, op: UnOp, input: Ty) -> Ty {
+fn lowered_unop_ty(world: &mut World, op: UnOp, input: Ty) -> Ty {
     match op {
         UnOp::Not => world.types_mut().bool(),
         UnOp::Neg => {
@@ -2449,73 +2262,10 @@ fn dedupe_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
     facts.into_iter().filter(|fact| seen.insert(fact.clone())).collect()
 }
 
-fn any_ty(world: &mut World<'_>) -> Ty {
+fn any_ty(world: &mut World) -> Ty {
     world.types_mut().any()
 }
 
-fn none_ty(world: &mut World<'_>) -> Ty {
+fn none_ty(world: &mut World) -> Ty {
     world.types_mut().none()
-}
-
-#[cfg(test)]
-mod dispatch_const_ty_tests {
-    use super::*;
-    use crate::ground_value::MapKey;
-    use crate::telemetry::ConfiguredTelemetry;
-
-    /// The `nil` keyword types as the atom `nil` in both expression and
-    /// pattern position; `[]` types as the empty list; the two are
-    /// distinct. This pins the fix for the divergence where pattern
-    /// position used to type `nil` as `empty_list()` while expression
-    /// position (`literal_ty`, `BodyLiteral::Nil`) already typed it as the
-    /// atom -- same keyword, same `GroundValue::Nil` payload, one `Ty`.
-    #[test]
-    fn nil_keyword_types_as_the_atom_in_pattern_position_not_the_empty_list() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-
-        let nil_pattern_ty = dispatch_const_ty(&mut world, &GroundValue::Nil);
-        let nil_expr_ty = world.types_mut().nil();
-        let empty_list_ty = world.types_mut().empty_list();
-
-        assert_eq!(
-            world.types_mut().display(&nil_pattern_ty),
-            world.types_mut().display(&nil_expr_ty),
-            "the `nil` keyword should type the same way (the atom nil) in pattern position as it does in expression position",
-        );
-        assert_ne!(
-            world.types_mut().display(&nil_pattern_ty),
-            world.types_mut().display(&empty_list_ty),
-            "the `nil` keyword must not type as the empty list -- `nil` and `[]` are distinct values with distinct types",
-        );
-
-        // `[]` never reaches `dispatch_const_ty` at all: `GroundValue` has
-        // no empty-list variant, so `[]` patterns lower to
-        // `Region::List(ListRegion::Empty)` instead (see
-        // `dispatch_matrix::pattern::append_list_pattern`). The distinction
-        // pinned above holds by construction -- there is no `GroundValue`
-        // an empty-list pattern could ever be confused with `Nil` through.
-    }
-
-    /// Because `nil` now types as the atom `:nil`, a `nil` map-pattern key
-    /// resolves to a `MapKey::Atom` singleton -- so `%{nil => ...}` prunes
-    /// its present/absent miss edge in the `Region::MapKeyPresent` proof
-    /// exactly like any other atom key. Before the fix, `nil` typed as the
-    /// empty list, `as_map_key` returned `None`, and the proof fell back to
-    /// the unconditional "cannot prune". This pins the resolvable-key path
-    /// that the type change unlocked so it is not silently untested.
-    #[test]
-    fn nil_map_pattern_key_resolves_to_the_nil_atom_singleton() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-
-        let nil_key_ty = dispatch_const_ty(&mut world, &GroundValue::Nil);
-        let resolved = world.types().as_map_key(&nil_key_ty);
-
-        assert_eq!(
-            resolved,
-            Some(MapKey::Atom("nil".to_string())),
-            "a `nil` map-pattern key should resolve to the `:nil` atom singleton so `MapKeyPresent` can prune its miss edge",
-        );
-    }
 }

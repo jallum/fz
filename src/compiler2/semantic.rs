@@ -35,6 +35,7 @@ pub struct CallTargetSummary {
     /// The exact bounded activation this target demanded, when the callee is
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
     pub activation: Option<ActivationKey>,
+    pub activation_inputs: Option<Vec<Ty>>,
     /// `None` means the callee has produced no return evidence yet — an
     /// honest snapshot mid-ascent. Settledness guarantees resolution before
     /// consumers read; at the fixpoint a still-`None` return *is* the empty
@@ -92,6 +93,11 @@ impl CallSiteSummary {
                     &mut observed_target.activation,
                     current_target.activation.clone(),
                 );
+                merge_callsite_optional_input_vec(
+                    types,
+                    &mut observed_target.activation_inputs,
+                    current_target.activation_inputs.as_deref(),
+                );
                 observed_target.return_ty =
                     join_optional_ty(types, current_target.return_ty, observed_target.return_ty);
             }
@@ -106,6 +112,11 @@ impl CallSiteSummary {
             if let Some(current) = coalesced.iter_mut().find(|current| same_call_target(current, &target)) {
                 merge_callsite_input_vec(types, &mut current.surface_inputs, &target.surface_inputs);
                 merge_callsite_activation(types, &mut current.activation, target.activation.take());
+                merge_callsite_optional_input_vec(
+                    types,
+                    &mut current.activation_inputs,
+                    target.activation_inputs.as_deref(),
+                );
                 current.return_ty = join_optional_ty(types, current.return_ty, target.return_ty);
             } else {
                 coalesced.push(target);
@@ -151,6 +162,14 @@ fn merge_callsite_input_vec(types: &mut Types, current: &mut Vec<Ty>, observed: 
     }
 }
 
+fn merge_callsite_optional_input_vec(types: &mut Types, current: &mut Option<Vec<Ty>>, observed: Option<&[Ty]>) {
+    match (current, observed) {
+        (Some(current), Some(observed)) => merge_callsite_input_vec(types, current, observed),
+        (current @ None, Some(observed)) => *current = Some(observed.to_vec()),
+        _ => {}
+    }
+}
+
 fn merge_callsite_activation(_types: &mut Types, current: &mut Option<ActivationKey>, observed: Option<ActivationKey>) {
     match (current.as_mut(), observed) {
         (Some(current), Some(observed)) if current.root == observed.root && current.function == observed.function => {}
@@ -189,12 +208,20 @@ impl CallableSurface {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CallableTarget {
+    pub surface: CallableSurface,
+    pub activation: ActivationKey,
+    pub activation_inputs: Vec<Ty>,
+}
+
 /// Runtime demand specific to callable values, kept separate from generic
 /// whole-value demand so semantic flow derivation can publish one exact
 /// callable-flow fact per local producer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct CallableDemand {
     pub resolved: BTreeSet<CallableSurface>,
+    pub targets: BTreeSet<CallableTarget>,
     pub opaque: bool,
     pub escape: bool,
 }
@@ -205,6 +232,7 @@ impl CallableDemand {
         resolved.insert(CallableSurface::new(inputs, types));
         Self {
             resolved,
+            targets: BTreeSet::new(),
             opaque: false,
             escape: false,
         }
@@ -213,6 +241,7 @@ impl CallableDemand {
     pub fn opaque() -> Self {
         Self {
             resolved: BTreeSet::new(),
+            targets: BTreeSet::new(),
             opaque: true,
             escape: false,
         }
@@ -221,13 +250,14 @@ impl CallableDemand {
     pub fn escaped() -> Self {
         Self {
             resolved: BTreeSet::new(),
+            targets: BTreeSet::new(),
             opaque: false,
             escape: true,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.resolved.is_empty() && !self.opaque && !self.escape
+        self.resolved.is_empty() && self.targets.is_empty() && !self.opaque && !self.escape
     }
 
     /// Whether the callable crosses a boundary that cannot carry a grounded
@@ -246,6 +276,7 @@ impl CallableDemand {
 
     pub fn join_assign(&mut self, other: &Self) {
         self.resolved.extend(other.resolved.iter().cloned());
+        self.targets.extend(other.targets.iter().cloned());
         self.opaque |= other.opaque;
         self.escape |= other.escape;
     }
@@ -382,7 +413,8 @@ impl RuntimeDemand {
 
     /// Ground this demand's callable dispatch surfaces (and those of any tuple
     /// fields) to the concrete runtime shapes, dropping phantom polymorphic
-    /// templates that a grounded sibling already covers. See
+    /// templates when the same carried demand already names a concrete
+    /// instantiation. See
     /// [`ground_dispatch_surfaces`].
     pub(crate) fn ground_callable_surfaces(&mut self, types: &Types) {
         if !self.callable.resolved.is_empty() {
@@ -417,29 +449,31 @@ pub struct CallableFlowFact {
 pub struct CallableFlowEdge {
     pub surface: CallableSurface,
     pub resolution: ExecutableKey,
+    pub capture_semantic_inputs: Box<[usize]>,
+    pub surface_semantic_inputs: Box<[usize]>,
 }
 
 /// Resolve callable `surfaces` to the ground runtime dispatch shapes the program
-/// actually invokes, drawing concrete instantiations from `ground_source`.
+/// actually invokes, drawing concrete instantiations from the same producer
+/// flow's `ground_source`.
 ///
 /// A callable surface that publishes a transport boundary names a runtime
 /// dispatch site, so it must be ground. When a callable escapes through a
 /// generic parameter slot (e.g. `Enum.reduce`'s reducer) analysis collects both
 /// the polymorphic template that slot is typed at and the concrete surfaces a
-/// real call instantiates it to. The template is not a distinct dispatch site —
-/// the grounded sibling is what the runtime invokes — so keeping it mints a
-/// phantom boundary that collapses onto the sibling after type erasure and
-/// forces an impossible multi-boundary publication in native (one boxed value
-/// has exactly one entry).
+/// real call instantiates it to. The template is not a distinct dispatch site;
+/// the same flow's concrete surface is what the runtime invokes. Keeping both
+/// mints a phantom boundary that collapses onto the concrete surface after type
+/// erasure and forces an impossible multi-boundary publication in native (one
+/// boxed value has exactly one entry).
 ///
 /// Each surface is therefore grounded: a ground surface is kept, and a template
-/// is replaced by the ground surfaces — from `surfaces` itself or `ground_source`
-/// — that instantiate it under one consistent substitution
+/// is replaced only by the same carried set or producer flow's ground surfaces
+/// that instantiate it under one consistent substitution
 /// ([`Types::key_list_subsumes`]). When the callable is invoked at any ground
 /// shape, every template is an inference artifact, so only ground dispatch
-/// shapes are published. A callable with no ground surface anywhere is a
-/// genuinely polymorphic escape — it has no concrete runtime shape of its own —
-/// so its templates are kept verbatim.
+/// shapes are published. A callable with no ground surface in that flow is a
+/// genuinely polymorphic escape, so its templates are kept verbatim.
 pub(crate) fn ground_dispatch_surfaces(
     types: &Types,
     surfaces: &BTreeSet<CallableSurface>,
@@ -536,16 +570,6 @@ pub struct ActivationSlot {
     analysis: Option<ActivationAnalysis>,
 }
 
-/// The BUDGET of strict ascents one activation's return may take per epoch
-/// (between rebases) before the join starts widening. This is deliberately a
-/// total, not a consecutive-ascent delay: resetting on a quiet round would
-/// let spurious wakes interleave with a genuinely divergent chain and starve
-/// the widening forever — the per-epoch total makes termination a theorem.
-/// Honest programs converge in a few rungs; only programs whose precise
-/// ascent provably never lands pay the precision loss. The corpus sweep
-/// (`compiler2_corpus_never_engages_return_widening_*`) pins the measured
-/// maximum at ≤ 4 strict ascents across every fixture; the budget sits at
-/// 2× that headroom.
 pub const RETURN_WIDENING_BUDGET: u32 = 8;
 
 /// The outcome of installing one round's return evidence.
@@ -1091,7 +1115,7 @@ mod tests {
     use crate::compiler2::{ExecutableNeed, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
 
-    fn test_key(world: &mut World<'_>) -> ActivationKey {
+    fn test_key(world: &mut World, _tel: &ConfiguredTelemetry) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let any = world.types_mut().any();
         let function = world.root_function(root);
@@ -1101,8 +1125,8 @@ mod tests {
     #[test]
     fn callsite_targets_ignore_type_payload_ascent() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let activation = test_key(&mut world);
+        let mut world = World::new();
+        let activation = test_key(&mut world, &tel);
         let callee = activation.function;
         let int = world.types_mut().int();
         let atom = world.types_mut().atom();
@@ -1113,6 +1137,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(activation.clone()),
+                activation_inputs: Some(vec![int]),
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1122,6 +1147,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![any],
                 activation: Some(activation),
+                activation_inputs: Some(vec![any]),
                 return_ty: Some(atom),
             }],
             return_ty: Some(atom),
@@ -1146,8 +1172,8 @@ mod tests {
 
     #[test]
     fn callsite_summary_join_keeps_return_evidence_when_later_snapshot_is_pending() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let caller = world.root_function(root);
         let callee = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
@@ -1165,6 +1191,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(callee_activation.clone()),
+                activation_inputs: Some(vec![int]),
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1174,6 +1201,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![int],
                 activation: Some(callee_activation),
+                activation_inputs: Some(vec![int]),
                 return_ty: None,
             }],
             return_ty: None,
@@ -1205,8 +1233,8 @@ mod tests {
 
     #[test]
     fn callsite_summary_snapshot_does_not_manufacture_or_retain_activation_keys_for_same_callee() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let caller = world.root_function(root);
         let callee_root = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
@@ -1225,6 +1253,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![input],
                 activation: Some(activation),
+                activation_inputs: Some(vec![input]),
                 return_ty: Some(input),
             }],
             return_ty: Some(input),
@@ -1256,9 +1285,65 @@ mod tests {
     }
 
     #[test]
+    fn callsite_summary_keeps_distinct_activations_for_one_callee() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let caller = world.root_function(root);
+        let callee_root = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
+        let callee = world.root_function(callee_root);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let caller_activation = ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+        let int_activation = ActivationKey::from_inputs(root, callee, &[int], world.types_mut());
+        let float_activation = ActivationKey::from_inputs(root, callee, &[float], world.types_mut());
+        let key = CallSiteKey {
+            activation: caller_activation,
+            callsite: CallSiteId::from_u32(0),
+        };
+        let summary = CallSiteSummary {
+            targets: vec![
+                CallTargetSummary {
+                    callee: SelectedCallee::Function(callee),
+                    surface_inputs: vec![int],
+                    activation: Some(int_activation.clone()),
+                    activation_inputs: Some(vec![int]),
+                    return_ty: Some(int),
+                },
+                CallTargetSummary {
+                    callee: SelectedCallee::Function(callee),
+                    surface_inputs: vec![float],
+                    activation: Some(float_activation.clone()),
+                    activation_inputs: Some(vec![float]),
+                    return_ty: Some(float),
+                },
+            ],
+            return_ty: Some(world.types_mut().union(int, float)),
+        };
+        let mut map = CallSiteMap::new();
+
+        assert!(map.define(world.types_mut(), key.clone(), summary));
+
+        let stored = map.get(&key).expect("stored callsite summary");
+        assert_eq!(stored.targets.len(), 2);
+        assert!(
+            stored
+                .targets
+                .iter()
+                .any(|target| target.activation.as_ref() == Some(&int_activation))
+        );
+        assert!(
+            stored
+                .targets
+                .iter()
+                .any(|target| target.activation.as_ref() == Some(&float_activation))
+        );
+    }
+
+    #[test]
     fn callsite_summary_join_is_quiet_for_equivalent_return_and_surface_types() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
         let caller = world.root_function(root);
         let callee_root = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
@@ -1283,6 +1368,7 @@ mod tests {
                 callee: SelectedCallee::Function(callee),
                 surface_inputs: vec![ty],
                 activation: Some(callee_activation.clone()),
+                activation_inputs: Some(vec![ty]),
                 return_ty: Some(ty),
             }],
             return_ty: Some(ty),
@@ -1298,8 +1384,8 @@ mod tests {
 
     #[test]
     fn activation_input_vector_join_does_not_lower_existing_union_evidence() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let atom_a = world.types_mut().atom_lit("a");
         let atom_b = world.types_mut().atom_lit("b");
         let union = world.types_mut().union(atom_a, atom_b);
@@ -1317,8 +1403,8 @@ mod tests {
     #[test]
     fn rebased_activation_input_conclusion_preserves_prior_publisher_frontier() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
-        let key = test_key(&mut world);
+        let mut world = World::new();
+        let key = test_key(&mut world, &tel);
         let input = world.types_mut().atom_lit("seen");
         let publisher = Job::AnalyzeActivation(key.clone());
         let mut map = ActivationInputMap::new();
@@ -1358,8 +1444,8 @@ mod tests {
         // whose only real runtime dispatch is the ground sibling `(atom, int)`
         // collected among the direct surfaces, alongside phantom templates the
         // mapper picked up flowing through generic recursive code.
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let int = world.types_mut().int();
         let atom = world.types_mut().atom();
         let a0 = world.types_mut().type_var(TypeVarId(0));
@@ -1384,8 +1470,8 @@ mod tests {
     fn ground_dispatch_surfaces_drops_a_recurring_var_phantom_beside_a_ground_shape() {
         // A self-grounding demand set: `(atom, int)` is the real dispatch and
         // `(a0, a0)` is a phantom no distinct-argument ground pair instantiates.
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let int = world.types_mut().int();
         let atom = world.types_mut().atom();
         let a0 = world.types_mut().type_var(TypeVarId(0));
@@ -1408,8 +1494,8 @@ mod tests {
         // No ground sibling anywhere: a callable passed through but never invoked
         // at a concrete shape keeps its template — it is the only surface it is
         // ever published at.
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let a0 = world.types_mut().type_var(TypeVarId(0));
         let a1 = world.types_mut().type_var(TypeVarId(1));
 
@@ -1424,8 +1510,8 @@ mod tests {
 
     #[test]
     fn runtime_demand_ignore_plus_resolved_callable_preserves_the_surface() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let int = world.types_mut().int();
 
         let joined =
@@ -1440,8 +1526,8 @@ mod tests {
 
     #[test]
     fn runtime_demand_resolved_callable_plus_escape_stays_callable_and_marks_first_class() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let int = world.types_mut().int();
 
         let joined = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()))
@@ -1451,6 +1537,7 @@ mod tests {
             joined,
             RuntimeDemand::callable(CallableDemand {
                 resolved: BTreeSet::from([CallableSurface::new(vec![int], world.types_mut())]),
+                targets: BTreeSet::new(),
                 opaque: false,
                 escape: true,
             }),
@@ -1468,14 +1555,15 @@ mod tests {
 
     #[test]
     fn runtime_demand_callable_escape_preserves_known_resolved_surfaces() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
         let int = world.types_mut().int();
         let atom = world.types_mut().atom();
 
         let left = RuntimeDemand::callable(resolved_surface(&[int], world.types_mut()));
         let right = RuntimeDemand::callable(CallableDemand {
             resolved: BTreeSet::from([CallableSurface::new(vec![atom], world.types_mut())]),
+            targets: BTreeSet::new(),
             opaque: false,
             escape: true,
         });
@@ -1489,6 +1577,7 @@ mod tests {
             joined,
             RuntimeDemand::callable(CallableDemand {
                 resolved: expected_resolved,
+                targets: BTreeSet::new(),
                 opaque: false,
                 escape: true,
             }),
@@ -1499,9 +1588,9 @@ mod tests {
     #[test]
     fn activation_return_joins_within_an_epoch_and_narrows_only_on_rebase() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let mut activations = ActivationMap::new();
-        let key = test_key(&mut world);
+        let key = test_key(&mut world, &tel);
         let any = world.types_mut().any();
         let int = world.types_mut().int();
 
@@ -1531,9 +1620,9 @@ mod tests {
     #[test]
     fn activation_return_bottom_is_the_join_identity() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let mut activations = ActivationMap::new();
-        let key = test_key(&mut world);
+        let key = test_key(&mut world, &tel);
         let int = world.types_mut().int();
 
         // No evidence adds nothing — before and after real evidence lands.
@@ -1550,9 +1639,9 @@ mod tests {
     #[test]
     fn activation_return_join_ascends_by_union_and_republication_is_quiet() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let mut activations = ActivationMap::new();
-        let key = test_key(&mut world);
+        let key = test_key(&mut world, &tel);
         let int = world.types_mut().int();
         let atom = world.types_mut().atom();
         let both = world.types_mut().union(int, atom);
@@ -1580,9 +1669,9 @@ mod tests {
     #[test]
     fn activation_return_join_preserves_closure_identity() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let mut activations = ActivationMap::new();
-        let key = test_key(&mut world);
+        let key = test_key(&mut world, &tel);
         let int = world.types_mut().int();
         let target = world.reference_function(super::super::identity::ModuleId::GLOBAL, "f", 1);
         let closure = world.closure_ty(target, vec![int]);
@@ -1610,9 +1699,9 @@ mod tests {
     #[test]
     fn activation_return_widening_reports_only_real_coarsening() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let mut activations = ActivationMap::new();
-        let key = test_key(&mut world);
+        let key = test_key(&mut world, &tel);
 
         // Atom-by-atom growth ascends strictly but never builds a list
         // spine, so past the budget `convergence_class` is the identity:
@@ -1645,9 +1734,9 @@ mod tests {
     #[test]
     fn activation_return_widens_past_the_delay_and_terminates() {
         let tel = ConfiguredTelemetry::new();
-        let mut world = World::new(&tel);
+        let mut world = World::new();
         let mut activations = ActivationMap::new();
-        let key = test_key(&mut world);
+        let key = test_key(&mut world, &tel);
 
         // The canonical divergent ascent: ever-deeper list nests.
         let mut ty = world.types_mut().int();

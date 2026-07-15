@@ -7,7 +7,7 @@ use crate::telemetry::ConfiguredTelemetry;
 #[test]
 fn if_constant_condition_routes_to_correct_branch() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00461_if_constant_cond_branch.fz".to_string()),
         text: include_str!("../../fixtures2/00461_if_constant_cond_branch.fz").to_string(),
@@ -26,7 +26,7 @@ fn if_constant_condition_routes_to_correct_branch() {
 #[test]
 fn if_arm_tail_call_returns_correct_value() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00462_if_tail_call_arm.fz".to_string()),
         text: include_str!("../../fixtures2/00462_if_tail_call_arm.fz").to_string(),
@@ -45,7 +45,7 @@ fn if_arm_tail_call_returns_correct_value() {
 #[test]
 fn case_clause_with_non_tail_call_compiles() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00463_case_call_in_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00463_case_call_in_clause.fz").to_string(),
@@ -64,7 +64,7 @@ fn case_clause_with_non_tail_call_compiles() {
 #[test]
 fn with_else_non_matching_pattern_routes_to_else() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00464_with_else_non_matching.fz".to_string()),
         text: include_str!("../../fixtures2/00464_with_else_non_matching.fz").to_string(),
@@ -83,7 +83,7 @@ fn with_else_non_matching_pattern_routes_to_else() {
 #[test]
 fn if_comparison_condition_routes_both_arms() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00465_if_comparison_cond.fz".to_string()),
         text: include_str!("../../fixtures2/00465_if_comparison_cond.fz").to_string(),
@@ -102,7 +102,7 @@ fn if_comparison_condition_routes_both_arms() {
 #[test]
 fn non_tail_if_call_arm_flows_through_join() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
@@ -121,7 +121,7 @@ fn non_tail_if_call_arm_flows_through_join() {
 #[test]
 fn non_tail_case_call_arm_flows_through_join() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00467_nontail_case_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00467_nontail_case_join_flow.fz").to_string(),
@@ -140,7 +140,7 @@ fn non_tail_case_call_arm_flows_through_join() {
 #[test]
 fn non_tail_cond_call_arm_flows_through_join() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00468_nontail_cond_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00468_nontail_cond_join_flow.fz").to_string(),
@@ -159,7 +159,7 @@ fn non_tail_cond_call_arm_flows_through_join() {
 #[test]
 fn synthesized_dispatch_branches_no_unreachable_arm_warnings() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00469_synthesized_branch_no_warn.fz".to_string()),
         text: include_str!("../../fixtures2/00469_synthesized_branch_no_warn.fz").to_string(),
@@ -181,7 +181,7 @@ fn synthesized_dispatch_branches_no_unreachable_arm_warnings() {
 #[test]
 fn closure_captures_only_referenced_outer_variables() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00470_closure_captures_outer.fz".to_string()),
         text: include_str!("../../fixtures2/00470_closure_captures_outer.fz").to_string(),
@@ -200,7 +200,7 @@ fn closure_captures_only_referenced_outer_variables() {
 #[test]
 fn closure_with_no_outer_reads_has_no_captures() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00471_closure_no_captures.fz".to_string()),
         text: include_str!("../../fixtures2/00471_closure_no_captures.fz").to_string(),
@@ -219,7 +219,7 @@ fn closure_with_no_outer_reads_has_no_captures() {
 #[test]
 fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00472_spawn_lambda_receive.fz".to_string()),
         text: include_str!("../../fixtures2/00472_spawn_lambda_receive.fz").to_string(),
@@ -241,7 +241,7 @@ fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
 #[test]
 fn unbound_variable_reference_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00473_unbound_var_error.fz".to_string()),
         text: include_str!("../../fixtures2/00473_unbound_var_error.fz").to_string(),
@@ -260,7 +260,7 @@ fn unbound_variable_reference_is_compile_error() {
 #[test]
 fn unbound_callee_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00474_unbound_callee_error.fz".to_string()),
         text: include_str!("../../fixtures2/00474_unbound_callee_error.fz").to_string(),
@@ -279,7 +279,7 @@ fn unbound_callee_is_compile_error() {
 #[test]
 fn empty_case_expression_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00475_empty_case_error.fz".to_string()),
         text: include_str!("../../fixtures2/00475_empty_case_error.fz").to_string(),
@@ -298,7 +298,7 @@ fn empty_case_expression_is_compile_error() {
 #[test]
 fn guard_and_binding_reuse_single_tuple_field_projection() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00476_guard_tuple_field_reuse.fz".to_string()),
         text: include_str!("../../fixtures2/00476_guard_tuple_field_reuse.fz").to_string(),
@@ -320,7 +320,7 @@ fn guard_and_binding_reuse_single_tuple_field_projection() {
 #[test]
 fn guard_and_binding_reuse_single_list_head_extraction() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00477_guard_list_head_reuse.fz".to_string()),
         text: include_str!("../../fixtures2/00477_guard_list_head_reuse.fz").to_string(),
@@ -339,7 +339,7 @@ fn guard_and_binding_reuse_single_list_head_extraction() {
 #[test]
 fn guard_and_binding_reuse_single_map_get_extraction() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00478_guard_map_get_reuse.fz".to_string()),
         text: include_str!("../../fixtures2/00478_guard_map_get_reuse.fz").to_string(),
@@ -358,7 +358,7 @@ fn guard_and_binding_reuse_single_map_get_extraction() {
 #[test]
 fn unexpanded_quote_node_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00479_quote_unexpanded_error.fz".to_string()),
         text: include_str!("../../fixtures2/00479_quote_unexpanded_error.fz").to_string(),
@@ -377,7 +377,7 @@ fn unexpanded_quote_node_is_compile_error() {
 #[test]
 fn extern_call_arity_mismatch_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00480_extern_arity_mismatch.fz".to_string()),
         text: include_str!("../../fixtures2/00480_extern_arity_mismatch.fz").to_string(),
@@ -396,7 +396,7 @@ fn extern_call_arity_mismatch_is_compile_error() {
 #[test]
 fn variadic_extern_too_few_args_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00481_variadic_extern_too_few.fz".to_string()),
         text: include_str!("../../fixtures2/00481_variadic_extern_too_few.fz").to_string(),
@@ -415,7 +415,7 @@ fn variadic_extern_too_few_args_is_compile_error() {
 #[test]
 fn case_guard_with_pure_user_fn_compiles() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00482_case_guard_pure_fn.fz".to_string()),
         text: include_str!("../../fixtures2/00482_case_guard_pure_fn.fz").to_string(),
@@ -434,7 +434,7 @@ fn case_guard_with_pure_user_fn_compiles() {
 #[test]
 fn case_guard_with_multi_clause_fn_dispatches_correctly() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00483_case_guard_multi_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00483_case_guard_multi_clause.fz").to_string(),
@@ -453,7 +453,7 @@ fn case_guard_with_multi_clause_fn_dispatches_correctly() {
 #[test]
 fn guarded_list_cons_clause_dispatches_correctly() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00484_guarded_cons_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00484_guarded_cons_clause.fz").to_string(),
@@ -472,7 +472,7 @@ fn guarded_list_cons_clause_dispatches_correctly() {
 #[test]
 fn receive_pinned_variable_resolves_from_outer_scope() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00485_receive_pinned_outer.fz".to_string()),
         text: include_str!("../../fixtures2/00485_receive_pinned_outer.fz").to_string(),
@@ -491,7 +491,7 @@ fn receive_pinned_variable_resolves_from_outer_scope() {
 #[test]
 fn receive_pinned_unbound_name_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00486_receive_pinned_unbound.fz".to_string()),
         text: include_str!("../../fixtures2/00486_receive_pinned_unbound.fz").to_string(),
@@ -510,7 +510,7 @@ fn receive_pinned_unbound_name_is_compile_error() {
 #[test]
 fn receive_well_formed_multi_pattern_compiles() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00487_receive_multi_pattern.fz".to_string()),
         text: include_str!("../../fixtures2/00487_receive_multi_pattern.fz").to_string(),
@@ -529,7 +529,7 @@ fn receive_well_formed_multi_pattern_compiles() {
 #[test]
 fn receive_guard_with_impure_helper_is_compile_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00488_receive_impure_guard.fz".to_string()),
         text: include_str!("../../fixtures2/00488_receive_impure_guard.fz").to_string(),

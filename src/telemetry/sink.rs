@@ -1,29 +1,77 @@
 //! The `Telemetry` trait — the compiler-facing observability surface.
 //!
-//! Compiler code depends only on the trait. The driver constructs whichever
-//! concrete impl it wants (see fz-ndf.5 for the configured impl) and threads
-//! `&dyn Telemetry` through. Tests pass capture impls (fz-ndf.6).
-//!
-//! Span semantics — start/stop/exception events, elapsed_ns, parent linkage —
-//! land in fz-ndf.4.
+//! Compiler code preserves the concrete sink type through the object-safe event
+//! surface and the associated raw-span guard capability. Legacy payload methods
+//! remain for tests and compatibility emitters.
 
+use std::any::{Any, TypeId};
+use std::convert::Infallible;
+use std::marker::PhantomData;
 use std::thread::panicking;
 use std::time::Instant;
 
 use super::event::{Measurements, Metadata};
 use super::handler::{Handler, HandlerId};
 
+macro_rules! raw_event_core {
+    ($method:ident $(, $arg:ident)*) => {
+        fn $method(&self, _name: &[&'static str], $($arg: &dyn Any),*) {}
+    };
+}
+
+macro_rules! raw_span_start_core {
+    ($method:ident $(, $arg:ident)*) => {
+        fn $method(
+            &self,
+            _name: &[&'static str],
+            _start_1: TypeId,
+            _start_2: TypeId,
+            _stop_1: TypeId,
+            _stop_2: TypeId,
+            $($arg: &dyn Any),*
+        ) -> u64 {
+            0
+        }
+    };
+}
+
+macro_rules! raw_span_stop_core {
+    ($method:ident $(, $arg:ident)*) => {
+        fn $method(
+            &self,
+            _name: &[&'static str],
+            _span_id: u64,
+            _elapsed_ns: u64,
+            _start_1: TypeId,
+            _start_2: TypeId,
+            _stop_1: TypeId,
+            _stop_2: TypeId,
+            $($arg: &dyn Any),*
+        ) {
+        }
+    };
+}
+
 /// The compiler's observability bus. Every observable thing the compiler
-/// does — diagnostics, stats, span boundaries, artifact dumps — flows
+/// does — diagnostics, stats, and span boundaries — flows
 /// through one of these methods.
 ///
 /// Fatal errors are *not* on this trait; they stay on `Result<T, FatalError>`.
 /// Telemetry is purely the side channel.
 pub trait Telemetry {
+    /// Returns whether at least one handler will observe an event at `name`.
+    fn is_enabled(&self, _name: &[&'static str]) -> bool {
+        true
+    }
+
+    fn is_span_enabled(&self, name: &[&'static str]) -> bool {
+        self.is_enabled(name)
+    }
+
     /// Emit a single event. `name` is the hierarchical path
     /// (e.g. `&["fz", "lexer", "tokens_built"]`); `measurements` carry
     /// numeric data fit for aggregation; `metadata` carries everything else.
-    fn execute(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata);
+    fn dispatch(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata);
 
     /// Open a new span. Returns the assigned `span_id` (opaque to callers
     /// other than the matching `span_stop` / `span_exception`). Impls
@@ -64,132 +112,692 @@ pub trait Telemetry {
         false
     }
 
-    /// Emit an event with no payload. Shorthand for
-    /// `execute(name, &Measurements::new(), &Metadata::new())`.
-    fn emit(&self, name: &[&'static str]) {
-        self.execute(name, &Measurements::new(), &Metadata::new());
-    }
+    raw_event_core!(dispatch_raw_event0);
+    raw_event_core!(dispatch_raw_event1, _a);
+    raw_event_core!(dispatch_raw_event2, _a, _b);
+    raw_event_core!(dispatch_raw_event3, _a, _b, _c);
 
-    /// Emit an event carrying only metadata (no measurements). Metadata is
-    /// passed by value and borrowed for the dispatch — no heap allocation
-    /// since `Metadata` uses inline `SmallVec` storage for ≤ 4 entries.
-    fn event(&self, name: &[&'static str], metadata: Metadata) {
-        self.execute(name, &Measurements::new(), &metadata);
+    raw_span_start_core!(start_raw_span0);
+    raw_span_start_core!(start_raw_span1, _a);
+    raw_span_start_core!(start_raw_span2, _a, _b);
+
+    raw_span_stop_core!(stop_raw_span0);
+    raw_span_stop_core!(stop_raw_span1, _a);
+    raw_span_stop_core!(stop_raw_span2, _a, _b);
+
+    fn exception_raw_span(
+        &self,
+        _name: &[&'static str],
+        _span_id: u64,
+        _elapsed_ns: u64,
+        _start_1: TypeId,
+        _start_2: TypeId,
+        _stop_1: TypeId,
+        _stop_2: TypeId,
+    ) {
     }
 }
 
-/// RAII guard returned by `TelemetryExt::span`. Captures the start time
-/// when constructed; on `Drop`, computes elapsed ns and calls back into
-/// the bus — `span_exception` when the scope is unwinding from a panic,
-/// `span_stop` otherwise.
+/// Zero-sized telemetry for callers that install no observation path.
+/// Generic compiler code can monomorphize these empty methods away.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullTelemetry;
+
+pub struct NullSpan;
+
+pub trait RawSpanGuard {
+    fn exception(self);
+}
+
+pub trait RawSpanStop0: RawSpanGuard {
+    fn stop0(self);
+}
+
+pub trait RawSpanStop1<P1: Any>: RawSpanGuard {
+    fn stop1(self, value: &P1);
+}
+
+pub trait RawSpanStop2<P1: Any, P2: Any>: RawSpanGuard {
+    fn stop2(self, first: &P1, second: &P2);
+}
+
+pub trait RawSpanTelemetry: Telemetry {
+    type Span0_0<'a>: RawSpanStop0
+    where
+        Self: 'a;
+    type Span0_1<'a, P1: Any>: RawSpanStop1<P1>
+    where
+        Self: 'a;
+    type Span1_0<'a, S1: Any>: RawSpanStop0
+    where
+        Self: 'a;
+    type Span1_1<'a, S1: Any, P1: Any>: RawSpanStop1<P1>
+    where
+        Self: 'a;
+    type Span1_2<'a, S1: Any, P1: Any, P2: Any>: RawSpanStop2<P1, P2>
+    where
+        Self: 'a;
+    type Span2_0<'a, S1: Any, S2: Any>: RawSpanStop0
+    where
+        Self: 'a;
+
+    fn make_span0_0<'a>(&'a self, name: &'a [&'static str], span_id: u64) -> Self::Span0_0<'a>;
+    fn make_span0_1<'a, P1: Any>(&'a self, name: &'a [&'static str], span_id: u64) -> Self::Span0_1<'a, P1>;
+    fn make_span1_0<'a, S1: Any>(&'a self, name: &'a [&'static str], span_id: u64) -> Self::Span1_0<'a, S1>;
+    fn make_span1_1<'a, S1: Any, P1: Any>(
+        &'a self,
+        name: &'a [&'static str],
+        span_id: u64,
+    ) -> Self::Span1_1<'a, S1, P1>;
+    fn make_span1_2<'a, S1: Any, P1: Any, P2: Any>(
+        &'a self,
+        name: &'a [&'static str],
+        span_id: u64,
+    ) -> Self::Span1_2<'a, S1, P1, P2>;
+    fn make_span2_0<'a, S1: Any, S2: Any>(
+        &'a self,
+        name: &'a [&'static str],
+        span_id: u64,
+    ) -> Self::Span2_0<'a, S1, S2>;
+}
+
+impl Telemetry for NullTelemetry {
+    fn is_enabled(&self, _name: &[&'static str]) -> bool {
+        false
+    }
+
+    fn is_span_enabled(&self, _name: &[&'static str]) -> bool {
+        false
+    }
+
+    fn dispatch(&self, _name: &[&'static str], _measurements: &Measurements, _metadata: &Metadata) {}
+
+    fn span_start(&self, _name: &[&'static str], _metadata: &Metadata) -> u64 {
+        0
+    }
+
+    fn span_stop(
+        &self,
+        _name: &[&'static str],
+        _span_id: u64,
+        _elapsed_ns: u64,
+        _measurements: &Measurements,
+        _metadata: &Metadata,
+    ) {
+    }
+
+    fn span_exception(
+        &self,
+        _name: &[&'static str],
+        _span_id: u64,
+        _elapsed_ns: u64,
+        _measurements: &Measurements,
+        _metadata: &Metadata,
+    ) {
+    }
+}
+
+impl RawSpanGuard for NullSpan {
+    fn exception(self) {}
+}
+
+impl RawSpanStop0 for NullSpan {
+    fn stop0(self) {}
+}
+
+impl<P1: Any> RawSpanStop1<P1> for NullSpan {
+    fn stop1(self, _value: &P1) {}
+}
+
+impl<P1: Any, P2: Any> RawSpanStop2<P1, P2> for NullSpan {
+    fn stop2(self, _first: &P1, _second: &P2) {}
+}
+
+impl RawSpanTelemetry for NullTelemetry {
+    type Span0_0<'a>
+        = NullSpan
+    where
+        Self: 'a;
+    type Span0_1<'a, P1: Any>
+        = NullSpan
+    where
+        Self: 'a;
+    type Span1_0<'a, S1: Any>
+        = NullSpan
+    where
+        Self: 'a;
+    type Span1_1<'a, S1: Any, P1: Any>
+        = NullSpan
+    where
+        Self: 'a;
+    type Span1_2<'a, S1: Any, P1: Any, P2: Any>
+        = NullSpan
+    where
+        Self: 'a;
+    type Span2_0<'a, S1: Any, S2: Any>
+        = NullSpan
+    where
+        Self: 'a;
+
+    #[inline(always)]
+    fn make_span0_0<'a>(&'a self, _name: &'a [&'static str], _span_id: u64) -> Self::Span0_0<'a> {
+        NullSpan
+    }
+
+    #[inline(always)]
+    fn make_span0_1<'a, P1: Any>(&'a self, _name: &'a [&'static str], _span_id: u64) -> Self::Span0_1<'a, P1> {
+        NullSpan
+    }
+
+    #[inline(always)]
+    fn make_span1_0<'a, S1: Any>(&'a self, _name: &'a [&'static str], _span_id: u64) -> Self::Span1_0<'a, S1> {
+        NullSpan
+    }
+
+    #[inline(always)]
+    fn make_span1_1<'a, S1: Any, P1: Any>(
+        &'a self,
+        _name: &'a [&'static str],
+        _span_id: u64,
+    ) -> Self::Span1_1<'a, S1, P1> {
+        NullSpan
+    }
+
+    #[inline(always)]
+    fn make_span1_2<'a, S1: Any, P1: Any, P2: Any>(
+        &'a self,
+        _name: &'a [&'static str],
+        _span_id: u64,
+    ) -> Self::Span1_2<'a, S1, P1, P2> {
+        NullSpan
+    }
+
+    #[inline(always)]
+    fn make_span2_0<'a, S1: Any, S2: Any>(
+        &'a self,
+        _name: &'a [&'static str],
+        _span_id: u64,
+    ) -> Self::Span2_0<'a, S1, S2> {
+        NullSpan
+    }
+}
+
+/// Configured raw-span guard. An active guard captures the start time and emits
+/// stop or exception lifecycle. An inactive configured guard contains no
+/// telemetry state; `NullTelemetry` uses the separate non-dropping `NullSpan`.
 ///
 /// The `span_id` carried here is opaque to client code; the bus impl
 /// (fz-ndf.5) uses it to thread parent linkage into child events emitted
 /// while the span is live.
-pub struct Span<'a> {
-    tel: &'a dyn Telemetry,
-    name: Box<[&'static str]>,
+pub struct Span<
+    'a,
+    T: Telemetry + ?Sized,
+    S1: Any = Infallible,
+    S2: Any = Infallible,
+    P1: Any = Infallible,
+    P2: Any = Infallible,
+> {
+    active: Option<ActiveSpan<'a, T>>,
+    marker: PhantomData<fn(&S1, &S2, &P1, &P2)>,
+}
+
+#[cfg(test)]
+pub struct DetachedSpan<'a> {
+    active: Option<DetachedActiveSpan<'a>>,
+}
+
+#[cfg(test)]
+struct DetachedActiveSpan<'a> {
+    name: &'a [&'static str],
+    span_id: u64,
+    start: Instant,
+}
+
+#[cfg(test)]
+impl<'a> DetachedSpan<'a> {
+    fn new(name: &'a [&'static str], span_id: u64) -> Self {
+        Self {
+            active: Some(DetachedActiveSpan {
+                name,
+                span_id,
+                start: Instant::now(),
+            }),
+        }
+    }
+
+    fn disabled() -> Self {
+        Self { active: None }
+    }
+}
+
+struct ActiveSpan<'a, T: Telemetry + ?Sized> {
+    tel: &'a T,
+    name: &'a [&'static str],
     span_id: u64,
     start: Instant,
     stop_measurements: Measurements<'static>,
     stop_metadata: Metadata<'static>,
     closed: bool,
+    raw: bool,
 }
 
-impl<'a> Span<'a> {
-    pub(super) fn new(tel: &'a dyn Telemetry, name: &[&'static str], span_id: u64) -> Self {
+#[cfg(test)]
+impl<'a, T: Telemetry + ?Sized> Span<'a, T> {
+    pub(super) fn new(tel: &'a T, name: &'a [&'static str], span_id: u64) -> Self {
         Self {
-            tel,
-            name: Box::from(name),
-            span_id,
-            start: Instant::now(),
-            stop_measurements: Measurements::new(),
-            stop_metadata: Metadata::new(),
-            closed: false,
+            active: Some(ActiveSpan {
+                tel,
+                name,
+                span_id,
+                start: Instant::now(),
+                stop_measurements: Measurements::new(),
+                stop_metadata: Metadata::new(),
+                closed: false,
+                raw: false,
+            }),
+            marker: PhantomData,
         }
     }
 
-    /// Replace the payload that will be attached to the eventual stop or
-    /// exception event for this span.
-    pub fn close_with(&mut self, measurements: Measurements<'static>, metadata: Metadata<'static>) {
-        self.stop_measurements = measurements;
-        self.stop_metadata = metadata;
+    pub(super) fn disabled() -> Self {
+        Self {
+            active: None,
+            marker: PhantomData,
+        }
     }
 
     /// Close the span immediately with borrowed payload. Useful when the stop
     /// data is only valid for the current scope and should not be copied into
     /// the guard for drop-time emission.
     pub fn stop_with<'meas, 'meta>(mut self, measurements: &Measurements<'meas>, metadata: &Metadata<'meta>) {
-        let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        self.tel
-            .span_stop(&self.name, self.span_id, elapsed_ns, measurements, metadata);
-        self.closed = true;
+        if let Some(active) = self.active.as_mut() {
+            let elapsed_ns = active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            active
+                .tel
+                .span_stop(active.name, active.span_id, elapsed_ns, measurements, metadata);
+            active.closed = true;
+        }
     }
 
-    /// Opaque identifier for this span. The bus impl uses this to attach
-    /// `parent_span_id` to events emitted while the span is open.
+    pub fn stop_with_lazy<'meas, 'meta>(self, payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>)) {
+        if self.active.is_some() {
+            let (measurements, metadata) = payload();
+            self.stop_with(&measurements, &metadata);
+        }
+    }
+}
+
+impl<'a, T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Span<'a, T, S1, S2, P1, P2> {
+    pub(super) fn new_raw(tel: &'a T, name: &'a [&'static str], span_id: u64) -> Self {
+        Self {
+            active: (span_id != 0).then(|| ActiveSpan {
+                tel,
+                name,
+                span_id,
+                start: Instant::now(),
+                stop_measurements: Measurements::new(),
+                stop_metadata: Metadata::new(),
+                closed: false,
+                raw: true,
+            }),
+            marker: PhantomData,
+        }
+    }
+
+    fn elapsed(active: &ActiveSpan<'_, T>) -> u64 {
+        active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64
+    }
+
+    fn close_raw_exception(active: &mut ActiveSpan<'_, T>) {
+        active.tel.exception_raw_span(
+            active.name,
+            active.span_id,
+            Self::elapsed(active),
+            TypeId::of::<S1>(),
+            TypeId::of::<S2>(),
+            TypeId::of::<P1>(),
+            TypeId::of::<P2>(),
+        );
+        active.closed = true;
+    }
+
+    pub fn exception(mut self) {
+        if let Some(active) = self.active.as_mut() {
+            Self::close_raw_exception(active);
+        }
+    }
+
     #[cfg(test)]
     pub fn span_id(&self) -> u64 {
-        self.span_id
+        self.active.as_ref().map_or(0, |active| active.span_id)
     }
 
-    /// Hierarchical name of the span. Useful for tests and renderers.
     #[cfg(test)]
     pub fn name(&self) -> &[&'static str] {
-        &self.name
+        self.active.as_ref().map_or(&[], |active| active.name)
     }
 }
 
-impl Drop for Span<'_> {
+#[cfg(test)]
+impl<T: Telemetry + ?Sized, S1: Any, S2: Any> Span<'_, T, S1, S2> {
+    pub fn stop0(mut self) {
+        if let Some(active) = self.active.as_mut() {
+            active.tel.stop_raw_span0(
+                active.name,
+                active.span_id,
+                Self::elapsed(active),
+                TypeId::of::<S1>(),
+                TypeId::of::<S2>(),
+                TypeId::of::<Infallible>(),
+                TypeId::of::<Infallible>(),
+            );
+            active.closed = true;
+        }
+    }
+}
+
+impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Span<'_, T, S1, S2, P1, P2> {
+    pub fn stop2(mut self, first: &P1, second: &P2) {
+        if let Some(active) = self.active.as_mut() {
+            active.tel.stop_raw_span2(
+                active.name,
+                active.span_id,
+                Self::elapsed(active),
+                TypeId::of::<S1>(),
+                TypeId::of::<S2>(),
+                TypeId::of::<P1>(),
+                TypeId::of::<P2>(),
+                first,
+                second,
+            );
+            active.closed = true;
+        }
+    }
+}
+
+impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> Drop for Span<'_, T, S1, S2, P1, P2> {
     fn drop(&mut self) {
-        if self.closed {
-            return;
-        }
-        let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        if panicking() {
-            self.tel.span_exception(
-                &self.name,
-                self.span_id,
-                elapsed_ns,
-                &self.stop_measurements,
-                &self.stop_metadata,
-            );
-        } else {
-            self.tel.span_stop(
-                &self.name,
-                self.span_id,
-                elapsed_ns,
-                &self.stop_measurements,
-                &self.stop_metadata,
-            );
+        if let Some(active) = self.active.as_mut() {
+            if active.closed {
+                return;
+            }
+            let elapsed_ns = Self::elapsed(active);
+            let stop_1 = TypeId::of::<P1>();
+            let stop_2 = TypeId::of::<P2>();
+            if active.raw
+                && !panicking()
+                && stop_1 == TypeId::of::<Infallible>()
+                && stop_2 == TypeId::of::<Infallible>()
+            {
+                active.tel.stop_raw_span0(
+                    active.name,
+                    active.span_id,
+                    elapsed_ns,
+                    TypeId::of::<S1>(),
+                    TypeId::of::<S2>(),
+                    stop_1,
+                    stop_2,
+                );
+            } else if active.raw {
+                Self::close_raw_exception(active);
+            } else if panicking() {
+                active.tel.span_exception(
+                    active.name,
+                    active.span_id,
+                    elapsed_ns,
+                    &active.stop_measurements,
+                    &active.stop_metadata,
+                );
+            } else {
+                active.tel.span_stop(
+                    active.name,
+                    active.span_id,
+                    elapsed_ns,
+                    &active.stop_measurements,
+                    &active.stop_metadata,
+                );
+            }
         }
     }
 }
 
-/// Ergonomic extension trait giving `t.span(...)` on any `&dyn Telemetry`.
-/// Split off the main trait so `Telemetry` stays dyn-safe and impl-free.
-pub trait TelemetryExt {
-    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_>;
+impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> RawSpanGuard for Span<'_, T, S1, S2, P1, P2> {
+    fn exception(self) {
+        Span::exception(self);
+    }
 }
 
-fn make_span<'a>(tel: &'a dyn Telemetry, name: &[&'static str], metadata: Metadata) -> Span<'a> {
+impl<T: Telemetry + ?Sized, S1: Any, S2: Any> RawSpanStop0 for Span<'_, T, S1, S2> {
+    fn stop0(mut self) {
+        if let Some(active) = self.active.as_mut() {
+            active.tel.stop_raw_span0(
+                active.name,
+                active.span_id,
+                Self::elapsed(active),
+                TypeId::of::<S1>(),
+                TypeId::of::<S2>(),
+                TypeId::of::<Infallible>(),
+                TypeId::of::<Infallible>(),
+            );
+            active.closed = true;
+        }
+    }
+}
+
+impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any> RawSpanStop1<P1> for Span<'_, T, S1, S2, P1> {
+    fn stop1(mut self, value: &P1) {
+        if let Some(active) = self.active.as_mut() {
+            active.tel.stop_raw_span1(
+                active.name,
+                active.span_id,
+                Self::elapsed(active),
+                TypeId::of::<S1>(),
+                TypeId::of::<S2>(),
+                TypeId::of::<P1>(),
+                TypeId::of::<Infallible>(),
+                value,
+            );
+            active.closed = true;
+        }
+    }
+}
+
+impl<T: Telemetry + ?Sized, S1: Any, S2: Any, P1: Any, P2: Any> RawSpanStop2<P1, P2> for Span<'_, T, S1, S2, P1, P2> {
+    fn stop2(self, first: &P1, second: &P2) {
+        Span::stop2(self, first, second);
+    }
+}
+
+macro_rules! raw_event_ext {
+    ($method:ident, $dispatch:ident $(, $ty:ident $arg:ident)*) => {
+        fn $method<$($ty: Any),*>(&self, name: &[&'static str], $($arg: &$ty),*) {
+            self.$dispatch(name, $($arg),*);
+        }
+    };
+}
+
+macro_rules! raw_span_ext {
+    ($method:ident, $make:ident, $guard:ident, $start:ident, [$($ty:ident),*], [$($arg_ty:ident $arg:ident),*], [$($guard_ty:ty),*], $s1:ty, $s2:ty, $p1:ty, $p2:ty) => {
+        #[inline(always)]
+        fn $method<'a, $($ty: Any),*>(
+            &'a self,
+            name: &'a [&'static str],
+            $($arg: &$arg_ty),*
+        ) -> <Self as RawSpanTelemetry>::$guard<'a, $($guard_ty),*>
+        where
+            Self: RawSpanTelemetry,
+        {
+            self.$make(
+                name,
+                self.$start(
+                    name,
+                    TypeId::of::<$s1>(),
+                    TypeId::of::<$s2>(),
+                    TypeId::of::<$p1>(),
+                    TypeId::of::<$p2>(),
+                    $($arg),*
+                ),
+            )
+        }
+    };
+}
+
+/// Typed raw telemetry helpers plus test-only legacy payload helpers.
+pub trait TelemetryExt: Telemetry {
+    #[cfg(test)]
+    fn execute_lazy<'meas, 'meta>(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>),
+    );
+
+    #[cfg(test)]
+    fn execute_lazy_with(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce(&mut dyn FnMut(&Measurements<'_>, &Metadata<'_>)),
+    );
+
+    #[cfg(test)]
+    fn event_lazy<'meta>(&self, name: &[&'static str], metadata: impl FnOnce() -> Metadata<'meta>);
+
+    #[cfg(test)]
+    fn span_lazy<'a, 'meta>(
+        &'a self,
+        name: &'a [&'static str],
+        metadata: impl FnOnce() -> Metadata<'meta>,
+    ) -> Span<'a, Self>;
+
+    #[cfg(test)]
+    fn start_span_lazy<'a, 'meta>(
+        &self,
+        name: &'a [&'static str],
+        metadata: impl FnOnce() -> Metadata<'meta>,
+    ) -> DetachedSpan<'a>;
+
+    #[cfg(test)]
+    fn stop_span_lazy<'meas, 'meta>(
+        &self,
+        span: DetachedSpan<'_>,
+        payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>),
+    );
+
+    #[cfg(test)]
+    fn raw_event0(&self, name: &[&'static str]) {
+        self.dispatch_raw_event0(name);
+    }
+    raw_event_ext!(raw_event1, dispatch_raw_event1, A a);
+    raw_event_ext!(raw_event2, dispatch_raw_event2, A a, B b);
+    raw_event_ext!(raw_event3, dispatch_raw_event3, A a, B b, C c);
+
+    #[cfg(test)]
+    raw_span_ext!(
+        raw_span0_0,
+        make_span0_0,
+        Span0_0,
+        start_raw_span0,
+        [],
+        [],
+        [],
+        Infallible,
+        Infallible,
+        Infallible,
+        Infallible
+    );
+    raw_span_ext!(
+        raw_span0_1,
+        make_span0_1,
+        Span0_1,
+        start_raw_span0,
+        [P1],
+        [],
+        [P1],
+        Infallible,
+        Infallible,
+        P1,
+        Infallible
+    );
+    raw_span_ext!(raw_span1_0, make_span1_0, Span1_0, start_raw_span1, [S1], [S1 first], [S1], S1, Infallible, Infallible, Infallible);
+    raw_span_ext!(raw_span1_1, make_span1_1, Span1_1, start_raw_span1, [S1, P1], [S1 first], [S1, P1], S1, Infallible, P1, Infallible);
+    raw_span_ext!(raw_span1_2, make_span1_2, Span1_2, start_raw_span1, [S1, P1, P2], [S1 first], [S1, P1, P2], S1, Infallible, P1, P2);
+    raw_span_ext!(raw_span2_0, make_span2_0, Span2_0, start_raw_span2, [S1, S2], [S1 first, S2 second], [S1, S2], S1, S2, Infallible, Infallible);
+}
+
+#[cfg(test)]
+fn make_span<'a, T: Telemetry + ?Sized>(tel: &'a T, name: &'a [&'static str], metadata: Metadata) -> Span<'a, T> {
     let span_id = tel.span_start(name, &metadata);
     Span::new(tel, name, span_id)
 }
 
-// Two impls so `t.span(...)` works for both concrete impls (which coerce
-// `&T` to `&dyn Telemetry` thanks to `T: Sized`) and trait objects
-// (which already are `&dyn Telemetry`). The Sized blanket and the `dyn`
-// impl don't overlap because `dyn Telemetry: !Sized`.
-impl<T: Telemetry> TelemetryExt for T {
-    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_> {
-        make_span(self, name, metadata)
+impl<T: Telemetry + ?Sized> TelemetryExt for T {
+    #[cfg(test)]
+    fn execute_lazy<'meas, 'meta>(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>),
+    ) {
+        if self.is_enabled(name) {
+            let (measurements, metadata) = payload();
+            self.dispatch(name, &measurements, &metadata);
+        }
     }
-}
 
-impl TelemetryExt for dyn Telemetry + '_ {
-    fn span(&self, name: &[&'static str], metadata: Metadata) -> Span<'_> {
-        make_span(self, name, metadata)
+    #[cfg(test)]
+    fn execute_lazy_with(
+        &self,
+        name: &[&'static str],
+        payload: impl FnOnce(&mut dyn FnMut(&Measurements<'_>, &Metadata<'_>)),
+    ) {
+        if self.is_enabled(name) {
+            let mut dispatch = |measurements: &Measurements<'_>, metadata: &Metadata<'_>| {
+                self.dispatch(name, measurements, metadata);
+            };
+            payload(&mut dispatch);
+        }
+    }
+
+    #[cfg(test)]
+    fn event_lazy<'meta>(&self, name: &[&'static str], metadata: impl FnOnce() -> Metadata<'meta>) {
+        self.execute_lazy(name, || (Measurements::new(), metadata()));
+    }
+
+    #[cfg(test)]
+    fn span_lazy<'a, 'meta>(
+        &'a self,
+        name: &'a [&'static str],
+        metadata: impl FnOnce() -> Metadata<'meta>,
+    ) -> Span<'a, Self> {
+        if self.is_span_enabled(name) {
+            make_span(self, name, metadata())
+        } else {
+            Span::disabled()
+        }
+    }
+
+    #[cfg(test)]
+    fn start_span_lazy<'a, 'meta>(
+        &self,
+        name: &'a [&'static str],
+        metadata: impl FnOnce() -> Metadata<'meta>,
+    ) -> DetachedSpan<'a> {
+        if self.is_span_enabled(name) {
+            DetachedSpan::new(name, self.span_start(name, &metadata()))
+        } else {
+            DetachedSpan::disabled()
+        }
+    }
+
+    #[cfg(test)]
+    fn stop_span_lazy<'meas, 'meta>(
+        &self,
+        span: DetachedSpan<'_>,
+        payload: impl FnOnce() -> (Measurements<'meas>, Metadata<'meta>),
+    ) {
+        if let Some(active) = span.active {
+            let (measurements, metadata) = payload();
+            let elapsed_ns = active.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            self.span_stop(active.name, active.span_id, elapsed_ns, &measurements, &metadata);
+        }
     }
 }
 

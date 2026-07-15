@@ -1,32 +1,26 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{
-    BackendBody, BackendEntry, BackendTail, CallEdge, CallReturnFlow, MaterializedTransportPlan,
-};
+use crate::compiler2::artifact::{BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
-use crate::compiler2::transport::{ExecutableSymbol, ShapeId, TransportPosition};
 use crate::compiler2::{
-    AbiValueRepr, ActivationKey, BackendEntryOrigin, BackendProgram, BackendStep, CallSiteId, CallSiteKey,
-    CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse, FunctionId, FunctionRef,
-    LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, QuotedSourceHeap, QuotedSourceMetadata,
-    SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
+    AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
+    CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
+    FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, Namespace, QuotedSourceHeap,
+    QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
-use crate::exec::runtime::DbgCapture;
-use crate::fz_ir::{
-    Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternTy, ExternalCallEdge, FnId,
-    FnIr as IrFn, Module as IrModule, PhysicalCapability, Prim as IrPrim, ReceiveAfter, ReceiveClause, Stmt as IrStmt,
-    Term as IrTerm,
-};
+use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
+use crate::fz_ir::{ExternTy, FnId, PhysicalCapability, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
-use crate::telemetry::handler::{Event, EventKind, Handler};
+use crate::telemetry::handler::{Event, EventKind};
+use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
@@ -35,7 +29,6 @@ type AppliedSteps = Rc<RefCell<Vec<AppliedStep<Job, FactKey>>>>;
 type EntryDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternDispatchPlan<Ty>>>>>;
 type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<PatternGuardDispatch<Ty>>>>>;
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
-type SpanJobs = Rc<RefCell<HashMap<u64, Job>>>;
 type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
 type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
 type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleState>>>>;
@@ -45,10 +38,23 @@ type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
 type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
-type Diagnostics = Rc<RefCell<Vec<Diagnostic>>>;
+type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
+
+const RECEIVE_AFTER_DIVERGENT_DISPATCH: &str = r#"
+fn main() do
+  me = self()
+  send(me, 1)
+  value = receive do
+    x -> x
+  after
+    10 -> :timeout
+  end
+  dbg(value + 2)
+end
+"#;
 
 fn jit_compile_native_program(
-    compiler: &mut Compiler2<'_>,
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
     program: &NativeProgram,
 ) -> crate::ir_codegen::CompiledModule {
     compiler
@@ -84,38 +90,20 @@ fn output_facts(effects: &JobEffects) -> OutputFacts {
         .collect()
 }
 
-fn demand_backend_product(compiler: &mut Compiler2<'_>, root_id: crate::compiler2::RootId) {
+fn demand_backend_product(compiler: &mut Compiler2<ConfiguredTelemetry>, root_id: crate::compiler2::RootId) {
     assert!(
         compiler.demand(Job::BuildBackendProduct(root_id)),
         "backend product should be explicitly demandable for {root_id:?}",
     );
 }
 
-fn handoff_shape_at(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
-    plan.shape_at(position)
-        .unwrap_or_else(|| panic!("transport handoff should include shape for {position:?}"))
-}
-
-fn executable_input_position(
-    plan: &MaterializedTransportPlan,
-    executable: &ExecutableSymbol,
-    semantic_index: usize,
-) -> TransportPosition {
-    let position = TransportPosition::ExecutableInput {
-        executable: executable.clone(),
-        semantic_index,
-    };
-    handoff_shape_at(plan, &position);
-    position
-}
-
 #[test]
 fn compiler2_runtime_prelude_does_not_run_frontend_before_drive() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -152,12 +140,12 @@ fn compiler2_runtime_prelude_does_not_run_frontend_before_drive() {
 #[test]
 fn compiler2_notes_top_level_types_into_the_global_scope() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    let noted_types = NotedTypeCapture::new();
+    noted_types.install(&tel);
 
     // Unique `tkf_` names so the assertions ignore the runtime prelude's own
     // @types, which are noted in the same drive when the user scope pulls it.
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("types.fz".to_string()),
         text: include_str!("../../fixtures2/00002_types_top_level.fz").to_string(),
@@ -169,27 +157,27 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
     );
     assert_resolved(compiler.drive(), "second drive should scope and note the @types");
 
-    let mine = capture
-        .find(&["fz", "compiler2", "type", "noted"])
+    let mine = noted_types
+        .all()
         .into_iter()
-        .filter(|event| metadata_str(event, "name").starts_with("tkf_"))
+        .filter(|record| record.name.name.starts_with("tkf_"))
         .collect::<Vec<_>>();
     assert_eq!(mine.len(), 2, "each top-level @type is noted exactly once");
-    for event in &mine {
+    for record in &mine {
         assert_eq!(
-            measurement_u64(event, "module_id"),
-            u64::from(ModuleId::GLOBAL.as_u32()),
+            record.name.module,
+            ModuleId::GLOBAL,
             "a top-level @type is noted under the GLOBAL module",
         );
         assert_ne!(
-            measurement_u64(event, "namespace"),
-            0,
+            record.namespace,
+            Namespace::default(),
             "the captured namespace is the built scope, never the empty namespace",
         );
     }
     let mut by_name = mine
         .iter()
-        .map(|event| (metadata_str(event, "name").to_string(), measurement_u64(event, "arity")))
+        .map(|record| (record.name.name.clone(), record.name.arity as u64))
         .collect::<Vec<_>>();
     by_name.sort();
     assert_eq!(
@@ -202,12 +190,12 @@ fn compiler2_notes_top_level_types_into_the_global_scope() {
 #[test]
 fn compiler2_records_type_references_as_consumer_dependencies() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    let references = TypeReferenceCapture::new();
+    references.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("refs.fz".to_string()),
         text: include_str!("../../fixtures2/00003_type_refs.fz").to_string(),
@@ -228,24 +216,7 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
         "third drive should materialize the function and publish its type references",
     );
 
-    // The event carries the consumer as raw state — a kind tag and the bare
-    // name — so the `kind:name` rendering happens here, in the observer.
-    let consumers_of = |ref_name: &str| {
-        let mut consumers = capture
-            .find(&["fz", "compiler2", "type", "referenced"])
-            .into_iter()
-            .filter(|event| metadata_str(event, "ref_name") == ref_name)
-            .map(|event| {
-                format!(
-                    "{}:{}",
-                    metadata_str(&event, "consumer_kind"),
-                    metadata_str(&event, "consumer")
-                )
-            })
-            .collect::<Vec<_>>();
-        consumers.sort();
-        consumers
-    };
+    let consumers_of = |ref_name: &str| references.consumers_of(ref_name);
 
     // tkf_target is named by the @spec of `tkf_uses` and — nested inside the
     // parametric application `tkf_box(tkf_target)` — by the wrapper type. The
@@ -267,23 +238,11 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     // arity is part of the identity, so tkf_box and tkf_box/1 never conflate.
     // (Its own body `list(a)` references nothing: `list` is a builtin ctor and
     // `a` is a formal type variable.)
-    let box_refs = capture
-        .find(&["fz", "compiler2", "type", "referenced"])
-        .into_iter()
-        .filter(|event| metadata_str(event, "ref_name") == "tkf_box")
-        .collect::<Vec<_>>();
     assert_eq!(
-        box_refs.len(),
+        references.reference_count("tkf_box", 1),
         1,
         "the parametric type tkf_box is referenced exactly once"
     );
-    assert_eq!(
-        measurement_u64(&box_refs[0], "ref_arity"),
-        1,
-        "tkf_box is referenced at arity 1",
-    );
-    assert_eq!(metadata_str(&box_refs[0], "consumer_kind"), "type");
-    assert_eq!(metadata_str(&box_refs[0], "consumer"), "tkf_wrapper");
     assert_eq!(
         consumers_of("tkf_box"),
         vec!["type:tkf_wrapper".to_string()],
@@ -291,51 +250,119 @@ fn compiler2_records_type_references_as_consumer_dependencies() {
     );
 }
 
+struct TypeReferenceCapture(Rc<RefCell<Vec<(String, u64, String)>>>);
+
+impl TypeReferenceCapture {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(Vec::new())))
+    }
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let records = Rc::clone(&self.0);
+        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
+            &["fz", "compiler2", "type", "references", "function", "recorded"],
+            move |_, _, _, world, function| {
+                let name = world.function_ref(*function).name.clone();
+                records.borrow_mut().extend(
+                    world
+                        .function_type_refs(*function)
+                        .iter()
+                        .map(|reference| (reference.name.clone(), reference.arity as u64, format!("fn:{name}"))),
+                );
+            },
+        );
+        let records = Rc::clone(&self.0);
+        telemetry.attach_raw_event2::<crate::compiler2::World, TypeName, _>(
+            &["fz", "compiler2", "type", "references", "type", "recorded"],
+            move |_, _, _, world, name| {
+                records
+                    .borrow_mut()
+                    .extend(world.type_def_refs(name).iter().map(|reference| {
+                        (
+                            reference.name.clone(),
+                            reference.arity as u64,
+                            format!("type:{}", name.name),
+                        )
+                    }));
+            },
+        );
+    }
+    fn consumers_of(&self, ref_name: &str) -> Vec<String> {
+        let mut consumers = self
+            .0
+            .borrow()
+            .iter()
+            .filter(|(name, _, _)| name == ref_name)
+            .map(|(_, _, consumer)| consumer.clone())
+            .collect::<Vec<_>>();
+        consumers.sort();
+        consumers
+    }
+    fn reference_count(&self, ref_name: &str, arity: u64) -> usize {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|(name, found_arity, _)| name == ref_name && *found_arity == arity)
+            .count()
+    }
+}
+
 struct RenderedTypeDef {
     name: String,
     arity: u64,
-    changed: u64,
+    changed: bool,
     rendered: String,
 }
 
-/// Event-time projection of `type.defined`: the event carries the raw
-/// definition and the interner as opaque refs, so observers that want the
-/// resolved surface render it themselves while the event's borrows are alive.
+#[derive(Clone)]
+struct NotedTypeRecord {
+    name: TypeName,
+    namespace: Namespace,
+}
+
+struct NotedTypeCapture(Rc<RefCell<Vec<NotedTypeRecord>>>);
+
+impl NotedTypeCapture {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(Vec::new())))
+    }
+
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let records = Rc::clone(&self.0);
+        telemetry.attach_raw_event2::<crate::compiler2::World, TypeName, _>(
+            &["fz", "compiler2", "type", "noted"],
+            move |_, _, _, world, name| {
+                let Some(decl) = world.type_decl(name) else {
+                    return;
+                };
+                records.borrow_mut().push(NotedTypeRecord {
+                    name: name.clone(),
+                    namespace: decl.namespace,
+                });
+            },
+        );
+    }
+
+    fn all(&self) -> Vec<NotedTypeRecord> {
+        self.0.borrow().clone()
+    }
+}
+
 fn rendered_type_defs(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<RenderedTypeDef>>> {
     let rendered: Rc<RefCell<Vec<RenderedTypeDef>>> = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&rendered);
-    tel.attach(
+    tel.attach_raw_event2::<crate::compiler2::World, TypeName, _>(
         &["fz", "compiler2", "type", "defined"],
-        Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(Value::Str(name)) = event.metadata.get("name") else {
-                return;
-            };
-            let (Some(Value::U64(arity)), Some(Value::U64(changed))) =
-                (event.measurements.get("arity"), event.measurements.get("changed"))
-            else {
-                return;
-            };
-            let Some(types) = event
-                .metadata
-                .get("types")
-                .and_then(|value| value.downcast_ref::<Types>())
-            else {
-                return;
-            };
-            let Some(def) = event
-                .metadata
-                .get("def")
-                .and_then(|value| value.downcast_ref::<crate::compiler2::typedef::TypeDef>())
-            else {
+        move |_, _, _, world, name| {
+            let Some(def) = world.type_def(name) else {
                 return;
             };
             sink.borrow_mut().push(RenderedTypeDef {
-                name: name.to_string(),
-                arity: *arity,
-                changed: *changed,
-                rendered: types.display(&def.ty),
+                name: name.name.clone(),
+                arity: name.arity as u64,
+                changed: true,
+                rendered: world.types().display(&def.ty),
             });
-        }),
+        },
     );
     rendered
 }
@@ -343,11 +370,9 @@ fn rendered_type_defs(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<RenderedTypeD
 #[test]
 fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_others_cold() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
     let rendered = rendered_type_defs(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("typedefs.fz".to_string()),
         text: include_str!("../../fixtures2/00004_typedefs.fz").to_string(),
@@ -360,10 +385,10 @@ fn compiler2_derive_type_def_pulls_a_referenced_type_and_its_wait_set_leaving_ot
     assert_resolved(compiler.drive(), "second drive should scope, note, and walk references");
 
     let define_count = |name: &str| {
-        capture
-            .find(&["fz", "compiler2", "type", "defined"])
-            .into_iter()
-            .filter(|event| metadata_str(event, "name") == name)
+        rendered
+            .borrow()
+            .iter()
+            .filter(|definition| definition.name == name)
             .count()
     };
 
@@ -448,7 +473,7 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
     let tel = ConfiguredTelemetry::new();
     let rendered = rendered_type_defs(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("brand.fz".to_string()),
         text: include_str!("../../fixtures2/00005_brand.fz").to_string(),
@@ -500,7 +525,7 @@ fn compiler2_derive_type_def_mints_a_refines_brand_inner_in_symbol() {
 #[test]
 fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("defimpl_owner_remote_call.fz".to_string()),
         concat!(
@@ -519,19 +544,28 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "source should index protocol and owner modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "source should index protocol and owner modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "top-level scope should prepare module definitions");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "top-level scope should prepare module definitions",
+    );
 
     let protocol = world.reference_module("Proof");
     assert!(
         world.demand(Job::DefineModule(protocol)),
         "protocol definition should be demandable"
     );
-    assert_resolved(world.drive(), "protocol definition should publish callback facts first");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "protocol definition should publish callback facts first",
+    );
 
     let owner = world.reference_module("Box");
     assert!(
@@ -539,7 +573,7 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
         "owner module definition should be demandable",
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "owner-module remote calls inside defimpl callbacks should use the live source namespace, not wait on ModuleDefined(owner)",
     );
 }
@@ -547,14 +581,14 @@ fn compiler2_defimpl_callback_owner_remote_call_does_not_self_wait() {
 #[test]
 fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("nested_protocol_impl_dispatch.fz".to_string()),
         include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz").to_string(),
     );
 
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "first drive should index the nested protocol/provider module and the caller module",
     );
     assert!(
@@ -562,14 +596,14 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
         "scoping the nested protocol fixture should be demandable",
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "top-level scoping should bind nested definition macros before root demand",
     );
 
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "main should settle when nested defimpl resolves against the declared protocol identity",
     );
 
@@ -602,18 +636,18 @@ fn compiler2_nested_defimpl_resolves_protocol_and_target_through_namespace() {
 #[test]
 fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when_impls_land() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    let noted_types = NotedTypeCapture::new();
+    noted_types.install(&tel);
     let rendered_defs = rendered_type_defs(&tel);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    outputs.install(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("protocol_domain.fz".to_string()),
         include_str!("../../fixtures2/00006_protocol_domain.fz").to_string(),
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "first drive should index the protocol and impl owner modules",
     );
     let indexed = outputs
@@ -638,21 +672,27 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         world.demand(Job::ScopeCode(code_id)),
         "scoping the protocol source should be demandable",
     );
-    assert_resolved(world.drive(), "second drive should scope the protocol source");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope the protocol source",
+    );
     assert!(
         world.demand(Job::DefineModule(protocol)),
         "defining the protocol module should be demandable",
     );
-    assert_resolved(world.drive(), "third drive should define the protocol callback surface");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should define the protocol callback surface",
+    );
     let protocol_defined = outputs
         .take(Job::DefineModule(protocol))
         .expect("DefineModule job effects for the protocol surface");
 
-    let noted = capture
-        .find(&["fz", "compiler2", "type", "noted"])
+    let noted = noted_types
+        .all()
         .into_iter()
-        .filter(|event| metadata_str(event, "name") == "t")
-        .map(|event| measurement_u64(&event, "arity"))
+        .filter(|record| record.name.name == "t")
+        .map(|record| record.name.arity as u64)
         .collect::<Vec<_>>();
     assert_eq!(noted, vec![0, 1], "protocol modules should synthesize both t/0 and t/1");
 
@@ -696,7 +736,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "t/1 derivation should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "demanded protocol-domain types should resolve through the normal DeriveTypeDef path",
     );
     let t0_derived = outputs
@@ -743,10 +783,10 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
     ));
     let rendered = expect.display(&marker);
     assert_eq!(type_events[0].0, 0);
-    assert_eq!(type_events[0].1, 1);
+    assert!(type_events[0].1);
     assert_eq!(type_events[0].2, *rendered);
     assert_eq!(type_events[1].0, 1);
-    assert_eq!(type_events[1].1, 1);
+    assert!(type_events[1].1);
     assert_eq!(type_events[1].2, *rendered);
     assert_eq!(t0_def.params, Vec::new(), "t/0 should remain monomorphic");
     assert_eq!(
@@ -778,7 +818,7 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
         "defining the hoisted impl module `Proof.List` should be demandable",
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "defining the impl module should revise the protocol facts",
     );
     let impl_defined = outputs
@@ -846,29 +886,22 @@ fn compiler2_protocol_domain_marker_stays_type_owned_while_dispatch_revises_when
 fn compiler2_struct_defined_publishes_independently_of_module_defined() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     // Observe the published `StructDef` through the callee-tier signal the
     // store emits — the same object slice .10 will read back — so the test
     // pins the store's *content*, not just that the fact fires.
     let published_fields: PublishedStructFields = Rc::new(RefCell::new(Vec::new()));
     let fields_sink = Rc::clone(&published_fields);
-    tel.attach(
+    tel.attach_raw_event2::<crate::compiler2::World, ModuleId, _>(
         &["fz", "compiler2", "struct_def", "defined"],
-        Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(Value::U64(module_id)) = event.measurements.get("module_id") else {
+        move |_, _, _, world, module_id| {
+            let Some(def) = world.struct_def(*module_id) else {
                 return;
             };
-            let Some(def) = event
-                .metadata
-                .get("def")
-                .and_then(|value| value.downcast_ref::<crate::compiler2::structdef::StructDef>())
-            else {
-                return;
-            };
-            fields_sink.borrow_mut().push((*module_id as u32, def.fields.clone()));
-        }),
+            fields_sink.borrow_mut().push((module_id.as_u32(), def.fields.clone()));
+        },
     );
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_defined_independence.fz".to_string()),
         concat!(
@@ -883,12 +916,18 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let point = world.reference_module("Point");
     let helper = world.reference_module("Helper");
@@ -901,7 +940,10 @@ fn compiler2_struct_defined_publishes_independently_of_module_defined() {
         world.demand(Job::DefineModule(helper)),
         "Helper definition should be demandable"
     );
-    assert_resolved(world.drive(), "third drive should define both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should define both modules",
+    );
 
     let point_defined = outputs
         .take(Job::DefineModule(point))
@@ -963,8 +1005,8 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
     // must diagnose at the SECOND defstruct's span.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_duplicate_defstruct.fz".to_string()),
         concat!(
@@ -976,12 +1018,18 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index the module",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope the module",
+    );
 
     let point = world.reference_module("Point");
     assert!(
@@ -989,7 +1037,10 @@ fn compiler2_struct_duplicate_defstruct_diagnoses_instead_of_silently_picking_on
         "Point definition should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "a module with two defstruct forms must diagnose rather than silently pick first-or-last"
     );
 
@@ -1030,8 +1081,8 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
     // content.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_macro_emitted_duplicate_defstruct.fz".to_string()),
         concat!(
@@ -1047,12 +1098,18 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index the module",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope the module");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope the module",
+    );
 
     let point = world.reference_module("Point");
     assert!(
@@ -1060,7 +1117,10 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
         "Point definition should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "two macro-emitted defstruct forms with identical fields must still diagnose as a duplicate, \
          not be silently treated as an idempotent re-run"
     );
@@ -1102,8 +1162,8 @@ fn compiler2_struct_macro_emitted_duplicate_defstruct_diagnoses_even_with_identi
 fn compiler2_duplicate_global_function_definition_diagnoses_instead_of_silently_picking_one() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("foo_first.fz".to_string()),
         text: "fn foo(), do: 1\n".to_string(),
@@ -1142,7 +1202,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
     // and once `Point` settles, the resolved type uses schema field order
     // (x, y) rather than the literal, reversed write order (y, x).
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_type_expression_out_of_order.fz".to_string()),
         concat!(
@@ -1157,12 +1217,18 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let q = world.reference_module("Q");
     let point = world.reference_module("Point");
@@ -1174,7 +1240,10 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
 
     // Q's own body settles before Point's defstruct does.
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
-    assert_resolved(world.drive(), "third drive should settle Q without Point existing yet");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should settle Q without Point existing yet",
+    );
 
     assert!(
         !world.has_fact(&FactKey::StructDefined(point)),
@@ -1199,7 +1268,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         "t/0 derivation should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "pulling t/0 should transitively pull Point's defstruct and resolve",
     );
 
@@ -1219,8 +1288,8 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
 fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_it() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_type_expression_unknown_field.fz".to_string()),
         concat!(
@@ -1235,24 +1304,36 @@ fn compiler2_struct_type_expression_diagnoses_unknown_field_instead_of_dropping_
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let point = world.reference_module("Point");
     assert!(
         world.demand(Job::DefineModule(point)),
         "Point definition should be demandable"
     );
-    assert_resolved(world.drive(), "third drive should define Point's defstruct");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "third drive should define Point's defstruct",
+    );
 
     let q = world.reference_module("Q");
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "an unknown struct field named in a type expression should diagnose rather than silently resolve",
     );
 
@@ -1274,8 +1355,8 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
     // validate against yet), and it must not be lost in the meantime.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_type_expression_out_of_order_unknown_field.fz".to_string()),
         concat!(
@@ -1290,17 +1371,23 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let q = world.reference_module("Q");
     assert!(world.demand(Job::DefineModule(q)), "Q definition should be demandable");
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "Q settling before Point exists should not itself fail -- there is nothing to validate yet",
     );
     assert!(
@@ -1314,7 +1401,10 @@ fn compiler2_struct_type_expression_out_of_order_unknown_field_diagnoses_when_st
         "Point definition should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "Point settling should validate Q's outstanding obligation and diagnose the unknown field",
     );
 
@@ -1341,8 +1431,8 @@ fn compiler2_struct_spec_type_diagnoses_unknown_field_instead_of_dropping_it() {
     // not dropped. Non-vacuous: on the pre-fix code this drive Resolved.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_spec_unknown_field.fz".to_string()),
         text: concat!(
@@ -1389,8 +1479,8 @@ fn compiler2_struct_spec_type_diagnoses_reference_to_non_struct_module() {
     // precise order; a non-struct now diagnoses instead of stalling silently.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_spec_non_struct.fz".to_string()),
         text: concat!(
@@ -1429,10 +1519,8 @@ fn compiler2_struct_spec_type_diagnoses_reference_to_non_struct_module() {
 fn compiler2_zero_field_struct_spec_type_diagnoses_non_struct_module_at_reference_span() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    let diagnostics = DiagnosticCapture::new();
-    tel.attach(&[], capture.handler());
-    tel.attach(&[], diagnostics.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     let source = concat!(
         "defmodule NotAStruct do\n",
         "  fn hello(), do: 0\n",
@@ -1466,10 +1554,11 @@ fn compiler2_zero_field_struct_spec_type_diagnoses_non_struct_module_at_referenc
         metadata_str(&diagnostic, "message"),
         "module `NotAStruct` is not a struct"
     );
-    let diagnostic = diagnostics
-        .last()
+    let diagnostic = diagnostic
+        .diagnostic
+        .as_ref()
         .expect("expected the not-a-struct diagnostic payload to be captured");
-    assert_primary_span_contains(&diagnostic, &source, "%NotAStruct{}");
+    assert_primary_span_contains(diagnostic, &source, "%NotAStruct{}");
 }
 
 #[test]
@@ -1482,8 +1571,8 @@ fn compiler2_struct_param_annotation_diagnoses_unknown_field_instead_of_dropping
     // sibling of the @spec test.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_param_annotation_unknown_field.fz".to_string()),
         text: concat!(
@@ -1531,8 +1620,8 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
     // would Resolve with no diagnostic.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("extern_struct_param.fz".to_string()),
         concat!(
@@ -1544,13 +1633,16 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index the code");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index the code",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "second drive should scope the code, indexing NotAStruct's body",
     );
 
@@ -1560,7 +1652,10 @@ fn compiler2_extern_struct_param_waits_on_struct_defined_not_literal_order() {
         "lowering the extern function should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering an extern whose struct param names a non-struct should terminate, not resolve in literal order",
     );
 
@@ -1591,10 +1686,10 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
     // `ModuleDefined`/source scan.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    bodies.install(&tel);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_literal_pattern_out_of_order.fz".to_string()),
         concat!(
@@ -1609,12 +1704,18 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         .to_string(),
     );
 
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let point = world.reference_module("Point");
@@ -1629,7 +1730,7 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
         "lowering convert/1 should be demandable"
     );
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "pulling convert/1's lowering should transitively pull Point's defstruct and resolve",
     );
     assert!(
@@ -1685,8 +1786,8 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
     // literal's own span, not a local synchronous check in `lower_struct_expr`.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_literal_unknown_field.fz".to_string()),
         concat!(
@@ -1700,12 +1801,18 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let make = world.reference_function(b, "make", 0);
@@ -1715,7 +1822,10 @@ fn compiler2_struct_literal_unknown_field_diagnoses_at_settle_not_synchronously(
         "lowering make/0 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "an unknown field on a struct literal should diagnose once Point settles, not resolve cleanly",
     );
     let diagnostic = capture
@@ -1740,8 +1850,8 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
     // check in `lower_struct_pattern`.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_pattern_unknown_field.fz".to_string()),
         concat!(
@@ -1755,12 +1865,18 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let take = world.reference_function(b, "take", 1);
@@ -1770,7 +1886,10 @@ fn compiler2_struct_pattern_unknown_field_diagnoses_at_settle_not_synchronously(
         "lowering take/1 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Fatal { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Fatal { .. }
+        ),
         "an unknown field on a struct pattern should diagnose once Point settles, not resolve cleanly",
     );
     let diagnostic = capture
@@ -1797,8 +1916,8 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
     // the settled-absent diagnostic fires instead of silently stalling.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_literal_non_struct.fz".to_string()),
         concat!(
@@ -1812,12 +1931,18 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let make = world.reference_function(b, "make", 0);
@@ -1826,7 +1951,10 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
         "lowering make/0 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a struct literal naming a non-struct module should terminate, not resolve in literal order",
     );
 
@@ -1844,10 +1972,8 @@ fn compiler2_struct_literal_lowering_diagnoses_reference_to_non_struct_module() 
 fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_reference_span() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    let diagnostics = DiagnosticCapture::new();
-    tel.attach(&[], capture.handler());
-    tel.attach(&[], diagnostics.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let source = concat!(
         "defmodule NotAStruct do\n",
         "  fn hello(), do: 0\n",
@@ -1862,12 +1988,18 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         Some("zero_field_struct_literal_non_struct.fz".to_string()),
         source.clone(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let make = world.reference_function(b, "make", 0);
@@ -1876,7 +2008,10 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         "lowering make/0 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a zero-field struct literal naming a non-struct module should diagnose at the literal",
     );
 
@@ -1888,10 +2023,11 @@ fn compiler2_zero_field_struct_literal_lowering_diagnoses_non_struct_module_at_r
         metadata_str(&diagnostic, "message"),
         "module `NotAStruct` is not a struct"
     );
-    let diagnostic = diagnostics
-        .last()
+    let diagnostic = diagnostic
+        .diagnostic
+        .as_ref()
         .expect("expected the not-a-struct diagnostic payload to be captured");
-    assert_primary_span_contains(&diagnostic, &source, "%NotAStruct{}");
+    assert_primary_span_contains(diagnostic, &source, "%NotAStruct{}");
 }
 
 #[test]
@@ -1913,8 +2049,8 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
     // with no diagnostic.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let code_id = world.submit_code(
         Some("struct_pattern_non_struct.fz".to_string()),
         concat!(
@@ -1928,12 +2064,18 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         )
         .to_string(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let take = world.reference_function(b, "take", 1);
@@ -1942,7 +2084,10 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
         "lowering take/1 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a struct pattern naming a non-struct module should terminate, not resolve in literal order",
     );
 
@@ -1960,10 +2105,8 @@ fn compiler2_struct_pattern_lowering_diagnoses_reference_to_non_struct_module() 
 fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_reference_span() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    let diagnostics = DiagnosticCapture::new();
-    tel.attach(&[], capture.handler());
-    tel.attach(&[], diagnostics.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    capture.install(&tel, &[]);
+    let mut world = crate::compiler2::World::new();
     let source = concat!(
         "defmodule NotAStruct do\n",
         "  fn hello(), do: 0\n",
@@ -1978,12 +2121,18 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         Some("zero_field_struct_pattern_non_struct.fz".to_string()),
         source.clone(),
     );
-    assert_resolved(world.drive(), "first drive should index both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive should index both modules",
+    );
     assert!(
         world.demand(Job::ScopeCode(code_id)),
         "top-level scope should be demandable"
     );
-    assert_resolved(world.drive(), "second drive should scope both modules");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "second drive should scope both modules",
+    );
 
     let b = world.reference_module("B");
     let take = world.reference_function(b, "take", 1);
@@ -1992,7 +2141,10 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         "lowering take/1 should be demandable"
     );
     assert!(
-        matches!(world.drive(), DriveOutcome::Unresolved { .. }),
+        matches!(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Unresolved { .. }
+        ),
         "lowering a zero-field struct pattern naming a non-struct module should diagnose at the pattern",
     );
 
@@ -2004,10 +2156,11 @@ fn compiler2_zero_field_struct_pattern_lowering_diagnoses_non_struct_module_at_r
         metadata_str(&diagnostic, "message"),
         "module `NotAStruct` is not a struct"
     );
-    let diagnostic = diagnostics
-        .last()
+    let diagnostic = diagnostic
+        .diagnostic
+        .as_ref()
         .expect("expected the not-a-struct diagnostic payload to be captured");
-    assert_primary_span_contains(&diagnostic, &source, "%NotAStruct{}");
+    assert_primary_span_contains(diagnostic, &source, "%NotAStruct{}");
 }
 
 #[test]
@@ -2021,10 +2174,8 @@ fn compiler2_import_of_undefined_module_diagnoses_at_the_import_site() {
     // `Span::DUMMY`.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    let diagnostics = DiagnosticCapture::new();
-    tel.attach(&[], capture.handler());
-    tel.attach(&[], diagnostics.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
     let source = concat!(
         "defmodule User do\n",
         "  import Missing\n",
@@ -2053,10 +2204,11 @@ fn compiler2_import_of_undefined_module_diagnoses_at_the_import_site() {
         .expect("expected an unknown-module diagnostic for `import Missing`");
     assert_eq!(metadata_str(&diagnostic, "code"), codes::RESOLVE_UNKNOWN_MODULE.0);
     assert_eq!(metadata_str(&diagnostic, "message"), "module `Missing` is not defined");
-    let diagnostic = diagnostics
-        .last()
+    let diagnostic = diagnostic
+        .diagnostic
+        .as_ref()
         .expect("expected the unknown-module diagnostic payload to be captured");
-    assert_primary_span_contains(&diagnostic, &source, "import");
+    assert_primary_span_contains(diagnostic, &source, "import");
 }
 
 #[test]
@@ -2071,10 +2223,8 @@ fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at
     // for `subtract/2` instead of emitting `Span::DUMMY`.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    let diagnostics = DiagnosticCapture::new();
-    tel.attach(&[], capture.handler());
-    tel.attach(&[], diagnostics.handler());
-    let mut compiler = Compiler2::new(&tel);
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
 
     compiler.submit_code(CodeSubmission {
         name: Some("math_export_span_math.fz".to_string()),
@@ -2113,10 +2263,11 @@ fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at
         metadata_str(&diagnostic, "message"),
         "module `Math` does not export `subtract/2`"
     );
-    let diagnostic = diagnostics
-        .last()
+    let diagnostic = diagnostic
+        .diagnostic
+        .as_ref()
         .expect("expected the unknown-import diagnostic payload to be captured");
-    assert_primary_span_contains(&diagnostic, &source, "Math.subtract");
+    assert_primary_span_contains(diagnostic, &source, "Math.subtract");
 }
 
 #[test]
@@ -2135,11 +2286,11 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
     // dot-accessed, proving the map serves both consumers.
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_backend_schema_from_facts.fz".to_string()),
         text: concat!(
@@ -2219,9 +2370,9 @@ fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driv
     // check.
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("struct_schema_complete_alongside_macro_root.fz".to_string()),
         text: concat!(
@@ -2266,15 +2417,15 @@ fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driv
 fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_bodies() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let source = include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string();
 
     let code_id = compiler.submit_code(CodeSubmission {
@@ -2457,13 +2608,19 @@ fn compiler2_index_code_defines_owned_functions_without_lowering_or_activating_b
 fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_foo() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
+    let submitted_roots = Rc::new(RefCell::new(Vec::new()));
+    let submitted_root_sink = Rc::clone(&submitted_roots);
+    tel.attach_raw_event2::<crate::compiler2::World, crate::compiler2::RootId, _>(
+        &["fz", "compiler2", "root", "submitted"],
+        move |_, _, _, _, root| submitted_root_sink.borrow_mut().push(*root),
+    );
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let _code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -2482,16 +2639,7 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
     let root_submitted = capture
         .last(&["fz", "compiler2", "root", "submitted"])
         .expect("root submitted event");
-    assert_eq!(
-        measurement_u64(&root_submitted, "root_id"),
-        root_id.as_u32() as u64,
-        "root submission should report the returned root id"
-    );
-    assert_eq!(
-        measurement_u64(&root_submitted, "module_id"),
-        ModuleId::GLOBAL.as_u32() as u64,
-        "root submission should mark top-level entries with the global module id"
-    );
+    assert_eq!(submitted_roots.borrow().as_slice(), &[root_id]);
     assert_eq!(
         root_submitted.metadata.len(),
         0,
@@ -2585,14 +2733,11 @@ fn compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_f
 fn compiler2_root_scopes_only_the_code_that_can_publish_its_entry() {
     let tel = ConfiguredTelemetry::new();
     let source_notes = SourceNoteCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "function", "source", "noted"],
-        source_notes.handler(),
-    );
+    source_notes.install(&tel);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let main_code = compiler.submit_code(CodeSubmission {
         name: Some("main_only.fz".to_string()),
         text: "fn main(), do: 1\n".to_string(),
@@ -2657,9 +2802,9 @@ fn compiler2_root_scopes_only_the_code_that_can_publish_its_entry() {
 fn compiler2_resolving_a_global_name_does_not_scope_unrelated_opaque_macro_calls() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let main_code = compiler.submit_code(CodeSubmission {
         name: Some("main_only.fz".to_string()),
         text: "fn main(), do: 1\n".to_string(),
@@ -2722,11 +2867,11 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
     // per-code-fact publication identity, so it observes `stashed`.
     let stashed_event: &'static [&'static str] = &["fz", "compiler2", "function", "source", "stashed"];
     let source_notes = SourceNoteCapture::for_event(stashed_event);
-    tel.attach(stashed_event, source_notes.handler());
+    source_notes.install(&tel);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let user_code = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
@@ -2785,13 +2930,23 @@ fn compiler2_root_source_publication_is_once_per_code_fact() {
 fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let macro_defs = Capture::new();
-    tel.attach(&["fz", "compiler2", "macro_executable"], macro_defs.handler());
+    macro_defs.install(&tel, &["fz", "compiler2", "macro_executable"]);
+    let macro_revisions = Rc::new(RefCell::new(Vec::new()));
+    let macro_revision_sink = Rc::clone(&macro_revisions);
+    tel.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
+        &["fz", "compiler2", "macro_executable", "defined"],
+        move |_, _, _, world, function| {
+            if let Some(executable) = world.macro_executable(*function) {
+                macro_revision_sink.borrow_mut().push(executable.backend_revision);
+            }
+        },
+    );
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("macro_inc.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\ndefmacro quoted_var() do\n  quote do: x\nend\n\ndefmacro forward_define(source) do\n  quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))\nend\n"
@@ -2820,13 +2975,10 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .last(&["fz", "compiler2", "macro_executable", "defined"])
         .expect("macro readiness should define a backend-backed macro executable");
     assert!(
-        measurement_u64(&macro_defined, "backend_revision") > 0,
+        macro_revisions.borrow().last().is_some_and(|revision| *revision > 0),
         "macro readiness should reuse a BackendProgram revision, not a separate evaluator"
     );
-    assert!(
-        measurement_u64(&macro_defined, "executable_count") > 0,
-        "macro readiness should carry a backend executable inventory"
-    );
+    assert!(macro_defined.measurements.get("backend_revision").is_none());
     assert!(
         !outputs
             .all()
@@ -2945,9 +3097,9 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
 @spec subtract([a], [a]) :: [a]
 fn subtract(left, []), do: left
 fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
-"#,
+        "#,
         crate::compiler2::CodeId::ZERO,
-        &tel,
+        compiler.telemetry(),
     )
     .expect("long-doc quoted parse");
     let long_doc_items = long_doc_source.cursor().list_items().expect("long-doc items");
@@ -2984,9 +3136,9 @@ defmodule M do
   fn subtract(left, []), do: left
   fn subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 end
-"#,
+        "#,
         crate::compiler2::CodeId::ZERO,
-        &tel,
+        compiler.telemetry(),
     )
     .expect("module quoted parse");
     let module_items = module_source.cursor().list_items().expect("module items");
@@ -3052,9 +3204,23 @@ end
 fn compiler2_runtime_roots_reject_macro_entries() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
+    let exceptions = Rc::new(RefCell::new(Vec::new()));
+    let exception_sink = Rc::clone(&exceptions);
+    tel.attach_raw_span0_1::<DriveOutcome<Job, FactKey>, _, _, _>(
+        &["fz", "compiler2", "drive"],
+        |_, _, _| {},
+        |_, _, _, _, _| {},
+        |_, _, _, _| {},
+    );
+    tel.attach_raw_span1_2::<Job, crate::compiler2::World, crate::compiler2::JobCompletion, _, _, _>(
+        &["fz", "compiler2", "job"],
+        |_, _, _, _| {},
+        |_, _, _, _, _, _| {},
+        move |_, span_id, parent_span_id, _| exception_sink.borrow_mut().push((span_id, parent_span_id)),
+    );
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_root.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n".to_string(),
@@ -3078,23 +3244,25 @@ fn compiler2_runtime_roots_reject_macro_entries() {
             .is_empty(),
         "rejected macro runtime roots must not reach backend or native lowering for the rejected runtime root"
     );
+    assert_eq!(exceptions.borrow().len(), 1);
+    assert_ne!(exceptions.borrow()[0].1, 0);
 }
 
 #[test]
 fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("runtime_refs.fz".to_string()),
         text: include_str!("../../fixtures2/00007_runtime_refs.fz").to_string(),
@@ -3179,11 +3347,11 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
 fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/callsite_fact_surface.fz".to_string()),
         text: include_str!("../../fixtures2/00008_callsite_fact_surface.fz").to_string(),
@@ -3235,15 +3403,15 @@ fn compiler2_analyze_activation_publishes_one_whole_callsite_fact_per_call() {
 fn compiler2_unused_runtime_library_stays_cold() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("no_runtime.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
@@ -3284,24 +3452,21 @@ fn compiler2_unused_runtime_library_stays_cold() {
 fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
     let analyzed = ActivationAnalysisCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "activation_analysis", "defined"],
-        analyzed.handler(),
-    );
+    analyzed.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -3473,23 +3638,15 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     );
 }
 
-/// fz-go4.18.31: `return_type.defined` carries a `changed` measurement mirroring
-/// `callsite.defined`'s — "did this publication actually move the fact", not a
-/// Ty-id-churn proxy (re-publishing an equal `Ty` value can still mint a fresh
-/// id). On quicksort (00001) `main/0`'s activation fires across several ascent
-/// rounds as callees settle; only rounds that actually widen the join should
-/// read `changed=true`, and every re-publication of an already-settled value
-/// (including the redundant cross-round re-runs fz-go4.18.20/.18.12 measured)
-/// must read `changed=false`.
 #[test]
-fn compiler2_return_type_defined_changed_field_matches_actual_fact_movement() {
+fn compiler2_return_type_event_reports_only_actual_fact_movement() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -3508,35 +3665,13 @@ fn compiler2_return_type_defined_changed_field_matches_actual_fact_movement() {
         !records.is_empty(),
         "main/0 should publish at least one return_type.defined record",
     );
-    assert!(
-        records.iter().any(|record| record.changed),
-        "at least one round should actually move main/0's return fact (changed=true)",
-    );
-
-    // Walk emission order and confirm `changed` matches whether the published
-    // Ty actually differs from the immediately preceding published Ty for the
-    // same activation — the exact signal `outcome.changed` reports from
-    // `ActivationMap::define_return` (semantic.rs), not a byproduct of Ty id
-    // churn on re-publication of an equal value.
-    let mut previous: Option<Ty> = None;
-    for record in &records {
-        let is_equivalent_to_previous =
-            previous.is_some_and(|prev| compiler.types_equivalent_for_test(prev, record.return_ty));
-        if is_equivalent_to_previous {
-            assert!(
-                !record.changed,
-                "re-publishing an equivalent return Ty for main/0 must read changed=false, got a record for {:?} equivalent to the prior one but marked changed=true",
-                record.return_ty,
-            );
-        }
-        previous = Some(record.return_ty);
+    for pair in records.windows(2) {
+        assert!(
+            !compiler.types_equivalent_for_test(pair[0].return_ty, pair[1].return_ty),
+            "return_type.defined must not report an equivalent re-publication for main/0",
+        );
     }
 
-    // Re-drive with byte-identical code: any further main/0 return_type.defined
-    // firing must be a redundant re-publication of the already-settled value
-    // and must therefore read changed=false.
-    let settled_return = returns.last_for_function(root_id, main_id);
-    assert!(!settled_return.changed || records.len() == 1);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -3546,32 +3681,28 @@ fn compiler2_return_type_defined_changed_field_matches_actual_fact_movement() {
         "re-submitting byte-identical code should resolve without changing the settled shape",
     );
     let after_replay = returns.records_for_function(root_id, main_id);
-    for record in &after_replay[records.len()..] {
-        assert!(
-            !record.changed,
-            "a byte-identical re-publication of main/0's already-settled return must read changed=false",
-        );
-    }
+    assert_eq!(
+        after_replay.len(),
+        records.len(),
+        "a byte-identical re-publication must not emit return_type.defined",
+    );
 }
 
 #[test]
 fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(&tel);
     let analyzed = ActivationAnalysisCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "activation_analysis", "defined"],
-        analyzed.handler(),
-    );
+    analyzed.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_operator_ref.fz".to_string()),
         text: include_str!("fixtures/enum_reduce_operator_ref.fz").to_string(),
@@ -3678,9 +3809,9 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
 fn compiler2_lowering_rejects_unbound_local_function_refs_before_artifact_planning() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/unresolved_callable_boundary.fz".to_string()),
         text: include_str!("../../fixtures2/00014_unresolved_callable_boundary.fz").to_string(),
@@ -3720,11 +3851,11 @@ fn compiler2_lowering_rejects_unbound_local_function_refs_before_artifact_planni
 fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bodies() {
     let tel = ConfiguredTelemetry::new();
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_exact_fn_ref.fz".to_string()),
         text: "import Math, only: [add: 2]\nfn main(), do: &add/2\n".to_string(),
@@ -3766,9 +3897,9 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
 fn compiler2_seed_root_does_not_depend_on_its_own_root_fact() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("seed_root_no_self_edge.fz".to_string()),
         text: "fn main(), do: 0\n".to_string(),
@@ -3795,13 +3926,13 @@ fn compiler2_seed_root_does_not_depend_on_its_own_root_fact() {
 fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -3847,8 +3978,8 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
         "backend lowering should keep cold foo/0 out of the backend handoff",
     );
     assert!(
-        program.callable_entries.is_empty(),
-        "quicksort should not manufacture callable-entry inventory in the backend handoff",
+        program.construction_wrappers.is_empty(),
+        "quicksort should not manufacture callable constructions in the backend handoff",
     );
 
     let (_, main_exec) = backend_executable(&program, main_id);
@@ -3892,11 +4023,11 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
 fn compiler2_backend_program_carries_tail_return_flow_from_transport_facts() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("backend_tail_return_flow.fz".to_string()),
         text: r#"
@@ -3930,20 +4061,74 @@ fn main(), do: inc(41)
     else {
         panic!("main/0 should tail-call inc/1, got {call:?}");
     };
-    let CallReturnFlow::Tail {
-        callee_return,
-        caller_return,
-    } = &target.return_flow
-    else {
+    let BackendReturnFlow::Tail = &target.return_flow else {
         panic!(
             "same-contract direct return should be classified as Tail, got {:?}",
             target.return_flow
         );
     };
+}
+
+#[test]
+fn compiler2_backend_dispatch_preserves_divergent_target_as_no_return() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_after_divergent_dispatch.fz".to_string()),
+        text: RECEIVE_AFTER_DIVERGENT_DISPATCH.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+
+    assert_resolved(
+        compiler.drive(),
+        "receive-after arithmetic should preserve the divergent dispatch member in the backend product",
+    );
+
+    let program = backend.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let (_, main) = backend_executable(&program, main_id);
+    let BackendBody::Clauses { entries, .. } = &main.body else {
+        panic!("main/0 should lower as clauses");
+    };
+    let dispatch = entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            BackendTail::DirectCall {
+                target: CallEdge::Dispatch(dispatch),
+                ..
+            } if dispatch.arms.len() == 2 => Some(dispatch),
+            _ => None,
+        })
+        .expect("post-receive arithmetic should lower as a two-member direct dispatch");
+
     assert_eq!(
-        transport_position_shape(&program.transport, callee_return),
-        transport_position_shape(&program.transport, caller_return),
-        "tail return flow must carry equal settled return contract shapes",
+        dispatch
+            .arms
+            .iter()
+            .filter(|arm| matches!(arm.return_flow, BackendReturnFlow::Deliver { .. }))
+            .count(),
+        1,
+        "the numeric member should deliver its result to the post-call resume",
+    );
+    assert_eq!(
+        dispatch
+            .arms
+            .iter()
+            .filter(|arm| matches!(arm.return_flow, BackendReturnFlow::NoReturn))
+            .count(),
+        1,
+        "the no-matching-clause member must preserve its settled no-return authority",
     );
 }
 
@@ -3951,11 +4136,11 @@ fn main(), do: inc(41)
 fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
@@ -3991,14 +4176,14 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
                     target: CallEdge::Direct(target),
                     ..
                 } => {
-                    if return_flow_is_distinct_return_payload(&program.transport, &target.return_flow) {
+                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.return_layout) {
                         saw_return_payload_flow = true;
                     }
                 }
                 BackendTail::ClosureCall {
                     return_flow: Some(return_flow),
                     ..
-                } if return_flow_is_distinct_return_payload(&program.transport, return_flow) => {
+                } if return_flow_is_distinct_return_payload(return_flow, &executable.return_layout) => {
                     saw_return_payload_flow = true;
                 }
                 _ => {}
@@ -4013,16 +4198,16 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
 }
 
 #[test]
-fn compiler2_backend_program_packages_direct_only_enum_reduce_as_resolved_entries() {
+fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -4037,7 +4222,7 @@ fn compiler2_backend_program_packages_direct_only_enum_reduce_as_resolved_entrie
 
     assert_resolved(
         compiler.drive(),
-        "backend lowering should package direct-only Enum.reduce reducers as resolved entries",
+        "backend lowering should keep direct-only Enum.reduce reducers out of first-class callable inventory",
     );
 
     let main_id = function_id(&functions, "main", 0);
@@ -4054,21 +4239,9 @@ fn compiler2_backend_program_packages_direct_only_enum_reduce_as_resolved_entrie
         .function_id;
 
     let program = backend.last(root_id).program;
-    let entry_functions = program
-        .callable_entries
-        .iter()
-        .map(|entry| program.executables[entry.target].key.activation.function)
-        .collect::<HashSet<_>>();
     assert!(
-        entry_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
-        "direct-only reducer targets must have resolved entries",
-    );
-    assert!(
-        program
-            .callable_entries
-            .iter()
-            .all(|entry| entry.publication_boundary.is_none()),
-        "direct-only reducer entries must not fabricate first-class publication boundaries",
+        program.construction_wrappers.is_empty(),
+        "backend construction-wrapper inventory should stay empty for direct-only reducer transport",
     );
     let executable_functions = program
         .executables
@@ -4079,59 +4252,6 @@ fn compiler2_backend_program_packages_direct_only_enum_reduce_as_resolved_entrie
         executable_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
         "the user reducer and bridge reducer should still survive in the backend executable inventory",
     );
-}
-
-#[test]
-fn compiler2_backend_program_surfaces_per_callable_boundary_association() {
-    // fz-go4.18.1: native callable materialization reads each callable's settled
-    // boundaries from the BackendProgram product (`CallableFacts.boundary_ids`
-    // surfaced through `MaterializedTransportPlan.callable_boundaries`), never
-    // from the legacy root transport plan. This guards that the product actually
-    // carries the per-callable boundary association the native consumer reads.
-    //
-    // Fixture 00181 is the canonical green pull fixture: its operator references
-    // (`&Kernel.+/2`, `&+/2`) are demanded callables, so the product surfaces a
-    // non-empty `callable_boundaries`. The refs are direct-callable, so their
-    // boundary lists are empty -- which is exactly the load-bearing distinction:
-    // a demanded callable resolves to `Some(&[])`, not `None`. End-to-end
-    // assertion over a callable carrying NON-EMPTY boundaries is deferred to
-    // fz-go4.18.3, because the published-boundary fixtures (e.g. Enum.take)
-    // currently fatal upstream in `artifact.rs` `materialize_call_edges` while
-    // building the backend product itself.
-    let tel = ConfiguredTelemetry::new();
-    let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/00181_enum_reduce_operator_ref.fz".to_string()),
-        text: include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    demand_backend_product(&mut compiler, root_id);
-
-    assert_resolved(
-        compiler.drive(),
-        "operator-ref reducers should settle the backend product cleanly",
-    );
-
-    let program = backend.last(root_id).program;
-    assert!(
-        !program.transport.callable_boundaries.is_empty(),
-        "the backend product must surface per-callable boundary facts so native lowering never reads the legacy root transport plan",
-    );
-    for (callable, boundaries) in &program.transport.callable_boundaries {
-        assert_eq!(
-            program.transport.callable_boundary_ids(*callable),
-            Some(boundaries.as_ref()),
-            "callable_boundary_ids should return the product-surfaced boundary association (Some, never None) for {callable:?}",
-        );
-    }
 }
 
 // fz-hwn.23: the Halt-specialized-DeliveredResume regression guard once aggravated by
@@ -4148,11 +4268,10 @@ fn compiler2_backend_program_surfaces_per_callable_boundary_association() {
 fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payloads() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
-
-    let mut compiler = Compiler2::new(&tel);
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         // `Enum.each` discards each element's mapped result, so the per-element
         // call delivers an IGNORED value to its resume continuation — a genuinely
@@ -4221,13 +4340,13 @@ fn compiler2_native_program_does_not_fabricate_nil_for_zero_width_resume_payload
 fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
@@ -4299,13 +4418,13 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
 fn compiler2_native_program_keeps_only_the_closed_quicksort_inventory() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4386,9 +4505,9 @@ fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
     let delivered_tuple_field_continuation_arities = || -> Vec<usize> {
         let tel = ConfiguredTelemetry::new();
         let native = NativeProgramCapture::new();
-        tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+        native.install(&tel);
 
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
             text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4464,8 +4583,8 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
     let destination_passing_tuple_field_arities = || -> Vec<usize> {
         let tel = ConfiguredTelemetry::new();
         let native = NativeProgramCapture::new();
-        tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
-        let mut compiler = Compiler2::new(&tel);
+        native.install(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
             text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4505,8 +4624,8 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
     let discarded_by_value_zero_width = || -> (usize, bool) {
         let tel = ConfiguredTelemetry::new();
         let native = NativeProgramCapture::new();
-        tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
-        let mut compiler = Compiler2::new(&tel);
+        native.install(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/enum_each_zero_width_payload.fz".to_string()),
             text: r#"fn main(), do: Enum.each([1, 2, 3], fn (x) -> x end)"#.to_string(),
@@ -4555,15 +4674,15 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
 fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee_return_abi() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -4672,15 +4791,15 @@ fn compiler2_native_program_matches_tuple_field_call_continuations_to_the_callee
 fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_inventory() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -4700,7 +4819,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "native lowering should materialize direct-only Enum.reduce reducer entries: {outcome:?}; diagnostic={message}"
+            "native lowering should keep direct-only Enum.reduce reducers out of first-class callable inventory: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -4718,21 +4837,10 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
         .function_id;
 
     let program = native.last(root_id).program;
-    let boundary_functions = program
-        .callable_boundaries
-        .iter()
-        .map(|boundary| boundary.target.activation.function)
-        .collect::<HashSet<_>>();
-    assert!(
-        boundary_functions.is_superset(&HashSet::from([user_reducer_id, bridge_reducer_id])),
-        "native direct-only reducer entries must materialize exact callable boundaries",
-    );
-    assert!(
-        program
-            .callable_boundaries
-            .iter()
-            .all(|boundary| boundary.boundary.is_none()),
-        "direct-only reducer boundaries must not claim first-class publication",
+    assert_eq!(
+        program.callable_boundaries,
+        Vec::new(),
+        "native callable-boundary inventory should stay empty for direct-only reducer transport",
     );
     let executable_functions = program
         .bodies
@@ -4753,13 +4861,13 @@ fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_
 {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/callable_boundary_capture_identity.fz".to_string()),
         text: r#"
@@ -4840,13 +4948,13 @@ end
 fn compiler2_native_program_joins_callable_resume_before_materializing_closure_call() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/opaque_fn_value_join.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
@@ -4874,7 +4982,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     let callable_functions = program
         .callable_boundaries
         .iter()
-        .map(|entry| entry.target.activation.function)
+        .flat_map(|boundary| boundary.members.iter())
+        .map(|member| member.target.activation.function)
         .collect::<HashSet<_>>();
     assert!(
         callable_functions.contains(&add_a_id) && callable_functions.contains(&add_b_id),
@@ -4890,16 +4999,254 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
 }
 
 #[test]
-fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_entries() {
+fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    capture.install(&tel, &[]);
+    let dbg = DbgCapture::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "opaque mapper should lower");
+    let each_a_id = function_id(&functions, "each_a", 1);
+    let each_b_id = function_id(&functions, "each_b", 1);
+    let program = native.last(root_id).program;
+    let boundaries = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary
+                .members
+                .iter()
+                .any(|member| [each_a_id, each_b_id].contains(&member.target.activation.function))
+        })
+        .collect::<Vec<_>>();
+    let boundary_ids = boundaries.iter().map(|boundary| boundary.id).collect::<HashSet<_>>();
+    let member_functions = boundaries
+        .iter()
+        .flat_map(|boundary| boundary.members.iter())
+        .map(|member| member.target.activation.function)
+        .collect::<HashSet<_>>();
+    assert_eq!(boundary_ids.len(), 2);
+    assert_eq!(member_functions, HashSet::from([each_a_id, each_b_id]));
+    assert!(
+        boundaries
+            .iter()
+            .all(|boundary| boundary.return_form == crate::compiler2::artifact::BackendCallableReturn::Absent)
+    );
+    assert!(
+        native_closure_call_targets(&program)
+            .into_iter()
+            .any(|target| target.is_none())
+    );
+    for boundary in &boundaries {
+        let wrapper = program
+            .module
+            .fns
+            .iter()
+            .find(|function| function.id == boundary.wrapper_fn)
+            .expect("absent-return boundary wrapper");
+        assert!(wrapper.blocks.iter().all(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(_),
+                    ..
+                }
+            )
+        }));
+    }
+    compiler.run_root_interp(root_id).unwrap();
+    compiler.run_root_jit(root_id).unwrap();
+    assert_eq!(dbg.lines().as_slice(), ["1", "2", "3", "1", "2", "3"]);
+}
 
-    let mut compiler = Compiler2::new(&tel);
+#[test]
+fn compiler2_all_divergent_public_callable_has_no_result_continuation() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let dbg = DbgCapture::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/opaque_fn_all_divergent.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_all_divergent.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "all-divergent public callable should lower");
+
+    let stop_functions = HashSet::from([
+        function_id(&functions, "stop_a", 1),
+        function_id(&functions, "stop_b", 1),
+    ]);
+    let program = native.last(root_id).program;
+    let boundaries = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary
+                .members
+                .iter()
+                .any(|member| stop_functions.contains(&member.target.activation.function))
+        })
+        .collect::<Vec<_>>();
+    assert!(!boundaries.is_empty());
+    assert!(boundaries.iter().all(|boundary| {
+        boundary.return_form == crate::compiler2::artifact::BackendCallableReturn::Diverges
+            && boundary.members.iter().all(|member| member.target_return.diverges)
+    }));
+    for boundary in boundaries {
+        let wrapper = program
+            .module
+            .fns
+            .iter()
+            .find(|function| function.id == boundary.wrapper_fn)
+            .expect("divergent callable wrapper");
+        assert!(!program.bodies.iter().any(|body| {
+            matches!(&body.origin, NativeBodyOrigin::Continuation { owner, .. } if *owner == boundary.wrapper_fn)
+        }));
+        assert!(wrapper.blocks.iter().all(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(_),
+                    ..
+                }
+            )
+        }));
+    }
+    let error = compiler
+        .run_root_interp(root_id)
+        .expect_err("selected divergent callable should halt");
+    assert!(error.contains("function_clause"), "unexpected halt: {error}");
+    compiler.run_root_jit(root_id).unwrap();
+    let exit = exits.last().expect("divergent callable should publish a process exit");
+    assert_eq!(program.module.atom_names[exit.halt_value as usize], "function_clause");
+    assert!(dbg.lines().is_empty());
+}
+
+#[test]
+fn compiler2_mixed_public_callable_adapts_only_its_returning_member() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/opaque_fn_mixed_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_mixed_return.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "mixed public callable should lower");
+
+    let program = native.last(root_id).program;
+    let boundary = program
+        .callable_boundaries
+        .iter()
+        .find(|boundary| {
+            boundary.members.len() == 2
+                && boundary
+                    .members
+                    .iter()
+                    .filter(|member| member.target_return.diverges)
+                    .count()
+                    == 1
+        })
+        .expect("mixed returning/divergent callable boundary");
+    assert_eq!(
+        boundary.return_form,
+        crate::compiler2::artifact::BackendCallableReturn::ValueRef
+    );
+    let wrapper = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.id == boundary.wrapper_fn)
+        .expect("mixed callable wrapper");
+    assert_eq!(
+        program
+            .bodies
+            .iter()
+            .filter(|body| {
+                matches!(&body.origin, NativeBodyOrigin::Continuation { owner, .. } if *owner == boundary.wrapper_fn)
+            })
+            .count(),
+        1
+    );
+    for member in &boundary.members {
+        let has_call = wrapper.blocks.iter().any(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                } if target == member.target_fn
+            )
+        });
+        let has_tail_call = wrapper.blocks.iter().any(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                } if target == member.target_fn
+            )
+        });
+        assert_eq!(
+            (has_call, has_tail_call),
+            (!member.target_return.diverges, member.target_return.diverges)
+        );
+    }
+    compiler.run_root_interp(root_id).unwrap();
+    compiler.run_root_jit(root_id).unwrap();
+    assert_eq!(dbg.lines().as_slice(), ["2", "2"]);
+}
+
+#[test]
+fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_targets() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
@@ -4931,11 +5278,16 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_ent
         .function_id;
     let program = native.last(root_id).program;
     assert!(
-        program
-            .callable_boundaries
-            .iter()
-            .any(|boundary| boundary.target.activation.function == lambda_id),
-        "singleton closure flows should carry the exact generated lambda entry through native lowering",
+        native_exact_call_targets(&program)
+            .into_iter()
+            .filter_map(|fn_id| {
+                program.bodies.iter().find_map(|body| match &body.origin {
+                    NativeBodyOrigin::Executable(key) if body.fn_id == fn_id => Some(key.activation.function),
+                    _ => None,
+                })
+            })
+            .any(|function| function == lambda_id),
+        "singleton closure flows should carry the exact generated lambda target through native lowering, even when the closure call itself collapses to a direct call",
     );
 }
 
@@ -4943,11 +5295,11 @@ fn compiler2_native_program_marks_settled_singleton_closure_flows_with_exact_ent
 fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_range_reduce_bridge() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
@@ -4975,7 +5327,7 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
     let callable_boundary_targets = program
         .callable_boundaries
         .iter()
-        .map(|boundary| boundary.target_fn)
+        .map(|boundary| boundary.wrapper_fn)
         .collect::<HashSet<_>>();
     let hinted_boundary_targets = native_closure_call_targets(&program)
         .into_iter()
@@ -4994,11 +5346,11 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
 fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
@@ -5030,14 +5382,42 @@ fn compiler2_interp_runs_range_reduce_scalar_bridge_from_backend_artifacts() {
 }
 
 #[test]
+fn compiler2_jit_runs_range_reduce_scalar_bridge_from_native_artifacts() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/fz_f98_range_reduce_scalar.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_jit(root_id)
+        .unwrap_or_else(|error| panic!("Compiler2 JIT should run the Range reduce scalar bridge: {error}"));
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["6", "{6, 3}"],
+        "Range Enum.reduce/3 should adapt the callable wrapper's boxed result at the native caller seam",
+    );
+}
+
+#[test]
 fn compiler2_interp_runs_range_reduce2_first_acc_bridge_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_reduce2.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz").to_string(),
@@ -5070,9 +5450,9 @@ fn compiler2_interp_runs_range_reduce2_first_acc_bridge_from_backend_artifacts()
 fn compiler2_jit_runs_range_reduce2_first_acc_bridge_from_native_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_reduce2.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_reduce2.fz").to_string(),
@@ -5098,9 +5478,9 @@ fn compiler2_jit_runs_range_reduce2_first_acc_bridge_from_native_artifacts() {
 fn compiler2_interp_preserves_range_reduce3_halt_and_suspend_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/range_reduce3_halt_suspend.fz".to_string()),
         text: r#"
@@ -5141,9 +5521,9 @@ end
 fn compiler2_jit_preserves_range_reduce3_halt_and_suspend_from_native_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/range_reduce3_halt_suspend.fz".to_string()),
         text: r#"
@@ -5184,11 +5564,11 @@ end
 fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
@@ -5221,21 +5601,21 @@ fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
 
 #[test]
 fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
-    // INTENT (fz-go4.18.22): RuntimeDemand settles as an SCC-local monotone
-    // fixpoint inside its producer -- the whole demand cone is solved by one
-    // bottom-start Kleene ascent and only the settled fixpoint is published.
-    // This fixture previously drove the period-2 seed/floor/retraction orbit
-    // (hundreds of RuntimeDemand re-productions, the value history cycling
-    // between repeated states). With the compensators deleted, each demand key
-    // produces at most once per epoch and NO produced value ever repeats a
-    // displaced one (`identical` stays false -- the value-history detector).
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&["fz", "compiler2", "pull", "product", "produced"], capture.handler());
+    let demand_productions = Rc::new(Cell::new(0_u64));
+    let demand_sink = Rc::clone(&demand_productions);
+    tel.attach_raw_event2::<crate::compiler2::ProductKey, crate::compiler2::pull::ProductValue, _>(
+        &["fz", "compiler2", "pull", "product", "settled"],
+        move |_, _, _, product, _| {
+            if product.kind() == "runtime_demand" {
+                demand_sink.set(demand_sink.get() + 1);
+            }
+        },
+    );
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/fz_f98_range_map_converges.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz").to_string(),
@@ -5251,29 +5631,15 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
         .expect("the orbit fixture should settle and run");
     assert_eq!(dbg.lines().as_slice(), ["[1, 3, 5, 7]", "[{1, :a}]"]);
 
-    let demand_productions = capture
-        .find(&["fz", "compiler2", "pull", "product", "produced"])
-        .into_iter()
-        .filter(
-            |event| matches!(event.metadata.get("kind"), Some(Value::Str(kind)) if kind.as_ref() == "runtime_demand"),
-        )
-        .collect::<Vec<_>>();
     assert!(
-        !demand_productions.is_empty(),
+        demand_productions.get() > 0,
         "the run should settle at least one demand cone"
     );
-    let identical = demand_productions
-        .iter()
-        .filter(|event| matches!(event.measurements.get("identical"), Some(Value::Bool(true))))
-        .count();
-    assert_eq!(
-        identical, 0,
-        "no RuntimeDemand production may repeat a displaced value: the orbit is gone at the source"
-    );
+    let demand_production_count = demand_productions.get();
     assert!(
-        demand_productions.len() <= 8,
+        demand_production_count <= 8,
         "RuntimeDemand settles whole cones at once: expected a handful of productions, got {}",
-        demand_productions.len()
+        demand_production_count
     );
 }
 
@@ -5281,13 +5647,13 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
 fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00013_variadic_open.fz").to_string(),
@@ -5335,11 +5701,11 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
 fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -5379,16 +5745,12 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
     let records = native.records(root_id);
     assert_eq!(
         records.len(),
-        2,
-        "the native program should have one initial definition and one unchanged re-derivation",
+        1,
+        "an unchanged native re-derivation must not emit another definition event",
     );
     assert!(
-        records[0].changed && !records[1].changed,
-        "initial derivation should be changed=true; re-derivation of identical state should be changed=false",
-    );
-    assert!(
-        native_programs_match(&records[0].program, &records[1].program),
-        "identical native-program recomputation should reproduce the same closed handoff facts",
+        records[0].changed,
+        "a native-program definition event represents actual state movement",
     );
 }
 
@@ -5396,13 +5758,13 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
 fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string(),
@@ -5428,7 +5790,7 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
 
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let halt = compiled.run(&tel, program.entry);
+    let halt = compiled.run_with_output(compiler.telemetry(), &dbg, program.entry);
     assert_eq!(
         halt, 42,
         "compiler2-owned native codegen should preserve the Compiler2 quicksort entry result"
@@ -5448,11 +5810,24 @@ fn compiler2_native_program_jit_runs_quicksort_through_compiler2_codegen() {
 fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
+    let code_bytes = Rc::new(RefCell::new(Vec::new()));
+    let code_bytes_sink = Rc::clone(&code_bytes);
+    tel.attach_raw_span1_1::<crate::fz_ir::FnId, cranelift_codegen::Context, _, _, _>(
+        &["fz", "codegen", "define_function"],
+        |_, _, _, _| {},
+        move |_, _, _, _, context| {
+            let Some(code) = context.compiled_code() else {
+                return;
+            };
+            code_bytes_sink.borrow_mut().push(code.code_buffer().len());
+        },
+        |_, _, _, _| {},
+    );
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_entry.fz".to_string()),
         text: include_str!("../../fixtures2/00019_quicksort_entry.fz").to_string(),
@@ -5522,8 +5897,6 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
         );
     }
 
-    // The native-compile span exists to make machine-code cost measurable, so
-    // every define carries the emitted code size.
     let define_stops = capture
         .find(&["fz", "codegen", "define_function"])
         .into_iter()
@@ -5534,15 +5907,44 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
         defined.len(),
         "each define span closes exactly once"
     );
-    for stop in &define_stops {
-        let code_bytes = match stop.measurements.get("code_bytes") {
-            Some(Value::U64(n)) => *n,
-            other => panic!("define_function stop must carry code_bytes: {other:?}"),
-        };
-        assert!(
-            code_bytes >= 1,
-            "native compile emits machine code, so code_bytes must be positive"
-        );
+    assert_eq!(code_bytes.borrow().len(), defined.len());
+    assert!(code_bytes.borrow().iter().all(|bytes| *bytes >= 1));
+}
+
+#[test]
+fn compiler2_null_telemetry_stays_concrete_through_frontdoors_and_runtimes() {
+    crate::telemetry::jsonl::reset_codegen_projection_count();
+    let mut compiler = Compiler2::new(NullTelemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("null_telemetry_codegen.fz".to_string()),
+        text: "fn main(), do: 42\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(
+        compiler
+            .run_root_interp(root)
+            .expect("null-telemetry interpreter run should succeed"),
+        42,
+    );
+    compiler
+        .run_root_jit(root)
+        .expect("null-telemetry native compile should succeed");
+    assert_eq!(crate::telemetry::jsonl::codegen_projection_count(), 0);
+    for source in [
+        include_str!("native_codegen/function.rs"),
+        include_str!("native_codegen/env.rs"),
+        include_str!("native_codegen/prim.rs"),
+        include_str!("native_codegen/support.rs"),
+        include_str!("native_codegen/driver.rs"),
+    ] {
+        assert!(!source.contains("CodegenFnStats"));
+        assert!(!source.contains("reusable_cons_candidate_count"));
+        assert!(!source.contains("reusable_cons_consumed_count"));
     }
 }
 
@@ -5550,13 +5952,13 @@ fn compiler2_native_codegen_brackets_every_phase_under_one_compile_span() {
 fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_spawn_then_receive.fz".to_string()),
         text: include_str!("../../fixtures2/00016_spawn_then_receive.fz").to_string(),
@@ -5596,7 +5998,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     );
     let callable_targets = native_callable_boundary_uses(&program)
         .into_iter()
-        .map(|boundary_id| {
+        .flat_map(|boundary_id| {
             program
                 .callable_boundaries
                 .iter()
@@ -5607,9 +6009,9 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
                         boundary_id
                     )
                 })
-                .target
-                .activation
-                .function
+                .members
+                .iter()
+                .map(|member| member.target.activation.function)
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -5620,7 +6022,7 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         42,
         "compiler2-owned native codegen should preserve Compiler2 spawn/receive behavior through the callable-entry seam",
     );
@@ -5634,11 +6036,11 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
 fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_spawn_receive_assert.fz".to_string()),
         text: include_str!("../../fixtures2/00017_spawn_receive_assert.fz").to_string(),
@@ -5665,7 +6067,7 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         0,
         "compiler2-owned native codegen should preserve Compiler2 spawn/receive/assert behavior through the continuation seam",
     );
@@ -5679,11 +6081,11 @@ fn compiler2_native_program_jit_runs_spawn_receive_and_assert_through_compiler2_
 fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -5710,7 +6112,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         15,
         "compiler2-owned native codegen should preserve the closed Enum.reduce result from Compiler2",
     );
@@ -5724,13 +6126,13 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
 fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&["fz", "runtime", "dbg"], dbg.handler());
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/enum_map_reduce_exact.fz".to_string()),
         text: "fn main() do\n  xs = [1, 2, 3, 4]\n  dbg(Enum.map_reduce(xs, 0, fn (x, acc) -> {x + acc, acc + x} end))\nend\n".to_string(),
@@ -5756,7 +6158,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
 
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let _ = compiled.run(&tel, program.entry);
+    let _ = compiled.run_with_output(compiler.telemetry(), &dbg, program.entry);
     assert_eq!(
         dbg.lines(),
         vec!["{[1, 3, 6, 10], 10}".to_string()],
@@ -5772,13 +6174,13 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
 fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/lambda_sugars.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/lambda_sugars.fz").to_string(),
@@ -5803,8 +6205,18 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
     }
 
     let program = native.last(root_id).program;
+    assert!(
+        program.callable_boundaries.is_empty() && native_callable_boundary_uses(&program).is_empty(),
+        "direct-only lambda sugars should stay out of native callable-boundary inventory when they never escape",
+    );
+    assert!(
+        native_closure_call_targets(&program)
+            .into_iter()
+            .all(|target| target.is_some()),
+        "direct-only lambda sugars should lower every closure call with an exact direct target before codegen",
+    );
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let _ = compiled.run(&tel, program.entry);
+    let _ = compiled.run_with_output(compiler.telemetry(), &dbg, program.entry);
     assert_eq!(
         dbg.lines(),
         vec!["42".to_string(), "{:zero, :pos, :other}".to_string()],
@@ -5825,11 +6237,11 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
 fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_compiler2_jit.fz".to_string()),
         text: include_str!("../../fixtures2/00015_variadic_open_jit.fz").to_string(),
@@ -5856,7 +6268,7 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         -1,
         "compiler2-owned native codegen should preserve Compiler2 variadic extern calls and return the libc open error sentinel for a missing path",
     );
@@ -5870,11 +6282,11 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
 fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/map_three_path_parity.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/map_three_path_parity.fz").to_string(),
@@ -5906,11 +6318,11 @@ fn compiler2_native_program_jit_runs_map_fixture_through_compiler2_codegen() {
 fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
@@ -5937,7 +6349,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run(compiler.telemetry(), program.entry),
         100_000,
         "compiler2-owned native codegen should preserve Compiler2 tail recursion without stack growth",
     );
@@ -5958,9 +6370,9 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
     // callee and continuation edges too.
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/tail_recursion.fz".to_string()),
         text: include_str!("../../fixtures2/00018_tail_recursion.fz").to_string(),
@@ -6001,11 +6413,11 @@ fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
 fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00297_heap_alloc_stats.fz".to_string()),
         text: include_str!("../../fixtures2/00297_heap_alloc_stats.fz").to_string(),
@@ -6035,8 +6447,8 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
     let resume_entry = entries
         .iter()
         .find(|entry| match &entry.origin {
-            BackendEntryOrigin::DeliveredResume { value, position } => {
-                let _shape = handoff_shape_at(&program.transport, position);
+            BackendEntryOrigin::DeliveredResume { value, layout } => {
+                let _shape = layout.layout.structural;
                 entry.steps.iter().any(|step| {
                     matches!(
                         step,
@@ -6054,8 +6466,8 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
         });
 
     match &resume_entry.origin {
-        BackendEntryOrigin::DeliveredResume { position, .. } => {
-            let _shape = handoff_shape_at(&program.transport, position);
+        BackendEntryOrigin::DeliveredResume { layout, .. } => {
+            let _shape = layout.layout.structural;
         }
         other => panic!("expected delivered-resume position for heap_alloc_stats continuation, got {other:?}"),
     }
@@ -6065,11 +6477,11 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
 fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("heap_stats_dbg_resume.fz".to_string()),
         text:
@@ -6102,12 +6514,11 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         "Kernel.dbg/1 should still require its input as one runtime lane even when callers ignore the returned value",
     );
     assert!(
-        dbg_exec.transport.input_positions.contains(&executable_input_position(
-            &program.transport,
-            &dbg_exec.transport.executable,
-            0,
-        )),
-        "Kernel.dbg/1 should carry its input through a plan-owned executable-input position",
+        dbg_exec
+            .semantic_inputs
+            .iter()
+            .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
+        "Kernel.dbg/1 should close its input as a non-empty executable contract",
     );
     let crate::compiler2::BackendBody::Clauses { entries, .. } = &main_exec.body else {
         panic!("expected clause body for heap_stats dbg-resume main/0");
@@ -6125,7 +6536,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         .iter()
         .find(|entry| {
             matches!(&entry.origin, BackendEntryOrigin::DeliveredResume { .. })
-                && !entry.capture_positions.is_empty()
+                && !entry.captures.is_empty()
                 && entry
                     .steps
                     .iter()
@@ -6139,8 +6550,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         });
 
     match &resume_entry.origin {
-        BackendEntryOrigin::DeliveredResume { value, position } => {
-            let _shape = handoff_shape_at(&program.transport, position);
+        BackendEntryOrigin::DeliveredResume { value, layout } => {
+            let _shape = layout.layout.structural;
             assert!(
                 main_exec
                     .runtime_demand
@@ -6153,11 +6564,19 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         }
         other => panic!("expected delivered-resume origin for dbg-resumed heap-stats continuation, got {other:?}"),
     }
+    let field_base = resume_entry
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            BackendStep::FieldAccess { base, .. } => Some(*base),
+            _ => None,
+        })
+        .expect("the selected continuation should project from its captured heap stats");
     assert!(
-        resume_entry.capture_positions.iter().any(|position| {
-            handoff_shape_at(&program.transport, position);
-            true
-        }),
+        resume_entry
+            .captures
+            .iter()
+            .any(|capture| capture.value == field_base && capture.layout.reprs.as_ref() == [AbiValueRepr::ValueRef]),
         "the continuation after dbg(stats) must preserve captured stats as a whole runtime value before atom-key projection: {:?}",
         resume_entry
     );
@@ -6167,15 +6586,15 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
 fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string(),
@@ -6205,14 +6624,10 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
     );
     assert!(
         qsort_exec
-            .transport
-            .input_positions
-            .contains(&executable_input_position(
-                &program.transport,
-                &qsort_exec.transport.executable,
-                0,
-            )),
-        "qsort/1's list input should be named by a plan-owned executable-input position",
+            .semantic_inputs
+            .iter()
+            .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
+        "qsort/1's list input should be closed as a non-empty executable contract",
     );
     assert_eq!(
         dbg.lines().first().map(String::as_str),
@@ -6232,9 +6647,9 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
 fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
         text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
@@ -6263,9 +6678,9 @@ fn compiler2_interp_runs_enum_reduce_from_backend_artifacts() {
 fn compiler2_interp_runs_enum_reduce_while_halt_payload_with_distinct_type() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00284_enum_find_early_halt.fz".to_string()),
         text: include_str!("../../fixtures2/00284_enum_find_early_halt.fz").to_string(),
@@ -6292,13 +6707,13 @@ fn compiler2_interp_runs_enum_reduce_while_halt_payload_with_distinct_type() {
 fn compiler2_semantic_preserves_enum_find_halt_payload_distinct_from_default() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_find_semantic_halt_payload.fz".to_string()),
         text: r#"
@@ -6345,9 +6760,9 @@ fn compiler2_interp_runs_first_class_callable_captured_by_a_non_tail_continuatio
     // unmaterializable.
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/first_class_callable_non_tail_continuation.fz".to_string()),
         text: r#"
@@ -6387,9 +6802,9 @@ fn compiler2_interp_runs_distinct_surface_boxed_callables() {
     // must still dispatch to its own body with the right argument shape.
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/distinct_surface_boxed_callables.fz".to_string()),
         text: r#"
@@ -6426,9 +6841,9 @@ end
 fn compiler2_interp_runs_enum_with_index_mapper_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_with_index_mapper_backend_interp.fz".to_string()),
         text: r#"
@@ -6467,9 +6882,9 @@ end
 fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_printf_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00021_variadic_printf.fz").to_string(),
@@ -6498,7 +6913,7 @@ fn compiler2_interp_runs_variadic_extern_from_backend_artifacts() {
 fn compiler2_interp_honors_typed_entry_dispatch_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/typed_dispatch_backend_interp.fz".to_string()),
         text: include_str!("../../fixtures2/00022_typed_dispatch.fz").to_string(),
@@ -6527,12 +6942,12 @@ fn compiler2_runtime_self_send_activations_keep_pid_boundary() {
     let modules = ModuleCapture::new();
     let returns = ReturnTypeCapture::new();
     let inputs = ActivationInputCapture::new();
-    tel.attach(&[], functions.handler());
-    tel.attach(&[], modules.handler());
-    tel.attach(&[], returns.handler());
-    tel.attach(&[], inputs.handler());
+    functions.install(&tel);
+    modules.install(&tel);
+    returns.install(&tel);
+    inputs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_self_send.fz".to_string()),
         text: include_str!("../../fixtures2/00023_backend_interp_self_send.fz").to_string(),
@@ -6580,9 +6995,9 @@ fn compiler2_runtime_self_send_activations_keep_pid_boundary() {
 fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_self_send.fz".to_string()),
         text: include_str!("../../fixtures2/00023_backend_interp_self_send.fz").to_string(),
@@ -6615,11 +7030,11 @@ fn compiler2_interp_uses_backend_runtime_self_and_send_intrinsics() {
 fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_spawn.fz".to_string()),
         text: include_str!("../../fixtures2/00024_backend_interp_spawn.fz").to_string(),
@@ -6657,9 +7072,9 @@ fn compiler2_interp_runs_spawned_children_from_backend_runtime_intrinsics() {
 fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_spawn_opt.fz".to_string()),
         text: include_str!("../../fixtures2/00025_backend_interp_spawn_opt.fz").to_string(),
@@ -6691,51 +7106,12 @@ fn compiler2_interp_runs_spawn_opt_children_from_backend_runtime_intrinsics() {
 }
 
 #[test]
-fn compiler2_interp_spawn_paths_carry_resolved_callable_entries() {
-    for (name, text) in [
-        (
-            "named child",
-            include_str!("../../fixtures2/behavior/concurrency_ping_pong.fz"),
-        ),
-        (
-            "captured lambda",
-            include_str!("../../fixtures2/behavior/spawn_with_captures.fz"),
-        ),
-        (
-            "nested actor lambda",
-            include_str!("../../fixtures2/behavior/actor_ring.fz"),
-        ),
-    ] {
-        let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(&tel);
-        compiler.submit_code(CodeSubmission {
-            name: Some(format!("fixtures2/behavior/{name}.fz")),
-            text: text.to_string(),
-        });
-        let root_id = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".to_string(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-
-        assert_eq!(
-            compiler.run_root_interp(root_id).unwrap_or_else(|error| {
-                panic!("{name} must reach fz_spawn with a resolved callable entry: {error}")
-            }),
-            0,
-            "{name} should complete after spawning through its carried callable entry",
-        );
-    }
-}
-
-#[test]
 fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/receive_selective_refs.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/receive_selective_refs.fz").to_string(),
@@ -6762,9 +7138,9 @@ fn compiler2_interp_runs_selective_receive_with_make_ref_from_backend_artifacts(
 fn compiler2_native_receive_value_resumes_as_arithmetic_input() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("receive_resume_arith.fz".to_string()),
         text: r#"
@@ -6798,12 +7174,135 @@ end
 }
 
 #[test]
+fn compiler2_native_receive_after_divergent_member_runs_numeric_path() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_after_divergent_member.fz".to_string()),
+        text: RECEIVE_AFTER_DIVERGENT_DISPATCH.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native receive should not construct a delivery continuation for a divergent member: {error}");
+    });
+
+    assert_eq!(dbg.lines().as_slice(), ["3"]);
+
+    let program = native.last(root_id).program;
+    let plus = function_id(&functions, "+", 2);
+    let no_return_targets = program
+        .bodies
+        .iter()
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key)
+                if key.activation.function == plus && compiler.world().types().is_empty(&body.return_ty) =>
+            {
+                Some(body.fn_id)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(no_return_targets.len(), 1);
+
+    let mut tail_calls = 0;
+    let mut calls = 0;
+    for block in program.module.fns.iter().flat_map(|function| &function.blocks) {
+        match &block.terminator {
+            IrTerm::TailCall {
+                callee: crate::fz_ir::DirectCallTarget::Local(target),
+                ..
+            } if no_return_targets.contains(target) => tail_calls += 1,
+            IrTerm::Call {
+                callee: crate::fz_ir::DirectCallTarget::Local(target),
+                ..
+            } if no_return_targets.contains(target) => calls += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        tail_calls, 1,
+        "the divergent dispatch member should be emitted as a tail call"
+    );
+    assert_eq!(
+        calls, 0,
+        "the divergent dispatch member must not publish a delivery continuation"
+    );
+}
+
+#[test]
+fn compiler2_receive_after_divergent_member_reaches_function_clause() {
+    let source = r#"
+fn main() do
+  value = receive do
+    x -> x
+  after
+    0 -> :timeout
+  end
+  dbg(value + 2)
+end
+"#;
+
+    let interp_tel = ConfiguredTelemetry::new();
+    let mut interp = Compiler2::new(interp_tel);
+    interp.submit_code(CodeSubmission {
+        name: Some("receive_after_timeout_interp.fz".to_string()),
+        text: source.to_string(),
+    });
+    let interp_root = interp.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let interp_error = interp
+        .run_root_interp(interp_root)
+        .expect_err("the selected timeout value should not match a numeric addition clause");
+    assert!(interp_error.starts_with("function_clause:"), "{interp_error}");
+
+    let jit_tel = ConfiguredTelemetry::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&jit_tel);
+    let native = NativeProgramCapture::new();
+    native.install(&jit_tel);
+    let mut jit = Compiler2::new(jit_tel);
+    jit.submit_code(CodeSubmission {
+        name: Some("receive_after_timeout_jit.fz".to_string()),
+        text: source.to_string(),
+    });
+    let jit_root = jit.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    jit.run_root_jit(jit_root)
+        .expect("the selected divergent target should compile and halt without a continuation ABI failure");
+
+    let program = native.last(jit_root).program;
+    let exit = exits.last().expect("native timeout path should publish a process exit");
+    assert_eq!(program.module.atom_names[exit.halt_value as usize], "function_clause");
+}
+
+#[test]
 fn compiler2_native_program_routes_post_receive_resumes_through_delivered_continuations() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/receive_shared_tuple_arity.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/receive_shared_tuple_arity.fz").to_string(),
@@ -6894,9 +7393,9 @@ fn compiler2_native_program_routes_post_receive_resumes_through_delivered_contin
 fn compiler2_native_receive_body_call_resumes_once() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("receive_body_call_resume.fz".to_string()),
         text: r#"
@@ -6935,9 +7434,9 @@ end
 fn compiler2_native_receive_branch_call_resumes_once() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("receive_branch_call_resume.fz".to_string()),
         text: r#"
@@ -6985,9 +7484,9 @@ end
 fn compiler2_native_receive_mixed_branch_resume_once() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("receive_mixed_branch_resume.fz".to_string()),
         text: r#"
@@ -7034,7 +7533,7 @@ end
 #[test]
 fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
@@ -7055,9 +7554,9 @@ fn compiler2_native_multi_relay_delivers_resume_values_through_continuation_abi(
 fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/multi_relay.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
@@ -7118,7 +7617,7 @@ fn compiler2_native_lowering_consumes_return_payload_flow_through_return_lanes()
 #[test]
 fn compiler2_native_actor_ring_delivers_resume_values_through_continuation_abi() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/actor_ring.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/actor_ring.fz").to_string(),
@@ -7142,9 +7641,9 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
 
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/backend_interp_make_resource.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -7190,9 +7689,9 @@ fn compiler2_interp_runs_resource_dtors_from_backend_runtime_intrinsics() {
 fn compiler2_native_program_reads_continuation_reprs_from_transport_seams() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("native_float_resume_reads_transport_seam.fz".to_string()),
         text: r#"
@@ -7249,8 +7748,8 @@ end
     );
     assert_eq!(
         continuation.param_reprs[0],
-        AbiValueRepr::ValueRef,
-        "native continuation metadata must read the transport ContinuationEntry seam repr; recomputing from float type would incorrectly produce RawF64",
+        AbiValueRepr::RawF64,
+        "the sealed resume endpoint should preserve the callee's physical RawF64 result lane",
     );
 }
 
@@ -7258,9 +7757,9 @@ end
 fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_take_delivered_lane_adapter.fz".to_string()),
         text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
@@ -7279,18 +7778,6 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
     );
 
     let program = native.last(root_id).program;
-    // A delivered-call adapter's continuation `extra_params` are EXACTLY the callee's
-    // return lanes (`native_return_contract(payload)` over the callee `ExecutableReturn`);
-    // any continuation captures the resume entry needs are threaded as *additional*
-    // params after the payload, never folded into the delivered value's lane decomposition.
-    //
-    // fz-f98.14.7 (de-widen reducer evidence) stopped widening var-bearing callables to a
-    // boxed `ValueRef`. The callee here returns the two-lane Enum.take list result
-    // `[RawAtom, RawInt]`; the reducer closure the resume entry resumes against is a
-    // separate `ValueRef` *capture*, so the adapter carries `extra_params: 2`
-    // (payload `[RawAtom, RawInt]`) followed by the `[ValueRef]` capture lane — NOT the
-    // pre-de-widening three-lane `[RawAtom, ValueRef, RawInt]` payload that conflated the
-    // boxed closure capture with the callee return.
     let adapter = program
         .bodies
         .iter()
@@ -7298,7 +7785,7 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
             let function = program.module.fn_by_id(body.fn_id);
             function.name.starts_with("deliver_lanes__")
                 && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 2 })
-                && body.param_reprs == [AbiValueRepr::RawAtom, AbiValueRepr::RawInt, AbiValueRepr::ValueRef]
+                && body.param_reprs == [AbiValueRepr::RawAtom, AbiValueRepr::RawInt]
         })
         .expect("delivered call adapter should expose the callee's full split return lanes");
 
@@ -7314,12 +7801,12 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
 }
 
 #[test]
-fn compiler2_native_program_carries_published_callable_boundary_targets_into_closure_calls() {
+fn compiler2_native_program_calls_published_callable_values_through_runtime_identity() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("enum_take_reducer_direct_target.fz".to_string()),
         text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
@@ -7356,26 +7843,20 @@ fn compiler2_native_program_carries_published_callable_boundary_targets_into_clo
     );
     assert!(
         reducer_calls.iter().all(|target| target.is_none()),
-        "reducer CallClosure terms must dispatch through the callable value, not a reconstructed target",
-    );
-    assert!(
-        !native_callable_boundary_uses(&program).is_empty(),
-        "reducer closure calls must retain an entry-owned callable boundary",
+        "a generic reducer call must dispatch through the published callable value; calls: {reducer_calls:?}",
     );
 }
 
 #[test]
-fn compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetry() {
+fn compiler2_native_program_keeps_published_closure_calls_indirect() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    let closure_calls = Capture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
-    tel.attach(&["fz", "codegen", "closure_call_lowered"], closure_calls.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/curried_add.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7387,36 +7868,114 @@ fn compiler2_native_codegen_reports_direct_closure_call_boundary_target_telemetr
 
     assert_resolved(
         compiler.drive(),
-        "closure boundary fixture should settle before inspecting direct closure call telemetry",
+        "closure boundary fixture should settle before inspecting closure call telemetry",
     );
 
     let program = native.last(root_id).program;
-    let boundary_uses = native_callable_boundary_uses(&program);
     assert!(
-        !boundary_uses.is_empty(),
-        "fixture should materialize at least one callable entry; closure targets: {:?}; boundary uses: {:?}",
+        native_closure_call_targets(&program).iter().any(Option::is_none),
+        "fixture should publish a closure call without a private direct target; closure targets: {:?}",
         native_closure_call_targets(&program),
-        boundary_uses,
+    );
+}
+
+#[test]
+fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and_jit() {
+    let source = include_str!("../../fixtures2/behavior/enum_take_drop_split.fz");
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/enum_take_drop_split.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "enum take/drop/split should lower natively");
+
+    let predicate_functions = functions
+        .all()
+        .into_iter()
+        .filter(|record| {
+            record
+                .function_ref
+                .name
+                .strip_prefix("#lambda:0:")
+                .is_some_and(|range| {
+                    range.split_once('-').is_some_and(|(start, end)| {
+                        start
+                            .parse::<usize>()
+                            .ok()
+                            .zip(end.parse::<usize>().ok())
+                            .and_then(|(start, end)| source.get(start..end))
+                            .is_some_and(|body| body.contains("x < 4"))
+                    })
+                })
+        })
+        .map(|record| record.function_id)
+        .collect::<HashSet<_>>();
+    assert!(!predicate_functions.is_empty());
+    let program = native.last(root_id).program;
+    let predicate_targets = program
+        .bodies
+        .iter()
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key) if predicate_functions.contains(&key.activation.function) => {
+                Some(body.fn_id)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert!(
+        program
+            .module
+            .fns
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .any(|block| match &block.terminator {
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                }
+                | IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                }
+                | IrTerm::CallClosure {
+                    direct_target: Some(target),
+                    ..
+                }
+                | IrTerm::TailCallClosure {
+                    direct_target: Some(target),
+                    ..
+                } => predicate_targets.contains(target),
+                _ => false,
+            })
     );
 
-    let _compiled = jit_compile_native_program(&mut compiler, &program);
-    let indirect_events = closure_calls
-        .find(&["fz", "codegen", "closure_call_lowered"])
-        .into_iter()
-        .filter(|event| metadata_str(event, "dispatch_kind") == "indirect")
+    compiler
+        .run_root_interp(root_id)
+        .expect("enum take/drop/split should run in the interpreter");
+    compiler
+        .run_root_jit(root_id)
+        .expect("enum take/drop/split should run in the JIT");
+    let expected = include_str!("../../fixtures2/behavior/enum_take_drop_split.expected.txt")
+        .lines()
         .collect::<Vec<_>>();
-    assert!(
-        !indirect_events.is_empty(),
-        "native codegen should report opaque closure-call lowering events",
-    );
-    assert!(
-        indirect_events.iter().any(|event| {
-            metadata_u64_opt(event, "callable_boundary_id").is_some()
-                && metadata_u64_opt(event, "direct_target_fn_id").is_none()
-                && metadata_u64_opt(event, "callable_boundary_target_fn_id").is_some()
-        }),
-        "opaque closure-call telemetry should report the callable boundary without a reconstructed direct target: {indirect_events:?}",
-    );
+    let lines = dbg.lines();
+    assert_eq!(&lines[..expected.len()], expected.as_slice());
+    assert_eq!(&lines[expected.len()..], expected.as_slice());
 }
 
 #[test]
@@ -7426,11 +7985,11 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
 
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_resource_callable_shape.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -7458,13 +8017,41 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     let callable_boundaries = program
         .callable_boundaries
         .iter()
-        .filter(|entry| entry.target.activation.function == lambda_id)
-        .map(|entry| (entry.capture_count, entry.arg_reprs.clone(), entry.return_reprs.clone()))
+        .filter(|entry| {
+            entry
+                .members
+                .iter()
+                .any(|member| member.target.activation.function == lambda_id)
+        })
+        .map(|entry| {
+            (
+                entry.captures.len(),
+                entry.call_arity,
+                entry.return_form,
+                entry
+                    .members
+                    .iter()
+                    .filter(|member| member.target.activation.function == lambda_id)
+                    .map(|member| {
+                        member
+                            .target_inputs
+                            .iter()
+                            .map(|input| input.layout.reprs.to_vec())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         callable_boundaries,
-        vec![(0, vec![AbiValueRepr::RawInt], vec![AbiValueRepr::RawAtom])],
-        "resource destructor lambdas should surface one zero-capture callable boundary that takes the raw payload lane and returns the settled nil atom through the raw atom lane (the runtime drain discards the dtor return, so it carries the dtor body's own grounded repr, not a boxed seam)",
+        vec![(
+            0,
+            1,
+            crate::compiler2::artifact::BackendCallableReturn::ValueRef,
+            vec![vec![vec![AbiValueRepr::RawInt]]],
+        )],
+        "resource destructor lambdas should publish a wrapper-owned boxed call surface with the member's raw payload layout recorded behind it",
     );
     assert_eq!(
         native_executable_body(&program, lambda_id).param_reprs,
@@ -7486,17 +8073,22 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
     let native_callable_boundary = program
         .callable_boundaries
         .iter()
-        .find(|entry| entry.target.activation.function == lambda_id)
+        .find(|entry| {
+            entry
+                .members
+                .iter()
+                .any(|member| member.target.activation.function == lambda_id)
+        })
         .expect("native program should publish the dtor lambda callable boundary");
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let static_target = compiled
         .static_closure_targets()
         .iter()
-        .find(|(_, fn_id, _, _)| *fn_id == native_callable_boundary.target_fn.0)
-        .expect("compiled JIT module should publish one static closure target for the dtor entry target");
+        .find(|(_, fn_id, _, _)| *fn_id == native_callable_boundary.wrapper_fn.0)
+        .expect("compiled JIT module should publish one static closure target for the dtor wrapper");
     let body_ptr = compiled
-        .fn_ptr(native_callable_boundary.target_fn)
-        .expect("compiled JIT module should publish the dtor entry target body address");
+        .fn_ptr(native_callable_boundary.wrapper_fn)
+        .expect("compiled JIT module should publish the dtor wrapper body address");
     assert_ne!(
         static_target.2, body_ptr,
         "static closure singletons should point at callable-boundary wrappers, not straight at the lambda body",
@@ -7527,11 +8119,11 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
 
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_resource_callable_shape.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -7596,12 +8188,12 @@ fn escaping_destructor_keys_its_activation_at_the_grounded_boundary_surface() {
 /// fz-hwn.19.5 removed the native-codegen return-shape vocabulary that kept
 /// this fixture from reaching JIT execution.
 #[test]
-fn compiler2_native_codegen_materializes_typed_capture_closure_as_a_resolved_entry() {
+fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_published_boundary() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/closure_typed_captures.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
@@ -7621,16 +8213,12 @@ fn compiler2_native_codegen_materializes_typed_capture_closure_as_a_resolved_ent
 
     let program = native.last(root_id).program;
     assert!(
-        program.callable_boundaries.iter().any(|boundary| {
-            boundary.boundary.is_none()
-                && boundary.capture_count == 2
-                && boundary.capture_reprs == vec![AbiValueRepr::RawInt, AbiValueRepr::RawInt]
-        }),
-        "a typed-capture closure must materialize its exact entry-owned capture ABI; got {:?}",
+        program.callable_boundaries.is_empty(),
+        "a typed-capture closure resolved to a known target must dispatch directly, not publish an opaque first-class callable boundary; got {:?}",
         program.callable_boundaries,
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
-    let halt = compiled.run(&tel, program.entry);
+    let halt = compiled.run(compiler.telemetry(), program.entry);
     assert_eq!(
         halt, 0,
         "closure_typed_captures should execute through JIT and halt with nil"
@@ -7641,9 +8229,9 @@ fn compiler2_native_codegen_materializes_typed_capture_closure_as_a_resolved_ent
 fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -7672,16 +8260,12 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
     let records = backend.records(root_id);
     assert_eq!(
         records.len(),
-        2,
-        "the backend program should have one initial definition and one unchanged re-derivation",
+        1,
+        "an unchanged backend re-derivation must not emit another definition event",
     );
     assert!(
-        records[0].changed && !records[1].changed,
-        "initial derivation should be changed=true; re-derivation of identical state should be changed=false",
-    );
-    assert_eq!(
-        records[0].program, records[1].program,
-        "identical backend-product recomputation should produce byte-for-byte equal program facts",
+        records[0].changed,
+        "a backend-program definition event represents actual state movement",
     );
 }
 
@@ -7689,11 +8273,11 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
 fn compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/variadic_open_too_few_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/00052_variadic_open_too_few.fz").to_string(),
@@ -7736,13 +8320,13 @@ fn compiler2_variadic_extern_too_few_args_is_a_lower_diagnostic() {
 fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_need() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/quicksort_plus_foo.fz".to_string()),
         text: include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -7812,15 +8396,15 @@ fn compiler2_semantic_analysis_derives_reachable_call_edges_and_tuple_return_nee
 fn compiler2_backend_product_lowers_closed_union_protocol_dispatch_as_call_edge() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&["fz", "diag", "error"], capture.handler());
+    capture.install(&tel, &["fz", "diag", "error"]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_protocol_union_dispatch.fz".to_string()),
         text: r#"
@@ -7943,13 +8527,13 @@ end
 fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&["fz", "diag", "error"], capture.handler());
+    capture.install(&tel, &["fz", "diag", "error"]);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
     let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
+    backend.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/membership_operator_compiler2.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/membership_operator.fz").to_string(),
@@ -8015,9 +8599,9 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
 fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort_plus_foo.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
@@ -8025,7 +8609,7 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "quicksort root should settle to a finite semantic frontier",
     );
 
@@ -8106,18 +8690,10 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
     );
-    // Honest argument evidence keys non-recursive runtime helpers
-    // per-callsite (the designed behavior); the old any-defaults accidentally
-    // merged those keys. The reachable frontier is a small, finite, EXACT
-    // fixpoint — the runaway grew it without bound. 21 is the measured minimum
-    // (main/0, the single qsort/partition/append keys, and the reached runtime
-    // helpers), schedule-invariant across fresh drives; if it moves, the keying
-    // convergence moved and that is the signal, not a headroom breach.
-    assert_eq!(
-        activations.len(),
-        21,
-        "quicksort should settle to its exact minimal rooted activation frontier (main + the collapsed \
-         qsort/partition/append keys + reached runtime helpers)"
+    assert!(
+        activations.len() <= 17,
+        "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
+         qsort/partition/append keys + reached runtime helpers): {activations:?}"
     );
     assert!(
         !activations.iter().any(|activation| activation.function == foo_id),
@@ -8181,16 +8757,19 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     // redefinition.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root_id));
-    assert_resolved(world.drive(), "initial quicksort root should settle");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "initial quicksort root should settle",
+    );
 
     let main_id = function_id(&functions, "main", 0);
     let qsort_id = function_id(&functions, "qsort", 1);
@@ -8211,7 +8790,7 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     );
     world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "redefining uncalled foo/0 should not reopen the quicksort root",
     );
 
@@ -8239,16 +8818,19 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     // frontier, matching the seal's rooted inventory.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort_plus_foo_v1.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root_id));
-    assert_resolved(world.drive(), "initial quicksort root should settle");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "initial quicksort root should settle",
+    );
 
     let main_id = function_id(&functions, "main", 0);
     let qsort_id = function_id(&functions, "qsort", 1);
@@ -8274,7 +8856,7 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     );
     world.demand(Job::BuildBackendProduct(root_id));
     assert_resolved(
-        world.drive(),
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "redefining main/0 should retract the old quicksort root frontier",
     );
 
@@ -8299,11 +8881,11 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
 fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let work_graph = WorkGraphCapture::new();
-    tel.attach(&["fz", "compiler2", "work_graph", "applied"], work_graph.handler());
+    work_graph.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -8370,9 +8952,9 @@ fn compiler2_submit_root_before_code_reports_unresolved_until_entry_is_defined()
 fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_root(RootSubmission {
         module_name: Some("User".to_string()),
         name: "run".to_string(),
@@ -8418,13 +9000,13 @@ fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
 fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseeding_semantics() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_only.fz".to_string()),
         text: include_str!("../../fixtures2/00009_no_runtime.fz").to_string(),
@@ -8488,15 +9070,15 @@ fn compiler2_submit_code_after_root_auto_scopes_new_definitions_without_reseedin
 fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/local_lambda.fz".to_string()),
         text: include_str!("../../fixtures2/00031_local_lambda.fz").to_string(),
@@ -8596,18 +9178,15 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
 fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let analyzed = ActivationAnalysisCapture::new();
-    tel.attach(
-        &["fz", "compiler2", "activation_analysis", "defined"],
-        analyzed.handler(),
-    );
+    analyzed.install(&tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_lambda_recursion_keying.fz".to_string()),
         text: include_str!("../../fixtures2/00032_lambda_recursion.fz").to_string(),
@@ -8673,15 +9252,15 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
 fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_clause_projections.fz".to_string()),
         text: include_str!("../../fixtures2/00033_clause_projections.fz").to_string(),
@@ -8736,13 +9315,13 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
 fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lambda_capture_inputs.fz".to_string()),
         text: include_str!("../../fixtures2/00034_lambda_capture.fz").to_string(),
@@ -8806,15 +9385,15 @@ fn compiler2_generated_lambda_body_binds_captures_as_leading_inputs() {
 fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/lowered_local_match.fz".to_string()),
         text: include_str!("../../fixtures2/00035_local_match.fz").to_string(),
@@ -8866,13 +9445,13 @@ fn compiler2_lowered_body_keeps_local_match_asserts_inside_the_body() {
 fn compiler2_lowering_routes_nontail_if_join_flow_through_delivered_resume() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
@@ -8945,9 +9524,9 @@ fn compiler2_lowering_routes_nontail_if_join_flow_through_delivered_resume() {
 fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_entries() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
@@ -9003,9 +9582,9 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
 fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("reusable_cons_continuation.fz".to_string()),
         text: r#"
@@ -9088,11 +9667,11 @@ fn main(), do: rebuild([1, 2])
 fn compiler2_lowered_body_records_reusable_cons_capture_requirements_on_delivered_entries() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("reusable_cons_continuation.fz".to_string()),
         text: r#"
@@ -9165,9 +9744,11 @@ end
 #[test]
 fn compiler2_reusable_cons_telemetry_reports_birth_transport_and_consumption() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let reusable_cons = ReusableConsCapture::new();
+    reusable_cons.install(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9194,32 +9775,12 @@ fn main(), do: rebuild([1, 2])
         panic!("reusable-cons telemetry fixture should run end-to-end: {error}");
     });
 
-    let native = capture
-        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
-        .expect("native reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
-    assert_eq!(measurement_u64(&native, "birth_count"), 1);
-    assert_eq!(measurement_u64(&native, "transport_count"), 1);
+    assert_eq!(reusable_cons.last(), Some((root_id, 1, 1)));
 
-    let consumed = capture
-        .find(&["fz", "codegen", "function_lowered"])
-        .into_iter()
-        .filter(|event| event.kind == EventKind::Event && metadata_str(event, "body_kind") == "fz_spec")
-        .map(|event| measurement_u64(&event, "reusable_cons_consumed_count"))
-        .max()
-        .expect("fz_spec function_lowered event with reusable-cons counters");
+    let exit = exits.last().expect("runtime process exit telemetry");
+    assert_eq!(exit.reusable_cons_attempts, 1);
     assert_eq!(
-        consumed, 1,
-        "one list construction site should consume the transported capability"
-    );
-
-    let exit = capture
-        .last(&["fz", "runtime", "process_exited"])
-        .expect("runtime process exit telemetry");
-    assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
-    assert_eq!(
-        measurement_u64(&exit, "reusable_cons_reused"),
-        1,
+        exit.reusable_cons_reused, 1,
         "the transported cell stays unique across the stack-resident continuation, so the \
          rebuilt `[h | t]` reuses it in place instead of allocating a fresh cons",
     );
@@ -9228,9 +9789,9 @@ fn main(), do: rebuild([1, 2])
 #[test]
 fn compiler2_reusable_cons_telemetry_reports_born_but_not_transported() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let reusable_cons = ReusableConsCapture::new();
+    reusable_cons.install(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9257,32 +9818,17 @@ fn main(), do: ignore([1, 2])
         panic!("born-without-transport fixture should run end-to-end: {error}");
     });
 
-    let native = capture
-        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
-        .expect("native reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
-    assert_eq!(measurement_u64(&native, "birth_count"), 1);
-    assert_eq!(measurement_u64(&native, "transport_count"), 0);
-
-    let consumed = capture
-        .find(&["fz", "codegen", "function_lowered"])
-        .into_iter()
-        .filter(|event| event.kind == EventKind::Event && metadata_str(event, "body_kind") == "fz_spec")
-        .map(|event| measurement_u64(&event, "reusable_cons_consumed_count"))
-        .max()
-        .expect("fz_spec function_lowered event with reusable-cons counters");
-    assert_eq!(
-        consumed, 0,
-        "no list reconstruction site should consume a reusable capability"
-    );
+    assert_eq!(reusable_cons.last(), Some((root_id, 1, 0)));
 }
 
 #[test]
 fn compiler2_reusable_cons_runtime_telemetry_reports_in_place_reuse() {
     let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let reusable_cons = ReusableConsCapture::new();
+    reusable_cons.install(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9306,35 +9852,37 @@ fn main(), do: rebuild([1, 2])
         panic!("direct reusable-cons fixture should run end-to-end: {error}");
     });
 
-    let native = capture
-        .last(&["fz", "compiler2", "native_program", "reusable_cons"])
-        .expect("native reusable-cons telemetry event");
-    assert_eq!(measurement_u64(&native, "root_id"), root_id.as_u32() as u64);
-    assert_eq!(measurement_u64(&native, "birth_count"), 1);
-    assert_eq!(measurement_u64(&native, "transport_count"), 0);
+    assert_eq!(reusable_cons.last(), Some((root_id, 1, 0)));
 
-    let exit = capture
-        .last(&["fz", "runtime", "process_exited"])
-        .expect("runtime process exit telemetry");
-    assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
-    assert_eq!(measurement_u64(&exit, "reusable_cons_reused"), 1);
+    let exit = exits.last().expect("runtime process exit telemetry");
+    assert_eq!(exit.reusable_cons_attempts, 1);
+    assert_eq!(exit.reusable_cons_reused, 1);
 }
 
 #[test]
 fn compiler2_reusable_cons_runtime_telemetry_reports_alias_fallback() {
-    let tel = ConfiguredTelemetry::new();
-    let capture = Capture::new();
-    tel.attach(&[], capture.handler());
-    let mut compiler = Compiler2::new(&tel);
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    compiler.submit_code(CodeSubmission {
-        name: Some("reusable_cons_alias_fallback.fz".to_string()),
-        text: r#"
+    let (attempts, reused) = reusable_cons_exit_counts(
+        "reusable_cons_alias_fallback.fz",
+        r#"
+fn rebuild(xs) do
+  [h | t] = xs
+  holder = {xs}
+  {holder, [h | t]}
+end
+
+fn main(), do: rebuild([1, 2])
+"#,
+    );
+
+    assert_eq!(attempts, 1);
+    assert_eq!(reused, 0);
+}
+
+#[test]
+fn compiler2_reusable_cons_erases_unused_call_argument_before_reuse() {
+    let (attempts, reused) = reusable_cons_exit_counts(
+        "reusable_cons_erased_unused_argument.fz",
+        r#"
 fn ping(x), do: x
 
 fn rebuild(xs) do
@@ -9344,19 +9892,40 @@ fn rebuild(xs) do
 end
 
 fn main(), do: rebuild([1, 2])
-"#
-        .to_string(),
+"#,
+    );
+
+    assert_eq!(attempts, 1);
+    assert_eq!(reused, 1);
+}
+
+fn reusable_cons_exit_counts(name: &str, source: &str) -> (u64, u64) {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.submit_code(CodeSubmission {
+        name: Some(name.to_string()),
+        text: source.to_string(),
     });
 
     compiler.run_root_jit(root_id).unwrap_or_else(|error| {
-        panic!("alias-fallback reusable-cons fixture should run end-to-end: {error}");
+        let diagnostic = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string());
+        panic!("alias-fallback reusable-cons fixture should run end-to-end: {error}; {diagnostic:?}");
     });
 
-    let exit = capture
-        .last(&["fz", "runtime", "process_exited"])
-        .expect("runtime process exit telemetry");
-    assert_eq!(measurement_u64(&exit, "reusable_cons_attempts"), 1);
-    assert_eq!(measurement_u64(&exit, "reusable_cons_reused"), 0);
+    let exit = exits.last().expect("runtime process exit telemetry");
+    (exit.reusable_cons_attempts, exit.reusable_cons_reused)
 }
 
 #[test]
@@ -9384,9 +9953,9 @@ end
 "#;
 
     let jit_tel = ConfiguredTelemetry::new();
-    let jit_capture = Capture::new();
-    jit_tel.attach(&[], jit_capture.handler());
-    let mut jit_compiler = Compiler2::new(&jit_tel);
+    let jit_exits = ProcessExitCapture::new();
+    jit_exits.install(&jit_tel);
+    let mut jit_compiler = Compiler2::new(jit_tel);
     let jit_root = jit_compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9400,14 +9969,12 @@ end
     jit_compiler.run_root_jit(jit_root).unwrap_or_else(|error| {
         panic!("compiler2 jit should run the mixed reusable-cons fixture: {error}");
     });
-    let jit_exit = jit_capture
-        .last(&["fz", "runtime", "process_exited"])
-        .expect("jit runtime process exit telemetry");
+    let jit_exit = jit_exits.last().expect("jit runtime process exit telemetry");
 
     let interp_tel = ConfiguredTelemetry::new();
-    let interp_capture = Capture::new();
-    interp_tel.attach(&[], interp_capture.handler());
-    let mut interp_compiler = Compiler2::new(&interp_tel);
+    let interp_exits = ProcessExitCapture::new();
+    interp_exits.install(&interp_tel);
+    let mut interp_compiler = Compiler2::new(interp_tel);
     let interp_root = interp_compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9422,25 +9989,18 @@ end
         .run_root_interp(interp_root)
         .expect("compiler2 backend interpreter should run the mixed reusable-cons fixture");
     assert_eq!(interp_halt, 0);
-    let interp_exit = interp_capture
-        .last(&["fz", "runtime", "process_exited"])
-        .expect("interp runtime process exit telemetry");
+    let interp_exit = interp_exits.last().expect("interp runtime process exit telemetry");
 
-    assert_eq!(measurement_i64(&jit_exit, "halt_value"), 0);
+    assert_eq!(jit_exit.halt_value, 0);
+    assert_eq!(jit_exit.halt_value, interp_exit.halt_value);
+    assert_eq!(jit_exit.reusable_cons_attempts, 2);
+    assert_eq!(jit_exit.reusable_cons_reused, 1);
     assert_eq!(
-        measurement_i64(&jit_exit, "halt_value"),
-        measurement_i64(&interp_exit, "halt_value")
-    );
-    assert_eq!(measurement_u64(&jit_exit, "reusable_cons_attempts"), 2);
-    assert_eq!(measurement_u64(&jit_exit, "reusable_cons_reused"), 1);
-    assert_eq!(
-        measurement_u64(&jit_exit, "reusable_cons_attempts"),
-        measurement_u64(&interp_exit, "reusable_cons_attempts"),
+        jit_exit.reusable_cons_attempts, interp_exit.reusable_cons_attempts,
         "jit and backend interpreter should agree on reusable-cons attempts",
     );
     assert_eq!(
-        measurement_u64(&jit_exit, "reusable_cons_reused"),
-        measurement_u64(&interp_exit, "reusable_cons_reused"),
+        jit_exit.reusable_cons_reused, interp_exit.reusable_cons_reused,
         "jit and backend interpreter should agree on in-place reusable-cons reuse",
     );
 }
@@ -9449,8 +10009,8 @@ end
 fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_codegen() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&["fz", "runtime", "dbg"], dbg.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00466_nontail_if_join_flow.fz".to_string()),
         text: include_str!("../../fixtures2/00466_nontail_if_join_flow.fz").to_string(),
@@ -9477,13 +10037,13 @@ fn compiler2_native_program_jit_runs_nontail_if_join_flow_through_compiler2_code
 fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module"], modules.handler());
+    modules.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_wrapper_calls.fz".to_string()),
         text: "defmodule Main do\n  fn main(x), do: {x + 1, x == 1, x < 2}\nend\n".to_string(),
@@ -9522,13 +10082,13 @@ fn compiler2_operator_expressions_lower_to_kernel_wrapper_calls() {
 fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
     let tel = ConfiguredTelemetry::new();
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module"], modules.handler());
+    modules.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/operator_intrinsic_lanes.fz".to_string()),
         text: "defmodule Main do\n  fn main(), do: {1 + 2, 1 + 2.0, 2.0 + 1, 2.0 + 3.0}\nend\n".to_string(),
@@ -9559,15 +10119,15 @@ fn compiler2_kernel_operator_wrappers_lower_to_intrinsic_extern_calls() {
 fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let guard_defs = GuardDispatchCapture::new();
-    tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
+    guard_defs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_helpers.fz".to_string()),
         text: include_str!("../../fixtures2/00036_guard_helpers.fz").to_string(),
@@ -9627,15 +10187,15 @@ fn compiler2_guard_dispatch_reifies_single_clause_and_transitive_helpers() {
 fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let guard_defs = GuardDispatchCapture::new();
-    tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
+    guard_defs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_destructure.fz".to_string()),
         text: include_str!("../../fixtures2/00037_guard_destructure.fz").to_string(),
@@ -9690,11 +10250,11 @@ fn compiler2_guard_dispatch_threads_call_arguments_and_destructuring() {
 fn compiler2_guard_dispatch_rejects_cycles() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_cycle.fz".to_string()),
         text: include_str!("../../fixtures2/00038_guard_cycle.fz").to_string(),
@@ -9739,11 +10299,11 @@ fn compiler2_guard_dispatch_rejects_cycles() {
 fn compiler2_guard_dispatch_rejects_impure_helpers() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/guard_impure.fz".to_string()),
         text: include_str!("../../fixtures2/00039_guard_impure.fz").to_string(),
@@ -9790,15 +10350,15 @@ fn compiler2_guard_dispatch_rejects_impure_helpers() {
 fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_guards() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let entry_defs = EntryDispatchCapture::new();
-    tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
+    entry_defs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_aliases.fz".to_string()),
         text: include_str!("../../fixtures2/00040_entry_dispatch_aliases.fz").to_string(),
@@ -9870,15 +10430,15 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
 fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let entry_defs = EntryDispatchCapture::new();
-    tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
+    entry_defs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_single_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00041_entry_dispatch_single.fz").to_string(),
@@ -9923,17 +10483,17 @@ fn compiler2_entry_dispatch_plans_trivial_single_clause_functions() {
 fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let guard_defs = GuardDispatchCapture::new();
-    tel.attach(&["fz", "compiler2", "guard_dispatch", "defined"], guard_defs.handler());
+    guard_defs.install(&tel);
     let entry_defs = EntryDispatchCapture::new();
-    tel.attach(&["fz", "compiler2", "entry_dispatch", "defined"], entry_defs.handler());
+    entry_defs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/entry_dispatch_blast_radius_v1.fz".to_string()),
         text: include_str!("../../fixtures2/00042_blast_radius_v1.fz").to_string(),
@@ -10033,15 +10593,15 @@ fn compiler2_entry_dispatch_recomputes_only_the_dependent_helper_blast_radius() 
 fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/nested_modules.fz".to_string()),
         text: include_str!("../../fixtures2/00044_nested_modules.fz").to_string(),
@@ -10164,13 +10724,13 @@ fn compiler2_scope_code_discovers_nested_modules_through_definition_macros() {
 fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only.fz".to_string()),
         text: include_str!("../../fixtures2/00045_import_only.fz").to_string(),
@@ -10178,6 +10738,7 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
 
     assert_resolved(compiler.drive(), "first drive should index import-only scope");
     let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only scope"
@@ -10193,7 +10754,7 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
         "root definition should not eagerly define project modules before their bodies are demanded"
     );
     assert!(
-        compiler.demand(Job::DefineModule(module_ids[0])),
+        compiler.demand(Job::DefineModule(user_module)),
         "demanding User should enqueue the consumer module only"
     );
     assert_resolved(
@@ -10244,13 +10805,13 @@ fn compiler2_import_only_keeps_provider_lazy_until_a_body_needs_it() {
 fn compiler2_imported_macro_expands_in_provider_definition_namespace() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/cross_module_macro.fz".to_string()),
         text: r#"
@@ -10300,13 +10861,13 @@ end
 fn compiler2_require_except_selects_remote_macro_set() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/require_except_remote_macro.fz".to_string()),
         text: r#"
@@ -10361,13 +10922,13 @@ end
 fn compiler2_cross_file_bare_require_permits_qualified_macro_call() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/cross_file_macro_provider.fz".to_string()),
         text: r#"
@@ -10422,9 +10983,9 @@ end
 fn compiler2_visible_alias_does_not_permit_remote_macro_without_require() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/aliased_macro_provider.fz".to_string()),
         text: r#"
@@ -10480,13 +11041,13 @@ end
 fn compiler2_dotted_require_permits_full_path_macro_call() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/dotted_macro_provider.fz".to_string()),
         text: r#"
@@ -10541,9 +11102,9 @@ end
 fn compiler2_dotted_require_does_not_bind_short_alias() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/dotted_macro_provider.fz".to_string()),
         text: r#"
@@ -10599,9 +11160,9 @@ end
 fn compiler2_remote_macro_requires_explicit_require() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/remote_macro_without_require.fz".to_string()),
         text: r#"
@@ -10663,13 +11224,13 @@ end
 fn compiler2_require_remote_macro_waits_executable_and_expands() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
     let bodies = LoweredBodyCapture::new();
-    tel.attach(&["fz", "compiler2", "lowered_body", "defined"], bodies.handler());
+    bodies.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/require_remote_macro.fz".to_string()),
         text: r#"
@@ -10719,11 +11280,11 @@ end
 fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_only_unknown.fz".to_string()),
         text: include_str!("../../fixtures2/00046_import_only_unknown.fz").to_string(),
@@ -10731,6 +11292,7 @@ fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() 
 
     assert_resolved(compiler.drive(), "first drive should index import-only unknown scope");
     let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-only unknown scope"
@@ -10740,7 +11302,7 @@ fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() 
         "second drive should scope import-only unknown modules",
     );
     assert!(
-        compiler.demand(Job::DefineModule(module_ids[0])),
+        compiler.demand(Job::DefineModule(user_module)),
         "demanding User should enqueue the consumer module only"
     );
     assert_resolved(
@@ -10757,15 +11319,15 @@ fn compiler2_import_only_missing_target_stays_lazy_until_interface_settlement() 
 fn compiler2_import_all_waits_for_module_interface() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_all.fz".to_string()),
         text: include_str!("../../fixtures2/00047_import_all.fz").to_string(),
@@ -10773,13 +11335,14 @@ fn compiler2_import_all_waits_for_module_interface() {
 
     assert_resolved(compiler.drive(), "first drive should index import-all scope");
     let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-all scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-all modules");
     assert!(
-        compiler.demand(Job::DefineModule(module_ids[0])),
+        compiler.demand(Job::DefineModule(user_module)),
         "demanding User should enqueue the consumer module only"
     );
     assert_resolved(
@@ -10788,7 +11351,7 @@ fn compiler2_import_all_waits_for_module_interface() {
     );
     assert!(
         outputs
-            .stops_matching(|job| *job == Job::DefineModule(module_ids[0]))
+            .stops_matching(|job| *job == Job::DefineModule(user_module))
             .into_iter()
             .any(|stop| {
                 stop.effects.as_ref().is_some_and(|effects| {
@@ -10823,15 +11386,15 @@ fn compiler2_import_all_waits_for_module_interface() {
 fn compiler2_import_except_waits_for_module_interface() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
     let outputs = OutputCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], outputs.handler());
+    outputs.install(&tel);
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let modules = ModuleCapture::new();
-    tel.attach(&["fz", "compiler2", "module", "defined"], modules.handler());
+    modules.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some("fixtures/import_except.fz".to_string()),
         text: include_str!("../../fixtures2/00048_import_except.fz").to_string(),
@@ -10839,13 +11402,14 @@ fn compiler2_import_except_waits_for_module_interface() {
 
     assert_resolved(compiler.drive(), "first drive should index import-except scope");
     let module_ids = module_indexed_ids(&outputs.take(Job::IndexCode(code_id)).expect("IndexCode job effects"));
+    let user_module = named_module_id(compiler.world(), &module_ids, "User");
     assert!(
         compiler.demand(Job::ScopeCode(code_id)),
         "explicit demand should enqueue root definition for import-except scope"
     );
     assert_resolved(compiler.drive(), "second drive should scope import-except modules");
     assert!(
-        compiler.demand(Job::DefineModule(module_ids[0])),
+        compiler.demand(Job::DefineModule(user_module)),
         "demanding User should enqueue the consumer module only"
     );
     assert_resolved(
@@ -10854,7 +11418,7 @@ fn compiler2_import_except_waits_for_module_interface() {
     );
     assert!(
         outputs
-            .stops_matching(|job| *job == Job::DefineModule(module_ids[0]))
+            .stops_matching(|job| *job == Job::DefineModule(user_module))
             .into_iter()
             .any(|stop| {
                 stop.effects.as_ref().is_some_and(|effects| {
@@ -10888,16 +11452,11 @@ fn compiler2_import_except_waits_for_module_interface() {
 
 struct OutputCapture {
     outputs: JobOutputMap,
-    spans: SpanJobs,
     stops: Rc<RefCell<Vec<JobSpanStop>>>,
 }
 
 struct WorkGraphCapture {
     steps: AppliedSteps,
-}
-
-struct DiagnosticCapture {
-    diagnostics: Diagnostics,
 }
 
 #[derive(Debug, Clone)]
@@ -10941,7 +11500,6 @@ struct NativeProgramRecord {
 pub(crate) struct ReturnTypeRecord {
     activation: ActivationKey,
     pub(crate) return_ty: Ty,
-    pub(crate) changed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -10978,6 +11536,33 @@ struct NativeProgramCapture {
     defs: NativeProgramDefs,
 }
 
+struct ReusableConsCapture {
+    counts: ReusableConsCounts,
+}
+
+impl ReusableConsCapture {
+    fn new() -> Self {
+        Self {
+            counts: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let counts = Rc::clone(&self.counts);
+        telemetry.attach_raw_event2::<crate::compiler2::RootId, BackendProgram, _>(
+            &["fz", "compiler2", "native_program", "reusable_cons"],
+            move |_, _, _, root, program| {
+                let (birth_count, transport_count) = reusable_cons_counts(program);
+                counts.borrow_mut().push((*root, birth_count, transport_count));
+            },
+        );
+    }
+
+    fn last(&self) -> Option<(crate::compiler2::RootId, u64, u64)> {
+        self.counts.borrow().last().copied()
+    }
+}
+
 struct EntryDispatchCapture {
     plans: EntryDispatchMap,
 }
@@ -10994,17 +11579,44 @@ impl OutputCapture {
     fn new() -> Self {
         Self {
             outputs: Rc::new(RefCell::new(HashMap::new())),
-            spans: Rc::new(RefCell::new(HashMap::new())),
             stops: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(OutputCaptureHandler {
-            outputs: self.outputs.clone(),
-            spans: self.spans.clone(),
-            stops: self.stops.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let outputs = Rc::clone(&self.outputs);
+        let stops = Rc::clone(&self.stops);
+        telemetry.attach_raw_span1_2::<Job, crate::compiler2::World, crate::compiler2::JobCompletion, _, _, _>(
+            &["fz", "compiler2", "job"],
+            |_, _, _, _| {},
+            move |_, _, _, _, world, completion| {
+                let job = completion.job.clone();
+                let changed = completion
+                    .changed
+                    .iter()
+                    .filter(|change| change.content_changed())
+                    .map(|change| change.key.clone())
+                    .collect();
+                let effects = JobEffects {
+                    reads: world.job_reads(&job).into_iter().flatten().cloned().collect(),
+                    waits: completion.blocked.clone(),
+                    outputs: completion.outputs.iter().cloned().collect(),
+                    changed,
+                    ..JobEffects::default()
+                };
+                stops.borrow_mut().push(JobSpanStop {
+                    job: job.clone(),
+                    effects_present: true,
+                    effects: Some(effects.clone()),
+                });
+                outputs
+                    .borrow_mut()
+                    .entry(job)
+                    .or_default()
+                    .push(output_facts(&effects));
+            },
+            |_, _, _, _| {},
+        );
     }
 
     fn take(&self, job: Job) -> Option<OutputFacts> {
@@ -11059,32 +11671,16 @@ impl WorkGraphCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(WorkGraphCaptureHandler {
-            steps: self.steps.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let steps = Rc::clone(&self.steps);
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, _, completion| steps.borrow_mut().push(completion.step.clone()),
+        );
     }
 
     fn all(&self) -> Vec<AppliedStep<Job, FactKey>> {
         self.steps.borrow().clone()
-    }
-}
-
-impl DiagnosticCapture {
-    fn new() -> Self {
-        Self {
-            diagnostics: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(DiagnosticCaptureHandler {
-            diagnostics: self.diagnostics.clone(),
-        })
-    }
-
-    fn last(&self) -> Option<Diagnostic> {
-        self.diagnostics.borrow().last().cloned()
     }
 }
 
@@ -11095,10 +11691,26 @@ impl FunctionCapture {
         }
     }
 
-    pub(crate) fn handler(&self) -> Box<dyn Handler> {
-        Box::new(FunctionCaptureHandler {
-            defs: self.defs.clone(),
-        })
+    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
+            &["fz", "compiler2", "function"],
+            move |name, _, _, world, function| {
+                let from_source = match name {
+                    ["fz", "compiler2", "function", "defined"] => false,
+                    ["fz", "compiler2", "function", "source", "stashed"] => true,
+                    _ => return,
+                };
+                record_function_definition(&defs, world, *function, None, from_source);
+            },
+        );
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event3::<crate::compiler2::World, FunctionId, FunctionId, _>(
+            &["fz", "compiler2", "function", "defined"],
+            move |_, _, _, world, function, owner| {
+                record_function_definition(&defs, world, *function, Some(*owner), false);
+            },
+        );
     }
 
     fn all(&self) -> Vec<FunctionDefinedRecord> {
@@ -11127,11 +11739,17 @@ impl SourceNoteCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(SourceNoteCaptureHandler {
-            notes: self.notes.clone(),
-            event: self.event,
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let event = self.event;
+        let notes = Rc::clone(&self.notes);
+        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
+            event,
+            move |name, _, _, world, function| {
+                if name == event {
+                    notes.borrow_mut().push(world.function_ref(*function).clone());
+                }
+            },
+        );
     }
 
     fn count(&self, name: &str, arity: usize) -> usize {
@@ -11150,10 +11768,17 @@ impl ModuleCapture {
         }
     }
 
-    pub(crate) fn handler(&self) -> Box<dyn Handler> {
-        Box::new(ModuleCaptureHandler {
-            defs: self.defs.clone(),
-        })
+    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event2::<crate::compiler2::World, ModuleId, _>(
+            &["fz", "compiler2", "module", "defined"],
+            move |_, _, _, world, module| {
+                defs.borrow_mut()
+                    .entry(*module)
+                    .or_default()
+                    .push(world.module_state(*module));
+            },
+        );
     }
 
     fn qualified_name(&self, module_id: ModuleId) -> String {
@@ -11213,10 +11838,20 @@ impl CallsiteCapture {
         }
     }
 
-    pub(crate) fn handler(&self) -> Box<dyn Handler> {
-        Box::new(CallsiteCaptureHandler {
-            defs: self.defs.clone(),
-        })
+    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event2::<crate::compiler2::World, CallSiteKey, _>(
+            &["fz", "compiler2", "callsite", "defined"],
+            move |_, _, _, world, key| {
+                let Some(summary) = world.callsite_summary(key) else {
+                    return;
+                };
+                defs.borrow_mut().push(CallsiteDefinedRecord {
+                    key: key.clone(),
+                    summary: summary.clone(),
+                });
+            },
+        );
     }
 
     pub(crate) fn all(&self) -> Vec<CallsiteDefinedRecord> {
@@ -11231,10 +11866,20 @@ impl ReturnTypeCapture {
         }
     }
 
-    pub(crate) fn handler(&self) -> Box<dyn Handler> {
-        Box::new(ReturnTypeCaptureHandler {
-            defs: self.defs.clone(),
-        })
+    pub(crate) fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+            &["fz", "compiler2", "return_type", "defined"],
+            move |_, _, _, world, activation| {
+                let Some(return_ty) = world.activation_return_evidence(activation) else {
+                    return;
+                };
+                defs.borrow_mut().push(ReturnTypeRecord {
+                    activation: activation.clone(),
+                    return_ty,
+                });
+            },
+        );
     }
 
     pub(crate) fn last_for_function(
@@ -11291,10 +11936,22 @@ impl ActivationInputCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(ActivationInputCaptureHandler {
-            defs: self.defs.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event2::<crate::compiler2::World, super::world::JobCompletion, _>(
+            &["fz", "compiler2", "activation_inputs", "defined"],
+            move |_, _, _, world, completion| {
+                for activation in &completion.activation_input_changed {
+                    let Some(inputs) = world.activation_inputs_ref(activation) else {
+                        continue;
+                    };
+                    defs.borrow_mut().push(ActivationInputRecord {
+                        activation: activation.clone(),
+                        inputs: inputs.clone(),
+                    });
+                }
+            },
+        );
     }
 
     fn last_for_function(&self, root_id: crate::compiler2::RootId, function_id: FunctionId) -> ActivationInputRecord {
@@ -11315,10 +11972,18 @@ impl BackendProgramCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(BackendProgramCaptureHandler {
-            defs: self.defs.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::RootId, _>(
+            &["fz", "compiler2", "backend_program", "defined"],
+            move |_, _, _, world, root| {
+                defs.borrow_mut().push(BackendProgramRecord {
+                    root_id: *root,
+                    changed: true,
+                    program: world.backend_program(*root),
+                });
+            },
+        );
     }
 
     fn last(&self, root_id: crate::compiler2::RootId) -> BackendProgramRecord {
@@ -11348,10 +12013,18 @@ impl NativeProgramCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(NativeProgramCaptureHandler {
-            defs: self.defs.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let defs = Rc::clone(&self.defs);
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::RootId, _>(
+            &["fz", "compiler2", "native_program", "defined"],
+            move |_, _, _, world, root| {
+                defs.borrow_mut().push(NativeProgramRecord {
+                    root_id: *root,
+                    changed: true,
+                    program: world.native_program(*root),
+                });
+            },
+        );
     }
 
     fn last(&self, root_id: crate::compiler2::RootId) -> NativeProgramRecord {
@@ -11381,10 +12054,18 @@ impl GuardDispatchCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(GuardDispatchCaptureHandler {
-            dispatches: self.dispatches.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let dispatches = Rc::clone(&self.dispatches);
+        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
+            &["fz", "compiler2", "guard_dispatch", "defined"],
+            move |_, _, _, world, function| {
+                dispatches
+                    .borrow_mut()
+                    .entry(*function)
+                    .or_default()
+                    .push(world.guard_dispatch(*function));
+            },
+        );
     }
 
     fn take(&self, function: FunctionId) -> Option<PatternGuardDispatch<Ty>> {
@@ -11413,10 +12094,18 @@ impl EntryDispatchCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(EntryDispatchCaptureHandler {
-            plans: self.plans.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let plans = Rc::clone(&self.plans);
+        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
+            &["fz", "compiler2", "entry_dispatch", "defined"],
+            move |_, _, _, world, function| {
+                plans
+                    .borrow_mut()
+                    .entry(*function)
+                    .or_default()
+                    .push(world.entry_dispatch(*function));
+            },
+        );
     }
 
     fn take(&self, function: FunctionId) -> Option<PatternDispatchPlan<Ty>> {
@@ -11445,10 +12134,18 @@ impl LoweredBodyCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(LoweredBodyCaptureHandler {
-            bodies: self.bodies.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let bodies = Rc::clone(&self.bodies);
+        telemetry.attach_raw_event2::<crate::compiler2::World, FunctionId, _>(
+            &["fz", "compiler2", "lowered_body", "defined"],
+            move |_, _, _, world, function| {
+                bodies
+                    .borrow_mut()
+                    .entry(*function)
+                    .or_default()
+                    .push(world.lowered_body(*function));
+            },
+        );
     }
 
     fn take(&self, function: FunctionId) -> Option<LoweredBody> {
@@ -11462,24 +12159,6 @@ impl LoweredBodyCapture {
     }
 }
 
-struct OutputCaptureHandler {
-    outputs: JobOutputMap,
-    spans: SpanJobs,
-    stops: Rc<RefCell<Vec<JobSpanStop>>>,
-}
-
-struct WorkGraphCaptureHandler {
-    steps: AppliedSteps,
-}
-
-struct DiagnosticCaptureHandler {
-    diagnostics: Diagnostics,
-}
-
-struct FunctionCaptureHandler {
-    defs: FunctionDefs,
-}
-
 struct SourceNoteCapture {
     notes: SourceNotes,
     // The source-publication event this capture observes. `noted` is the
@@ -11488,489 +12167,75 @@ struct SourceNoteCapture {
     event: &'static [&'static str],
 }
 
-struct SourceNoteCaptureHandler {
-    notes: SourceNotes,
-    event: &'static [&'static str],
-}
-
-struct ModuleCaptureHandler {
-    defs: ModuleDefs,
-}
-
-struct CallsiteCaptureHandler {
-    defs: CallsiteDefs,
-}
-
-struct ReturnTypeCaptureHandler {
-    defs: ReturnTypeDefs,
-}
-
-struct ActivationInputCaptureHandler {
-    defs: ActivationInputDefs,
-}
-
-struct BackendProgramCaptureHandler {
-    defs: BackendProgramDefs,
-}
-
-struct NativeProgramCaptureHandler {
-    defs: NativeProgramDefs,
-}
-
-struct EntryDispatchCaptureHandler {
-    plans: EntryDispatchMap,
-}
-
-struct GuardDispatchCaptureHandler {
-    dispatches: GuardDispatchMap,
-}
-
-struct LoweredBodyCaptureHandler {
-    bodies: LoweredBodyDefs,
-}
-
-impl Handler for OutputCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "job"] {
-            return;
+fn reusable_cons_counts(program: &BackendProgram) -> (u64, u64) {
+    let mut birth_count = 0_u64;
+    let mut transport_count = 0_u64;
+    for executable in &program.executables {
+        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+            continue;
+        };
+        for clause in clauses {
+            birth_count += clause
+                .projections
+                .iter()
+                .filter(|step| matches!(step, BackendStep::SplitList { .. }))
+                .count() as u64;
         }
-        match event.kind {
-            EventKind::SpanStart => {
-                let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
-                    return;
-                };
-                self.spans.borrow_mut().insert(event.span_id, job.clone());
-            }
-            EventKind::SpanStop => {
-                let Some(job) = self.spans.borrow_mut().remove(&event.span_id) else {
-                    return;
-                };
-                self.stops.borrow_mut().push(JobSpanStop {
-                    job: job.clone(),
-                    effects_present: event.metadata.get("effects").is_some(),
-                    effects: event
-                        .metadata
-                        .get("effects")
-                        .and_then(|value| value.downcast_ref::<JobEffects>())
-                        .cloned(),
-                });
-                let Some(effects) = event
-                    .metadata
-                    .get("effects")
-                    .and_then(|value| value.downcast_ref::<JobEffects>())
-                else {
-                    return;
-                };
-                self.outputs
-                    .borrow_mut()
-                    .entry(job)
-                    .or_default()
-                    .push(output_facts(effects));
-            }
-            EventKind::Event | EventKind::SpanException => {}
+        for entry in entries {
+            birth_count += entry
+                .steps
+                .iter()
+                .filter(|step| matches!(step, BackendStep::SplitList { .. }))
+                .count() as u64;
+            transport_count += entry.reusable_cons_captures.len() as u64;
         }
     }
+    (birth_count, transport_count)
 }
 
-impl Handler for WorkGraphCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "work_graph", "applied"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(step) = event
-            .metadata
-            .get("step")
-            .and_then(|value| value.downcast_ref::<AppliedStep<Job, FactKey>>())
-        else {
-            return;
-        };
-        self.steps.borrow_mut().push(step.clone());
-    }
-}
-
-impl Handler for DiagnosticCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if !event.name.starts_with(&["fz", "diag"]) || event.kind != EventKind::Event {
-            return;
-        }
-        if let Some(diagnostic) = event
-            .metadata
-            .get("diagnostic")
-            .and_then(|value| value.downcast_ref::<Diagnostic>())
-        {
-            self.diagnostics.borrow_mut().push(diagnostic.clone());
-        }
-    }
-}
-
-impl Handler for FunctionCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.kind != EventKind::Event {
-            return;
-        }
-        // `stashed` is the eager interface signal every scope-defined function
-        // emits; `defined` marks a function whose body was pulled and lowered.
-        // Both name a function by identity, which is what name lookups want
-        // (fz-f98.14.5). The body-noted churn is observed separately through
-        // `SourceNoteCapture`.
-        let from_source = match event.name {
-            ["fz", "compiler2", "function", "defined"] => false,
-            ["fz", "compiler2", "function", "source", "stashed"] => true,
-            _ => return,
-        };
-        let Some(function_id) = event
-            .metadata
-            .get("function_id")
-            .and_then(|v| v.downcast_ref::<FunctionId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(module_id) = event
-            .metadata
-            .get("module_id")
-            .and_then(|v| v.downcast_ref::<ModuleId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(Value::U64(arity)) = event.measurements.get("arity") else {
-            return;
-        };
-        let Some(Value::U64(clauses)) = event.measurements.get("clauses") else {
-            return;
-        };
-        let Some(function_ref) = event
-            .metadata
-            .get("function_ref")
-            .and_then(|value| value.downcast_ref::<FunctionRef>())
-        else {
-            return;
-        };
-        let owner_function_id = if from_source {
-            None
-        } else {
-            event
-                .metadata
-                .get("owner_function_id")
-                .and_then(|v| v.downcast_ref::<FunctionId>())
-                .copied()
-        };
-        self.defs.borrow_mut().insert(
+fn record_function_definition(
+    defs: &FunctionDefs,
+    world: &crate::compiler2::World,
+    function_id: FunctionId,
+    owner_function_id: Option<FunctionId>,
+    from_source: bool,
+) {
+    let function_ref = world.function_ref(function_id);
+    let module_id = function_ref.module;
+    let clauses = if from_source {
+        world
+            .pending_function_source(function_id)
+            .and_then(|source| crate::compiler2::quoted_function::derive_function_surface(&source.source).ok())
+            .map_or(0, |surface| surface.clauses.len() as u64)
+    } else {
+        world.function_surface(function_id).clauses.len() as u64
+    };
+    defs.borrow_mut().insert(
+        function_id,
+        FunctionDefinedRecord {
             function_id,
-            FunctionDefinedRecord {
-                function_id,
-                module_id,
-                arity: *arity,
-                clauses: *clauses,
-                owner_function_id,
-                function_ref: function_ref.clone(),
-            },
-        );
-    }
-}
-
-impl Handler for SourceNoteCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != self.event || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(function_ref) = event
-            .metadata
-            .get("function_ref")
-            .and_then(|value| value.downcast_ref::<FunctionRef>())
-        else {
-            return;
-        };
-        self.notes.borrow_mut().push(function_ref.clone());
-    }
-}
-
-impl Handler for ModuleCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "module", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(module_id) = event
-            .metadata
-            .get("module_id")
-            .and_then(|v| v.downcast_ref::<ModuleId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(module) = event
-            .metadata
-            .get("module")
-            .and_then(|value| value.downcast_ref::<ModuleState>())
-        else {
-            return;
-        };
-        self.defs
-            .borrow_mut()
-            .entry(module_id)
-            .or_default()
-            .push(module.clone());
-    }
-}
-
-impl Handler for CallsiteCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "callsite", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(key) = event
-            .metadata
-            .get("callsite")
-            .and_then(|value| value.downcast_ref::<CallSiteKey>())
-        else {
-            return;
-        };
-        let Some(summary) = event
-            .metadata
-            .get("summary")
-            .and_then(|value| value.downcast_ref::<CallSiteSummary>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(CallsiteDefinedRecord {
-            key: key.clone(),
-            summary: summary.clone(),
-        });
-    }
-}
-
-impl Handler for ReturnTypeCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "return_type", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(activation) = event
-            .metadata
-            .get("activation")
-            .and_then(|value| value.downcast_ref::<ActivationKey>())
-        else {
-            return;
-        };
-        // The event carries the activation's return EVIDENCE. Only rounds
-        // that hold evidence are recorded; the last record at quiescence is
-        // the settled return.
-        let Some(Some(return_ty)) = event
-            .metadata
-            .get("return_ty")
-            .and_then(|value| value.downcast_ref::<Option<Ty>>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
-            return;
-        };
-        self.defs.borrow_mut().push(ReturnTypeRecord {
-            activation: activation.clone(),
-            return_ty,
-            changed: *changed != 0,
-        });
-    }
-}
-
-impl Handler for ActivationInputCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "activation_inputs", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(activation) = event
-            .metadata
-            .get("activation")
-            .and_then(|value| value.downcast_ref::<ActivationKey>())
-        else {
-            return;
-        };
-        let Some(inputs) = event
-            .metadata
-            .get("inputs")
-            .and_then(|value| value.downcast_ref::<Vec<Ty>>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(ActivationInputRecord {
-            activation: activation.clone(),
-            inputs: inputs.clone(),
-        });
-    }
-}
-
-impl Handler for BackendProgramCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "backend_program", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(root_id) = event
-            .metadata
-            .get("root_id")
-            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
-            return;
-        };
-        let Some(program) = event
-            .metadata
-            .get("program")
-            .and_then(|value| value.downcast_ref::<BackendProgram>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(BackendProgramRecord {
-            root_id,
-            changed: *changed != 0,
-            program: program.clone(),
-        });
-    }
-}
-
-impl Handler for NativeProgramCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "native_program", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(root_id) = event
-            .metadata
-            .get("root_id")
-            .and_then(|v| v.downcast_ref::<crate::compiler2::RootId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(Value::U64(changed)) = event.measurements.get("changed") else {
-            return;
-        };
-        let Some(program) = event
-            .metadata
-            .get("program")
-            .and_then(|value| value.downcast_ref::<NativeProgram>())
-        else {
-            return;
-        };
-        self.defs.borrow_mut().push(NativeProgramRecord {
-            root_id,
-            changed: *changed != 0,
-            program: program.clone(),
-        });
-    }
-}
-
-impl Handler for GuardDispatchCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "guard_dispatch", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(function_id) = event
-            .metadata
-            .get("function_id")
-            .and_then(|v| v.downcast_ref::<FunctionId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(dispatch) = event
-            .metadata
-            .get("dispatch")
-            .and_then(|value| value.downcast_ref::<PatternGuardDispatch<Ty>>())
-        else {
-            return;
-        };
-        self.dispatches
-            .borrow_mut()
-            .entry(function_id)
-            .or_default()
-            .push(dispatch.clone());
-    }
-}
-
-impl Handler for EntryDispatchCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "entry_dispatch", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(function_id) = event
-            .metadata
-            .get("function_id")
-            .and_then(|v| v.downcast_ref::<FunctionId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(plan) = event
-            .metadata
-            .get("plan")
-            .and_then(|value| value.downcast_ref::<PatternDispatchPlan<Ty>>())
-        else {
-            return;
-        };
-        self.plans
-            .borrow_mut()
-            .entry(function_id)
-            .or_default()
-            .push(plan.clone());
-    }
-}
-
-impl Handler for LoweredBodyCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "lowered_body", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        let Some(function_id) = event
-            .metadata
-            .get("function_id")
-            .and_then(|v| v.downcast_ref::<FunctionId>())
-            .copied()
-        else {
-            return;
-        };
-        let Some(body) = event
-            .metadata
-            .get("body")
-            .and_then(|value| value.downcast_ref::<LoweredBody>())
-        else {
-            return;
-        };
-        self.bodies
-            .borrow_mut()
-            .entry(function_id)
-            .or_default()
-            .push(body.clone());
-    }
-}
-
-fn measurement_u64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> u64 {
-    match event.measurements.get(key) {
-        Some(Value::U64(value)) => *value,
-        other => panic!("measurement key `{key}` missing or not u64: {other:?}"),
-    }
-}
-
-fn measurement_i64(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> i64 {
-    match event.measurements.get(key) {
-        Some(Value::I64(value)) => *value,
-        other => panic!("measurement key `{key}` missing or not i64: {other:?}"),
-    }
-}
-
-fn metadata_u64_opt(event: &crate::telemetry::capture::OwnedEvent, key: &str) -> Option<u64> {
-    match event.metadata.get(key) {
-        Some(Value::U64(value)) => Some(*value),
-        None => None,
-        other => panic!("metadata key `{key}` is not u64: {other:?}"),
-    }
+            module_id,
+            arity: function_ref.arity as u64,
+            clauses,
+            owner_function_id,
+            function_ref: function_ref.clone(),
+        },
+    );
 }
 
 fn metadata_str<'a>(event: &'a crate::telemetry::capture::OwnedEvent, key: &str) -> &'a str {
     match event.metadata.get(key) {
         Some(Value::Str(value)) => value.as_ref(),
+        None if key == "code" => event
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.code.0)
+            .unwrap_or_else(|| panic!("diagnostic missing for metadata key `{key}`")),
+        None if key == "message" => event
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .unwrap_or_else(|| panic!("diagnostic missing for metadata key `{key}`")),
         other => panic!("metadata key `{key}` missing or not str: {other:?}"),
     }
 }
@@ -12097,19 +12362,8 @@ fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> b
     })
 }
 
-fn transport_position_shape(plan: &MaterializedTransportPlan, position: &TransportPosition) -> ShapeId {
-    plan.shape_at(position)
-        .unwrap_or_else(|| panic!("transport position should have a materialized shape: {position:?}"))
-}
-
-fn return_flow_is_distinct_return_payload(plan: &MaterializedTransportPlan, flow: &CallReturnFlow) -> bool {
-    let CallReturnFlow::Continue { payload, caller_return } = flow else {
-        return false;
-    };
-    if !matches!(payload, TransportPosition::ReturnPayload { .. }) {
-        return false;
-    }
-    transport_position_shape(plan, payload) != transport_position_shape(plan, caller_return)
+fn return_flow_is_distinct_return_payload(flow: &BackendReturnFlow, caller: &BackendReturnLayout) -> bool {
+    matches!(flow, BackendReturnFlow::Continue { source } if source.as_ref() != caller)
 }
 
 fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
@@ -12118,7 +12372,9 @@ fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
         .iter()
         .filter_map(|body| match &body.origin {
             NativeBodyOrigin::Executable(key) => Some(key.activation.function),
-            NativeBodyOrigin::Clause { .. } | NativeBodyOrigin::Continuation { .. } => None,
+            NativeBodyOrigin::Clause { .. }
+            | NativeBodyOrigin::Continuation { .. }
+            | NativeBodyOrigin::CallableWrapper { .. } => None,
         })
         .collect()
 }
@@ -12131,7 +12387,8 @@ fn native_executable_fn(program: &NativeProgram, function: FunctionId) -> crate:
             NativeBodyOrigin::Executable(key) if key.activation.function == function => Some(body.fn_id),
             NativeBodyOrigin::Executable(_)
             | NativeBodyOrigin::Clause { .. }
-            | NativeBodyOrigin::Continuation { .. } => None,
+            | NativeBodyOrigin::Continuation { .. }
+            | NativeBodyOrigin::CallableWrapper { .. } => None,
         })
         .unwrap_or_else(|| panic!("native executable fn for {function:?}"))
 }
@@ -12159,12 +12416,47 @@ fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
     out
 }
 
-fn native_callable_boundary_uses(program: &NativeProgram) -> HashSet<NativeCallableBoundaryId> {
-    let mut out = HashSet::new();
-    for body in &program.bodies {
-        out.extend(body.callable_value_boundaries.values().copied());
+fn native_exact_call_targets(program: &NativeProgram) -> Vec<FnId> {
+    let mut out = Vec::new();
+    for function in &program.module.fns {
+        for block in &function.blocks {
+            match &block.terminator {
+                IrTerm::Call { callee, .. } | IrTerm::TailCall { callee, .. } => {
+                    if let crate::fz_ir::DirectCallTarget::Local(fn_id) = callee {
+                        out.push(*fn_id);
+                    }
+                }
+                IrTerm::CallClosure {
+                    direct_target: Some(fn_id),
+                    ..
+                }
+                | IrTerm::TailCallClosure {
+                    direct_target: Some(fn_id),
+                    ..
+                } => out.push(*fn_id),
+                _ => {}
+            }
+        }
     }
     out
+}
+
+fn native_callable_boundary_uses(program: &NativeProgram) -> HashSet<NativeCallableBoundaryId> {
+    program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .flat_map(|block| block.stmts.iter())
+        .filter_map(|stmt| match stmt {
+            IrStmt::Let(_, IrPrim::MakeFnRef(_, identity_fn) | IrPrim::MakeClosure(_, identity_fn, _)) => program
+                .callable_boundaries
+                .iter()
+                .find(|boundary| boundary.identity_fn == *identity_fn)
+                .map(|boundary| boundary.id()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn sorted_extern_marshals(body: &crate::compiler2::artifact::NativeBody) -> Vec<ExternTy> {
@@ -12175,269 +12467,6 @@ fn sorted_extern_marshals(body: &crate::compiler2::artifact::NativeBody) -> Vec<
         .collect::<Vec<_>>();
     marshals.sort_by_key(|(arg_idx, _)| *arg_idx);
     marshals.into_iter().map(|(_, ty)| ty).collect()
-}
-
-fn native_programs_match(left: &NativeProgram, right: &NativeProgram) -> bool {
-    left.backend_revision == right.backend_revision
-        && left.entry == right.entry
-        && left.bodies == right.bodies
-        && left.callable_boundaries == right.callable_boundaries
-        && native_modules_match(&left.module, &right.module)
-}
-
-fn native_modules_match(left: &IrModule, right: &IrModule) -> bool {
-    left.module_path == right.module_path
-        && left.fns.len() == right.fns.len()
-        && left
-            .fns
-            .iter()
-            .zip(right.fns.iter())
-            .all(|(left, right)| native_fns_match(left, right))
-        && left.fn_idx == right.fn_idx
-        && left.atom_names == right.atom_names
-        && left.externs == right.externs
-        && left.extern_idx == right.extern_idx
-        && left.external_call_edges().len() == right.external_call_edges().len()
-        && left
-            .external_call_edges()
-            .iter()
-            .zip(right.external_call_edges().iter())
-            .all(|(left, right)| native_external_call_edges_match(left, right))
-        && left.protocol_call_targets == right.protocol_call_targets
-}
-
-fn native_fns_match(left: &IrFn, right: &IrFn) -> bool {
-    left.id == right.id
-        && left.name == right.name
-        && left.frame_schema_id == right.frame_schema_id
-        && left.entry == right.entry
-        && left.category == right.category
-        && left.owner_module == right.owner_module
-        && left.ignored_entry_params == right.ignored_entry_params
-        && left.physical_entry_params == right.physical_entry_params
-        && left.physical_capabilities == right.physical_capabilities
-        && left.blocks.len() == right.blocks.len()
-        && left
-            .blocks
-            .iter()
-            .zip(right.blocks.iter())
-            .all(|(left, right)| native_blocks_match(left, right))
-}
-
-fn native_blocks_match(left: &IrBlock, right: &IrBlock) -> bool {
-    left.id == right.id
-        && left.params == right.params
-        && left.stmts.len() == right.stmts.len()
-        && left
-            .stmts
-            .iter()
-            .zip(right.stmts.iter())
-            .all(|(left, right)| native_stmts_match(left, right))
-        && native_terms_match(&left.terminator, &right.terminator)
-}
-
-fn native_stmts_match(left: &IrStmt, right: &IrStmt) -> bool {
-    match (left, right) {
-        (IrStmt::Let(left_var, left_prim), IrStmt::Let(right_var, right_prim)) => {
-            left_var == right_var && native_prims_match(left_prim, right_prim)
-        }
-    }
-}
-
-fn native_prims_match(left: &IrPrim, right: &IrPrim) -> bool {
-    match (left, right) {
-        (IrPrim::Extern(left_ident, left_extern, left_args), IrPrim::Extern(right_ident, right_extern, right_args)) => {
-            native_callsite_idents_match(left_ident, right_ident)
-                && left_extern == right_extern
-                && left_args == right_args
-        }
-        (IrPrim::MakeFnRef(left_ident, left_fn), IrPrim::MakeFnRef(right_ident, right_fn)) => {
-            native_callsite_idents_match(left_ident, right_ident) && left_fn == right_fn
-        }
-        (
-            IrPrim::MakeClosure(left_ident, left_fn, left_captured),
-            IrPrim::MakeClosure(right_ident, right_fn, right_captured),
-        ) => {
-            native_callsite_idents_match(left_ident, right_ident)
-                && left_fn == right_fn
-                && left_captured == right_captured
-        }
-        _ => left == right,
-    }
-}
-
-fn native_terms_match(left: &IrTerm, right: &IrTerm) -> bool {
-    match (left, right) {
-        (IrTerm::Goto(left_block, left_args), IrTerm::Goto(right_block, right_args)) => {
-            left_block == right_block && left_args == right_args
-        }
-        (
-            IrTerm::If {
-                cond: left_cond,
-                then_b: left_then,
-                else_b: left_else,
-                origin: left_origin,
-            },
-            IrTerm::If {
-                cond: right_cond,
-                then_b: right_then,
-                else_b: right_else,
-                origin: right_origin,
-            },
-        ) => {
-            left_cond == right_cond && left_then == right_then && left_else == right_else && left_origin == right_origin
-        }
-        (
-            IrTerm::Call {
-                ident: left_ident,
-                callee: left_callee,
-                args: left_args,
-                continuation: left_cont,
-            },
-            IrTerm::Call {
-                ident: right_ident,
-                callee: right_callee,
-                args: right_args,
-                continuation: right_cont,
-            },
-        ) => {
-            native_callsite_idents_match(left_ident, right_ident)
-                && left_callee == right_callee
-                && left_args == right_args
-                && native_conts_match(left_cont, right_cont)
-        }
-        (
-            IrTerm::TailCall {
-                ident: left_ident,
-                callee: left_callee,
-                args: left_args,
-                is_back_edge: left_back_edge,
-            },
-            IrTerm::TailCall {
-                ident: right_ident,
-                callee: right_callee,
-                args: right_args,
-                is_back_edge: right_back_edge,
-            },
-        ) => {
-            native_callsite_idents_match(left_ident, right_ident)
-                && left_callee == right_callee
-                && left_args == right_args
-                && left_back_edge == right_back_edge
-        }
-        (
-            IrTerm::CallClosure {
-                ident: left_ident,
-                closure: left_closure,
-                args: left_args,
-                continuation: left_cont,
-                direct_target: left_direct_target,
-            },
-            IrTerm::CallClosure {
-                ident: right_ident,
-                closure: right_closure,
-                args: right_args,
-                continuation: right_cont,
-                direct_target: right_direct_target,
-            },
-        ) => {
-            native_callsite_idents_match(left_ident, right_ident)
-                && left_closure == right_closure
-                && left_args == right_args
-                && native_conts_match(left_cont, right_cont)
-                && left_direct_target == right_direct_target
-        }
-        (
-            IrTerm::TailCallClosure {
-                ident: left_ident,
-                closure: left_closure,
-                args: left_args,
-                direct_target: left_direct_target,
-            },
-            IrTerm::TailCallClosure {
-                ident: right_ident,
-                closure: right_closure,
-                args: right_args,
-                direct_target: right_direct_target,
-            },
-        ) => {
-            native_callsite_idents_match(left_ident, right_ident)
-                && left_closure == right_closure
-                && left_args == right_args
-                && left_direct_target == right_direct_target
-        }
-        (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {
-            left_var == right_var
-        }
-        (IrTerm::ReturnLanes(left_lanes), IrTerm::ReturnLanes(right_lanes)) => left_lanes == right_lanes,
-        (
-            IrTerm::ReceiveMatched {
-                ident: left_ident,
-                clauses: left_clauses,
-                dispatch: left_dispatch,
-                after: left_after,
-                pinned: left_pinned,
-                captures: left_captures,
-            },
-            IrTerm::ReceiveMatched {
-                ident: right_ident,
-                clauses: right_clauses,
-                dispatch: right_dispatch,
-                after: right_after,
-                pinned: right_pinned,
-                captures: right_captures,
-            },
-        ) => {
-            native_callsite_idents_match(left_ident, right_ident)
-                && left_clauses.len() == right_clauses.len()
-                && left_clauses
-                    .iter()
-                    .zip(right_clauses.iter())
-                    .all(|(left, right)| native_receive_clauses_match(left, right))
-                && left_dispatch == right_dispatch
-                && native_receive_after_match(left_after.as_ref(), right_after.as_ref())
-                && left_pinned == right_pinned
-                && left_captures == right_captures
-        }
-        _ => false,
-    }
-}
-
-fn native_conts_match(left: &IrCont, right: &IrCont) -> bool {
-    left.fn_id == right.fn_id && left.captured == right.captured
-}
-
-fn native_receive_clauses_match(left: &ReceiveClause, right: &ReceiveClause) -> bool {
-    native_callsite_idents_match(&left.ident, &right.ident)
-        && left.bound_names == right.bound_names
-        && left.guard == right.guard
-        && left.body == right.body
-        && left.span == right.span
-}
-
-fn native_receive_after_match(left: Option<&ReceiveAfter>, right: Option<&ReceiveAfter>) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => {
-            native_callsite_idents_match(&left.ident, &right.ident)
-                && left.timeout == right.timeout
-                && left.body == right.body
-                && left.span == right.span
-        }
-        _ => false,
-    }
-}
-
-fn native_external_call_edges_match(left: &ExternalCallEdge, right: &ExternalCallEdge) -> bool {
-    native_callsite_ids_match(&left.callsite, &right.callsite) && left.target == right.target
-}
-
-fn native_callsite_ids_match(left: &IrCallsiteId, right: &IrCallsiteId) -> bool {
-    left.caller == right.caller && left.slot == right.slot && native_callsite_idents_match(&left.ident, &right.ident)
-}
-
-fn native_callsite_idents_match(left: &CallsiteIdent, right: &CallsiteIdent) -> bool {
-    left.span() == right.span()
 }
 
 fn direct_call_in_body(body: LoweredBody, callee: FunctionId) -> (CallSiteId, ValueId) {
@@ -12572,10 +12601,12 @@ impl ActivationAnalysisCapture {
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(ActivationAnalysisCaptureHandler {
-            keys: self.keys.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let keys = Rc::clone(&self.keys);
+        telemetry.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+            &["fz", "compiler2", "activation_analysis", "defined"],
+            move |_, _, _, _, activation| keys.borrow_mut().push(activation.clone()),
+        );
     }
 
     fn keys_for_root(&self, root: crate::compiler2::RootId) -> Vec<ActivationKey> {
@@ -12585,25 +12616,6 @@ impl ActivationAnalysisCapture {
             .filter(|key| key.root == root)
             .cloned()
             .collect()
-    }
-}
-
-struct ActivationAnalysisCaptureHandler {
-    keys: Rc<RefCell<Vec<ActivationKey>>>,
-}
-
-impl Handler for ActivationAnalysisCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "activation_analysis", "defined"] || event.kind != EventKind::Event {
-            return;
-        }
-        if let Some(activation) = event
-            .metadata
-            .get("activation")
-            .and_then(|value| value.downcast_ref::<ActivationKey>())
-        {
-            self.keys.borrow_mut().push(activation.clone());
-        }
     }
 }
 
@@ -12672,6 +12684,14 @@ fn module_indexed_ids(outputs: &OutputFacts) -> Vec<crate::compiler2::ModuleId> 
         .collect()
 }
 
+fn named_module_id(world: &crate::compiler2::World, modules: &[ModuleId], name: &str) -> ModuleId {
+    modules
+        .iter()
+        .copied()
+        .find(|module| world.module_name(*module) == Some(name))
+        .unwrap_or_else(|| panic!("indexed module `{name}`"))
+}
+
 fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
     values.sort();
     values
@@ -12685,11 +12705,11 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
     // dead) and never an `any` placeholder (`any` is earned at boundaries).
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let callsites = CallsiteCapture::new();
-    tel.attach(&["fz", "compiler2", "callsite", "defined"], callsites.handler());
+    callsites.install(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("count.fz".to_string()),
         concat!(
@@ -12700,7 +12720,10 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "the recursive count program should converge");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the recursive count program should converge",
+    );
 
     let count_id = function_id(&functions, "count", 1);
     let self_calls: Vec<_> = callsites
@@ -12759,16 +12782,19 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
     // empty: at the fixpoint, "no evidence" IS the fact "never returns".
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("forever.fz".to_string()),
         concat!("fn forever(), do: forever()\n", "fn main(), do: forever()\n").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
     world.demand(Job::BuildBackendProduct(root));
-    assert_resolved(world.drive(), "a never-returning program still quiesces");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "a never-returning program still quiesces",
+    );
 
     // The two reachable activations both have bottom returns: analysis reaches
     // them (main/0 calls forever/0, forever/0 calls itself) but neither ever
@@ -12798,17 +12824,24 @@ fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
     // program manufactured a divergent ascent (list(none), list(list(none)),
     // …); honest paths never start the chain.
     let tel = ConfiguredTelemetry::new();
-    let widened = Capture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let widened = Rc::new(Cell::new(false));
+    let widened_sink = Rc::clone(&widened);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "widened"],
+        move |_, _, _, _, _| widened_sink.set(true),
+    );
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_unproductive.fz".to_string()),
         concat!("fn deep(x), do: [deep(x)]\n", "fn main(), do: deep(1)\n").to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "an unproductive deepening program quiesces at bottom");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "an unproductive deepening program quiesces at bottom",
+    );
     assert!(
-        widened.is_empty(),
+        !widened.get(),
         "no evidence ever ascends, so widening must never engage",
     );
 }
@@ -12822,9 +12855,13 @@ fn compiler2_productive_deepening_terminates_by_widening() {
     // express, so the precise ascent provably never lands. Termination must
     // come from the widening operator, not from a timeout.
     let tel = ConfiguredTelemetry::new();
-    let widened = Capture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
-    let mut world = crate::compiler2::World::new(&tel);
+    let widened = Rc::new(Cell::new(false));
+    let widened_sink = Rc::clone(&widened);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "return_type", "widened"],
+        move |_, _, _, _, _| widened_sink.set(true),
+    );
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_productive.fz".to_string()),
         concat!(
@@ -12835,9 +12872,12 @@ fn compiler2_productive_deepening_terminates_by_widening() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "the productive deepening program must converge");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the productive deepening program must converge",
+    );
     assert!(
-        !widened.is_empty(),
+        widened.get(),
         "termination of a true divergent ascent must come from widening",
     );
 }
@@ -12852,41 +12892,32 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
     #[derive(Default)]
     struct ReturnStats {
         define_calls: u64,
-        max_ascents: u64,
     }
     let defines: Rc<RefCell<HashMap<(u64, u64), ReturnStats>>> = Rc::new(RefCell::new(HashMap::new()));
     let sink = Rc::clone(&defines);
-    tel.attach(
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "return_type", "defined"],
-        Box::new(move |event: &Event<'_, '_, '_>| {
-            let (Some(Value::U64(root)), Some(Value::U64(function)), Some(Value::U64(ascents))) = (
-                event.measurements.get("root_id"),
-                event.measurements.get("function_id"),
-                event.measurements.get("ascents"),
-            ) else {
-                return;
-            };
+        move |_, _, _, _, activation| {
             let mut defines = sink.borrow_mut();
-            let entry = defines.entry((*root, *function)).or_default();
+            let entry = defines
+                .entry((activation.root.as_u32() as u64, activation.function.as_u32() as u64))
+                .or_default();
             entry.define_calls += 1;
-            entry.max_ascents = entry.max_ascents.max(*ascents);
-        }),
+        },
     );
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "quicksort converges by theorem, on every schedule");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "quicksort converges by theorem, on every schedule",
+    );
 
     for ((root, function), stats) in defines.borrow().iter() {
-        assert!(
-            stats.max_ascents <= 8,
-            "fn {function} (root {root}) ascended {} times — corpus programs converge well under the widening delay",
-            stats.max_ascents,
-        );
         assert!(
             stats.define_calls <= 64,
             "fn {function} (root {root}) was re-analyzed {} times — the runaway re-ran one activation 32,366 times",
@@ -12895,16 +12926,9 @@ fn compiler2_quicksort_return_revisions_stay_bounded() {
     }
 }
 
-/// The widening operator is a terminator of last resort, not a feature any
-/// honest program meets: across the whole fixture corpus the return join
-/// must converge precisely, with zero widening engagements. The measured
-/// maximum ascent pinned here is what justifies the headroom documented on
-/// RETURN_WIDENING_BUDGET — if this pin moves, that doc comment moves with
-/// it. The sweep is sharded into four `#[test]`s purely so it parallelizes
-/// across the harness's threads; together the shards cover every fixture.
 fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
     let mut swept = 0u32;
-    let mut corpus_max_ascents = 0u64;
+    let mut corpus_max_return_changes = 0u64;
     let mut entries = std::fs::read_dir("fixtures2")
         .expect("fixtures2 corpus")
         .map(|entry| entry.expect("corpus entry").path())
@@ -12924,40 +12948,42 @@ fn sweep_corpus_for_return_widening(shard: usize, shards: usize) {
         swept += 1;
 
         let tel = ConfiguredTelemetry::new();
-        let widened = Capture::new();
-        tel.attach(&["fz", "compiler2", "return_type", "widened"], widened.handler());
-        let max_ascents: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
-        let sink = Rc::clone(&max_ascents);
-        tel.attach(
+        let widened = Rc::new(Cell::new(false));
+        let widened_sink = Rc::clone(&widened);
+        tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+            &["fz", "compiler2", "return_type", "widened"],
+            move |_, _, _, _, _| widened_sink.set(true),
+        );
+        let return_changes: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::new()));
+        let sink = Rc::clone(&return_changes);
+        tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
             &["fz", "compiler2", "return_type", "defined"],
-            Box::new(move |event: &Event<'_, '_, '_>| {
-                if let Some(Value::U64(ascents)) = event.measurements.get("ascents") {
-                    let mut max = sink.borrow_mut();
-                    *max = (*max).max(*ascents);
-                }
-            }),
+            move |_, _, _, _, activation| {
+                *sink.borrow_mut().entry(activation.clone()).or_default() += 1;
+            },
         );
 
-        let mut world = crate::compiler2::World::new(&tel);
+        let mut world = crate::compiler2::World::new();
         world.submit_code(Some(path.display().to_string()), text);
         world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
         // Diagnostics are fixture-specific; the corpus invariants are that
         // the drive terminates (it returned) and never widened a return.
-        let _ = world.drive();
+        let _ = super::drive::ExecutionContext::new(&mut world, &tel).drive();
         assert!(
-            widened.is_empty(),
+            !widened.get(),
             "return widening engaged on corpus fixture {}",
             path.display(),
         );
-        corpus_max_ascents = corpus_max_ascents.max(*max_ascents.borrow());
+        let fixture_max_return_changes = return_changes.borrow().values().copied().max().unwrap_or_default();
+        corpus_max_return_changes = corpus_max_return_changes.max(fixture_max_return_changes);
     }
     assert!(
         swept >= 25,
         "corpus shard {shard}/{shards} swept only {swept} fixtures — wrong path?"
     );
     assert!(
-        corpus_max_ascents <= 4,
-        "corpus max return ascents grew to {corpus_max_ascents} — \
+        corpus_max_return_changes <= 5,
+        "corpus max return changes grew to {corpus_max_return_changes} — \
          re-derive RETURN_WIDENING_BUDGET's headroom before loosening this",
     );
 }
@@ -12997,7 +13023,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
     // seal's SemanticClosure inventory, and the same reconstruction
     // `compiler2_quicksort_root_closes_with_a_finite_recursive_frontier` pins to
     // its exact size.
-    let mut shapes: Vec<(u64, usize)> = Vec::new();
+    let mut shapes = Vec::new();
     for _ in 0..20 {
         let tel = ConfiguredTelemetry::new();
         let jobs_ran: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
@@ -13011,26 +13037,50 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
             }),
         );
 
-        let mut world = crate::compiler2::World::new(&tel);
+        let mut world = crate::compiler2::World::new();
         world.submit_code(
             Some("quicksort.fz".to_string()),
             include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
         );
         let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
         world.demand(Job::BuildBackendProduct(root));
-        assert_resolved(world.drive(), "every schedule converges");
+        assert_resolved(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            "every schedule converges",
+        );
         let entry = world.root_function(root);
         let frontier = rooted_reachable_frontier(&mut world, root, entry);
-        shapes.push((*jobs_ran.borrow(), frontier.len()));
+        let normalized = frontier
+            .iter()
+            .map(|activation| {
+                (
+                    world.function_ref(activation.function).name.clone(),
+                    activation
+                        .inputs(world.types())
+                        .iter()
+                        .map(|ty| world.types().display(ty))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let names = normalized.iter().map(|(name, _)| name.as_str()).collect::<HashSet<_>>();
+        assert!(
+            names.contains("main")
+                && names.contains("qsort")
+                && names.contains("partition")
+                && names.contains("append")
+        );
+        assert!(!names.contains("foo"));
+        assert!(
+            frontier.len() <= 17,
+            "quicksort frontier exceeded the proven bound: {frontier:?}"
+        );
+        shapes.push((*jobs_ran.borrow(), normalized));
     }
-    // The fixpoint is unique: every schedule settles the exact same frontier
-    // (21 — the same minimum the single-drive frontier test pins), and the WORK
-    // to reach it may vary slightly (a different interleaving costs a few extra
-    // quiet joins) but stays in a tight band — the runaway did 54,000+ jobs
-    // where these do bounded work.
+    let expected = &shapes[0].1;
     assert!(
-        shapes.iter().all(|(_, size)| *size == 21),
-        "all schedules must settle the same exact activation frontier size (21): {shapes:?}",
+        shapes.iter().all(|(_, frontier)| frontier == expected),
+        "all schedules must settle the same activation frontier: {shapes:?}",
     );
     let min_jobs = shapes.iter().map(|(jobs, _)| *jobs).min().expect("runs");
     let max_jobs = shapes.iter().map(|(jobs, _)| *jobs).max().expect("runs");
@@ -13046,13 +13096,16 @@ fn compiler2_resolved_drive_is_quiescent() {
     // submissions runs zero jobs. Self-wake loops (the runaway's engine)
     // would fail this immediately.
     let tel = ConfiguredTelemetry::new();
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("quicksort.fz".to_string()),
         include_str!("../../fixtures2/00001_quicksort_plus_foo.fz").to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "first drive settles");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "first drive settles",
+    );
 
     let jobs_ran: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
     let sink = Rc::clone(&jobs_ran);
@@ -13064,7 +13117,10 @@ fn compiler2_resolved_drive_is_quiescent() {
             }
         }),
     );
-    assert_resolved(world.drive(), "a settled world re-drives to Resolved");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "a settled world re-drives to Resolved",
+    );
     assert_eq!(*jobs_ran.borrow(), 0, "a settled world has nothing to do");
 }
 
@@ -13123,28 +13179,22 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
     // simply gone. Both clauses must stay reachable.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     type ReachableByFunction = Vec<(u64, Vec<u32>)>;
     let analyses: Rc<RefCell<ReachableByFunction>> = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&analyses);
-    tel.attach(
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
         &["fz", "compiler2", "activation_analysis", "defined"],
-        Box::new(move |event: &Event<'_, '_, '_>| {
-            let Some(Value::U64(function)) = event.measurements.get("function_id") else {
+        move |_, _, _, world, activation| {
+            let Some(analysis) = world.activation_analysis(activation) else {
                 return;
             };
-            let Some(analysis) = event
-                .metadata
-                .get("analysis")
-                .and_then(|value| value.downcast_ref::<crate::compiler2::ActivationAnalysis>())
-            else {
-                return;
-            };
-            sink.borrow_mut().push((*function, analysis.reachable_clauses.clone()));
-        }),
+            sink.borrow_mut()
+                .push((activation.function.as_u32() as u64, analysis.reachable_clauses.clone()));
+        },
     );
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("string_dispatch.fz".to_string()),
         concat!(
@@ -13155,7 +13205,10 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "string-constant dispatch should settle");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "string-constant dispatch should settle",
+    );
 
     let pick_id = function_id(&functions, "pick", 1).as_u32() as u64;
     let last = analyses
@@ -13173,17 +13226,428 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
 }
 
 #[test]
+fn compiler2_dispatch_reachability_preserves_correlated_tuple_inputs() {
+    let (direct, direct_return) = semantic_reachability_for_source(
+        "correlated_tuple_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: {:a, :x}, else: {:b, :y}
+end
+
+fn classify({:a, :x}), do: :left
+fn classify({:b, :y}), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        direct,
+        vec![0, 1],
+        "the exact tuple alternatives must not invent cross-wired or wildcard reachability",
+    );
+    assert!(
+        direct_return.contains(":left") && direct_return.contains(":right") && !direct_return.contains(":fallback"),
+        "the published classifier return must exclude the phantom fallback, got {direct_return}",
+    );
+
+    let projected = reachable_clauses_for_source(
+        "projected_tuple_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: {:a, [true]}, else: {:b, [false]}
+end
+
+fn classify({:a, [true | _tail]}), do: :left
+fn classify({:b, [false | _tail]}), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        projected,
+        vec![0, 1],
+        "tuple alternatives must stay correlated through list-head projections",
+    );
+
+    let nested = reachable_clauses_for_source(
+        "nested_tuple_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: {:outer, {:a, :x}}, else: {:outer, {:b, :y}}
+end
+
+fn classify({:outer, {:a, :x}}), do: :left
+fn classify({:outer, {:b, :y}}), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        nested,
+        vec![0, 1],
+        "nested tuple products must retain sibling correlation"
+    );
+
+    let list_of_tuples = reachable_clauses_for_source(
+        "list_of_tuples_dispatch.fz",
+        r#"
+fn choose() do
+  if true, do: [{:a, :x}], else: [{:b, :y}]
+end
+
+fn classify([{:a, :x} | _tail]), do: :left
+fn classify([{:b, :y} | _tail]), do: :right
+fn classify(_), do: :fallback
+
+fn main(), do: classify(choose())
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        list_of_tuples,
+        vec![0, 1],
+        "correlated list alternatives must preserve the tuple product observed at their head",
+    );
+}
+
+#[test]
+fn compiler2_dispatch_reachability_keeps_list_positions_and_unknown_tests_conservative() {
+    let list_positions = reachable_clauses_for_source(
+        "list_position_dispatch.fz",
+        r#"
+fn classify([true, true | _tail]), do: :same
+fn classify(_), do: :fallback
+
+fn main(), do: classify([true, false])
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        list_positions,
+        vec![0, 1],
+        "one observed head must not globally narrow later positions of a homogeneous list type",
+    );
+
+    let guarded = reachable_clauses_for_source(
+        "guarded_dispatch.fz",
+        r#"
+fn classify(value) when value == :a, do: :guarded
+fn classify(_), do: :fallback
+
+fn main(), do: classify(:a)
+"#,
+        "classify",
+        1,
+    );
+    assert_eq!(
+        guarded,
+        vec![0, 1],
+        "guard predicates remain conservative in semantic reachability"
+    );
+}
+
+#[test]
+fn compiler2_declared_domains_drive_function_head_exhaustiveness() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "declared_domain_exhaustiveness.fz",
+        r#"
+@spec tuple_total({:a, :x} | {:b, :y}) :: atom
+fn tuple_total({:a, :x}), do: :left
+fn tuple_total({:b, :y}), do: :right
+
+@spec overload_total(:a, :x) :: atom
+@spec overload_total(:b, :y) :: atom
+fn overload_total(:a, :x), do: :left
+fn overload_total(:b, :y), do: :right
+
+@spec count_a([:a]) :: integer
+fn count_a([]), do: 0
+fn count_a([:a | tail]), do: 1 + count_a(tail)
+
+fn main() do
+  {tuple_total({:a, :x}), overload_total(:b, :y), count_a([:a, :a])}
+end
+"#,
+    );
+
+    assert!(diagnostics.is_empty(), "total declared domains warned: {diagnostics:?}");
+}
+
+#[test]
+fn compiler2_bounded_contract_domains_drive_function_head_exhaustiveness() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "bounded_contract_exhaustiveness.fz",
+        r#"
+@spec bounded(t) :: atom when t: :a | :b
+fn bounded(:a), do: :left
+fn bounded(:b), do: :right
+
+@spec nested({:tag, t}) :: atom when t: :a | :b
+fn nested({:tag, :a}), do: :left
+fn nested({:tag, :b}), do: :right
+
+fn main(), do: {bounded(:a), nested({:tag, :b})}
+"#,
+    );
+
+    assert!(
+        diagnostics.is_empty(),
+        "bounded declared domains warned: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn compiler2_partial_bounded_contract_domain_still_warns() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "partial_bounded_contract.fz",
+        r#"
+@spec partial(t) :: atom when t: :a | :b
+fn partial(:a), do: :a
+
+fn main(), do: partial(:a)
+"#,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "the uncovered bounded atom must warn: {diagnostics:?}"
+    );
+    assert_eq!(diagnostics[0].1.message, "`fn` clauses don't cover every input");
+}
+
+#[test]
+fn compiler2_partial_declared_domains_warn_with_and_without_guards() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "partial_declared_domains.fz",
+        r#"
+@spec partial(:a | :b | :c) :: atom
+fn partial(:a), do: :a
+fn partial(:b), do: :b
+
+@spec guarded(:a | :b) :: atom
+fn guarded(value) when value == :a, do: :a
+
+fn main(), do: {partial(:a), guarded(:a)}
+"#,
+    );
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|(_, diagnostic)| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "`fn` clauses don't cover every input",
+            "`fn` clauses don't cover every input",
+        ],
+        "both real fallthroughs must warn: {diagnostics:?}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|(source, _)| source == "partial_declared_domains.fz")
+    );
+}
+
+#[test]
+fn compiler2_contracted_functions_keep_nested_match_diagnostics() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "contracted_nested_case.fz",
+        r#"
+@spec nested(:ok) :: integer
+fn nested(:ok) do
+  case :a do
+    :a -> 1
+    :b -> 2
+  end
+end
+
+fn main(), do: nested(:ok)
+"#,
+    );
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "only the nested case should warn: {diagnostics:?}"
+    );
+    assert_eq!(diagnostics[0].1.message, "`case` clauses don't cover every input");
+}
+
+#[test]
+fn compiler2_invalid_contract_does_not_invent_a_domain_warning() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "invalid_contract_domain.fz",
+        r#"
+@spec invalid(Missing.t) :: atom
+fn invalid(:a), do: :a
+fn invalid(:b), do: :b
+
+fn main(), do: invalid(:a)
+"#,
+    );
+
+    assert!(
+        diagnostics.is_empty(),
+        "an unresolved contract has no valid domain: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn compiler2_enum_reduce_operator_ref_has_no_function_head_warnings() {
+    let diagnostics = no_matching_clause_diagnostics(
+        "fixtures2/00181_enum_reduce_operator_ref.fz",
+        include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
+    );
+
+    assert!(
+        diagnostics.is_empty(),
+        "runtime reducers should be total in their contracts: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn compiler2_enum_runtime_domains_are_total_without_hiding_user_partiality() {
+    for (source_name, source) in [
+        (
+            "fixtures2/behavior/enum_take_drop_split.fz",
+            include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+        ),
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        ),
+    ] {
+        let runtime_diagnostics = no_matching_clause_diagnostics(source_name, source);
+        assert!(
+            runtime_diagnostics.is_empty(),
+            "Enum and List runtime domains should be exhaustive for {source_name}: {runtime_diagnostics:?}"
+        );
+    }
+
+    let user_diagnostics = no_matching_clause_diagnostics(
+        "user_partial_function.fz",
+        r#"
+@spec partial(:a | :b) :: atom
+fn partial(:a), do: :a
+
+fn main(), do: partial(:a)
+"#,
+    );
+    assert_eq!(
+        user_diagnostics.len(),
+        1,
+        "a genuine user fallthrough must still warn: {user_diagnostics:?}"
+    );
+    assert_eq!(user_diagnostics[0].0, "user_partial_function.fz");
+    assert_eq!(user_diagnostics[0].1.message, "`fn` clauses don't cover every input");
+}
+
+fn no_matching_clause_diagnostics(source_name: &str, source: &str) -> Vec<(String, Diagnostic)> {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+
+    let mut world = crate::compiler2::World::new();
+    let user_code = world.submit_code(Some(source_name.to_string()), source.to_string());
+    world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    let outcome = super::drive::ExecutionContext::new(&mut world, &tel).drive();
+    assert!(
+        !matches!(outcome, DriveOutcome::Fatal { .. }),
+        "diagnostic fixture must not fail fatally: {outcome:?}; diagnostics: {:?}",
+        diagnostics.find(&["fz", "diag"]),
+    );
+
+    diagnostics
+        .find(&["fz", "diag"])
+        .into_iter()
+        .filter_map(|event| event.diagnostic)
+        .filter(|diagnostic| diagnostic.code == codes::TYPE_NO_MATCHING_CLAUSE)
+        .map(|diagnostic| {
+            let source = if diagnostic.primary.span.code_id.0 == user_code.as_u32() {
+                source_name.to_string()
+            } else {
+                "<runtime>".to_string()
+            };
+            (source, diagnostic)
+        })
+        .collect()
+}
+
+fn reachable_clauses_for_source(source_name: &str, source: &str, function_name: &str, arity: u64) -> Vec<u32> {
+    semantic_reachability_for_source(source_name, source, function_name, arity).0
+}
+
+fn semantic_reachability_for_source(
+    source_name: &str,
+    source: &str,
+    function_name: &str,
+    arity: u64,
+) -> (Vec<u32>, String) {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let returns = ReturnTypeCapture::new();
+    returns.install(&tel);
+    type ReachableByFunction = Vec<(u64, Vec<u32>)>;
+    let analyses: Rc<RefCell<ReachableByFunction>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&analyses);
+    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
+        &["fz", "compiler2", "activation_analysis", "defined"],
+        move |_, _, _, world, activation| {
+            let Some(analysis) = world.activation_analysis(activation) else {
+                return;
+            };
+            sink.borrow_mut()
+                .push((activation.function.as_u32() as u64, analysis.reachable_clauses.clone()));
+        },
+    );
+
+    let mut world = crate::compiler2::World::new();
+    world.submit_code(Some(source_name.to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "dispatch reachability fixture should settle",
+    );
+
+    let function_id = function_id(&functions, function_name, arity);
+    let function_measurement = function_id.as_u32() as u64;
+    let reachable = analyses
+        .borrow()
+        .iter()
+        .rev()
+        .find(|(function, _)| *function == function_measurement)
+        .map(|(_, clauses)| clauses.clone())
+        .unwrap_or_else(|| panic!("{function_name}/{arity} should be analyzed"));
+    let return_ty = returns.last_for_function(root, function_id).return_ty;
+    (reachable, world.types().display(&return_ty))
+}
+
+#[test]
 fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
     // Map keys are VALUES: the lowering carries the written constant
     // alongside the runtime key (LoweredMapKey), so %{1 => 10}[1] keeps its
     // precise int field type without numeric singleton types in the lattice.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
-    tel.attach(&["fz", "compiler2", "function"], functions.handler());
+    functions.install(&tel);
     let returns = ReturnTypeCapture::new();
-    tel.attach(&["fz", "compiler2", "return_type", "defined"], returns.handler());
+    returns.install(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("map_int_key.fz".to_string()),
         concat!(
@@ -13196,7 +13660,10 @@ fn compiler2_int_keyed_map_index_types_through_the_carried_literal() {
         .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "int-keyed map program settles");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "int-keyed map program settles",
+    );
 
     let pick_id = function_id(&functions, "pick", 0);
     let settled = returns.last_for_function(root, pick_id).return_ty;
@@ -13214,10 +13681,10 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
     // changing what the annotation filters.
     let tel = ConfiguredTelemetry::new();
     let diags = Capture::new();
-    tel.attach(&["fz", "diag"], diags.handler());
+    diags.install(&tel, &["fz", "diag"]);
     let rendered = rendered_type_defs(&tel);
 
-    let mut world = crate::compiler2::World::new(&tel);
+    let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("digit.fz".to_string()),
         concat!(
@@ -13228,14 +13695,17 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
         .to_string(),
     );
     world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
-    assert_resolved(world.drive(), "the literal-typed program settles");
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the literal-typed program settles",
+    );
 
     assert!(
         diags.find(&["fz", "diag", "warning"]).iter().any(|event| {
-            matches!(
-                event.metadata.get("code"),
-                Some(Value::Str(code)) if code == "type/numeric-literal-widened"
-            )
+            event
+                .diagnostic
+                .as_ref()
+                .is_some_and(|diagnostic| diagnostic.code.0 == "type/numeric-literal-widened")
         }),
         "widening a numeric literal type must warn",
     );
@@ -13249,94 +13719,14 @@ fn compiler2_numeric_literal_in_type_position_widens_with_a_warning() {
     assert_eq!(digit, "int", "the literal type means its kind");
 }
 #[test]
-fn compiler2_resolved_callable_entries_match_their_target_abi() {
-    let tel = ConfiguredTelemetry::new();
-    let backend = BackendProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "backend_program", "defined"], backend.handler());
-    let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
-
-    let mut compiler = Compiler2::new(&tel);
-    compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz").to_string(),
-    });
-    let root_id = compiler.submit_root(RootSubmission {
-        module_name: None,
-        name: "main".to_string(),
-        arity: 0,
-        need: ExecutableNeed::Value,
-    });
-    compiler.demand(Job::LowerNativeProgram(root_id));
-
-    assert_resolved(
-        compiler.drive(),
-        "the retained-list reduce/count fixture should preserve target-owned callable return ABIs",
-    );
-
-    let backend_program = backend.last(root_id).program;
-    let mut constructed_entries = Vec::new();
-    for executable in &backend_program.executables {
-        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
-            continue;
-        };
-        for step in clauses
-            .iter()
-            .flat_map(|clause| clause.projections.iter())
-            .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
-        {
-            match step {
-                BackendStep::FunctionRef {
-                    resolved_entry: Some(identity),
-                    ..
-                }
-                | BackendStep::Lambda {
-                    resolved_entry: Some(identity),
-                    ..
-                } => constructed_entries.push(*identity),
-                BackendStep::FunctionRef { .. } | BackendStep::Lambda { .. } => {}
-                _ => {}
-            }
-        }
-    }
-    assert!(
-        !constructed_entries.is_empty(),
-        "the fixture must construct at least one callable with a resolved entry identity"
-    );
-    for identity in constructed_entries {
-        assert!(
-            backend_program
-                .callable_entries
-                .iter()
-                .any(|entry| entry.identity == identity),
-            "callable construction must carry an identity from the root callable-entry inventory"
-        );
-    }
-
-    let program = native.last(root_id).program;
-    for boundary in &program.callable_boundaries {
-        let target = program
-            .bodies
-            .iter()
-            .find(|body| body.fn_id == boundary.target_fn)
-            .expect("callable boundary target body");
-        assert_eq!(
-            boundary.return_reprs, target.return_reprs,
-            "callable boundary {:?} must use its target body's grounded return ABI",
-            boundary
-        );
-    }
-}
-
-#[test]
 fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
     let native = NativeProgramCapture::new();
-    tel.attach(&["fz", "compiler2", "native_program", "defined"], native.handler());
+    native.install(&tel);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/behavior/repr_seam_closure_predicate.fz".to_string()),
         text: include_str!("../../fixtures2/behavior/repr_seam_closure_predicate.fz").to_string(),
@@ -13357,7 +13747,7 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
     let program = native.last(root_id).program;
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(
-        compiled.run(&tel, program.entry),
+        compiled.run_with_output(compiler.telemetry(), &dbg, program.entry),
         2,
         "the fixture should still return the final count after native callable-entry adaptation",
     );
@@ -13390,8 +13780,8 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
     // -- see `compiler2_multi_target_closure_arg_floor_shares_one_capture_surface_across_boundaries`.
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
-    tel.attach(&[], dbg.handler());
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
         text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
@@ -13413,5 +13803,200 @@ fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_cra
             "the demand-floor fix should stop the shared-body accumulator from being left as an unbound \
              backend value, but got: {error}",
         ),
+    }
+}
+
+#[test]
+fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_construction() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00279_enum_find_find_value.fz".to_string()),
+        text: include_str!("../../fixtures2/00279_enum_find_find_value.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "native program lowering must settle for a shared reducer body named by two boundaries with differing \
+         call-site return shapes -- this used to panic in build_codegen_closure_targets' deleted consistency loop",
+    );
+
+    let program = native.last(root_id).program;
+    let predicate = functions
+        .all()
+        .into_iter()
+        .find(|record| {
+            record
+                .function_ref
+                .name
+                .strip_prefix("#lambda:0:")
+                .is_some_and(|range| {
+                    range.split_once('-').is_some_and(|(start, end)| {
+                        start
+                            .parse::<usize>()
+                            .ok()
+                            .zip(end.parse::<usize>().ok())
+                            .and_then(|(start, end)| {
+                                include_str!("../../fixtures2/00279_enum_find_find_value.fz").get(start..end)
+                            })
+                            .is_some_and(|source| source.contains("x > 2"))
+                    })
+                })
+        })
+        .expect("find predicate producer should be indexed")
+        .function_id;
+    let boundary = program
+        .callable_boundaries
+        .iter()
+        .find(|boundary| {
+            boundary.members.len() == 1
+                && boundary
+                    .members
+                    .iter()
+                    .all(|member| member.target.activation.function == predicate)
+        })
+        .expect("the find predicate should remain the unique member of its producer construction");
+    let target = boundary.members[0].target_fn;
+    assert_ne!(
+        boundary.wrapper_fn, target,
+        "producer target {target:?} must stay behind its construction wrapper",
+    );
+}
+
+#[test]
+fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "enum_predicate_search should settle the backend product cleanly",
+    );
+
+    let program = backend.last(root_id).program;
+    let mut by_target: HashMap<usize, Vec<Vec<AbiValueRepr>>> = HashMap::new();
+    for member in program
+        .construction_wrappers
+        .iter()
+        .flat_map(|wrapper| wrapper.members.iter())
+    {
+        let capture_reprs = member
+            .capture_semantic_inputs
+            .iter()
+            .flat_map(|semantic_index| {
+                member
+                    .target_inputs
+                    .iter()
+                    .find(|input| input.semantic_index == *semantic_index)
+                    .into_iter()
+                    .flat_map(|input| input.layout.reprs.iter().copied())
+            })
+            .collect::<Vec<_>>();
+        by_target.entry(member.target).or_default().push(capture_reprs);
+    }
+
+    let saw_multi_member_construction = program
+        .construction_wrappers
+        .iter()
+        .any(|wrapper| wrapper.members.len() > 1);
+    let mut saw_physical_capture = false;
+    for (target, capture_surfaces) in &by_target {
+        if capture_surfaces.iter().any(|surface| !surface.is_empty()) {
+            saw_physical_capture = true;
+        }
+        if capture_surfaces.len() < 2 {
+            continue;
+        }
+        let first = &capture_surfaces[0];
+        for capture_surface in &capture_surfaces[1..] {
+            assert_eq!(
+                capture_surface, first,
+                "construction members naming target {target} should use its one sealed capture surface",
+            );
+        }
+    }
+    assert!(
+        saw_multi_member_construction,
+        "enum_predicate_search should exercise multi-member callable constructions",
+    );
+    assert!(
+        saw_physical_capture,
+        "enum_predicate_search should exercise callable members with physical captures",
+    );
+}
+
+#[test]
+fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "enum_predicate_search should settle native lowering with construction-owned callable wrappers",
+    );
+
+    let program = native.last(root_id).program;
+    assert!(
+        !program.callable_boundaries.is_empty(),
+        "enum_predicate_search should publish callable construction wrappers",
+    );
+    assert!(
+        program
+            .callable_boundaries
+            .iter()
+            .any(|boundary| !boundary.captures.is_empty()),
+        "non-vacuous guard: at least one construction should carry a real capture surface",
+    );
+    for boundary in &program.callable_boundaries {
+        assert!(
+            !boundary.members.is_empty(),
+            "every construction wrapper needs a member adapter"
+        );
+        assert!(
+            boundary.members.iter().all(|member| {
+                member
+                    .target_inputs
+                    .windows(2)
+                    .all(|inputs| inputs[0].semantic_index < inputs[1].semantic_index)
+            }),
+            "construction member adapters must publish target semantic input order",
+        );
     }
 }

@@ -61,6 +61,22 @@ is not "put the message somewhere and revisit it later". A hit outcome is a
 projected outcome-closure payload for the winning clause body; a miss outcome is
 "append the full message to the mailbox and stay parked".
 
+Compiler2 semantic reachability is another consumer, not another dispatch
+model. `compiler2/dispatch_reachability.rs` interprets the graph's edge proofs
+against root input `Ty` rows and uses plan-owned `PatternSubjectRef` paths to
+derive every tested projection. It never stores types by `SubjectId` and never
+adds type/domain policy to this generic module. Before traversal, a runtime
+envelope replaces bare inference templates in positive, recursively inspectable
+tuple/list/map/resource slots with `any`, narrows unresolved negative exclusions
+instead of widening them, and preserves callable arrows that the pattern graph
+cannot inspect. Negative finite variable branches are erased while preserving
+their concrete axes; negative cofinite branches with excluded variable IDs
+become empty. A cofinite variable axis with no excluded IDs remains ordinary
+top. Exact tuple projections lift to their roots;
+ambiguous positional list projections keep both edges. Each reachable outcome
+retains its refined root inputs for clause analysis, so reachability and clause
+binding consume the same proof.
+
 ## Vocabulary Boundary
 
 DispatchMatrix has three layers that must stay separate:

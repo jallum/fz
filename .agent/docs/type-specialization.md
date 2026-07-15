@@ -17,6 +17,21 @@ reachable clauses = reachable_clause_ids(entry_dispatch, inputs)
 return            = union over reachable clauses of each clause's body type
 ```
 
+`compiler2/dispatch_reachability.rs` owns that first calculation. Its branch
+state is only the original input-root `Ty` row, memoized with the graph node.
+Every tested `PatternSubjectRef` is projected fresh from those roots; exact
+tuple-field constraints lift back through the full projection path before
+intersecting the match root or subtracting the miss root. This keeps sibling
+fields correlated instead of caching independently widened projected types.
+Value-only predicates and projections the type lattice cannot represent retain
+both branches.
+
+List head/tail observations are positional, while `ListSig` element types are
+homogeneous. The calculator may select an already-correlated list alternative
+whose projected element is proved inside or outside a region, but an ambiguous
+head never narrows the whole list element type. Thus observing one head cannot
+silently constrain a later element.
+
 There is no separate inference IR and no per-cell solver lattice. `AnalyzeActivation`
 walks the clause bodies once, threading a `values: HashMap<ValueId, Ty>` map, and
 the cross-activation fixpoint lives entirely in the fact graph: a call reads its

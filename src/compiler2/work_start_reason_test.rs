@@ -43,7 +43,7 @@ const EXTERNAL_IGNITIONS: u64 = 2;
 
 fn assert_pull_only(name: &str, source: &str) {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some(name.to_string()),
         text: source.to_string(),

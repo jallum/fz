@@ -1,0 +1,12 @@
+fn each_a(x), do: dbg(x)
+fn each_b(x), do: dbg(x)
+fn run(mapper), do: Enum.each([1, 2, 3], mapper)
+
+fn main() do
+  mapper = case Process.heap_alloc_stats()[:allocs] == 0 do
+    true -> each_a
+    _ -> each_b
+  end
+  run(mapper)
+  0
+end

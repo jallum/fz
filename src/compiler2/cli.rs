@@ -5,22 +5,21 @@
 //! It does not reopen the old planner/module pipeline or emulate old-world
 //! diagnostics.
 
-use std::cell::Cell;
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
-use std::rc::Rc;
 use std::time::Duration;
 
 use crate::aot_link;
 use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
-use crate::ir_codegen::{ir_text_record_enable, ir_text_record_take};
+use crate::diag::style::ColorMode;
 use crate::notify_fixture_execution_start;
-use crate::telemetry::{ConfiguredTelemetry, Event, Handler, JsonlBackend, StatsHandler, Value};
+use crate::telemetry::diag_render::{DiagRenderer, DiagnosticStatus};
+use crate::telemetry::{ConfiguredTelemetry, JsonlBackend, StatsHandler};
 
 use super::code::CodeId;
-use super::dump::{DumpKind, DumpSpec, install_dump_handlers, max_requested_stage, parse_dump_spec};
+use super::dump::{DumpKind, DumpSpec, FileRequestedOutput, max_requested_stage, parse_dump_spec};
 use super::quoted_surface::{MacroCallForm, ScopeForm, ScopeSurface, read_module_body_surface, read_scope_surface};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission, parse_quoted_program};
 
@@ -35,26 +34,25 @@ pub fn run() {
 
     let tel = ConfiguredTelemetry::new();
     if let Some(path) = log_telemetry.as_deref() {
-        let backend = JsonlBackend::new_file(Path::new(path)).unwrap_or_else(|error| {
+        let backend = JsonlBackend::new_public_file(Path::new(path)).unwrap_or_else(|error| {
             eprintln!("fz2 --log-telemetry {}: {}", path, error);
             exit(2);
         });
-        tel.attach(&[], Box::new(backend));
+        backend.install(&tel);
     }
     let stats_handler = if emit_stats {
         let stats = StatsHandler::new();
-        tel.attach(&[], stats.handler());
+        stats.install(&tel);
         Some(stats)
     } else {
         None
     };
-    let diagnostics = ConsoleDiagnostics::new();
-    tel.attach(&["fz", "diag"], diagnostics.handler());
+    let diagnostic_status = DiagnosticStatus::new();
 
-    let exit_code = match dispatch(&tel, args) {
+    let exit_code = match dispatch(tel, args, &diagnostic_status) {
         Ok(()) => 0,
         Err(error) => {
-            if !diagnostics.saw_error() {
+            if !diagnostic_status.saw_error() {
                 eprintln!("{}", error.message);
             }
             error.code
@@ -119,21 +117,21 @@ fn parse_global_args(raw_args: Vec<String>) -> (Option<String>, bool, Vec<String
     (log_telemetry, emit_stats, args)
 }
 
-fn dispatch(tel: &ConfiguredTelemetry, args: Vec<String>) -> Result<(), CliError> {
+fn dispatch(tel: ConfiguredTelemetry, args: Vec<String>, diagnostic_status: &DiagnosticStatus) -> Result<(), CliError> {
     match args.first().map(String::as_str) {
         Some("help" | "--help" | "-h") => {
             print_help();
             Ok(())
         }
-        Some("run") => run_command(tel, &args[1..]),
-        Some("interp") => interp_command(tel, &args[1..]),
-        Some("build") => build_command(tel, &args[1..]),
-        Some("test") => test_command(tel, &args[1..]),
+        Some("run") => run_command(tel, &args[1..], diagnostic_status),
+        Some("interp") => interp_command(tel, &args[1..], diagnostic_status),
+        Some("build") => build_command(tel, &args[1..], diagnostic_status),
+        Some("test") => test_command(tel, &args[1..], diagnostic_status),
         // Not advertised in `help`: the private per-test entry point `test_command`
         // spawns itself through, one subprocess per discovered test, so a failing
         // `assert` (which aborts the process on the JIT backend) can't take down
         // sibling tests.
-        Some("run-test-root") => run_test_root_command(tel, &args[1..]),
+        Some("run-test-root") => run_test_root_command(tel, &args[1..], diagnostic_status),
         Some(command) => Err(CliError::usage(format!("fz2: unknown command `{command}`"))),
         None => Err(CliError::usage("fz2 <run|build|interp|test|help> [options] <src.fz>")),
     }
@@ -173,45 +171,32 @@ build options:
     );
 }
 
-fn run_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn run_command(
+    tel: ConfiguredTelemetry,
+    args: &[String],
+    diagnostic_status: &DiagnosticStatus,
+) -> Result<(), CliError> {
     let options = parse_source_options("fz2 run [--lto] [--dump <spec>] <src.fz>", args)?;
     let path = options.path;
-    let (mut compiler, root) = load_main_root(tel, &path)?;
-    install_dump_handlers(tel, root, &options.dumps);
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        ir_text_record_enable();
-    }
+    let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
+    compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     notify_fixture_execution_start();
     compiler
         .run_root_jit(root)
         .map_err(|error| CliError::failure(format!("fz2 run: {error}")))?;
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        let _ = ir_text_record_take();
-    }
     Ok(())
 }
 
-fn interp_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn interp_command(
+    tel: ConfiguredTelemetry,
+    args: &[String],
+    diagnostic_status: &DiagnosticStatus,
+) -> Result<(), CliError> {
     let options = parse_source_options("fz2 interp [--dump <spec>] <src.fz>", args)?;
     let path = options.path;
-    let (mut compiler, root) = load_main_root(tel, &path)?;
-    install_dump_handlers(tel, root, &options.dumps);
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        ir_text_record_enable();
-    }
+    let (mut compiler, root) = load_main_root(tel, &path, diagnostic_status)?;
+    compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
     emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
     notify_fixture_execution_start();
     let result = compiler.run_root_interp(root).map_err(|error| {
@@ -221,57 +206,43 @@ fn interp_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliE
             CliError::failure(format!("fz2 interp: {error}"))
         }
     });
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        let _ = ir_text_record_take();
-    }
     result?;
     Ok(())
 }
 
-fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
-    let options = parse_build_options(args)?;
-    let path = options.path;
-    let output = options.output;
-    let (mut compiler, root) = load_main_root(tel, &path)?;
-    install_dump_handlers(tel, root, &options.dumps);
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        ir_text_record_enable();
-    }
-    emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
-    let obj_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("fz_program");
-    let artifact = compiler
-        .compile_root_aot(root, obj_name)
-        .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
-    emit_through(tel, artifact.diagnostics.as_slice());
-    if artifact
-        .diagnostics
-        .as_slice()
-        .iter()
-        .any(|diag| diag.severity == Severity::Error)
-    {
-        return Err(CliError::failure("fz2 build failed with codegen diagnostics"));
-    }
-    if artifact.main_symbol.is_none() {
-        return Err(CliError::failure("fz2 build: no `main/0` fn found"));
-    }
-    aot_link::link_aot_artifact(&artifact, &output)
-        .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
-    if options
-        .dumps
-        .iter()
-        .any(|spec| matches!(spec.kind, super::dump::DumpKind::Clif))
-    {
-        let _ = ir_text_record_take();
-    }
-    Ok(())
+fn build_command(
+    tel: ConfiguredTelemetry,
+    args: &[String],
+    diagnostic_status: &DiagnosticStatus,
+) -> Result<(), CliError> {
+    let mut compiler = configured_compiler(tel, diagnostic_status);
+    (|| {
+        let options = parse_build_options(args)?;
+        let path = options.path;
+        let output = options.output;
+        let root = submit_main_root_from_path(&mut compiler, &path)?;
+        compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &options.dumps)));
+        emit_requested_root_dumps(&mut compiler, root, &options.dumps).map_err(CliError::failure)?;
+        let obj_name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("fz_program");
+        let artifact = compiler
+            .compile_root_aot(root, obj_name)
+            .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
+        emit_through(compiler.telemetry(), artifact.diagnostics.as_slice());
+        if artifact
+            .diagnostics
+            .as_slice()
+            .iter()
+            .any(|diag| diag.severity == Severity::Error)
+        {
+            return Err(CliError::failure("fz2 build failed with codegen diagnostics"));
+        }
+        if artifact.main_symbol.is_none() {
+            return Err(CliError::failure("fz2 build: no `main/0` fn found"));
+        }
+        aot_link::link_aot_artifact(&artifact, &output, compiler.telemetry())
+            .map_err(|error| CliError::failure(format!("fz2 build: {error}")))?;
+        Ok(())
+    })()
 }
 
 /// `fz2 test <src.fz>`: discovers every `test(:name) do ... end` item — at
@@ -279,13 +250,17 @@ fn build_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliEr
 /// Each test runs in a fresh `run-test-root` subprocess: on the JIT backend a
 /// failing `assert` aborts the whole process (see `fz_panic`), so sibling
 /// tests would never run if the driver executed them in-process.
-fn test_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn test_command(
+    tel: ConfiguredTelemetry,
+    args: &[String],
+    _diagnostic_status: &DiagnosticStatus,
+) -> Result<(), CliError> {
     let options = parse_test_options(args)?;
     let path = options.path;
     let text = read_to_string(&path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
     let source_name = path.display().to_string();
     let tests =
-        discover_tests(&source_name, &text, tel).map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
+        discover_tests(&source_name, &text, &tel).map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
     let exe = std::env::current_exe().map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
 
     println!("Running {}...\n", plural_count(tests.len(), "test", "tests"));
@@ -352,7 +327,11 @@ const TEST_MACRO_PRELUDE_NAME: &str = "test:prelude.fz";
 /// through the backend interpreter instead. The `test` item macro is supplied
 /// as a scoped prelude (its own `CodeId`), never spliced into the user source,
 /// so the user's file keeps its true byte offsets.
-fn run_test_root_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(), CliError> {
+fn run_test_root_command(
+    tel: ConfiguredTelemetry,
+    args: &[String],
+    diagnostic_status: &DiagnosticStatus,
+) -> Result<(), CliError> {
     let usage = "fz2 run-test-root [--interp] <src.fz> <module|-> <name>";
     let mut interp = false;
     let mut positional = Vec::new();
@@ -369,7 +348,15 @@ fn run_test_root_command(tel: &ConfiguredTelemetry, args: &[String]) -> Result<(
     let path = Path::new(path);
     let source_name = path.display().to_string();
     let text = read_to_string(path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
-    let (mut compiler, root) = load_test_root_from_text(tel, source_name, text, module_name, name.to_string(), 0);
+    let (mut compiler, root) = load_test_root_from_text(
+        tel,
+        source_name,
+        text,
+        module_name,
+        name.to_string(),
+        0,
+        diagnostic_status,
+    );
     if interp {
         compiler
             .run_root_interp(root)
@@ -640,11 +627,16 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, CliError> {
     Ok(BuildOptions { path, output, dumps })
 }
 
-fn emit_requested_root_dumps(compiler: &mut Compiler2<'_>, root: RootId, dumps: &[DumpSpec]) -> Result<(), String> {
+fn emit_requested_root_dumps(
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
+    root: RootId,
+    dumps: &[DumpSpec],
+) -> Result<(), String> {
     if let Some(stage) = max_requested_stage(dumps) {
         compiler
             .drive_root_to_dump_stage(root, stage)
             .map_err(|error| format!("fz2 dump prep: {error}"))?;
+        compiler.emit_requested_program_dumps(root);
     }
     // The types/activations dumps are served from the product-path activation
     // inventory, independently of any backend/native stage drive above, so they
@@ -660,58 +652,105 @@ fn emit_requested_root_dumps(compiler: &mut Compiler2<'_>, root: RootId, dumps: 
     Ok(())
 }
 
-fn load_main_root<'a>(tel: &'a ConfiguredTelemetry, path: &Path) -> Result<(Compiler2<'a>, RootId), CliError> {
-    load_root(tel, path, None, "main".to_string(), 0)
+fn load_main_root(
+    tel: ConfiguredTelemetry,
+    path: &Path,
+    diagnostic_status: &DiagnosticStatus,
+) -> Result<(Compiler2<ConfiguredTelemetry>, RootId), CliError> {
+    load_root(tel, path, None, "main".to_string(), 0, diagnostic_status)
 }
 
-fn load_root<'a>(
-    tel: &'a ConfiguredTelemetry,
+fn load_root(
+    tel: ConfiguredTelemetry,
     path: &Path,
     module_name: Option<String>,
     name: String,
     arity: usize,
-) -> Result<(Compiler2<'a>, RootId), CliError> {
-    let source_name = path.display().to_string();
-    let text = read_to_string(path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
-    Ok(load_root_from_text(tel, source_name, text, module_name, name, arity))
+    diagnostic_status: &DiagnosticStatus,
+) -> Result<(Compiler2<ConfiguredTelemetry>, RootId), CliError> {
+    let mut compiler = configured_compiler(tel, diagnostic_status);
+    let root = submit_root_from_path(&mut compiler, path, module_name, name, arity)?;
+    Ok((compiler, root))
 }
 
-fn load_root_from_text<'a>(
-    tel: &'a ConfiguredTelemetry,
+fn configured_compiler(
+    tel: ConfiguredTelemetry,
+    diagnostic_status: &DiagnosticStatus,
+) -> Compiler2<ConfiguredTelemetry> {
+    let mut compiler = Compiler2::new(tel);
+    DiagRenderer::new_to_stderr_with_status(
+        compiler.source_map(),
+        diagnostic_color_mode(),
+        diagnostic_status.clone(),
+    )
+    .install(compiler.telemetry());
+    compiler.set_drive_timeout(FZ2_COMPILER_DRIVE_TIMEOUT);
+    compiler
+}
+
+fn submit_main_root_from_path(compiler: &mut Compiler2<ConfiguredTelemetry>, path: &Path) -> Result<RootId, CliError> {
+    submit_root_from_path(compiler, path, None, "main".to_string(), 0)
+}
+
+fn submit_root_from_path(
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
+    path: &Path,
+    module_name: Option<String>,
+    name: String,
+    arity: usize,
+) -> Result<RootId, CliError> {
+    let source_name = path.display().to_string();
+    let text = read_to_string(path).map_err(|error| CliError::failure(format!("read {}: {error}", path.display())))?;
+    Ok(submit_root_from_text(
+        compiler,
+        source_name,
+        text,
+        module_name,
+        name,
+        arity,
+    ))
+}
+
+fn submit_root_from_text(
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
     source_name: String,
     text: String,
     module_name: Option<String>,
     name: String,
     arity: usize,
-) -> (Compiler2<'a>, RootId) {
-    let mut compiler = Compiler2::new(tel);
-    compiler.set_drive_timeout(FZ2_COMPILER_DRIVE_TIMEOUT);
+) -> RootId {
     compiler.submit_code(CodeSubmission {
         name: Some(source_name),
         text,
     });
-    let root = compiler.submit_root(RootSubmission {
+    compiler.submit_root(RootSubmission {
         module_name,
         name,
         arity,
         need: ExecutableNeed::Value,
-    });
-    (compiler, root)
+    })
 }
 
-/// Like [`load_root_from_text`] but first registers the `test` item macro as a
+/// Like ordinary root setup but first registers the `test` item macro as a
 /// scoped prelude, so the submitted test source — passed verbatim, spans
 /// intact — can use `test(:name) do ... end` without the macro being spliced
 /// into its text or added to the global Kernel bootstrap.
-fn load_test_root_from_text<'a>(
-    tel: &'a ConfiguredTelemetry,
+fn load_test_root_from_text(
+    tel: ConfiguredTelemetry,
     source_name: String,
     text: String,
     module_name: Option<String>,
     name: String,
     arity: usize,
-) -> (Compiler2<'a>, RootId) {
+    diagnostic_status: &DiagnosticStatus,
+) -> (Compiler2<ConfiguredTelemetry>, RootId) {
     let mut compiler = Compiler2::new(tel);
+    DiagRenderer::new_to_stderr_with_status(
+        compiler.source_map(),
+        diagnostic_color_mode(),
+        diagnostic_status.clone(),
+    )
+    .install(compiler.telemetry());
     compiler.set_drive_timeout(FZ2_COMPILER_DRIVE_TIMEOUT);
     compiler.submit_scoped_prelude(CodeSubmission {
         name: Some(TEST_MACRO_PRELUDE_NAME.to_string()),
@@ -730,53 +769,11 @@ fn load_test_root_from_text<'a>(
     (compiler, root)
 }
 
-struct ConsoleDiagnostics {
-    saw_error: Rc<Cell<bool>>,
-}
-
-impl ConsoleDiagnostics {
-    fn new() -> Self {
-        Self {
-            saw_error: Rc::new(Cell::new(false)),
-        }
-    }
-
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(ConsoleDiagnosticsHandler {
-            saw_error: self.saw_error.clone(),
-        })
-    }
-
-    fn saw_error(&self) -> bool {
-        self.saw_error.get()
-    }
-}
-
-struct ConsoleDiagnosticsHandler {
-    saw_error: Rc<Cell<bool>>,
-}
-
-impl Handler for ConsoleDiagnosticsHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if !matches!(event.name, ["fz", "diag", "error"] | ["fz", "diag", "warning"]) {
-            return;
-        }
-        let severity = match event.metadata.get("severity") {
-            Some(Value::Str(value)) => value.as_ref(),
-            _ => "error",
-        };
-        let code = match event.metadata.get("code") {
-            Some(Value::Str(value)) => value.as_ref(),
-            _ => "unknown",
-        };
-        let message = match event.metadata.get("message") {
-            Some(Value::Str(value)) => value.as_ref(),
-            _ => "diagnostic emitted without a message",
-        };
-        if severity == "error" {
-            self.saw_error.set(true);
-        }
-        eprintln!("{severity}[{code}]: {message}");
+fn diagnostic_color_mode() -> ColorMode {
+    if std::env::var_os("NO_COLOR").is_some() {
+        ColorMode::Never
+    } else {
+        ColorMode::Auto
     }
 }
 
@@ -878,7 +875,7 @@ mod test_prelude_span_test {
         // every span would be off by that many bytes -- this asserts the true
         // offset, so it fails against the concatenated-buffer approach.
         let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_scoped_prelude(CodeSubmission {
             name: Some(TEST_MACRO_PRELUDE_NAME.to_string()),
             text: TEST_MACRO_PRELUDE_SOURCE.to_string(),
@@ -925,5 +922,44 @@ mod test_prelude_span_test {
             user_code.as_u32(),
             "the user node's span must name the user's own code unit, not a combined prelude+user buffer"
         );
+    }
+}
+
+#[cfg(test)]
+mod requested_output_test {
+    use super::*;
+
+    #[test]
+    fn cli_routes_mixed_dump_specs_through_one_file_sink() {
+        let dir = std::env::temp_dir().join(format!("fz-cli-dumps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dump directory");
+        let specs = [
+            (DumpKind::Types, dir.join("root.types")),
+            (DumpKind::Activations, dir.join("root.activations")),
+            (DumpKind::Backend, dir.join("root.backend")),
+            (DumpKind::Native, dir.join("root.native")),
+            (DumpKind::Fnir, dir.join("root.fnir")),
+        ]
+        .map(|(kind, path)| DumpSpec { kind, path });
+        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("mixed_dumps.fz".to_string()),
+            text: "fn main(), do: 0\n".to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.set_requested_output(Box::new(FileRequestedOutput::new(root, &specs)));
+
+        emit_requested_root_dumps(&mut compiler, root, &specs).expect("emit mixed dumps");
+
+        for spec in &specs {
+            let text = std::fs::read_to_string(&spec.path).expect("dump file");
+            assert!(!text.is_empty(), "empty dump: {}", spec.path.display());
+        }
+        std::fs::remove_dir_all(dir).ok();
     }
 }

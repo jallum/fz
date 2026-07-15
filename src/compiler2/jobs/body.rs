@@ -234,7 +234,11 @@ enum ExprStep {
 /// This job reads the frozen function definition and emits one reusable body
 /// fact keyed by `FunctionId`. It lowers only that function, plus any lambda
 /// definitions it syntactically owns, and leaves unrelated bodies cold.
-pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn lower_function(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
     let Some(_) = world.function_defined_revision(function) else {
         return Ok(world.wait_for_function_definition(function));
     };
@@ -273,6 +277,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         for param in &clause.params {
             collect_local_pattern_requirements(
                 world,
+                tel,
                 source.namespace,
                 source.owner_module,
                 source.code,
@@ -284,6 +289,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         if let Some(guard) = &clause.guard {
             collect_local_dispatch_requirements(
                 world,
+                tel,
                 source.namespace,
                 source.owner_module,
                 source.code,
@@ -294,6 +300,7 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         }
         collect_local_dispatch_requirements(
             world,
+            tel,
             source.namespace,
             source.owner_module,
             source.code,
@@ -310,9 +317,10 @@ pub(super) fn lower_function(world: &mut World<'_>, function: FunctionId) -> Res
         });
     }
 
-    let mut lowerer = Lowerer::new(world, function, source, surface);
+    let mut lowerer = Lowerer::new(world, tel, function, source, surface);
     let (body, mut outputs, mut changed) = lowerer.lower()?;
-    let body_changed = lowerer.world.define_lowered_body(function, body);
+    let body_changed =
+        super::super::drive::ExecutionContext::new(lowerer.world, tel).define_lowered_body(function, body);
     outputs.push(FactKey::LoweredBody(function));
     if body_changed {
         changed.push(FactKey::LoweredBody(function));
@@ -343,7 +351,8 @@ fn extern_wire_ty(
 }
 
 fn collect_local_dispatch_requirements(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
     code: CodeId,
@@ -354,11 +363,12 @@ fn collect_local_dispatch_requirements(
     match &expr.node {
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, subject, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, subject, reads, waits)?;
             }
             for clause in clauses {
                 collect_local_pattern_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -367,9 +377,18 @@ fn collect_local_dispatch_requirements(
                     waits,
                 )?;
                 if let Some(guard) = &clause.guard {
-                    collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
+                    collect_local_guard_requirements(world, tel, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, &clause.body, reads, waits)?;
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
             }
         }
         Expr::With(bindings, body, else_clauses) => {
@@ -378,6 +397,7 @@ fn collect_local_dispatch_requirements(
                     WithBinding::Match(pattern, expr) => {
                         collect_local_pattern_requirements(
                             world,
+                            tel,
                             namespace,
                             owner_module,
                             code,
@@ -385,17 +405,36 @@ fn collect_local_dispatch_requirements(
                             reads,
                             waits,
                         )?;
-                        collect_local_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
+                        collect_local_dispatch_requirements(
+                            world,
+                            tel,
+                            namespace,
+                            owner_module,
+                            code,
+                            expr,
+                            reads,
+                            waits,
+                        )?;
                     }
                     WithBinding::Bare(expr) => {
-                        collect_local_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
+                        collect_local_dispatch_requirements(
+                            world,
+                            tel,
+                            namespace,
+                            owner_module,
+                            code,
+                            expr,
+                            reads,
+                            waits,
+                        )?;
                     }
                 }
             }
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
             for clause in else_clauses {
                 collect_local_pattern_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -404,28 +443,47 @@ fn collect_local_dispatch_requirements(
                     waits,
                 )?;
                 if let Some(guard) = &clause.guard {
-                    collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
+                    collect_local_guard_requirements(world, tel, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, &clause.body, reads, waits)?;
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
             }
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, then_expr, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, else_expr, reads, waits)?;
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    else_expr,
+                    reads,
+                    waits,
+                )?;
             }
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
             }
         }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
                 collect_local_pattern_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -434,13 +492,23 @@ fn collect_local_dispatch_requirements(
                     waits,
                 )?;
                 if let Some(guard) = &clause.guard {
-                    collect_local_guard_requirements(world, namespace, guard, reads, waits)?;
+                    collect_local_guard_requirements(world, tel, namespace, guard, reads, waits)?;
                 }
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, &clause.body, reads, waits)?;
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    &clause.body,
+                    reads,
+                    waits,
+                )?;
             }
             if let Some(after) = after {
                 collect_local_dispatch_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -448,59 +516,78 @@ fn collect_local_dispatch_requirements(
                     reads,
                     waits,
                 )?;
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, &after.body, reads, waits)?;
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    &after.body,
+                    reads,
+                    waits,
+                )?;
             }
         }
         Expr::Match(pattern, rhs) => {
-            collect_local_pattern_requirements(world, namespace, owner_module, code, pattern, reads, waits)?;
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)?;
+            collect_local_pattern_requirements(world, tel, namespace, owner_module, code, pattern, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)?;
         }
         Expr::Ascribe(rhs, _) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) | Expr::Unquote(rhs) => {
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)?;
         }
         Expr::Quote(rhs) => {
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)?;
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, left, reads, waits)?;
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, right, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, left, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, right, reads, waits)?;
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, target, reads, waits)?;
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, target, reads, waits)?;
             for arg in args {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, arg, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, arg, reads, waits)?;
             }
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, tail, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, tail, reads, waits)?;
             }
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
             }
         }
         Expr::Bitstring(fields) => {
             for field in fields {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, &field.value, reads, waits)?;
+                collect_local_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    &field.value,
+                    reads,
+                    waits,
+                )?;
             }
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, base, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, key, reads, waits)?;
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, key, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
             }
         }
         Expr::Struct { module, fields } => {
             record_struct_reference(
                 world,
+                tel,
                 namespace,
                 owner_module,
                 code,
@@ -511,12 +598,12 @@ fn collect_local_dispatch_requirements(
                 waits,
             )?;
             for (_, value) in fields {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
             }
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_local_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
+                collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, expr, reads, waits)?;
             }
         }
         Expr::Lambda(_) => {}
@@ -543,7 +630,8 @@ fn collect_local_dispatch_requirements(
 /// separately), so this only needs to recurse far enough to find nested
 /// struct patterns.
 fn collect_local_pattern_requirements(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
     code: CodeId,
@@ -555,6 +643,7 @@ fn collect_local_pattern_requirements(
         Pattern::Struct { module, fields } => {
             record_struct_reference(
                 world,
+                tel,
                 namespace,
                 owner_module,
                 code,
@@ -565,33 +654,51 @@ fn collect_local_pattern_requirements(
                 waits,
             )?;
             for (_, field_pattern) in fields {
-                collect_local_pattern_requirements(world, namespace, owner_module, code, field_pattern, reads, waits)?;
+                collect_local_pattern_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    field_pattern,
+                    reads,
+                    waits,
+                )?;
             }
         }
         Pattern::Tuple(items) => {
             for item in items {
-                collect_local_pattern_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
             }
         }
         Pattern::List(items, tail) => {
             for item in items {
-                collect_local_pattern_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_local_pattern_requirements(world, namespace, owner_module, code, tail, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, tail, reads, waits)?;
             }
         }
         Pattern::Map(entries) => {
             for (_, value) in entries {
-                collect_local_pattern_requirements(world, namespace, owner_module, code, value, reads, waits)?;
+                collect_local_pattern_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
             }
         }
         Pattern::As(_, inner) => {
-            collect_local_pattern_requirements(world, namespace, owner_module, code, inner, reads, waits)?;
+            collect_local_pattern_requirements(world, tel, namespace, owner_module, code, inner, reads, waits)?;
         }
         Pattern::Bitstring(fields) => {
             for field in fields {
-                collect_local_pattern_requirements(world, namespace, owner_module, code, &field.value, reads, waits)?;
+                collect_local_pattern_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    &field.value,
+                    reads,
+                    waits,
+                )?;
             }
         }
         Pattern::Wildcard
@@ -628,7 +735,8 @@ fn collect_local_pattern_requirements(
 /// mode, not a struct-schema question.
 #[allow(clippy::too_many_arguments)]
 fn record_struct_reference<'a>(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
     code: CodeId,
@@ -648,7 +756,11 @@ fn record_struct_reference<'a>(
     };
     world.note_struct_reference_expectation(module_id, requester.clone());
     for field in fields {
-        world.note_struct_field_expectation(module_id, field.to_string(), requester.clone())?;
+        super::super::drive::ExecutionContext::new(world, tel).note_struct_field_expectation(
+            module_id,
+            field.to_string(),
+            requester.clone(),
+        )?;
     }
     let fact = FactKey::StructDefined(module_id);
     if world.has_fact(&fact) {
@@ -660,7 +772,8 @@ fn record_struct_reference<'a>(
 }
 
 fn collect_unquote_dispatch_requirements(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     owner_module: ModuleId,
     code: CodeId,
@@ -670,21 +783,40 @@ fn collect_unquote_dispatch_requirements(
 ) -> Result<(), FatalError> {
     match &expr.node {
         Expr::Unquote(inner) => {
-            collect_local_dispatch_requirements(world, namespace, owner_module, code, inner, reads, waits)
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, code, inner, reads, waits)
         }
         Expr::Ascribe(inner, _) | Expr::Quote(inner) => {
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, inner, reads, waits)
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, inner, reads, waits)
         }
         Expr::Case(subject, clauses) => {
             if let Some(subject) = subject {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, subject, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    subject,
+                    reads,
+                    waits,
+                )?;
             }
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, owner_module, code, guard, reads, waits)?;
+                    collect_unquote_dispatch_requirements(
+                        world,
+                        tel,
+                        namespace,
+                        owner_module,
+                        code,
+                        guard,
+                        reads,
+                        waits,
+                    )?;
                 }
                 collect_unquote_dispatch_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -701,6 +833,7 @@ fn collect_unquote_dispatch_requirements(
                     WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
                         collect_unquote_dispatch_requirements(
                             world,
+                            tel,
                             namespace,
                             owner_module,
                             code,
@@ -711,13 +844,23 @@ fn collect_unquote_dispatch_requirements(
                     }
                 }
             }
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
             for clause in else_clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, owner_module, code, guard, reads, waits)?;
+                    collect_unquote_dispatch_requirements(
+                        world,
+                        tel,
+                        namespace,
+                        owner_module,
+                        code,
+                        guard,
+                        reads,
+                        waits,
+                    )?;
                 }
                 collect_unquote_dispatch_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -729,27 +872,46 @@ fn collect_unquote_dispatch_requirements(
             Ok(())
         }
         Expr::If(cond, then_expr, else_expr) => {
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, then_expr, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, then_expr, reads, waits)?;
             if let Some(else_expr) = else_expr {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, else_expr, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    else_expr,
+                    reads,
+                    waits,
+                )?;
             }
             Ok(())
         }
         Expr::Cond(arms) => {
             for (cond, body) in arms {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, cond, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, body, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, cond, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, body, reads, waits)?;
             }
             Ok(())
         }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
-                    collect_unquote_dispatch_requirements(world, namespace, owner_module, code, guard, reads, waits)?;
+                    collect_unquote_dispatch_requirements(
+                        world,
+                        tel,
+                        namespace,
+                        owner_module,
+                        code,
+                        guard,
+                        reads,
+                        waits,
+                    )?;
                 }
                 collect_unquote_dispatch_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -761,6 +923,7 @@ fn collect_unquote_dispatch_requirements(
             if let Some(after) = after {
                 collect_unquote_dispatch_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -768,36 +931,45 @@ fn collect_unquote_dispatch_requirements(
                     reads,
                     waits,
                 )?;
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, &after.body, reads, waits)?;
+                collect_unquote_dispatch_requirements(
+                    world,
+                    tel,
+                    namespace,
+                    owner_module,
+                    code,
+                    &after.body,
+                    reads,
+                    waits,
+                )?;
             }
             Ok(())
         }
         Expr::Match(_, rhs) | Expr::UnOp(_, rhs) | Expr::Capture(rhs) => {
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, rhs, reads, waits)
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, rhs, reads, waits)
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, left, reads, waits)?;
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, right, reads, waits)
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, left, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, right, reads, waits)
         }
         Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
-            collect_unquote_dispatch_requirements(world, namespace, owner_module, code, target, reads, waits)?;
+            collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, target, reads, waits)?;
             for arg in args {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, arg, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, arg, reads, waits)?;
             }
             Ok(())
         }
         Expr::List(items, tail) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
             }
             if let Some(tail) = tail {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, tail, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, tail, reads, waits)?;
             }
             Ok(())
         }
         Expr::Tuple(items) => {
             for item in items {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, item, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, item, reads, waits)?;
             }
             Ok(())
         }
@@ -805,6 +977,7 @@ fn collect_unquote_dispatch_requirements(
             for field in fields {
                 collect_unquote_dispatch_requirements(
                     world,
+                    tel,
                     namespace,
                     owner_module,
                     code,
@@ -817,23 +990,23 @@ fn collect_unquote_dispatch_requirements(
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
             if let Expr::MapUpdate(base, _) = &expr.node {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, base, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, base, reads, waits)?;
             }
             for (key, value) in entries {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, key, reads, waits)?;
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, key, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Struct { fields, .. } => {
             for (_, value) in fields {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, value, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, value, reads, waits)?;
             }
             Ok(())
         }
         Expr::Block(exprs) => {
             for expr in exprs {
-                collect_unquote_dispatch_requirements(world, namespace, owner_module, code, expr, reads, waits)?;
+                collect_unquote_dispatch_requirements(world, tel, namespace, owner_module, code, expr, reads, waits)?;
             }
             Ok(())
         }
@@ -851,7 +1024,8 @@ fn collect_unquote_dispatch_requirements(
 }
 
 fn collect_local_guard_requirements(
-    world: &mut World<'_>,
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
     guard: &Spanned<Expr>,
     reads: &mut Vec<FactKey>,
@@ -860,7 +1034,7 @@ fn collect_local_guard_requirements(
     let mut calls = Vec::new();
     collect_guard_calls_in_expr(guard, &mut calls).map_err(|span| {
         emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 "compiler2 case/with guards must be dispatch-pure".to_string(),
@@ -869,7 +1043,7 @@ fn collect_local_guard_requirements(
         )
     })?;
     for call in calls {
-        let callee = resolve_guard_callee(world, namespace, &call)?;
+        let callee = resolve_guard_callee(world, tel, namespace, &call)?;
         let fact = FactKey::GuardDispatch(callee);
         if world.fact_revision(&fact).is_some() {
             reads.push(fact);
@@ -880,8 +1054,9 @@ fn collect_local_guard_requirements(
     Ok(())
 }
 
-struct Lowerer<'w, 'tel> {
-    world: &'w mut World<'tel>,
+struct Lowerer<'w, 'tel, T: crate::telemetry::Telemetry> {
+    world: &'w mut World,
+    telemetry: &'tel T,
     owner: FunctionId,
     namespace: Namespace,
     source: FunctionSource,
@@ -893,15 +1068,15 @@ struct Lowerer<'w, 'tel> {
     generated_ids: Vec<FunctionId>,
 }
 
-struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
-    lowerer: &'a mut Lowerer<'w, 'tel>,
+struct QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> {
+    lowerer: &'a mut Lowerer<'w, 'tel, T>,
     env: &'env mut HashMap<String, ValueId>,
     steps: &'steps mut Vec<ExprStep>,
 }
 
-impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
+impl<'a, 'w, 'tel, 'env, 'steps, T: crate::telemetry::Telemetry> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps, T> {
     fn new(
-        lowerer: &'a mut Lowerer<'w, 'tel>,
+        lowerer: &'a mut Lowerer<'w, 'tel, T>,
         env: &'env mut HashMap<String, ValueId>,
         steps: &'steps mut Vec<ExprStep>,
     ) -> Self {
@@ -927,7 +1102,7 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
                 Ok(self.push_list(values, None))
             }
             Expr::List(_, Some(_)) => Err(emit_job_diagnostic(
-                self.lowerer.world,
+                self.lowerer.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     "compiler2 quote does not lower improper source lists yet".to_string(),
@@ -975,7 +1150,7 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
             Expr::Match(pattern, rhs) => {
                 let Pattern::Var(name) = &pattern.node else {
                     return Err(emit_job_diagnostic(
-                        self.lowerer.world,
+                        self.lowerer.telemetry,
                         Diagnostic::error(
                             codes::LOWER_UNSUPPORTED,
                             "compiler2 quote only supports variable match patterns today".to_string(),
@@ -1019,7 +1194,7 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
             | Expr::With(_, _, _)
             | Expr::Receive { .. }
             | Expr::Lambda(_) => Err(emit_job_diagnostic(
-                self.lowerer.world,
+                self.lowerer.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     format!("compiler2 quote does not lower `{}` yet", expr_name(&expr.node)),
@@ -1086,7 +1261,7 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
     fn lower_index(&mut self, base: &Spanned<Expr>, key: &Spanned<Expr>, span: Span) -> Result<ValueId, FatalError> {
         let Expr::Atom(field) = &key.node else {
             return Err(emit_job_diagnostic(
-                self.lowerer.world,
+                self.lowerer.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     "compiler2 quote only lowers atom field access today".to_string(),
@@ -1149,11 +1324,18 @@ impl<'a, 'w, 'tel, 'env, 'steps> QuoteLowerer<'a, 'w, 'tel, 'env, 'steps> {
     }
 }
 
-impl<'w, 'tel> Lowerer<'w, 'tel> {
-    fn new(world: &'w mut World<'tel>, owner: FunctionId, source: FunctionSource, surface: FunctionSurface) -> Self {
+impl<'w, 'tel, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, T> {
+    fn new(
+        world: &'w mut World,
+        telemetry: &'tel T,
+        owner: FunctionId,
+        source: FunctionSource,
+        surface: FunctionSurface,
+    ) -> Self {
         let namespace = source.namespace;
         Self {
             world,
+            telemetry,
             owner,
             namespace,
             source,
@@ -1206,7 +1388,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
     fn resolve_extern_signature(&mut self) -> Result<LoweredExtern, FatalError> {
         let contract = extern_semantic_contract(&self.surface).ok_or_else(|| {
             emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     format!("`{}` is not an extern declaration", self.surface.name),
@@ -1219,7 +1401,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             .resolve_spec_decl(self.namespace, &contract)
             .map_err(|error| {
                 emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::RESOLVE_TYPE_ALIAS,
                         format!(
@@ -1340,7 +1522,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                                     Ok(value)
                                 }
                                 InterfaceCallableKind::Macro => Err(emit_job_diagnostic(
-                                    self.world,
+                                    self.telemetry,
                                     Diagnostic::error(
                                         codes::LOWER_UNSUPPORTED,
                                         format!("macro `{name}` cannot be used as a runtime value"),
@@ -1353,7 +1535,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                             };
                         }
                         Err(emit_job_diagnostic(
-                            self.world,
+                            self.telemetry,
                             Diagnostic::error(
                                 codes::LOWER_UNSUPPORTED,
                                 format!(
@@ -1364,7 +1546,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                         ))
                     }
                     Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
-                        self.world,
+                        self.telemetry,
                         Diagnostic::error(
                             codes::LOWER_UNSUPPORTED,
                             format!("macro `{name}` cannot be used as a runtime value"),
@@ -1375,7 +1557,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                     | Some(NamespaceSymbol::Type(_))
                     | Some(NamespaceSymbol::Splice(_))
                     | None => Err(emit_job_diagnostic(
-                        self.world,
+                        self.telemetry,
                         Diagnostic::error(
                             codes::LOWER_UNBOUND,
                             format!("compiler2 lowering found unresolved value `{name}`"),
@@ -1591,7 +1773,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }
             Expr::Case(Some(subject), clauses) => self.lower_case(expr.span, subject, clauses, env, steps),
             Expr::Case(None, _) => Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     "source-only headless `case` reached body lowering without a pipe subject".to_string(),
@@ -1606,7 +1788,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Expr::Lambda(clauses) => self.lower_lambda(expr.span, clauses, env, steps),
             Expr::Quote(inner) => QuoteLowerer::new(self, env, steps).lower(inner),
             Expr::Unquote(_) => Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     "compiler2 lowering found `unquote` outside `quote`".to_string(),
@@ -1614,7 +1796,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 ),
             )),
             Expr::Capture(_) | Expr::CaptureArg(_) => Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     format!("compiler2 does not lower `{}` yet", expr_name(&expr.node)),
@@ -1660,7 +1842,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         match self.world.lookup_callable_namespace(self.namespace, name, arity) {
             Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => Ok(function),
             Some(NamespaceSymbol::Macro(_)) => Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     format!("macro call `{name}/{arity}` reached body lowering without source expansion"),
@@ -1682,7 +1864,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             && arity < fixed_arity
         {
             return Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     format!(
@@ -1706,7 +1888,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
 
     fn unbound_runtime_function(&mut self, name: &str, arity: usize, span: Span, context: &str) -> FatalError {
         emit_job_diagnostic(
-            self.world,
+            self.telemetry,
             Diagnostic::error(
                 codes::LOWER_UNBOUND,
                 format!("compiler2 lowering found unresolved {context} `{name}/{arity}`"),
@@ -1838,7 +2020,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Some(BitSize::Literal(value)) => Some(LoweredBitSize::Literal(*value)),
             Some(BitSize::Var(name)) => Some(LoweredBitSize::Value(*env.get(name).ok_or_else(|| {
                 emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::LOWER_UNBOUND,
                         format!("compiler2 lowering found unbound bit size name `{name}`"),
@@ -1858,7 +2040,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             .resolve_module_name(self.source.owner_module, self.namespace, module)
             .ok_or_else(|| {
                 emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::LOWER_UNBOUND,
                         format!("compiler2 could not resolve struct module `{}`", module.dotted()),
@@ -2085,7 +2267,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
     ) -> Result<ValueId, FatalError> {
         if clauses.is_empty() && after.is_none() {
             return Err(emit_job_diagnostic(
-                self.world,
+                self.telemetry,
                 Diagnostic::error(
                     codes::LOWER_UNSUPPORTED,
                     "compiler2 does not lower `receive` with no clauses and no `after`".to_string(),
@@ -2154,7 +2336,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             }))
         };
         pattern_dispatch_from_source_with_guard_resolver(source, &mut resolver)
-            .map_err(|error| emit_local_dispatch_error(self.world, label, span, error))
+            .map_err(|error| emit_local_dispatch_error(self.telemetry, label, span, error))
     }
 
     fn compile_single_pattern_dispatch(
@@ -2188,7 +2370,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 body_id: 0,
             }],
         })
-        .map_err(|error| emit_local_dispatch_error(self.world, "cond", span, error))
+        .map_err(|error| emit_local_dispatch_error(self.telemetry, "cond", span, error))
     }
 
     fn lower_dispatch_bindings(
@@ -2206,7 +2388,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 if let Some(input) = pinned.input {
                     return inputs.get(input as usize).copied().ok_or_else(|| {
                         emit_job_diagnostic(
-                            self.world,
+                            self.telemetry,
                             Diagnostic::error(
                                 codes::LOWER_UNSUPPORTED,
                                 format!("compiler2 local dispatch input {} is out of bounds", input),
@@ -2217,7 +2399,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
                 }
                 env.get(&pinned.name).copied().ok_or_else(|| {
                     emit_job_diagnostic(
-                        self.world,
+                        self.telemetry,
                         Diagnostic::error(
                             codes::LOWER_UNBOUND,
                             format!("compiler2 local dispatch pinned name `{}` is unresolved", pinned.name),
@@ -2387,9 +2569,8 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             .map(|name| *env.get(name).expect("captured names should resolve in the local env"))
             .collect::<Vec<_>>();
 
-        let (function, changed) =
-            self.world
-                .define_generated_function(self.owner, self.namespace, capture_params, surface);
+        let (function, changed) = super::super::drive::ExecutionContext::new(self.world, self.telemetry)
+            .define_generated_function(self.owner, self.namespace, capture_params, surface);
         self.generated.push(FactKey::FunctionDefined(function));
         if changed {
             self.generated_changed.push(FactKey::FunctionDefined(function));
@@ -2830,7 +3011,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
             Pattern::Pinned(name) => {
                 let Some(pinned) = env.get(name).copied() else {
                     return Err(emit_job_diagnostic(
-                        self.world,
+                        self.telemetry,
                         Diagnostic::error(
                             codes::LOWER_UNBOUND,
                             format!("compiler2 lowering found unbound pinned name `{name}`"),
@@ -2920,7 +3101,7 @@ impl<'w, 'tel> Lowerer<'w, 'tel> {
         for (key_pattern, value_pattern) in entries {
             let Some(key) = literal_from_pattern(&key_pattern.node) else {
                 return Err(emit_job_diagnostic(
-                    self.world,
+                    self.telemetry,
                     Diagnostic::error(
                         codes::LOWER_UNSUPPORTED,
                         format!(
@@ -3888,10 +4069,15 @@ fn match_rows(clauses: &[MatchClause]) -> Vec<PatternRow<super::super::types::Ty
         .collect()
 }
 
-fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: PatternDispatchError) -> FatalError {
+fn emit_local_dispatch_error(
+    tel: &impl crate::telemetry::Telemetry,
+    label: &str,
+    span: Span,
+    error: PatternDispatchError,
+) -> FatalError {
     match error {
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedGuardExpr) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 {label} guards must be dispatch-pure"),
@@ -3900,7 +4086,7 @@ fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: 
         ),
         PatternDispatchError::SourcePattern(SourcePatternError::UnknownPinned(name))
         | PatternDispatchError::SourcePattern(SourcePatternError::UnknownGuardVar(name)) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNBOUND,
                 format!("compiler2 {label} guard references unknown name `{name}`"),
@@ -3908,7 +4094,7 @@ fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: 
             ),
         ),
         PatternDispatchError::SourcePattern(SourcePatternError::UnsupportedMapKey) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 {label} patterns require literal map keys"),
@@ -3916,7 +4102,7 @@ fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: 
             ),
         ),
         PatternDispatchError::SourcePattern(SourcePatternError::DispatchMatrix(message)) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 {label} dispatch could not be planned: {message}"),
@@ -3931,7 +4117,7 @@ fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: 
             panic!("compiler2 built an invalid local dispatch row set: {error:?}")
         }
         PatternDispatchError::SourcePattern(SourcePatternError::GuardCallCycle(name, arity)) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 {label} guard helper cycle detected through `{name}/{arity}`"),
@@ -3939,7 +4125,7 @@ fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: 
             ),
         ),
         PatternDispatchError::MatrixBuild(error) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 {label} dispatch matrix is invalid: {error:?}"),
@@ -3947,7 +4133,7 @@ fn emit_local_dispatch_error(world: &World<'_>, label: &str, span: Span, error: 
             ),
         ),
         PatternDispatchError::Compile(error) => emit_job_diagnostic(
-            world,
+            tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
                 format!("compiler2 {label} dispatch could not be compiled: {error:?}"),
@@ -4135,8 +4321,8 @@ fn pattern_name(pattern: &Pattern) -> &'static str {
     }
 }
 
-fn emit_job_diagnostic(world: &World<'_>, diagnostic: Diagnostic) -> FatalError {
-    emit_through(world.tel(), std::slice::from_ref(&diagnostic));
+fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) -> FatalError {
+    emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
 }
 

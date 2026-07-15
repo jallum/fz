@@ -316,11 +316,17 @@ fn lex_error_carries_span_at_offending_byte() {
 // DROP: lexer telemetry span and token count, infrastructure
 #[test]
 fn telemetry_emits_pass_span_and_token_count() {
-    use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
+    use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
 
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
+    cap.install(&tel, &[]);
+    let observed = std::rc::Rc::new(std::cell::Cell::new(None));
+    let sink = std::rc::Rc::clone(&observed);
+    tel.attach_raw_event3::<crate::source::Id, Option<std::rc::Rc<str>>, Vec<Token>, _>(
+        &["fz", "lexer", "tokens_built"],
+        move |_, _, _, _, _, tokens| sink.set(Some(tokens.len())),
+    );
 
     let src = "fn foo(x), do: x + 1";
     let toks = Lexer::with_source_name(src, "<test>").tokenize(&tel).expect("lex");
@@ -331,12 +337,7 @@ fn telemetry_emits_pass_span_and_token_count() {
     assert_eq!(cap.count_by_kind(EventKind::SpanStop), 1);
     assert_eq!(cap.count(&["fz", "lexer", "pass"]), 2); // start + stop
 
-    // tokens_built event with the count measurement.
-    let built = cap.last(&["fz", "lexer", "tokens_built"]).unwrap();
-    match built.measurements.get("count") {
-        Some(Value::U64(n)) => assert_eq!(*n as usize, expected_count),
-        other => panic!("expected U64 count, got {:?}", other),
-    }
+    assert_eq!(observed.get(), Some(expected_count));
 }
 
 // DROP: lexer telemetry span_id inheritance, infrastructure
@@ -346,7 +347,7 @@ fn telemetry_user_event_inherits_span_id() {
 
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
+    cap.install(&tel, &[]);
 
     let _ = Lexer::with_source_name("fn x() do, :ok end", "<test>")
         .tokenize(&tel)
@@ -368,7 +369,7 @@ fn telemetry_user_event_inherits_span_id() {
 fn null_telemetry_is_a_silent_no_op() {
     // Same call path; just verifies the null impl compiles + runs.
     let toks = Lexer::with_source_name("fn x(), do: :ok", "<test>")
-        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .tokenize(&crate::telemetry::sink::NullTelemetry)
         .expect("lex");
     assert!(!toks.is_empty());
 }

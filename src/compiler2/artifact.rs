@@ -31,7 +31,10 @@ use super::body::{
 };
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::semantic::ExecutableRuntimeDemand;
-use super::transport::{BoundaryId, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportPosition};
+use super::transport::{
+    BoundaryId, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportCarrier, TransportLayout,
+    TransportPosition,
+};
 use super::types::Ty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +62,8 @@ impl<T: Copy> CallTarget<T> {
 pub struct MaterializedTransportPlan {
     pub entry: ExecutableSymbol,
     pub executable_membership: Box<[ExecutableSymbol]>,
-    pub position_shapes: Vec<(TransportPosition, ShapeId)>,
-    pub callable_entry_positions: Vec<(TransportPosition, CallableId, u32)>,
+    pub position_layouts: Vec<(TransportPosition, TransportLayout)>,
+    pub callable_constructions: Vec<BackendCallableConstruction>,
     /// Per-callable settled boundary inventory, sourced from the `CallableFacts`
     /// pull product (`CallableFacts.boundary_ids`). Native callable
     /// materialization reads boundary selection from here; it never re-opens the
@@ -71,29 +74,99 @@ pub struct MaterializedTransportPlan {
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendCallableConstruction {
+    pub callable: CallableId,
+    pub producer: TransportPosition,
+    pub captures: Box<[BackendCallableCapture]>,
+    pub members: Box<[BackendCallableConstructionMember]>,
+    pub(crate) selection: Option<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendCallableConstructionMember {
+    pub surface_inputs: Box<[Ty]>,
+    pub surface_arg_shapes: Box<[ShapeId]>,
+    pub resolution: ExecutableSymbol,
+    pub capture_semantic_inputs: Box<[usize]>,
+    pub surface_semantic_inputs: Box<[usize]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendConstructionWrapper {
+    pub identity: u32,
+    pub callable: CallableId,
+    pub captures: Box<[BackendConstructionCapture]>,
+    pub call_arity: usize,
+    pub return_form: BackendCallableReturn,
+    pub members: Box<[BackendConstructionMemberAdapter]>,
+    pub(crate) selection: Option<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendCallableReturn {
+    Diverges,
+    Absent,
+    ValueRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendConstructionMemberAdapter {
+    pub surface_inputs: Box<[Ty]>,
+    pub surface_arg_shapes: Box<[ShapeId]>,
+    pub target: usize,
+    pub capture_semantic_inputs: Box<[usize]>,
+    pub surface_semantic_inputs: Box<[usize]>,
+    pub target_inputs: Box<[BackendSemanticInputLayout]>,
+    pub target_return: BackendReturnLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendSemanticInputLayout {
+    pub semantic_index: usize,
+    pub layout: BackendValueLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendValueLayout {
+    pub structural: ShapeId,
+    pub carrier: TransportCarrier,
+    pub tys: Box<[Ty]>,
+    pub reprs: Box<[AbiValueRepr]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendReturnLayout {
+    pub layout: BackendValueLayout,
+    pub diverges: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendCallableCapture {
+    pub source: TransportPosition,
+    pub layout: TransportLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendConstructionCapture {
+    pub carrier: TransportCarrier,
+}
+
 impl MaterializedTransportPlan {
-    /// Settled boundaries a callable value carries, as recorded by the
-    /// `CallableFacts` pull product. `None` means the callable was never
-    /// demanded for this program (no facts), distinct from an empty boundary
-    /// list.
-    pub fn callable_boundary_ids(&self, callable: CallableId) -> Option<&[BoundaryId]> {
-        self.callable_boundaries
-            .iter()
-            .find_map(|(candidate, boundaries)| (*candidate == callable).then_some(&boundaries[..]))
-    }
-
+    #[cfg(test)]
     pub fn shape_at(&self, position: &TransportPosition) -> Option<ShapeId> {
-        self.position_shapes
-            .iter()
-            .find_map(|(candidate, shape)| (candidate == position).then_some(*shape))
+        self.layout_at(position).map(|layout| layout.structural)
     }
 
-    pub fn callable_entry_at(&self, position: &TransportPosition, callable: CallableId) -> Option<u32> {
-        self.callable_entry_positions
+    pub fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
+        self.position_layouts
             .iter()
-            .find_map(|(candidate, candidate_callable, identity)| {
-                (candidate == position && *candidate_callable == callable).then_some(*identity)
-            })
+            .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
+    }
+
+    pub fn carries_runtime_value(&self, position: &TransportPosition) -> bool {
+        self.layout_at(position)
+            .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef))
     }
 }
 
@@ -129,19 +202,19 @@ pub struct MaterializedCallEdge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallEdge<T> {
-    Direct(DirectCallEdge<T>),
-    Dispatch(DispatchCallEdge<T>),
+pub enum CallEdge<T, F = CallReturnFlow> {
+    Direct(DirectCallEdge<T, F>),
+    Dispatch(Box<DispatchCallEdge<T, F>>),
     /// A closure-call site with 2+ distinct concrete producers: no single
     /// local target can be devirtualized, so the call runs through the
     /// callee's runtime identity (the boxed/opaque callable value), agreeing
     /// with the generic callable transport shape assigned to that value.
     /// Explicit and settled — distinct from a callsite whose summary fact
     /// has not been computed yet (which stays `Ok(None)` at materialization).
-    Indirect,
+    Indirect(F),
 }
 
-impl<T> CallEdge<T> {
+impl<T, F> CallEdge<T, F> {
     /// Every local callee the edge can reach: the direct target, or all
     /// dispatch arms. This is the single callee-extraction both the effects
     /// producer's cone traversal and the session's effect-dependents reverse
@@ -150,30 +223,30 @@ impl<T> CallEdge<T> {
         match self {
             Self::Direct(direct) => direct.callee.local().into_iter().collect(),
             Self::Dispatch(dispatch) => dispatch.arms.iter().filter_map(|arm| arm.callee.local()).collect(),
-            Self::Indirect => Vec::new(),
+            Self::Indirect(_) => Vec::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectCallEdge<T> {
+pub struct DirectCallEdge<T, F = CallReturnFlow> {
     pub callee: CallTarget<T>,
-    pub return_flow: CallReturnFlow,
+    pub return_flow: F,
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DispatchCallEdge<T> {
+pub struct DispatchCallEdge<T, F = CallReturnFlow> {
     pub(crate) plan: PatternDispatchPlan<Ty>,
-    pub arms: Vec<DispatchCallArm<T>>,
+    pub arms: Vec<DispatchCallArm<T, F>>,
     pub miss: DispatchCallMiss,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DispatchCallArm<T> {
+pub struct DispatchCallArm<T, F = CallReturnFlow> {
     pub body_id: u32,
     pub callee: CallTarget<T>,
-    pub return_flow: CallReturnFlow,
+    pub return_flow: F,
     pub extern_marshals: Option<Vec<ExternTy>>,
 }
 
@@ -184,17 +257,35 @@ pub enum DispatchCallMiss {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallReturnFlow {
+    NoReturn {
+        local_source: Option<TransportPosition>,
+    },
     Tail {
-        callee_return: TransportPosition,
+        source: TransportPosition,
+        payload: TransportPosition,
         caller_return: TransportPosition,
     },
     Continue {
+        source: TransportPosition,
         payload: TransportPosition,
         caller_return: TransportPosition,
     },
     Deliver {
-        payload: TransportPosition,
+        source: TransportPosition,
         resume: TransportPosition,
+        entry: ControlEntryId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendReturnFlow {
+    NoReturn,
+    Tail,
+    Continue {
+        source: Box<BackendReturnLayout>,
+    },
+    Deliver {
+        source: Box<BackendReturnLayout>,
         entry: ControlEntryId,
     },
 }
@@ -202,13 +293,11 @@ pub enum CallReturnFlow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendProgram {
     pub backend_revision: u64,
-    pub transport_revision: u64,
     pub entry: usize,
-    pub transport: MaterializedTransportPlan,
     pub atom_names: Vec<String>,
     pub struct_schemas: BTreeMap<String, Vec<String>>,
     pub executables: Vec<BackendExecutable>,
-    pub callable_entries: Vec<BackendCallableEntry>,
+    pub construction_wrappers: Vec<BackendConstructionWrapper>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,6 +337,7 @@ pub(crate) enum NativeBodyOrigin {
     Executable(ExecutableKey),
     Clause { owner: ExecutableKey, index: u32 },
     Continuation { owner: FnId, index: u32 },
+    CallableWrapper { identity: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -270,17 +360,11 @@ pub(crate) struct NativeBody {
     /// ABI lanes at the entry seam.
     pub param_reprs: Vec<AbiValueRepr>,
     pub return_ty: Ty,
-    pub return_position: TransportPosition,
     pub return_reprs: Vec<AbiValueRepr>,
     pub return_tuple_arity: Option<usize>,
     pub block_param_reprs: HashMap<Var, AbiValueRepr>,
     /// Final per-value types after Compiler2 lowering into CPS/native form.
     pub value_types: HashMap<Var, Ty>,
-    /// Closure-producing vars mapped to the settled callable boundary they
-    /// materialize. These refs stay in callable-boundary space; they do not
-    /// collapse to executable-body ids or force codegen to re-select a
-    /// boundary from local type evidence.
-    pub callable_value_boundaries: HashMap<Var, NativeCallableBoundaryId>,
     /// Concrete extern marshal classes keyed by CPS/native extern site.
     pub extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     pub effects: EffectSummary,
@@ -289,25 +373,25 @@ pub(crate) struct NativeBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundary {
     pub id: NativeCallableBoundaryId,
-    /// The transport `BoundaryId` this native boundary projects. Callable
-    /// materialization selects a boundary by the value's `CallableId` fact
-    /// (`CallableFacts.boundary_ids`), never by re-deriving from capture types.
-    pub boundary: Option<BoundaryId>,
-    /// Synthetic callable identity used at `MakeFnRef` / `MakeClosure` sites.
     pub identity_fn: FnId,
-    /// Direct executable-entry body the callable boundary ultimately reaches
-    /// when an opaque closure value dispatches through its identity entry.
+    pub wrapper_fn: FnId,
+    pub captures: Box<[BackendConstructionCapture]>,
+    pub capture_reprs: Box<[AbiValueRepr]>,
+    pub call_arity: usize,
+    pub return_form: BackendCallableReturn,
+    pub members: Box<[NativeConstructionMember]>,
+    pub(crate) selection: Option<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeConstructionMember {
     pub target_fn: FnId,
     pub target: ExecutableKey,
-    pub capture_count: usize,
-    /// Executable closure-entry capture lanes, loaded from `self` by the
-    /// target body's entry harness.
-    pub capture_reprs: Vec<AbiValueRepr>,
-    /// Executable closure-entry argument lanes in source call order.
-    pub arg_reprs: Vec<AbiValueRepr>,
-    pub return_ty: Ty,
-    pub return_reprs: Vec<AbiValueRepr>,
-    pub return_tuple_arity: Option<usize>,
+    pub surface_inputs: Box<[Ty]>,
+    pub capture_semantic_inputs: Box<[usize]>,
+    pub surface_semantic_inputs: Box<[usize]>,
+    pub target_inputs: Box<[BackendSemanticInputLayout]>,
+    pub target_return: BackendReturnLayout,
 }
 
 impl NativeCallableBoundary {
@@ -336,11 +420,14 @@ pub struct AbiReadyExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
+    pub return_layout: BackendReturnLayout,
+    pub return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub transport: MaterializedExecutableTransport,
     pub original_entry_ids: Vec<ControlEntryId>,
     pub value_types: HashMap<ValueId, Ty>,
-    pub value_reprs: HashMap<ValueId, AbiValueRepr>,
+    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
     pub effects: EffectSummary,
     pub body: LoweredBody,
     pub call_edges: HashMap<CallSiteId, AbiReadyCallEdge>,
@@ -358,11 +445,13 @@ pub struct EmissionReadyExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
+    pub return_layout: BackendReturnLayout,
     pub runtime_demand: ExecutableRuntimeDemand,
     pub transport: MaterializedExecutableTransport,
     pub original_entry_ids: Vec<ControlEntryId>,
     pub value_types: HashMap<ValueId, Ty>,
-    pub value_reprs: HashMap<ValueId, AbiValueRepr>,
+    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
     pub effects: EffectSummary,
     pub body: LoweredBody,
     pub call_edges: Vec<EmissionReadyCallEdge>,
@@ -380,29 +469,13 @@ pub struct BackendExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
     pub param_reprs: Vec<AbiValueRepr>,
+    pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
+    pub return_layout: BackendReturnLayout,
     pub runtime_demand: ExecutableRuntimeDemand,
-    pub transport: MaterializedExecutableTransport,
     pub value_types: HashMap<ValueId, Ty>,
-    pub value_reprs: HashMap<ValueId, AbiValueRepr>,
+    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
     pub effects: EffectSummary,
     pub body: BackendBody,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackendCallableEntry {
-    /// Dense root-local identity of this exact resolved closure entry.
-    pub identity: u32,
-    /// Concrete callable producer whose value carries this entry identity.
-    pub callable: CallableId,
-    /// The first-class publication that carries this exact target, when the
-    /// callable crosses one. This is association data only; the entry's target
-    /// remains the sole ABI authority.
-    pub publication_boundary: Option<BoundaryId>,
-    pub target: usize,
-    pub capture_count: usize,
-    pub capture_reprs: Vec<AbiValueRepr>,
-    pub arg_reprs: Vec<AbiValueRepr>,
-    pub return_ty: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -437,11 +510,15 @@ impl ExecutableDispatch {
     }
 
     pub(crate) fn required_input_ordinals(&self) -> HashSet<usize> {
-        let mut required = HashSet::new();
-        let mut visited = HashSet::new();
-        collect_dispatch_node_inputs(&self.plan, self.plan.graph.root, &mut visited, &mut required);
-        required
+        required_dispatch_input_ordinals(&self.plan)
     }
+}
+
+pub(crate) fn required_dispatch_input_ordinals(plan: &PatternDispatchPlan<Ty>) -> HashSet<usize> {
+    let mut required = HashSet::new();
+    let mut visited = HashSet::new();
+    collect_dispatch_node_inputs(plan, plan.graph.root, &mut visited, &mut required);
+    required
 }
 
 fn collect_dispatch_node_inputs(
@@ -561,11 +638,16 @@ pub struct BackendEntry {
     pub span: Span,
     pub origin: BackendEntryOrigin,
     pub params: Vec<ValueId>,
-    pub captures: Vec<ValueId>,
-    pub capture_positions: Vec<TransportPosition>,
+    pub captures: Vec<BackendEntryCapture>,
     pub reusable_cons_captures: Vec<ReusableConsCapture>,
     pub steps: Vec<BackendStep>,
     pub tail: BackendTail,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackendEntryCapture {
+    pub value: ValueId,
+    pub layout: BackendValueLayout,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -584,7 +666,7 @@ pub enum BackendEntryOrigin {
     ReceiveOutcome,
     DeliveredResume {
         value: ValueId,
-        position: TransportPosition,
+        layout: BackendReturnLayout,
     },
 }
 
@@ -600,7 +682,6 @@ impl BackendEntryOrigin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCallArg {
     pub value: ValueId,
-    pub position: TransportPosition,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -612,7 +693,7 @@ pub enum BackendTail {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        target: CallEdge<usize>,
+        target: CallEdge<usize, BackendReturnFlow>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
     },
@@ -621,10 +702,9 @@ pub enum BackendTail {
         callsite: CallSiteId,
         callee: ValueId,
         target: Option<usize>,
-        resolved_entry: Option<u32>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
-        return_flow: Option<CallReturnFlow>,
+        return_flow: Option<BackendReturnFlow>,
     },
     If {
         cond: ValueId,
@@ -681,13 +761,13 @@ pub enum BackendStep {
     FunctionRef {
         value: ValueId,
         function: FunctionId,
-        resolved_entry: Option<u32>,
+        construction: Option<u32>,
     },
     Lambda {
         value: ValueId,
         function: FunctionId,
         captures: Vec<ValueId>,
-        resolved_entry: Option<u32>,
+        construction: Option<u32>,
     },
     BinaryOp {
         value: ValueId,

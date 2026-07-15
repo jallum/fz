@@ -5,7 +5,7 @@ use std::rc::Rc;
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
 use crate::parser::lexer::{Lexer, Tok, Token};
 use crate::source::Span;
-use crate::telemetry::Telemetry;
+use crate::telemetry::RawSpanTelemetry;
 use fz_runtime::any_value::AnyValueRef;
 
 use super::code::CodeId;
@@ -43,11 +43,11 @@ impl From<QuotedSourceError> for FrontDoorError {
     }
 }
 
-pub fn parse_quoted_program(
+pub fn parse_quoted_program<T: RawSpanTelemetry + ?Sized>(
     source_name: impl AsRef<str>,
     source_text: &str,
     code_id: CodeId,
-    tel: &dyn Telemetry,
+    tel: &T,
 ) -> Result<QuotedSourceRoot, FrontDoorError> {
     let source_name = Rc::<str>::from(source_name.as_ref());
     let tokens = Lexer::with_code_id_and_source_name(source_text, crate::source::Id(code_id.as_u32()), source_name)

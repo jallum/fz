@@ -1,0 +1,12 @@
+fn mapper(x :: integer), do: x + 1
+fn mapper(x :: atom), do: x + 1
+fn invoke(f, x), do: f.(x)
+
+fn main() do
+  n = Process.heap_alloc_stats()[:allocs]
+  x = case n < n + 1 do
+    true -> 1
+    _ -> :bad
+  end
+  dbg(invoke(mapper, x))
+end

@@ -8,6 +8,7 @@ mod compiler;
 mod contract;
 mod deps;
 mod dispatch;
+mod dispatch_reachability;
 mod drive;
 mod dump;
 mod facts;
@@ -44,15 +45,16 @@ mod types;
 mod world;
 
 pub use agenda::Agenda;
-pub(crate) use artifact::NativeEntryAbi;
 pub use artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableEntry,
-    BackendClause, BackendEntry, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendProgramMap,
-    BackendReceive, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm, DispatchCallEdge,
-    DispatchCallMiss, EmissionReadyCallEdge, EmissionReadyExecutable, ExecutableDispatch, MaterializedCallEdge,
-    MaterializedExecutable,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableConstruction,
+    BackendClause, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendProgramMap, BackendReceive, BackendReturnLayout,
+    BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
+    DispatchCallEdge, DispatchCallMiss, EmissionReadyCallEdge, EmissionReadyExecutable, ExecutableDispatch,
+    MaterializedCallEdge, MaterializedExecutable,
 };
 pub(crate) use artifact::{NativeBody, NativeProgram};
+pub(crate) use artifact::{NativeEntryAbi, required_dispatch_input_ordinals};
 pub use body::{
     BodyState, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin, DispatchBindings,
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,
@@ -63,6 +65,7 @@ pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
+pub(crate) use drive::JobEffects;
 pub use drive::{FactKey, Job, WorkGraph};
 pub use facts::{FactChange, FactReadiness, FactReplace, FactTable, FactUse};
 #[cfg(test)]
@@ -78,11 +81,13 @@ pub use identity::{
     ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
     RootMap, TypeName,
 };
+pub(crate) use keying::DispatchDemand;
 pub use module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable,
     ReadyOrPending,
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
+pub(crate) use pull::{ProductKey, PullSession};
 pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler, WorkStartReason, WorkStartTally};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
@@ -98,6 +103,7 @@ pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
     Ty, TypeVarId, Types,
 };
+pub(crate) use world::JobCompletion;
 pub use world::World;
 
 #[cfg(test)]

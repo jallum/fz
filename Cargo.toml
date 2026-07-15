@@ -2,6 +2,7 @@
 name = "fz"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [workspace]
 members = ["runtime"]
@@ -44,6 +45,7 @@ serde_json = "1"
 # named individually instead of collapsing into one `fixture_matrix ... ok`).
 libtest-mimic = "0.8"
 serial_test = "3"
+syn = { version = "2", features = ["full", "visit"] }
 
 [[test]]
 name = "fixture_matrix"

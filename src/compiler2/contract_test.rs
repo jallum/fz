@@ -609,6 +609,137 @@ fn function_contract_arrow_stores_protocol_domain_obligations_from_when_bounds()
 }
 
 #[test]
+fn function_contract_input_domains_instantiate_top_level_bounded_union() {
+    let mut types = Types::new();
+    let var = TypeVarId(0);
+    let param = types.type_var(var);
+    let a = types.atom_lit("a");
+    let b = types.atom_lit("b");
+    let domain = types.union(a, b);
+    let result = types.atom();
+    let contract = FunctionContract::from_resolved(
+        &mut types,
+        vec![ResolvedSpecDecl {
+            params: vec![param],
+            result,
+            constraints: HashMap::from([(var, domain)]),
+        }],
+    );
+
+    let rows = contract.input_domain_rows(&mut types);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 1);
+    assert!(types.is_equivalent(&rows[0][0], &domain));
+}
+
+#[test]
+fn function_contract_input_domains_instantiate_nested_bounded_variable() {
+    let mut types = Types::new();
+    let var = TypeVarId(0);
+    let nested = types.type_var(var);
+    let a = types.atom_lit("a");
+    let b = types.atom_lit("b");
+    let domain = types.union(a, b);
+    let tuple = types.tuple(&[nested]);
+    let result = types.atom();
+    let contract = FunctionContract::from_resolved(
+        &mut types,
+        vec![ResolvedSpecDecl {
+            params: vec![tuple],
+            result,
+            constraints: HashMap::from([(var, domain)]),
+        }],
+    );
+
+    let rows = contract.input_domain_rows(&mut types);
+    let expected = types.tuple(&[domain]);
+
+    assert!(types.is_equivalent(&rows[0][0], &expected));
+}
+
+#[test]
+fn function_contract_input_domains_close_dependent_bounds_without_grounding_unbounded_vars() {
+    let mut types = Types::new();
+    let outer = TypeVarId(0);
+    let inner = TypeVarId(1);
+    let outer_ty = types.type_var(outer);
+    let inner_ty = types.type_var(inner);
+    let a = types.atom_lit("a");
+    let b = types.atom_lit("b");
+    let domain = types.union(a, b);
+    let result = types.atom();
+    let bounded = FunctionContract::from_resolved(
+        &mut types,
+        vec![ResolvedSpecDecl {
+            params: vec![outer_ty],
+            result,
+            constraints: HashMap::from([(outer, inner_ty), (inner, domain)]),
+        }],
+    );
+    let unbounded = FunctionContract::from_resolved(
+        &mut types,
+        vec![ResolvedSpecDecl {
+            params: vec![outer_ty],
+            result,
+            constraints: HashMap::new(),
+        }],
+    );
+    let expanding = types.tuple(&[inner_ty]);
+    let cyclic = FunctionContract::from_resolved(
+        &mut types,
+        vec![ResolvedSpecDecl {
+            params: vec![outer_ty],
+            result,
+            constraints: HashMap::from([(outer, expanding), (inner, outer_ty)]),
+        }],
+    );
+
+    let bounded_rows = bounded.input_domain_rows(&mut types);
+    let unbounded_rows = unbounded.input_domain_rows(&mut types);
+    let cyclic_rows = cyclic.input_domain_rows(&mut types);
+
+    assert!(types.is_equivalent(&bounded_rows[0][0], &domain));
+    assert!(types.has_vars(&unbounded_rows[0][0]));
+    assert!(types.is_equivalent(&cyclic_rows[0][0], &outer_ty));
+}
+
+#[test]
+fn dependent_contract_bounds_are_stable_across_fresh_type_worlds() {
+    for reverse in [false, true] {
+        let mut types = Types::new();
+        let outer = TypeVarId(0);
+        let inner = TypeVarId(1);
+        let outer_ty = types.type_var(outer);
+        let inner_ty = types.type_var(inner);
+        let a = types.atom_lit("a");
+        let b = types.atom_lit("b");
+        let domain = types.union(a, b);
+        let mut constraints = HashMap::new();
+        if reverse {
+            constraints.insert(inner, domain);
+            constraints.insert(outer, inner_ty);
+        } else {
+            constraints.insert(outer, inner_ty);
+            constraints.insert(inner, domain);
+        }
+        let contract = FunctionContract::from_resolved(
+            &mut types,
+            vec![ResolvedSpecDecl {
+                params: vec![outer_ty],
+                result: outer_ty,
+                constraints,
+            }],
+        );
+
+        let applied = contract.apply(&mut types, &[a]);
+        assert!(applied.satisfied);
+        assert!(applied.enforceable_satisfied);
+        assert!(types.is_equivalent(&applied.result.expect("dependent bound should resolve"), &a));
+    }
+}
+
+#[test]
 fn function_contract_ignores_protocol_markers_inside_nested_complements() {
     let mut types = Types::new();
     let domain = types.opaque_of("protocol::Enumerable.t");
@@ -652,7 +783,7 @@ fn function_contract_ignores_protocol_markers_inside_nested_complements() {
 #[test]
 fn derive_function_contract_carries_protocol_domain_obligation_through_transitive_aliases() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let root = compiler.submit_root(RootSubmission {
         module_name: Some("M".to_string()),
         name: "f".to_string(),

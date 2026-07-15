@@ -81,6 +81,7 @@ impl WorkStartTally {
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
+    pub outputs: HashSet<F>,
     pub changed: Vec<FactChange<F>>,
     pub enqueued: Vec<J>,
     /// Jobs this wave woke that were already pending in the agenda from an
@@ -192,6 +193,10 @@ where
 
     pub fn output_keys(&self, job: &J) -> HashSet<F> {
         self.deps.output_keys(job)
+    }
+
+    pub fn reads(&self, job: &J) -> Option<&HashSet<FactUse<F>>> {
+        self.deps.reads(job)
     }
 
     /// Whether any job is currently blocked waiting on `fact` (in either its
@@ -351,6 +356,7 @@ where
             }
         }
         AppliedStep {
+            outputs: replaced.output_keys,
             changed: replaced.changed,
             enqueued,
             coalesced,

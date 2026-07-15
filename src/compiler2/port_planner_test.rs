@@ -7,7 +7,7 @@ use crate::telemetry::ConfiguredTelemetry;
 #[test]
 fn higher_order_closure_call_folds_to_direct_branch() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00381_choose_closure_branch.fz".to_string()),
         text: include_str!("../../fixtures2/00381_choose_closure_branch.fz").to_string(),
@@ -26,7 +26,7 @@ fn higher_order_closure_call_folds_to_direct_branch() {
 #[test]
 fn direct_call_fused_into_single_block() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00382_add1_call_fuse.fz".to_string()),
         text: include_str!("../../fixtures2/00382_add1_call_fuse.fz").to_string(),
@@ -45,7 +45,7 @@ fn direct_call_fused_into_single_block() {
 #[test]
 fn typetest_guard_folds_dead_branch_for_concrete_int() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00383_typetest_dead_branch_fold.fz".to_string()),
         text: include_str!("../../fixtures2/00383_typetest_dead_branch_fold.fz").to_string(),
@@ -64,7 +64,7 @@ fn typetest_guard_folds_dead_branch_for_concrete_int() {
 #[test]
 fn closure_with_captures_registers_typed_callable_entry() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00384_closure_predicate_wrapper.fz".to_string()),
         text: include_str!("../../fixtures2/00384_closure_predicate_wrapper.fz").to_string(),
@@ -83,7 +83,7 @@ fn closure_with_captures_registers_typed_callable_entry() {
 #[test]
 fn tuple_destructure_specializes_callee_by_return_demand() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00385_tuple_destructure_demand.fz".to_string()),
         text: include_str!("../../fixtures2/00385_tuple_destructure_demand.fz").to_string(),
@@ -105,7 +105,7 @@ fn tuple_destructure_specializes_callee_by_return_demand() {
 #[test]
 fn return_shape_tuple_vs_list_inferred_over_quicksort() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00386_quicksort_return_shapes.fz".to_string()),
         text: include_str!("../../fixtures2/00386_quicksort_return_shapes.fz").to_string(),
@@ -124,7 +124,7 @@ fn return_shape_tuple_vs_list_inferred_over_quicksort() {
 #[test]
 fn empty_list_input_only_reaches_empty_clause() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00387_empty_list_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00387_empty_list_dispatch.fz").to_string(),
@@ -143,7 +143,7 @@ fn empty_list_input_only_reaches_empty_clause() {
 #[test]
 fn wildcard_param_does_not_fork_specialization() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00388_wildcard_param_hole.fz".to_string()),
         text: include_str!("../../fixtures2/00388_wildcard_param_hole.fz").to_string(),
@@ -162,7 +162,7 @@ fn wildcard_param_does_not_fork_specialization() {
 #[test]
 fn polymorphic_fn_returns_distinct_types_per_activation() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00389_poly_id_direct_call.fz".to_string()),
         text: include_str!("../../fixtures2/00389_poly_id_direct_call.fz").to_string(),
@@ -181,7 +181,7 @@ fn polymorphic_fn_returns_distinct_types_per_activation() {
 #[test]
 fn named_ref_retains_polymorphic_return_per_activation() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00390_poly_named_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00390_poly_named_ref.fz").to_string(),
@@ -200,7 +200,7 @@ fn named_ref_retains_polymorphic_return_per_activation() {
 #[test]
 fn captured_closure_preserves_per_activation_return_types() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00391_poly_capture_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00391_poly_capture_ref.fz").to_string(),
@@ -219,7 +219,7 @@ fn captured_closure_preserves_per_activation_return_types() {
 #[test]
 fn named_ref_pattern_dispatch_folds_dead_arms_per_activation() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00392_named_ref_pattern_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00392_named_ref_pattern_dispatch.fz").to_string(),
@@ -238,7 +238,7 @@ fn named_ref_pattern_dispatch_folds_dead_arms_per_activation() {
 #[test]
 fn atom_pattern_dispatches_correct_clause_per_input() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00393_atom_pattern_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00393_atom_pattern_dispatch.fz").to_string(),
@@ -257,7 +257,7 @@ fn atom_pattern_dispatches_correct_clause_per_input() {
 #[test]
 fn list_pattern_dispatch_selects_clause_by_shape() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00394_list_pattern_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00394_list_pattern_dispatch.fz").to_string(),
@@ -276,7 +276,7 @@ fn list_pattern_dispatch_selects_clause_by_shape() {
 #[test]
 fn list_head_binding_returns_element_type_for_cons_input() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00395_list_head_binding.fz".to_string()),
         text: include_str!("../../fixtures2/00395_list_head_binding.fz").to_string(),
@@ -295,7 +295,7 @@ fn list_head_binding_returns_element_type_for_cons_input() {
 #[test]
 fn tuple_pattern_binding_projects_field_type() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00396_tuple_pattern_binding.fz".to_string()),
         text: include_str!("../../fixtures2/00396_tuple_pattern_binding.fz").to_string(),
@@ -314,7 +314,7 @@ fn tuple_pattern_binding_projects_field_type() {
 #[test]
 fn nested_pattern_binding_projects_inner_type() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00397_nested_pattern_binding.fz".to_string()),
         text: include_str!("../../fixtures2/00397_nested_pattern_binding.fz").to_string(),
@@ -333,7 +333,7 @@ fn nested_pattern_binding_projects_inner_type() {
 #[test]
 fn nested_pattern_cascade_selects_correct_leaf_per_input() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00398_nested_pattern_partition.fz".to_string()),
         text: include_str!("../../fixtures2/00398_nested_pattern_partition.fz").to_string(),
@@ -352,7 +352,7 @@ fn nested_pattern_cascade_selects_correct_leaf_per_input() {
 #[test]
 fn tagged_tuple_pattern_dispatch_by_atom_tag() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00399_tuple_tag_partition.fz".to_string()),
         text: include_str!("../../fixtures2/00399_tuple_tag_partition.fz").to_string(),
@@ -371,7 +371,7 @@ fn tagged_tuple_pattern_dispatch_by_atom_tag() {
 #[test]
 fn tuple_arity_pattern_dispatch_by_size() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00400_tuple_arity_partition.fz".to_string()),
         text: include_str!("../../fixtures2/00400_tuple_arity_partition.fz").to_string(),
@@ -390,7 +390,7 @@ fn tuple_arity_pattern_dispatch_by_size() {
 #[test]
 fn guard_clause_collapses_witness_activations_to_one_spec() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00401_guard_partition.fz".to_string()),
         text: include_str!("../../fixtures2/00401_guard_partition.fz").to_string(),
@@ -409,7 +409,7 @@ fn guard_clause_collapses_witness_activations_to_one_spec() {
 #[test]
 fn map_pattern_binding_hit_vs_absent() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00402_map_pattern_binding.fz".to_string()),
         text: include_str!("../../fixtures2/00402_map_pattern_binding.fz").to_string(),
@@ -428,7 +428,7 @@ fn map_pattern_binding_hit_vs_absent() {
 #[test]
 fn tail_recursive_fold_converges_to_concrete_int_return() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00403_tail_fold_closure.fz".to_string()),
         text: include_str!("../../fixtures2/00403_tail_fold_closure.fz").to_string(),
@@ -447,7 +447,7 @@ fn tail_recursive_fold_converges_to_concrete_int_return() {
 #[test]
 fn enum_reduce_with_closure_converges_to_concrete_int() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00404_enum_reduce_list.fz".to_string()),
         text: include_str!("../../fixtures2/00404_enum_reduce_list.fz").to_string(),
@@ -466,7 +466,7 @@ fn enum_reduce_with_closure_converges_to_concrete_int() {
 #[test]
 fn enum_reduce_with_operator_ref_propagates_int_type() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00405_enum_reduce_operator_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00405_enum_reduce_operator_ref.fz").to_string(),
@@ -485,7 +485,7 @@ fn enum_reduce_with_operator_ref_propagates_int_type() {
 #[test]
 fn enum_reduce_over_range_converges_to_int() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00406_enum_reduce_range.fz".to_string()),
         text: include_str!("../../fixtures2/00406_enum_reduce_range.fz").to_string(),
@@ -504,7 +504,7 @@ fn enum_reduce_over_range_converges_to_int() {
 #[test]
 fn spawned_child_reachable_through_callable_boundary() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00407_spawn_plain.fz".to_string()),
         text: include_str!("../../fixtures2/00407_spawn_plain.fz").to_string(),
@@ -523,7 +523,7 @@ fn spawned_child_reachable_through_callable_boundary() {
 #[test]
 fn spawn_child_remains_reachable_after_materialization() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00407_spawn_plain.fz".to_string()),
         text: include_str!("../../fixtures2/00407_spawn_plain.fz").to_string(),
@@ -545,7 +545,7 @@ fn spawn_child_remains_reachable_after_materialization() {
 #[test]
 fn recursive_sum_return_converges_at_fixpoint_not_base_case() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00408_recursive_sum_fixpoint.fz".to_string()),
         text: include_str!("../../fixtures2/00408_recursive_sum_fixpoint.fz").to_string(),
@@ -564,7 +564,7 @@ fn recursive_sum_return_converges_at_fixpoint_not_base_case() {
 #[test]
 fn fn_as_value_retains_typed_spec_and_callable_entry() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00409_higher_order_named_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00409_higher_order_named_ref.fz").to_string(),
@@ -583,7 +583,7 @@ fn fn_as_value_retains_typed_spec_and_callable_entry() {
 #[test]
 fn spawn_receives_typed_closure_capability_no_thunk() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00410_spawn_closure_capture.fz".to_string()),
         text: include_str!("../../fixtures2/00410_spawn_closure_capture.fz").to_string(),
@@ -602,7 +602,7 @@ fn spawn_receives_typed_closure_capability_no_thunk() {
 #[test]
 fn closure_distinct_captures_specializes_without_any_key() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00411_closure_distinct_captures.fz".to_string()),
         text: include_str!("../../fixtures2/00411_closure_distinct_captures.fz").to_string(),
@@ -621,7 +621,7 @@ fn closure_distinct_captures_specializes_without_any_key() {
 #[test]
 fn named_fn_ref_propagates_callable_identity() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00409_higher_order_named_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00409_higher_order_named_ref.fz").to_string(),
@@ -640,7 +640,7 @@ fn named_fn_ref_propagates_callable_identity() {
 #[test]
 fn closure_with_captures_distinct_from_fn_ref() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00412_closure_with_captures.fz".to_string()),
         text: include_str!("../../fixtures2/00412_closure_with_captures.fz").to_string(),
@@ -659,7 +659,7 @@ fn closure_with_captures_distinct_from_fn_ref() {
 #[test]
 fn callable_identity_flows_through_direct_call_to_parameter() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00409_higher_order_named_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00409_higher_order_named_ref.fz").to_string(),
@@ -681,7 +681,7 @@ fn callable_identity_flows_through_direct_call_to_parameter() {
 #[test]
 fn returned_closure_retains_captured_identity_at_call_sites() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00391_poly_capture_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00391_poly_capture_ref.fz").to_string(),
@@ -700,7 +700,7 @@ fn returned_closure_retains_captured_identity_at_call_sites() {
 #[test]
 fn indirect_call_with_known_fn_registers_typed_specialization() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00409_higher_order_named_ref.fz".to_string()),
         text: include_str!("../../fixtures2/00409_higher_order_named_ref.fz").to_string(),
@@ -719,7 +719,7 @@ fn indirect_call_with_known_fn_registers_typed_specialization() {
 #[test]
 fn protocol_call_on_concrete_receiver_dispatches_to_correct_impl() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00413_protocol_static_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00413_protocol_static_dispatch.fz").to_string(),
@@ -738,7 +738,7 @@ fn protocol_call_on_concrete_receiver_dispatches_to_correct_impl() {
 #[test]
 fn cross_module_call_stays_at_provider_boundary() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00414_cross_module_provider.fz".to_string()),
         text: include_str!("../../fixtures2/00414_cross_module_provider.fz").to_string(),
@@ -761,7 +761,7 @@ fn cross_module_call_stays_at_provider_boundary() {
 #[test]
 fn cross_module_protocol_call_stays_at_external_boundary() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00416_protocol_provider.fz".to_string()),
         text: include_str!("../../fixtures2/00416_protocol_provider.fz").to_string(),
@@ -784,7 +784,7 @@ fn cross_module_protocol_call_stays_at_external_boundary() {
 #[test]
 fn enum_count_on_range_returns_integer_per_declared_spec() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00418_enum_count_range.fz".to_string()),
         text: include_str!("../../fixtures2/00418_enum_count_range.fz").to_string(),
@@ -803,7 +803,7 @@ fn enum_count_on_range_returns_integer_per_declared_spec() {
 #[test]
 fn enum_take_on_mixed_inputs_specializes_for_each_type() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00419_enum_take_mixed.fz".to_string()),
         text: include_str!("../../fixtures2/00419_enum_take_mixed.fz").to_string(),
@@ -822,7 +822,7 @@ fn enum_take_on_mixed_inputs_specializes_for_each_type() {
 #[test]
 fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
         text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
@@ -841,7 +841,7 @@ fn enum_reduce_runtime_graph_reducer_returns_non_empty_type() {
 #[test]
 fn take_positive_reduce_while_has_typed_callback_return() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
         text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
@@ -860,7 +860,7 @@ fn take_positive_reduce_while_has_typed_callback_return() {
 #[test]
 fn reduce_cont_clause_links_list_param_to_accumulator_result() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00421_reduce_cont_clause.fz".to_string()),
         text: include_str!("../../fixtures2/00421_reduce_cont_clause.fz").to_string(),
@@ -879,7 +879,7 @@ fn reduce_cont_clause_links_list_param_to_accumulator_result() {
 #[test]
 fn protocol_impl_disjoint_spec_rejected_at_compile_time() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00422_protocol_impl_disjoint_spec.fz".to_string()),
         text: include_str!("../../fixtures2/00422_protocol_impl_disjoint_spec.fz").to_string(),
@@ -899,7 +899,7 @@ fn protocol_impl_disjoint_spec_rejected_at_compile_time() {
 #[test]
 fn protocol_impl_compatible_spec_accepted_at_compile_time() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00423_protocol_impl_compatible_spec.fz".to_string()),
         text: include_str!("../../fixtures2/00423_protocol_impl_compatible_spec.fz").to_string(),
@@ -918,7 +918,7 @@ fn protocol_impl_compatible_spec_accepted_at_compile_time() {
 #[test]
 fn protocol_call_on_non_implementing_type_emits_diagnostic() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00424_protocol_no_impl.fz".to_string()),
         text: include_str!("../../fixtures2/00424_protocol_no_impl.fz").to_string(),
@@ -937,7 +937,7 @@ fn protocol_call_on_non_implementing_type_emits_diagnostic() {
 #[test]
 fn protocol_call_on_implementing_receiver_emits_no_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00425_protocol_impl_match.fz".to_string()),
         text: include_str!("../../fixtures2/00425_protocol_impl_match.fz").to_string(),
@@ -959,7 +959,7 @@ fn protocol_call_on_implementing_receiver_emits_no_error() {
 #[test]
 fn closed_union_receiver_dispatches_via_typetest_cascade() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00426_closed_union_protocol_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00426_closed_union_protocol_dispatch.fz").to_string(),
@@ -979,7 +979,7 @@ fn closed_union_receiver_dispatches_via_typetest_cascade() {
 #[test]
 fn closed_union_dispatch_matrix_has_no_fallback() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00426_closed_union_protocol_dispatch.fz".to_string()),
         text: include_str!("../../fixtures2/00426_closed_union_protocol_dispatch.fz").to_string(),
@@ -999,7 +999,7 @@ fn closed_union_dispatch_matrix_has_no_fallback() {
 #[test]
 fn single_impl_protocol_receiver_not_rewritten_to_cascade() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00427_single_impl_protocol.fz".to_string()),
         text: include_str!("../../fixtures2/00427_single_impl_protocol.fz").to_string(),
@@ -1018,7 +1018,7 @@ fn single_impl_protocol_receiver_not_rewritten_to_cascade() {
 #[test]
 fn single_impl_protocol_receiver_selects_static_direct_dispatch() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00427_single_impl_protocol.fz".to_string()),
         text: include_str!("../../fixtures2/00427_single_impl_protocol.fz").to_string(),
@@ -1037,7 +1037,7 @@ fn single_impl_protocol_receiver_selects_static_direct_dispatch() {
 #[test]
 fn open_union_receiver_dispatches_with_stub_fallthrough() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00428_open_union_protocol.fz".to_string()),
         text: include_str!("../../fixtures2/00428_open_union_protocol.fz").to_string(),
@@ -1057,7 +1057,7 @@ fn open_union_receiver_dispatches_with_stub_fallthrough() {
 #[test]
 fn open_union_protocol_matrix_retains_residual_fallback() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00428_open_union_protocol.fz".to_string()),
         text: include_str!("../../fixtures2/00428_open_union_protocol.fz").to_string(),
@@ -1077,7 +1077,7 @@ fn open_union_protocol_matrix_retains_residual_fallback() {
 #[test]
 fn external_provider_protocol_impl_stays_as_stub_fallback() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00429_external_impl_residual.fz".to_string()),
         text: include_str!("../../fixtures2/00429_external_impl_residual.fz").to_string(),
@@ -1096,7 +1096,7 @@ fn external_provider_protocol_impl_stays_as_stub_fallback() {
 #[test]
 fn opaque_value_accessor_inside_declaring_module_types_as_inner() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00430_opaque_value_accessor.fz".to_string()),
         text: include_str!("../../fixtures2/00430_opaque_value_accessor.fz").to_string(),
@@ -1118,7 +1118,7 @@ fn opaque_value_accessor_inside_declaring_module_types_as_inner() {
 #[test]
 fn opaque_value_accessor_no_visibility_diagnostic_inside_module() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00431_opaque_accessor_no_diag.fz".to_string()),
         text: include_str!("../../fixtures2/00431_opaque_accessor_no_diag.fz").to_string(),
@@ -1137,7 +1137,7 @@ fn opaque_value_accessor_no_visibility_diagnostic_inside_module() {
 #[test]
 fn string_literal_lowers_to_utf8_branded_bitstring() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00432_string_utf8_brand.fz".to_string()),
         text: include_str!("../../fixtures2/00432_string_utf8_brand.fz").to_string(),
@@ -1156,7 +1156,7 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
 #[test]
 fn pid_opaque_arithmetic_emits_type_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00433_opaque_pid_arithmetic.fz".to_string()),
         text: include_str!("../../fixtures2/00433_opaque_pid_arithmetic.fz").to_string(),
@@ -1175,7 +1175,7 @@ fn pid_opaque_arithmetic_emits_type_error() {
 #[test]
 fn ref_opaque_arithmetic_emits_type_error() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00434_opaque_ref_arithmetic.fz".to_string()),
         text: include_str!("../../fixtures2/00434_opaque_ref_arithmetic.fz").to_string(),
@@ -1194,7 +1194,7 @@ fn ref_opaque_arithmetic_emits_type_error() {
 #[test]
 fn opaque_equality_comparison_permitted_without_diagnostic() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00435_opaque_equality_ok.fz".to_string()),
         text: include_str!("../../fixtures2/00435_opaque_equality_ok.fz").to_string(),
@@ -1213,7 +1213,7 @@ fn opaque_equality_comparison_permitted_without_diagnostic() {
 #[test]
 fn plain_int_arithmetic_no_opaque_diagnostic() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00436_plain_int_arithmetic.fz".to_string()),
         text: include_str!("../../fixtures2/00436_plain_int_arithmetic.fz").to_string(),

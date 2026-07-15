@@ -875,7 +875,7 @@ fn surface_span(root: &QuotedSourceRoot) -> Result<Span, QuotedSourceError> {
     Ok(merged.unwrap_or(Span::DUMMY))
 }
 
-fn span_from_meta(meta: &QuotedSourceCursor) -> Result<Span, QuotedSourceError> {
+pub(crate) fn span_from_meta(meta: &QuotedSourceCursor) -> Result<Span, QuotedSourceError> {
     let Some(span_map) = meta.map_value(META_SPAN_KEY)? else {
         return Ok(Span::DUMMY);
     };

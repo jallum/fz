@@ -65,6 +65,7 @@ defmodule List do
   fnp reduce_while_step(list, {:cont, acc}, reducer), do: reduce_while_cont(list, acc, reducer)
   fnp reduce_while_step(_list, {:halt, acc}, _reducer), do: acc
 
+  @spec count([a], integer) :: integer
   fnp count([], acc), do: acc
   fnp count([_head | tail], acc), do: count(tail, acc + 1)
 end

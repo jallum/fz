@@ -152,11 +152,11 @@ unsafe extern "C" fn fz_op_rem_ff(a: u64, b: u64) -> u64 {
     (f64::from_bits(a) % f64::from_bits(b)).to_bits()
 }
 
-pub(super) fn call_lowered_extern(
+pub(super) fn call_lowered_extern<T: Telemetry + ?Sized>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &crate::compiler2::transport::TransportStore,
-    tel: &dyn Telemetry,
+    tel: &T,
     program: &crate::compiler2::BackendProgram,
     module: &Module,
     signature: &LoweredExtern,
@@ -227,8 +227,17 @@ pub(super) fn call_lowered_extern(
                 return Err(format!("{}/1+ got 0 args", signature.symbol));
             }
             let (fn_id, captured) = super::binop::unpack_callable(args[0], runtime.cur_proc())?;
-            let target = super::backend::callable_entry_target(program, fn_id)?;
-            let pid = runtime.spawn_backend(target, captured)?;
+            let (target, inputs) = super::backend::construction_wrapper_invocation(
+                runtime,
+                types,
+                transport,
+                program,
+                module,
+                fn_id,
+                &captured,
+                &[],
+            )?;
+            let pid = runtime.spawn_backend(target, inputs)?;
             return Ok(AnyValue::Int(pid as i64));
         }
         "fz_self" => {
@@ -243,7 +252,7 @@ pub(super) fn call_lowered_extern(
                 return Err(format!("fz_send/2 got {} args", args.len()));
             }
             let receiver = args[0].as_i64().ok_or_else(|| "send/2: pid must be Int".to_string())? as u32;
-            runtime.send_opaque(types, transport, tel, program, module, receiver, args[1])?;
+            runtime.send_opaque(types, transport, tel, program, module, &receiver, args[1])?;
             return Ok(args[1]);
         }
         "fz_make_resource" => {

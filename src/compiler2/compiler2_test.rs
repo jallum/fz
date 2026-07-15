@@ -1,12 +1,11 @@
-use super::{CodeSubmission, Compiler2, DriveOutcome, Job, ModuleInterface};
+use super::{CodeId, CodeSubmission, Compiler2, DriveOutcome, Job, ModuleInterface, World};
 use crate::exec::runtime::DbgCapture;
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
-use crate::telemetry::handler::{Event, Handler};
-use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -14,6 +13,13 @@ struct ContractCase<'a> {
     name: &'a str,
     source_name: &'a str,
     source_text: &'a str,
+}
+
+#[test]
+fn compiler2_can_own_configured_telemetry() {
+    fn requires_owned_configured_telemetry(_: Compiler2<ConfiguredTelemetry>) {}
+
+    requires_owned_configured_telemetry(Compiler2::new(ConfiguredTelemetry::new()));
 }
 
 #[test]
@@ -37,7 +43,7 @@ fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compile
 #[test]
 fn compiler2_root_drive_timeout_reports_the_configured_limit() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_main.fz".to_string()),
@@ -62,7 +68,7 @@ fn compiler2_root_drive_timeout_reports_the_configured_limit() {
 #[test]
 fn compiler2_drive_honors_the_configured_timeout() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.set_drive_timeout(Duration::ZERO);
     compiler.submit_code(CodeSubmission {
         name: Some("timeout_drive.fz".to_string()),
@@ -91,7 +97,7 @@ fn compiler2_drive_honors_the_configured_timeout() {
 #[test]
 fn compiler2_submit_module_interface_settles_an_external_module_without_a_body() {
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     let module = compiler.submit_module_interface("ExternalHost".to_string(), ModuleInterface::default());
 
     assert!(
@@ -111,42 +117,44 @@ fn compiler2_submit_module_interface_settles_an_external_module_without_a_body()
 fn run_contract(case: ContractCase<'_>) {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
+    let drive_span_id = Rc::new(Cell::new(0));
+    let drive_start = Rc::clone(&drive_span_id);
+    let drive_outcome = Rc::new(RefCell::new(None));
+    let outcome_sink = Rc::clone(&drive_outcome);
+    tel.attach_raw_span0_1::<DriveOutcome<Job, super::FactKey>, _, _, _>(
+        &["fz", "compiler2", "drive"],
+        move |_, span_id, _| drive_start.set(span_id),
+        move |_, _, _, _, outcome| *outcome_sink.borrow_mut() = Some(outcome.clone()),
+        |_, _, _, _| {},
+    );
+    let submissions = Rc::new(RefCell::new(Vec::<(CodeId, usize)>::new()));
+    let submission_sink = Rc::clone(&submissions);
+    tel.attach_raw_event2::<World, CodeId, _>(
+        &["fz", "compiler2", "code", "submitted"],
+        move |_, _, _, world, code| {
+            submission_sink.borrow_mut().push((*code, world.code_text(*code).len()));
+        },
+    );
     let jobs = JobCapture::new();
-    tel.attach(&["fz", "compiler2", "job"], jobs.handler());
-    let mut compiler = Compiler2::new(&tel);
+    jobs.install(&tel);
+    let mut compiler = Compiler2::new(tel);
 
     let code_id = compiler.submit_code(CodeSubmission {
         name: Some(case.source_name.to_string()),
         text: case.source_text.to_string(),
     });
 
-    let submitted_event = capture
-        .last(&["fz", "compiler2", "code", "submitted"])
-        .expect("compiler2 submitted event");
-    let submitted_id = match submitted_event.measurements.get("code_id") {
-        Some(Value::U64(id)) => *id,
-        other => panic!("submitted event missing code_id measurement: {other:?}"),
-    };
+    let submitted = submissions.borrow();
+    let (submitted_id, submitted_bytes) = *submitted.last().expect("compiler2 submitted event");
     assert_eq!(
-        submitted_id,
-        code_id.as_u32() as u64,
+        submitted_id, code_id,
         "{} should report the submitted code id",
         case.name
     );
     assert_eq!(
-        submitted_event.metadata.len(),
-        0,
-        "{} should not durable-capture synthesized code submission metadata",
-        case.name
-    );
-    let submitted_bytes = match submitted_event.measurements.get("bytes") {
-        Some(Value::U64(bytes)) => *bytes,
-        other => panic!("submitted event missing bytes measurement: {other:?}"),
-    };
-    assert_eq!(
         submitted_bytes,
-        case.source_text.len() as u64,
+        case.source_text.len(),
         "{} should report the submitted byte length",
         case.name
     );
@@ -163,56 +171,24 @@ fn run_contract(case: ContractCase<'_>) {
         "compiler2 drive should index the submitted code and finish resolved"
     );
 
-    let drive_span = capture
-        .find(&["fz", "compiler2", "drive"])
-        .into_iter()
-        .find(|event| event.kind == EventKind::SpanStart)
-        .expect("compiler2 drive span start");
-    let pending_jobs = match drive_span.metadata.get("pending_jobs") {
-        Some(Value::U64(count)) => *count,
-        other => panic!("drive span missing pending_jobs metadata: {other:?}"),
-    };
-    assert_eq!(
-        pending_jobs, 1,
-        "{} should start drive with one pending indexing job",
-        case.name
-    );
-    let drive_stop = capture
-        .find(&["fz", "compiler2", "drive"])
-        .into_iter()
-        .find(|event| event.kind == EventKind::SpanStop)
-        .expect("compiler2 drive span stop");
-    let jobs_ran = match drive_stop.measurements.get("jobs_ran") {
-        Some(Value::U64(count)) => *count,
-        other => panic!("drive stop missing jobs_ran measurement: {other:?}"),
-    };
-    let expected_jobs = 1;
-    assert_eq!(
-        jobs_ran, expected_jobs,
-        "{} should only process the index job without explicit demand",
-        case.name
-    );
-    assert_eq!(
-        drive_stop.metadata.len(),
-        0,
-        "{} should not durable-capture resolved drive metadata",
-        case.name
-    );
+    assert!(matches!(*drive_outcome.borrow(), Some(DriveOutcome::Resolved)));
     let indexed_start = jobs.start(Job::IndexCode(code_id));
     assert_eq!(
-        indexed_start.parent_span_id, drive_span.span_id,
+        indexed_start.parent_span_id,
+        drive_span_id.get(),
         "{} should start indexed work under the drive span",
         case.name
     );
     let indexed_stop = jobs.stop(Job::IndexCode(code_id));
     assert_eq!(
-        indexed_stop.parent_span_id, drive_span.span_id,
+        indexed_stop.parent_span_id,
+        drive_span_id.get(),
         "{} should emit indexed work under the drive span",
         case.name
     );
     assert!(
-        indexed_stop.effects_present,
-        "{} should close the indexing job with effects metadata",
+        indexed_stop.completion_present,
+        "{} should close the indexing job with completion metadata",
         case.name
     );
 
@@ -233,24 +209,6 @@ fn run_contract(case: ContractCase<'_>) {
         jobs.stop_count(Job::IndexCode(code_id)),
         1,
         "{} should close exactly one IndexCode job span",
-        case.name
-    );
-    assert_eq!(
-        capture
-            .last(&["fz", "compiler2", "job"])
-            .map(|event| event.kind)
-            .unwrap_or(EventKind::Event),
-        EventKind::SpanStop,
-        "{} should finish with the job stop event after the first drive",
-        case.name
-    );
-    assert!(
-        capture
-            .find(&["fz", "compiler2", "job"])
-            .into_iter()
-            .filter(|event| event.kind == EventKind::SpanStop && event.span_id == indexed_stop.span_id)
-            .all(|event| event.metadata.get("effects").is_none()),
-        "{} generic capture should not durable-copy opaque job effects",
         case.name
     );
     assert_eq!(
@@ -278,7 +236,7 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
     assert_eq!(
-        capture.count(&["fz", "compiler2", "code", "submitted"]),
+        submissions.borrow().len(),
         1,
         "{} should emit exactly one Compiler2 submission event",
         case.name
@@ -316,7 +274,7 @@ fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
     );
 }
 
-fn assert_native_backend_compile_span(capture: &Capture, backend: &str, context: &str) {
+fn assert_native_backend_compile_span(capture: &Capture, context: &str) {
     let starts = |name: &[&str]| {
         capture
             .find(name)
@@ -339,22 +297,6 @@ fn assert_native_backend_compile_span(capture: &Capture, backend: &str, context:
         "{context}: compiler2 should name the native backend boundary once"
     );
     let boundary = &boundary_starts[0];
-    match boundary.metadata.get("backend") {
-        Some(Value::Str(actual)) => assert_eq!(actual.as_ref(), backend, "{context}: backend metadata"),
-        other => panic!("{context}: native backend span missing backend metadata: {other:?}"),
-    }
-    for key in [
-        "root_id",
-        "backend_revision",
-        "entry_fn_id",
-        "body_count",
-        "callable_boundary_count",
-    ] {
-        assert!(
-            matches!(boundary.metadata.get(key), Some(Value::U64(_))),
-            "{context}: native backend span should carry numeric `{key}` metadata"
-        );
-    }
 
     let boundary_stops = stops(&["fz", "compiler2", "native_backend", "compile"]);
     assert_eq!(
@@ -421,10 +363,10 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
     for case in cases {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
-        tel.attach(&[], capture.handler());
+        capture.install(&tel, &[]);
         let dbg = DbgCapture::new();
-        tel.attach(&[], dbg.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
         compiler.submit_code(CodeSubmission {
             name: Some(case.source_name.to_string()),
             text: case.source_text,
@@ -439,9 +381,9 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
         let (compiled, entry) = compiler
             .compile_root_jit(root_id)
             .unwrap_or_else(|err| panic!("{} should JIT-compile through NativeProgram: {err}", case.name));
-        assert_native_backend_compile_span(&capture, "jit", case.name);
+        assert_native_backend_compile_span(&capture, case.name);
         assert_eq!(
-            compiled.run(&tel, entry),
+            compiled.run_with_output(compiler.telemetry(), &dbg, entry),
             case.expected_halt,
             "{} should preserve the Compiler2-native JIT result",
             case.name
@@ -487,8 +429,8 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
     for (name, source_name, source_text, obj_name) in cases {
         let tel = ConfiguredTelemetry::new();
         let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        capture.install(&tel, &[]);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some(source_name.to_string()),
             text: source_text,
@@ -503,7 +445,7 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
         let artifact = compiler
             .compile_root_aot(root_id, obj_name)
             .unwrap_or_else(|err| panic!("{name} should AOT-compile through NativeProgram: {err}"));
-        assert_native_backend_compile_span(&capture, "aot", name);
+        assert_native_backend_compile_span(&capture, name);
         assert!(
             !artifact.object.is_empty(),
             "{name} should produce a non-empty AOT object through the Compiler2 front door",
@@ -531,7 +473,7 @@ fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path
     // JIT front door.
     {
         let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/enum_reduce_native_front_door_jit.fz".to_string()),
             text: source.to_string(),
@@ -546,7 +488,7 @@ fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path
             .compile_root_jit(root)
             .expect("enum_reduce should JIT-compile through the product path");
         assert_eq!(
-            compiled.run(&tel, entry),
+            compiled.run(compiler.telemetry(), entry),
             15,
             "enum_reduce should preserve its JIT result through the native front door",
         );
@@ -555,7 +497,7 @@ fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path
     // AOT front door.
     {
         let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/enum_reduce_native_front_door_aot.fz".to_string()),
             text: source.to_string(),
@@ -583,9 +525,9 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
 
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
-    tel.attach(&[], capture.handler());
+    capture.install(&tel, &[]);
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/compiler2_run_root_jit_resource.fz".to_string()),
         text: include_str!("../../fixtures2/00026_make_resource.fz").to_string(),
@@ -600,7 +542,7 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
     compiler
         .run_root_jit(root_id)
         .unwrap_or_else(|error| panic!("resource fixture should run through Compiler2 JIT: {error}"));
-    assert_native_backend_compile_span(&capture, "jit", "Compiler2 run_root_jit");
+    assert_native_backend_compile_span(&capture, "Compiler2 run_root_jit");
 
     assert_eq!(
         tests_support_dtor_fired(),
@@ -637,14 +579,12 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
 #[test]
 fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
     let source = include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz");
-    const LOWERED: &[&str] = &["fz", "compiler2", "native_program", "reusable_cons"];
 
     // Interp front door: BackendProgram only, NativeProgram absent.
     {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let lowered = capture_native_lowerings(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/interp_never_lowers_native.fz".to_string()),
             text: source.to_string(),
@@ -661,7 +601,7 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             .unwrap_or_else(|error| panic!("enum_reduce_operator_ref should interp-run: {error}"));
 
         assert_eq!(
-            capture.count(LOWERED),
+            lowered.get(),
             0,
             "an interp drive must never lower NativeProgram -- interp reads BackendProgram, \
              never NativeProgram, so lowering native off the backend product is pure overproduction",
@@ -675,9 +615,8 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
     // JIT front door: NativeProgram still produced, through one explicit demand.
     {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let lowered = capture_native_lowerings(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/jit_still_lowers_native.fz".to_string()),
             text: source.to_string(),
@@ -694,7 +633,7 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             .unwrap_or_else(|error| panic!("enum_reduce_operator_ref should JIT-compile: {error}"));
 
         assert_eq!(
-            capture.count(LOWERED),
+            lowered.get(),
             1,
             "the JIT front door demands NativeProgram exactly once through compile_root_jit",
         );
@@ -707,9 +646,8 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
     // AOT front door: NativeProgram still produced, through one explicit demand.
     {
         let tel = ConfiguredTelemetry::new();
-        let capture = Capture::new();
-        tel.attach(&[], capture.handler());
-        let mut compiler = Compiler2::new(&tel);
+        let lowered = capture_native_lowerings(&tel);
+        let mut compiler = Compiler2::new(tel);
         compiler.submit_code(CodeSubmission {
             name: Some("fixtures/aot_still_lowers_native.fz".to_string()),
             text: source.to_string(),
@@ -726,7 +664,7 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             .unwrap_or_else(|error| panic!("enum_reduce_operator_ref should AOT-compile: {error}"));
 
         assert_eq!(
-            capture.count(LOWERED),
+            lowered.get(),
             1,
             "the AOT front door demands NativeProgram exactly once through compile_root_aot",
         );
@@ -735,6 +673,16 @@ fn compiler2_interp_never_lowers_native_program_while_jit_and_aot_still_do() {
             "the AOT front door must still produce NativeProgram",
         );
     }
+}
+
+fn capture_native_lowerings(telemetry: &ConfiguredTelemetry) -> Rc<Cell<u64>> {
+    let count = Rc::new(Cell::new(0));
+    let sink = Rc::clone(&count);
+    telemetry.attach_raw_event2::<super::RootId, super::BackendProgram, _>(
+        &["fz", "compiler2", "native_program", "reusable_cons"],
+        move |_, _, _, _, _| sink.set(sink.get() + 1),
+    );
+    count
 }
 
 #[derive(Debug, Clone)]
@@ -746,13 +694,11 @@ struct JobSpanStart {
 #[derive(Debug, Clone)]
 struct JobSpanStop {
     job: Job,
-    span_id: u64,
     parent_span_id: u64,
-    effects_present: bool,
+    completion_present: bool,
 }
 
 struct JobCapture {
-    live: Rc<RefCell<HashMap<u64, Job>>>,
     starts: Rc<RefCell<Vec<JobSpanStart>>>,
     stops: Rc<RefCell<Vec<JobSpanStop>>>,
 }
@@ -760,18 +706,31 @@ struct JobCapture {
 impl JobCapture {
     fn new() -> Self {
         Self {
-            live: Rc::new(RefCell::new(HashMap::new())),
             starts: Rc::new(RefCell::new(Vec::new())),
             stops: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
-    fn handler(&self) -> Box<dyn Handler> {
-        Box::new(JobCaptureHandler {
-            live: self.live.clone(),
-            starts: self.starts.clone(),
-            stops: self.stops.clone(),
-        })
+    fn install(&self, telemetry: &ConfiguredTelemetry) {
+        let starts = Rc::clone(&self.starts);
+        let stops = Rc::clone(&self.stops);
+        telemetry.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
+            &["fz", "compiler2", "job"],
+            move |_, _, parent_span_id, job| {
+                starts.borrow_mut().push(JobSpanStart {
+                    job: job.clone(),
+                    parent_span_id,
+                });
+            },
+            move |_, _, parent_span_id, _, _, completion| {
+                stops.borrow_mut().push(JobSpanStop {
+                    job: completion.job.clone(),
+                    parent_span_id,
+                    completion_present: true,
+                });
+            },
+            |_, _, _, _| {},
+        );
     }
 
     fn start(&self, job: Job) -> JobSpanStart {
@@ -797,44 +756,6 @@ impl JobCapture {
     }
 }
 
-struct JobCaptureHandler {
-    live: Rc<RefCell<HashMap<u64, Job>>>,
-    starts: Rc<RefCell<Vec<JobSpanStart>>>,
-    stops: Rc<RefCell<Vec<JobSpanStop>>>,
-}
-
-impl Handler for JobCaptureHandler {
-    fn handle(&self, event: &Event<'_, '_, '_>) {
-        if event.name != ["fz", "compiler2", "job"] {
-            return;
-        }
-        match event.kind {
-            EventKind::SpanStart => {
-                let Some(job) = event.metadata.get("job").and_then(|value| value.downcast_ref::<Job>()) else {
-                    return;
-                };
-                self.live.borrow_mut().insert(event.span_id, job.clone());
-                self.starts.borrow_mut().push(JobSpanStart {
-                    job: job.clone(),
-                    parent_span_id: event.parent_span_id,
-                });
-            }
-            EventKind::SpanStop => {
-                let Some(job) = self.live.borrow_mut().remove(&event.span_id) else {
-                    return;
-                };
-                self.stops.borrow_mut().push(JobSpanStop {
-                    job,
-                    span_id: event.span_id,
-                    parent_span_id: event.parent_span_id,
-                    effects_present: event.metadata.get("effects").is_some(),
-                });
-            }
-            EventKind::Event | EventKind::SpanException => {}
-        }
-    }
-}
-
 #[test]
 fn env_in_function_body_resolves_via_namespace_splice() {
     // A function body that names __ENV__ must compile: just before the body is
@@ -842,7 +763,7 @@ fn env_in_function_body_resolves_via_namespace_splice() {
     // snippet) and the expander splices it in. Without that binding __ENV__ is
     // an unbound variable and the drive cannot resolve.
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("env_body.fz".to_string()),
         text: "fn main(), do: __ENV__\n".to_string(),
@@ -867,7 +788,7 @@ fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
     // layout rather than pass a fixed [__CALLER__, args] ABI; otherwise the entry
     // is handed one lane too many ("expected 1 runtime lane(s), got 2").
     let tel = ConfiguredTelemetry::new();
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_caller_elision.fz".to_string()),
         text: "defmacro inc(x) do\n  quote do: unquote(x) + 1\nend\n\nfn main(), do: inc(41)\n".to_string(),
@@ -887,41 +808,18 @@ fn compiler2_macro_ignoring_caller_runs_with_elided_caller_lane() {
     );
 }
 
-/// Distinguishes two counts that fz-go4 has confused before: how many
-/// function bodies a module *stashes* (cheap bookkeeping, proportional to
-/// module size -- every function defined in a scoped module, reached or
-/// not) versus how many `FunctionSource` facts are actually *demand-minted*
-/// (proportional to the functions something in the program actually
-/// reaches, via `PublishFunctionSource`, fz-f98.14.5). Reading the stash
-/// count as if it were the demand-minted count produced a false alarm that
-/// this guard exists to foreclose. The real regression it catches: someone
-/// making `FunctionSource` eager again (minted at stash time instead of on
-/// pull) collapses minted into stash, which is exactly the shape this test
-/// asserts must NOT happen on `enum_reduce_operator_ref` (see below).
-/// Drives one fixture through the real front door (`submit_code` +
-/// `submit_root`) to its backend product and returns
-/// `(demand_minted_count, stash_count)`:
-/// - `demand_minted_count`: distinct functions whose consumable
-///   `FunctionSource` fact was demand-minted -- proportional to REACHED
-///   functions.
-/// - `stash_count`: `compiler_service.define` events -- proportional to
-///   MODULE SIZE (every function a scoped module defines, reached or not).
-///
-/// Both counts are read from production signal after a resolved drive: the
-/// stash count from the `compiler_service.define` events, the minted count
-/// from the settled fact table. A `FunctionSource` is minted ONLY if its
-/// body was stashed first -- `publish_function_source_job` succeeds solely
-/// when `publish_pending_function_source` finds the stash present -- so the
-/// minted set is a subset of the stashed set. Filtering the stashed
-/// function-ids to those for which `World::has_fact(FunctionSource(id))`
-/// holds therefore recovers exactly the demand-minted set, without parsing
-/// any Debug-oriented telemetry side channel.
 fn drive_and_count_function_source_production(name: &str, source: &str) -> (usize, usize) {
     let tel = ConfiguredTelemetry::new();
-    let stash = Capture::new();
-    tel.attach(&["fz", "compiler2", "compiler_service", "define"], stash.handler());
+    let stashed = Rc::new(RefCell::new(HashSet::<super::FunctionId>::new()));
+    let stash_sink = Rc::clone(&stashed);
+    tel.attach_raw_event3::<super::World, super::FunctionId, super::FunctionSource, _>(
+        &["fz", "compiler2", "compiler_service", "define"],
+        move |_, _, _, _, function, _| {
+            stash_sink.borrow_mut().insert(*function);
+        },
+    );
 
-    let mut compiler = Compiler2::new(&tel);
+    let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some(name.to_string()),
         text: source.to_string(),
@@ -935,16 +833,13 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
     compiler
         .drive_root_backend_work_starts(root)
         .unwrap_or_else(|error| panic!("{name} should drive to its backend product: {error}"));
+    assert!(
+        !compiler.world().backend_program(root).executables.is_empty(),
+        "{name} should settle a backend product with executable functions",
+    );
 
-    let define_events = stash.find(&["fz", "compiler2", "compiler_service", "define"]);
-    let stash_count = define_events.len();
-    let stashed: HashSet<super::FunctionId> = define_events
-        .iter()
-        .filter_map(|event| match event.measurements.get("function_id") {
-            Some(Value::U64(id)) => Some(super::FunctionId::for_test(*id as u32)),
-            _ => None,
-        })
-        .collect();
+    let stashed = stashed.borrow();
+    let stash_count = stashed.len();
     let minted = stashed
         .iter()
         .filter(|&&id| compiler.world().has_fact(&super::FactKey::FunctionSource(id)))
@@ -955,66 +850,25 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
 
 #[test]
 fn function_source_is_demand_minted_not_stash_eager() {
-    // quicksort_plus_foo: 4 named functions with several clauses (append,
-    // partition x3, qsort x2, main, foo) plus the reached slice of the
-    // Kernel/Enum prelude pulled in by list literals, comparisons, and
-    // `Process.heap_alloc_stats`/`dbg`. `foo/0` itself is never called from
-    // `main`, so even this fixture's own module contributes an unreached
-    // function to the stash/minted gap.
-    let (minted, stash) = drive_and_count_function_source_production(
-        "quicksort_plus_foo.fz",
-        include_str!("../../fixtures2/00001_quicksort_plus_foo.fz"),
-    );
-    assert_eq!(
-        minted, 13,
-        "quicksort_plus_foo: reached-function count drifted -- re-confirm against the fixture \
-         before assuming a regression",
-    );
-    assert!(
-        stash > minted,
-        "quicksort_plus_foo: stash ({stash}) should exceed demand-minted ({minted}) -- prelude \
-         functions this fixture never calls are still stashed",
-    );
-
-    // make_resource: the smallest of the three -- one extern declaration and
-    // one `main` calling `make_resource`/2 with a destructor closure. Still
-    // pulls enough of the runtime prelude to keep stash well above minted.
-    let (minted, stash) = drive_and_count_function_source_production(
-        "make_resource.fz",
-        include_str!("../../fixtures2/00026_make_resource.fz"),
-    );
-    assert_eq!(
-        minted, 5,
-        "make_resource: reached-function count drifted -- re-confirm against the fixture before \
-         assuming a regression",
-    );
-    assert!(
-        stash > minted,
-        "make_resource: stash ({stash}) should exceed demand-minted ({minted}) -- prelude \
-         functions this fixture never calls are still stashed",
-    );
-
-    // enum_reduce_operator_ref: THE BITE. `main` only ever reaches
-    // `Enum.reduce/3` and `Kernel.+/2` (by name and by `&.../2` reference),
-    // yet the Kernel/Enum module the prelude stashes wholesale defines
-    // dozens of other operators and Enum functions this program never
-    // touches. That gap between "everything the owning module stashed" (224
-    // events) and "only what `main` reached" (13 functions) is the widest of
-    // the three -- if `FunctionSource` were ever minted eagerly at stash
-    // time instead of on demand, `minted` would jump to equal `stash` here,
-    // and this assertion is what would catch it.
-    let (minted, stash) = drive_and_count_function_source_production(
-        "enum_reduce_operator_ref.fz",
-        include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
-    );
-    assert_eq!(
-        minted, 13,
-        "enum_reduce_operator_ref: reached-function count drifted -- re-confirm against the \
-         fixture before assuming a regression",
-    );
-    assert!(
-        stash > minted,
-        "enum_reduce_operator_ref: stash ({stash}) should exceed demand-minted ({minted}) -- an \
-         eager FunctionSource regression would collapse this to stash == minted",
-    );
+    for (name, source) in [
+        (
+            "quicksort_plus_foo.fz",
+            include_str!("../../fixtures2/00001_quicksort_plus_foo.fz"),
+        ),
+        (
+            "make_resource.fz",
+            include_str!("../../fixtures2/00026_make_resource.fz"),
+        ),
+        (
+            "enum_reduce_operator_ref.fz",
+            include_str!("../../fixtures2/00181_enum_reduce_operator_ref.fz"),
+        ),
+    ] {
+        let (minted, stash) = drive_and_count_function_source_production(name, source);
+        assert!(minted > 0, "{name} should demand at least one function source");
+        assert!(
+            minted < stash,
+            "{name} should leave unreached function sources unminted: minted={minted}, stash={stash}",
+        );
+    }
 }

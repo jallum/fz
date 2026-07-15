@@ -3,7 +3,6 @@
 use super::*;
 use crate::compiler2::NativeBody;
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
-use crate::telemetry::Telemetry;
 use cranelift_codegen::ir::{self};
 use cranelift_module::{DataId, FuncId};
 use fz_runtime::any_value::AnyValue;
@@ -11,7 +10,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) struct CodegenEnv<'a> {
-    pub(super) telemetry: &'a dyn Telemetry,
     pub(super) runtime: &'a RuntimeRefs,
     pub(super) surface: &'a NativeCodegenSurface<'a>,
     pub(super) module: &'a Module,
@@ -40,7 +38,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) receive_dispatch_fn_ids: &'a HashMap<(u32, u32), FuncId>,
 }
 
-impl<'a> CodegenEnv<'a> {
+impl CodegenEnv<'_> {
     pub(super) fn body_fn_id(&self, codegen_id: u32) -> FnId {
         self.surface.body_fn_id(codegen_id)
     }
@@ -125,9 +123,4 @@ pub(crate) struct CodegenCache {
     pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
     /// Rebuilt head Var -> source cons Var facts for reusable-cons attempts.
     pub(super) reusable_cons_sources: HashMap<u32, Var>,
-    /// Potential head+tail list construction sites that could consume a
-    /// reusable-cons capability.
-    pub(super) reusable_cons_candidate_count: u64,
-    /// Candidate sites that lowered to the runtime reusable-cons helper.
-    pub(super) reusable_cons_consumed_count: u64,
 }

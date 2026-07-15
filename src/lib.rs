@@ -23,6 +23,7 @@ pub mod types;
 use libc::{c_int, close, write};
 
 pub use function_surface::FunctionSurface;
+pub use telemetry::sink::NullTelemetry;
 
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
 

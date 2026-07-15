@@ -19,6 +19,10 @@ Compiler2 owns the active contract path:
   `ResolvedTypeShape` values.
 - `compiler2/contract.rs` and the compiler2 type/arrow-matching code consume the
   resolved contract data.
+- `Types::close_bounds` is the shared addressed-`TypeVarId` resolver for `when`
+  dependencies. It closes only ground acyclic RHS chains; unresolved and cyclic
+  components remain symbolic. Contract matching and declared input domains both
+  use this one interpretation.
 - `FunctionContract` stores resolved protocol-domain marker obligations per
   arrow. The current obligation identity is the resolved opaque marker tag
   (`protocol::<Name>.t`) wrapped as a `ProtocolDomainObligation`; it is
