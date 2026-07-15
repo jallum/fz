@@ -4,14 +4,15 @@
   "blocks": [
     "fz-k22.29.2"
   ],
+  "closed_at": "2026-07-15T20:04:14Z",
   "created": "2026-07-15T19:36:24Z",
   "description": "Per the slice-0 plan (fz-k22.29 comments): for any ClosureCall whose callee ValueId resolves WITHIN THE SAME EXECUTABLE (via the construction: Option\u003cu32\u003e field / resolved_constructions_for_values) to a BackendConstructionWrapper with members.len()==1 \u0026\u0026 selection.is_none(), record a derived fact carrying that identity/target pair. Purely additive: backend.rs packaging + artifact.rs field/side-table + NativeLowerer::new plumbing; NO codegen/interp behavior change. Deterministic discipline (sorted/dense identities, no HashMap-order leaks). TEST: fact is Some exactly for single-member/no-selection; None for multi-member, dispatch-selected, and the branch-merged two-lambda negative case (pins the SSA-local soundness argument). Scoreboard: NO counters move; lib 0 failed; byte-identical-BackendProgram test green; matrix name-set unchanged.",
   "id": "fz-k22.29.1",
   "labels": [],
   "parent": "fz-k22.29",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-k22.29 slice 1: derive the single-member-direct authority fact (read-only, no behavior change)",
   "type": "task",
-  "updated_at": "2026-07-15T19:36:27Z"
+  "updated_at": "2026-07-15T20:04:14Z"
 }
