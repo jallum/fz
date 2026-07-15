@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-k22.5.2"
+    "fz-k22.5.2",
+    "fz-k22.5.3"
   ],
   "blocks": [],
   "created": "2026-07-15T20:46:24Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Derive incoming input slots from frontier and outgoing products",
   "type": "bug",
-  "updated_at": "2026-07-15T20:46:40Z"
+  "updated_at": "2026-07-15T20:46:41Z"
 }
