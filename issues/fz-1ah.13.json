@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-1ah.12"
+  ],
   "blocks": [],
   "created": "2026-07-15T03:09:18Z",
   "description": "Goal\\nRestore the native selective-receive continuation contract for fixtures2/behavior/receive_selective_refs.fz.\\n\\nBaseline proof\\nAt integration parent f8a7557a0, both tests/fz2_cli.rs::run_and_interp_execute_receive_fixtures and ::build_executes_receive_fixtures panic at src/compiler2/native_codegen/terminator.rs:182: continuation callee 32 has 1 logical argument but 2 published param reprs. The fz-1ah.12 telemetry worktree reproduces the same invariant failure at the corresponding line 161 with telemetry absent, so fz-1ah.12 did not introduce it.\\n\\nStrategy\\nReopen the data-model seam behind closed fz-go4.10 rather than weakening the invariant: prove which authority owns the selective-receive outcome closure and its logical delivery arguments, then make continuation param representations consume that authority once.\\n\\nAcceptance\\nBoth exact CLI tests pass for run, interp, and build; the logical-argument/published-representation invariant remains enforced; no telemetry compensation or fixture exception is introduced.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] Restore selective-receive continuation delivery contract",
   "type": "bug",
-  "updated_at": "2026-07-15T03:09:18Z"
+  "updated_at": "2026-07-15T03:09:21Z"
 }
