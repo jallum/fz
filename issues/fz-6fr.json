@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T15:10:40Z",
+  "description": "Surfaced by fz-lfp classification. panic at src/compiler2/jobs/native.rs:3375 -- backend value ValueId(6) must be runtime-materializable; value=Absent. STRONG resemblance to the closed fz-k22.8 (clause-0 base-case accumulator demand-pruned vs codegen lowering all clauses -- same ValueId(6) signature on reduce_while_cont) but through the Map Enumerable impl. Likely the k22.8 trivial-clause widening gate does not cover a Map-impl clause shape. Repro: fixture_matrix map_enumerable.",
+  "id": "fz-6fr",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "map_enumerable crashes all backends: ValueId(6) must be runtime-materializable, value=Absent (native.rs:3375)",
+  "type": "bug",
+  "updated_at": "2026-07-15T15:10:40Z"
+}
