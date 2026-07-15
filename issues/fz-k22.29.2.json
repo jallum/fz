@@ -21,5 +21,5 @@
   "status": "in_progress",
   "title": "fz-k22.29 slice 2: native consumes the fact -- no boxing/closure alloc at single-member construction+call sites",
   "type": "task",
-  "updated_at": "2026-07-15T20:42:18Z"
+  "updated_at": "2026-07-15T21:14:59Z"
 }
