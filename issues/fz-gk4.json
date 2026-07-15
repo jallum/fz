@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T15:10:41Z",
+  "description": "Surfaced by fz-lfp classification. The rendered closure arity/identity string changed to #fn\u003c4/3\u003e on run/build; the fixture comment + golden pin #fn\u003c4/2\u003e. Plausibly the callable-entry identity_fn work (k22.20) changed which fn id renders, or an arity accounting change (capture in the count?). Determine which rendering is CORRECT per Elixir conventions before either fixing the renderer or reblessing. Repro: fixture_matrix enum_reduce_suspend (run/build; interp green).",
+  "id": "fz-gk4",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "enum_reduce_suspend run/build render closure identity #fn\u003c4/3\u003e where fixture pins #fn\u003c4/2\u003e",
+  "type": "bug",
+  "updated_at": "2026-07-15T15:10:41Z"
+}
