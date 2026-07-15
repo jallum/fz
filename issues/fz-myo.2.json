@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-myo.1"
   ],
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-myo: stop pinning raw reductions_remaining as a strict golden for output+allocation-contract fixtures -- derive it or make it telemetry-only",
   "type": "bug",
-  "updated_at": "2026-07-15T15:09:06Z"
+  "updated_at": "2026-07-15T18:49:41Z"
 }
