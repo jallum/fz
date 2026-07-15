@@ -10,6 +10,6 @@
   "priority": 4,
   "status": "open",
   "title": "Delete residual legacy fixture metadata, APIs, documentation, and sidecars",
-  "type": "bug",
-  "updated_at": "2026-07-15T14:37:53Z"
+  "type": "chore",
+  "updated_at": "2026-07-15T14:39:55Z"
 }
