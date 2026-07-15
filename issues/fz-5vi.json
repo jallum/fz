@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.29"
+  ],
   "blocks": [],
   "created": "2026-07-15T15:10:42Z",
   "description": "Surfaced by fz-lfp classification. run/build show {22,352,0,0,0,0,27,432} vs golden {22,352,0,0,0,0,0,0}; interp is clean (its leg was blessed and is green). Native-only scalar boxing regression -- same family fz-6jh fixed once before. Root-cause the native boxing seam (likely the k22.20-23 entry thunks boxing scalars at callable entries). Repro: fixture_matrix enum_sort (run/build legs).",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "enum_sort run/build only: extra scalar boxing {27,432} where golden and interp have zero",
   "type": "bug",
-  "updated_at": "2026-07-15T15:10:42Z"
+  "updated_at": "2026-07-15T19:10:50Z"
 }

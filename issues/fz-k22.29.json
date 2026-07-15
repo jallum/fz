@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-5vi",
     "fz-66j"
   ],
   "created": "2026-07-15T19:10:49Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz-k22: derive lazy direct callable boundaries at concrete single-member producers -- un-fold the k22.24-27 design that was folded into k22.23 without implementation",
   "type": "bug",
-  "updated_at": "2026-07-15T19:10:49Z"
+  "updated_at": "2026-07-15T19:10:50Z"
 }
