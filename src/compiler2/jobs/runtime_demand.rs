@@ -2163,6 +2163,58 @@ fn propagate_steps_reverse(
             }
         }
     }
+    // `jobs/backend.rs::lower_step` packages a `TupleField` step into a real
+    // `BackendStep::TupleField` unconditionally — unlike `Tuple`/`List`, it
+    // has no `Omitted` fallback for a provably-unread projection. Native
+    // codegen therefore always reads `source` to extract the field, even
+    // when every field ever projected from it goes unused downstream (e.g.
+    // a guard-passed match arm that destructures `{:ok, s}` but returns a
+    // literal without touching `s`). The per-step handling above already
+    // keeps `source` live whenever ANY projected field carries real demand
+    // (the ordinary, common case — no change needed there), but when EVERY
+    // field projected from a given `source` is ignored, `source` never
+    // enters `live` at all and its transport lane starves — the fz-xvq
+    // "materialize absent value" crash. This closing sweep is the exact,
+    // minimal net for only that starved case: for any `source` this steps
+    // slice projects a `TupleField` from that isn't already live by any
+    // other means, float it to a per-field `Whole` (`tuple_fields`, not a
+    // bare `whole()`) so the transport layer keeps the same field-split
+    // freedom an already-demanded source has — a bare `whole()` would
+    // instead assert the *opaque box* is needed, forcing a single boxed
+    // lane and coarsening an otherwise-splittable tuple (e.g. a `{:cont,
+    // acc}` HOF continuation whose split raw lanes another clause of the
+    // same shared body legitimately demands). Sources that already carry
+    // demand from a live field are untouched, so this cannot regress the
+    // split-lane shape of an already-working case.
+    let mut floored = HashSet::new();
+    for step in steps {
+        if let LoweredStep::TupleField { source, .. } = step
+            && !live.contains_key(source)
+            && floored.insert(*source)
+        {
+            let arity = asserted_tuple_arities.get(source).copied().unwrap_or_else(|| {
+                steps
+                    .iter()
+                    .filter_map(|step| match step {
+                        LoweredStep::TupleField {
+                            source: candidate,
+                            index,
+                            ..
+                        } if candidate == source => Some(*index + 1),
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(1)
+            });
+            note_live_demand(
+                world,
+                out,
+                live,
+                *source,
+                RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); arity]),
+            );
+        }
+    }
 }
 
 fn step_asserted_tuple_arities(steps: &[LoweredStep]) -> HashMap<ValueId, usize> {
@@ -2557,20 +2609,29 @@ fn arg_demands_for_summary(
             slot.join_assign(&observed);
         }
     }
-    // The boxed-apply ABI for an ambiguous (2+ target) *closure* callsite
-    // (`CallEdge::Indirect` / `generic_callable_shape`) transmits a real
-    // value in every argument lane regardless of what any one resolved
-    // callee does with it: the caller cannot devirtualize, so it must
-    // materialize the full argument tuple for whichever target ends up
-    // selected at runtime. Joining demands *per target* (as the loop above
-    // does) lets an argument some targets ignore -- e.g. a shared HOF body's
-    // `_acc` parameter that one target discards -- join down to `Ignore` when
-    // every target ignores it, starving that argument's materialization even
-    // though the ABI still carries it. Floor every argument to `Whole` in
-    // this case, generalizing the index-0-only receiver floor above (which
-    // covers the direct/receiver protocol-dispatch case) to closure calls
-    // and to every argument position.
-    if matches!(input_mode, CallInputMode::Closure) && summary.targets.len() > 1 {
+    // The boxed-apply ABI for a *closure* callsite (`CallEdge::Indirect` /
+    // `generic_callable_shape`) transmits a real value in every argument
+    // lane regardless of what any one resolved callee does with it, and
+    // regardless of how many targets `summary.targets` resolved to. Whether
+    // native codegen ends up on the direct-call fast path (which *can* skip
+    // a truly-unused arg lane, because there the caller and the one callee
+    // share a co-designed, per-instantiation ABI —
+    // `direct_closure_capture_lanes`/`closure_fast_path_arg_is_structural`
+    // in `native.rs`) or falls back to the generic indirect closure-call
+    // path (which always lowers every positional arg via `env_runtime_vars`,
+    // with no callee-demand check at all) is a native-codegen-time
+    // structural decision this pass cannot predict — so it must assume the
+    // worst case even for an unambiguous single-target callsite. Joining
+    // demands *per target* (as the loop above does) lets an argument some
+    // targets ignore -- e.g. a shared HOF body's `_acc` parameter that one
+    // target discards, or a closure whose sole target never reads its own
+    // parameter (an Enumerable slice continuation's unused `_map`) -- join
+    // down to `Ignore`, starving that argument's materialization even
+    // though the ABI still carries it once codegen picks the generic path.
+    // Floor every argument to `Whole` for every closure callsite,
+    // generalizing the index-0-only receiver floor above (which covers the
+    // direct/receiver protocol-dispatch case) to every argument position.
+    if matches!(input_mode, CallInputMode::Closure) {
         for slot in out.iter_mut() {
             slot.join_assign(&RuntimeDemand::whole());
         }
