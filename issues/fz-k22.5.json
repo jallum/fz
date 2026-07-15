@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.5.4"
+  ],
   "blocks": [
     "fz-k22.30"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Make callable transport determination a product-owned refinement",
   "type": "bug",
-  "updated_at": "2026-07-15T20:34:26Z"
+  "updated_at": "2026-07-15T20:47:09Z"
 }
