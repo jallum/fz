@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T15:10:40Z",
+  "description": "Surfaced by fz-lfp classification (2026-07-15). The fz-bsx brand-blind-equality REGRESSION GUARDS now fail outright on all 3 legs: native.rs materialize absent value ty None; interp backend value 3 is unbound. These fixtures existed to pin the bsx equality/matching semantics -- their crash means either a regression in that machinery or a latent gap the diagnostics noise was masking. Same materialize-absent symptom family as the closed fz-k22.8 (demand/codegen clause pruning) -- check that family first. Repro: cargo test --test fixture_matrix -- --test-threads=1 bsx_guard_eq bsx_nested_match.",
+  "id": "fz-xvq",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-bsx regression guards bsx_guard_eq + bsx_nested_match hard-crash on all backends (native materialize-absent / interp value unbound)",
+  "type": "bug",
+  "updated_at": "2026-07-15T15:10:40Z"
+}
