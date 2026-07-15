@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T19:24:35Z",
+  "description": "Goal\n\nExplain and eliminate the remaining projected-source Unknown in a valid joined callable flow at the first source-flow authority. A producer projection must yield an exact shape, an explicit recursive state, or an explicit dynamic/first-class contract; it must not become generic merely because an upstream source lost its reason.\n\nSignal\n\nThe minimized reducer fixture joins named add/2 and subtract/2 through a runtime case and calls Enum.reduce. With target-correlated callable selection enabled, reducer selection correctly narrows shapes 15 and 16 to the targeted producer, but four projected-source-unknown observations remain. The first observed remainder projects main ValueId(11) into function 68 semantic input 1. No missing producer context or value type occurs. Interpreter, JIT, and AOT all currently print 3.\n\nStrategy\n\nInstrument the carried TransportSource chain and its owning semantic/runtime-demand facts, then trace backward from the first SourceShape::Unknown to the earliest fact that stops expressing an explicit source contract. Classify whether the source is genuinely opaque, explicitly first-class, recursive, or missing an authoritative relation. Refine a genuine state directly into its physical contract; otherwise repair the first lost source-flow fact. Do not alter direct callable selection, infer identity from shapes, or preserve correctness through the executable-input generic fallback.\n\nAcceptance\n\nThe minimized joined-reducer fixture and neighboring named-function joins pass interp, run, and build. The production signal contains no unexplained projected-source Unknown and no missing-context/type compensation. Any retained non-exact state has an explicit modeled authority and a direct refinement rule. Library tests and strict clippy pass; temporary instrumentation and probes are removed.",
+  "id": "fz-k22.30",
+  "labels": [],
+  "parent": "fz-k22",
+  "priority": 3,
+  "status": "open",
+  "title": "Trace remaining projected-source Unknown to its source-flow authority",
+  "type": "bug",
+  "updated_at": "2026-07-15T19:24:35Z"
+}
