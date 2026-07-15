@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.29.1"
+  ],
   "blocks": [],
   "created": "2026-07-15T19:36:24Z",
   "description": "jobs/native.rs (emit_callable_construction; direct_closure_capture_lanes/direct_callable_lanes) + native_codegen/terminator.rs (widen the existing singleton fast path in emit_call_closure to consume the slice-1 fact, not only Term::CallClosure.direct_target). Multi-member path byte-identical (prim.rs lower_make_closure untouched for it). GUARD: compiler2_jit_runs_range_reduce2_first_acc_bridge_from_native_artifacts (the k22.25 multi-member regression) must stay green; determinism test green. Scoreboard: enum_list_allocations run/build {5,80,14,448,0,0,8,128}/528 -\u003e toward golden 368; enum_sort run/build scalar_box {27,432} -\u003e {0,0}. Riskiest slice: stop-and-report if any OTHER fixture counter moves.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-k22.29 slice 2: native consumes the fact -- no boxing/closure alloc at single-member construction+call sites",
   "type": "task",
-  "updated_at": "2026-07-15T19:36:24Z"
+  "updated_at": "2026-07-15T19:36:26Z"
 }
