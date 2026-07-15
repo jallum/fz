@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-15T12:59:17Z",
+  "description": "Found in the 2026-07-15 state evaluation: matrix::tree::{run,interp,build} FAILED at HEAD a20f29ab3 but tree does NOT appear in the 74-name failing baseline at eae19c725 (/tmp/k22base_names.txt), and did not appear in the k22-stack eval at f557a9c7d either. The regression (or red fixture landing) is in the ~20-commit fz-1ah range 3e1d2d62b..a20f29ab3 (telemetry rework, native Enum domain exhaustiveness, dispatch reachability changes, divergent return flow, k22.23). TRIAGE: confirm the fixture existed+was green at 3e1d2d62b (if new, it landed red -- different bookkeeping); if pre-existing, git bisect the range with the fixture as the test; classify regression vs known-red-by-design; fix if small/clean, else report with the culprit commit + failure mode.",
+  "id": "fz-d1g",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "tree::{run,interp,build} newly red vs the 74-name baseline -- regression or red-landed fixture in the fz-1ah range (3e1d2d62b..a20f29ab3)",
+  "type": "bug",
+  "updated_at": "2026-07-15T12:59:17Z"
+}
