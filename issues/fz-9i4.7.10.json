@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-15T13:25:19Z",
-  "description": "Intent: a callable-mapper overload must preserve the mapper input from its producer through activation, demand, transport, and native lowering. Minimal current repro: Enum.with_index([\"a\", \"b\"], fn (x, _index) -\u003e x \u003c\u003e \"!\" end). Interpreter succeeds with [\"a!\", \"b!\"], while run and build fail before execution: native clause dispatch required omitted semantic input 1 for the with_index activation.\n\nTrace backward from the omitted BackendExecutable input to the first fact that classified the mapper as non-runtime. Repair that authoritative demand/transport conclusion; do not add a native fallback, recalculate a source shape, or force all inputs live. Preserve omission for genuinely unused overload inputs.\n\nAcceptance: the single-call repro and the string/int/tuple mapper variants from enum_map_family pass interp/run/build with oracle output; telemetry or a focused production-path test pins the mapper input as present at the first model boundary that previously dropped it; no new fallback exists; lib and clippy pass.",
+  "description": "Goal\n\nA callable-mapper overload preserves its mapper input from producer-owned callable use through activation, runtime demand, transport, and native lowering. Inputs are omitted only when settled semantic demand proves they are unused.\n\nCurrent proof\n\nEnum.with_index([\"a\", \"b\"], fn(x, _index) -\u003e x \u003c\u003e \"!\" end) returns [\"a!\", \"b!\"] in the backend interpreter. JIT and AOT fail before execution because native clause dispatch requires omitted semantic input 1 for the with_index activation. The callable exists and is selected; its mapper input was incorrectly classified as non-runtime before native lowering.\n\nStrategy\n\nTrace BackendExecutable input 1 backward through transport and RuntimeDemand to the first authoritative fact that omitted it. Refine that producer/use conclusion there. Do not add a native fallback, decode an ActivationKey, inspect payloads downstream, or force all overload inputs live. Preserve omission for genuinely unused inputs.\n\nAcceptance\n\nThe isolated callback repro and the string, integer, and tuple mapper variants in enum_map_family pass interp, run, and build with oracle output. A focused production-path signal pins the mapper input as present at the first boundary that formerly dropped it. No reconstruction or fallback is introduced; library tests and strict clippy pass.",
   "id": "fz-9i4.7.10",
   "labels": [],
   "parent": "fz-k22",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Preserve Enum.with_index callable mapper input through native lowering",
   "type": "bug",
-  "updated_at": "2026-07-15T14:38:09Z"
+  "updated_at": "2026-07-15T14:38:46Z"
 }
