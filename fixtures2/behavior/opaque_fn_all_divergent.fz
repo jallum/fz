@@ -1,0 +1,12 @@
+fn stop_a(_), do: :bad + 1
+fn stop_b(_), do: :bad + 2
+fn invoke(f), do: f.(1)
+
+fn main() do
+  f = case Process.heap_alloc_stats()[:allocs] == 0 do
+    true -> stop_a
+    _ -> stop_b
+  end
+  dbg(invoke(f))
+  dbg(:unreachable)
+end

@@ -3566,20 +3566,19 @@ fn callable_for_producer(
         let surface_arg_shapes = surface_shapes(world, &boundary_surface_demands, facts);
         let boundary_resolution_symbols =
             boundary_resolution_symbols_for_flow_surfaces(upstream_flow, &boundary_surface_demands, world.types());
-        let boundary_return_contracts = boundary_return_contracts_for_resolution_symbols(
+        let boundary_return_tys = boundary_return_tys_for_resolution_symbols(
             world,
             contexts,
             callable_ty,
             &boundary_surface_demands,
             &boundary_resolution_symbols,
-            upstream_flow.escape && upstream_flow.direct_surfaces.is_empty(),
         );
         let boundary_return_shapes = boundary_return_shapes_for_flow_surfaces(
             world,
             contexts,
             facts,
             &boundary_resolution_symbols,
-            &boundary_return_contracts.return_tys,
+            &boundary_return_tys,
             memo,
         );
         publish_boundaries_for_callable(
@@ -3590,8 +3589,7 @@ fn callable_for_producer(
             &surface_arg_shapes,
             &capture_lanes,
             callable_ty,
-            &boundary_return_contracts.return_tys,
-            &boundary_return_contracts.publish,
+            &boundary_return_tys,
             &boundary_return_shapes,
             &boundary_resolution_symbols,
             publication,
@@ -3874,7 +3872,6 @@ fn generic_callable_shape_with_resolutions(
             &[],
             ty,
             &return_tys,
-            &vec![true; return_tys.len()],
             &return_shapes,
             &resolution_symbols,
             publication,
@@ -4173,7 +4170,6 @@ fn publish_boundaries_for_callable(
     capture_lanes: &[LaneId],
     published_value_ty: Ty,
     return_tys: &[Ty],
-    publish_boundary: &[bool],
     return_shapes: &[ShapeId],
     resolution_symbols: &[Vec<ExecutableSymbol>],
     publication: Option<TransportPosition>,
@@ -4190,11 +4186,6 @@ fn publish_boundaries_for_callable(
     );
     assert_eq!(
         surfaces.len(),
-        publish_boundary.len(),
-        "boundary publish flags must align with published surfaces"
-    );
-    assert_eq!(
-        surfaces.len(),
         return_shapes.len(),
         "boundary return shapes must align with published surfaces"
     );
@@ -4204,17 +4195,13 @@ fn publish_boundaries_for_callable(
         "boundary resolution symbols must align with published surfaces"
     );
     let mut boundary_ids = Vec::new();
-    for (((((surface, arg_shapes), return_ty), publish), return_shape), resolutions) in surfaces
+    for ((((surface, arg_shapes), return_ty), return_shape), resolutions) in surfaces
         .iter()
         .zip(surface_shapes.iter())
         .zip(return_tys.iter().copied())
-        .zip(publish_boundary.iter().copied())
         .zip(return_shapes.iter().copied())
         .zip(resolution_symbols.iter())
     {
-        if !publish {
-            continue;
-        }
         let return_lanes = boundary_lanes_for_shape(world, return_shape, return_ty).into_boxed_slice();
         let published_value_lane = value_lane(world, published_value_ty);
         let arg_lanes = arg_shapes
@@ -4299,26 +4286,19 @@ fn boundary_return_shapes_for_flow_surfaces(
         .collect()
 }
 
-struct BoundaryReturnContracts {
-    return_tys: Vec<Ty>,
-    publish: Vec<bool>,
-}
-
-fn boundary_return_contracts_for_resolution_symbols(
+fn boundary_return_tys_for_resolution_symbols(
     world: &mut World,
     contexts: &TransportContexts,
     callable_ty: Ty,
     surfaces: &BTreeSet<CallableSurface>,
     resolution_symbols: &[Vec<ExecutableSymbol>],
-    publish_empty_resolved_returns: bool,
-) -> BoundaryReturnContracts {
+) -> Vec<Ty> {
     assert_eq!(
         surfaces.len(),
         resolution_symbols.len(),
         "boundary return types must align surfaces with resolution symbols"
     );
     let mut return_tys = Vec::with_capacity(surfaces.len());
-    let mut publish = Vec::with_capacity(surfaces.len());
     for (surface, resolutions) in surfaces.iter().zip(resolution_symbols.iter()) {
         let mut resolved = None;
         for resolution in resolutions {
@@ -4338,9 +4318,8 @@ fn boundary_return_contracts_for_resolution_symbols(
             None => surface_return_ty,
         };
         return_tys.push(return_ty);
-        publish.push(!resolved_empty || publish_empty_resolved_returns);
     }
-    BoundaryReturnContracts { return_tys, publish }
+    return_tys
 }
 
 fn boundary_resolution_symbols_for_flow_surfaces(

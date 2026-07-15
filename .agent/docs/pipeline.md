@@ -462,11 +462,12 @@ The next products narrow the contract:
   `AbiFacts`.
 
 `RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
-producer. The wrapper owns all resolved members, retained captures, semantic
-input mappings, private member layouts, member selection, and one public return
-form: `Diverges`, `Absent`, or `ValueRef`. Mixed public return forms are invalid;
-the public form is not copied from one private member or reconstructed from a
-semantic return type.
+first-class producer. Boundary publication follows first-class callable
+surfaces, independently of whether any member returns. The wrapper owns all
+resolved members, retained captures, semantic input mappings, private member
+layouts, member selection, and one public return form: `Diverges`, `Absent`, or
+`ValueRef`. Mixed public return forms are invalid; the public form is not copied
+from one private member or reconstructed from a semantic return type.
 
 Construction identity is allocation-only. `MakeFnRef` or `MakeClosure` selects
 the producer wrapper when the runtime object is created; the resulting code
@@ -474,11 +475,18 @@ pointer and environment are the callable's identity thereafter. Generic calls
 do not carry a parallel construction ID or per-variable boundary table. Exact
 calls may bypass the public object and use a member's private ABI.
 
-Packaged call flow is `Tail`, `Continue { source }`, or
-`Deliver { source, entry }`. Each non-tail form carries the sealed source return
-layout; the caller executable or destination entry already owns its sealed
-layout. Native and interpreter adapters consume those contracts directly and
-never scan endpoints, positions, types, or `World` to rebuild them.
+Packaged call flow is `NoReturn`, `Tail`, `Continue { source }`, or
+`Deliver { source, entry }`. Every settled-empty callsite or exact target
+publishes `NoReturn` before physical packaging, including public indirect
+calls. A local target's return endpoint must independently agree that it
+diverges. `Continue` and `Deliver` carry the sealed source return layout; a
+divergent target carries no delivery layout and creates no continuation. Native
+callable wrappers likewise tail-call divergent members while returning members,
+including returning zero-lane members, retain their return adapters. The caller
+executable or destination entry already owns its sealed layout. Native adapters
+consume those contracts directly and never scan endpoints, positions, types, or
+`World` to rebuild them. The backend interpreter follows the selected target's
+`ControlDestination` only if that target returns.
 
 Things that belong in Compiler2 artifact facts:
 
@@ -565,10 +573,10 @@ backend program facts, and `NativeBody.extern_marshals`.
 
 The same rule applies to native return delivery. `NativeBody.return_reprs` is
 the published result contract for a native body. Native lowering consumes the
-packaged `BackendReturnFlow`; `Continue` and `Deliver` carry their sealed source
-layout while the caller executable or destination entry owns the other side of
-the adapter. Codegen does not rediscover ABI at individual tailcall or callable
-entry sites.
+packaged `BackendReturnFlow`; `NoReturn` emits a tail call without a
+continuation, while `Continue` and `Deliver` carry their sealed source layout and
+the caller executable or destination entry owns the other side of the adapter.
+Codegen does not rediscover ABI at individual tailcall or callable entry sites.
 
 The same two-layer split now applies on both sides of the migration seam:
 legacy lowering may still project legacy `Ty` handles into

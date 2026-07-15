@@ -810,14 +810,20 @@ fn seal_return_flow(
 ) -> Result<BackendReturnFlow, FatalError> {
     let layout = |position: &TransportPosition| endpoints.get(position).ok_or(FatalError);
     Ok(match flow {
+        CallReturnFlow::NoReturn { local_source } => {
+            if let Some(local_source) = local_source
+                && !layout(local_source)?.diverges
+            {
+                return Err(FatalError);
+            }
+            BackendReturnFlow::NoReturn
+        }
         super::super::artifact::CallReturnFlow::Tail {
             source,
             payload,
             caller_return,
         } => {
-            if layout(source)?.diverges
-                || (layout(source)? == layout(payload)? && layout(source)? == layout(caller_return)?)
-            {
+            if layout(source)? == layout(payload)? && layout(source)? == layout(caller_return)? {
                 BackendReturnFlow::Tail
             } else {
                 BackendReturnFlow::Continue {
@@ -828,10 +834,16 @@ fn seal_return_flow(
         super::super::artifact::CallReturnFlow::Continue { source, .. } => BackendReturnFlow::Continue {
             source: Box::new(layout(source)?.clone()),
         },
-        super::super::artifact::CallReturnFlow::Deliver { source, entry, .. } => BackendReturnFlow::Deliver {
-            source: Box::new(layout(source)?.clone()),
-            entry: *entry,
-        },
+        super::super::artifact::CallReturnFlow::Deliver { source, entry, .. } => {
+            let source = layout(source)?;
+            if source.diverges {
+                return Err(FatalError);
+            }
+            BackendReturnFlow::Deliver {
+                source: Box::new(source.clone()),
+                entry: *entry,
+            }
+        }
     })
 }
 
@@ -2228,4 +2240,63 @@ fn incomplete_backend_program(
     );
     emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler2::FunctionId;
+    use crate::compiler2::artifact::BackendValueLayout;
+    use crate::compiler2::pull::TransportCarrier;
+    use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol};
+
+    #[test]
+    fn seal_return_flow_rejects_divergence_contradictions() {
+        let mut world = World::new();
+        let ty = world.types_mut().int();
+        let shape = world.intern_shape(ShapeDescr::Nothing);
+        let position = TransportPosition::ExecutableReturn {
+            executable: ExecutableSymbol {
+                activation: ActivationSymbol {
+                    function: FunctionId::for_test(1),
+                    arrow: ty,
+                    input: Box::default(),
+                },
+                need: ExecutableNeed::Value,
+            },
+        };
+        let layout = |diverges| BackendReturnLayout {
+            layout: BackendValueLayout {
+                structural: shape,
+                carrier: TransportCarrier::Absent,
+                tys: Box::default(),
+                reprs: Box::default(),
+            },
+            diverges,
+        };
+
+        let returning = HashMap::from([(position.clone(), layout(false))]);
+        assert!(
+            seal_return_flow(
+                &CallReturnFlow::NoReturn {
+                    local_source: Some(position.clone()),
+                },
+                &returning,
+            )
+            .is_err()
+        );
+
+        let divergent = HashMap::from([(position.clone(), layout(true))]);
+        assert!(
+            seal_return_flow(
+                &CallReturnFlow::Deliver {
+                    source: position.clone(),
+                    resume: position,
+                    entry: ControlEntryId::from_u32(0),
+                },
+                &divergent,
+            )
+            .is_err()
+        );
+    }
 }

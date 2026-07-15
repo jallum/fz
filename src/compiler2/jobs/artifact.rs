@@ -30,7 +30,9 @@ use super::super::pull::{
     ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
 };
 use super::super::scheduler::FatalError;
-use super::super::semantic::{ActivationAnalysis, CallSiteKey, CallTargetSummary, SelectedCallee, ShapeDemand};
+use super::super::semantic::{
+    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee, ShapeDemand,
+};
 use super::super::transport::{
     ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
     CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPosition,
@@ -1514,13 +1516,12 @@ fn materialize_closure_call_edge(
     };
     let Some(target) = summary.single_target().cloned() else {
         if summary.targets.len() >= 2 {
-            // 2+ distinct concrete closure producers: no single local target
-            // can be devirtualized. Route through the boxed/opaque callable
-            // value explicitly (agreeing with the generic callable transport
-            // shape), rather than silently dropping the edge — a dropped
-            // edge is indistinguishable from "not computed yet".
-            return Ok(Some(MaterializedCallEdge {
-                target: CallEdge::Indirect(call_return_flow(
+            let return_ty =
+                public_indirect_return_ty(world, tel, root_id, analysis, Some(&summary), callsite, result_value)?;
+            let return_flow = if world.types().is_empty(&return_ty) {
+                CallReturnFlow::NoReturn { local_source: None }
+            } else {
+                call_return_flow(
                     world,
                     tel,
                     root_id,
@@ -1531,8 +1532,11 @@ fn materialize_closure_call_edge(
                     dest,
                     original_entry_ids,
                     true,
-                )?),
-                return_ty: summary.settled_return(world.types_mut()),
+                )?
+            };
+            return Ok(Some(MaterializedCallEdge {
+                target: CallEdge::Indirect(return_flow),
+                return_ty,
             }));
         }
         return Ok(None);
@@ -1686,21 +1690,25 @@ fn materialize_transport_closure_call_edge(
         need: resolution.need,
     };
     let callee = CallTarget::Local(target.clone());
-    let return_flow = call_return_flow(
-        world,
-        tel,
-        root_id,
-        transport_plan,
-        executable,
-        Some(&callee),
-        callsite,
-        dest,
-        original_entry_ids,
-        public_callable,
-    )?;
     let return_ty = world
         .activation_return(&target.activation)
         .unwrap_or_else(|| world.types_mut().none());
+    let return_flow = if world.types().is_empty(&return_ty) {
+        exact_no_return_flow(world, &callee)
+    } else {
+        call_return_flow(
+            world,
+            tel,
+            root_id,
+            transport_plan,
+            executable,
+            Some(&callee),
+            callsite,
+            dest,
+            original_entry_ids,
+            public_callable,
+        )?
+    };
     Ok(TransportClosureCallEdge::Direct {
         edge: DirectCallEdge {
             callee,
@@ -1712,7 +1720,7 @@ fn materialize_transport_closure_call_edge(
 }
 
 fn materialize_public_indirect_closure_call_edge(
-    world: &World,
+    world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
     transport_plan: &ArtifactTransportLookup<'_>,
@@ -1727,7 +1735,45 @@ fn materialize_public_indirect_closure_call_edge(
     if !public_callable {
         return Ok(TransportClosureCallEdge::Absent);
     }
-    let return_ty = analysis.value_types.get(&result_value).copied().ok_or_else(|| {
+    let key = CallSiteKey {
+        activation: executable.activation.clone(),
+        callsite,
+    };
+    let summary = world.callsite_summary(&key).cloned();
+    let return_ty = public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
+    let return_flow = if world.types().is_empty(&return_ty) {
+        CallReturnFlow::NoReturn { local_source: None }
+    } else {
+        call_return_flow(
+            world,
+            tel,
+            root_id,
+            transport_plan,
+            executable,
+            None,
+            callsite,
+            dest,
+            original_entry_ids,
+            true,
+        )?
+    };
+    Ok(TransportClosureCallEdge::PublicIndirect { return_flow, return_ty })
+}
+
+fn public_indirect_return_ty(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+    analysis: &ActivationAnalysis,
+    summary: Option<&CallSiteSummary>,
+    callsite: CallSiteId,
+    result_value: ValueId,
+) -> Result<Ty, FatalError> {
+    let settled_return = summary.map(|summary| summary.settled_return(world.types_mut()));
+    if let Some(return_ty) = settled_return.filter(|return_ty| world.types().is_empty(return_ty)) {
+        return Ok(return_ty);
+    }
+    let result_ty = analysis.value_types.get(&result_value).copied().ok_or_else(|| {
         incomplete_semantic_plan(
             tel,
             root_id,
@@ -1737,19 +1783,17 @@ fn materialize_public_indirect_closure_call_edge(
             ),
         )
     })?;
-    let return_flow = call_return_flow(
-        world,
-        tel,
-        root_id,
-        transport_plan,
-        executable,
-        None,
-        callsite,
-        dest,
-        original_entry_ids,
-        true,
-    )?;
-    Ok(TransportClosureCallEdge::PublicIndirect { return_flow, return_ty })
+    if settled_return.is_some_and(|settled_return| !world.types().is_equivalent(&settled_return, &result_ty)) {
+        return Err(incomplete_semantic_plan(
+            tel,
+            root_id,
+            format!(
+                "public closure callsite {} settled return disagrees with its semantic result type",
+                callsite.as_u32()
+            ),
+        ));
+    }
+    Ok(result_ty)
 }
 
 fn boundary_resolutions_for_closure_call(
@@ -1859,25 +1903,30 @@ fn lower_materialized_call_target(
         }
         SelectedCallee::ProviderBoundary(function) => (CallTarget::ProviderBoundary(function), None),
     };
-    let return_flow = call_return_flow(
-        world,
-        tel,
-        root_id,
-        transport_plan,
-        executable,
-        Some(&callee),
-        callsite,
-        dest,
-        original_entry_ids,
-        false,
-    )?;
+    let return_ty = target.settled_return(world.types_mut());
+    let return_flow = if world.types().is_empty(&return_ty) {
+        exact_no_return_flow(world, &callee)
+    } else {
+        call_return_flow(
+            world,
+            tel,
+            root_id,
+            transport_plan,
+            executable,
+            Some(&callee),
+            callsite,
+            dest,
+            original_entry_ids,
+            false,
+        )?
+    };
     Ok((
         DirectCallEdge {
             callee,
             return_flow,
             extern_marshals,
         },
-        target.settled_return(world.types_mut()),
+        return_ty,
     ))
 }
 
@@ -1948,10 +1997,7 @@ fn call_return_flow(
             let source_layout = require_transport_layout(tel, root_id, transport_plan, &source)?;
             let caller_layout = require_transport_layout(tel, root_id, transport_plan, &caller_return)?;
             let payload_layout = require_transport_layout(tel, root_id, transport_plan, &payload)?;
-            if !public_callable
-                && (matches!(world.shape(source_layout.structural), ShapeDescr::Nothing)
-                    || (source_layout == caller_layout && source_layout == payload_layout))
-            {
+            if !public_callable && source_layout == caller_layout && source_layout == payload_layout {
                 return Ok(CallReturnFlow::Tail {
                     source,
                     payload,
@@ -1965,6 +2011,13 @@ fn call_return_flow(
             })
         }
     }
+}
+
+fn exact_no_return_flow(world: &World, callee: &CallTarget<ExecutableKey>) -> CallReturnFlow {
+    let local_source = callee.local().map(|callee| TransportPosition::ExecutableReturn {
+        executable: transport_executable_symbol(callee, world.types()),
+    });
+    CallReturnFlow::NoReturn { local_source }
 }
 
 fn require_transport_layout(
@@ -2837,76 +2890,80 @@ mod tests {
         }
     }
 
-    /// Non-vacuous regression guard for the fz-k22 Slice A fix:
-    /// `materialize_closure_call_edge` used to silently return `Ok(None)` for
-    /// a closure-call site with 2+ distinct concrete producers (no single
-    /// target to devirtualize), dropping the edge entirely -- indistinguishable
-    /// from a callsite whose summary fact has not settled yet. It must instead
-    /// produce an explicit `CallEdge::Indirect` edge, routing the call through
-    /// the callee's runtime identity (agreeing with the generic boxed callable
-    /// transport shape from Slice B) rather than devirtualizing or dropping it.
     #[test]
-    fn materialize_closure_call_edge_routes_ambiguous_multi_target_through_indirect() {
+    fn local_no_return_flow_carries_exact_return_endpoint() {
+        let mut world = World::new();
+        let callee = fake_call_executable(&mut world, 100, 102, &[]);
+        let target = CallTarget::Local(callee.clone());
+        let flow = exact_no_return_flow(&world, &target);
+
+        assert_eq!(
+            flow,
+            CallReturnFlow::NoReturn {
+                local_source: Some(TransportPosition::ExecutableReturn {
+                    executable: transport_executable_symbol(&callee, world.types()),
+                }),
+            }
+        );
+    }
+
+    fn materialize_ambiguous_closure_edge(returns: bool) -> (World, MaterializedCallEdge) {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
-
         let caller = fake_call_executable(&mut world, 300, 301, &[]);
-        let producer_a = FunctionId::for_test(302);
-        let producer_b = FunctionId::for_test(303);
         let callsite = CallSiteId::from_u32(7);
-
         let key = CallSiteKey {
             activation: caller.activation.clone(),
             callsite,
         };
-        let summary = CallSiteSummary {
-            targets: vec![
-                CallTargetSummary {
-                    callee: SelectedCallee::Function(producer_a),
-                    surface_inputs: vec![int, int],
-                    activation: None,
-                    activation_inputs: None,
-                    return_ty: Some(int),
-                },
-                CallTargetSummary {
-                    callee: SelectedCallee::Function(producer_b),
-                    surface_inputs: vec![int, int],
-                    activation: None,
-                    activation_inputs: None,
-                    return_ty: Some(int),
-                },
-            ],
-            return_ty: Some(int),
-        };
-        world.define_callsite_summary(key, summary);
-
+        world.define_callsite_summary(
+            key,
+            CallSiteSummary {
+                targets: [302, 303]
+                    .into_iter()
+                    .map(|function| CallTargetSummary {
+                        callee: SelectedCallee::Function(FunctionId::for_test(function)),
+                        surface_inputs: vec![int],
+                        activation: None,
+                        activation_inputs: None,
+                        return_ty: returns.then_some(int),
+                    })
+                    .collect(),
+                return_ty: returns.then_some(int),
+            },
+        );
+        let result_value = ValueId::from_u32(2);
         let analysis = ActivationAnalysis {
             reachable_clauses: Vec::new(),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             latent_executables: Vec::new(),
-            value_types: HashMap::new(),
+            value_types: returns.then_some((result_value, int)).into_iter().collect(),
         };
-        let caller_symbol = transport_executable_symbol(&caller, world.types());
-        let caller_return = TransportPosition::ExecutableReturn {
-            executable: caller_symbol.clone(),
+        let positions = if returns {
+            let caller_symbol = transport_executable_symbol(&caller, world.types());
+            let caller_return = TransportPosition::ExecutableReturn {
+                executable: caller_symbol.clone(),
+            };
+            let payload = TransportPosition::ReturnPayload {
+                executable: caller_symbol,
+                callsite,
+            };
+            let shape = world.intern_shape(ShapeDescr::Nothing);
+            HashMap::from([
+                (caller_return, TransportLayout::structural(shape)),
+                (
+                    payload,
+                    TransportLayout {
+                        structural: shape,
+                        carrier: TransportCarrier::ValueRef,
+                    },
+                ),
+            ])
+        } else {
+            HashMap::new()
         };
-        let payload = TransportPosition::ReturnPayload {
-            executable: caller_symbol,
-            callsite,
-        };
-        let shape = world.intern_shape(ShapeDescr::Nothing);
-        let positions = HashMap::from([
-            (caller_return, TransportLayout::structural(shape)),
-            (
-                payload,
-                TransportLayout {
-                    structural: shape,
-                    carrier: TransportCarrier::ValueRef,
-                },
-            ),
-        ]);
         let callables = HashMap::new();
         let boundaries = HashMap::new();
         let codegen_seam_facts = Vec::new();
@@ -2916,9 +2973,6 @@ mod tests {
             boundaries: &boundaries,
             codegen_seam_facts: &codegen_seam_facts,
         };
-        let callsite_args = HashMap::new();
-        let callee_value = ValueId::from_u32(1);
-
         let edge = materialize_closure_call_edge(
             &mut world,
             &tel,
@@ -2928,28 +2982,40 @@ mod tests {
             &analysis,
             ExecutableNeed::Value,
             callsite,
-            callee_value,
-            ValueId::from_u32(2),
+            ValueId::from_u32(1),
+            result_value,
             &ControlDestination::Return,
             &[],
-            &callsite_args,
+            &HashMap::new(),
         )
         .expect("materialization should not fail")
-        .expect("ambiguous 2+-producer closure call must produce an edge, not Ok(None)");
+        .expect("settled multi-target closure call should produce an edge");
+        (world, edge)
+    }
 
+    #[test]
+    fn materialize_closure_call_edge_routes_ambiguous_multi_target_through_indirect() {
+        let (_world, edge) = materialize_ambiguous_closure_edge(true);
         let CallEdge::Indirect(CallReturnFlow::Continue {
             source,
             payload,
             caller_return,
         }) = edge.target
         else {
-            panic!(
-                "ambiguous 2+-producer closure call should carry sealed indirect return flow, got {:?}",
-                edge.target
-            )
+            panic!("returning multi-target closure call should carry indirect return flow")
         };
         assert_eq!(source, payload);
         assert_ne!(source, caller_return);
+    }
+
+    #[test]
+    fn materialize_closure_call_edge_routes_settled_empty_multi_target_without_a_result_value() {
+        let (world, edge) = materialize_ambiguous_closure_edge(false);
+        assert!(world.types().is_empty(&edge.return_ty));
+        assert_eq!(
+            edge.target,
+            CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
+        );
     }
 
     #[test]

@@ -294,6 +294,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     fn lower_callable_construction_wrapper(&mut self, boundary: &NativeCallableBoundary) -> Result<(), FatalError> {
+        let all_members_diverge = boundary.members.iter().all(|member| member.target_return.diverges);
+        if matches!(boundary.return_form, BackendCallableReturn::Diverges) != all_members_diverge {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "callable construction {} return form disagrees with its member return contracts",
+                    boundary.id.as_u32()
+                ),
+            ));
+        }
         let mut ctx = NativeFnCtx::new(
             boundary.wrapper_fn,
             &format!("callable_wrapper_{}", boundary.id.as_u32()),
@@ -563,6 +574,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     input_reprs.len(),
                 ),
             ));
+        }
+        if member.target_return.diverges {
+            Self::emit_native_no_return_call(ctx, DirectCallTarget::Local(member.target_fn), target_args);
+            return Ok(());
         }
         let continuation = self.callable_wrapper_return_continuation(ctx, boundary, member)?;
         ctx.set_term(Term::Call {
@@ -1417,14 +1432,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     if call_args.len() != callee_executable.param_reprs.len() {
                         direct_ok = false;
                     }
-                    if !matches!(return_flow, Some(BackendReturnFlow::Tail))
-                        && !return_flow.as_ref().is_some_and(|flow| match flow {
-                            BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
-                                source.as_ref() == &callee_executable.return_layout
-                            }
-                            BackendReturnFlow::Tail => true,
-                        })
-                    {
+                    if !return_flow.as_ref().is_some_and(|flow| match flow {
+                        BackendReturnFlow::NoReturn | BackendReturnFlow::Tail => true,
+                        BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
+                            source.as_ref() == &callee_executable.return_layout
+                        }
+                    }) {
                         direct_ok = false;
                     }
                     direct_ok.then_some((target, call_args))
@@ -1433,69 +1446,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 };
                 if let Some((target, call_args)) = direct_call {
                     let callee = DirectCallTarget::Local(self.executable_fns[target]);
-                    if self.program.executables[target].return_layout.diverges {
-                        ctx.set_term(Term::TailCall {
-                            ident: CallsiteIdent::from_source(Span::DUMMY),
-                            callee,
-                            args: call_args,
-                            is_back_edge: false,
-                        });
-                        Ok(())
-                    } else {
-                        match dest {
-                            ControlDestination::Return => match return_flow.as_ref().ok_or_else(|| {
-                                incomplete_native_program(
-                                    self.telemetry,
-                                    self.root_id,
-                                    "native direct closure call with Return destination is missing return-flow facts",
-                                )
-                            })? {
-                                BackendReturnFlow::Tail => {
-                                    ctx.set_term(Term::TailCall {
-                                        ident: CallsiteIdent::from_source(Span::DUMMY),
-                                        callee,
-                                        args: call_args,
-                                        is_back_edge: false,
-                                    });
-                                    Ok(())
-                                }
-                                BackendReturnFlow::Continue { source } => {
-                                    let continuation =
-                                        self.return_lane_continuation_for_source_payload(ctx, executable, source)?;
-                                    ctx.set_term(Term::Call {
-                                        ident: CallsiteIdent::from_source(Span::DUMMY),
-                                        callee,
-                                        args: call_args,
-                                        continuation,
-                                    });
-                                    Ok(())
-                                }
-                                BackendReturnFlow::Deliver { .. } => Err(incomplete_native_program(
-                                    self.telemetry,
-                                    self.root_id,
-                                    "native direct closure call with Return destination carried Deliver return-flow",
-                                )),
-                            },
-                            ControlDestination::Deliver(entry_id) => {
-                                let continuation = self.delivered_call_continuation(
-                                    ctx,
-                                    executable,
-                                    entries,
-                                    entry_fns,
-                                    *entry_id,
-                                    env,
-                                    return_flow.as_ref(),
-                                )?;
-                                ctx.set_term(Term::Call {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    callee,
-                                    args: call_args,
-                                    continuation,
-                                });
-                                Ok(())
-                            }
-                        }
-                    }
+                    let return_flow = return_flow.as_ref().ok_or_else(|| {
+                        incomplete_native_program(
+                            self.telemetry,
+                            self.root_id,
+                            "native direct closure call is missing return-flow facts",
+                        )
+                    })?;
+                    self.emit_native_direct_call_tail(
+                        ctx,
+                        executable,
+                        entries,
+                        entry_fns,
+                        env,
+                        callee,
+                        call_args,
+                        dest,
+                        return_flow,
+                    )
                 } else {
                     let callee_value = callee_value.as_ref().ok_or_else(|| {
                         incomplete_native_program(
@@ -1512,47 +1480,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
                     );
                     let direct_target = None;
-                    match dest {
-                        ControlDestination::Return => match return_flow.as_ref() {
-                            Some(BackendReturnFlow::Continue { source }) => {
-                                let continuation =
-                                    self.return_lane_continuation_for_source_payload(ctx, executable, source)?;
-                                ctx.set_term(Term::CallClosure {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    closure,
-                                    direct_target,
-                                    args: call_args,
-                                    continuation,
-                                });
-                                Ok(())
-                            }
-                            Some(BackendReturnFlow::Tail) => {
-                                ctx.set_term(Term::TailCallClosure {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    closure,
-                                    direct_target,
-                                    args: call_args,
-                                });
-                                Ok(())
-                            }
-                            _ => {
-                                ctx.set_term(Term::TailCallClosure {
-                                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                                    closure,
-                                    direct_target,
-                                    args: call_args,
-                                });
-                                Ok(())
-                            }
-                        },
-                        ControlDestination::Deliver(entry_id) => {
-                            let Some(BackendReturnFlow::Deliver { source, entry }) = return_flow.as_ref() else {
-                                return Err(incomplete_native_program(
-                                    self.telemetry,
-                                    self.root_id,
-                                    "native indirect closure call with Deliver destination is missing delivered return-flow",
-                                ));
-                            };
+                    match (return_flow.as_ref(), dest) {
+                        (Some(BackendReturnFlow::Continue { source }), ControlDestination::Return) => {
+                            let continuation =
+                                self.return_lane_continuation_for_source_payload(ctx, executable, source)?;
+                            ctx.set_term(Term::CallClosure {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                closure,
+                                direct_target,
+                                args: call_args,
+                                continuation,
+                            });
+                            Ok(())
+                        }
+                        (Some(BackendReturnFlow::Deliver { source, entry }), ControlDestination::Deliver(entry_id)) => {
                             if entry != entry_id {
                                 return Err(incomplete_native_program(
                                     self.telemetry,
@@ -1571,6 +1512,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                 continuation,
                             });
                             Ok(())
+                        }
+                        (Some(BackendReturnFlow::NoReturn), _)
+                        | (Some(BackendReturnFlow::Tail), ControlDestination::Return)
+                        | (None, ControlDestination::Return)
+                        | (Some(BackendReturnFlow::Deliver { .. }), ControlDestination::Return) => {
+                            ctx.set_term(Term::TailCallClosure {
+                                ident: CallsiteIdent::from_source(Span::DUMMY),
+                                closure,
+                                direct_target,
+                                args: call_args,
+                            });
+                            Ok(())
+                        }
+                        (None, ControlDestination::Deliver(_))
+                        | (Some(BackendReturnFlow::Tail), ControlDestination::Deliver(_))
+                        | (Some(BackendReturnFlow::Continue { .. }), ControlDestination::Deliver(_)) => {
+                            Err(incomplete_native_program(
+                                self.telemetry,
+                                self.root_id,
+                                "native indirect closure call with Deliver destination is missing delivered return-flow",
+                            ))
                         }
                     }
                 }
@@ -1934,8 +1896,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         dest: &ControlDestination,
         return_flow: &BackendReturnFlow,
     ) -> Result<(), FatalError> {
+        if matches!(return_flow, BackendReturnFlow::NoReturn) {
+            Self::emit_native_no_return_call(ctx, callee, call_args);
+            return Ok(());
+        }
         match dest {
             ControlDestination::Return => match return_flow {
+                BackendReturnFlow::NoReturn => unreachable!(),
                 BackendReturnFlow::Tail => {
                     ctx.set_term(Term::TailCall {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
@@ -1980,6 +1947,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
         }
+    }
+
+    fn emit_native_no_return_call(ctx: &mut NativeFnCtx, callee: DirectCallTarget, args: Vec<Var>) {
+        ctx.set_term(Term::TailCall {
+            ident: CallsiteIdent::from_source(Span::DUMMY),
+            callee,
+            args,
+            is_back_edge: false,
+        });
     }
 
     fn lower_value_destination(

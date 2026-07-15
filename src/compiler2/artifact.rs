@@ -257,6 +257,9 @@ pub enum DispatchCallMiss {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallReturnFlow {
+    NoReturn {
+        local_source: Option<TransportPosition>,
+    },
     Tail {
         source: TransportPosition,
         payload: TransportPosition,
@@ -276,6 +279,7 @@ pub enum CallReturnFlow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendReturnFlow {
+    NoReturn,
     Tail,
     Continue {
         source: Box<BackendReturnLayout>,

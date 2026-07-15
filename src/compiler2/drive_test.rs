@@ -40,6 +40,19 @@ type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
 
+const RECEIVE_AFTER_DIVERGENT_DISPATCH: &str = r#"
+fn main() do
+  me = self()
+  send(me, 1)
+  value = receive do
+    x -> x
+  after
+    10 -> :timeout
+  end
+  dbg(value + 2)
+end
+"#;
+
 fn jit_compile_native_program(
     compiler: &mut Compiler2<ConfiguredTelemetry>,
     program: &NativeProgram,
@@ -4057,6 +4070,69 @@ fn main(), do: inc(41)
 }
 
 #[test]
+fn compiler2_backend_dispatch_preserves_divergent_target_as_no_return() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_after_divergent_dispatch.fz".to_string()),
+        text: RECEIVE_AFTER_DIVERGENT_DISPATCH.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root_id);
+
+    assert_resolved(
+        compiler.drive(),
+        "receive-after arithmetic should preserve the divergent dispatch member in the backend product",
+    );
+
+    let program = backend.last(root_id).program;
+    let main_id = function_id(&functions, "main", 0);
+    let (_, main) = backend_executable(&program, main_id);
+    let BackendBody::Clauses { entries, .. } = &main.body else {
+        panic!("main/0 should lower as clauses");
+    };
+    let dispatch = entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            BackendTail::DirectCall {
+                target: CallEdge::Dispatch(dispatch),
+                ..
+            } if dispatch.arms.len() == 2 => Some(dispatch),
+            _ => None,
+        })
+        .expect("post-receive arithmetic should lower as a two-member direct dispatch");
+
+    assert_eq!(
+        dispatch
+            .arms
+            .iter()
+            .filter(|arm| matches!(arm.return_flow, BackendReturnFlow::Deliver { .. }))
+            .count(),
+        1,
+        "the numeric member should deliver its result to the post-call resume",
+    );
+    assert_eq!(
+        dispatch
+            .arms
+            .iter()
+            .filter(|arm| matches!(arm.return_flow, BackendReturnFlow::NoReturn))
+            .count(),
+        1,
+        "the no-matching-clause member must preserve its settled no-return authority",
+    );
+}
+
+#[test]
 fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
@@ -4977,9 +5053,187 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
             .into_iter()
             .any(|target| target.is_none())
     );
+    for boundary in &boundaries {
+        let wrapper = program
+            .module
+            .fns
+            .iter()
+            .find(|function| function.id == boundary.wrapper_fn)
+            .expect("absent-return boundary wrapper");
+        assert!(wrapper.blocks.iter().all(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(_),
+                    ..
+                }
+            )
+        }));
+    }
     compiler.run_root_interp(root_id).unwrap();
     compiler.run_root_jit(root_id).unwrap();
     assert_eq!(dbg.lines().as_slice(), ["1", "2", "3", "1", "2", "3"]);
+}
+
+#[test]
+fn compiler2_all_divergent_public_callable_has_no_result_continuation() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let dbg = DbgCapture::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/opaque_fn_all_divergent.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_all_divergent.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "all-divergent public callable should lower");
+
+    let stop_functions = HashSet::from([
+        function_id(&functions, "stop_a", 1),
+        function_id(&functions, "stop_b", 1),
+    ]);
+    let program = native.last(root_id).program;
+    let boundaries = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary
+                .members
+                .iter()
+                .any(|member| stop_functions.contains(&member.target.activation.function))
+        })
+        .collect::<Vec<_>>();
+    assert!(!boundaries.is_empty());
+    assert!(boundaries.iter().all(|boundary| {
+        boundary.return_form == crate::compiler2::artifact::BackendCallableReturn::Diverges
+            && boundary.members.iter().all(|member| member.target_return.diverges)
+    }));
+    for boundary in boundaries {
+        let wrapper = program
+            .module
+            .fns
+            .iter()
+            .find(|function| function.id == boundary.wrapper_fn)
+            .expect("divergent callable wrapper");
+        assert!(!program.bodies.iter().any(|body| {
+            matches!(&body.origin, NativeBodyOrigin::Continuation { owner, .. } if *owner == boundary.wrapper_fn)
+        }));
+        assert!(wrapper.blocks.iter().all(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(_),
+                    ..
+                }
+            )
+        }));
+    }
+    let error = compiler
+        .run_root_interp(root_id)
+        .expect_err("selected divergent callable should halt");
+    assert!(error.contains("function_clause"), "unexpected halt: {error}");
+    compiler.run_root_jit(root_id).unwrap();
+    let exit = exits.last().expect("divergent callable should publish a process exit");
+    assert_eq!(program.module.atom_names[exit.halt_value as usize], "function_clause");
+    assert!(dbg.lines().is_empty());
+}
+
+#[test]
+fn compiler2_mixed_public_callable_adapts_only_its_returning_member() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/opaque_fn_mixed_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_mixed_return.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "mixed public callable should lower");
+
+    let program = native.last(root_id).program;
+    let boundary = program
+        .callable_boundaries
+        .iter()
+        .find(|boundary| {
+            boundary.members.len() == 2
+                && boundary
+                    .members
+                    .iter()
+                    .filter(|member| member.target_return.diverges)
+                    .count()
+                    == 1
+        })
+        .expect("mixed returning/divergent callable boundary");
+    assert_eq!(
+        boundary.return_form,
+        crate::compiler2::artifact::BackendCallableReturn::ValueRef
+    );
+    let wrapper = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.id == boundary.wrapper_fn)
+        .expect("mixed callable wrapper");
+    assert_eq!(
+        program
+            .bodies
+            .iter()
+            .filter(|body| {
+                matches!(&body.origin, NativeBodyOrigin::Continuation { owner, .. } if *owner == boundary.wrapper_fn)
+            })
+            .count(),
+        1
+    );
+    for member in &boundary.members {
+        let has_call = wrapper.blocks.iter().any(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                } if target == member.target_fn
+            )
+        });
+        let has_tail_call = wrapper.blocks.iter().any(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                } if target == member.target_fn
+            )
+        });
+        assert_eq!(
+            (has_call, has_tail_call),
+            (!member.target_return.diverges, member.target_return.diverges)
+        );
+    }
+    compiler.run_root_interp(root_id).unwrap();
+    compiler.run_root_jit(root_id).unwrap();
+    assert_eq!(dbg.lines().as_slice(), ["2", "2"]);
 }
 
 #[test]
@@ -6917,6 +7171,129 @@ end
         ["3"],
         "a receive hit should resume through the outcome closure with the projected value ready for downstream arithmetic",
     );
+}
+
+#[test]
+fn compiler2_native_receive_after_divergent_member_runs_numeric_path() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("receive_after_divergent_member.fz".to_string()),
+        text: RECEIVE_AFTER_DIVERGENT_DISPATCH.to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("compiler2 native receive should not construct a delivery continuation for a divergent member: {error}");
+    });
+
+    assert_eq!(dbg.lines().as_slice(), ["3"]);
+
+    let program = native.last(root_id).program;
+    let plus = function_id(&functions, "+", 2);
+    let no_return_targets = program
+        .bodies
+        .iter()
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key)
+                if key.activation.function == plus && compiler.world().types().is_empty(&body.return_ty) =>
+            {
+                Some(body.fn_id)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(no_return_targets.len(), 1);
+
+    let mut tail_calls = 0;
+    let mut calls = 0;
+    for block in program.module.fns.iter().flat_map(|function| &function.blocks) {
+        match &block.terminator {
+            IrTerm::TailCall {
+                callee: crate::fz_ir::DirectCallTarget::Local(target),
+                ..
+            } if no_return_targets.contains(target) => tail_calls += 1,
+            IrTerm::Call {
+                callee: crate::fz_ir::DirectCallTarget::Local(target),
+                ..
+            } if no_return_targets.contains(target) => calls += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        tail_calls, 1,
+        "the divergent dispatch member should be emitted as a tail call"
+    );
+    assert_eq!(
+        calls, 0,
+        "the divergent dispatch member must not publish a delivery continuation"
+    );
+}
+
+#[test]
+fn compiler2_receive_after_divergent_member_reaches_function_clause() {
+    let source = r#"
+fn main() do
+  value = receive do
+    x -> x
+  after
+    0 -> :timeout
+  end
+  dbg(value + 2)
+end
+"#;
+
+    let interp_tel = ConfiguredTelemetry::new();
+    let mut interp = Compiler2::new(interp_tel);
+    interp.submit_code(CodeSubmission {
+        name: Some("receive_after_timeout_interp.fz".to_string()),
+        text: source.to_string(),
+    });
+    let interp_root = interp.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let interp_error = interp
+        .run_root_interp(interp_root)
+        .expect_err("the selected timeout value should not match a numeric addition clause");
+    assert!(interp_error.starts_with("function_clause:"), "{interp_error}");
+
+    let jit_tel = ConfiguredTelemetry::new();
+    let exits = ProcessExitCapture::new();
+    exits.install(&jit_tel);
+    let native = NativeProgramCapture::new();
+    native.install(&jit_tel);
+    let mut jit = Compiler2::new(jit_tel);
+    jit.submit_code(CodeSubmission {
+        name: Some("receive_after_timeout_jit.fz".to_string()),
+        text: source.to_string(),
+    });
+    let jit_root = jit.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    jit.run_root_jit(jit_root)
+        .expect("the selected divergent target should compile and halt without a continuation ABI failure");
+
+    let program = native.last(jit_root).program;
+    let exit = exits.last().expect("native timeout path should publish a process exit");
+    assert_eq!(program.module.atom_names[exit.halt_value as usize], "function_clause");
 }
 
 #[test]
