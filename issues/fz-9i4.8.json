@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-09T20:23:27Z",
-  "description": "Found during fz-2su. fixture_metadata.rs parses any budget.* key generically into Vec\u003cBudgetAssertion\u003e read ONLY to flip participates_in_matrix() -- no assertion compares any of them to telemetry. The dump_budgets test + fz dump --emit stats + DUMP_BUDGET_TOLERANCE_PERCENT mechanism they fed was deleted in 9dda68aa0 (Remove old-world compiler dead code). So budget.codegen.functions, budget.codegen.instructions, budget.planner.*, etc. are ALL stale decoration, and fixtures2/GOLDEN.md still documents the dead fz dump --emit stats Fixture Dump Budgets workflow as if live. fz-2su removed only budget.specs.count per its scope. ACTION: either revive a real telemetry-backed check for the budget.* family (ties to over-specialization guarding, cf. fz-myo.2) or delete the remaining budget.* fields + the stale GOLDEN.md section. Coordinate with fz-myo.2 (which may want a spec-count pin).",
+  "description": "Goal: delete metadata that claims to enforce a compiler-shape contract but has no consumer. There are 500 budget.* lines in 50 behavioral fixtures. FixtureMetadata parses them into BudgetAssertion, but no harness compares them with telemetry; the old fz dump --emit stats counters and tolerance workflow were deleted with the old compiler. The current matrix discovers every fixtures2/behavior/*.fz by default, so these keys do not own fixture participation.\n\nDo not revive old planner/codegen numbers or translate them into new metrics without a newly demonstrated current invariant. Delete all budget.* fixture lines, BudgetAssertion/budget_assertions and the generic parser arm, their tests/public exports, and the stale GOLDEN.md/.agent fixture documentation. Audit and remove the participation predicates too if they remain caller-free; do not retain a dead API solely because budget parsing once fed it. Make budget.* an unknown metadata key so stale decoration cannot silently return.\n\nAcceptance: rg finds no budget.* frontmatter or deleted dump-budget workflow; the shared metadata model has no BudgetAssertion; every affected behavioral fixture is still discovered and its real behavior contract still runs; metadata, fixture-matrix discovery, lib, and clippy tests pass. Current compiler-shape signals continue to use assert.metric.* and telemetry-derived facts.",
   "id": "fz-9i4.8",
   "labels": [],
   "parent": "fz-9i4",
   "priority": 4,
   "status": "open",
-  "title": "fixtures: the whole budget.* frontmatter family is decorative/unchecked and GOLDEN.md documents a deleted dump-budgets workflow",
+  "title": "Delete decorative old-compiler budget metadata and its dead model",
   "type": "bug",
-  "updated_at": "2026-07-09T20:23:27Z"
+  "updated_at": "2026-07-15T13:25:19Z"
 }
