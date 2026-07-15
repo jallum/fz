@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-07-15T13:22:53Z",
   "created": "2026-07-11T12:31:57Z",
   "description": "Found during the fz-k22.22 audit (2026-07-11), REPRODUCED DETERMINISTICALLY on parent commit f557a9c7d: cargo test --test fixture_matrix under --release shows resource_index_payload_private, a-resource_aot_dtor, file_handle, file_resource_lifecycle, resource_lifecycle ::build legs SIGBUS (exit 138) AFTER printing correct stdout -- i.e. the AOT binary crashes during teardown/dtor drain in the release-optimized backend. Debug profile is green. Prior memory attributed SIGBUS in these exact fixtures to machine-load contention; the audit falsifies that: it is a REAL release-codegen bug in the resource-dtor path (plausibly the same emit_drain_dtor_entry shim family). Repro: build release, run any of the five ::build fixtures. Root-cause the release-only miscompile/UB (alignment? tail-call ABI under opt? dtor closure lifetime?).",
   "id": "fz-gdf",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "release-profile AOT resource-dtor fixtures SIGBUS (exit 138) after correct stdout -- real pre-existing bug, NOT a contention artifact",
   "type": "bug",
-  "updated_at": "2026-07-15T12:59:18Z"
+  "updated_at": "2026-07-15T13:22:53Z"
 }
