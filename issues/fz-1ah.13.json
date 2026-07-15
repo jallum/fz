@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-1ah.12"
   ],
@@ -10,7 +10,7 @@
   "labels": [],
   "parent": "fz-1ah",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Restore selective-receive continuation delivery contract",
   "type": "bug",
   "updated_at": "2026-07-15T04:26:59Z"
