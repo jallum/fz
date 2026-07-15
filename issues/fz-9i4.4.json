@@ -6,10 +6,10 @@
   "description": "Goal: finish the first-class callable-boundary cutover in the architecture that now exists. Direct executable calls remain DirectCallTarget::Local. A materialized closure carries producer-owned callable construction members behind one public callable boundary and is invoked indirectly through that value. Native lowering now emits CallClosure/TailCallClosure with direct_target=None; it must not retain a second per-FnId closure-target surface model or reconstruct capture/argument ABI from consumers.\n\nThe behavior originally sought by this umbrella is already live through the callable-boundary and fz-k22.23 construction model. Remaining work is deletion-only cleanup in fz-9i4.4.4. Acceptance: the dormant native closure-target registry/direct-target branches are gone; callable boundary wrappers and producer-owned member facts remain authoritative; closure_typed_captures, curried_add, multi_caller_spec_divergent, and the two-distinct-Enum.map regression pass run/interp/build; lib and clippy are green.",
   "id": "fz-9i4.4",
   "labels": [],
-  "parent": "fz-9i4",
+  "parent": "fz-k22",
   "priority": 2,
   "status": "open",
   "title": "Complete the callable-boundary cutover by deleting the retired native closure-target model",
   "type": "bug",
-  "updated_at": "2026-07-15T13:25:17Z"
+  "updated_at": "2026-07-15T14:38:08Z"
 }
