@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-88t",
     "fz-k22.29"
   ],
   "blocks": [],
@@ -18,5 +19,5 @@
   "status": "in_progress",
   "title": "enum_list_allocations: THREE-WAY allocation divergence -- run/build vs interp vs golden all disagree",
   "type": "bug",
-  "updated_at": "2026-07-15T19:10:50Z"
+  "updated_at": "2026-07-15T21:31:10Z"
 }
