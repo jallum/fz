@@ -4,14 +4,16 @@
     "fz-k22.3"
   ],
   "blocks": [],
+  "closed_at": "2026-07-15T12:39:50Z",
+  "close_reason": "Completed by the folded callable-construction model. The two-Enum.find_index enum_predicate_search fixture now passes native lowering and CLI AOT build/run, and construction-owned wrapper tests replace the deleted one-capture-surface-per-FnId assertion with the owned invariant. Verified at a20f29ab3.",
   "created": "2026-07-08T03:39:47Z",
   "description": "From the fz-k22 investigation. A variant repro (Enum.find_index called twice with different predicates) hit a capture-count-mismatch assertion in build_codegen_closure_targets (src/compiler2/native_codegen/driver.rs:927-970, which asserts one global capture-surface per native FnId). May be a FOURTH independent symptom of the 2+-distinct-closure-shared-HOF class, OR may resolve once Slices A-C land. RE-VERIFY after A-C: run the find_index-twice repro; if still failing, diagnose whether the one-capture-surface-per-FnId assertion is too strict for a shared HOF specialization reached by distinct-capture closures. ACCEPTANCE for the whole fz-k22: the minimal 2-closure repro (Enum.find + Enum.find_value in one fn) AND enum_predicate_search fixture run GREEN on all three backends (run/interp/build) -\u003e enum_predicate_search::{run,interp,build} leave the known-red set (11-\u003e8). Related: fz-k22.",
   "id": "fz-k22.4",
   "labels": [],
   "parent": "fz-k22",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "fz-k22 Slice D: re-verify build_codegen_closure_targets one-capture-surface-per-FnId assertion after A-C (Enum.find_index-twice variant)",
   "type": "bug",
-  "updated_at": "2026-07-08T03:39:48Z"
+  "updated_at": "2026-07-15T12:39:50Z"
 }
