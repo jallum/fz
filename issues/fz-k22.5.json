@@ -13,7 +13,7 @@
   "parent": "fz-k22",
   "priority": 2,
   "status": "in_progress",
-  "title": "Make callable transport determination a product-owned refinement",
+  "title": "Make transport shape a product-owned refinement",
   "type": "bug",
-  "updated_at": "2026-07-16T17:21:34Z"
+  "updated_at": "2026-07-16T17:21:38Z"
 }
