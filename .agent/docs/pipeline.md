@@ -330,6 +330,16 @@ authority. A direct-only local producer owns `construction: None`; a first-class
 producer owns `Some` with at least one exact executable member. There is no root
 solve, component inventory, or absence-provenance side channel.
 
+Closure-call materialization reads the callee's positioned transport carrier.
+`ValueRef` calls through the public wrapper even when semantic resolution has
+one target; target cardinality cannot turn a transported value back into a
+private call. `Absent` leaves one exact target eligible for direct invocation
+and cannot support a call without one exact target. Callable-construction
+ownership remains the authority for wrapper construction and packaging, not for
+rediscovering the invocation carrier. Public delivery names the caller-owned
+`ReturnPayload` as its source and adapts it into the separate delivered-resume
+destination.
+
 World movements arrive from the scheduler as borrowed `FactMovement` values,
 one exact final `FactState` per moved key. Product generations and reader edges
 invalidate only products that consumed a changed fact or product. Equal

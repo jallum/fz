@@ -691,6 +691,12 @@ MaterializedExecutable(E)
         direct edges with no construction. A first-class producer carries one nonempty construction
         with its captures, members, boundaries, and selection. Root packaging consumes those owners
         directly; it does not rejoin boundary publications to decide which constructions exist.
+        Closure-call materialization reads the callee's positioned transport carrier. A
+        <code>ValueRef</code> carrier keeps the call on its public wrapper even when semantic
+        resolution has one target, while an <code>Absent</code> carrier leaves one exact target
+        eligible for direct invocation. Target cardinality does not redefine whether an
+        already-transported callable is private. Callable-construction ownership remains the
+        authority for wrapper construction and packaging, not invocation-carrier discovery.
       </p>
       <p>
         Private callable targets keep their exact return layouts. A first-class callable wrapper
@@ -698,7 +704,8 @@ MaterializedExecutable(E)
         nonempty returning result. The wrapper decodes the selected target layout and materializes
         that public word once. Callers never infer a return contract by scanning targets, types, or
         the semantic world. A caller owns its <code>ReturnPayload</code>; the callee independently
-        owns its <code>ExecutableReturn</code>.
+        owns its <code>ExecutableReturn</code>. Public non-tail delivery uses that return payload as
+        its source and refines it into the caller's separate resume destination.
       </p>
     </section>
 

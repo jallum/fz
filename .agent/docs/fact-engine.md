@@ -215,8 +215,10 @@ jobs for the submitted root.
 `PullSession` owns the request-local product memo and scheduling relations used
 to reproduce moved products. A `TransportShape(position)` answer remains in its
 memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
-positioned layout answers it consumed; `AbiReadyExecutable` refines that set and
-embeds each callable-construction answer with its position; and
+positioned layout answers it consumed. A closure callee's carrier selects its
+physical invocation: `ValueRef` uses the public wrapper, while `Absent` permits
+one exact semantic target to refine directly. `AbiReadyExecutable` refines that
+set and embeds each callable-construction answer with its position; and
 `SymbolicBackendExecutable` carries both values unchanged. The root backend
 packages a wrapper only from a positioned owner whose `construction` is
 present. Direct-only owners retain their layout and direct callable facts with

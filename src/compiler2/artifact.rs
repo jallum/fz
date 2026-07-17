@@ -191,10 +191,10 @@ pub struct MaterializedCallEdge {
 pub enum CallEdge<T, F = CallReturnFlow> {
     Direct(DirectCallEdge<T, F>),
     Dispatch(Box<DispatchCallEdge<T, F>>),
-    /// A closure-call site with 2+ distinct concrete producers: no single
-    /// local target can be devirtualized, so the call runs through the
-    /// callee's runtime identity (the boxed/opaque callable value), agreeing
-    /// with the generic callable transport shape assigned to that value.
+    /// A closure-call site whose positioned callee transport has a public
+    /// `ValueRef` carrier. Invocation runs through the callee's runtime identity
+    /// even when semantic resolution has one exact target; target cardinality
+    /// does not redefine the transported physical representation.
     /// Explicit and settled — distinct from a callsite whose summary fact
     /// has not been computed yet (which stays `Ok(None)` at materialization).
     Indirect(F),

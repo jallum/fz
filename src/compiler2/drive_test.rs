@@ -13896,6 +13896,86 @@ end
 }
 
 #[test]
+fn compiler2_published_captured_closure_keeps_its_public_return_contract() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("published_captured_closure.fz".to_string()),
+        text: r#"
+fn main() do
+  n = 40
+  f = fn (x) -> n + x end
+  dbg(f)
+  dbg(f.(2))
+end
+"#
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root));
+    assert_resolved(compiler.drive(), "published captured closure should lower natively");
+    let program = native.last(root).program;
+    let [boundary] = program.callable_boundaries.as_slice() else {
+        panic!("the published captured closure should own one boundary")
+    };
+    assert_eq!(boundary.captures.len(), 1);
+    assert_eq!(boundary.return_form, BackendCallableReturn::ValueRef);
+    let [member] = boundary.members.as_ref() else {
+        panic!("the captured closure boundary should have one member")
+    };
+    assert_eq!(member.target_return.layout.reprs.as_ref(), [AbiValueRepr::RawInt]);
+
+    let closure_call = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .find_map(|block| match &block.terminator {
+            IrTerm::CallClosure {
+                direct_target,
+                continuation,
+                ..
+            } => Some((direct_target, continuation)),
+            _ => None,
+        })
+        .expect("the captured closure should emit one closure call");
+    assert!(
+        closure_call.0.is_none(),
+        "a first-class construction must call through its wrapper"
+    );
+    let continuation = program
+        .bodies
+        .iter()
+        .find(|body| body.fn_id == closure_call.1.fn_id)
+        .expect("the captured closure call should own a return continuation");
+    assert!(matches!(
+        continuation.entry_abi,
+        NativeEntryAbi::Continuation { extra_params: 1 }
+    ));
+    assert_eq!(continuation.param_reprs.first(), Some(&AbiValueRepr::ValueRef));
+
+    compiler
+        .run_root_interp(root)
+        .expect("the backend interpreter should run the published captured closure");
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run_with_output(compiler.telemetry(), &dbg, program.entry), 42);
+    let lines = dbg.lines();
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].starts_with("#fn<") && lines[2].starts_with("#fn<"));
+    assert_eq!(lines[1], "42");
+    assert_eq!(lines[3], "42");
+}
+
+#[test]
 fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_crash() {
     // INTENT: `Enum.find` and `Enum.find_value` share one generic reduce body
     // whose `_acc` reducer parameter `find` never reads and `find_value` does.
