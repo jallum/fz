@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-17T04:47:40Z",
+  "description": "Goal\\n\\nA specialized executable refines its function-owned entry-dispatch plan with the exact settled activation reachability already calculated by semantic analysis. One reachable clause with unreachable failure enters directly; multi-clause or fail-reachable activations retain runtime dispatch.\\n\\nSignal\\n\\nFor each isolated Enum.with_index callable mapper activation, semantic reachability selects mapper clause 1 and proves failure unreachable. RuntimeDemand keeps an exact direct callable input whose TransportShape carrier is Absent and ABI has no physical mapper lane. Materialization currently clones the global two-arm dispatch graph, causing native lowering to demand that intentionally absent lane.\\n\\nStrategy\\n\\nRetain the dispatcher-produced reachable clauses and fail_reachable atomically as EntryReachability. Consume it directly in RuntimeDemand and artifact materialization. Collapse entry dispatch only through is_direct_clause(); do not force inputs live, reconstruct types, decode keys, or add native fallback.\\n\\nAcceptance\\n\\nFocused one-clause/no-fail, one-clause/fail, and multi-clause controls pass. Isolated string, integer, and tuple with_index mapper roots pass interp/JIT/AOT. All reachable_clauses readers migrate to the atomic value; docs and JSONL handler expose the already-computed scalar; full library and strict clippy pass.",
+  "id": "fz-9i4.7.10.1",
+  "labels": [],
+  "parent": "fz-9i4.7.10",
+  "priority": 1,
+  "status": "open",
+  "title": "Refine entry dispatch from settled activation reachability",
+  "type": "bug",
+  "updated_at": "2026-07-17T04:47:40Z"
+}
