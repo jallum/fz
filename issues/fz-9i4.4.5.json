@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9i4.7.10.2"
+  ],
   "blocks": [
     "fz-9i4.4.4"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Ground exact closure-call return transport",
   "type": "bug",
-  "updated_at": "2026-07-17T05:23:20Z"
+  "updated_at": "2026-07-17T05:35:35Z"
 }
