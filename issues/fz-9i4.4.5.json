@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-07-17T05:04:10Z",
+  "description": "Goal\n\nA curried direct call carries the exact producer-owned argument and capture contract into native lowering, so the checked-in curried_add behavior agrees across interp, JIT, and AOT without native codegen reconstructing or compensating for missing lanes.\n\nSignal\n\nOn unchanged integration HEAD 2de30c10c, release curried_add passes interp but run fails before codegen: `native direct call emitted 2 arguments ... target ... declares 3`. The fz-9i4.4.4 deletion worktree fails identically. That ticket only removes permanently absent closure direct_target fields; the failing direct-call argument construction is an untouched upstream path.\n\nStrategy\n\nUse the semantic compiler root-cause loop before implementation. Trace the exact callable construction, transport shape, runtime demand, direct-call summary, and NativeProgram arguments backward to the first authority that loses or misclassifies the capture/argument boundary. Preserve/refine that producer-owned structure forward. Do not pad arguments in codegen, decode identities, add a per-FnId registry, or select among reconstructed physical surfaces.\n\nPlan\n\n1. Pin curried_add interp/native divergence and dump raw authoritative products at each boundary using borrowed telemetry.\n2. Prove the first mismatching producer with a minimal spike and compare captured, zero-capture, and non-curried controls.\n3. Update this ticket with the proven correction and exact test plan before production implementation.\n4. Implement test-first at the first data-model loss, deleting obsolete compensations or duplicate surface calculations.\n5. Verify curried_add and controls through interp/JIT/AOT, then full library, formatting, strict clippy, and docs.\n\nAcceptance\n\ncurried_add matches its oracle through interp, run, and build. Structural tests prove native direct-call arguments and the callee contract refine the same producer-owned callable construction; no downstream padding, registry, identity reconstruction, or fallback is added. Captured, zero-capture, and ordinary direct-call controls remain green; full gates pass warning-free.",
+  "id": "fz-9i4.4.5",
+  "labels": [],
+  "parent": "fz-9i4.4",
+  "priority": 1,
+  "status": "open",
+  "title": "Preserve curried direct-call argument contract",
+  "type": "bug",
+  "updated_at": "2026-07-17T05:04:10Z"
+}
