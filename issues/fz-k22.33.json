@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-k22.32"
+  ],
   "blocks": [],
   "created": "2026-07-17T03:02:52Z",
   "description": "Goal\n\nA captured closure that is first published as a value and then invoked must return the same semantic result through interpreter, JIT, and AOT. First-class publication must not change the later call-result representation.\n\nSignal\n\nOn base 636384f94 and during fz-k22.31 controls, a closure capturing n=40 is dbg-printed, then invoked with 2. Interpreter prints 42; JIT and AOT print a large tagged/reference word. The simpler captured-closure control that invokes without first publishing the closure returns 8 correctly on all paths.\n\nStrategy\n\nMinimize and pin the publication-before-call sequence. Trace the exact positioned CallableConstruction owner, wrapper selection, target private return layout, uniform public ValueRef return, and caller-local decode. Find the first boundary that returns or stores a reference word where the caller owns a scalar result. Repair that authority boundary; do not special-case dbg, infer from printed bits, or add a second return-shape selector. Evaluate after fz-k22.32 clarifies construction ownership, because both touch public wrapper authority.\n\nAcceptance\n\nPublished-then-called captured closures, called-only captured closures, uncalled first-class references, opaque callables, and mixed direct/public controls agree semantically across interp/run/AOT. Full library tests and strict clippy pass; no temporary probes remain.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Preserve captured closure call results after first-class publication",
   "type": "bug",
-  "updated_at": "2026-07-17T03:02:52Z"
+  "updated_at": "2026-07-17T03:02:56Z"
 }
