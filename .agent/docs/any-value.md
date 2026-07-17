@@ -41,7 +41,9 @@ owns packing, projection, and the platform difference behind the word.
 - **`AnyValue`**: the by-value enum a host caller decodes a ref into —
   `Null`, `EmptyList`, `Int(i64)`, `Float(u64)`, `Atom(u32)`, `HeapRef(AnyValueRef)`.
   A scalar `AnyValue` has no address; `ref_word()` panics on a scalar because a
-  scalar needs object-local storage before it can become a ref.
+  scalar needs object-local storage before it can become a ref. The interpreter's
+  temporary `FnRef` view materializes a closure before a public boundary and
+  returns its tagged ref word; the heap object's raw storage address is not a ref.
 - **Container object-local metadata**: each heap object stores payload words
   plus its own kind bytes (see Container Storage). This is *not* a reusable
   `{value, kind}` carrier — there is no public value model other than the ref.

@@ -66,7 +66,7 @@ impl AnyValue {
             AnyValue::Float(value) => Ok(fz_box_float_for_any(proc, value)),
             AnyValue::Atom(value) => Ok(fz_box_atom_for_any(proc, value as u64)),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list().raw_word()),
-            AnyValue::FnRef(fn_id) => Ok(Self::materialize_fn_ref(proc, fn_id)?.raw()),
+            AnyValue::FnRef(fn_id) => Ok(Self::materialize_fn_ref(proc, fn_id)?.ref_word().raw_word()),
             AnyValue::Ref(value) => Ok(value.raw_word()),
         }
     }

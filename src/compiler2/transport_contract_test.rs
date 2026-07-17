@@ -2755,6 +2755,34 @@ end
 }
 
 #[test]
+fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
+    let source = "fn identity(x), do: x\nfn main(), do: dbg(identity)\n";
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("uncalled_named_function_value.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root)
+        .expect("interpreter should preserve the callable value");
+    compiler
+        .run_root_jit(root)
+        .expect("JIT should preserve the callable value");
+    let lines = dbg.lines();
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|line| line.starts_with("#fn<")), "got {lines:?}");
+}
+
+#[test]
 #[serial_test::serial]
 fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     let tel = ConfiguredTelemetry::new();
