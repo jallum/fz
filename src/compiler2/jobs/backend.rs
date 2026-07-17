@@ -14,12 +14,11 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableCapture, BackendCallableConstruction,
-    BackendCallableConstructionMember, BackendClause, BackendConstructionCapture, BackendConstructionMemberAdapter,
-    BackendConstructionWrapper, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
-    BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep, BackendTail, CallEdge, CallReturnFlow,
-    CallTarget, DirectCallEdge, DispatchCallArm, EmissionReadyExecutable, MaterializedTransportPlan,
-    RootBackendProductAnswer,
+    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
+    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
+    BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, EmissionReadyExecutable,
+    MaterializedTransportPlan, RootBackendProductAnswer,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -198,14 +197,8 @@ pub(crate) fn produce_root_backend_product(
         })
         .collect::<Vec<_>>();
     let (produced_callables, produced_boundaries) = aggregate_callable_owners(&owners);
-    let transport = symbolic_materialized_transport_plan(
-        &backends,
-        &entry,
-        world,
-        &owners,
-        &produced_callables,
-        &produced_boundaries,
-    );
+    let transport =
+        symbolic_materialized_transport_plan(&backends, &entry, world, &produced_callables, &produced_boundaries);
 
     let mut executable_keys = reachable.into_iter().collect::<Vec<_>>();
     executable_keys.sort_by(|left, right| compare_executable_keys(left, right, world.types()));
@@ -878,38 +871,40 @@ fn package_backend_construction_wrappers(
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
 ) -> Result<(Vec<BackendConstructionWrapper>, HashMap<TransportPosition, u32>), FatalError> {
     let mut constructions = transport
-        .callable_constructions
+        .callable_owners
         .iter()
-        .filter_map(|construction| {
-            let boundaries = transport
-                .publication_boundaries
-                .iter()
-                .filter_map(|(position, boundary)| (position == &construction.producer).then_some(*boundary))
-                .collect::<Vec<_>>();
-            (!boundaries.is_empty()).then_some((construction, boundaries))
+        .filter_map(|positioned| {
+            positioned
+                .owner
+                .construction
+                .as_ref()
+                .map(|construction| (positioned, construction))
         })
         .collect::<Vec<_>>();
-    constructions.sort_by_cached_key(|(construction, _)| transport_position_global_sort_key(&construction.producer));
+    constructions.sort_by_cached_key(|(positioned, _)| transport_position_global_sort_key(&positioned.position));
     let identities = constructions
         .iter()
         .enumerate()
-        .map(|(identity, (construction, _))| (construction.producer.clone(), identity as u32))
+        .map(|(identity, (positioned, _))| (positioned.position.clone(), identity as u32))
         .collect();
     let wrappers = constructions
         .into_iter()
         .enumerate()
-        .map(|(identity, (construction, boundaries))| {
-            let call_arity = construction.members.first().map_or_else(
-                || world.boundary(boundaries[0]).surface_arg_shapes.len(),
-                |member| member.surface_inputs.len(),
-            );
+        .map(|(identity, (_, construction))| {
+            let call_arity = construction
+                .members
+                .first()
+                .expect("first-class construction authority must contain an executable member")
+                .surface_inputs
+                .len();
             if construction
                 .members
                 .iter()
                 .any(|member| member.surface_inputs.len() != call_arity)
-                || boundaries
+                || construction
+                    .members
                     .iter()
-                    .any(|boundary| world.boundary(*boundary).surface_arg_shapes.len() != call_arity)
+                    .any(|member| world.boundary(member.boundary).surface_arg_shapes.len() != call_arity)
             {
                 return Err(incomplete_backend_program(
                     tel,
@@ -1248,7 +1243,6 @@ pub(crate) fn symbolic_materialized_transport_plan(
     backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
     executable: &ExecutableKey,
     world: &World,
-    owners: &[super::super::transport::CallableConstructionOwner],
     callables: &HashMap<CallableId, CallableFacts>,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
 ) -> MaterializedTransportPlan {
@@ -1309,35 +1303,6 @@ pub(crate) fn symbolic_materialized_transport_plan(
         },
         executable_membership: Box::default(),
         position_layouts,
-        callable_constructions: owners
-            .iter()
-            .filter_map(|owner| owner.construction.as_ref())
-            .map(|construction| BackendCallableConstruction {
-                callable: construction.callable,
-                producer: construction.producer.clone(),
-                captures: construction
-                    .captures
-                    .iter()
-                    .map(|capture| BackendCallableCapture {
-                        source: capture.source.clone(),
-                        layout: capture.layout,
-                    })
-                    .collect(),
-                members: construction
-                    .members
-                    .iter()
-                    .map(|member| BackendCallableConstructionMember {
-                        boundary: member.boundary,
-                        surface_inputs: member.surface_inputs.clone(),
-                        surface_arg_shapes: member.surface_arg_shapes.clone(),
-                        resolution: member.resolution.clone(),
-                        capture_semantic_inputs: member.capture_semantic_inputs.clone(),
-                        surface_semantic_inputs: member.surface_semantic_inputs.clone(),
-                    })
-                    .collect(),
-                selection: construction.selection.clone(),
-            })
-            .collect(),
         callable_boundaries: {
             let mut rows = callables
                 .iter()

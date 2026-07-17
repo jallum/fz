@@ -46,8 +46,8 @@ mod world;
 
 pub use agenda::Agenda;
 pub use artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableConstruction,
-    BackendClause, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
+    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
+    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendProgramMap, BackendReceive, BackendReturnLayout,
     BackendSemanticInputLayout, BackendStep, BackendTail, CallEdge, CallTarget, DirectCallEdge, DispatchCallArm,
     DispatchCallEdge, DispatchCallMiss, EmissionReadyCallEdge, EmissionReadyExecutable, ExecutableDispatch,

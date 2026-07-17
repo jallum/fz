@@ -63,7 +63,6 @@ pub struct MaterializedTransportPlan {
     pub entry: ExecutableSymbol,
     pub executable_membership: Box<[ExecutableSymbol]>,
     pub position_layouts: Vec<(TransportPosition, TransportLayout)>,
-    pub callable_constructions: Vec<BackendCallableConstruction>,
     /// Per-callable boundary inventory projected from position-owned callable
     /// construction products.
     pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
@@ -73,25 +72,6 @@ pub struct MaterializedTransportPlan {
     pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
     pub callable_facts: HashMap<CallableId, CallableFacts>,
     pub boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackendCallableConstruction {
-    pub callable: CallableId,
-    pub producer: TransportPosition,
-    pub captures: Box<[BackendCallableCapture]>,
-    pub members: Box<[BackendCallableConstructionMember]>,
-    pub(crate) selection: Option<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackendCallableConstructionMember {
-    pub boundary: BoundaryId,
-    pub surface_inputs: Box<[Ty]>,
-    pub surface_arg_shapes: Box<[ShapeId]>,
-    pub resolution: ExecutableSymbol,
-    pub capture_semantic_inputs: Box<[usize]>,
-    pub surface_semantic_inputs: Box<[usize]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,12 +122,6 @@ pub struct BackendValueLayout {
 pub struct BackendReturnLayout {
     pub layout: BackendValueLayout,
     pub diverges: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackendCallableCapture {
-    pub source: TransportPosition,
-    pub layout: TransportLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

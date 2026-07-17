@@ -1155,6 +1155,28 @@ end
         0,
         "a direct-only lambda path should not publish a first-class boundary"
     );
+    let direct_owners = root_backend_answer_for_test(session)
+        .transport
+        .callable_owners
+        .iter()
+        .filter(|positioned| {
+            positioned.position.executable() == &main
+                && matches!(
+                    shape_descr(&world, positioned.owner.layout.structural),
+                    ShapeDescr::Callable(_)
+                )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !direct_owners.is_empty(),
+        "the direct lambda should own its callable layout"
+    );
+    assert!(
+        direct_owners
+            .iter()
+            .all(|positioned| positioned.owner.construction.is_none()),
+        "direct-only callable positions must not publish wrapper constructions: {direct_owners:#?}",
+    );
 }
 
 #[test]
@@ -1172,7 +1194,12 @@ fn main(), do: make()
     let _ = &plan;
     let session = driver.session();
     let make = executable_for(&world, session, "make", 0);
-    let returned = plan_shape_at(&plan, &TransportPosition::ExecutableReturn { executable: make });
+    let returned = plan_shape_at(
+        &plan,
+        &TransportPosition::ExecutableReturn {
+            executable: make.clone(),
+        },
+    );
     assert!(
         matches!(shape_descr(&world, returned), ShapeDescr::Callable(_)),
         "escaped lambda should still be a callable shape in the transport plan"
@@ -1181,6 +1208,20 @@ fn main(), do: make()
         callable_owner_facts_for_test(session).1.len(),
         1,
         "escaping a lambda as a returned callable should publish exactly one boundary contract"
+    );
+    let constructions = root_backend_answer_for_test(session)
+        .transport
+        .callable_owners
+        .iter()
+        .filter_map(|positioned| positioned.owner.construction.as_ref())
+        .filter(|construction| construction.producer.executable() == &make)
+        .collect::<Vec<_>>();
+    let [construction] = constructions.as_slice() else {
+        panic!("the escaped lambda producer should own one exact wrapper construction: {constructions:#?}")
+    };
+    assert!(
+        !construction.members.is_empty(),
+        "a first-class wrapper construction must own at least one executable member",
     );
 }
 
@@ -2424,6 +2465,21 @@ end
         }),
         "the local lambda passed through the opaque call should be a first-class runtime obligation: {demand:?}",
     );
+    let main = executable_for(&world, driver.session(), "main", 1);
+    let constructions = root_backend_answer_for_test(driver.session())
+        .transport
+        .callable_owners
+        .iter()
+        .filter(|positioned| positioned.position.executable() == &main)
+        .filter_map(|positioned| positioned.owner.construction.as_ref())
+        .collect::<Vec<_>>();
+    let [construction] = constructions.as_slice() else {
+        panic!("the lambda passed to an opaque call should own one first-class construction: {constructions:#?}")
+    };
+    assert!(
+        !construction.members.is_empty(),
+        "the opaque-call argument construction must retain its executable member",
+    );
 }
 
 #[test]
@@ -2757,6 +2813,32 @@ end
 #[test]
 fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
     let source = "fn identity(x), do: x\nfn main(), do: dbg(identity)\n";
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("uncalled_named_function_value_product.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, _) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let constructions = callable_owners_for_test(driver.session())
+        .into_iter()
+        .filter_map(|owner| owner.construction)
+        .filter(|construction| {
+            world
+                .callable(construction.callable)
+                .function
+                .is_some_and(|function| world.function_ref(function).name == "identity")
+        })
+        .collect::<Vec<_>>();
+    let [construction] = constructions.as_slice() else {
+        panic!("the uncalled named function value should own one first-class construction: {constructions:#?}")
+    };
+    assert!(
+        !construction.members.is_empty(),
+        "the uncalled named function construction must retain its executable member",
+    );
+
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     let mut compiler = Compiler2::new(tel);
@@ -3543,13 +3625,6 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
         "the take/drop/split fixture should preserve its concrete reducer constructions: {reducers:?}"
     );
     for (owner, construction) in reducers {
-        let is_published = owner
-            .boundary_facts
-            .values()
-            .any(|facts| facts.publications.contains(&construction.producer));
-        if !is_published {
-            continue;
-        }
         assert!(
             !construction.members.is_empty(),
             "a published reducer construction must retain its executable members: {construction:?}"
@@ -3903,7 +3978,7 @@ fn compiler2_transport_plan_publishes_enum_take_reduce_while_multi_surface_calla
 }
 
 #[test]
-fn compiler2_callable_construction_owners_preserve_shared_callable_resolutions() {
+fn compiler2_direct_callable_owners_preserve_shared_callable_resolutions() {
     let source = "fn make(seed) do\n  dbg(seed)\n  fn (x) -> x end\nend\nfn apply_int(f), do: f.(1)\nfn apply_atom(f), do: f.(:ok)\nfn main(), do: {apply_int(make(1)), apply_atom(make(:ok))}\n";
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -3915,36 +3990,39 @@ fn compiler2_callable_construction_owners_preserve_shared_callable_resolutions()
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
     let session = driver.session();
-    let owners = callable_owners_for_test(session);
-    let answers = owners
+    let answers = root_backend_answer_for_test(session)
+        .transport
+        .callable_owners
         .iter()
-        .filter_map(|answer| {
-            answer
-                .construction
-                .as_ref()
-                .map(|construction| (&construction.producer, answer))
-        })
-        .filter(|(_, answer)| {
-            answer.construction.as_ref().is_some_and(|construction| {
-                world
-                    .function_ref(construction.producer.executable().activation.function)
+        .filter(|positioned| {
+            matches!(positioned.position, TransportPosition::Value { .. })
+                && world
+                    .function_ref(positioned.position.executable().activation.function)
                     .name
                     == "make"
-            })
+                && !positioned.owner.callable_facts.is_empty()
         })
         .collect::<Vec<_>>();
     let [left, right] = answers.as_slice() else {
         panic!("the two specialized make/1 activations should own two callable answers: {answers:#?}")
     };
-    let left_construction = left.1.construction.as_ref().expect("make/1 constructs a closure");
-    let right_construction = right.1.construction.as_ref().expect("make/1 constructs a closure");
-    assert_ne!(left.0, right.0);
-    assert_eq!(left_construction.callable, right_construction.callable);
-    let left_facts = &left.1.callable_facts[&left_construction.callable];
-    let right_facts = &right.1.callable_facts[&right_construction.callable];
+    assert!(left.owner.construction.is_none());
+    assert!(right.owner.construction.is_none());
+    assert_ne!(left.position, right.position);
+    let left_callables = left.owner.callable_facts.keys().copied().collect::<Vec<_>>();
+    let [left_callable] = left_callables.as_slice() else {
+        panic!("the left make/1 specialization should own one direct callable identity: {left:#?}")
+    };
+    let right_callables = right.owner.callable_facts.keys().copied().collect::<Vec<_>>();
+    let [right_callable] = right_callables.as_slice() else {
+        panic!("the right make/1 specialization should own one direct callable identity: {right:#?}")
+    };
+    assert_eq!(left_callable, right_callable);
+    let left_facts = &left.owner.callable_facts[left_callable];
+    let right_facts = &right.owner.callable_facts[right_callable];
     assert_ne!(left_facts.resolutions, right_facts.resolutions);
     assert_ne!(left_facts.direct_surfaces, right_facts.direct_surfaces);
-    assert_eq!(left.1.layout, right.1.layout);
+    assert_eq!(left.owner.layout, right.owner.layout);
 }
 
 #[test]

@@ -325,8 +325,10 @@ direct returns refine from the selected target position, while public returns
 project every nonempty result to `ValueRef`. Recursive position dependencies are
 settled as one atomic product group from external anchors, so no member observes
 a partial result. `CallableConstruction(position)` uses the same position-owned
-layout and carries the callable and boundary facts for that construction; there
-is no root solve, component inventory, or absence-provenance side channel.
+layout and carries direct callable and boundary facts independently of wrapper
+authority. A direct-only local producer owns `construction: None`; a first-class
+producer owns `Some` with at least one exact executable member. There is no root
+solve, component inventory, or absence-provenance side channel.
 
 World movements arrive from the scheduler as borrowed `FactMovement` values,
 one exact final `FactState` per moved key. Product generations and reader edges
@@ -444,8 +446,10 @@ The next products narrow the contract:
   `AbiFacts`.
 
 `RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
-first-class producer. Boundary publication follows first-class callable
-surfaces, independently of whether any member returns. The wrapper owns all
+positioned owner whose exact product contains a first-class construction. It
+does not reconstruct eligibility from the materialized publication-boundary
+inventory. Boundary publication follows first-class callable surfaces,
+independently of whether any member returns. The wrapper owns all
 resolved members, retained captures, semantic input mappings, private member
 layouts, member selection, and one public return form: `Diverges`, `Absent`, or
 `ValueRef`. Every nonempty returning member adapts to that one public word;

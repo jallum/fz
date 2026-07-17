@@ -1991,9 +1991,7 @@ mod tests {
 
     use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
-    use super::super::transport::{
-        BoundaryFacts, BoundaryId, CallableConstructionFact, CallableFacts, CallableId, ExecutableSymbol,
-    };
+    use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
     use super::*;
 
     fn fact_movement(key: FactKey, revision: Option<u64>, settled: bool) -> FactMovement<FactKey> {
@@ -3701,13 +3699,7 @@ mod tests {
     ) -> ProductValue {
         ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
             layout,
-            construction: Some(CallableConstructionFact {
-                callable,
-                producer: owner.clone(),
-                captures: Box::default(),
-                members: Box::default(),
-                selection: None,
-            }),
+            construction: None,
             callable_facts: HashMap::from([(
                 callable,
                 CallableFacts {
@@ -3824,7 +3816,6 @@ mod tests {
                     entry: left_resolution.clone(),
                     executable_membership: Box::default(),
                     position_layouts: Vec::new(),
-                    callable_constructions: Vec::new(),
                     callable_boundaries: Vec::new(),
                     boundary_ids: Vec::new(),
                     publication_boundaries: Vec::new(),

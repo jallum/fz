@@ -218,7 +218,11 @@ memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
 positioned layout answers it consumed; `AbiReadyExecutable` refines that set and
 embeds each callable-construction answer with its position; and
 `SymbolicBackendExecutable` carries both values unchanged. The root backend
-producer traverses its exact reachable backend-product values, then densifies
+packages a wrapper only from a positioned owner whose `construction` is
+present. Direct-only owners retain their layout and direct callable facts with
+no construction, so final packaging does not rejoin boundary publications to
+recover first-class eligibility. The root backend producer traverses its exact
+reachable backend-product values, then densifies
 their embedded layouts and callable owners into one root product answer. The
 answer retains that `MaterializedTransportPlan` beside the closed
 `BackendProgram`; runtime consumers project only the program.

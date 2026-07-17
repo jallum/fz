@@ -38,7 +38,6 @@ struct BoundaryFactsDraft {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TransportFactsBuilder {
     callables: HashMap<CallableId, CallableFactsDraft>,
-    constructions: HashMap<TransportPosition, CallableConstructionFact>,
     boundaries: HashMap<BoundaryId, BoundaryFactsDraft>,
 }
 
@@ -137,9 +136,6 @@ impl TransportFactsBuilder {
                 draft.boundary_ids.clone(),
             );
         }
-        for construction in other.constructions.values() {
-            self.record_callable_construction(construction.clone());
-        }
         for (boundary, draft) in &other.boundaries {
             for publication in &draft.publications {
                 self.record_boundary(*boundary, publication.clone());
@@ -148,17 +144,7 @@ impl TransportFactsBuilder {
         }
     }
 
-    fn record_callable_construction(&mut self, construction: CallableConstructionFact) {
-        self.constructions.insert(construction.producer.clone(), construction);
-    }
-
-    fn finish(
-        self,
-    ) -> (
-        HashMap<CallableId, CallableFacts>,
-        HashMap<TransportPosition, CallableConstructionFact>,
-        HashMap<BoundaryId, BoundaryFacts>,
-    ) {
+    fn finish(self) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
         let callables = self
             .callables
             .into_iter()
@@ -197,7 +183,7 @@ impl TransportFactsBuilder {
                 )
             })
             .collect();
-        (callables, self.constructions, boundaries)
+        (callables, boundaries)
     }
 }
 
@@ -511,7 +497,7 @@ fn produce_generic_callable_owner(
                     .expect("callable owner group member must have a settled transport shape");
                 settled.record_layout_publication(world, member_layout.structural, member);
             }
-            let (callable_facts, _, boundary_facts) = settled.finish();
+            let (callable_facts, boundary_facts) = settled.finish();
             let values = members
                 .iter()
                 .map(|member| {
@@ -544,7 +530,7 @@ fn produce_generic_callable_owner(
         }
     }
     let builder = project_generic_owner_facts(world, &builder, layout.structural, ty, &demand, position);
-    let (callable_facts, _, boundary_facts) = builder.finish();
+    let (callable_facts, boundary_facts) = builder.finish();
     PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(
         CallableConstructionOwner {
             layout,
@@ -1045,7 +1031,6 @@ fn produce_local_callable_construction(
     let mut builder = TransportFactsBuilder::default();
     let direct_surfaces = surface_shapes(world, &flow.direct_surfaces, &mut builder);
     let direct_edges = callable_direct_edges(world, &flow.direct_edges, &mut builder);
-    let construction_edges = callable_direct_edges(world, &flow.first_class_edges, &mut builder);
     let capture_shapes = capture_layouts
         .iter()
         .map(|layout| layout.structural)
@@ -1090,44 +1075,49 @@ fn produce_local_callable_construction(
         direct_edges,
         boundaries_by_surface.values().copied().collect(),
     );
-    let construction = CallableConstructionFact {
-        callable,
-        producer: producer_position,
-        captures: producer
-            .captures
-            .iter()
-            .copied()
-            .zip(capture_layouts)
-            .map(|(value, layout)| CallableConstructionCapture {
-                source: TransportPosition::Value {
-                    executable: executable_symbol(executable, world.types()),
-                    value,
-                },
-                layout,
-            })
-            .collect(),
-        members: flow
-            .first_class_edges
-            .iter()
-            .zip(construction_edges.iter())
-            .map(|(source, edge)| CallableConstructionMember {
-                boundary: *boundaries_by_surface
-                    .get(&source.surface)
-                    .expect("every construction edge surface should have a published boundary"),
-                surface_inputs: edge.surface_inputs.clone(),
-                surface_arg_shapes: edge.surface_arg_shapes.clone(),
-                resolution: edge.resolution.clone(),
-                capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
-                surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
-            })
-            .collect(),
-        selection: super::super::callsite_dispatch::dispatch_from_callable_flow_edges(
-            world.types_mut(),
-            &flow.first_class_edges,
-        )
-        .expect("settled callable flow edges should produce a dispatch plan"),
+    let construction = if flow.first_class_edges.is_empty() {
+        None
+    } else {
+        let construction_edges = callable_direct_edges(world, &flow.first_class_edges, &mut builder);
+        Some(CallableConstructionFact {
+            callable,
+            producer: producer_position,
+            captures: producer
+                .captures
+                .iter()
+                .copied()
+                .zip(capture_layouts)
+                .map(|(value, layout)| CallableConstructionCapture {
+                    source: TransportPosition::Value {
+                        executable: executable_symbol(executable, world.types()),
+                        value,
+                    },
+                    layout,
+                })
+                .collect(),
+            members: flow
+                .first_class_edges
+                .iter()
+                .zip(construction_edges.iter())
+                .map(|(source, edge)| CallableConstructionMember {
+                    boundary: *boundaries_by_surface
+                        .get(&source.surface)
+                        .expect("every construction edge surface should have a published boundary"),
+                    surface_inputs: edge.surface_inputs.clone(),
+                    surface_arg_shapes: edge.surface_arg_shapes.clone(),
+                    resolution: edge.resolution.clone(),
+                    capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
+                    surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
+                })
+                .collect(),
+            selection: super::super::callsite_dispatch::dispatch_from_callable_flow_edges(
+                world.types_mut(),
+                &flow.first_class_edges,
+            )
+            .expect("settled callable flow edges should produce a dispatch plan"),
+        })
     };
-    let (callable_facts, _, boundary_facts) = builder.finish();
+    let (callable_facts, boundary_facts) = builder.finish();
     Ok(CallableConstructionOwner {
         layout: TransportLayout {
             structural: world.intern_shape(ShapeDescr::Callable(callable)),
@@ -1137,7 +1127,7 @@ fn produce_local_callable_construction(
                 TransportCarrier::Absent
             },
         },
-        construction: Some(construction),
+        construction,
         callable_facts,
         boundary_facts,
     })
