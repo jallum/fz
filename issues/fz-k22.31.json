@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-15T19:24:36Z",
-  "description": "Goal\n\nMake an uncalled first-class named function value observably identical across the backend interpreter, JIT, and AOT. The value is explicitly first-class and boxed even though no call supplies argument producers; absence of direct invocation is not absence of the function value.\n\nSignal\n\nThe minimized source\n\nfn identity(x), do: x\nfn main(), do: dbg(identity)\n\nprints null in the backend interpreter and #fn\u003c0/0\u003e in JIT and AOT. Callable-flow evidence has no direct target, as expected, and carries an explicit first-class edge to the boxed resolution. The discrepancy is therefore downstream of valid first-class authority.\n\nStrategy\n\nTrace the first-class FunctionRef value through backend packaging and interpreter materialization, compare it with the native boxed callable path, and establish the intended language-level function-value representation from existing called and uncalled function controls. Repair the first backend representation boundary that loses the value. Do not invent a direct call edge, synthesize argument evidence, or special-case dbg formatting.\n\nAcceptance\n\nThe minimized uncalled function, a called named reference, a captured lambda, and an opaque first-class control produce path-invariant behavior on interp, run, and build. Explicit first-class flow remains boxed without direct-target fabrication. Library tests and strict clippy pass.",
+  "description": "",
   "id": "fz-k22.31",
   "labels": [],
   "parent": "fz-k22",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "Make uncalled first-class function values path-invariant",
   "type": "bug",
-  "updated_at": "2026-07-17T02:40:41Z"
+  "updated_at": "2026-07-17T02:46:34Z"
 }
