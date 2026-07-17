@@ -6,14 +6,16 @@
   "blocks": [
     "fz-k22.33"
   ],
+  "closed_at": "2026-07-17T03:28:38Z",
+  "close_reason": "Folded as 19535a662. Fresh audit found no production blocker; stale test fixture nit corrected before fold. Integration cargo test --lib: 1432 passed, 0 failed, 6 ignored; commit hook fmt/check/strict clippy green. Direct-only owners now construction=None; first-class owners carry exact nonempty constructions; downstream publication eligibility rejoin and DTOs deleted.",
   "created": "2026-07-17T02:57:11Z",
   "description": "Goal\n\nMake CallableConstructionOwner::construction the exact authority for one owned first-class wrapper construction. Direct-only callable producers expose None; first-class producers expose a nonempty Some that root packaging consumes without reconstructing eligibility.\n\nProven signal\n\nA direct lambda producer previously exposed construction=Some with zero members, Absent carrier, exact direct edges, and no boundary publications. The producer derived direct_edges and first_class_edges separately but unconditionally minted construction afterward. Escaped, opaque-call argument, captured, mixed, and uncalled named-reference controls already carry nonempty first_class_edges and exact nonempty constructions.\n\nStrategy\n\nUse the settled upstream first_class_edges at the local position producer as the construction ownership decision. Preserve direct callable layout and facts independently. Delete the downstream BackendCallableConstruction projection, dead construction builder inventory, publication-boundary eligibility join, and empty-member arity fallback. Package positioned owners with construction=Some directly; do not infer eligibility from layouts, types, targets, carriers, or root inventories.\n\nAcceptance\n\nDirect-only owners expose construction=None and create no wrapper. First-class local producer owners expose exact nonempty constructions and create wrappers without a second eligibility filter. Preserve uncalled named refs, escaped/opaque/captured/mixed callable behavior, replacement/order/retraction semantics, interpreter/JIT/AOT, the full library suite, strict clippy/fmt/diff gates, and release direct/public controls.",
   "id": "fz-k22.32",
   "labels": [],
   "parent": "fz-k22",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Clarify callable construction as first-class wrapper authority",
   "type": "bug",
-  "updated_at": "2026-07-17T03:18:45Z"
+  "updated_at": "2026-07-17T03:28:38Z"
 }
