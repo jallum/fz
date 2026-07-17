@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-9i4.7.10.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-9i4.7.10",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Refine entry dispatch from settled activation reachability",
   "type": "bug",
-  "updated_at": "2026-07-17T04:49:37Z"
+  "updated_at": "2026-07-17T04:49:47Z"
 }
