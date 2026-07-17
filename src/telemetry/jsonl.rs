@@ -195,12 +195,6 @@ impl JsonlBackend {
             &["fz", "compiler2", "pull", "product"],
             "product",
         );
-        Self::install_raw_value::<crate::compiler2::pull::SolvedTransportClosure>(
-            telemetry,
-            &backend,
-            &["fz", "compiler2", "pull", "transport_component", "closure_solved"],
-            "closure",
-        );
         let product_backend = Rc::clone(&backend);
         telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductValue, _>(
             &["fz", "compiler2", "pull", "product", "settled"],
@@ -229,27 +223,6 @@ impl JsonlBackend {
                         program: crate::telemetry::opaque(program),
                     },
                 );
-            },
-        );
-        telemetry.attach_raw_event2::<
-            crate::compiler2::ExecutableKey,
-            crate::compiler2::pull::TransportComponentInventory,
-            _,
-        >(
-            &["fz", "compiler2", "executable_transport", "projected"],
-            {
-                let backend = Rc::clone(&backend);
-            move |name, span_id, parent_span_id, executable, component| {
-                backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    crate::metadata! {
-                        executable: crate::telemetry::opaque(executable),
-                        component: crate::telemetry::opaque(component),
-                    },
-                );
-            }
             },
         );
         Self::install_compiler_spans(telemetry, &backend);
@@ -1330,22 +1303,6 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                 }
                 out.push(']');
             }
-        }
-    } else if let Some(component) = opaque.downcast_ref::<crate::compiler2::pull::TransportComponentInventory>() {
-        out.push(',');
-        write_str_lit(out, "positions");
-        out.push(':');
-        push_u64(out, component.positions.len() as u64);
-    } else if let Some(closure) = opaque.downcast_ref::<crate::compiler2::pull::SolvedTransportClosure>() {
-        for (name, value) in [
-            ("executables", closure.executables.len()),
-            ("components", closure.components.len()),
-            ("positions", closure.component_of.len()),
-        ] {
-            out.push(',');
-            write_str_lit(out, name);
-            out.push(':');
-            push_u64(out, value as u64);
         }
     } else if let Some(timeout) = opaque.downcast_ref::<Option<std::time::Duration>>() {
         out.push(',');

@@ -161,6 +161,40 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let wrapper_fn = *construction_wrapper_fns
                 .get(&wrapper.identity)
                 .expect("construction wrapper should be predeclared");
+            let members = wrapper
+                .members
+                .iter()
+                .map(|member| NativeConstructionMember {
+                    boundary: member.boundary,
+                    target_fn: executable_fns[member.target],
+                    target: program.executables[member.target].key.clone(),
+                    surface_inputs: member.surface_inputs.clone(),
+                    capture_semantic_inputs: member.capture_semantic_inputs.clone(),
+                    surface_semantic_inputs: member.surface_semantic_inputs.clone(),
+                    target_inputs: member.target_inputs.clone(),
+                    target_return: member.target_return.clone(),
+                })
+                .collect::<Box<[_]>>();
+            let task_halt_repr = if wrapper.call_arity != 0 {
+                None
+            } else {
+                match members.as_ref() {
+                    [] => None,
+                    [member] if member.target_return.diverges => None,
+                    [member] => member.target_return.layout.reprs.first().copied(),
+                    _ => {
+                        return Err(incomplete_native_program(
+                            telemetry,
+                            root_id,
+                            format!(
+                                "zero-argument callable construction {} has {} members",
+                                wrapper.identity,
+                                members.len(),
+                            ),
+                        ));
+                    }
+                }
+            };
             callable_boundaries.push(NativeCallableBoundary {
                 id: NativeCallableBoundaryId(index as u32),
                 identity_fn,
@@ -169,19 +203,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 capture_reprs: native_construction_capture_reprs(wrapper),
                 call_arity: wrapper.call_arity,
                 return_form: wrapper.return_form,
-                members: wrapper
-                    .members
-                    .iter()
-                    .map(|member| NativeConstructionMember {
-                        target_fn: executable_fns[member.target],
-                        target: program.executables[member.target].key.clone(),
-                        surface_inputs: member.surface_inputs.clone(),
-                        capture_semantic_inputs: member.capture_semantic_inputs.clone(),
-                        surface_semantic_inputs: member.surface_semantic_inputs.clone(),
-                        target_inputs: member.target_inputs.clone(),
-                        target_return: member.target_return.clone(),
-                    })
-                    .collect(),
+                task_halt_repr,
+                members,
                 selection: wrapper.selection.clone(),
             });
         }
@@ -313,16 +336,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 identity: boundary.id.as_u32(),
             },
             NativeEntryAbi::Direct,
-            vec![AbiValueRepr::ValueRef; boundary.capture_reprs.len() + boundary.call_arity],
+            boundary
+                .capture_reprs
+                .iter()
+                .copied()
+                .chain(std::iter::repeat_n(AbiValueRepr::ValueRef, boundary.call_arity))
+                .collect(),
             self.world.types_mut().any(),
             callable_return_reprs(boundary.return_form),
             None,
             EffectSummary::default(),
         );
-        let params = ctx.entry_params(&vec![
-            self.world.types_mut().any();
-            boundary.capture_reprs.len() + boundary.call_arity
-        ]);
+        let mut param_tys = boundary
+            .captures
+            .iter()
+            .flat_map(|capture| capture.layout.tys.iter().copied())
+            .collect::<Vec<_>>();
+        param_tys.extend(std::iter::repeat_n(self.world.types_mut().any(), boundary.call_arity));
+        let params = ctx.entry_params(&param_tys);
         let captures = params[..boundary.capture_reprs.len()].to_vec();
         let args = params[boundary.capture_reprs.len()..].to_vec();
         match &boundary.selection {
@@ -481,13 +512,26 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let mut capture_cursor = 0;
         for (capture_index, capture) in boundary.captures.iter().enumerate() {
             let input = *member.capture_semantic_inputs.get(capture_index).ok_or(FatalError)?;
-            if !matches!(capture.carrier, super::super::pull::TransportCarrier::ValueRef) {
+            let repr_count = capture.layout.reprs.len();
+            if repr_count == 0 {
                 continue;
             }
-            values[input] = Some(NativeBoundValue::Runtime(
-                *captures.get(capture_cursor).ok_or(FatalError)?,
-            ));
-            capture_cursor += 1;
+            let lanes = captures
+                .get(capture_cursor..capture_cursor + repr_count)
+                .ok_or(FatalError)?
+                .to_vec();
+            values[input] = Some(if capture.layout.reprs.as_ref() == [AbiValueRepr::ValueRef] {
+                NativeBoundValue::Runtime(lanes[0])
+            } else {
+                NativeBoundValue::Transport {
+                    shape: capture.layout.structural,
+                    lanes,
+                }
+            });
+            capture_cursor += repr_count;
+        }
+        if capture_cursor != captures.len() {
+            return Err(FatalError);
         }
         if member.surface_semantic_inputs.len() != args.len() {
             return Err(incomplete_native_program(
@@ -613,7 +657,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             member.target_return.layout.reprs.to_vec(),
             self.world.types_mut().any(),
             if member.target_return.layout.reprs.is_empty() {
-                member.target_return.layout.reprs.to_vec()
+                Vec::new()
             } else {
                 callable_return_reprs(boundary.return_form)
             },
@@ -636,14 +680,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let return_lanes = if member.target_return.layout.reprs.is_empty() {
             Vec::new()
         } else {
-            let value = match self.world.shape(member.target_return.layout.structural) {
-                ShapeDescr::Lane(_) => NativeBoundValue::Runtime(*params.first().ok_or(FatalError)?),
-                ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) => NativeBoundValue::Transport {
-                    shape: member.target_return.layout.structural,
-                    lanes: params,
-                },
-                ShapeDescr::Nothing => NativeBoundValue::Absent,
-            };
+            let mut lane_index = 0;
+            let value =
+                self.decode_runtime_value_for_layout(&mut ctx, &member.target_return.layout, &params, &mut lane_index)?;
+            if lane_index != params.len() {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!(
+                        "callable construction {} consumed {} of {} target return lanes",
+                        boundary.id.as_u32(),
+                        lane_index,
+                        params.len(),
+                    ),
+                ));
+            }
             vec![self.materialize_native_value(&mut ctx, None, &value)?]
         };
         ctx.set_term(Term::ReturnLanes(return_lanes));
@@ -1130,24 +1181,28 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         .transpose()?;
                     if let Some(boundary) = callable_boundary {
                         let mut capture_lanes = Vec::new();
-                        let capture_carriers = self.callable_boundaries[boundary.as_u32() as usize]
+                        let capture_layouts = self.callable_boundaries[boundary.as_u32() as usize]
                             .captures
                             .iter()
-                            .map(|slot| slot.carrier)
+                            .map(|slot| slot.layout.clone())
                             .collect::<Vec<_>>();
-                        if capture_carriers.len() != captures.len() {
+                        if capture_layouts.len() != captures.len() {
                             return Err(incomplete_native_program(
                                 self.telemetry,
                                 self.root_id,
                                 "native callable construction capture inventory disagrees with its lambda producer",
                             ));
                         }
-                        for (capture, carrier) in captures.iter().copied().zip(capture_carriers) {
-                            if matches!(carrier, super::super::pull::TransportCarrier::ValueRef) {
-                                let local = env_local_value(env, capture)?;
-                                let ty = executable.value_types.get(&capture).copied();
-                                capture_lanes.push(self.materialize_native_value(ctx, ty, &local)?);
-                            }
+                        for (capture, layout) in captures.iter().copied().zip(capture_layouts) {
+                            let local = env_local_value(env, capture)?;
+                            self.encode_runtime_value_for_layout(
+                                ctx,
+                                executable,
+                                Some(capture),
+                                &local,
+                                &layout,
+                                &mut capture_lanes,
+                            )?;
                         }
                         let var = self.emit_callable_construction(ctx, boundary, capture_lanes);
                         self.bind_runtime_value(ctx, executable, env, *value, var);
@@ -1371,7 +1426,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } => {
                 let callee_value = env.cloned_value(*callee);
                 let direct_capture_lanes =
-                    self.direct_closure_capture_lanes(callee_value.as_ref(), *target, args.len())?;
+                    self.direct_closure_capture_lanes(executable, *callee, callee_value.as_ref(), *target, args.len())?;
                 let direct_call = if let Some(capture_lanes) = direct_capture_lanes {
                     let target = target.ok_or_else(|| {
                         incomplete_native_program(
@@ -3610,6 +3665,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     fn direct_closure_capture_lanes(
         &self,
+        caller: &BackendExecutable,
+        callee: ValueId,
         value: Option<&NativeBoundValue>,
         target: Option<usize>,
         surface_arity: usize,
@@ -3643,8 +3700,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 self.telemetry,
                 self.root_id,
                 format!(
-                    "native exact closure target {:?} requires physical capture inputs, but its callee value is absent",
+                    "native closure call owner={:?} callee={callee:?} bound={value:?} resolves to target={:?} with absent physical identity, but capture input range 0..{capture_inputs_end} has exact layouts {:?}",
+                    caller.key,
                     executable.key,
+                    executable
+                        .semantic_inputs
+                        .iter()
+                        .filter(|input| input.semantic_index < capture_inputs_end)
+                        .collect::<Vec<_>>(),
                 ),
             ));
         }
@@ -4124,8 +4187,7 @@ fn native_construction_capture_reprs(
     wrapper
         .captures
         .iter()
-        .filter(|capture| matches!(capture.carrier, super::super::pull::TransportCarrier::ValueRef))
-        .map(|_| AbiValueRepr::ValueRef)
+        .flat_map(|capture| capture.layout.reprs.iter().copied())
         .collect()
 }
 

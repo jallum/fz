@@ -30,7 +30,9 @@ pub struct ExecutableFacts {
     callsites: HashMap<CallSiteId, CallSiteSummary>,
     callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
     delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
-    local_callable_producers: HashMap<ValueId, LocalCallableProducer>,
+    callsite_return_origins: HashMap<CallSiteId, TransportOrigin>,
+    value_origins: HashMap<ValueId, TransportOrigin>,
+    return_origins: Box<[TransportOrigin]>,
 }
 
 struct DerivedExecutableDemand {
@@ -40,9 +42,80 @@ struct DerivedExecutableDemand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct LocalCallableProducer {
-    function: FunctionId,
-    captures: Box<[ValueId]>,
+pub(crate) enum TransportOrigin {
+    ExecutableInput(usize),
+    LocalValue(ValueId),
+    CallsiteReturn(CallSiteId),
+    PublicCallableReturn(CallSiteId),
+    Join(Box<[TransportOrigin]>),
+    TupleValue(Box<[ValueId]>),
+    TupleField { source: ValueId, index: usize },
+    CallableValue(LocalCallableProducer),
+}
+
+fn trivial_value_clause_ids(body: &LoweredBody, reachable: &[u32]) -> Vec<u32> {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return Vec::new();
+    };
+    (0..clauses.len() as u32)
+        .filter(|clause_id| !reachable.contains(clause_id))
+        .filter(|clause_id| {
+            let clause = &clauses[*clause_id as usize];
+            let entry = &entries[clause.entry.as_u32() as usize];
+            entry.steps.is_empty() && matches!(entry.tail, LoweredTail::Value { .. })
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct LocalCallableProducer {
+    pub(crate) value: ValueId,
+    pub(crate) function: FunctionId,
+    pub(crate) captures: Box<[ValueId]>,
+}
+
+impl ExecutableFacts {
+    pub(crate) fn analysis(&self) -> &ActivationAnalysis {
+        &self.analysis
+    }
+
+    pub(crate) fn body(&self) -> &LoweredBody {
+        &self.body
+    }
+
+    pub(crate) fn callsites(&self) -> &HashMap<CallSiteId, CallSiteSummary> {
+        &self.callsites
+    }
+
+    pub(crate) fn callsite_needs(&self) -> &HashMap<CallSiteId, ExecutableNeed> {
+        &self.callsite_needs
+    }
+
+    pub(crate) fn callsite_return_origin(&self, callsite: CallSiteId) -> Option<&TransportOrigin> {
+        self.callsite_return_origins.get(&callsite)
+    }
+
+    pub(crate) fn value_origin(&self, value: ValueId) -> Option<&TransportOrigin> {
+        self.value_origins.get(&value)
+    }
+
+    pub(crate) fn return_origins(&self) -> &[TransportOrigin] {
+        &self.return_origins
+    }
+
+    fn callable_origin(&self, value: ValueId) -> Option<&LocalCallableProducer> {
+        match self.value_origins.get(&value) {
+            Some(TransportOrigin::CallableValue(producer)) => Some(producer),
+            _ => None,
+        }
+    }
+
+    fn callable_origins(&self) -> impl Iterator<Item = (&ValueId, &LocalCallableProducer)> {
+        self.value_origins.iter().filter_map(|(value, origin)| match origin {
+            TransportOrigin::CallableValue(producer) => Some((value, producer)),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,9 +144,10 @@ impl CallableFlowBuilder {
 
     fn record_direct_demand(&mut self, facts: &ExecutableFacts, value: ValueId, demand: &RuntimeDemand) {
         self.record_direct_surfaces(facts, value, &demand.callable.resolved);
-        if !demand.callable.targets.is_empty() {
+        let targets = &demand.callable.targets;
+        if !targets.is_empty() {
             let mut seen = HashSet::new();
-            self.record_direct_targets_for_value(facts, value, &demand.callable.targets, &mut seen);
+            self.record_direct_targets_for_value(facts, value, targets, &mut seen);
         }
     }
 
@@ -119,7 +193,7 @@ impl CallableFlowBuilder {
         if !seen.insert(value) {
             return;
         }
-        if facts.local_callable_producers.contains_key(&value) {
+        if facts.callable_origin(value).is_some() {
             self.direct_surfaces
                 .entry(value)
                 .or_default()
@@ -145,7 +219,7 @@ impl CallableFlowBuilder {
         if !seen.insert(value) {
             return;
         }
-        if facts.local_callable_producers.contains_key(&value) {
+        if facts.callable_origin(value).is_some() {
             self.first_class_surfaces
                 .entry(value)
                 .or_default()
@@ -171,7 +245,7 @@ impl CallableFlowBuilder {
         if !seen.insert(value) {
             return;
         }
-        if facts.local_callable_producers.contains_key(&value) {
+        if facts.callable_origin(value).is_some() {
             self.direct_targets
                 .entry(value)
                 .or_default()
@@ -513,7 +587,7 @@ fn settle_demand_cone(
     let mut produced_function_readers: HashMap<FunctionId, Vec<&ExecutableKey>> = HashMap::new();
     for member in &members {
         let facts = graph.facts.get(member).expect("every cone member has facts");
-        for producer in facts.local_callable_producers.values() {
+        for (_, producer) in facts.callable_origins() {
             produced_function_readers
                 .entry(producer.function)
                 .or_default()
@@ -700,10 +774,9 @@ fn derive_member_demand(
         &mut derived.demand,
         waits,
     );
-    let boundary_return_demands = Vec::new();
     let boundary_input_demands = callable_boundary_input_demand_contributions_product(world, &derived.demand);
     let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
-    for (target, demand) in return_demand_contributions.into_iter().chain(boundary_return_demands) {
+    for (target, demand) in return_demand_contributions {
         let entry = contributions.entry(target).or_default();
         match &mut entry.return_demand {
             Some(current) => current.join_assign(&demand),
@@ -806,7 +879,9 @@ fn collect_one_executable_facts_product(
     }
 
     let delivered_value_joins = delivered_value_joins(&body);
-    let local_callable_producers = local_callable_producers(&body);
+    let callsite_return_origins = collect_callsite_return_origins(&body);
+    let value_origins = collect_value_origins(&body, &callsite_return_origins);
+    let return_origins = collect_return_origins(&body, &analysis);
     let entry_dispatch_inputs =
         executable_dispatch_input_ordinals(world, activation.function, analysis.reachable_clauses.clone());
     let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
@@ -817,7 +892,9 @@ fn collect_one_executable_facts_product(
         callsites,
         callsite_needs,
         delivered_value_joins,
-        local_callable_producers,
+        callsite_return_origins,
+        value_origins,
+        return_origins,
     });
     Some(facts)
 }
@@ -890,12 +967,17 @@ fn collect_callable_capture_input_sources(
     contribution: &mut HashMap<InputSlot, HashSet<IncomingInputSource>>,
 ) {
     for (&flow_value, flow) in &demand.callable_flows {
-        for resolution in &flow.resolutions {
-            for (index, value) in flow.captures.iter().copied().enumerate() {
+        for edge in flow.direct_edges.iter().chain(&flow.first_class_edges) {
+            for (capture_index, (&semantic_index, value)) in edge
+                .capture_semantic_inputs
+                .iter()
+                .zip(flow.captures.iter().copied())
+                .enumerate()
+            {
                 contribution
                     .entry(InputSlot {
-                        executable: resolution.clone(),
-                        semantic_index: index,
+                        executable: edge.resolution.clone(),
+                        semantic_index,
                     })
                     .or_default()
                     .insert(IncomingInputSource {
@@ -903,7 +985,7 @@ fn collect_callable_capture_input_sources(
                         value,
                         role: IncomingInputRole::CallableCapture {
                             construction: flow_value,
-                            capture_index: index,
+                            capture_index,
                         },
                     });
             }
@@ -998,7 +1080,7 @@ fn derive_callable_flow_facts_for_executable_product(
     // numbering. `ValueId` is assigned by deterministic body construction (not
     // by the type interner), so sorting by it pins the fold order without
     // depending on the very ids this loop mints.
-    let mut producers = facts.local_callable_producers.iter().collect::<Vec<_>>();
+    let mut producers = facts.callable_origins().collect::<Vec<_>>();
     producers.sort_by_key(|(value, _)| **value);
     for (&value, producer) in producers {
         let Some(value_demand) = demand.value_demands.get(&value) else {
@@ -1094,7 +1176,7 @@ fn callable_flow_edges_for_targets(
             surface: target.surface.clone(),
             resolution: ExecutableKey {
                 activation: target.activation.clone(),
-                need: ExecutableNeed::Value,
+                need: target.need,
             },
             capture_semantic_inputs: (0..captures_len).collect(),
             surface_semantic_inputs: (captures_len..captures_len + target.surface.inputs.len()).collect(),
@@ -1135,6 +1217,14 @@ fn callable_boundary_input_demand_contributions_product(
     let mut flows = demand.callable_flows.iter().collect::<Vec<_>>();
     flows.sort_by_key(|(value, _)| **value);
     for (_, flow) in flows {
+        for edge in flow.direct_edges.iter().chain(&flow.first_class_edges) {
+            for (&semantic_index, capture) in edge.capture_semantic_inputs.iter().zip(flow.captures.iter()) {
+                let Some(capture_demand) = demand.value_demands.get(capture) else {
+                    continue;
+                };
+                required.push((edge.resolution.clone(), semantic_index, capture_demand.clone()));
+            }
+        }
         if flow.first_class_surfaces.is_empty() {
             continue;
         }
@@ -1258,14 +1348,9 @@ fn derive_executable_runtime_demand(
     // analysis under-approximates as dead (e.g. a recursive base case whose
     // list slot is over-narrowed) can still reach native lowering and crash
     // when its return value was never marked live. Widen the walked clause
-    // set by the trivial delta `trivial_value_clause_ids` identifies —
-    // shared with `collect_transport_contexts` in transport.rs so the
-    // predicate has one definition.
+    // set by the trivial delta `trivial_value_clause_ids` identifies.
     let mut walked_clauses = facts.analysis.reachable_clauses.clone();
-    walked_clauses.extend(super::transport::trivial_value_clause_ids(
-        &facts.body,
-        &facts.analysis.reachable_clauses,
-    ));
+    walked_clauses.extend(trivial_value_clause_ids(&facts.body, &facts.analysis.reachable_clauses));
     for clause_id in walked_clauses {
         let clause = &clauses[clause_id as usize];
         let mut live = collect_entry_live_demands(
@@ -1467,7 +1552,17 @@ fn collect_entry_live_demands(
             record_call_return_demand(call_return_demands, *callsite, demand);
             tail_call_return = Some((*callsite, *value));
             merge_live_demands(&mut live, external_demands);
-            let callee_callable = closure_callee_demand(world, facts, args.as_slice(), facts.callsites.get(callsite));
+            let callee_callable = closure_callee_demand(
+                world,
+                facts,
+                args.as_slice(),
+                facts.callsites.get(callsite),
+                facts
+                    .callsite_needs
+                    .get(callsite)
+                    .copied()
+                    .unwrap_or(ExecutableNeed::Value),
+            );
             let callee_demand = RuntimeDemand::callable(callee_callable);
             callable_flows.record_direct_demand(facts, *callee, &callee_demand);
             note_live_demand(world, out, &mut live, *callee, callee_demand);
@@ -1686,7 +1781,7 @@ fn continuation_capture_demand(
     mut demand: RuntimeDemand,
 ) -> RuntimeDemand {
     if demand.is_callable()
-        && !facts.local_callable_producers.contains_key(&capture)
+        && facts.callable_origin(capture).is_none()
         && value_is_callable(world, facts, capture)
         && value_depends_on_callsite_return(facts, capture)
         && value_is_closure_callee(&facts.body, capture)
@@ -1885,7 +1980,7 @@ fn delivered_join_has_distinct_callable_producers(
         .sources
         .iter()
         .filter_map(|join_source| match join_source {
-            DeliveredValueSource::LocalValue(value) => facts.local_callable_producers.get(value),
+            DeliveredValueSource::LocalValue(value) => facts.callable_origin(*value),
             DeliveredValueSource::CallsiteReturn(_) => None,
         })
         .collect::<HashSet<_>>();
@@ -2805,8 +2900,7 @@ fn record_first_class_boundary_demand(
             opaque: demand.callable.opaque,
             escape: demand.callable.escape,
         });
-        let may_seed_from_value_type =
-            demand.callable.resolved.is_empty() || facts.local_callable_producers.contains_key(&value);
+        let may_seed_from_value_type = demand.callable.resolved.is_empty() || facts.callable_origin(value).is_some();
         let type_seed = boundary_ty.or_else(|| {
             may_seed_from_value_type
                 .then(|| facts.analysis.value_types.get(&value).copied())
@@ -2832,6 +2926,7 @@ fn closure_callee_demand(
     facts: &ExecutableFacts,
     args: &[CallArg],
     summary: Option<&CallSiteSummary>,
+    need: ExecutableNeed,
 ) -> CallableDemand {
     let actual_inputs: Vec<Ty> = args
         .iter()
@@ -2847,7 +2942,7 @@ fn closure_callee_demand(
     let Some(summary) = summary else {
         let mut demand = CallableDemand {
             resolved: Default::default(),
-            targets: Default::default(),
+            targets: BTreeSet::new(),
             opaque: true,
             escape: false,
         };
@@ -2868,6 +2963,7 @@ fn closure_callee_demand(
                 surface,
                 activation: activation.clone(),
                 activation_inputs: activation_inputs.clone(),
+                need,
             });
         }
     }
@@ -2966,36 +3062,109 @@ fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
     }
 }
 
-fn local_callable_producers(body: &LoweredBody) -> HashMap<ValueId, LocalCallableProducer> {
-    let mut producers = HashMap::new();
+fn collect_callsite_return_origins(body: &LoweredBody) -> HashMap<CallSiteId, TransportOrigin> {
+    let mut origins = HashMap::new();
+    let LoweredBody::Clauses { entries, .. } = body else {
+        return origins;
+    };
+    for entry in entries {
+        match entry.tail {
+            LoweredTail::DirectCall { callsite, .. } => {
+                origins.insert(callsite, TransportOrigin::CallsiteReturn(callsite));
+            }
+            LoweredTail::ClosureCall { callsite, .. } => {
+                origins.insert(callsite, TransportOrigin::PublicCallableReturn(callsite));
+            }
+            _ => {}
+        }
+    }
+    origins
+}
+
+fn collect_value_origins(
+    body: &LoweredBody,
+    callsite_return_origins: &HashMap<CallSiteId, TransportOrigin>,
+) -> HashMap<ValueId, TransportOrigin> {
+    let mut origins = HashMap::new();
     let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return producers;
+        return origins;
     };
     for clause in clauses {
         for step in &clause.projections {
-            if let Some((value, producer)) = step_local_callable_producer(step) {
-                producers.insert(value, producer);
+            if let Some((value, origin)) = step_transport_origin(step) {
+                origins.insert(value, origin);
             }
+        }
+        for (semantic_index, value) in clause.params.iter().copied().enumerate() {
+            origins.insert(value, TransportOrigin::ExecutableInput(semantic_index));
         }
     }
     for entry in entries {
         for step in &entry.steps {
-            if let Some((value, producer)) = step_local_callable_producer(step) {
-                producers.insert(value, producer);
+            if let Some((value, origin)) = step_transport_origin(step) {
+                origins.insert(value, origin);
             }
         }
+        match entry.tail {
+            LoweredTail::DirectCall { value, callsite, .. } | LoweredTail::ClosureCall { value, callsite, .. } => {
+                origins.insert(
+                    value,
+                    callsite_return_origins
+                        .get(&callsite)
+                        .expect("every lowered callsite must have a normalized return origin")
+                        .clone(),
+                );
+            }
+            _ => {}
+        }
     }
-    producers
+    for join in delivered_value_joins(body).into_values() {
+        let mut sources = join
+            .sources
+            .into_iter()
+            .map(|source| match source {
+                DeliveredValueSource::LocalValue(value) => TransportOrigin::LocalValue(value),
+                DeliveredValueSource::CallsiteReturn(callsite) => callsite_return_origins
+                    .get(&callsite)
+                    .expect("every delivered callsite return must have a normalized origin")
+                    .clone(),
+            })
+            .collect::<Vec<_>>();
+        sources.sort_by_key(|source| match source {
+            TransportOrigin::LocalValue(value) => (0, value.as_u32()),
+            TransportOrigin::CallsiteReturn(callsite) => (1, callsite.as_u32()),
+            TransportOrigin::PublicCallableReturn(callsite) => (2, callsite.as_u32()),
+            _ => unreachable!(),
+        });
+        sources.dedup();
+        let origin = match sources.as_slice() {
+            [source] => source.clone(),
+            _ => TransportOrigin::Join(sources.into_boxed_slice()),
+        };
+        origins.insert(join.value, origin);
+    }
+    origins
 }
 
-fn step_local_callable_producer(step: &LoweredStep) -> Option<(ValueId, LocalCallableProducer)> {
+fn step_transport_origin(step: &LoweredStep) -> Option<(ValueId, TransportOrigin)> {
     match step {
+        LoweredStep::Tuple { value, items } => {
+            Some((*value, TransportOrigin::TupleValue(items.clone().into_boxed_slice())))
+        }
+        LoweredStep::TupleField { value, source, index } => Some((
+            *value,
+            TransportOrigin::TupleField {
+                source: *source,
+                index: *index,
+            },
+        )),
         LoweredStep::FunctionRef { value, function } => Some((
             *value,
-            LocalCallableProducer {
+            TransportOrigin::CallableValue(LocalCallableProducer {
+                value: *value,
                 function: *function,
                 captures: Box::default(),
-            },
+            }),
         )),
         LoweredStep::Lambda {
             value,
@@ -3003,13 +3172,77 @@ fn step_local_callable_producer(step: &LoweredStep) -> Option<(ValueId, LocalCal
             captures,
         } => Some((
             *value,
-            LocalCallableProducer {
+            TransportOrigin::CallableValue(LocalCallableProducer {
+                value: *value,
                 function: *function,
                 captures: captures.clone().into_boxed_slice(),
-            },
+            }),
         )),
         _ => None,
     }
+}
+
+fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> Box<[TransportOrigin]> {
+    let LoweredBody::Clauses { clauses, entries, .. } = body else {
+        return Box::default();
+    };
+    let reachable = analysis.reachable_entries.iter().copied().collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let mut origins = Vec::new();
+    let mut pending = analysis
+        .reachable_clauses
+        .iter()
+        .map(|clause| clauses[*clause as usize].entry)
+        .collect::<Vec<_>>();
+    while let Some(entry_id) = pending.pop() {
+        if !reachable.contains(&entry_id) || !seen.insert(entry_id) {
+            continue;
+        }
+        match &entries[entry_id.as_u32() as usize].tail {
+            LoweredTail::Value {
+                value,
+                dest: ControlDestination::Return,
+            } => origins.push(TransportOrigin::LocalValue(*value)),
+            LoweredTail::DirectCall {
+                callsite,
+                dest: ControlDestination::Return,
+                ..
+            } => origins.push(TransportOrigin::CallsiteReturn(*callsite)),
+            LoweredTail::ClosureCall {
+                callsite,
+                dest: ControlDestination::Return,
+                ..
+            } => origins.push(TransportOrigin::PublicCallableReturn(*callsite)),
+            LoweredTail::Value {
+                dest: ControlDestination::Deliver(target),
+                ..
+            }
+            | LoweredTail::DirectCall {
+                dest: ControlDestination::Deliver(target),
+                ..
+            }
+            | LoweredTail::ClosureCall {
+                dest: ControlDestination::Deliver(target),
+                ..
+            } => pending.push(*target),
+            LoweredTail::If {
+                then_entry, else_entry, ..
+            } => pending.extend([*then_entry, *else_entry]),
+            LoweredTail::Dispatch { dispatch, .. } => {
+                pending.extend(dispatch.arm_entries.iter().copied());
+                pending.push(dispatch.miss_entry);
+            }
+            LoweredTail::Receive(receive) => {
+                pending.extend(receive.clauses.iter().map(|clause| clause.entry));
+                pending.extend(receive.after.iter().map(|after| after.entry));
+                if let ControlDestination::Deliver(target) = receive.dest {
+                    pending.push(target);
+                }
+            }
+            LoweredTail::Halt { .. } => {}
+        }
+    }
+    origins.into_boxed_slice()
 }
 
 fn note_live_demand(
@@ -3085,4 +3318,60 @@ fn record_call_return_demand(
 
 fn take_live_demand(live: &mut HashMap<ValueId, RuntimeDemand>, value: ValueId) -> RuntimeDemand {
     live.remove(&value).unwrap_or(RuntimeDemand::ignore())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler2::body::ControlEntryOrigin;
+    use crate::source::Span;
+
+    #[test]
+    fn lowered_call_kind_is_preserved_in_transport_origins() {
+        let direct_callsite = CallSiteId::from_u32(0);
+        let closure_callsite = CallSiteId::from_u32(1);
+        let direct_value = ValueId::from_u32(0);
+        let closure_value = ValueId::from_u32(1);
+        let entry = |tail| LoweredEntry {
+            span: Span::DUMMY,
+            origin: ControlEntryOrigin::Clause,
+            params: Vec::new(),
+            captures: Vec::new(),
+            reusable_cons_captures: Vec::new(),
+            steps: Vec::new(),
+            tail,
+        };
+        let body = LoweredBody::Clauses {
+            clauses: Vec::new(),
+            entries: vec![
+                entry(LoweredTail::DirectCall {
+                    value: direct_value,
+                    callsite: direct_callsite,
+                    callee: FunctionId::for_test(0),
+                    args: Vec::new(),
+                    dest: ControlDestination::Return,
+                }),
+                entry(LoweredTail::ClosureCall {
+                    value: closure_value,
+                    callsite: closure_callsite,
+                    callee: ValueId::from_u32(2),
+                    args: Vec::new(),
+                    dest: ControlDestination::Return,
+                }),
+            ],
+            generated: Vec::new(),
+        };
+
+        let callsite_origins = collect_callsite_return_origins(&body);
+        let value_origins = collect_value_origins(&body, &callsite_origins);
+
+        assert_eq!(
+            value_origins.get(&direct_value),
+            Some(&TransportOrigin::CallsiteReturn(direct_callsite))
+        );
+        assert_eq!(
+            value_origins.get(&closure_value),
+            Some(&TransportOrigin::PublicCallableReturn(closure_callsite))
+        );
+    }
 }

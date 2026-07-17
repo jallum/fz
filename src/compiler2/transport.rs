@@ -278,6 +278,14 @@ pub struct CallableConstructionFact {
     pub(crate) selection: Option<PatternDispatchPlan<Ty>>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallableConstructionOwner {
+    pub layout: TransportLayout,
+    pub construction: Option<CallableConstructionFact>,
+    pub callable_facts: HashMap<CallableId, CallableFacts>,
+    pub boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableConstructionCapture {
     pub source: TransportPosition,
@@ -286,6 +294,7 @@ pub struct CallableConstructionCapture {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableConstructionMember {
+    pub boundary: BoundaryId,
     pub surface_inputs: Box<[Ty]>,
     pub surface_arg_shapes: Box<[ShapeId]>,
     pub resolution: ExecutableSymbol,
@@ -309,8 +318,6 @@ pub struct BoundaryDescr {
     pub published_value_lane: LaneId,
     pub published_capture_lanes: Box<[LaneId]>,
     pub published_arg_lanes: Box<[LaneId]>,
-    pub published_return_shape: ShapeId,
-    pub published_return_lanes: Box<[LaneId]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,9 +361,7 @@ pub enum TransportPosition {
 }
 
 impl TransportPosition {
-    /// The executable that OWNS this position -- the symbol every variant
-    /// carries. Per-executable views (the session's by-symbol transport
-    /// indexes, artifact packaging) key on this.
+    /// The executable that owns this position.
     pub fn executable(&self) -> &ExecutableSymbol {
         match self {
             Self::ExecutableInput { executable, .. }

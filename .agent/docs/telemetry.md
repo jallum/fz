@@ -259,10 +259,8 @@ jq -sr '
 ' /tmp/fz-00181.jsonl
 ```
 
-The job trace is minimal by construction: the legacy `SealSemanticClosure` /
-`DeriveRuntimeDemand` / `DeriveExecutableTransport` / `DeriveTransportPlan` jobs
-do not exist, so no job debug string can name them. The fixture call-edge
-oracle sources its activation set from `Compiler2::product_executable_inventory`
+The fixture call-edge oracle sources its activation set from
+`Compiler2::product_executable_inventory`
 (`compiler.rs`), which drives the root through the product backend path and
 collects `driver.session().materialized_executables()` — there is no separate
 frontier scan.
@@ -290,24 +288,10 @@ identify paths that do not run a producer. `settled` carries the raw
 succeeds. Waiting outcomes do not claim completion. There is no `requested`,
 `produced`, `waited`, or generic `finished` alias.
 
-`[fz, compiler2, executable_transport, projected]`
-(`jobs/transport.rs::emit_transport_component_materialized`) fires only on the
-fresh-materialize path — never on the cache-hit early return — so it is the
-narrower signal: "this executable's transport was (re)projected on this
-drive." The emitter passes the raw `ExecutableKey` and
-`TransportComponentInventory`; handlers derive representative or cardinality.
-The `product.settled` value already owns every produced transport component,
-so there is no second transport-component-produced event. A position outside
-the demanded closure never retriggers `executable_transport.projected`, which
-is the observable form of the cone-scoped bounded-blast-radius property.
-
-`[fz, compiler2, pull, transport_component, closure_solved]`
-(`jobs/transport.rs::emit_transport_closure_solved`) fires when
-`solve_transport_closure` finishes covering an executable's transport
-closure. It carries the raw `SolvedTransportClosure`; a handler derives
-its `executables`, `components`, and `positions` counts. It is the per-solve sizing signal
-for the covering solve that `product.settled` and
-`executable_transport.projected` ride on.
+Transport uses the same product events. A settled `TransportShape(position)` or
+`CallableConstruction(position)` event carries the raw `ProductKey` and
+`ProductValue`; handlers inspect the borrowed position-owned answer directly.
+There is no parallel projection, component, or solve event.
 
 `[fz, compiler2, pull, session, finished]` (`pull.rs::PullSession::emit_finished`,
 called from `ProductDriver::finish_session`) fires once per pull session, when

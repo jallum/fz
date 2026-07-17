@@ -187,7 +187,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             DumpStage::Backend => self.product_backend_program_for_root(root).map(|_| ()),
             // Native dumps share the front-door routing: the guarded product
             // boundary plus a single `LowerNativeProgram` job, never the legacy
-            // seal/transport ladder.
+            // root-wide planning ladder.
             DumpStage::Native => self.native_program_for_root(root).map(|_| ()),
         }
     }

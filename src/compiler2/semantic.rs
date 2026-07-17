@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
+use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -57,7 +57,7 @@ pub struct CallSiteTargets {
 impl CallTargetSummary {
     /// The Kleene reading of a settled summary: evidence absent at the
     /// fixpoint means no value ever flows — the empty type. Only valid
-    /// behind the settled gate (seal/materialization).
+    /// behind the settled materialization gate.
     pub fn settled_return(&self, types: &mut Types) -> Ty {
         self.return_ty.unwrap_or_else(|| types.none())
     }
@@ -213,6 +213,7 @@ pub struct CallableTarget {
     pub surface: CallableSurface,
     pub activation: ActivationKey,
     pub activation_inputs: Vec<Ty>,
+    pub need: ExecutableNeed,
 }
 
 /// Runtime demand specific to callable values, kept separate from generic
@@ -523,7 +524,7 @@ impl ExecutableRuntimeDemand {
     /// a runtime dispatch site, so a phantom polymorphic template that a grounded
     /// sibling already covers must not survive into representation. The
     /// `callable_flows` are grounded at construction (against their direct
-    /// surfaces); this seals the remaining axes a consumer publishes from.
+    /// surfaces); this settles the remaining axes a consumer publishes from.
     pub(crate) fn ground_callable_surfaces(&mut self, types: &Types) {
         self.return_demand.ground_callable_surfaces(types);
         for demand in &mut self.input_demands {

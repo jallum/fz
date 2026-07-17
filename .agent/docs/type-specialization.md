@@ -3,7 +3,7 @@
 This is how compiler2 settles the types inside one activation, and why the set
 of activations stays finite. It is the inference half of the semantic stratum;
 [`semantic-fixpoint`](semantic-fixpoint.md) is the orchestration half (how
-activations are discovered, keyed, and sealed). Read that first — this doc
+activations are discovered, keyed, and settled). Read that first — this doc
 assumes activations and the keying facts.
 
 ## Model

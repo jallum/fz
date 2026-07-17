@@ -32,8 +32,8 @@ use super::body::{
 use super::identity::{ExecutableKey, FunctionId, RootId};
 use super::semantic::ExecutableRuntimeDemand;
 use super::transport::{
-    BoundaryId, CallableId, CodegenSeamFact, ExecutableSymbol, ShapeId, TransportCarrier, TransportLayout,
-    TransportPosition,
+    BoundaryFacts, BoundaryId, CallableConstructionOwner, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol,
+    ShapeId, TransportCarrier, TransportLayout, TransportPosition,
 };
 use super::types::Ty;
 
@@ -64,14 +64,15 @@ pub struct MaterializedTransportPlan {
     pub executable_membership: Box<[ExecutableSymbol]>,
     pub position_layouts: Vec<(TransportPosition, TransportLayout)>,
     pub callable_constructions: Vec<BackendCallableConstruction>,
-    /// Per-callable settled boundary inventory, sourced from the `CallableFacts`
-    /// pull product (`CallableFacts.boundary_ids`). Native callable
-    /// materialization reads boundary selection from here; it never re-opens the
-    /// legacy root transport plan.
+    /// Per-callable boundary inventory projected from position-owned callable
+    /// construction products.
     pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
     pub boundary_ids: Vec<BoundaryId>,
     pub publication_boundaries: Vec<(TransportPosition, BoundaryId)>,
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
+    pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
+    pub callable_facts: HashMap<CallableId, CallableFacts>,
+    pub boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,7 @@ pub struct BackendCallableConstruction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendCallableConstructionMember {
+    pub boundary: BoundaryId,
     pub surface_inputs: Box<[Ty]>,
     pub surface_arg_shapes: Box<[ShapeId]>,
     pub resolution: ExecutableSymbol,
@@ -112,6 +114,7 @@ pub enum BackendCallableReturn {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionMemberAdapter {
+    pub boundary: BoundaryId,
     pub surface_inputs: Box<[Ty]>,
     pub surface_arg_shapes: Box<[ShapeId]>,
     pub target: usize,
@@ -149,7 +152,7 @@ pub struct BackendCallableCapture {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionCapture {
-    pub carrier: TransportCarrier,
+    pub layout: BackendValueLayout,
 }
 
 impl MaterializedTransportPlan {
@@ -173,6 +176,7 @@ impl MaterializedTransportPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedExecutableTransport {
     pub executable: ExecutableSymbol,
+    pub position_layouts: Vec<(TransportPosition, TransportLayout)>,
     pub input_positions: Vec<TransportPosition>,
     pub return_position: TransportPosition,
     pub resume_positions: Vec<TransportPosition>,
@@ -180,6 +184,14 @@ pub struct MaterializedExecutableTransport {
     pub entry_capture_positions: Vec<TransportPosition>,
     pub call_arg_positions: Vec<TransportPosition>,
     pub value_positions: Vec<TransportPosition>,
+}
+
+impl MaterializedExecutableTransport {
+    pub fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
+        self.position_layouts
+            .iter()
+            .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -301,6 +313,12 @@ pub struct BackendProgram {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RootBackendProductAnswer {
+    pub program: BackendProgram,
+    pub transport: MaterializedTransportPlan,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MacroExecutable {
     pub root: RootId,
     pub backend_revision: u64,
@@ -379,12 +397,14 @@ pub(crate) struct NativeCallableBoundary {
     pub capture_reprs: Box<[AbiValueRepr]>,
     pub call_arity: usize,
     pub return_form: BackendCallableReturn,
+    pub task_halt_repr: Option<AbiValueRepr>,
     pub members: Box<[NativeConstructionMember]>,
     pub(crate) selection: Option<crate::dispatch_matrix::pattern::PatternDispatchPlan<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeConstructionMember {
+    pub boundary: BoundaryId,
     pub target_fn: FnId,
     pub target: ExecutableKey,
     pub surface_inputs: Box<[Ty]>,
@@ -431,6 +451,13 @@ pub struct AbiReadyExecutable {
     pub effects: EffectSummary,
     pub body: LoweredBody,
     pub call_edges: HashMap<CallSiteId, AbiReadyCallEdge>,
+    pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PositionedCallableConstructionOwner {
+    pub position: TransportPosition,
+    pub owner: CallableConstructionOwner,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

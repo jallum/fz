@@ -23,9 +23,7 @@ pub(crate) struct NativeCallableBoundarySurface {
     pub capture_key: Vec<crate::types::KeySlot<crate::compiler2::Ty>>,
     pub capture_reprs: Vec<ArgRepr>,
     pub arg_reprs: Vec<ArgRepr>,
-    pub return_diverges: bool,
-    pub return_reprs: Vec<ArgRepr>,
-    pub return_tuple_arity: Option<usize>,
+    pub task_halt_repr: Option<ArgRepr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -60,11 +60,9 @@ fn clif_output_observes_populated_functions() {
     assert!(observed.iter().all(|function| function.contains("block0")));
 }
 
-/// The user-facing `types`/`activations` dumps are served from the PRODUCT-PATH
-/// activation inventory (`emit_product_semantic_dumps`). There is no legacy
-/// semantic-closure seal to route around — it was deleted (fz-go4.18.4). This
-/// pins that the product dump producer emits the per-activation dump events and
-/// that they carry the real root-owned activation facts.
+/// The user-facing `types`/`activations` dumps are served from the product-path
+/// activation inventory (`emit_product_semantic_dumps`). The product dump
+/// producer emits per-activation events carrying the root-owned facts.
 #[test]
 fn semantic_dumps_serve_from_the_product_path() {
     let tel = ConfiguredTelemetry::new();

@@ -1225,7 +1225,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         .iter()
                         .copied()
                         .zip(wrapper.captures.iter())
-                        .filter(|(_, capture)| matches!(capture.carrier, TransportCarrier::ValueRef))
+                        .filter(|(_, capture)| !capture.layout.reprs.is_empty())
                         .map(|(capture, _)| env_get(transport, runtime.cur_proc(), env, capture))
                         .collect::<Result<Vec<_>, _>>()?;
                     construction_callable_value(runtime.cur_proc(), program, *construction, &physical_captures)?
@@ -1903,7 +1903,7 @@ fn construction_callable_value(
     let capture_count = wrapper
         .captures
         .iter()
-        .filter(|capture| matches!(capture.carrier, TransportCarrier::ValueRef))
+        .filter(|capture| !capture.layout.reprs.is_empty())
         .count();
     if captures.len() != capture_count {
         return Err(format!(
@@ -2023,7 +2023,7 @@ impl ConstructionInputEncoder<'_> {
             .wrapper
             .captures
             .iter()
-            .filter(|capture| matches!(capture.carrier, TransportCarrier::ValueRef))
+            .filter(|capture| !capture.layout.reprs.is_empty())
             .count();
         if self.wrapper.captures.len() != self.member.capture_semantic_inputs.len()
             || captures.len() != physical_capture_count
@@ -2049,7 +2049,7 @@ impl ConstructionInputEncoder<'_> {
                     self.wrapper.identity, self.target_index
                 )
             })?;
-            if matches!(capture.carrier, TransportCarrier::ValueRef)
+            if !capture.layout.reprs.is_empty()
                 && slot
                     .replace(physical_captures.next().ok_or_else(|| {
                         format!(

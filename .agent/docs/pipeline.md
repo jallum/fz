@@ -53,9 +53,8 @@ product   RootBackendProduct(root)
             effect summary over the symbolic call-edge closure demanded by E
           RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
             request-local representation demand and input-source accounting
-          TransportShape(position), TransportComponent(position),
-          CallableFacts(id), BoundaryFacts(id)
-            addressable transport and callable-boundary products
+          TransportShape(position), CallableConstruction(position)
+            position-owned transport layouts and callable construction facts
 ```
 
 The product inventory is not a root projection stack. A demanded executable forms
@@ -67,24 +66,23 @@ BackendExecutable(E)
   <- AbiExecutable(E)
      <- MaterializedExecutable(E)
      <- ExecutableEffects(E)
-     <- TransportShape/TransportComponent positions named by E
+     <- TransportShape/CallableConstruction positions named by E
      <- RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
 ```
 
 `RootBackendProduct(root)` is the final assembly boundary. It keys the root
 entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
-callable entries already recorded in the request-local `PullSession`, assigns
-dense executable indices, and packages the `BackendProgram`. There is no root
-semantic-closure seal or root transport-plan fact: the legacy
-`SealSemanticClosure`/`DeriveTransportPlan`/`DeriveExecutableTransport`/
-`DeriveRuntimeDemand` jobs and their `SemanticClosed`/`TransportPlan`/
-`ExecutableTransport`/`RuntimeDemand`/`InputSources` facts do not exist;
-the product pull path is the only artifact path.
+positioned callable owners embedded in each reached backend product, assigns
+dense executable indices, and publishes one `RootBackendProductAnswer`. That
+answer owns both the symbolic `MaterializedTransportPlan` and the closed runtime
+`BackendProgram`; runtime consumers project only the program. The product pull
+path is the only artifact path.
 
-A callable boundary's return ABI belongs to its selected `BackendExecutable`:
-native lowering reads that executable's return transport position directly. A
-boundary may carry publication facts, but it must never impose a second return
-representation on the target body.
+A callable target keeps its exact private return layout. A first-class callable
+wrapper publishes one uniform contract: `Diverges`, `Absent`, or one `ValueRef`
+for every nonempty returning result. Native lowering decodes the private target
+layout and materializes the public word once; no consumer derives a second
+return contract from semantic types or target enumeration.
 
 The planning artifact `../pull-based.html` documents the pull-based design
 and remains available as a reference; this doc and `northstar.html` are the
@@ -118,7 +116,7 @@ submit_root(main/0)
         pulls ExecutableEffects(E)
         pulls EntryCapture, resume, input, return, and callable-boundary transport products
       lowers one symbolic backend executable
-    packages the request-local symbolic executable inventory into BackendProgram(root)
+    follows exact reachable backend products and publishes RootBackendProductAnswer(root)
 ```
 
 Each fact wait names the exact prerequisite: `LowerFunction` /
@@ -303,10 +301,8 @@ Growth across that line is represented by another named product/fact wait, not
 by a root pass.
 
 Backend-required transport positions wait for an actual produced
-`TransportShape(position)`, not merely for the position to appear in
-`PullSession.demanded_transport_positions`. `TransportComponent(position)` can
-name equivalent positions before every shape has been produced; backend and ABI
-products consume shapes, so their waits must test `PullSession::transport_shape`.
+`TransportShape(position)`. Backend and ABI products consume layouts, so their
+waits test the exact position product.
 Product entries retain exact product generations and fact-use states. Producers
 record dependencies at the read site; waits name those reads without restamping
 or rereading the world. Scheduler movements are reconciled to their final exact
@@ -321,47 +317,21 @@ for the exact current frontier generation. `IncomingInputSlot(slot)`
 projects one exact value from it. Replacement, withdrawal, and equal reproduction use the
 ordinary product-generation rules; there is no append-only call-edge inventory.
 
-The shape-constraint graph behind those products is solved ONCE per settled
-executable closure, not once per pulled position. The first component pull
-whose executable has no covering solve expands the closure, projects every
-member, solves the whole union, and records the complete result — every
-connected component (member positions, canonical representative, agreed
-shape), its boundary-publication positions, and all callable/boundary facts —
-as a `SolvedTransportClosure` in the session, emitting
-`pull.transport_component.closure_solved`. Every later
-`TransportComponent(position)` pull for a covered executable materializes its
-component from that record (a covered position absent from the solve is
-proven unconstrained and gets a singleton), so solve count tracks live closures,
-not positions. The singleton proof rests on a load-bearing lemma:
-a materialized body is a position-preserving PRUNE of the
-lowered body in original-id space (`prune_lowered_body` keeps value/callsite
-ids and maps entries through `original_entry_ids`), so a body swap can only
-REMOVE positions and edges, never add them — absence from the covering solve
-therefore stays a proof of unconstrained. If pruning ever renumbers values or
-synthesizes positions, this proof breaks.
+Each `TransportShape(position)` producer owns one exact answer. It reads the
+position owner's `ExecutableFacts`, settled `RuntimeDemand`, and only the
+upstream position products named by the normalized origin. `ExecutableFacts`
+distinguishes direct call returns from public callable returns before transport:
+direct returns refine from the selected target position, while public returns
+project every nonempty result to `ValueRef`. Recursive position dependencies are
+settled as one atomic product group from external anchors, so no member observes
+a partial result. `CallableConstruction(position)` uses the same position-owned
+layout and carries the callable and boundary facts for that construction; there
+is no root solve, component inventory, or absence-provenance side channel.
 
-Plan completeness is order-independent by construction. Every fact a closure
-solve reads is recorded in a consulted-facts ledger at the read site, split by
-retraction channel. Session-product reads (RuntimeDemand values,
-IncomingInputSlot values) register their owning executable; on completion the
-solve cross-registers those owners against its membership
-and exact world-fact reverse indexes. A moved session-product owner retracts
-closures containing that member or registered as readers of that owner; an
-exact world-fact movement retracts closures registered against that fact.
-Unrelated closures remain valid.
-World movements arrive from the scheduler as borrowed `FactMovement` values:
-one exact final `FactState` per moved key, read directly from the scheduler's
-`FactTable` after propagation. Product reconciliation therefore depends on
-neither transition-stack order nor a world reread. Boundary-publication carrier
-evidence is read only from the covering solved closure and dies when that
-closure is replaced or retracted. Intrinsic callable callsite mode is read from
-the authoritative `LoweredBody`, never from an optional pruned materialization.
-A position the
-solve fails to ground records `TransportShapeFact::AbsentForClosure(id)` —
-provenance naming the solve, never a bare terminal absence — so the verdict
-dies with the solve that produced it. Because the discovery graph and the
-retraction graph are the same graph, the solve's expansion emits waits in
-whatever order the waiting subset iterates: no schedule is load-bearing.
+World movements arrive from the scheduler as borrowed `FactMovement` values,
+one exact final `FactState` per moved key. Product generations and reader edges
+invalidate only products that consumed a changed fact or product. Equal
+reproduction preserves generations, and unrelated products remain valid.
 
 Runtime demand is what makes that line precise for *representation*. A semantic
 fact — an activation, a callsite summary, an exact callable surface — is
@@ -447,9 +417,10 @@ stages do not derive either component by rescanning semantic types or lowered
 bodies.
 
 `CallableFlowFact` is the semantic authority for one producer construction. It
-keeps the producer's function and captures correlated with its resolved members,
-semantic input mappings, direct uses, public uses, and consumer-owned result
-demand. Direct-call compatibility does not erase a value's first-class state.
+keeps the producer's function and captures correlated with direct and
+first-class surfaces, resolved members, and semantic input mappings. Transport
+projects these facts and never recovers them from callable types or callsite
+scans.
 
 The next products narrow the contract:
 
@@ -462,9 +433,10 @@ The next products narrow the contract:
 - `BackendExecutable(E)` reads `AbiExecutable(E)` and lowers one symbolic
   backend executable. Direct calls remain symbolic executable keys until final
   packaging.
-- `RootBackendProduct(root)` packages the request-local symbolic inventory into
-  dense `BackendProgram` indices and closed `BackendValueLayout` contracts.
-  Symbolic `TransportPosition`s end here. This is the interpreter-ready handoff.
+- `RootBackendProduct(root)` traverses exact reachable `BackendExecutable`
+  product values and packages them into dense `BackendProgram` indices and
+  closed `BackendValueLayout` contracts. Its answer retains the symbolic plan;
+  the program is the interpreter-ready projection.
 - `NativeProgram(root)` is the native-specific projection above
   `BackendProgram(root)`: it carries direct executable bodies, clause helpers,
   continuations, construction wrappers, native body return contracts, and
@@ -476,8 +448,9 @@ first-class producer. Boundary publication follows first-class callable
 surfaces, independently of whether any member returns. The wrapper owns all
 resolved members, retained captures, semantic input mappings, private member
 layouts, member selection, and one public return form: `Diverges`, `Absent`, or
-`ValueRef`. Mixed public return forms are invalid; the public form is not copied
-from one private member or reconstructed from a semantic return type.
+`ValueRef`. Every nonempty returning member adapts to that one public word;
+mixed empty and nonempty returning members are invalid. The public form is not
+copied from one private member or reconstructed from a semantic return type.
 
 Construction identity is allocation-only. `MakeFnRef` or `MakeClosure` selects
 the producer wrapper when the runtime object is created; the resulting code
@@ -489,11 +462,11 @@ Packaged call flow is `NoReturn`, `Tail`, `Continue { source }`, or
 `Deliver { source, entry }`. Every settled-empty callsite or exact target
 publishes `NoReturn` before physical packaging, including public indirect
 calls. A local target's return endpoint must independently agree that it
-diverges. `Continue` and `Deliver` carry the sealed source return layout; a
+diverges. `Continue` and `Deliver` carry the resolved source return layout; a
 divergent target carries no delivery layout and creates no continuation. Native
 callable wrappers likewise tail-call divergent members while returning members,
 including returning zero-lane members, retain their return adapters. The caller
-executable or destination entry already owns its sealed layout. Native adapters
+executable or destination entry already owns its layout. Native adapters
 consume those contracts directly and never scan endpoints, positions, types, or
 `World` to rebuild them. The backend interpreter follows the selected target's
 `ControlDestination` only if that target returns.
@@ -534,10 +507,11 @@ requested product.
 - `AbiExecutable(E)` may consume only `MaterializedExecutable(E)`,
   `ExecutableEffects(E)`, exact transport products, and the world-owned type
   store.
-- `BackendExecutable(E)` may consume only `AbiExecutable(E)`, request-local
-  transport facts, and the world-owned type store.
+- `BackendExecutable(E)` may consume only `AbiExecutable(E)` and its embedded
+  positioned transport answers.
 - `RootBackendProduct(root)` may consume only `RootEntry(root)`/entry key facts
-  and the request-local backend executable inventory.
+  and exact `BackendExecutable(E)` products reached through their symbolic call
+  edges and positioned callable owners.
 
 If backend code needs to ask semantic, reachability, callee-selection, or
 type-inference questions after that line, the product contract is incomplete or
@@ -584,7 +558,7 @@ backend program facts, and `NativeBody.extern_marshals`.
 The same rule applies to native return delivery. `NativeBody.return_reprs` is
 the published result contract for a native body. Native lowering consumes the
 packaged `BackendReturnFlow`; `NoReturn` emits a tail call without a
-continuation, while `Continue` and `Deliver` carry their sealed source layout and
+continuation, while `Continue` and `Deliver` carry their resolved source layout and
 the caller executable or destination entry owns the other side of the adapter.
 Codegen does not rediscover ABI at individual tailcall or callable entry sites.
 
@@ -606,8 +580,7 @@ Current conclusion from the code:
 - the native/JIT/AOT front doors reach `NativeProgram(root)` through the same
   product boundary as interp: `native_program_for_root` runs the single demanded
   `LowerNativeProgram(root)` job, which builds `BackendProgram(root)` via the
-  product driver (`build_backend_product`). There is no legacy seal/transport
-  ladder to avoid: those jobs do not exist
+  product driver (`build_backend_product`)
 - `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
   `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
   `main/0`, and never reopen old planner or type-infer work; `fz2 test`

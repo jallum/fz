@@ -184,9 +184,7 @@ ProductKey =
   IncomingInputRelations(root)
   IncomingInputSlot(slot)
   TransportShape(position)
-  TransportComponent(position)
-  CallableFacts(id)
-  BoundaryFacts(id)
+  CallableConstruction(position)
 
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
@@ -195,11 +193,17 @@ The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled
 `ReturnType(A)`"; it may not schedule unrelated work under another name.
 Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
-and `RuntimeDemand(E)` each discover the dependency group containing `E` from
-settled call-edge facts, run a bottom-start monotone ascent to the fixpoint,
-and memoize the settled value for every member at once. Each memo entry carries
-its immutable value, generation, exact product generations, and exact fact-use
-states. Equal reproduction preserves its generation. Settled demand retracts
+and `RuntimeDemand(E)` discover executable dependency groups from settled
+call-edge facts; recursive `TransportShape(position)` and
+`CallableConstruction(position)` products settle their position groups from
+external anchors. Each group publishes every member atomically. Each memo entry
+carries its immutable value, generation, exact product generations, and exact
+fact-use states. Every member of a settled group retains the union of the
+group's external product and fact dependencies when every duplicate dependency
+state agrees; a mixed-generation or mixed-fact-state snapshot publishes nothing
+and retries from fresh reads. Internal back-edges disappear only after that
+concordance check. Product or fact movement discards pending reader snapshots
+and unregisters their edges before retry. Equal reproduction preserves its generation. Settled demand retracts
 when re-materialization resolves a call edge outside the settlement's callee
 inventory, or when a settlement's own publication grows the join of an
 external input it consumed — then the producer re-collects with the displaced
@@ -208,19 +212,23 @@ waits are satisfied at the Compiler2 front door by driving only the direct fact
 producer needed for that exact fact, while deferring forbidden root artifact
 jobs for the submitted root.
 
-`PullSession` is request-local product state. It memoizes produced products and
-records the symbolic inventory discovered by demanded products: materialized,
-ABI, and backend executables; runtime demand; transport
-shapes/components; callable/boundary facts; and the final dense executable
-index. The final dense `BackendProgram` packaging is the only root-wide assembly
-step. It packages the symbolic backend executables already present in the
-session; it does not scan the fact table to rediscover artifact membership.
+`PullSession` owns the request-local product memo and scheduling relations used
+to reproduce moved products. A `TransportShape(position)` answer remains in its
+memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
+positioned layout answers it consumed; `AbiReadyExecutable` refines that set and
+embeds each callable-construction answer with its position; and
+`SymbolicBackendExecutable` carries both values unchanged. The root backend
+producer traverses its exact reachable backend-product values, then densifies
+their embedded layouts and callable owners into one root product answer. The
+answer retains that `MaterializedTransportPlan` beside the closed
+`BackendProgram`; runtime consumers project only the program.
+There is no parallel session map of transport positions, shapes, layouts,
+callable boundaries, or recursive groups, and final packaging does not scan the
+fact table or memo to rediscover them.
 Outgoing publication is an order-free requested-publisher set plus immutable
 per-publisher slot-source maps. `IncomingInputRelations(root)` derives the
 immutable request-relative slot/source relation for the exact current frontier
-generation; each `IncomingInputSlot(slot)` projects one exact value. Transport closure
-indexes retract only closures owned by a moved
-member, session-product owner, or exact world fact.
+generation; each `IncomingInputSlot(slot)` projects one exact value.
 Runtime-demand products also record the other runtime-demand products they read.
 When one settles to a changed value, only those recorded dependents are
 invalidated; if a product is invalidated while in progress, the pull driver

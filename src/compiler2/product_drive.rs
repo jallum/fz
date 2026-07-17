@@ -72,8 +72,7 @@ pub(crate) trait ProductDriveError: Sized {
 /// Drives `root`'s `RootBackendProduct` to a settled `BackendProgram` through
 /// the guarded product boundary, returning the program together with the
 /// finished-but-not-yet-emitted driver so a caller can read the accumulated
-/// session (e.g. the materialized executable inventory) before calling
-/// `ProductDriver::finish_session`.
+/// product memo before calling `ProductDriver::finish_session`.
 pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &'a T,
@@ -114,10 +113,10 @@ pub(super) fn drive_root_backend_product_with_budgets<
             driver.pull(&mut producers, current.clone())
         };
         match outcome {
-            PullOutcome::Produced(ProductValue::RootBackendProduct(program)) if current == root_key => {
+            PullOutcome::Produced(ProductValue::RootBackendProduct(answer)) if current == root_key => {
                 driver.session_mut().record_work_starts(world.work_start_tally());
                 ExecutionContext::new(world, tel).flush_reported_warnings();
-                return Ok((*program, driver));
+                return Ok((answer.program, driver));
             }
             PullOutcome::Produced(_) => {}
             PullOutcome::Waiting(mut waits) => {

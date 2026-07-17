@@ -451,10 +451,7 @@ impl World {
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
         let changed = dedupe_job_facts(changed);
         // Captured before `outputs` moves into `complete`: the two record
-        // sites that keep `activation_frontier` in lockstep with the fact
-        // table, mirrored on the publish/settle pair the way
-        // `insert_transport_shape`/`remove_transport_shape` keep their own
-        // by-symbol index coherent.
+        // sites keep `activation_frontier` in lockstep with the fact table.
         let activation_published: Vec<ActivationKey> = outputs
             .iter()
             .filter_map(|fact| match fact {

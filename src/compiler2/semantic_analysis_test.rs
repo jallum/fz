@@ -1,52 +1,15 @@
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
 
 use super::drive_test::{CallsiteCapture, FunctionCapture, assert_resolved, function_id};
-use super::job_budget_guard::JobBudgetGuard;
-use super::{CallSiteSummary, ExecutableKey, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
+use super::{CallSiteSummary, ExecutableNeed, FactKey, FunctionId, Job, RootId, SelectedCallee, World};
 use crate::telemetry::ConfiguredTelemetry;
-
-/// Captures the executable behind every `executable_transport.projected`
-/// event: the set of executables whose transport component was freshly
-/// materialized by a drive (a cache-served pull emits nothing). `clear()`
-/// between drives isolates one drive's blast radius from the next. This is
-/// the product-path successor to the legacy `executable_transport.derived`
-/// signal (native cutover moved off that spine; see fz-go4.18.11).
-struct TransportProjectedCapture {
-    executables: Rc<RefCell<Vec<ExecutableKey>>>,
-}
-
-impl TransportProjectedCapture {
-    fn new() -> Self {
-        Self {
-            executables: Rc::new(RefCell::new(Vec::new())),
-        }
-    }
-
-    fn install(&self, telemetry: &ConfiguredTelemetry) {
-        let executables = Rc::clone(&self.executables);
-        telemetry.attach_raw_event2::<ExecutableKey, super::pull::TransportComponentInventory, _>(
-            &["fz", "compiler2", "executable_transport", "projected"],
-            move |_, _, _, executable, _| executables.borrow_mut().push(executable.clone()),
-        );
-    }
-
-    fn clear(&self) {
-        self.executables.borrow_mut().clear();
-    }
-
-    fn executables(&self) -> Vec<ExecutableKey> {
-        self.executables.borrow().clone()
-    }
-}
 
 /// fz-hwn.19.2.4.12: a `defimpl` nested in a module the program never reaches by
 /// name (`Mini`) used to be dropped — `DefineModule` is demand-gated, nothing
 /// referenced `Mini`, so its impl never registered into `Susp`'s dispatch. The
 /// `Susp.run([..])` call then found an empty dispatch and waited forever on the
-/// *receiver type's* module (`List`), which never grows a `Susp` arm. Three jobs
-/// (`SealSemanticClosure`, `AnalyzeActivation(make)`, `DefineModule`) livelocked.
+/// *receiver type's* module (`List`), which never grows a `Susp` arm. Activation
+/// analysis and provider definition livelocked.
 ///
 /// The provider index fixes this: scope time records "Mini provides Susp-for-List"
 /// as resolved ids, and the protocol call demands `DefineModule(Mini)` — the real
@@ -483,10 +446,9 @@ fn main(), do: 1
     );
 }
 
-/// Drives the root's whole closure to settlement through the backend product,
-/// the demand-driven pull that now stands where the legacy seal did: its
-/// internal pull loop settles every reachable activation's analysis before it
-/// packages the product, so a resolved drive proves the closure converged.
+/// Drives the root's reachable activation set to settlement through the backend
+/// product. A resolved drive proves every reachable analysis converged before
+/// packaging.
 fn drive_until_semantic_closure(world: &mut World, tel: &ConfiguredTelemetry, root: RootId, message: &str) {
     world.demand(Job::BuildBackendProduct(root));
     assert_resolved(super::drive::ExecutionContext::new(world, tel).drive(), message);
@@ -594,84 +556,6 @@ end
     assert!(
         displayed.contains("int") && displayed.contains("binary"),
         "main/0 should return the captured branch-joined union of int and string, got `{displayed}`",
-    );
-}
-
-#[test]
-fn compiler2_adding_a_defimpl_reprojects_only_the_cone_its_dispatch_reaches() {
-    let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let functions = FunctionCapture::new();
-    functions.install(&tel);
-    let transport = TransportProjectedCapture::new();
-    transport.install(&tel);
-    // Livelock backstop: if cone-scoped re-derivation ever loops, this names the
-    // runaway job kind instead of hanging the drive.
-    let job_guard = JobBudgetGuard::new();
-    job_guard.install(&tel);
-
-    let mut world = World::new();
-    world.submit_code(
-        Some("blast_radius_v1.fz".to_string()),
-        r#"
-defprotocol Shout do
-  @spec say(t(a)) :: a
-  fn say(x)
-end
-
-defimpl Shout, for: Integer do
-  fn say(n), do: n
-end
-
-fn lonely(a, b), do: a + b
-
-fn quiet(), do: lonely(3, 4)
-
-fn shouty() do
-  picked = if true, do: 1, else: "two"
-  Shout.say(picked)
-end
-
-fn main() do
-  shouty()
-  quiet()
-end
-"#
-        .to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    world.demand(Job::LowerNativeProgram(root));
-    assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-        "drive 1 with one Shout impl should settle the transport plan",
-    );
-
-    let lonely_id = function_id(&functions, "lonely", 2);
-    let s1 = transport.executables();
-    assert!(
-        s1.iter().any(|executable| executable.activation.function == lonely_id),
-        "lonely's transport must be derived on the first drive; saw {s1:?}",
-    );
-
-    transport.clear();
-    world.submit_code(
-        Some("blast_radius_v2.fz".to_string()),
-        r#"
-defimpl Shout, for: String do
-  fn say(s), do: s
-end
-"#
-        .to_string(),
-    );
-    world.demand(Job::LowerNativeProgram(root));
-    assert_resolved(
-        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
-        "drive 2 adding the String impl should re-settle the transport plan",
-    );
-
-    let s2 = transport.executables();
-    assert!(
-        !s2.iter().any(|executable| executable.activation.function == lonely_id),
-        "bounded blast radius: adding an unrelated defimpl must NOT re-derive lonely's transport; re-derived {s2:?}",
     );
 }
 

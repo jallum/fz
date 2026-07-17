@@ -8,7 +8,7 @@ use crate::compiler2::artifact::{
     NativeConstructionMember, NativeEntryAbi, NativeProgram,
 };
 use crate::compiler2::pull::TransportCarrier;
-use crate::compiler2::transport::{LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore};
+use crate::compiler2::transport::{BoundaryId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore};
 use crate::compiler2::types::Ty;
 use crate::fz_ir::{
     Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
@@ -158,7 +158,9 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             capture_reprs: Box::default(),
             call_arity: 1,
             return_form: BackendCallableReturn::ValueRef,
+            task_halt_repr: None,
             members: Box::new([NativeConstructionMember {
+                boundary: BoundaryId::for_test(0),
                 target_fn: entry_fn,
                 target: executable.clone(),
                 surface_inputs: Box::new([int]),
@@ -326,7 +328,9 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             capture_reprs: Box::default(),
             call_arity: 1,
             return_form: BackendCallableReturn::ValueRef,
+            task_halt_repr: None,
             members: Box::new([NativeConstructionMember {
+                boundary: BoundaryId::for_test(0),
                 target_fn: entry_fn,
                 target: executable.clone(),
                 surface_inputs: Box::new([int]),

@@ -11,8 +11,8 @@ use std::rc::Rc;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::artifact::{
-    AbiReadyExecutable, BackendCallArg, BackendProgram, BackendReceive, BackendStep, CallEdge, CallReturnFlow,
-    EffectSummary, MaterializedExecutable, ReusableConsCapture,
+    AbiReadyExecutable, BackendCallArg, BackendReceive, BackendStep, CallEdge, CallReturnFlow, EffectSummary,
+    MaterializedExecutable, ReusableConsCapture, RootBackendProductAnswer,
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
@@ -23,10 +23,7 @@ use super::identity::{ExecutableKey, RootId};
 use super::jobs::runtime_demand::ExecutableFacts;
 use super::scheduler::WorkStartTally;
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
-use super::transport::{
-    BoundaryFacts, BoundaryId, CallableConstructionFact, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol,
-    ShapeId, TransportPosition,
-};
+use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
 use super::world::World;
 
@@ -50,17 +47,7 @@ pub enum ProductKey {
     IncomingInputRelations(RootId),
     IncomingInputSlot(InputSlot),
     TransportShape(TransportPosition),
-    TransportComponent(TransportPosition),
-    CallableFacts(CallableId),
-    BoundaryFacts(BoundaryId),
-    /// The session's published codegen seam facts, over every boundary
-    /// recorded in `PullSession::boundary_facts_inventory` so far. Computed
-    /// once per root per invalidation epoch (see `record_boundary_facts`),
-    /// not once per executable production: both
-    /// `produce_materialized_executable_product` and
-    /// `produce_abi_executable_product` pull this instead of rebuilding and
-    /// sorting the full seam-fact set on every call.
-    CodegenSeamFacts(RootId),
+    CallableConstruction(TransportPosition),
 }
 
 impl ProductKey {
@@ -78,10 +65,7 @@ impl ProductKey {
             Self::IncomingInputRelations(_) => "incoming_input_relations",
             Self::IncomingInputSlot(_) => "incoming_input_slot",
             Self::TransportShape(_) => "transport_shape",
-            Self::TransportComponent(_) => "transport_component",
-            Self::CallableFacts(_) => "callable_facts",
-            Self::BoundaryFacts(_) => "boundary_facts",
-            Self::CodegenSeamFacts(_) => "codegen_seam_facts",
+            Self::CallableConstruction(_) => "callable_construction",
         }
     }
 
@@ -99,17 +83,7 @@ impl ProductKey {
             | Self::OutgoingEdgeFrontier(_)
             | Self::IncomingInputRelations(_)
             | Self::TransportShape(_)
-            | Self::TransportComponent(_)
-            | Self::CallableFacts(_)
-            | Self::BoundaryFacts(_)
-            | Self::CodegenSeamFacts(_) => None,
-        }
-    }
-
-    fn transport_position(&self) -> Option<&TransportPosition> {
-        match self {
-            Self::TransportShape(position) | Self::TransportComponent(position) => Some(position),
-            _ => None,
+            | Self::CallableConstruction(_) => None,
         }
     }
 }
@@ -117,21 +91,18 @@ impl ProductKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportShapeFact {
     Layout(TransportLayout),
-    AbsentForClosure(u64),
 }
 
 impl TransportShapeFact {
     pub fn shape(&self) -> Option<ShapeId> {
         match self {
             Self::Layout(layout) => Some(layout.structural),
-            Self::AbsentForClosure(_) => None,
         }
     }
 
     pub fn layout(&self) -> Option<TransportLayout> {
         match self {
             Self::Layout(layout) => Some(*layout),
-            Self::AbsentForClosure(_) => None,
         }
     }
 }
@@ -139,7 +110,7 @@ impl TransportShapeFact {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
     Unit,
-    RootBackendProduct(Box<BackendProgram>),
+    RootBackendProduct(Box<RootBackendProductAnswer>),
     BackendExecutable(Box<SymbolicBackendExecutable>),
     AbiExecutable(Box<AbiReadyExecutable>),
     MaterializedExecutable(Box<MaterializedExecutable>),
@@ -151,10 +122,7 @@ pub enum ProductValue {
     IncomingInputRelations(Rc<HashMap<InputSlot, HashSet<IncomingInputSource>>>),
     IncomingInputSlot(HashSet<IncomingInputSource>),
     TransportShape(TransportShapeFact),
-    TransportComponent(TransportComponentInventory),
-    CallableFacts(Option<CallableFacts>),
-    BoundaryFacts(Option<BoundaryFacts>),
-    CodegenSeamFacts(Box<[CodegenSeamFact]>),
+    CallableConstruction(Box<CallableConstructionOwner>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -303,8 +271,96 @@ impl ProductMemo {
         self.produced.get(key).map(|entry| entry.generation)
     }
 
+    #[cfg(test)]
+    pub(crate) fn product_dependencies(&self, key: &ProductKey) -> Option<&HashMap<ProductKey, Option<u64>>> {
+        self.produced.get(key).map(|entry| &entry.dependencies.products)
+    }
+
     pub fn contains_in_progress(&self, key: &ProductKey) -> bool {
         self.in_progress.contains(key)
+    }
+
+    fn pending_dependency_reaches(&self, from: &ProductKey, target: &ProductKey) -> bool {
+        let mut pending = vec![from.clone()];
+        let mut seen = HashSet::new();
+        while let Some(key) = pending.pop() {
+            if key == *target {
+                return true;
+            }
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            if let Some(dependencies) = self.product_dependencies_for_group(&key) {
+                pending.extend(dependencies.products.keys().cloned());
+            }
+        }
+        false
+    }
+
+    fn pending_strong_component(
+        &self,
+        current: &ProductKey,
+        current_dependencies: &ProductDependencies,
+        member: fn(&ProductKey) -> bool,
+    ) -> Vec<ProductKey> {
+        let mut candidates = self
+            .pending_dependencies
+            .keys()
+            .chain(self.produced.keys())
+            .chain(self.displaced.keys())
+            .filter(|key| member(key))
+            .cloned()
+            .collect::<HashSet<_>>();
+        candidates.insert(current.clone());
+        candidates
+            .into_iter()
+            .filter(|candidate| {
+                self.dependency_reaches_with_current(current, candidate, current, current_dependencies, member)
+                    && self.dependency_reaches_with_current(candidate, current, current, current_dependencies, member)
+            })
+            .collect()
+    }
+
+    fn dependency_reaches_with_current(
+        &self,
+        from: &ProductKey,
+        target: &ProductKey,
+        current: &ProductKey,
+        current_dependencies: &ProductDependencies,
+        member: fn(&ProductKey) -> bool,
+    ) -> bool {
+        let mut pending = vec![from.clone()];
+        let mut seen = HashSet::new();
+        while let Some(key) = pending.pop() {
+            if key == *target {
+                return true;
+            }
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let dependencies = if &key == current {
+                Some(current_dependencies)
+            } else {
+                self.product_dependencies_for_group(&key)
+            };
+            if let Some(dependencies) = dependencies {
+                pending.extend(
+                    dependencies
+                        .products
+                        .keys()
+                        .filter(|dependency| member(dependency))
+                        .cloned(),
+                );
+            }
+        }
+        false
+    }
+
+    fn product_dependencies_for_group(&self, key: &ProductKey) -> Option<&ProductDependencies> {
+        self.pending_dependencies
+            .get(key)
+            .or_else(|| self.produced.get(key).map(|entry| &entry.dependencies))
+            .or_else(|| self.displaced.get(key).map(|entry| &entry.dependencies))
     }
 
     fn is_displaced(&self, key: &ProductKey) -> bool {
@@ -327,41 +383,7 @@ impl ProductMemo {
                 | ProductValue::IncomingInputRelations(_)
                 | ProductValue::IncomingInputSlot(_)
                 | ProductValue::TransportShape(_)
-                | ProductValue::TransportComponent(_)
-                | ProductValue::CallableFacts(_)
-                | ProductValue::BoundaryFacts(_)
-                | ProductValue::CodegenSeamFacts(_),
-            )
-            | None => None,
-        }
-    }
-
-    /// The session-wide codegen seam facts, once settled for the current
-    /// invalidation epoch. `None` means the product has not been produced
-    /// yet (or was displaced by `record_boundary_facts` observing a changed
-    /// boundary) -- the caller should wait on
-    /// `ProductKey::CodegenSeamFacts(root)`, exactly like `runtime_demand`
-    /// above.
-    pub fn codegen_seam_facts(&self, root: RootId) -> Option<&[CodegenSeamFact]> {
-        match self.get(&ProductKey::CodegenSeamFacts(root)) {
-            Some(ProductValue::CodegenSeamFacts(facts)) => Some(facts.as_ref()),
-            Some(
-                ProductValue::Unit
-                | ProductValue::RootBackendProduct(_)
-                | ProductValue::BackendExecutable(_)
-                | ProductValue::AbiExecutable(_)
-                | ProductValue::MaterializedExecutable(_)
-                | ProductValue::ExecutableEffects(_)
-                | ProductValue::ExecutableFacts(_)
-                | ProductValue::RuntimeDemand(_)
-                | ProductValue::OutgoingEdgeFrontier(_)
-                | ProductValue::OutgoingInputEdges(_)
-                | ProductValue::IncomingInputRelations(_)
-                | ProductValue::IncomingInputSlot(_)
-                | ProductValue::TransportShape(_)
-                | ProductValue::TransportComponent(_)
-                | ProductValue::CallableFacts(_)
-                | ProductValue::BoundaryFacts(_),
+                | ProductValue::CallableConstruction(_),
             )
             | None => None,
         }
@@ -379,8 +401,7 @@ impl ProductMemo {
         }
         let previous = self.produced.remove(key).or_else(|| self.displaced.remove(key));
         self.remove_reader_dependencies(key, previous.as_ref().map(|entry| &entry.dependencies));
-        let pending = self.pending_dependencies.remove(key);
-        self.remove_reader_dependencies(key, pending.as_ref());
+        self.take_pending_dependencies(key);
         let changed = previous.as_ref().is_none_or(|entry| entry.value != value);
         let generation = previous.as_ref().map_or(1, |entry| {
             if changed {
@@ -408,11 +429,103 @@ impl ProductMemo {
         true
     }
 
+    fn finish_group(&mut self, members: Vec<(ProductKey, ProductValue, ProductDependencies)>) -> bool {
+        let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
+        assert_eq!(member_keys.len(), members.len());
+        if member_keys.iter().any(|key| self.invalidated_in_progress.contains(key)) {
+            self.reject_group(&member_keys);
+            return false;
+        }
+
+        let mut group_dependencies = ProductDependencies::default();
+        for (_, _, dependencies) in &members {
+            for (dependency, generation) in &dependencies.products {
+                if member_keys.contains(dependency) {
+                    continue;
+                }
+                if group_dependencies
+                    .products
+                    .get(dependency)
+                    .is_some_and(|recorded| recorded != generation)
+                {
+                    self.reject_group(&member_keys);
+                    return false;
+                }
+                group_dependencies.products.insert(dependency.clone(), *generation);
+            }
+            for (fact, state) in &dependencies.facts {
+                if group_dependencies
+                    .facts
+                    .get(fact)
+                    .is_some_and(|recorded| recorded != state)
+                {
+                    self.reject_group(&member_keys);
+                    return false;
+                }
+                group_dependencies.facts.insert(fact.clone(), *state);
+            }
+        }
+
+        let mut prepared = Vec::with_capacity(members.len());
+        for (key, value, _) in members {
+            self.in_progress.remove(&key);
+            let previous = self.produced.remove(&key).or_else(|| self.displaced.remove(&key));
+            self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| &entry.dependencies));
+            self.take_pending_dependencies(&key);
+            let changed = previous.as_ref().is_none_or(|entry| entry.value != value);
+            let generation = previous.as_ref().map_or(1, |entry| {
+                if changed {
+                    entry.generation + 1
+                } else {
+                    entry.generation
+                }
+            });
+            prepared.push((key, value, group_dependencies.clone(), generation, changed));
+        }
+
+        for (key, value, dependencies, generation, _) in &prepared {
+            self.install_reader_dependencies(key, dependencies);
+            self.fact_stale_dependencies.remove(key);
+            self.dirty_descendants.remove(key);
+            self.produced.insert(
+                key.clone(),
+                ProductEntry {
+                    value: value.clone(),
+                    generation: *generation,
+                    dependencies: dependencies.clone(),
+                },
+            );
+        }
+        for (key, _, _, _, changed) in prepared {
+            if changed {
+                self.invalidate_readers(&key);
+            } else {
+                self.refresh_reader_dirtiness(&key);
+            }
+        }
+        true
+    }
+
+    fn reject_group(&mut self, member_keys: &HashSet<ProductKey>) {
+        for key in member_keys {
+            self.in_progress.remove(key);
+            self.invalidated_in_progress.remove(key);
+            self.take_pending_dependencies(key);
+            if let Some(entry) = self.produced.remove(key) {
+                self.remove_reader_dependencies(key, Some(&entry.dependencies));
+                self.displaced.insert(key.clone(), entry);
+                self.mark_readers_dirty(key);
+            }
+            if let Some(entry) = self.displaced.get_mut(key) {
+                entry.dependencies = ProductDependencies::default();
+            }
+        }
+    }
+
     fn unblock(&mut self, key: &ProductKey, dependencies: ProductDependencies) {
         self.in_progress.remove(key);
         self.invalidated_in_progress.remove(key);
-        let previous = self.pending_dependencies.remove(key).unwrap_or_default();
-        self.remove_reader_dependencies(key, Some(&previous));
+        let previous = self.take_pending_dependencies(key).unwrap_or_default();
         let mut retained = previous;
         retained.products.extend(dependencies.products);
         retained.facts.extend(dependencies.facts);
@@ -428,10 +541,14 @@ impl ProductMemo {
         if self.in_progress.contains(key) {
             self.invalidated_in_progress.insert(key.clone());
         }
+        let pending = self.take_pending_dependencies(key).is_some();
         if let Some(entry) = self.produced.remove(key) {
             self.remove_reader_dependencies(key, Some(&entry.dependencies));
             self.displaced.insert(key.clone(), entry);
             self.mark_readers_dirty(key);
+        }
+        if pending {
+            self.invalidate_readers(key);
         }
     }
 
@@ -481,6 +598,12 @@ impl ProductMemo {
         }
     }
 
+    fn take_pending_dependencies(&mut self, reader: &ProductKey) -> Option<ProductDependencies> {
+        let pending = self.pending_dependencies.remove(reader);
+        self.remove_reader_dependencies(reader, pending.as_ref());
+        pending
+    }
+
     fn invalidate_readers(&mut self, key: &ProductKey) {
         let readers = self.product_readers.get(key).cloned().unwrap_or_default();
         for reader in readers {
@@ -492,6 +615,16 @@ impl ProductMemo {
         for (fact_key, final_state) in pending {
             let readers = self.fact_readers.get(fact_key).cloned().unwrap_or_default();
             for reader in readers {
+                let pending_stale = self.pending_dependencies.get(&reader).is_some_and(|dependencies| {
+                    dependencies
+                        .facts
+                        .iter()
+                        .any(|(fact, recorded)| fact.fact() == fact_key && final_state.projected(fact) != *recorded)
+                });
+                if pending_stale {
+                    self.displace_for_reproduction(&reader);
+                    continue;
+                }
                 let stale = self.produced.get(&reader).is_some_and(|entry| {
                     entry
                         .dependencies
@@ -604,43 +737,6 @@ pub enum IncomingInputRole {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransportComponentInventory {
-    /// The canonical component representative: the running-min member position
-    /// under the structural position order. Every member's pull materializes
-    /// an inventory carrying this same representative and membership.
-    pub representative: TransportPosition,
-    pub positions: Vec<TransportPosition>,
-}
-
-/// One connected component of a solved transport shape-constraint closure: its
-/// canonical representative, every member position, and the component's agreed
-/// shape (`None` when no anchor grounded the component).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SolvedTransportComponent {
-    pub representative: TransportPosition,
-    pub positions: Vec<TransportPosition>,
-    pub shape: Option<ShapeId>,
-}
-
-/// The full result of ONE shape-constraint solve over a settled executable
-/// closure: every connected component indexed by member position, the exact
-/// boundary-publication positions it derived, and the executable cover it
-/// projected. A position of a covered executable that is absent from
-/// `component_of` was proven unconstrained by this same solve -- it needs a
-/// singleton component, not a re-solve.
-#[derive(Debug, Default)]
-pub struct SolvedTransportClosure {
-    pub executables: HashSet<ExecutableKey>,
-    pub component_of: HashMap<TransportPosition, usize>,
-    pub components: Vec<SolvedTransportComponent>,
-    pub(crate) boundary_publications: HashSet<TransportPosition>,
-    /// Settled world facts consumed by the solve at their exact states.
-    pub consumed_fact_states: HashMap<FactKey, FactState>,
-    /// Session-product owners consulted while discovering the closure.
-    pub consulted: HashSet<ExecutableKey>,
-}
-
 #[derive(Debug)]
 pub struct PullSession {
     root: RootId,
@@ -701,42 +797,6 @@ pub struct PullSession {
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
     abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
     backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
-    demanded_transport_positions: HashSet<TransportPosition>,
-    // By-symbol view of the EntryCapture/ResumePayload members of
-    // `demanded_transport_positions` -- the only variants
-    // `session_materialized_executable_transport` reads from the demanded
-    // set. The demanded set is monotone (positions are never retracted), so
-    // this index needs no invalidation story: it grows in lockstep inside
-    // `note_demanded_transport_position`, the single insertion point.
-    demanded_capture_resume_positions: HashMap<ExecutableSymbol, HashSet<TransportPosition>>,
-    transport_shape_facts: HashMap<TransportPosition, TransportShapeFact>,
-    transport_layouts: HashMap<TransportPosition, TransportLayout>,
-    // `transport_shapes` and `transport_shapes_by_symbol` are one fact in two
-    // keyings: the flat position->shape map, and the per-owning-executable
-    // index `session_materialized_executable_transport` consumes instead of
-    // filter-scanning the whole inventory per production. They mutate ONLY
-    // through `insert_transport_shape`/`remove_transport_shape`, so the index
-    // lives and dies with the map by construction -- including the epoch
-    // removals in `invalidate_transport_products` and the displaced-product
-    // removals in `discard_product_side_effects`.
-    transport_shapes: HashMap<TransportPosition, ShapeId>,
-    transport_shapes_by_symbol: HashMap<ExecutableSymbol, HashSet<TransportPosition>>,
-    transport_components: HashMap<TransportPosition, TransportComponentInventory>,
-    // Live solved closures and the exact reverse indexes for their member,
-    // world-fact, and session-product ownership.
-    solved_transport_closures: HashMap<u64, SolvedTransportClosure>,
-    transport_closure_cover: HashMap<ExecutableKey, u64>,
-    transport_closure_fact_dependents: HashMap<FactKey, HashSet<u64>>,
-    transport_closure_counter: u64,
-    // Session-product owner -> covered members. Entries are installed and
-    // retracted with the closure that owns them.
-    transport_closure_consult_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    transport_positions_by_executable: HashMap<ExecutableKey, HashSet<TransportPosition>>,
-    callable_facts: HashMap<CallableId, CallableFacts>,
-    callable_constructions: HashMap<TransportPosition, CallableConstructionFact>,
-    boundary_facts: HashMap<BoundaryId, BoundaryFacts>,
-    demanded_callables: HashSet<CallableId>,
-    demanded_boundaries: HashSet<BoundaryId>,
     executable_index: HashMap<ExecutableKey, usize>,
     producer_pokes: u64,
     /// The world's cumulative work-start attribution snapshot, recorded by the
@@ -770,24 +830,6 @@ impl PullSession {
             executable_effects: HashMap::new(),
             abi_executables: HashMap::new(),
             backend_executables: HashMap::new(),
-            demanded_transport_positions: HashSet::new(),
-            demanded_capture_resume_positions: HashMap::new(),
-            transport_shape_facts: HashMap::new(),
-            transport_shapes: HashMap::new(),
-            transport_layouts: HashMap::new(),
-            transport_shapes_by_symbol: HashMap::new(),
-            transport_components: HashMap::new(),
-            solved_transport_closures: HashMap::new(),
-            transport_closure_cover: HashMap::new(),
-            transport_closure_fact_dependents: HashMap::new(),
-            transport_closure_counter: 0,
-            transport_closure_consult_dependents: HashMap::new(),
-            transport_positions_by_executable: HashMap::new(),
-            callable_facts: HashMap::new(),
-            callable_constructions: HashMap::new(),
-            boundary_facts: HashMap::new(),
-            demanded_callables: HashSet::new(),
-            demanded_boundaries: HashSet::new(),
             executable_index: HashMap::new(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
@@ -861,10 +903,7 @@ impl PullSession {
             ProductDependencies::default(),
         );
         if changed {
-            // Artifact products displace inside the transport walk
-            // (`invalidate_transport_products` owns them for every reached
-            // executable, root included) -- no second call here.
-            self.invalidate_transport_products(&executable);
+            self.invalidate_artifact_products(&executable);
         }
     }
 
@@ -975,114 +1014,6 @@ impl PullSession {
 
     pub fn backend_executables(&self) -> &HashMap<ExecutableKey, SymbolicBackendExecutable> {
         &self.backend_executables
-    }
-
-    pub fn demanded_transport_positions(&self) -> &HashSet<TransportPosition> {
-        &self.demanded_transport_positions
-    }
-
-    pub fn transport_shape(&self, position: &TransportPosition) -> Option<ShapeId> {
-        self.transport_layout(position).map(|layout| layout.structural)
-    }
-
-    pub fn transport_layout(&self, position: &TransportPosition) -> Option<TransportLayout> {
-        self.transport_layouts.get(position).copied()
-    }
-
-    pub fn transport_shape_fact(&self, position: &TransportPosition) -> Option<&TransportShapeFact> {
-        self.transport_shape_facts.get(position)
-    }
-
-    pub fn transport_shapes(&self) -> &HashMap<TransportPosition, ShapeId> {
-        &self.transport_shapes
-    }
-
-    pub fn transport_layouts(&self) -> &HashMap<TransportPosition, TransportLayout> {
-        &self.transport_layouts
-    }
-
-    /// Every position with a recorded shape whose OWNING executable is
-    /// `symbol` -- the keyed view maintained in lockstep with
-    /// `transport_shapes`, avoiding a per-production filter-scan of the
-    /// whole inventory.
-    pub fn transport_shape_positions_for(&self, symbol: &ExecutableSymbol) -> impl Iterator<Item = &TransportPosition> {
-        self.transport_shapes_by_symbol.get(symbol).into_iter().flatten()
-    }
-
-    /// Every demanded EntryCapture/ResumePayload position owned by `symbol`.
-    /// Monotone alongside `demanded_transport_positions`; see the field
-    /// comment.
-    pub fn demanded_capture_resume_positions_for(
-        &self,
-        symbol: &ExecutableSymbol,
-    ) -> impl Iterator<Item = &TransportPosition> {
-        self.demanded_capture_resume_positions.get(symbol).into_iter().flatten()
-    }
-
-    pub fn transport_component(&self, position: &TransportPosition) -> Option<&TransportComponentInventory> {
-        self.transport_components.get(position)
-    }
-
-    /// Whether `executable` was projected by a still-valid shape-constraint
-    /// solve. A covered executable's positions never re-solve: they read the
-    /// recorded solve (or are proven unconstrained by it).
-    pub fn transport_closure_covers(&self, executable: &ExecutableKey) -> bool {
-        self.transport_closure_cover.contains_key(executable)
-    }
-
-    /// The solved component holding `position`, from the closure covering
-    /// `executable`. `None` under a valid cover means the solve proved the
-    /// position unconstrained (singleton component).
-    pub fn solved_transport_component(
-        &self,
-        executable: &ExecutableKey,
-        position: &TransportPosition,
-    ) -> Option<&SolvedTransportComponent> {
-        let id = self.transport_closure_cover.get(executable)?;
-        let closure = &self.solved_transport_closures[id];
-        closure
-            .component_of
-            .get(position)
-            .map(|index| &closure.components[*index])
-    }
-
-    pub(crate) fn solved_transport_closure_publishes(
-        &self,
-        executable: &ExecutableKey,
-        position: &TransportPosition,
-    ) -> bool {
-        self.transport_closure_cover
-            .get(executable)
-            .and_then(|id| self.solved_transport_closures.get(id))
-            .is_some_and(|closure| closure.boundary_publications.contains(position))
-    }
-
-    pub fn callable_facts(&self, callable: CallableId) -> Option<&CallableFacts> {
-        self.callable_facts.get(&callable)
-    }
-
-    pub fn callable_facts_inventory(&self) -> &HashMap<CallableId, CallableFacts> {
-        &self.callable_facts
-    }
-
-    pub fn callable_constructions(&self) -> &HashMap<TransportPosition, CallableConstructionFact> {
-        &self.callable_constructions
-    }
-
-    pub fn boundary_facts(&self, boundary: BoundaryId) -> Option<&BoundaryFacts> {
-        self.boundary_facts.get(&boundary)
-    }
-
-    pub fn boundary_facts_inventory(&self) -> &HashMap<BoundaryId, BoundaryFacts> {
-        &self.boundary_facts
-    }
-
-    pub fn demanded_callables(&self) -> &HashSet<CallableId> {
-        &self.demanded_callables
-    }
-
-    pub fn demanded_boundaries(&self) -> &HashSet<BoundaryId> {
-        &self.demanded_boundaries
     }
 
     pub fn executable_index(&self) -> &HashMap<ExecutableKey, usize> {
@@ -1373,207 +1304,6 @@ impl PullSession {
         self.backend_executables.insert(executable, backend);
     }
 
-    /// Record the component inventory a position's pull materialized. The key
-    /// is the PULLED position (the product identity); the value carries the
-    /// component's canonical representative and full membership from the
-    /// covering solve.
-    pub fn record_transport_component(&mut self, position: TransportPosition, component: TransportComponentInventory) {
-        self.note_demanded_transport_position(&position);
-        for member in &component.positions {
-            self.note_demanded_transport_position(member);
-        }
-        self.transport_components.insert(position, component);
-    }
-
-    /// Total `(consulted, member)` edge count currently live in
-    /// `transport_closure_consult_dependents` -- test/telemetry
-    /// observability for the ledger's lockstep pruning: bounded by the
-    /// LIVE closures' membership, never by the session's full solve
-    /// history.
-    #[cfg(test)]
-    pub(crate) fn transport_closure_consult_edge_count(&self) -> usize {
-        self.transport_closure_consult_dependents
-            .values()
-            .map(HashSet::len)
-            .sum()
-    }
-
-    /// Install the dense consult product `closure.consulted x
-    /// closure.executables` into `transport_closure_consult_dependents`:
-    /// every `(consulted, member)` pair the closure's solve read while
-    /// discovering its membership. The mirror of
-    /// `remove_transport_closure_consult_edges` -- called only from
-    /// `record_solved_transport_closure`, so the two stay in lockstep by
-    /// construction (one call site installs, one call site retracts, both
-    /// keyed off the SAME closure value).
-    fn insert_transport_closure_consult_edges(&mut self, closure: &SolvedTransportClosure) {
-        for consulted in &closure.consulted {
-            let dependents = self
-                .transport_closure_consult_dependents
-                .entry(consulted.clone())
-                .or_default();
-            for member in &closure.executables {
-                if member != consulted {
-                    dependents.insert(member.clone());
-                }
-            }
-            if dependents.is_empty() {
-                self.transport_closure_consult_dependents.remove(consulted);
-            }
-        }
-    }
-
-    /// Retract exactly the edges `insert_transport_closure_consult_edges`
-    /// installed for this closure. Since closures are kept disjoint (a
-    /// member belongs to at most one recorded closure at a time), this
-    /// closure owns these `(consulted, member)` pairs outright -- no other
-    /// live closure can have contributed the same edge, so removal is safe
-    /// without a reference count.
-    fn remove_transport_closure_consult_edges(&mut self, closure: &SolvedTransportClosure) {
-        for consulted in &closure.consulted {
-            let Some(dependents) = self.transport_closure_consult_dependents.get_mut(consulted) else {
-                continue;
-            };
-            for member in &closure.executables {
-                dependents.remove(member);
-            }
-            if dependents.is_empty() {
-                self.transport_closure_consult_dependents.remove(consulted);
-            }
-        }
-    }
-
-    /// Record the full result of one shape-constraint solve. While live,
-    /// closures stay disjoint by construction: any prior closure sharing a
-    /// member executable is dropped whole -- cover AND consult edges -- before
-    /// the new cover and its own consult edges are installed.
-    pub fn record_solved_transport_closure(&mut self, closure: SolvedTransportClosure) {
-        let displaced = closure
-            .executables
-            .iter()
-            .filter_map(|member| self.transport_closure_cover.get(member).copied())
-            .collect::<HashSet<u64>>();
-        for id in displaced {
-            self.drop_solved_transport_closure(id);
-        }
-        let id = self.transport_closure_counter;
-        self.transport_closure_counter += 1;
-        for member in &closure.executables {
-            self.transport_closure_cover.insert(member.clone(), id);
-        }
-        for fact in closure.consumed_fact_states.keys() {
-            self.transport_closure_fact_dependents
-                .entry(fact.clone())
-                .or_default()
-                .insert(id);
-        }
-        self.insert_transport_closure_consult_edges(&closure);
-        self.solved_transport_closures.insert(id, closure);
-    }
-
-    fn drop_solved_transport_closure(&mut self, id: u64) {
-        let Some(closure) = self.solved_transport_closures.remove(&id) else {
-            return;
-        };
-        for member in &closure.executables {
-            if self.transport_closure_cover.get(member) == Some(&id) {
-                self.transport_closure_cover.remove(member);
-            }
-        }
-        for fact in closure.consumed_fact_states.keys() {
-            let remove_entry = self
-                .transport_closure_fact_dependents
-                .get_mut(fact)
-                .is_some_and(|closures| {
-                    closures.remove(&id);
-                    closures.is_empty()
-                });
-            if remove_entry {
-                self.transport_closure_fact_dependents.remove(fact);
-            }
-        }
-        self.remove_transport_closure_consult_edges(&closure);
-    }
-
-    pub fn record_transport_shape(&mut self, position: TransportPosition, shape: ShapeId) {
-        self.record_transport_layout(position, TransportLayout::structural(shape));
-    }
-
-    pub fn record_transport_layout(&mut self, position: TransportPosition, layout: TransportLayout) {
-        self.note_demanded_transport_position(&position);
-        self.transport_shape_facts
-            .insert(position.clone(), TransportShapeFact::Layout(layout));
-        self.insert_transport_layout(position, layout);
-    }
-
-    pub fn record_transport_shape_for(
-        &mut self,
-        executable: &ExecutableKey,
-        position: TransportPosition,
-        shape: ShapeId,
-    ) {
-        self.record_transport_layout_for(executable, position, TransportLayout::structural(shape));
-    }
-
-    pub fn record_transport_layout_for(
-        &mut self,
-        executable: &ExecutableKey,
-        position: TransportPosition,
-        layout: TransportLayout,
-    ) {
-        self.note_demanded_transport_position(&position);
-        self.transport_positions_by_executable
-            .entry(executable.clone())
-            .or_default()
-            .insert(position.clone());
-        self.transport_shape_facts
-            .insert(position.clone(), TransportShapeFact::Layout(layout));
-        let changed = self.insert_transport_layout(position, layout);
-        if changed {
-            self.invalidate_artifact_products(executable);
-        }
-    }
-
-    /// Record a provisional absence: `position` has no grounded shape under
-    /// the closure solve identified by `closure` (the id
-    /// `transport_closure_id_covering` returned for `position`'s owning
-    /// executable at the time of the query). The verdict stands only until
-    /// that closure is displaced -- see `TransportShapeFact::AbsentForClosure`.
-    pub fn record_absent_transport_shape_for(
-        &mut self,
-        executable: &ExecutableKey,
-        position: TransportPosition,
-        closure: u64,
-    ) {
-        self.note_demanded_transport_position(&position);
-        self.transport_positions_by_executable
-            .entry(executable.clone())
-            .or_default()
-            .insert(position.clone());
-        let fact = TransportShapeFact::AbsentForClosure(closure);
-        let changed = self.transport_shape_facts.insert(position.clone(), fact.clone()) != Some(fact);
-        self.remove_transport_shape(&position);
-        if changed {
-            self.invalidate_artifact_products(executable);
-        }
-    }
-
-    /// The closure id covering `executable`, if any -- the provenance a
-    /// caller records into `TransportShapeFact::AbsentForClosure` when this
-    /// solve fails to ground one of `executable`'s positions.
-    pub fn transport_closure_id_covering(&self, executable: &ExecutableKey) -> Option<u64> {
-        self.transport_closure_cover.get(executable).copied()
-    }
-
-    /// Displace the transport products derived from the (stale) solve
-    /// covering `executable`: the full invalidation walk, so every member the
-    /// solve consulted loses its shape/component/artifact products and the
-    /// next pull re-solves against the moved facts. Over-reaching is
-    /// conservative-correct; a member left standing is the stale-verdict bug.
-    pub(crate) fn displace_transport_closure_for(&mut self, executable: &ExecutableKey) {
-        self.invalidate_transport_products(executable);
-    }
-
     fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
         for movement in movements {
             self.pending_fact_states.insert(movement.key.clone(), movement.state);
@@ -1582,100 +1312,7 @@ impl PullSession {
 
     fn reconcile_fact_movements(&mut self) {
         let pending = std::mem::take(&mut self.pending_fact_states);
-        let mut stale_closures = HashSet::new();
-        for (fact, state) in &pending {
-            let Some(dependents) = self.transport_closure_fact_dependents.get(fact) else {
-                continue;
-            };
-            for id in dependents {
-                let consumed = self
-                    .solved_transport_closures
-                    .get(id)
-                    .and_then(|closure| closure.consumed_fact_states.get(fact))
-                    .copied();
-                if consumed != Some(*state) {
-                    stale_closures.insert(*id);
-                }
-            }
-        }
-        let stale_transport = stale_closures
-            .iter()
-            .filter_map(|id| self.solved_transport_closures.get(id))
-            .filter_map(|closure| closure.executables.iter().next().cloned())
-            .collect::<Vec<_>>();
-        for executable in stale_transport {
-            self.displace_transport_closure_for(&executable);
-        }
         self.memo.reconcile_fact_movements(&pending);
-    }
-
-    /// The SOLE insertion point into `transport_shapes`: keeps the by-symbol
-    /// index in lockstep. Returns whether the recorded shape changed.
-    fn insert_transport_layout(&mut self, position: TransportPosition, layout: TransportLayout) -> bool {
-        self.transport_shapes_by_symbol
-            .entry(position.executable().clone())
-            .or_default()
-            .insert(position.clone());
-        self.transport_shapes.insert(position.clone(), layout.structural);
-        self.transport_layouts.insert(position, layout) != Some(layout)
-    }
-
-    /// The SOLE removal point from `transport_shapes`: keeps the by-symbol
-    /// index in lockstep.
-    fn remove_transport_shape(&mut self, position: &TransportPosition) {
-        self.transport_shapes.remove(position);
-        self.transport_layouts.remove(position);
-        if let Some(positions) = self.transport_shapes_by_symbol.get_mut(position.executable()) {
-            positions.remove(position);
-            if positions.is_empty() {
-                self.transport_shapes_by_symbol.remove(position.executable());
-            }
-        }
-    }
-
-    /// The SOLE insertion point into `demanded_transport_positions`: keeps the
-    /// by-symbol EntryCapture/ResumePayload index in lockstep. Both sets are
-    /// monotone, so lockstep insertion is the whole coherence story.
-    fn note_demanded_transport_position(&mut self, position: &TransportPosition) {
-        if !self.demanded_transport_positions.insert(position.clone()) {
-            return;
-        }
-        if matches!(
-            position,
-            TransportPosition::EntryCapture { .. } | TransportPosition::ResumePayload { .. }
-        ) {
-            self.demanded_capture_resume_positions
-                .entry(position.executable().clone())
-                .or_default()
-                .insert(position.clone());
-        }
-    }
-
-    pub fn record_callable_facts(&mut self, callable: CallableId, facts: CallableFacts) {
-        self.demanded_callables.insert(callable);
-        self.callable_facts.insert(callable, facts);
-    }
-
-    pub fn record_callable_construction(&mut self, construction: CallableConstructionFact) {
-        self.callable_constructions
-            .insert(construction.producer.clone(), construction);
-    }
-
-    pub fn record_boundary_facts(&mut self, boundary: BoundaryId, facts: BoundaryFacts) {
-        self.demanded_boundaries.insert(boundary);
-        let changed = self.boundary_facts.insert(boundary, facts.clone()).as_ref() != Some(&facts);
-        // `session_codegen_publication_seam_facts` is the ONLY reader of
-        // `boundary_facts_inventory`/`boundary_facts` behind
-        // `ProductKey::CodegenSeamFacts`: a boundary whose recorded facts
-        // actually moved (a new boundary, or a re-solved closure whose
-        // publications changed) invalidates that memo so the next pull
-        // re-derives the seam-fact set instead of serving a snapshot that
-        // predates this boundary. An unchanged re-record (the common case:
-        // a shared boundary re-confirmed by another executable's closure
-        // solve) leaves the memo standing.
-        if changed {
-            self.memo.remove(&ProductKey::CodegenSeamFacts(self.root));
-        }
     }
 
     pub fn assign_executable_index(&mut self, executable: ExecutableKey, index: usize) {
@@ -1696,9 +1333,7 @@ impl PullSession {
                 continue;
             }
             self.memo.remove(&ProductKey::RuntimeDemand(current.clone()));
-            // The transport walk artifact-invalidates every node it reaches,
-            // `current` included -- no separate artifact wipe is needed here.
-            self.invalidate_transport_products(&current);
+            self.invalidate_artifact_products(&current);
             if let Some(dependents) = self.runtime_demand_dependents.get(&current).cloned() {
                 stack.extend(dependents);
             }
@@ -1723,17 +1358,7 @@ impl PullSession {
             ProductKey::BackendExecutable(executable) => {
                 self.backend_executables.remove(executable);
             }
-            ProductKey::TransportShape(position) => {
-                if matches!(
-                    self.transport_shape_facts.get(position),
-                    Some(TransportShapeFact::AbsentForClosure(_))
-                ) {
-                    self.transport_shape_facts.remove(position);
-                }
-            }
-            ProductKey::TransportComponent(position) => {
-                self.transport_components.remove(position);
-            }
+            ProductKey::TransportShape(_) => {}
             ProductKey::RootBackendProduct(_)
             | ProductKey::ExecutableFacts(_)
             | ProductKey::RuntimeDemand(_)
@@ -1741,9 +1366,7 @@ impl PullSession {
             | ProductKey::OutgoingInputEdges(_)
             | ProductKey::IncomingInputRelations(_)
             | ProductKey::IncomingInputSlot(_)
-            | ProductKey::CallableFacts(_)
-            | ProductKey::BoundaryFacts(_)
-            | ProductKey::CodegenSeamFacts(_) => {}
+            | ProductKey::CallableConstruction(_) => {}
         }
     }
 
@@ -1813,67 +1436,6 @@ impl PullSession {
         }
     }
 
-    fn invalidate_transport_products(&mut self, executable: &ExecutableKey) {
-        let mut stack = vec![executable.clone()];
-        let mut seen = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            let mut closure_ids = HashSet::new();
-            if let Some(id) = self.transport_closure_cover.get(&current) {
-                closure_ids.insert(*id);
-            }
-            if let Some(dependents) = self.transport_closure_consult_dependents.get(&current) {
-                closure_ids.extend(
-                    dependents
-                        .iter()
-                        .filter_map(|dependent| self.transport_closure_cover.get(dependent).copied()),
-                );
-            }
-            let displaced_members = closure_ids
-                .iter()
-                .filter_map(|id| self.solved_transport_closures.get(id))
-                .flat_map(|closure| closure.executables.iter().cloned())
-                .collect::<HashSet<_>>();
-            for id in closure_ids {
-                self.drop_solved_transport_closure(id);
-            }
-            stack.extend(displaced_members);
-            self.invalidate_transport_products_for_one(&current);
-            self.invalidate_artifact_products(&current);
-        }
-    }
-
-    fn invalidate_transport_products_for_one(&mut self, executable: &ExecutableKey) {
-        let Some(positions) = self.transport_positions_by_executable.remove(executable) else {
-            return;
-        };
-        for position in &positions {
-            self.transport_shape_facts.remove(position);
-            self.remove_transport_shape(position);
-            self.transport_components.remove(position);
-            self.memo.remove(&ProductKey::TransportShape(position.clone()));
-            self.memo.remove(&ProductKey::TransportComponent(position.clone()));
-        }
-
-        let stale_components = self
-            .transport_components
-            .iter()
-            .filter_map(|(member, component)| {
-                component
-                    .positions
-                    .iter()
-                    .any(|position| positions.contains(position))
-                    .then_some(member.clone())
-            })
-            .collect::<Vec<_>>();
-        for member in stale_components {
-            self.transport_components.remove(&member);
-            self.memo.remove(&ProductKey::TransportComponent(member));
-        }
-    }
-
     fn note_product_request(&mut self, key: &ProductKey) {
         if let ProductKey::OutgoingInputEdges(executable) = key
             && self.outgoing_edge_request_set.insert(executable.clone())
@@ -1882,18 +1444,6 @@ impl PullSession {
         }
         if let Some(executable) = key.executable() {
             self.demanded_executables.insert(executable.clone());
-        }
-        if let Some(position) = key.transport_position() {
-            self.note_demanded_transport_position(position);
-        }
-        match key {
-            ProductKey::CallableFacts(callable) => {
-                self.demanded_callables.insert(*callable);
-            }
-            ProductKey::BoundaryFacts(boundary) => {
-                self.demanded_boundaries.insert(*boundary);
-            }
-            _ => {}
         }
     }
 
@@ -1915,6 +1465,7 @@ fn effect_relevant_inputs(materialized: &MaterializedExecutable) -> (EffectSumma
 pub struct ProductReadContext<'s> {
     session: &'s mut PullSession,
     dependencies: ProductDependencies,
+    finished_group: bool,
 }
 
 impl<'s> ProductReadContext<'s> {
@@ -1922,11 +1473,130 @@ impl<'s> ProductReadContext<'s> {
         Self {
             session,
             dependencies: ProductDependencies::default(),
+            finished_group: false,
         }
     }
 
     pub fn read_product(&mut self, key: ProductKey) -> Option<&ProductValue> {
         self.read_product_entry(key)
+    }
+
+    pub(crate) fn pending_dependency_reaches(&self, from: &ProductKey, target: &ProductKey) -> bool {
+        self.session.memo.pending_dependency_reaches(from, target)
+    }
+
+    pub(crate) fn pending_transport_shape_group(&self, current: &ProductKey) -> Vec<ProductKey> {
+        self.session
+            .memo
+            .pending_strong_component(current, &self.dependencies, |key| {
+                matches!(key, ProductKey::TransportShape(_))
+            })
+    }
+
+    pub(crate) fn pending_callable_construction_group(&self, current: &ProductKey) -> Vec<ProductKey> {
+        self.session
+            .memo
+            .pending_strong_component(current, &self.dependencies, |key| {
+                matches!(key, ProductKey::CallableConstruction(_))
+            })
+    }
+
+    pub(crate) fn recursive_group_transport_layouts(&self, members: &[ProductKey]) -> Vec<TransportLayout> {
+        let member_set = members.iter().collect::<HashSet<_>>();
+        members
+            .iter()
+            .flat_map(|member| {
+                self.session
+                    .memo
+                    .pending_dependencies
+                    .get(member)
+                    .into_iter()
+                    .flat_map(|dependencies| dependencies.products.keys())
+            })
+            .filter(|dependency| !member_set.contains(dependency))
+            .filter_map(|dependency| match self.session.memo.get(dependency) {
+                Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn finish_transport_shape_group(
+        &mut self,
+        current: &ProductKey,
+        members: &[ProductKey],
+        value: ProductValue,
+    ) -> bool {
+        self.finish_product_group(current, members, vec![value; members.len()])
+    }
+
+    pub(crate) fn recursive_group_callable_owners(&self, members: &[ProductKey]) -> Vec<CallableConstructionOwner> {
+        let member_set = members.iter().collect::<HashSet<_>>();
+        members
+            .iter()
+            .flat_map(|member| {
+                self.session
+                    .memo
+                    .product_dependencies_for_group(member)
+                    .into_iter()
+                    .flat_map(|dependencies| dependencies.products.keys())
+            })
+            .filter(|dependency| !member_set.contains(dependency))
+            .filter_map(|dependency| match self.session.memo.get(dependency) {
+                Some(ProductValue::CallableConstruction(owner)) => Some(owner.as_ref().clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn callable_group_layout(&self, member: &ProductKey) -> Option<TransportLayout> {
+        let ProductKey::CallableConstruction(position) = member else {
+            return None;
+        };
+        match self.session.memo.get(&ProductKey::TransportShape(position.clone())) {
+            Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn finish_callable_construction_group(
+        &mut self,
+        current: &ProductKey,
+        members: &[ProductKey],
+        values: Vec<ProductValue>,
+    ) -> bool {
+        self.finish_product_group(current, members, values)
+    }
+
+    fn finish_product_group(
+        &mut self,
+        current: &ProductKey,
+        members: &[ProductKey],
+        values: Vec<ProductValue>,
+    ) -> bool {
+        assert_eq!(members.len(), values.len());
+        let entries = members
+            .iter()
+            .cloned()
+            .zip(values)
+            .map(|(key, value)| {
+                let dependencies = if &key == current {
+                    self.dependencies.clone()
+                } else {
+                    self.session
+                        .memo
+                        .product_dependencies_for_group(&key)
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                (key, value, dependencies)
+            })
+            .collect();
+        self.finished_group = self.session.memo.finish_group(entries);
+        if !self.finished_group {
+            self.dependencies = ProductDependencies::default();
+        }
+        self.finished_group
     }
 
     fn read_product_entry(&mut self, key: ProductKey) -> Option<&ProductValue> {
@@ -1953,14 +1623,6 @@ impl<'s> ProductReadContext<'s> {
         match self.read_product(ProductKey::ExecutableFacts(executable.clone())) {
             Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
             Some(other) => panic!("executable facts product produced unexpected value {other:?}"),
-            None => None,
-        }
-    }
-
-    pub fn read_codegen_seam_facts(&mut self, root: RootId) -> Option<Box<[CodegenSeamFact]>> {
-        match self.read_product(ProductKey::CodegenSeamFacts(root)) {
-            Some(ProductValue::CodegenSeamFacts(facts)) => Some(facts.clone()),
-            Some(other) => panic!("codegen seam facts product produced unexpected value {other:?}"),
             None => None,
         }
     }
@@ -2007,8 +1669,8 @@ impl<'s> ProductReadContext<'s> {
         self.session
     }
 
-    fn into_dependencies(self) -> ProductDependencies {
-        self.dependencies
+    fn into_dependencies(self) -> (ProductDependencies, bool) {
+        (self.dependencies, self.finished_group)
     }
 }
 
@@ -2057,14 +1719,13 @@ pub trait ProductProducers {
         context: &mut ProductReadContext<'_>,
         position: &TransportPosition,
     ) -> PullOutcome;
-    fn produce_transport_component(
+    fn produce_callable_construction(
         &mut self,
-        context: &mut ProductReadContext<'_>,
-        position: &TransportPosition,
-    ) -> PullOutcome;
-    fn produce_callable_facts(&mut self, context: &mut ProductReadContext<'_>, callable: CallableId) -> PullOutcome;
-    fn produce_boundary_facts(&mut self, context: &mut ProductReadContext<'_>, boundary: BoundaryId) -> PullOutcome;
-    fn produce_codegen_seam_facts(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
+        _context: &mut ProductReadContext<'_>,
+        _position: &TransportPosition,
+    ) -> PullOutcome {
+        panic!("callable construction producer is not installed")
+    }
 }
 
 pub struct WorldProductProducers<'w, 'a, T: crate::telemetry::Telemetry> {
@@ -2189,31 +1850,15 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
         context: &mut ProductReadContext<'_>,
         position: &TransportPosition,
     ) -> PullOutcome {
-        super::jobs::transport::produce_transport_shape_product(context, position)
+        super::jobs::transport::produce_transport_shape_product(self.world, context, position)
     }
 
-    fn produce_transport_component(
+    fn produce_callable_construction(
         &mut self,
         context: &mut ProductReadContext<'_>,
         position: &TransportPosition,
     ) -> PullOutcome {
-        super::jobs::transport::produce_transport_component_product(self.world, self.telemetry, context, position)
-    }
-
-    fn produce_callable_facts(&mut self, context: &mut ProductReadContext<'_>, callable: CallableId) -> PullOutcome {
-        PullOutcome::Produced(ProductValue::CallableFacts(
-            context.session().callable_facts(callable).cloned(),
-        ))
-    }
-
-    fn produce_boundary_facts(&mut self, context: &mut ProductReadContext<'_>, boundary: BoundaryId) -> PullOutcome {
-        PullOutcome::Produced(ProductValue::BoundaryFacts(
-            context.session().boundary_facts(boundary).cloned(),
-        ))
-    }
-
-    fn produce_codegen_seam_facts(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-        super::jobs::artifact::produce_codegen_seam_facts_product(self.world, self.telemetry, context, root)
+        super::jobs::transport::produce_callable_construction_product(self.world, context, position)
     }
 }
 
@@ -2293,12 +1938,11 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             ProductKey::IncomingInputRelations(root) => producers.produce_incoming_input_relations(&mut context, *root),
             ProductKey::IncomingInputSlot(slot) => producers.produce_incoming_input_slot(&mut context, slot),
             ProductKey::TransportShape(position) => producers.produce_transport_shape(&mut context, position),
-            ProductKey::TransportComponent(position) => producers.produce_transport_component(&mut context, position),
-            ProductKey::CallableFacts(callable) => producers.produce_callable_facts(&mut context, *callable),
-            ProductKey::BoundaryFacts(boundary) => producers.produce_boundary_facts(&mut context, *boundary),
-            ProductKey::CodegenSeamFacts(root) => producers.produce_codegen_seam_facts(&mut context, *root),
+            ProductKey::CallableConstruction(position) => {
+                producers.produce_callable_construction(&mut context, position)
+            }
         };
-        let dependencies = context.into_dependencies();
+        let (dependencies, finished_group) = context.into_dependencies();
         if let PullOutcome::Waiting(waits) = &outcome {
             for wait in waits {
                 if let PullWait::Product(product) = wait {
@@ -2309,6 +1953,11 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
 
         match outcome {
             PullOutcome::Produced(value) => {
+                if finished_group {
+                    self.tel
+                        .raw_event2(&["fz", "compiler2", "pull", "product", "settled"], &key, &value);
+                    return PullOutcome::Produced(value);
+                }
                 let settled = self.session.memo.finish(&key, value.clone(), dependencies);
                 if !settled {
                     self.session.discard_product_side_effects(&key);
@@ -2335,14 +1984,16 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
 
     use crate::telemetry::ConfiguredTelemetry;
 
     use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
-    use super::super::transport::{ActivationSymbol, ExecutableSymbol};
+    use super::super::transport::{
+        BoundaryFacts, BoundaryId, CallableConstructionFact, CallableFacts, CallableId, ExecutableSymbol,
+    };
     use super::*;
 
     fn fact_movement(key: FactKey, revision: Option<u64>, settled: bool) -> FactMovement<FactKey> {
@@ -2579,34 +2230,6 @@ mod tests {
         ) -> PullOutcome {
             self.produce(ProductKey::TransportShape(position.clone()))
         }
-
-        fn produce_transport_component(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            position: &TransportPosition,
-        ) -> PullOutcome {
-            self.produce(ProductKey::TransportComponent(position.clone()))
-        }
-
-        fn produce_callable_facts(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            callable: CallableId,
-        ) -> PullOutcome {
-            self.produce(ProductKey::CallableFacts(callable))
-        }
-
-        fn produce_boundary_facts(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            boundary: BoundaryId,
-        ) -> PullOutcome {
-            self.produce(ProductKey::BoundaryFacts(boundary))
-        }
-
-        fn produce_codegen_seam_facts(&mut self, _context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
-            self.produce(ProductKey::CodegenSeamFacts(root))
-        }
     }
 
     #[test]
@@ -2715,14 +2338,18 @@ mod tests {
             },
         );
         driver.apply_fact_movements(&[fact_movement(fact.fact().clone(), Some(3), true)]);
-        producers.runtime_value = Some(ProductValue::CallableFacts(None));
+        let changed_value = ProductValue::ExecutableEffects(EffectSummary {
+            allocates: true,
+            ..EffectSummary::default()
+        });
+        producers.runtime_value = Some(changed_value.clone());
         assert_eq!(
             driver.pull(&mut producers, parent.clone()),
             PullOutcome::wait_on_product(child.clone())
         );
         assert_eq!(
             driver.pull(&mut producers, child.clone()),
-            PullOutcome::Produced(ProductValue::CallableFacts(None))
+            PullOutcome::Produced(changed_value)
         );
         assert_eq!(driver.session().memo().generation(&child), Some(2));
         assert_eq!(driver.session().memo().generation(&parent), None);
@@ -2977,7 +2604,11 @@ mod tests {
                 settled: false,
             },
         );
-        producers.backend_value = Some(ProductValue::CallableFacts(None));
+        let changed_value = ProductValue::ExecutableEffects(EffectSummary {
+            allocates: true,
+            ..EffectSummary::default()
+        });
+        producers.backend_value = Some(changed_value.clone());
         driver.apply_fact_movements(&[fact_movement(fact.fact().clone(), Some(2), false)]);
         assert_eq!(
             driver.pull(&mut producers, grandparent.clone()),
@@ -2985,10 +2616,7 @@ mod tests {
         );
         assert_eq!(driver.session().memo().generation(&grandparent), Some(1));
         assert_eq!(driver.session().memo().generation(&parent), Some(1));
-        assert_eq!(
-            driver.pull(&mut producers, child),
-            PullOutcome::Produced(ProductValue::CallableFacts(None))
-        );
+        assert_eq!(driver.pull(&mut producers, child), PullOutcome::Produced(changed_value));
         assert_eq!(driver.session().memo().generation(&parent), None);
         assert_eq!(driver.session().memo().generation(&grandparent), Some(1));
         assert_eq!(
@@ -3035,30 +2663,6 @@ mod tests {
         assert!(driver.session().memo().get(&key).is_none());
         assert!(!driver.session().memo().contains_in_progress(&key));
         assert_eq!(capture.produced.get(), 0);
-    }
-
-    #[test]
-    fn first_pull_of_an_absent_product_does_not_discard_session_side_effects() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(18);
-        let position = TransportPosition::ExecutableReturn {
-            executable: executable_symbol_for_test(&fake_executable(root)),
-        };
-        let shape = ShapeId::for_test(0);
-        let key = ProductKey::TransportShape(position.clone());
-        let mut session = PullSession::new(root);
-        session.record_transport_shape(position.clone(), shape);
-        let mut driver = ProductDriver::with_session(&tel, session);
-        let mut producers = FakeProducers::default();
-
-        assert_eq!(
-            driver.pull(&mut producers, key),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        assert_eq!(
-            driver.session().transport_shape_fact(&position),
-            Some(&TransportShapeFact::Layout(TransportLayout::structural(shape)))
-        );
     }
 
     #[test]
@@ -3186,96 +2790,6 @@ mod tests {
             ]))))
         );
         assert_ne!(driver.session().memo().generation(&frontier_key), initial_generation);
-    }
-
-    #[test]
-    fn pull_session_leaves_codegen_seam_facts_standing_across_an_unchanged_boundary_rerecord() {
-        // The common case: a boundary shared by several executables' transport
-        // closures is re-confirmed (same value) each time its closure re-solves.
-        // `record_boundary_facts` must not treat this as a movement of the data
-        // `session_codegen_publication_seam_facts` reads.
-        let mut session = PullSession::new(RootId::for_test(9));
-        let boundary = BoundaryId::for_test(0);
-        let facts = BoundaryFacts {
-            publications: Box::default(),
-            resolutions: Box::default(),
-        };
-        session.record_boundary_facts(boundary, facts.clone());
-        session.memo.finish(
-            &ProductKey::CodegenSeamFacts(session.root()),
-            ProductValue::CodegenSeamFacts(Box::default()),
-            ProductDependencies::default(),
-        );
-
-        session.record_boundary_facts(boundary, facts);
-
-        assert!(
-            session.memo().codegen_seam_facts(session.root()).is_some(),
-            "an unchanged re-record of the same boundary facts must leave the codegen seam facts memo standing"
-        );
-    }
-
-    #[test]
-    fn pull_session_invalidates_codegen_seam_facts_when_a_boundary_actually_changes() {
-        // The hard case this ticket is about: `session_codegen_publication_seam_facts`
-        // is memoized behind `ProductKey::CodegenSeamFacts`, but it is still
-        // derived from `boundary_facts_inventory` -- a boundary whose recorded
-        // facts move (a brand-new boundary, or a re-solved closure whose
-        // publications changed) must displace the memo, or a later production
-        // would read a snapshot that predates the boundary it needs.
-        let mut session = PullSession::new(RootId::for_test(9));
-        let boundary_a = BoundaryId::for_test(0);
-        let boundary_b = BoundaryId::for_test(1);
-        let empty_facts = BoundaryFacts {
-            publications: Box::default(),
-            resolutions: Box::default(),
-        };
-        session.record_boundary_facts(boundary_a, empty_facts.clone());
-        session.memo.finish(
-            &ProductKey::CodegenSeamFacts(session.root()),
-            ProductValue::CodegenSeamFacts(Box::default()),
-            ProductDependencies::default(),
-        );
-        assert!(session.memo().codegen_seam_facts(session.root()).is_some());
-
-        // A brand-new boundary appearing in the inventory changes the set
-        // `session_codegen_publication_seam_facts` iterates over.
-        session.record_boundary_facts(boundary_b, empty_facts);
-        assert!(
-            session.memo().codegen_seam_facts(session.root()).is_none(),
-            "a newly recorded boundary must invalidate the memoized codegen seam facts product"
-        );
-
-        // Re-settle the memo, then re-solve `boundary_a` with DIFFERENT facts
-        // (e.g. its closure re-solved with a new publication) -- the value at
-        // an already-known key moving must invalidate too, not just new keys.
-        session.memo.finish(
-            &ProductKey::CodegenSeamFacts(session.root()),
-            ProductValue::CodegenSeamFacts(Box::default()),
-            ProductDependencies::default(),
-        );
-        let mut world = crate::compiler2::World::new();
-        let arrow = world.types_mut().any();
-        let publication = TransportPosition::Value {
-            executable: ExecutableSymbol {
-                activation: ActivationSymbol {
-                    function: FunctionId::for_test(1),
-                    arrow,
-                    input: Box::default(),
-                },
-                need: ExecutableNeed::Value,
-            },
-            value: ValueId::from_u32(0),
-        };
-        let changed_facts = BoundaryFacts {
-            publications: Box::from([publication]),
-            resolutions: Box::default(),
-        };
-        session.record_boundary_facts(boundary_a, changed_facts);
-        assert!(
-            session.memo().codegen_seam_facts(session.root()).is_none(),
-            "a boundary whose recorded facts changed must invalidate the memoized codegen seam facts product"
-        );
     }
 
     #[test]
@@ -3540,150 +3054,6 @@ mod tests {
     }
 
     #[test]
-    fn world_product_transport_shape_waits_for_component_inventory() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(63);
-        let position = TransportPosition::ExecutableReturn {
-            executable: executable_symbol_for_test(&fake_executable(root)),
-        };
-        let mut driver = ProductDriver::new(&tel, root);
-        let mut world = World::new();
-        let mut producers = WorldProductProducers::new(&mut world, &tel);
-
-        let outcome = driver.pull(&mut producers, ProductKey::TransportShape(position.clone()));
-
-        assert_eq!(
-            outcome,
-            PullOutcome::wait_on_product(ProductKey::TransportComponent(position))
-        );
-    }
-
-    #[test]
-    fn world_product_transport_shape_projects_layout_owned_by_a_live_cover() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(64);
-        let executable = fake_executable(root);
-        let position = TransportPosition::ExecutableReturn {
-            executable: executable_symbol_for_test(&executable),
-        };
-        let mut world = World::new();
-        let shape = ShapeId::for_test(0);
-        let mut driver = ProductDriver::new(&tel, root);
-        driver
-            .session_mut()
-            .record_solved_transport_closure(SolvedTransportClosure {
-                executables: HashSet::from([executable.clone()]),
-                component_of: HashMap::from([(position.clone(), 0)]),
-                components: vec![SolvedTransportComponent {
-                    representative: position.clone(),
-                    positions: vec![position.clone()],
-                    shape: Some(shape),
-                }],
-                boundary_publications: HashSet::new(),
-                consumed_fact_states: HashMap::new(),
-                consulted: HashSet::new(),
-            });
-        driver.session_mut().record_transport_layout_for(
-            &executable,
-            position.clone(),
-            TransportLayout::structural(shape),
-        );
-        let mut producers = WorldProductProducers::new(&mut world, &tel);
-
-        assert_eq!(
-            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
-            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Layout(
-                TransportLayout::structural(shape),
-            )))
-        );
-        assert!(
-            driver
-                .session()
-                .memo()
-                .get(&ProductKey::TransportComponent(position))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn world_product_transport_artifacts_require_product_entries_not_only_session_inventory() {
-        use super::super::transport::{
-            ActivationSymbol, CallableDescr, CallableFacts, ExecutableSymbol, LaneDescr, ShapeDescr, TransportClass,
-        };
-
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(7);
-        let executable = fake_executable(root);
-        let mut world = World::new();
-        let int = world.types_mut().int();
-        let lane = world.intern_lane(LaneDescr {
-            ty: int,
-            class: TransportClass::Value,
-        });
-        let shape = world.intern_shape(ShapeDescr::Lane(lane));
-        let callable = world.intern_callable(CallableDescr {
-            function: Some(executable.activation.function),
-            capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
-        });
-        let callable_facts = CallableFacts {
-            resolutions: Box::new([ExecutableSymbol {
-                activation: ActivationSymbol {
-                    function: executable.activation.function,
-                    arrow: executable.activation.arrow,
-                    input: Box::default(),
-                },
-                need: executable.need,
-            }]),
-            direct_surfaces: Box::new([Box::new([shape])]),
-            direct_edges: Box::default(),
-            boundary_ids: Box::default(),
-        };
-        let position = TransportPosition::ExecutableReturn {
-            executable: callable_facts.resolutions[0].clone(),
-        };
-        let mut driver = ProductDriver::new(&tel, root);
-        driver.session_mut().record_transport_shape(position.clone(), shape);
-        let component = TransportComponentInventory {
-            representative: position.clone(),
-            positions: vec![position.clone()],
-        };
-        driver
-            .session_mut()
-            .record_transport_component(position.clone(), component.clone());
-        driver
-            .session_mut()
-            .record_callable_facts(callable, callable_facts.clone());
-        let mut producers = WorldProductProducers::new(&mut world, &tel);
-
-        assert_eq!(
-            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
-            PullOutcome::wait_on_product(ProductKey::TransportComponent(position.clone()))
-        );
-        driver.session_mut().memo.finish(
-            &ProductKey::TransportComponent(position.clone()),
-            ProductValue::TransportComponent(component.clone()),
-            ProductDependencies::default(),
-        );
-        assert_eq!(
-            driver.pull(&mut producers, ProductKey::TransportShape(position.clone())),
-            PullOutcome::Produced(ProductValue::TransportShape(TransportShapeFact::Layout(
-                TransportLayout::structural(shape),
-            )))
-        );
-        assert_eq!(
-            driver.pull(&mut producers, ProductKey::TransportComponent(position)),
-            PullOutcome::Produced(ProductValue::TransportComponent(component))
-        );
-        assert_eq!(
-            driver.pull(&mut producers, ProductKey::CallableFacts(callable)),
-            PullOutcome::Produced(ProductValue::CallableFacts(Some(callable_facts)))
-        );
-        assert_eq!(driver.session().producer_pokes(), 0);
-    }
-
-    #[test]
     fn executable_effects_product_settles_symbolic_mutual_recursion_without_root_loop() {
         use super::super::artifact::{
             CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
@@ -3761,6 +3131,7 @@ mod tests {
                 runtime_demand: ExecutableRuntimeDemand::default(),
                 transport: MaterializedExecutableTransport {
                     executable,
+                    position_layouts: Vec::new(),
                     input_positions: Vec::new(),
                     return_position,
                     resume_positions: Vec::new(),
@@ -3951,6 +3322,7 @@ mod tests {
                 runtime_demand: ExecutableRuntimeDemand::default(),
                 transport: MaterializedExecutableTransport {
                     executable,
+                    position_layouts: Vec::new(),
                     input_positions: Vec::new(),
                     return_position,
                     resume_positions: Vec::new(),
@@ -4144,6 +3516,7 @@ mod tests {
                 runtime_demand: ExecutableRuntimeDemand::default(),
                 transport: MaterializedExecutableTransport {
                     executable,
+                    position_layouts: Vec::new(),
                     input_positions: Vec::new(),
                     return_position,
                     resume_positions: Vec::new(),
@@ -4277,501 +3650,1135 @@ mod tests {
         }
     }
 
-    /// INTENT: a recorded solve serves EVERY member position of EVERY
-    /// component -- any member's lookup through the executable cover reaches
-    /// its component (with the canonical representative), and a covered
-    /// position absent from the solve is proven unconstrained (`None`), so no
-    /// pull path ever needs a second solve without an input movement.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct OwnerCallableAggregation {
+        resolutions: HashSet<ExecutableSymbol>,
+        direct_surfaces: HashSet<Box<[ShapeId]>>,
+        direct_edges: HashSet<super::super::transport::CallableDirectEdge>,
+        boundary_ids: HashSet<BoundaryId>,
+    }
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct OwnerBoundaryAggregation {
+        publications: HashSet<TransportPosition>,
+        resolutions: HashSet<ExecutableSymbol>,
+    }
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct OwnerAggregation {
+        callables: HashMap<CallableId, OwnerCallableAggregation>,
+        boundaries: HashMap<BoundaryId, OwnerBoundaryAggregation>,
+    }
+
+    fn aggregate_callable_owners(memo: &ProductMemo, owners: &[ProductKey]) -> OwnerAggregation {
+        let mut out = OwnerAggregation::default();
+        for owner in owners {
+            let Some(ProductValue::CallableConstruction(answer)) = memo.get(owner) else {
+                continue;
+            };
+            for (callable, facts) in &answer.callable_facts {
+                let aggregate = out.callables.entry(*callable).or_default();
+                aggregate.resolutions.extend(facts.resolutions.iter().cloned());
+                aggregate.direct_surfaces.extend(facts.direct_surfaces.iter().cloned());
+                aggregate.direct_edges.extend(facts.direct_edges.iter().cloned());
+                aggregate.boundary_ids.extend(facts.boundary_ids.iter().copied());
+            }
+            for (boundary, facts) in &answer.boundary_facts {
+                let aggregate = out.boundaries.entry(*boundary).or_default();
+                aggregate.publications.extend(facts.publications.iter().cloned());
+                aggregate.resolutions.extend(facts.resolutions.iter().cloned());
+            }
+        }
+        out
+    }
+
+    fn callable_owner_answer(
+        layout: TransportLayout,
+        owner: TransportPosition,
+        callable: CallableId,
+        boundary: BoundaryId,
+        resolution: ExecutableSymbol,
+    ) -> ProductValue {
+        ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+            layout,
+            construction: Some(CallableConstructionFact {
+                callable,
+                producer: owner.clone(),
+                captures: Box::default(),
+                members: Box::default(),
+                selection: None,
+            }),
+            callable_facts: HashMap::from([(
+                callable,
+                CallableFacts {
+                    resolutions: Box::new([resolution.clone()]),
+                    direct_surfaces: Box::default(),
+                    direct_edges: Box::default(),
+                    boundary_ids: Box::new([boundary]),
+                },
+            )]),
+            boundary_facts: HashMap::from([(
+                boundary,
+                BoundaryFacts {
+                    publications: Box::new([owner]),
+                    resolutions: Box::new([resolution]),
+                },
+            )]),
+        }))
+    }
+
+    fn withdrawn_callable_owner_answer(layout: TransportLayout) -> ProductValue {
+        ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+            layout,
+            construction: None,
+            callable_facts: HashMap::new(),
+            boundary_facts: HashMap::new(),
+        }))
+    }
+
+    fn finish_test_product(
+        memo: &mut ProductMemo,
+        key: &ProductKey,
+        value: ProductValue,
+        dependencies: impl IntoIterator<Item = ProductKey>,
+    ) {
+        assert!(memo.begin(key.clone()));
+        let products = dependencies
+            .into_iter()
+            .map(|dependency| {
+                let generation = memo.generation(&dependency);
+                (dependency, generation)
+            })
+            .collect();
+        assert!(memo.finish(
+            key,
+            value,
+            ProductDependencies {
+                products,
+                facts: HashMap::new(),
+            },
+        ));
+    }
+
     #[test]
-    fn solved_transport_closure_serves_every_member_position() {
-        let root = RootId::for_test(21);
-        let executable = fake_executable(root);
-        let symbol = executable_symbol_for_test(&executable);
-        let representative = TransportPosition::ExecutableInput {
-            executable: symbol.clone(),
-            semantic_index: 0,
+    fn callable_owner_products_aggregate_order_free_and_retract_independently() {
+        let root = RootId::for_test(35);
+        let left_position = TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 350)),
+            value: ValueId::from_u32(0),
         };
-        let member = TransportPosition::ExecutableReturn {
-            executable: symbol.clone(),
+        let right_position = TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 351)),
+            value: ValueId::from_u32(0),
         };
-        let unconstrained = TransportPosition::Value {
-            executable: symbol,
-            value: ValueId::from_u32(7),
-        };
-        let mut closure = SolvedTransportClosure::default();
-        closure.executables.insert(executable.clone());
-        closure.components.push(SolvedTransportComponent {
-            representative: representative.clone(),
-            positions: vec![representative.clone(), member.clone()],
-            shape: None,
+        let left_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 352));
+        let right_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 353));
+        let replacement_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 354));
+        let mut world = World::new();
+        let callable = world.intern_callable(super::super::transport::CallableDescr {
+            function: Some(FunctionId::for_test(355)),
+            capture_tys: Box::default(),
+            capture_shapes: Box::default(),
+            capture_lanes: Box::default(),
         });
-        closure.component_of.insert(representative.clone(), 0);
-        closure.component_of.insert(member.clone(), 0);
-        let mut session = PullSession::new(root);
+        let boundary = BoundaryId::for_test(8);
+        let layout = TransportLayout::structural(ShapeId::for_test(9));
+        let left_key = ProductKey::CallableConstruction(left_position.clone());
+        let right_key = ProductKey::CallableConstruction(right_position.clone());
+        let left_abi = ProductKey::AbiExecutable(fake_executable_with_function(root, 350));
+        let right_abi = ProductKey::AbiExecutable(fake_executable_with_function(root, 351));
+        let root_key = ProductKey::RootBackendProduct(root);
+        let mut memo = ProductMemo::default();
 
-        session.record_solved_transport_closure(closure);
-
-        assert!(session.transport_closure_covers(&executable));
-        let by_member = session
-            .solved_transport_component(&executable, &member)
-            .expect("a member position's lookup should reach its solved component");
-        assert_eq!(by_member.representative, representative);
-        assert_eq!(
-            session.solved_transport_component(&executable, &representative),
-            session.solved_transport_component(&executable, &member),
-            "every member should read the one solved component"
+        let left_value = callable_owner_answer(
+            layout,
+            left_position.clone(),
+            callable,
+            boundary,
+            left_resolution.clone(),
         );
-        assert!(
-            session
-                .solved_transport_component(&executable, &unconstrained)
-                .is_none(),
-            "a covered position outside the solve is proven unconstrained, not unsolved"
+        let right_value = callable_owner_answer(
+            layout,
+            right_position.clone(),
+            callable,
+            boundary,
+            right_resolution.clone(),
+        );
+        finish_test_product(&mut memo, &left_key, left_value, []);
+        finish_test_product(&mut memo, &right_key, right_value, []);
+        finish_test_product(&mut memo, &left_abi, ProductValue::Unit, [left_key.clone()]);
+        finish_test_product(&mut memo, &right_abi, ProductValue::Unit, [right_key.clone()]);
+        finish_test_product(
+            &mut memo,
+            &root_key,
+            ProductValue::RootBackendProduct(Box::new(RootBackendProductAnswer {
+                program: super::super::artifact::BackendProgram {
+                    backend_revision: 0,
+                    entry: 0,
+                    atom_names: Vec::new(),
+                    struct_schemas: Default::default(),
+                    executables: Vec::new(),
+                    construction_wrappers: Vec::new(),
+                },
+                transport: super::super::artifact::MaterializedTransportPlan {
+                    entry: left_resolution.clone(),
+                    executable_membership: Box::default(),
+                    position_layouts: Vec::new(),
+                    callable_constructions: Vec::new(),
+                    callable_boundaries: Vec::new(),
+                    boundary_ids: Vec::new(),
+                    publication_boundaries: Vec::new(),
+                    codegen_seam_facts: Box::default(),
+                    callable_owners: Box::default(),
+                    callable_facts: HashMap::new(),
+                    boundary_facts: HashMap::new(),
+                },
+            })),
+            [left_abi.clone(), right_abi.clone()],
+        );
+
+        let forward = aggregate_callable_owners(&memo, &[left_key.clone(), right_key.clone()]);
+        let reverse = aggregate_callable_owners(&memo, &[right_key.clone(), left_key.clone()]);
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            forward.callables[&callable].resolutions,
+            HashSet::from([left_resolution.clone(), right_resolution.clone()])
+        );
+        assert_eq!(
+            forward.boundaries[&boundary].publications,
+            HashSet::from([left_position.clone(), right_position.clone()])
+        );
+        assert_eq!(
+            memo.product_dependencies(&left_abi).unwrap(),
+            &HashMap::from([(left_key.clone(), Some(1))])
+        );
+        assert_eq!(
+            memo.product_dependencies(&right_abi).unwrap(),
+            &HashMap::from([(right_key.clone(), Some(1))])
+        );
+        assert_eq!(
+            memo.product_dependencies(&root_key).unwrap(),
+            &HashMap::from([(left_abi.clone(), Some(1)), (right_abi.clone(), Some(1))])
+        );
+
+        let right_generation = memo.generation(&right_key);
+        memo.remove(&left_key);
+        finish_test_product(
+            &mut memo,
+            &left_key,
+            callable_owner_answer(
+                layout,
+                left_position,
+                callable,
+                boundary,
+                replacement_resolution.clone(),
+            ),
+            [],
+        );
+        let replaced_generation = memo.generation(&left_key);
+        let replaced = aggregate_callable_owners(&memo, &[left_key.clone(), right_key.clone()]);
+        assert_eq!(
+            replaced.callables[&callable].resolutions,
+            HashSet::from([replacement_resolution, right_resolution.clone()])
+        );
+        assert!(!replaced.callables[&callable].resolutions.contains(&left_resolution));
+        assert_eq!(memo.generation(&right_key), right_generation);
+        assert!(memo.stale_dependency(&left_abi).is_some());
+        assert!(memo.stale_dependency(&right_abi).is_none());
+        assert!(memo.stale_dependency(&root_key).is_some());
+
+        let reproduced = memo.get(&left_key).cloned().expect("replaced owner product");
+        memo.remove(&left_key);
+        finish_test_product(&mut memo, &left_key, reproduced, []);
+        assert_eq!(memo.generation(&left_key), replaced_generation);
+        assert_eq!(memo.generation(&right_key), right_generation);
+
+        memo.remove(&left_key);
+        finish_test_product(&mut memo, &left_key, withdrawn_callable_owner_answer(layout), []);
+        let withdrawn = aggregate_callable_owners(&memo, &[left_key, right_key]);
+        assert_eq!(
+            withdrawn.callables[&callable].resolutions,
+            HashSet::from([right_resolution])
+        );
+        assert_eq!(
+            withdrawn.boundaries[&boundary].publications,
+            HashSet::from([right_position])
         );
     }
 
-    /// A demand movement on one member retracts its owning closure for every member.
-    #[test]
-    fn member_demand_movement_retracts_its_owning_transport_closure() {
-        let root = RootId::for_test(22);
-        let first = fake_executable_with_function(root, 220);
-        let second = fake_executable_with_function(root, 221);
-        let position = TransportPosition::ExecutableReturn {
-            executable: executable_symbol_for_test(&second),
+    type OwnerSymbolKey = (u32, super::super::types::Ty, Vec<super::super::types::Ty>, u8, usize);
+    type OwnerPositionKey = (u8, OwnerSymbolKey, u64, u64, usize);
+
+    fn owner_symbol_key(symbol: &ExecutableSymbol) -> OwnerSymbolKey {
+        let need = match symbol.need {
+            ExecutableNeed::Value => (0, 0),
+            ExecutableNeed::TupleFields(arity) => (1, arity),
         };
-        let mut closure = SolvedTransportClosure::default();
-        closure.executables.insert(first.clone());
-        closure.executables.insert(second.clone());
-        closure.components.push(SolvedTransportComponent {
-            representative: position.clone(),
-            positions: vec![position.clone()],
-            shape: None,
-        });
-        closure.component_of.insert(position.clone(), 0);
-        let mut session = PullSession::new(root);
-        session.record_solved_transport_closure(closure);
-        assert!(session.transport_closure_covers(&first));
-        assert!(session.transport_closure_covers(&second));
-        assert!(session.solved_transport_component(&second, &position).is_some());
-
-        let settled = ExecutableRuntimeDemand::default();
-        let mut moved = ExecutableRuntimeDemand::default();
-        moved.input_demands.push(RuntimeDemand::default());
-        session.record_settled_runtime_demand(first.clone(), settled);
-        session.record_settled_runtime_demand(first.clone(), moved);
-
-        assert!(
-            !session.transport_closure_covers(&first),
-            "the moved member's cover must drop"
-        );
-        assert!(
-            !session.transport_closure_covers(&second),
-            "the whole closure must drop with it -- no member may serve the displaced solve"
-        );
-        assert!(session.solved_transport_component(&second, &position).is_none());
+        (
+            symbol.activation.function.as_u32(),
+            symbol.activation.arrow,
+            symbol.activation.input.to_vec(),
+            need.0,
+            need.1,
+        )
     }
 
-    /// INTENT: closures stay disjoint -- recording a solve that absorbs a
-    /// member of an older solve displaces the older solve entirely, so a
-    /// single cover always answers for an executable.
-    #[test]
-    fn solved_transport_closure_recording_displaces_overlapping_closures() {
-        let root = RootId::for_test(23);
-        let shared = fake_executable_with_function(root, 230);
-        let old_only = fake_executable_with_function(root, 231);
-        let mut old = SolvedTransportClosure::default();
-        old.executables.insert(shared.clone());
-        old.executables.insert(old_only.clone());
-        let mut new = SolvedTransportClosure::default();
-        new.executables.insert(shared.clone());
-        let mut session = PullSession::new(root);
-
-        session.record_solved_transport_closure(old);
-        session.record_solved_transport_closure(new);
-
-        assert!(session.transport_closure_covers(&shared));
-        assert!(
-            !session.transport_closure_covers(&old_only),
-            "the displaced closure's other members must not keep a stale cover"
-        );
-    }
-
-    /// INTENT (fz-go4.18.28.13): a re-solve that shares a member with an
-    /// older closure but has DIFFERENT overall membership must displace the
-    /// older closure's consult edges along with its cover -- precisely,
-    /// leaving an unrelated LIVE closure's own edges untouched. Before this
-    /// fix, `record_transport_closure_consult` only ever grew the ledger:
-    /// `drop_solved_transport_closure` evicted the cover but never the
-    /// consult edges the dropped closure had installed, so a fact only the
-    /// old, now-gone membership ever consulted kept a dangling edge forever.
-    #[test]
-    fn transport_closure_consult_ledger_prunes_displaced_closure_on_resolve() {
-        let root = RootId::for_test(24);
-        let consulted_only_by_old = fake_executable_with_function(root, 240);
-        let shared_consulted = fake_executable_with_function(root, 241);
-        let shared_member = fake_executable_with_function(root, 242);
-        let old_only_member = fake_executable_with_function(root, 243);
-        let new_only_member = fake_executable_with_function(root, 244);
-        let untouched_member = fake_executable_with_function(root, 245);
-        let mut session = PullSession::new(root);
-
-        // An unrelated live closure elsewhere in the session -- shares no
-        // member with `old`, so `record_solved_transport_closure`'s
-        // disjointness rule must never touch it.
-        let mut untouched = SolvedTransportClosure::default();
-        untouched.executables.insert(untouched_member.clone());
-        untouched.consulted.insert(shared_consulted.clone());
-        session.record_solved_transport_closure(untouched);
-
-        // The old closure: two members, consulted by both
-        // `consulted_only_by_old` (exclusively) and `shared_consulted`.
-        let mut old = SolvedTransportClosure::default();
-        old.executables.insert(shared_member.clone());
-        old.executables.insert(old_only_member.clone());
-        old.consulted.insert(consulted_only_by_old);
-        old.consulted.insert(shared_consulted.clone());
-        session.record_solved_transport_closure(old);
-
-        assert_eq!(
-            session.transport_closure_consult_edge_count(),
-            5,
-            "untouched(1 consulted x 1 member) + old(2 consulted x 2 members) = 5 live edges"
-        );
-
-        // Re-solve `shared_member` with DIFFERENT membership: `old_only_member`
-        // drops out, `new_only_member` joins, and this closure was only ever
-        // consulted through `shared_consulted` -- `consulted_only_by_old` was
-        // never read by this solve. This is exactly the re-solve
-        // `jobs::transport::solve_transport_closure` performs: same
-        // `record_solved_transport_closure` call, sharing `shared_member`
-        // with the prior cover so the disjointness rule displaces `old`.
-        let mut new = SolvedTransportClosure::default();
-        new.executables.insert(shared_member.clone());
-        new.executables.insert(new_only_member.clone());
-        new.consulted.insert(shared_consulted);
-        session.record_solved_transport_closure(new);
-
-        assert!(session.transport_closure_covers(&shared_member));
-        assert!(session.transport_closure_covers(&new_only_member));
-        assert!(
-            !session.transport_closure_covers(&old_only_member),
-            "the displaced closure's dropped-out member must not keep a stale cover"
-        );
-        assert!(
-            session.transport_closure_covers(&untouched_member),
-            "the unrelated live closure must survive a disjoint re-solve"
-        );
-
-        assert_eq!(
-            session.transport_closure_consult_edge_count(),
-            3,
-            "untouched(1) + new(1 consulted x 2 members) = 3 live edges -- `old`'s edges from \
-             `consulted_only_by_old` (exclusive to the dropped membership) and its stale \
-             `shared_consulted -> old_only_member` edge must both be gone, not accumulated on \
-             top of `new`'s edges"
-        );
-    }
-
-    #[test]
-    fn transport_invalidation_retracts_only_closures_that_own_the_moved_input() {
-        let root = RootId::for_test(25);
-        let consulted = fake_executable_with_function(root, 250);
-        let member = fake_executable_with_function(root, 251);
-        let unrelated = fake_executable_with_function(root, 252);
-        let mut closure = SolvedTransportClosure::default();
-        closure.executables.insert(member.clone());
-        closure.consulted.insert(consulted);
-        let mut unrelated_closure = SolvedTransportClosure::default();
-        unrelated_closure.executables.insert(unrelated.clone());
-        let mut session = PullSession::new(root);
-        session.record_solved_transport_closure(closure);
-        session.record_solved_transport_closure(unrelated_closure);
-        assert_eq!(session.transport_closure_consult_edge_count(), 1);
-
-        let settled = ExecutableRuntimeDemand::default();
-        let mut moved = ExecutableRuntimeDemand::default();
-        moved.input_demands.push(RuntimeDemand::default());
-        session.record_settled_runtime_demand(member.clone(), settled);
-        session.record_settled_runtime_demand(member.clone(), moved);
-
-        assert_eq!(
-            session.transport_closure_consult_edge_count(),
-            0,
-            "the displaced closure must retract the consult edge it owned"
-        );
-        assert!(!session.transport_closure_covers(&member));
-        assert!(
-            session.transport_closure_covers(&unrelated),
-            "a movement cannot retract a closure that neither covers nor consulted the moved executable"
-        );
-    }
-
-    #[test]
-    fn fact_movement_batch_retracts_every_affected_transport_closure() {
-        let root = RootId::for_test(26);
-        let first = fake_executable_with_function(root, 260);
-        let second = fake_executable_with_function(root, 261);
-        let untouched = fake_executable_with_function(root, 262);
-        let first_fact = FactKey::LoweredBody(FunctionId::for_test(260));
-        let second_fact = FactKey::LoweredBody(FunctionId::for_test(261));
-        let mut session = PullSession::new(root);
-        for (executable, consumed) in [
-            (
-                first.clone(),
-                HashMap::from([(
-                    first_fact.clone(),
-                    FactState {
-                        revision: Some(1),
-                        settled: true,
-                    },
-                )]),
+    fn owner_position_key(position: &TransportPosition) -> OwnerPositionKey {
+        let local = match position {
+            TransportPosition::ExecutableInput { semantic_index, .. } => (0, 0, 0, *semantic_index),
+            TransportPosition::ExecutableReturn { .. } => (1, 0, 0, 0),
+            TransportPosition::ResumePayload { callsite, entry, .. } => (
+                2,
+                callsite.map_or(0, |callsite| u64::from(callsite.as_u32()) + 1),
+                u64::from(entry.as_u32()),
+                0,
             ),
-            (
-                second.clone(),
-                HashMap::from([(
-                    second_fact.clone(),
-                    FactState {
-                        revision: Some(4),
-                        settled: true,
-                    },
-                )]),
-            ),
-            (untouched.clone(), HashMap::new()),
-        ] {
-            session.record_solved_transport_closure(SolvedTransportClosure {
-                executables: HashSet::from([executable]),
-                consumed_fact_states: consumed,
-                ..Default::default()
-            });
+            TransportPosition::ReturnPayload { callsite, .. } => (3, u64::from(callsite.as_u32()), 0, 0),
+            TransportPosition::CallArg {
+                callsite,
+                semantic_index,
+                ..
+            } => (4, u64::from(callsite.as_u32()), 0, *semantic_index),
+            TransportPosition::EntryCapture {
+                entry, capture_index, ..
+            } => (5, u64::from(entry.as_u32()), 0, *capture_index),
+            TransportPosition::Value { value, .. } => (6, u64::from(value.as_u32()), 0, 0),
+        };
+        (
+            local.0,
+            owner_symbol_key(position.executable()),
+            local.1,
+            local.2,
+            local.3,
+        )
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct OwnerState {
+        layout: TransportLayout,
+        resolutions: HashSet<ExecutableSymbol>,
+        publications: HashSet<TransportPosition>,
+    }
+
+    impl OwnerState {
+        fn bottom(layout: TransportLayout) -> Self {
+            Self {
+                layout,
+                resolutions: HashSet::new(),
+                publications: HashSet::new(),
+            }
         }
 
-        session.apply_fact_movements(&[
-            fact_movement(first_fact, Some(2), true),
-            fact_movement(second_fact, Some(5), true),
-        ]);
-        session.reconcile_fact_movements();
+        fn join_assign(&mut self, other: &Self) {
+            self.resolutions.extend(other.resolutions.iter().cloned());
+            self.publications.extend(other.publications.iter().cloned());
+        }
 
-        assert!(!session.transport_closure_covers(&first));
-        assert!(!session.transport_closure_covers(&second));
-        assert!(session.transport_closure_covers(&untouched));
+        fn product_value(&self, callable: CallableId, boundary: BoundaryId) -> ProductValue {
+            let mut resolutions = self.resolutions.iter().cloned().collect::<Vec<_>>();
+            resolutions.sort_by_key(owner_symbol_key);
+            let direct_edges = resolutions
+                .iter()
+                .cloned()
+                .map(|resolution| super::super::transport::CallableDirectEdge {
+                    surface_inputs: Box::default(),
+                    surface_arg_shapes: Box::new([self.layout.structural]),
+                    resolution,
+                    capture_semantic_inputs: Box::default(),
+                    surface_semantic_inputs: Box::default(),
+                })
+                .collect();
+            let mut publications = self.publications.iter().cloned().collect::<Vec<_>>();
+            publications.sort_by_key(owner_position_key);
+            ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+                layout: self.layout,
+                construction: None,
+                callable_facts: (!resolutions.is_empty())
+                    .then(|| {
+                        (
+                            callable,
+                            CallableFacts {
+                                resolutions: resolutions.clone().into_boxed_slice(),
+                                direct_surfaces: Box::new([Box::new([self.layout.structural])]),
+                                direct_edges,
+                                boundary_ids: Box::new([boundary]),
+                            },
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
+                boundary_facts: (!publications.is_empty() || !resolutions.is_empty())
+                    .then(|| {
+                        (
+                            boundary,
+                            BoundaryFacts {
+                                publications: publications.into_boxed_slice(),
+                                resolutions: resolutions.into_boxed_slice(),
+                            },
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
+            }))
+        }
+    }
+
+    #[derive(Clone)]
+    struct OwnerEquation {
+        seed: OwnerState,
+        children: Vec<usize>,
+    }
+
+    fn settle_owner_equations(equations: &[OwnerEquation], reverse: bool) -> (Vec<OwnerState>, usize) {
+        let mut answers = equations
+            .iter()
+            .map(|equation| OwnerState::bottom(equation.seed.layout))
+            .collect::<Vec<_>>();
+        let mut order = (0..equations.len()).collect::<Vec<_>>();
+        if reverse {
+            order.reverse();
+        }
+        for round in 0..16 {
+            let previous = answers.clone();
+            for index in order.iter().copied() {
+                let mut answer = equations[index].seed.clone();
+                for child in &equations[index].children {
+                    answer.join_assign(&answers[*child]);
+                }
+                answers[index] = answer;
+            }
+            if answers == previous {
+                return (answers, round);
+            }
+        }
+        panic!("finite callable owner equations did not settle")
+    }
+
+    fn finish_owner_group(
+        memo: &mut ProductMemo,
+        keys: &[ProductKey],
+        answers: &[OwnerState],
+        external: &[ProductKey],
+        callable: CallableId,
+        boundary: BoundaryId,
+        reverse: bool,
+    ) {
+        for key in keys {
+            assert!(memo.begin(key.clone()));
+            assert!(memo.get(key).is_none());
+        }
+        let mut order = (0..keys.len()).collect::<Vec<_>>();
+        if reverse {
+            order.reverse();
+        }
+        let entries = order
+            .into_iter()
+            .map(|index| {
+                let products = keys
+                    .iter()
+                    .chain(external)
+                    .cloned()
+                    .map(|dependency| {
+                        let generation = memo.generation(&dependency);
+                        (dependency, generation)
+                    })
+                    .collect();
+                (
+                    keys[index].clone(),
+                    answers[index].product_value(callable, boundary),
+                    ProductDependencies {
+                        products,
+                        facts: HashMap::new(),
+                    },
+                )
+            })
+            .collect();
+        assert!(memo.finish_group(entries));
     }
 
     #[test]
-    fn same_revision_dirty_fact_movement_retracts_cover_and_component_product() {
-        let root = RootId::for_test(28);
-        let executable = fake_executable_with_function(root, 280);
-        let fact = FactKey::LoweredBody(FunctionId::for_test(280));
-        let position = TransportPosition::ExecutableReturn {
-            executable: executable_symbol_for_test(&executable),
+    fn transport_shape_group_retains_every_external_dependency_for_every_member() {
+        let root = RootId::for_test(38);
+        let symbol = executable_symbol_for_test(&fake_executable_with_function(root, 380));
+        let left = ProductKey::TransportShape(TransportPosition::Value {
+            executable: symbol.clone(),
+            value: ValueId::from_u32(1),
+        });
+        let right = ProductKey::TransportShape(TransportPosition::Value {
+            executable: symbol,
+            value: ValueId::from_u32(2),
+        });
+        let external = ProductKey::IncomingInputSlot(InputSlot {
+            executable: fake_executable_with_function(root, 381),
+            semantic_index: 0,
+        });
+        let left_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 382));
+        let right_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 383));
+        let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 384));
+        let first_layout = TransportLayout::structural(ShapeId::for_test(110));
+        let second_layout = TransportLayout::structural(ShapeId::for_test(111));
+        let external_value = |producer| {
+            ProductValue::IncomingInputSlot(HashSet::from([IncomingInputSource {
+                producer: fake_executable_with_function(root, producer),
+                value: ValueId::from_u32(1),
+                role: IncomingInputRole::CallArgument,
+            }]))
         };
-        let component = TransportComponentInventory {
-            representative: position.clone(),
-            positions: vec![position.clone()],
+
+        for reverse in [false, true] {
+            let mut memo = ProductMemo::default();
+            finish_test_product(&mut memo, &external, external_value(385), []);
+            for key in [&left, &right] {
+                assert!(memo.begin(key.clone()));
+            }
+            let mut entries = vec![
+                (
+                    left.clone(),
+                    ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
+                    ProductDependencies {
+                        products: HashMap::from([
+                            (right.clone(), None),
+                            (external.clone(), memo.generation(&external)),
+                        ]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (
+                    right.clone(),
+                    ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
+                    ProductDependencies {
+                        products: HashMap::from([(left.clone(), None)]),
+                        facts: HashMap::new(),
+                    },
+                ),
+            ];
+            if reverse {
+                entries.reverse();
+            }
+            assert!(memo.finish_group(entries));
+            for key in [&left, &right] {
+                assert_eq!(
+                    memo.product_dependencies(key),
+                    Some(&HashMap::from([(external.clone(), Some(1))]))
+                );
+            }
+
+            finish_test_product(&mut memo, &left_reader, ProductValue::Unit, [left.clone()]);
+            finish_test_product(&mut memo, &right_reader, ProductValue::Unit, [right.clone()]);
+            finish_test_product(&mut memo, &unrelated, ProductValue::Unit, []);
+            let unrelated_generation = memo.generation(&unrelated);
+
+            memo.remove(&external);
+            finish_test_product(&mut memo, &external, external_value(386), []);
+            assert!(memo.get(&left).is_none());
+            assert!(memo.get(&right).is_none());
+            assert!(memo.get(&unrelated).is_some());
+
+            for key in [&left, &right] {
+                assert!(memo.begin(key.clone()));
+            }
+            assert!(memo.finish_group(vec![
+                (
+                    left.clone(),
+                    ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
+                    ProductDependencies {
+                        products: HashMap::from([
+                            (right.clone(), memo.generation(&right)),
+                            (external.clone(), memo.generation(&external)),
+                        ]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (
+                    right.clone(),
+                    ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
+                    ProductDependencies {
+                        products: HashMap::from([(left.clone(), memo.generation(&left))]),
+                        facts: HashMap::new(),
+                    },
+                ),
+            ]));
+            assert_eq!(memo.generation(&left), Some(2));
+            assert_eq!(memo.generation(&right), Some(2));
+            assert!(memo.get(&left_reader).is_none());
+            assert!(memo.get(&right_reader).is_none());
+            assert_eq!(memo.generation(&unrelated), unrelated_generation);
+        }
+    }
+
+    #[test]
+    fn changed_product_authority_discards_pending_reader_snapshots_before_group_settlement() {
+        let root = RootId::for_test(39);
+        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 390));
+        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 391));
+        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 392));
+        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 393));
+        let first = ProductValue::ExecutableEffects(EffectSummary::default());
+        let second = ProductValue::ExecutableEffects(EffectSummary {
+            allocates: true,
+            ..EffectSummary::default()
+        });
+
+        for reverse in [false, true] {
+            let mut memo = ProductMemo::default();
+            finish_test_product(&mut memo, &external, first.clone(), []);
+            finish_test_product(&mut memo, &unrelated, ProductValue::Unit, []);
+            let unrelated_generation = memo.generation(&unrelated);
+
+            assert!(memo.begin(left.clone()));
+            memo.unblock(
+                &left,
+                ProductDependencies {
+                    products: HashMap::from([(right.clone(), None), (external.clone(), Some(1))]),
+                    facts: HashMap::new(),
+                },
+            );
+            assert!(memo.pending_dependencies.contains_key(&left));
+
+            memo.remove(&external);
+            finish_test_product(&mut memo, &external, second.clone(), []);
+
+            assert!(!memo.pending_dependencies.contains_key(&left));
+            assert!(
+                memo.product_readers
+                    .get(&external)
+                    .is_none_or(|readers| !readers.contains(&left))
+            );
+            assert!(
+                memo.product_readers
+                    .get(&right)
+                    .is_none_or(|readers| !readers.contains(&left))
+            );
+
+            for key in [&left, &right] {
+                assert!(memo.begin(key.clone()));
+            }
+            let mut entries = vec![
+                (
+                    left.clone(),
+                    ProductValue::Unit,
+                    ProductDependencies {
+                        products: HashMap::from([(right.clone(), None), (external.clone(), Some(2))]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (
+                    right.clone(),
+                    ProductValue::Unit,
+                    ProductDependencies {
+                        products: HashMap::from([(left.clone(), None), (external.clone(), Some(2))]),
+                        facts: HashMap::new(),
+                    },
+                ),
+            ];
+            if reverse {
+                entries.reverse();
+            }
+            assert!(memo.finish_group(entries));
+            for key in [&left, &right] {
+                assert_eq!(
+                    memo.product_dependencies(key),
+                    Some(&HashMap::from([(external.clone(), Some(2))]))
+                );
+            }
+            assert_eq!(memo.generation(&unrelated), unrelated_generation);
+        }
+    }
+
+    #[test]
+    fn changed_fact_authority_discards_only_pending_readers_of_that_fact() {
+        let root = RootId::for_test(40);
+        let reader = ProductKey::RuntimeDemand(fake_executable_with_function(root, 400));
+        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 401));
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
+        let other_fact = FactUse::settled(FactKey::RootEntry(root));
+        let first = FactState {
+            revision: Some(1),
+            settled: false,
         };
-        let key = ProductKey::TransportComponent(position.clone());
-        let mut session = PullSession::new(root);
-        session.record_solved_transport_closure(SolvedTransportClosure {
-            executables: HashSet::from([executable.clone()]),
-            consumed_fact_states: HashMap::from([(
-                fact.clone(),
+        let second = FactState {
+            revision: Some(2),
+            settled: false,
+        };
+
+        let mut memo = ProductMemo::default();
+        for (key, dependency, state) in [
+            (&reader, fact.clone(), first),
+            (
+                &unrelated,
+                other_fact.clone(),
                 FactState {
                     revision: Some(1),
                     settled: true,
                 },
-            )]),
-            ..Default::default()
-        });
-        session.record_transport_shape_for(&executable, position.clone(), ShapeId::for_test(0));
-        session.record_transport_component(position, component.clone());
-        session.memo.finish(
-            &key,
-            ProductValue::TransportComponent(component),
-            ProductDependencies::default(),
+            ),
+        ] {
+            assert!(memo.begin(key.clone()));
+            memo.unblock(
+                key,
+                ProductDependencies {
+                    products: HashMap::new(),
+                    facts: HashMap::from([(dependency, state)]),
+                },
+            );
+        }
+
+        memo.reconcile_fact_movements(&HashMap::from([(fact.fact().clone(), first)]));
+        assert!(memo.pending_dependencies.contains_key(&reader));
+        memo.reconcile_fact_movements(&HashMap::from([(fact.fact().clone(), second)]));
+
+        assert!(!memo.pending_dependencies.contains_key(&reader));
+        assert!(memo.pending_dependencies.contains_key(&unrelated));
+        assert!(
+            memo.fact_readers
+                .get(fact.fact())
+                .is_none_or(|readers| !readers.contains(&reader))
         );
-        let mut scheduler = super::super::scheduler::Scheduler::<u32, FactKey>::new();
-        scheduler.complete(
-            &1,
-            HashSet::new(),
-            HashSet::new(),
-            vec![fact.clone()],
-            vec![fact.clone()],
-        );
-        let blocked = scheduler.complete(
-            &1,
-            HashSet::new(),
-            HashSet::from([FactUse::current(FactKey::RootEntry(root))]),
-            vec![fact],
-            Vec::new(),
-        );
-        assert_eq!(blocked.movements.len(), 1);
-        assert_eq!(blocked.movements[0].state.revision, Some(1));
-        assert!(!blocked.movements[0].state.settled);
-
-        session.apply_fact_movements(&blocked.movements);
-        session.reconcile_fact_movements();
-
-        assert!(!session.transport_closure_covers(&executable));
-        assert!(session.memo().get(&key).is_none());
-    }
-
-    /// INTENT: the by-symbol transport-shape index is a second KEYING of
-    /// `transport_shapes`, not a cache -- a symbol's lookup returns exactly
-    /// the recorded positions the old whole-inventory filter-scan would have
-    /// found for it, and nothing from any other executable.
-    #[test]
-    fn transport_shape_index_serves_exactly_the_owning_symbol() {
-        let root = RootId::for_test(31);
-        let first = fake_executable_with_function(root, 310);
-        let second = fake_executable_with_function(root, 311);
-        let first_position = TransportPosition::ExecutableReturn {
-            executable: executable_symbol_for_test(&first),
-        };
-        let second_position = TransportPosition::ExecutableReturn {
-            executable: executable_symbol_for_test(&second),
-        };
-        let shape = ShapeId::for_test(0);
-        let mut session = PullSession::new(root);
-
-        session.record_transport_shape_for(&first, first_position.clone(), shape);
-        session.record_transport_shape_for(&second, second_position.clone(), shape);
-
-        assert_eq!(
-            session
-                .transport_shape_positions_for(&executable_symbol_for_test(&first))
-                .collect::<Vec<_>>(),
-            vec![&first_position]
-        );
-        assert_eq!(
-            session
-                .transport_shape_positions_for(&executable_symbol_for_test(&second))
-                .collect::<Vec<_>>(),
-            vec![&second_position]
+        assert!(
+            memo.fact_readers
+                .get(other_fact.fact())
+                .is_some_and(|readers| readers.contains(&unrelated))
         );
     }
 
-    /// INTENT: the index lives and dies with `transport_shapes` across the
-    /// transport EPOCH boundary. Invalidation is keyed by the RECORDING
-    /// executable (`transport_positions_by_executable`), while the index is
-    /// keyed by each position's OWNING symbol -- a position recorded FOR one
-    /// executable but owned by another's symbol must still leave the index
-    /// when its recorder's epoch ends, and positions recorded by an
-    /// untouched executable must keep standing.
     #[test]
-    fn transport_shape_index_dies_with_its_owning_closure() {
-        let root = RootId::for_test(32);
-        let invalidated = fake_executable_with_function(root, 320);
-        let untouched = fake_executable_with_function(root, 321);
-        let invalidated_symbol = executable_symbol_for_test(&invalidated);
-        let untouched_symbol = executable_symbol_for_test(&untouched);
-        let own_position = TransportPosition::ExecutableReturn {
-            executable: invalidated_symbol.clone(),
+    fn group_settlement_rejects_discordant_dependency_snapshots_before_publication() {
+        let root = RootId::for_test(41);
+        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 410));
+        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 411));
+        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 412));
+        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 413));
+        let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
+        let fact_one = FactState {
+            revision: Some(1),
+            settled: false,
         };
-        // Recorded FOR `invalidated`, but OWNED by `untouched`'s symbol --
-        // e.g. a CallArg on the caller solved by the callee's closure.
-        let cross_position = TransportPosition::CallArg {
-            executable: untouched_symbol.clone(),
-            callsite: CallSiteId::from_u32(0),
-            semantic_index: 0,
+        let fact_two = FactState {
+            revision: Some(2),
+            settled: false,
         };
-        let standing_position = TransportPosition::ExecutableReturn {
-            executable: untouched_symbol.clone(),
-        };
-        let shape = ShapeId::for_test(0);
-        let mut session = PullSession::new(root);
-        session.record_transport_shape_for(&invalidated, own_position.clone(), shape);
-        session.record_transport_shape_for(&invalidated, cross_position.clone(), shape);
-        session.record_transport_shape_for(&untouched, standing_position.clone(), shape);
 
-        // Settled demand for `invalidated` moves.
-        let settled = ExecutableRuntimeDemand::default();
-        let mut moved = ExecutableRuntimeDemand::default();
-        moved.input_demands.push(RuntimeDemand::default());
-        session.record_settled_runtime_demand(invalidated.clone(), settled);
-        session.record_settled_runtime_demand(invalidated.clone(), moved);
+        for reverse in [false, true] {
+            for discordant_fact in [false, true] {
+                let mut memo = ProductMemo::default();
+                finish_test_product(&mut memo, &unrelated, ProductValue::Unit, []);
+                let unrelated_generation = memo.generation(&unrelated);
+                let left_dependencies = ProductDependencies {
+                    products: HashMap::from([(external.clone(), if discordant_fact { Some(2) } else { Some(1) })]),
+                    facts: HashMap::from([(fact.clone(), fact_one)]),
+                };
+                let right_dependencies = ProductDependencies {
+                    products: HashMap::from([(external.clone(), Some(2))]),
+                    facts: HashMap::from([(fact.clone(), if discordant_fact { fact_two } else { fact_one })]),
+                };
+                assert!(memo.begin(left.clone()));
+                memo.unblock(&left, left_dependencies.clone());
+                assert!(memo.begin(right.clone()));
+                let mut entries = vec![
+                    (left.clone(), ProductValue::Unit, left_dependencies),
+                    (right.clone(), ProductValue::Unit, right_dependencies),
+                ];
+                if reverse {
+                    entries.reverse();
+                }
 
-        assert!(session.transport_shape(&own_position).is_none());
-        assert!(session.transport_shape(&cross_position).is_none());
-        assert_eq!(
-            session
-                .transport_shape_positions_for(&invalidated_symbol)
-                .collect::<Vec<_>>(),
-            Vec::<&TransportPosition>::new(),
-            "the invalidated recorder's own position must leave the index with the map"
-        );
-        assert_eq!(
-            session
-                .transport_shape_positions_for(&untouched_symbol)
-                .collect::<Vec<_>>(),
-            vec![&standing_position],
-            "the cross-recorded position must leave the index, while the untouched recorder's position stands"
-        );
+                assert!(!memo.finish_group(entries));
+                for key in [&left, &right] {
+                    assert!(memo.get(key).is_none());
+                    assert!(!memo.pending_dependencies.contains_key(key));
+                    assert!(!memo.in_progress.contains(key));
+                }
+                assert!(
+                    memo.product_readers
+                        .get(&external)
+                        .is_none_or(|readers| !readers.contains(&left) && !readers.contains(&right))
+                );
+                assert!(
+                    memo.fact_readers
+                        .get(fact.fact())
+                        .is_none_or(|readers| !readers.contains(&left) && !readers.contains(&right))
+                );
+                assert_eq!(memo.generation(&unrelated), unrelated_generation);
+
+                for key in [&left, &right] {
+                    assert!(memo.begin(key.clone()));
+                }
+                let concordant = ProductDependencies {
+                    products: HashMap::from([(external.clone(), Some(2))]),
+                    facts: HashMap::from([(fact.clone(), fact_two)]),
+                };
+                assert!(memo.finish_group(vec![
+                    (left.clone(), ProductValue::Unit, concordant.clone()),
+                    (right.clone(), ProductValue::Unit, concordant),
+                ]));
+            }
+        }
     }
 
-    /// INTENT: a position re-recorded as ABSENT leaves `transport_shapes` and
-    /// must leave the index with it -- the artifact consumer packages only
-    /// positions that currently have a shape.
     #[test]
-    fn transport_shape_index_drops_positions_rerecorded_absent() {
-        let root = RootId::for_test(33);
-        let executable = fake_executable_with_function(root, 330);
-        let symbol = executable_symbol_for_test(&executable);
-        let position = TransportPosition::ExecutableReturn {
-            executable: symbol.clone(),
-        };
-        let mut session = PullSession::new(root);
-        session.record_transport_shape_for(&executable, position.clone(), ShapeId::for_test(0));
-        assert_eq!(session.transport_shape_positions_for(&symbol).count(), 1);
+    fn rejected_group_retries_without_displaced_dependency_snapshots() {
+        let root = RootId::for_test(42);
+        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 420));
+        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 421));
+        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 422));
 
-        session.record_absent_transport_shape_for(&executable, position.clone(), 0);
+        for reverse in [false, true] {
+            let mut memo = ProductMemo::default();
+            for key in [&left, &right] {
+                assert!(memo.begin(key.clone()));
+            }
+            let first = ProductDependencies {
+                products: HashMap::from([(external.clone(), Some(1))]),
+                facts: HashMap::new(),
+            };
+            assert!(memo.finish_group(vec![
+                (left.clone(), ProductValue::Unit, first.clone()),
+                (right.clone(), ProductValue::Unit, first),
+            ]));
+            for key in [&left, &right] {
+                memo.remove(key);
+            }
 
-        assert!(session.transport_shape(&position).is_none());
-        assert_eq!(
-            session.transport_shape_positions_for(&symbol).count(),
-            0,
-            "an absent re-record must remove the position from the by-symbol index"
-        );
+            assert!(memo.begin(right.clone()));
+            let current = ProductDependencies {
+                products: HashMap::from([(external.clone(), Some(2))]),
+                facts: HashMap::new(),
+            };
+            memo.unblock(&right, current.clone());
+            assert!(memo.begin(left.clone()));
+            let stale = memo
+                .displaced
+                .get(&left)
+                .expect("left should retain its prior value while reproducing")
+                .dependencies
+                .clone();
+            let mut entries = vec![
+                (left.clone(), ProductValue::Unit, stale),
+                (right.clone(), ProductValue::Unit, current.clone()),
+            ];
+            if reverse {
+                entries.reverse();
+            }
+            assert!(!memo.finish_group(entries));
+
+            for key in [&left, &right] {
+                let displaced = memo
+                    .displaced
+                    .get(key)
+                    .expect("rejected member should retain its prior value and generation");
+                assert_eq!(displaced.generation, 1);
+                assert_eq!(displaced.dependencies, ProductDependencies::default());
+                assert!(memo.begin(key.clone()));
+            }
+            assert!(memo.finish_group(vec![
+                (left.clone(), ProductValue::Unit, current.clone()),
+                (right.clone(), ProductValue::Unit, current),
+            ]));
+            assert_eq!(memo.generation(&left), Some(1));
+            assert_eq!(memo.generation(&right), Some(1));
+        }
     }
 
-    /// INTENT: the demanded-position index carries exactly the
-    /// EntryCapture/ResumePayload variants the artifact consumer reads from
-    /// the demanded set, keyed by each position's own symbol; other variants
-    /// join the demanded set without joining the index.
     #[test]
-    fn demanded_capture_resume_index_tracks_only_those_variants() {
-        let root = RootId::for_test(34);
-        let executable = fake_executable_with_function(root, 340);
-        let symbol = executable_symbol_for_test(&executable);
-        let capture = TransportPosition::EntryCapture {
-            executable: symbol.clone(),
-            entry: ControlEntryId::from_u32(0),
-            capture_index: 0,
+    fn callable_owner_scc_is_finite_order_free_and_contains_only_pass_through_owners() {
+        let root = RootId::for_test(36);
+        let x = TransportPosition::ExecutableInput {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 360)),
+            semantic_index: 1,
         };
-        let resume = TransportPosition::ResumePayload {
-            executable: symbol.clone(),
-            callsite: None,
-            entry: ControlEntryId::from_u32(1),
+        let left = TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 361)),
+            value: ValueId::from_u32(1),
         };
-        let input = TransportPosition::ExecutableInput {
-            executable: symbol.clone(),
-            semantic_index: 0,
+        let right = TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 361)),
+            value: ValueId::from_u32(2),
         };
-        let mut session = PullSession::new(root);
-        session.record_transport_component(
-            input.clone(),
-            TransportComponentInventory {
-                representative: input.clone(),
-                positions: vec![input.clone(), capture.clone(), resume.clone()],
+        let left_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 362));
+        let right_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 363));
+        let x_layout = TransportLayout {
+            structural: ShapeId::for_test(91),
+            carrier: TransportCarrier::ValueRef,
+        };
+        let y_layout = TransportLayout::structural(ShapeId::for_test(92));
+        let no_anchor = [OwnerEquation {
+            seed: OwnerState::bottom(x_layout),
+            children: vec![0],
+        }];
+        assert_eq!(
+            settle_owner_equations(&no_anchor, false).0[0],
+            OwnerState::bottom(x_layout)
+        );
+
+        let seed = OwnerState {
+            layout: x_layout,
+            resolutions: HashSet::from([left_resolution.clone(), left_resolution, right_resolution]),
+            publications: HashSet::from([x, left, right]),
+        };
+        let pair = [
+            OwnerEquation {
+                seed: seed.clone(),
+                children: vec![1],
             },
-        );
+            OwnerEquation {
+                seed: OwnerState::bottom(y_layout),
+                children: vec![0],
+            },
+        ];
+        let pair_forward = settle_owner_equations(&pair, false);
+        let pair_reverse = settle_owner_equations(&pair, true);
+        assert_eq!(pair_forward.0, pair_reverse.0);
+        assert!(pair_forward.1 <= 3 && pair_reverse.1 <= 3);
+        assert_eq!(pair_forward.0[0].layout, x_layout);
+        assert_eq!(pair_forward.0[1].layout, y_layout);
 
-        assert!(session.demanded_transport_positions().contains(&input));
-        let mut indexed = session
-            .demanded_capture_resume_positions_for(&symbol)
-            .cloned()
-            .collect::<Vec<_>>();
-        indexed.sort_by_key(|position| match position {
-            TransportPosition::EntryCapture { .. } => 0,
-            _ => 1,
+        let ring = [
+            OwnerEquation {
+                seed,
+                children: vec![1],
+            },
+            OwnerEquation {
+                seed: OwnerState::bottom(y_layout),
+                children: vec![2],
+            },
+            OwnerEquation {
+                seed: OwnerState::bottom(x_layout),
+                children: vec![3],
+            },
+            OwnerEquation {
+                seed: OwnerState::bottom(y_layout),
+                children: vec![0],
+            },
+        ];
+        let ring_forward = settle_owner_equations(&ring, false);
+        let ring_reverse = settle_owner_equations(&ring, true);
+        assert_eq!(ring_forward.0, ring_reverse.0);
+        assert!(ring_forward.1 <= 5 && ring_reverse.1 <= 5);
+
+        let mut world = World::new();
+        let callable = world.intern_callable(super::super::transport::CallableDescr {
+            function: None,
+            capture_tys: Box::default(),
+            capture_shapes: Box::default(),
+            capture_lanes: Box::default(),
         });
-        assert_eq!(indexed, vec![capture, resume]);
+        for answer in pair_forward.0 {
+            let ProductValue::CallableConstruction(answer) = answer.product_value(callable, BoundaryId::for_test(9))
+            else {
+                unreachable!()
+            };
+            assert!(answer.construction.is_none());
+            assert_eq!(answer.callable_facts[&callable].resolutions.len(), 2);
+            assert_eq!(answer.callable_facts[&callable].direct_edges.len(), 2);
+            assert_eq!(answer.boundary_facts[&BoundaryId::for_test(9)].publications.len(), 3);
+        }
+    }
+
+    #[test]
+    fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
+        let root = RootId::for_test(37);
+        let x_position = TransportPosition::ExecutableInput {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 370)),
+            semantic_index: 1,
+        };
+        let y_position = TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 370)),
+            value: ValueId::from_u32(5),
+        };
+        let terminal_position = TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 371)),
+            value: ValueId::from_u32(1),
+        };
+        let x = ProductKey::CallableConstruction(x_position.clone());
+        let y = ProductKey::CallableConstruction(y_position);
+        let terminal = ProductKey::CallableConstruction(terminal_position.clone());
+        let slot = ProductKey::IncomingInputSlot(InputSlot {
+            executable: fake_executable_with_function(root, 370),
+            semantic_index: 1,
+        });
+        let parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 370));
+        let unrelated = ProductKey::CallableConstruction(TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 372)),
+            value: ValueId::from_u32(0),
+        });
+        let unrelated_parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 372));
+        let mut world = World::new();
+        let callable = world.intern_callable(super::super::transport::CallableDescr {
+            function: None,
+            capture_tys: Box::default(),
+            capture_shapes: Box::default(),
+            capture_lanes: Box::default(),
+        });
+        let boundary = BoundaryId::for_test(10);
+        let layout = TransportLayout {
+            structural: ShapeId::for_test(101),
+            carrier: TransportCarrier::ValueRef,
+        };
+        let first_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 373));
+        let second_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 374));
+        let equations = |resolution: ExecutableSymbol, publication: TransportPosition| {
+            [
+                OwnerEquation {
+                    seed: OwnerState {
+                        layout,
+                        resolutions: HashSet::from([resolution]),
+                        publications: HashSet::from([publication, x_position.clone()]),
+                    },
+                    children: vec![1],
+                },
+                OwnerEquation {
+                    seed: OwnerState::bottom(layout),
+                    children: vec![0],
+                },
+            ]
+        };
+        let first_answers =
+            settle_owner_equations(&equations(first_resolution.clone(), terminal_position.clone()), false).0;
+        let keys = [x.clone(), y.clone()];
+        let external = [terminal.clone(), slot.clone()];
+        let slot_value = ProductValue::IncomingInputSlot(HashSet::from([IncomingInputSource {
+            producer: fake_executable_with_function(root, 371),
+            value: ValueId::from_u32(1),
+            role: IncomingInputRole::CallArgument,
+        }]));
+
+        let mut memos = Vec::new();
+        for reverse in [false, true] {
+            let mut memo = ProductMemo::default();
+            finish_test_product(
+                &mut memo,
+                &terminal,
+                callable_owner_answer(
+                    layout,
+                    terminal_position.clone(),
+                    callable,
+                    boundary,
+                    first_resolution.clone(),
+                ),
+                [],
+            );
+            finish_test_product(&mut memo, &slot, slot_value.clone(), []);
+            finish_owner_group(&mut memo, &keys, &first_answers, &external, callable, boundary, reverse);
+            memos.push(memo);
+        }
+        let mut memo = memos.remove(0);
+        let reverse = memos.remove(0);
+        for key in &keys {
+            assert_eq!(memo.get(key), reverse.get(key));
+            assert_eq!(memo.generation(key), reverse.generation(key));
+            assert_eq!(
+                memo.product_dependencies(key),
+                Some(&HashMap::from([(terminal.clone(), Some(1)), (slot.clone(), Some(1))]))
+            );
+        }
+
+        finish_test_product(&mut memo, &parent, ProductValue::Unit, [x.clone()]);
+        finish_test_product(&mut memo, &unrelated, withdrawn_callable_owner_answer(layout), []);
+        finish_test_product(&mut memo, &unrelated_parent, ProductValue::Unit, [unrelated.clone()]);
+        let unrelated_generations = (memo.generation(&unrelated), memo.generation(&unrelated_parent));
+
+        let generations = keys.clone().map(|key| memo.generation(&key));
+        for key in &keys {
+            memo.remove(key);
+        }
+        finish_owner_group(&mut memo, &keys, &first_answers, &external, callable, boundary, true);
+        assert_eq!(keys.clone().map(|key| memo.generation(&key)), generations);
+
+        let replacement_position = TransportPosition::Value {
+            executable: executable_symbol_for_test(&fake_executable_with_function(root, 371)),
+            value: ValueId::from_u32(2),
+        };
+        memo.remove(&terminal);
+        finish_test_product(
+            &mut memo,
+            &terminal,
+            callable_owner_answer(
+                layout,
+                replacement_position.clone(),
+                callable,
+                boundary,
+                second_resolution.clone(),
+            ),
+            [],
+        );
+        assert!(keys.iter().all(|key| memo.get(key).is_none()));
+        assert!(memo.stale_dependency(&parent).is_some());
+        let replacement_answers = settle_owner_equations(
+            &equations(second_resolution.clone(), replacement_position.clone()),
+            true,
+        )
+        .0;
+        finish_owner_group(
+            &mut memo,
+            &keys,
+            &replacement_answers,
+            &external,
+            callable,
+            boundary,
+            false,
+        );
+        assert!(keys.iter().all(|key| memo.generation(key) == Some(2)));
+        assert!(memo.get(&parent).is_none());
+
+        memo.remove(&terminal);
+        finish_test_product(
+            &mut memo,
+            &terminal,
+            callable_owner_answer(layout, replacement_position, callable, boundary, second_resolution),
+            [],
+        );
+        assert!(keys.iter().all(|key| memo.generation(key) == Some(2)));
+
+        memo.remove(&terminal);
+        finish_test_product(&mut memo, &terminal, withdrawn_callable_owner_answer(layout), []);
+        assert!(keys.iter().all(|key| memo.get(key).is_none()));
+        let empty = settle_owner_equations(
+            &equations(
+                executable_symbol_for_test(&fake_executable_with_function(root, 376)),
+                x_position.clone(),
+            ),
+            false,
+        )
+        .0
+        .into_iter()
+        .map(|answer| OwnerState::bottom(answer.layout))
+        .collect::<Vec<_>>();
+        finish_owner_group(&mut memo, &keys, &empty, &external, callable, boundary, false);
+        assert!(keys.iter().all(|key| memo.generation(key) == Some(3)));
+
+        memo.remove(&slot);
+        finish_test_product(
+            &mut memo,
+            &slot,
+            ProductValue::IncomingInputSlot(HashSet::from([
+                IncomingInputSource {
+                    producer: fake_executable_with_function(root, 371),
+                    value: ValueId::from_u32(1),
+                    role: IncomingInputRole::CallArgument,
+                },
+                IncomingInputSource {
+                    producer: fake_executable_with_function(root, 375),
+                    value: ValueId::from_u32(2),
+                    role: IncomingInputRole::CallArgument,
+                },
+            ])),
+            [],
+        );
+        assert!(keys.iter().all(|key| memo.get(key).is_none()));
+        finish_owner_group(
+            &mut memo,
+            std::slice::from_ref(&x),
+            std::slice::from_ref(&empty[0]),
+            &external,
+            callable,
+            boundary,
+            false,
+        );
+        assert!(memo.get(&x).is_some());
+        assert!(memo.get(&y).is_none());
+        assert_eq!(
+            (memo.generation(&unrelated), memo.generation(&unrelated_parent)),
+            unrelated_generations
+        );
     }
 }

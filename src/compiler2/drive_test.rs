@@ -1,5 +1,5 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
+use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
@@ -3579,8 +3579,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
 
     // The settled root keeps the whole reached reduce path live and leaves
     // unrelated Enum functions cold. Observed through the per-activation
-    // `activation_analysis.defined` signal (the product-path successor to the
-    // deleted seal's closure inventory): a reached activation publishes it,
+    // `activation_analysis.defined` signal: a reached activation publishes it,
     // while a defined-but-unreached function never does.
     let analyzed_functions = analyzed
         .keys_for_root(root_id)
@@ -5051,11 +5050,12 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
         .collect::<HashSet<_>>();
     assert_eq!(boundary_ids.len(), 2);
     assert_eq!(member_functions, HashSet::from([each_a_id, each_b_id]));
-    assert!(
-        boundaries
+    assert!(boundaries.iter().all(|boundary| {
+        boundary
+            .members
             .iter()
-            .all(|boundary| boundary.return_form == crate::compiler2::artifact::BackendCallableReturn::Absent)
-    );
+            .all(|member| member.target_return.layout.reprs.is_empty())
+    }));
     assert!(
         native_closure_call_targets(&program)
             .into_iter()
@@ -5084,7 +5084,7 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
 }
 
 // This test used to pin the all-divergent callable boundary's lowering and
-// runtime fate (Diverges return form, no continuation, function_clause halt).
+// runtime fate (no continuation, function_clause halt).
 // Kernel arithmetic contracts reject the program outright now: every join
 // member's body adds `1`/`2` to `:bad`, each a provable spec violation at a
 // user callsite, so compilation fails before lowering and no output escapes
@@ -5153,10 +5153,6 @@ fn compiler2_mixed_public_callable_adapts_only_its_returning_member() {
                     == 1
         })
         .expect("mixed returning/divergent callable boundary");
-    assert_eq!(
-        boundary.return_form,
-        crate::compiler2::artifact::BackendCallableReturn::ValueRef
-    );
     let wrapper = program
         .module
         .fns
@@ -5996,6 +5992,59 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
         &capture,
         "Compiler2-native spawn/receive JIT should not reopen legacy planning or type inference",
     );
+}
+
+#[test]
+fn compiler2_spawned_tuple_return_uses_exact_member_lanes_and_task_halt_repr() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_spawn_tuple_return.fz".to_string()),
+        text: r#"
+fn child(parent) do
+  send(parent, :ran)
+  {1, 2}
+end
+
+fn main() do
+  parent = self()
+  spawn(fn () -> child(parent) end)
+  receive do
+    :ran -> 0
+  end
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "spawned tuple-returning closure should lower");
+
+    let program = native.last(root_id).program;
+    let boundary = program
+        .callable_boundaries
+        .iter()
+        .find(|boundary| boundary.call_arity == 0)
+        .expect("spawned zero-argument callable boundary");
+    let [member] = boundary.members.as_ref() else {
+        panic!("spawned zero-argument callable should have one exact member")
+    };
+    assert_eq!(
+        member.target_return.layout.reprs.as_ref(),
+        [AbiValueRepr::RawInt, AbiValueRepr::RawInt]
+    );
+    assert_eq!(boundary.task_halt_repr, Some(AbiValueRepr::RawInt));
+
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run(compiler.telemetry(), program.entry), 0);
 }
 
 #[test]
@@ -7704,7 +7753,7 @@ end
     assert_eq!(
         continuation.param_reprs[0],
         AbiValueRepr::RawF64,
-        "the sealed resume endpoint should preserve the callee's physical RawF64 result lane",
+        "the resolved resume endpoint should preserve the callee's physical RawF64 result lane",
     );
 }
 
@@ -7982,7 +8031,6 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
             (
                 entry.captures.len(),
                 entry.call_arity,
-                entry.return_form,
                 entry
                     .members
                     .iter()
@@ -8000,13 +8048,8 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         .collect::<Vec<_>>();
     assert_eq!(
         callable_boundaries,
-        vec![(
-            0,
-            1,
-            crate::compiler2::artifact::BackendCallableReturn::ValueRef,
-            vec![vec![vec![AbiValueRepr::RawInt]]],
-        )],
-        "resource destructor lambdas should publish a wrapper-owned boxed call surface with the member's raw payload layout recorded behind it",
+        vec![(0, 1, vec![vec![vec![AbiValueRepr::RawInt]]],)],
+        "resource destructor lambdas should publish a wrapper-owned call surface with the member's exact raw payload layout",
     );
     assert_eq!(
         native_executable_body(&program, lambda_id).param_reprs,
@@ -8574,9 +8617,8 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     let append_id = function_id(&functions, "append", 2);
     let foo_id = function_id(&functions, "foo", 0);
 
-    // The rooted, reachability-pruned activation frontier the deleted seal's
-    // `SemanticClosure.activations` inventory used to hand back is reconstructed
-    // by walking the SETTLED call graph from the entry (see
+    // The rooted, reachability-pruned activation frontier is derived by walking
+    // the settled call graph from the entry (see
     // `rooted_reachable_frontier`). Reachability over the unique least fixpoint
     // is schedule-free, and each callsite resolves to its settled callee, so the
     // mid-convergence intermediates that a raw `activation_analysis` snapshot
@@ -8656,9 +8698,8 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
     );
 }
 
-/// Reconstructs the ROOTED, reachability-pruned activation frontier the deleted
-/// seal's `SemanticClosure.activations` inventory used to hand back: starting at
-/// the root's entry activation, follow the SETTLED call graph — each activation's
+/// Derives the rooted, reachability-pruned activation frontier by starting at
+/// the root's entry activation and following the settled call graph. Each activation's
 /// `callsites`, resolved through `callsite_targets`, name the callee activations
 /// it actually reaches. Callers: the redefinition tests below, plus the
 /// single-drive frontier test and the every-schedule convergence test.
@@ -8666,10 +8707,9 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
 /// A raw `activation_analysis.defined` snapshot is NOT enough on its own here:
 /// that store is a monotone GLOBAL cache that never retracts an activation once
 /// analyzed, so a root that STOPS reaching a function keeps its stale facts
-/// there (and the backend product is not rebuilt on redefinition either). The
-/// seal, by contrast, published a per-root REACHABILITY walk. Walking the entry's
-/// live call graph is what prunes back to the currently reachable closure, so
-/// this reconstruction tracks the seal's rooted inventory across redefinitions.
+/// there (and the backend product is not rebuilt on redefinition either). Walking
+/// the entry's live call graph prunes back to the currently reachable set across
+/// redefinitions.
 fn rooted_reachable_frontier(
     world: &mut crate::compiler2::World,
     root: crate::compiler2::RootId,
@@ -8706,10 +8746,8 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
     // After a quicksort root settles, redefining the UNCALLED `foo/0` must not
     // perturb the rooted settled activation frontier: `foo` is never reached, so
     // swapping its body has no bearing on which activations the root closes over.
-    // The deleted seal proved this by not republishing its SemanticClosure
-    // record; we prove the same INTENT directly against the reconstructed
-    // rooted reachable frontier — incremental stability under an irrelevant
-    // redefinition.
+    // The rooted reachable frontier directly proves incremental stability under
+    // an irrelevant redefinition.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -8763,14 +8801,12 @@ fn compiler2_redefining_main_retracts_the_old_root_frontier_and_activates_foo() 
     // exactly {main, foo} and no longer reach qsort/partition/append.
     //
     // The retraction is observed by re-walking the settled call graph from the
-    // entry, NOT by re-reading the raw `activation_analysis` snapshot. The seal's
-    // old `SemanticClosure` inventory was a per-root REACHABILITY walk, so a root
-    // that stopped reaching qsort simply omitted it. The modern activation store
+    // entry, NOT by re-reading the raw `activation_analysis` snapshot. The activation store
     // is a monotone GLOBAL cache: qsort/partition/append are still defined (00008
     // only redefines `main`+`foo`), so their first-drive analysis facts stay live
     // and un-pruned there — and the backend product is not rebuilt on this
     // redefinition. Reachability from the (re-analyzed) entry is what prunes the
-    // frontier, matching the seal's rooted inventory.
+    // live frontier.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -9181,8 +9217,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
 
     // Recursive non-dispatch inputs collapse to ONE build/2 activation key, and
     // it still carries the recursive accumulator slot. Read off the settled
-    // per-activation `activation_analysis.defined` frontier — the product-path
-    // successor to the deleted seal's closure inventory — keeping only keys that
+    // per-activation `activation_analysis.defined` frontier, keeping only keys that
     // earned a converged return (dropping mid-convergence intermediates).
     let settled_returns = returns.settled_activations(root_id);
     let build_activations = analyzed
@@ -9815,9 +9850,9 @@ fn main(), do: rebuild([1, 2])
 }
 
 #[test]
-fn compiler2_reusable_cons_runtime_telemetry_reports_alias_fallback() {
-    let (attempts, reused) = reusable_cons_exit_counts(
-        "reusable_cons_alias_fallback.fz",
+fn compiler2_reusable_cons_statically_skips_a_returned_source_alias() {
+    let run = reusable_cons_run(
+        "reusable_cons_returned_source_alias.fz",
         r#"
 fn rebuild(xs) do
   [h | t] = xs
@@ -9825,17 +9860,22 @@ fn rebuild(xs) do
   {holder, [h | t]}
 end
 
-fn main(), do: rebuild([1, 2])
+fn main() do
+  dbg(rebuild([1, 2]))
+  0
+end
 "#,
     );
 
-    assert_eq!(attempts, 1);
-    assert_eq!(reused, 0);
+    assert_eq!((run.births, run.transported), (1, 0));
+    assert_eq!((run.attempts, run.reused), (0, 0));
+    assert!(run.source_and_rebuild_share_return);
+    assert_eq!(run.output, ["{{[1, 2]}, [1, 2]}"]);
 }
 
 #[test]
 fn compiler2_reusable_cons_erases_unused_call_argument_before_reuse() {
-    let (attempts, reused) = reusable_cons_exit_counts(
+    let run = reusable_cons_run(
         "reusable_cons_erased_unused_argument.fz",
         r#"
 fn ping(x), do: x
@@ -9850,17 +9890,31 @@ fn main(), do: rebuild([1, 2])
 "#,
     );
 
-    assert_eq!(attempts, 1);
-    assert_eq!(reused, 1);
+    assert_eq!((run.attempts, run.reused), (1, 1));
 }
 
-fn reusable_cons_exit_counts(name: &str, source: &str) -> (u64, u64) {
+struct ReusableConsRun {
+    births: u64,
+    transported: u64,
+    attempts: u64,
+    reused: u64,
+    source_and_rebuild_share_return: bool,
+    output: Vec<String>,
+}
+
+fn reusable_cons_run(name: &str, source: &str) -> ReusableConsRun {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
     let exits = ProcessExitCapture::new();
     exits.install(&tel);
+    let reusable_cons = ReusableConsCapture::new();
+    reusable_cons.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let dbg = DbgCapture::new();
     let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
         name: "main".to_string(),
@@ -9880,7 +9934,43 @@ fn reusable_cons_exit_counts(name: &str, source: &str) -> (u64, u64) {
     });
 
     let exit = exits.last().expect("runtime process exit telemetry");
-    (exit.reusable_cons_attempts, exit.reusable_cons_reused)
+    let (_, births, transported) = reusable_cons.last().expect("reusable-cons compilation telemetry");
+    let source_and_rebuild_share_return = reusable_cons_source_and_rebuild_share_return(&native.last(root_id).program);
+    ReusableConsRun {
+        births,
+        transported,
+        attempts: exit.reusable_cons_attempts,
+        reused: exit.reusable_cons_reused,
+        source_and_rebuild_share_return,
+        output: dbg.lines(),
+    }
+}
+
+fn reusable_cons_source_and_rebuild_share_return(program: &NativeProgram) -> bool {
+    program.module.fns.iter().any(|function| {
+        function.physical_capabilities.iter().any(|fact| {
+            let PhysicalCapability::ReusableConsCell { rebuilt_head } = fact.capability;
+            let rebuilt = function
+                .blocks
+                .iter()
+                .flat_map(|block| block.stmts.iter())
+                .find_map(|stmt| match stmt {
+                    IrStmt::Let(value, IrPrim::MakeList(items, Some(_))) if items.as_slice() == [rebuilt_head] => {
+                        Some(*value)
+                    }
+                    _ => None,
+                });
+            rebuilt.is_some_and(|rebuilt| {
+                function.blocks.iter().any(|block| {
+                    matches!(
+                        &block.terminator,
+                        IrTerm::ReturnLanes(lanes)
+                            if lanes.contains(&fact.source) && lanes.contains(&rebuilt)
+                    )
+                })
+            })
+        })
+    })
 }
 
 #[test]
@@ -12544,7 +12634,7 @@ pub(crate) fn function_id(capture: &FunctionCapture, name: &str, arity: u64) -> 
 /// `activation_analysis.defined`. A key can be republished across rounds (and,
 /// before convergence, a transient key can appear); callers dedup by key and
 /// filter to the live frontier via `world.activation_analysis` to recover the
-/// settled analyzed-activation set the deleted seal used to hand back directly.
+/// settled analyzed-activation set.
 struct ActivationAnalysisCapture {
     keys: Rc<RefCell<Vec<ActivationKey>>>,
 }
@@ -12974,8 +13064,7 @@ fn compiler2_quicksort_converges_identically_on_every_schedule() {
     // same activation frontier. If this test ever flakes, the design has a
     // hole and the flake has found it — do not loosen it. The frontier is the
     // rooted, reachability-pruned settled call graph (see
-    // `rooted_reachable_frontier`) — the schedule-free successor to the deleted
-    // seal's SemanticClosure inventory, and the same reconstruction
+    // `rooted_reachable_frontier`), and the same derivation
     // `compiler2_quicksort_root_closes_with_a_finite_recursive_frontier` pins to
     // its exact size.
     let mut shapes = Vec::new();
@@ -13714,6 +13803,99 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
 }
 
 #[test]
+fn compiler2_connected_callable_returns_share_one_public_value_ref_contract() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("connected_callable_returns.fz".to_string()),
+        text: r#"
+fn run(flag) do
+  p = fn (x) -> {:p, x} end
+  r = fn (x) -> {:r, x} end
+  q = fn (x) -> x end
+  left = if flag, do: p, else: r
+  a = left.(1)
+  right = if flag, do: p, else: q
+  b = right.(2)
+  {a, b, p}
+end
+
+fn main() do
+  {a1, b1, _} = run(true)
+  {a2, b2, _} = run(false)
+  dbg({a1, b1, a2, b2})
+  0
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(compiler.drive(), "connected callable returns should lower natively");
+
+    let program = native.last(root_id).program;
+    let returning_boundaries = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary
+                .members
+                .iter()
+                .any(|member| !member.target_return.diverges && !member.target_return.layout.reprs.is_empty())
+        })
+        .collect::<Vec<_>>();
+    assert!(!returning_boundaries.is_empty());
+    assert!(
+        returning_boundaries
+            .iter()
+            .all(|boundary| boundary.return_form == BackendCallableReturn::ValueRef)
+    );
+    assert!(returning_boundaries.iter().all(|boundary| {
+        program.bodies.iter().any(|body| {
+            body.origin
+                == (NativeBodyOrigin::CallableWrapper {
+                    identity: boundary.id.as_u32(),
+                })
+                && body.return_reprs == [AbiValueRepr::ValueRef]
+        })
+    }));
+
+    let indirect_return_continuations = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .filter_map(|block| match &block.terminator {
+            IrTerm::CallClosure {
+                direct_target: None,
+                continuation,
+                ..
+            } => program.bodies.iter().find(|body| body.fn_id == continuation.fn_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(indirect_return_continuations.len() >= 2);
+    assert!(indirect_return_continuations.iter().all(|body| {
+        matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
+            && body.param_reprs.last() == Some(&AbiValueRepr::ValueRef)
+    }));
+
+    let compiled = jit_compile_native_program(&mut compiler, &program);
+    assert_eq!(compiled.run_with_output(compiler.telemetry(), &dbg, program.entry), 0);
+    assert_eq!(dbg.lines(), ["{{:p, 1}, {:p, 2}, {:r, 1}, 2}"]);
+}
+
+#[test]
 fn compiler2_multi_target_closure_arg_floor_clears_the_shared_reducer_demand_crash() {
     // INTENT: `Enum.find` and `Enum.find_value` share one generic reduce body
     // whose `_acc` reducer parameter `find` never reads and `find_value` does.
@@ -13890,7 +14072,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
         for capture_surface in &capture_surfaces[1..] {
             assert_eq!(
                 capture_surface, first,
-                "construction members naming target {target} should use its one sealed capture surface",
+                "construction members naming target {target} should use its one settled capture surface",
             );
         }
     }

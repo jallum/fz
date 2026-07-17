@@ -221,7 +221,7 @@
         There is one fact engine and one product driver. Joined activation inputs, return types,
         direct-call summaries, and recursive keying facts settle as direct facts. Backend artifacts
         are request-local products that wait on exact facts or products; they do not begin from a
-        root-wide semantic closure pass.
+        root-wide collection pass.
       </p>
     </header>
 
@@ -313,10 +313,11 @@
         The artifact boundary is product-keyed:
         <code>MaterializedExecutable(E)</code> then <code>AbiExecutable(E)</code> then
         <code>BackendExecutable(E)</code>, with <code>RuntimeDemand(E)</code>,
-        <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, and callable /
-        boundary facts pulled only when a demanded executable names them. The final
-        <code>RootBackendProduct(root)</code> packages request-local symbolic executables into one
-        dense <code>BackendProgram</code>.
+        <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, and
+        <code>CallableConstruction(position)</code> pulled only when a demanded executable names
+        them. The final
+        <code>RootBackendProduct(root)</code> follows exact reachable backend product values and
+        owns their symbolic plan beside one dense <code>BackendProgram</code>.
       </p>
     </section>
 
@@ -343,9 +344,8 @@
     LowerNativeProgram(RootId),
 }</code></pre>
       <p>
-        The full enum still contains legacy semantic-closure and root transport-plan jobs for
-        diagnostic dump surfaces and old contract tests. They are not the artifact vocabulary:
-        backend products are pulled by <code>ProductKey</code> and exact settled fact waits.
+        These jobs publish semantic facts. Backend artifacts are pulled separately by
+        <code>ProductKey</code> and exact settled fact waits.
       </p>
       <p>
         <code>ScopeCode</code> then walks the parsed items in source order. The first pass reserves
@@ -465,7 +465,7 @@ enum FactValue {
           <tr>
             <td>Product root</td>
             <td><code>RootBackendProduct(root)</code></td>
-            <td>The demanded root answer. It keys the entry executable, pulls symbolic backend executables by product key, and packages only the request-local inventory.</td>
+            <td>The demanded root answer. It keys the entry executable, follows exact backend products through symbolic edges and positioned callable owners, and retains their symbolic plan beside the dense runtime program.</td>
           </tr>
           <tr>
             <td>Executable products</td>
@@ -474,8 +474,8 @@ enum FactValue {
           </tr>
           <tr>
             <td>Representation products</td>
-            <td><code>RuntimeDemand(E)</code>, <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, <code>CallableFacts</code>, <code>BoundaryFacts</code></td>
-            <td>Request-local representation and transport answers pulled only for positions and callable boundaries named by demanded executables. <code>RuntimeDemand</code> and <code>ExecutableEffects</code> are SCC-settled: each producer discovers its cyclic dependency group from settled call-edge facts, runs a bottom-start monotone ascent to the fixpoint entirely inside the producer, and publishes the settled value for every member at once — no mid-ascent value is ever observable.</td>
+            <td><code>RuntimeDemand(E)</code>, <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, <code>CallableConstruction(position)</code></td>
+            <td>Request-local representation answers pulled only for positions named by demanded executables. Executable demand/effects and recursive position products publish cyclic groups atomically, so no mid-ascent value is observable.</td>
           </tr>
         </tbody>
       </table>
@@ -648,7 +648,8 @@ BackendExecutable(E)
 AbiExecutable(E)
   pulls MaterializedExecutable(E)
   pulls ExecutableEffects(E)
-  pulls TransportShape(EntryCapture / input / return / resume / boundary positions)
+  pulls TransportShape(EntryCapture / input / return / resume / value positions)
+  pulls CallableConstruction(callable positions)
 
 MaterializedExecutable(E)
   waits on ActivationAnalyzed(E.activation), ReturnType(E.activation), CallSiteSummary(...)
@@ -656,9 +657,10 @@ MaterializedExecutable(E)
       <p>
         Product materialization clones one executable body, prunes unreachable clauses, rewrites
         semantically cold local-control entries into explicit halt stubs, and freezes each live
-        callsite to selected symbolic callee executable keys. The root product is only the final
-        dense packaging step; it packages the symbolic executable products already in the request
-        session and does not scan all semantic facts to rediscover membership.
+        callsite to selected symbolic callee executable keys. The root product traverses exact
+        reachable <code>BackendExecutable</code> product values through their symbolic call edges
+        and positioned callable owners. Its answer retains the symbolic transport plan beside the
+        dense runtime program and does not scan session state or semantic facts to rediscover membership.
       </p>
       <p>
         Product freshness is revisioned by exact product generations and exact fact uses. A producer
@@ -675,21 +677,21 @@ MaterializedExecutable(E)
       <p>
         Backend-required transport positions wait for produced
         <code>TransportShape(position)</code> values, not just demanded position membership.
-        Transport shapes are demand-derived. <code>RuntimeDemand(E)</code> settles its demand
-        SCC inside one producer (the <code>ExecutableEffects</code> pattern): the cone is
-        discovered from settled call-edge facts, a bottom-start monotone ascent solves every
-        member together, and only the settled fixpoint is memoized — there is no whole-by-need
-        mid-ascent seed, no consumed-return floor, and no in-flight retraction. A moved transport
-        input retracts only live closures containing that member or registered as readers of that
-        session-product owner. Exact world-fact movement retracts closures registered against that
-        fact. Boundary-publication carrier evidence belongs to the solved closure that produced it,
-        and intrinsic callable callsite mode comes from the authoritative lowered body rather than
-        an optional pruned materialization. Unrelated live closures remain valid. Settled demand retracts only
-        when re-materialization resolves a call edge
-        outside the settlement's callee inventory, which re-keys and re-settles the affected
-        cone. Actual
-        call arguments inherit the selected callee input demand during transport projection, so a
-        recursive caller cannot omit a local argument value that the callee input will decode.
+        Each position owns one layout answer derived from settled <code>RuntimeDemand(E)</code>,
+        normalized <code>ExecutableFacts</code>, and exact upstream position products. Direct-call
+        and public-callable return origins are distinguished before transport. Recursive position
+        dependencies settle as one atomic product group from their external anchors; there is no
+        root transport solve, component inventory, or absence-provenance side channel. Exact fact
+        and product generations invalidate only recorded readers, while equal reproduction and
+        unrelated positions remain standing.
+      </p>
+      <p>
+        Private callable targets keep their exact return layouts. A first-class callable wrapper
+        publishes <code>Diverges</code>, <code>Absent</code>, or one <code>ValueRef</code> for every
+        nonempty returning result. The wrapper decodes the selected target layout and materializes
+        that public word once. Callers never infer a return contract by scanning targets, types, or
+        the semantic world. A caller owns its <code>ReturnPayload</code>; the callee independently
+        owns its <code>ExecutableReturn</code>.
       </p>
     </section>
 
@@ -728,8 +730,9 @@ MaterializedExecutable(E)
         <div class="card">
           <h3><code>RootBackendProduct</code></h3>
           <p>
-            The interpreter-ready package. It assigns dense executable indices and callable-entry
-            inventory for the symbolic backend executables already present in the pull session.
+            The final product answer. It traverses exact reachable backend product values, retains
+            their positioned layouts and callable owners in a symbolic plan, and assigns dense
+            executable indices in the interpreter-ready <code>BackendProgram</code> projection.
           </p>
         </div>
         <div class="card">
@@ -1016,8 +1019,9 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
           edges. <code>AbiExecutable(E)</code> then makes return delivery, ABI lanes,
           <code>EntryCapture</code> positions, resumes, and callable entries explicit without asking new
           semantic questions. <code>BackendExecutable(E)</code> lowers one symbolic body. Finally,
-          <code>RootBackendProduct(root)</code> assigns dense indices and packages the request-local
-          inventory into <code>BackendProgram</code>. Redefining uncalled <code>foo/0</code> later does
+          <code>RootBackendProduct(root)</code> follows exact reachable backend product values, retains
+          their positioned symbolic plan, and packages dense indices into <code>BackendProgram</code>.
+          Redefining uncalled <code>foo/0</code> later does
           not change that root product. Redefining <code>main/0</code> can, because the settled local
           callsite summaries it depends on may change.
         </p>
@@ -1145,7 +1149,7 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
         <li><strong>No separate type loop:</strong> activation-input joins are ordinary fact replacement.</li>
         <li><strong>Lazy runtime bootstrap:</strong> <code>runtime.fz</code> and runtime modules warm only when demanded.</li>
         <li><strong>Product-keyed artifacts:</strong> artifact producers return exact fact/product waits; they do not self-schedule follow-up work.</li>
-        <li><strong>Artifact isolation:</strong> materialization consumes settled local facts and named products, then final root packaging only densifies request-local inventory.</li>
+        <li><strong>Artifact isolation:</strong> materialization consumes settled local facts and named products, then final root packaging follows and densifies only exact reachable backend product values.</li>
         <li><strong>Blast radius by revision:</strong> redefinition propagates only as far as fact revisions actually change.</li>
       </ul>
     </section>

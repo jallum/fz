@@ -171,13 +171,7 @@ fn collect_static_closure_targets(
         let body_fid = *callable_boundary_fn_ids
             .get(&boundary_id)
             .expect("zero-cap closure boundary must have a callable-boundary FuncId");
-        let halt_kind = single_scalar_return_repr(
-            boundary.return_diverges,
-            &boundary.return_reprs,
-            boundary.return_tuple_arity,
-        )
-        .unwrap_or(ArgRepr::ValueRef)
-        .halt_kind();
+        let halt_kind = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef).halt_kind();
         targets.insert(boundary_id, (boundary.target_fn.0, body_fid, halt_kind));
     }
 
@@ -254,13 +248,6 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             .get(&boundary_id)
             .ok_or_else(|| CodegenError::new(format!("missing callable-boundary FuncId for boundary {boundary_id}")))?;
         let arg_reprs = boundary.arg_reprs.as_slice();
-        let body_return_reprs = arg_reprs_from_compiler2(&surface.body(body_sid).native_body.return_reprs);
-        if body_return_reprs != boundary.return_reprs {
-            return Err(CodegenError::new(format!(
-                "callable boundary {boundary_id} return lanes must match target body lanes exactly: boundary={:?}, body={:?}",
-                boundary.return_reprs, body_return_reprs
-            )));
-        }
         let sig = build_callable_boundary_signature(arg_reprs.len());
         let boundary_name = format!("callable_boundary_b{boundary_id}");
         emit_fn_body(m, fbctx, sig, callable_boundary_id, |m, b| {
@@ -794,18 +781,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
                 .map(arg_repr_from_compiler2)
                 .collect(),
             arg_reprs: vec![ArgRepr::ValueRef; boundary.call_arity],
-            return_diverges: matches!(
-                boundary.return_form,
-                crate::compiler2::artifact::BackendCallableReturn::Diverges
-            ),
-            return_reprs: matches!(
-                boundary.return_form,
-                crate::compiler2::artifact::BackendCallableReturn::ValueRef
-            )
-            .then_some(ArgRepr::ValueRef)
-            .into_iter()
-            .collect(),
-            return_tuple_arity: None,
+            task_halt_repr: boundary.task_halt_repr.map(arg_repr_from_compiler2),
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {
             debug_assert_eq!(previous, next);

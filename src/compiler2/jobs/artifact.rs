@@ -17,7 +17,7 @@ use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, DispatchCallEdge,
     DispatchCallMiss, EffectSummary, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
-    MaterializedExecutableTransport,
+    MaterializedExecutableTransport, PositionedCallableConstructionOwner,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -25,17 +25,18 @@ use super::super::body::{
 };
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
+use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{
-    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
 };
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee, ShapeDemand,
+    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, ExecutableRuntimeDemand, SelectedCallee,
+    ShapeDemand,
 };
 use super::super::transport::{
-    ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
-    CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPosition,
+    ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr,
+    ShapeId, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -81,12 +82,6 @@ pub(crate) fn produce_materialized_executable_product(
             }
         }
     }
-    let return_position = TransportPosition::ExecutableReturn {
-        executable: transport_executable_symbol(executable, world.types()),
-    };
-    if transport_shape_product_pending(context, &return_position) {
-        waits.push(PullWait::Product(ProductKey::TransportShape(return_position)));
-    }
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
@@ -117,30 +112,42 @@ pub(crate) fn produce_materialized_executable_product(
     let pruned = prune_lowered_body(lowered, &dispatch_outcomes, &retained_entries);
     let body = pruned.body;
     let callsite_args = super::super::body::callsite_call_args(&body);
-    waits.extend(required_call_edge_transport_waits(
+    let mut transport_positions = vec![TransportPosition::ExecutableReturn {
+        executable: transport_executable_symbol(executable, world.types()),
+    }];
+    transport_positions.extend(required_call_edge_transport_positions(
         world,
-        context,
         executable,
         &analysis,
+        runtime_demand
+            .as_ref()
+            .expect("runtime-demand product wait should have been satisfied"),
         &body,
         &callsite_args,
     ));
+    let position_layouts = match read_transport_layouts(context, transport_positions) {
+        Ok(position_layouts) => position_layouts,
+        Err(transport_waits) => {
+            waits.extend(transport_waits);
+            Vec::new()
+        }
+    };
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let root = context.session().root();
-    let Some(codegen_seam_facts) = context.read_codegen_seam_facts(root) else {
-        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(root))]);
-    };
-    let session = context.session_mut();
-    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
+    let transport = materialized_executable_transport(position_layouts, executable, world.types());
+    let codegen_seam_facts = Box::default();
+    let transport_plan = transport_lookup(&transport.position_layouts, &codegen_seam_facts);
     let call_edges = materialize_call_edges(
         world,
         tel,
-        session.root(),
+        context.session().root(),
         &transport_plan,
         executable,
         &analysis,
+        runtime_demand
+            .as_ref()
+            .expect("runtime-demand product wait should have been satisfied"),
         &body,
         &pruned.original_entry_ids,
         &callsite_args,
@@ -152,14 +159,16 @@ pub(crate) fn produce_materialized_executable_product(
         entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
         return_ty,
         runtime_demand: runtime_demand.expect("runtime-demand product wait should have been satisfied"),
-        transport: session_materialized_executable_transport(session, executable, world.types()),
+        transport,
         original_entry_ids: pruned.original_entry_ids,
         value_types: analysis.value_types,
         effects,
         body,
         call_edges,
     };
-    session.record_materialized_executable(executable.clone(), materialized.clone());
+    context
+        .session_mut()
+        .record_materialized_executable(executable.clone(), materialized.clone());
     PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)))
 }
 
@@ -370,27 +379,67 @@ pub(crate) fn produce_abi_executable_product(
 
     let mut materialized = materialized.expect("materialized executable product wait should have been satisfied");
     materialized.effects = effects.expect("executable effects product wait should have been satisfied");
-    materialized.transport = session_materialized_executable_transport(context.session(), executable, world.types());
-    waits.extend(required_executable_transport_facts_waits(
+    let mut transport_positions = materialized
+        .transport
+        .position_layouts
+        .iter()
+        .map(|(position, _)| position.clone())
+        .collect::<Vec<_>>();
+    transport_positions.extend(required_executable_transport_positions(
         world,
-        context,
         executable,
         &materialized,
     ));
+    let position_layouts = match read_transport_layouts(context, transport_positions) {
+        Ok(position_layouts) => position_layouts,
+        Err(transport_waits) => {
+            waits.extend(transport_waits);
+            Vec::new()
+        }
+    };
+    if waits.is_empty() {
+        materialized.transport = materialized_executable_transport(position_layouts, executable, world.types());
+    }
+    let mut callable_owners = Vec::new();
+    for position in executable_transport_positions(&materialized.transport) {
+        let key = ProductKey::CallableConstruction(position.clone());
+        match context.read_product(key.clone()) {
+            Some(ProductValue::CallableConstruction(owner)) => {
+                callable_owners.push(PositionedCallableConstructionOwner {
+                    position: position.clone(),
+                    owner: owner.as_ref().clone(),
+                })
+            }
+            Some(other) => panic!("callable construction product produced unexpected value {other:?}"),
+            None => waits.push(PullWait::Product(key)),
+        }
+    }
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let root = context.session().root();
-    let Some(codegen_seam_facts) = context.read_codegen_seam_facts(root) else {
-        return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::CodegenSeamFacts(root))]);
-    };
-    let session = context.session_mut();
-    let transport_plan = session_transport_lookup(session, &codegen_seam_facts);
+    let codegen_seam_facts = Box::default();
+    let transport_plan = transport_lookup(&materialized.transport.position_layouts, &codegen_seam_facts);
     let plan = build_executable_abi_plan(world, executable, &materialized, &transport_plan);
-    let abi = build_abi_executable(&materialized, &plan)
+    let abi = build_abi_executable(&materialized, &plan, callable_owners.into_boxed_slice())
         .expect("per-executable ABI derivation should not require root fan-in");
-    session.record_abi_executable(executable.clone(), abi.clone());
+    context
+        .session_mut()
+        .record_abi_executable(executable.clone(), abi.clone());
     PullOutcome::Produced(ProductValue::AbiExecutable(Box::new(abi)))
+}
+
+pub(crate) fn executable_transport_positions(
+    transport: &MaterializedExecutableTransport,
+) -> impl Iterator<Item = &TransportPosition> {
+    transport
+        .input_positions
+        .iter()
+        .chain(std::iter::once(&transport.return_position))
+        .chain(&transport.resume_positions)
+        .chain(&transport.return_payload_positions)
+        .chain(&transport.entry_capture_positions)
+        .chain(&transport.call_arg_positions)
+        .chain(&transport.value_positions)
 }
 
 #[derive(Debug, Clone)]
@@ -408,11 +457,19 @@ struct PrunedLoweredBody {
 }
 
 fn materialized_executable_transport(
-    positions: impl Iterator<Item = TransportPosition>,
+    mut position_layouts: Vec<(TransportPosition, TransportLayout)>,
     executable: &ExecutableKey,
     types: &Types,
 ) -> MaterializedExecutableTransport {
     let symbol = transport_executable_symbol(executable, types);
+    position_layouts.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
+    position_layouts.dedup_by(|left, right| {
+        if left.0 != right.0 {
+            return false;
+        }
+        assert_eq!(left.1, right.1, "one transport position must have one settled layout");
+        true
+    });
     let mut input_positions = Vec::new();
     let mut return_position = None;
     let mut resume_positions = Vec::new();
@@ -420,15 +477,18 @@ fn materialized_executable_transport(
     let mut entry_capture_positions = Vec::new();
     let mut call_arg_positions = Vec::new();
     let mut value_positions = Vec::new();
-    for position in positions {
+    for (position, _) in &position_layouts {
+        if position.executable() != &symbol {
+            continue;
+        }
         match &position {
-            TransportPosition::ExecutableInput { .. } => input_positions.push(position),
-            TransportPosition::ExecutableReturn { .. } => return_position = Some(position),
-            TransportPosition::ResumePayload { .. } => resume_positions.push(position),
-            TransportPosition::ReturnPayload { .. } => return_payload_positions.push(position),
-            TransportPosition::EntryCapture { .. } => entry_capture_positions.push(position),
-            TransportPosition::CallArg { .. } => call_arg_positions.push(position),
-            TransportPosition::Value { .. } => value_positions.push(position),
+            TransportPosition::ExecutableInput { .. } => input_positions.push(position.clone()),
+            TransportPosition::ExecutableReturn { .. } => return_position = Some(position.clone()),
+            TransportPosition::ResumePayload { .. } => resume_positions.push(position.clone()),
+            TransportPosition::ReturnPayload { .. } => return_payload_positions.push(position.clone()),
+            TransportPosition::EntryCapture { .. } => entry_capture_positions.push(position.clone()),
+            TransportPosition::CallArg { .. } => call_arg_positions.push(position.clone()),
+            TransportPosition::Value { .. } => value_positions.push(position.clone()),
         }
     }
     sort_transport_positions(&mut input_positions);
@@ -439,6 +499,7 @@ fn materialized_executable_transport(
     sort_transport_positions(&mut value_positions);
     MaterializedExecutableTransport {
         executable: symbol,
+        position_layouts,
         input_positions,
         return_position: return_position.unwrap_or_else(|| {
             panic!("transport plan should publish one return position for materialized executable {executable:?}")
@@ -451,116 +512,27 @@ fn materialized_executable_transport(
     }
 }
 
-fn session_materialized_executable_transport(
-    session: &PullSession,
-    executable: &ExecutableKey,
-    types: &Types,
-) -> MaterializedExecutableTransport {
-    let symbol = transport_executable_symbol(executable, types);
-    let mut positions = session
-        .transport_shape_positions_for(&symbol)
-        .cloned()
-        .collect::<HashSet<_>>();
-    positions.extend(session.demanded_capture_resume_positions_for(&symbol).cloned());
-    materialized_executable_transport(positions.into_iter(), executable, types)
-}
-
-/// A per-production view onto the session's already-settled transport facts,
-/// borrowed straight from `PullSession` instead of cloned. Every consumer in
-/// this file does single-key lookups or a linear scan of `codegen_seam_facts`,
-/// so this lookup carries only what materialized/ABI production actually
-/// reads (contrast `MaterializedTransportPlan`, the root-scoped product built
-/// once per root in `jobs/backend.rs`, which carries the fuller shape).
 struct ArtifactTransportLookup<'a> {
-    positions: &'a HashMap<TransportPosition, TransportLayout>,
-    callables: &'a HashMap<CallableId, CallableFacts>,
-    boundaries: &'a HashMap<BoundaryId, BoundaryFacts>,
+    positions: &'a [(TransportPosition, TransportLayout)],
     codegen_seam_facts: &'a [CodegenSeamFact],
 }
 
-fn session_transport_lookup<'a>(
-    session: &'a PullSession,
+fn transport_lookup<'a>(
+    positions: &'a [(TransportPosition, TransportLayout)],
     codegen_seam_facts: &'a [CodegenSeamFact],
 ) -> ArtifactTransportLookup<'a> {
     ArtifactTransportLookup {
-        positions: session.transport_layouts(),
-        callables: session.callable_facts_inventory(),
-        boundaries: session.boundary_facts_inventory(),
+        positions,
         codegen_seam_facts,
     }
 }
 
-/// Produces `ProductKey::CodegenSeamFacts(root)`: the session-wide codegen
-/// seam-fact set, computed once per root per invalidation epoch and read
-/// (never recomputed) by both `produce_materialized_executable_product` and
-/// `produce_abi_executable_product`. This has no waits of its own -- like
-/// `produce_callable_facts`/`produce_boundary_facts`, it always succeeds
-/// immediately over whatever `BoundaryFacts` the session has recorded so far
-/// -- so its callers are responsible for having already waited on the
-/// specific boundaries/transport shapes THEY need before pulling this
-/// product (`required_call_edge_transport_waits` and
-/// `required_executable_transport_facts_waits` already do this). Staleness
-/// is instead prevented on the write side: `PullSession::record_boundary_facts`
-/// invalidates this product's memo entry whenever a boundary's recorded
-/// facts actually change, so a later pull that observes a newer boundary
-/// re-derives the set instead of serving a snapshot that predates it.
-pub(crate) fn produce_codegen_seam_facts_product(
-    world: &mut World,
-    _tel: &impl crate::telemetry::Telemetry,
-    context: &mut ProductReadContext<'_>,
-    root: RootId,
-) -> PullOutcome {
-    let session = context.session_mut();
-    debug_assert_eq!(
-        root,
-        session.root(),
-        "codegen seam facts are keyed by the session's own root"
-    );
-    let facts = session_codegen_publication_seam_facts(world, session);
-    PullOutcome::Produced(ProductValue::CodegenSeamFacts(facts))
-}
-
-fn session_codegen_publication_seam_facts(world: &World, session: &PullSession) -> Box<[CodegenSeamFact]> {
-    let mut out = Vec::new();
-    for boundary in session.boundary_facts_inventory().keys().copied() {
-        let descr = world.boundary(boundary);
-        for lane in descr
-            .published_capture_lanes
+impl ArtifactTransportLookup<'_> {
+    fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
+        self.positions
             .iter()
-            .chain(descr.published_arg_lanes.iter())
-            .chain(descr.published_return_lanes.iter())
-            .copied()
-        {
-            out.push(CodegenSeamFact {
-                seam: CodegenSeam::CallableBoundary { boundary },
-                shape: None,
-                lane,
-                repr: codegen_repr_for_lane(world, lane),
-            });
-        }
-        let Some(facts) = session.boundary_facts(boundary) else {
-            continue;
-        };
-        if facts.publications.is_empty() {
-            continue;
-        }
-        out.push(CodegenSeamFact {
-            seam: CodegenSeam::FirstClassPublication { boundary },
-            shape: None,
-            lane: descr.published_value_lane,
-            repr: CodegenLaneRepr::ValueRef,
-        });
-        for publication in facts.publications.iter() {
-            push_session_publication_codegen_seam(publication, descr.published_value_lane, &mut out);
-        }
+            .find_map(|(candidate, layout)| (candidate == position).then_some(*layout))
     }
-    // A structural key, not a `format!("{fact:?}")` comparator: the fields
-    // already carry stable numeric/interned identity, so comparing them
-    // directly gives the same deterministic order without formatting (and
-    // allocating a `String` for) every fact on every production. Cached
-    // because the key still allocates its owner `Vec<Ty>` per element.
-    out.sort_by_cached_key(codegen_seam_fact_sort_key);
-    out.into_boxed_slice()
 }
 
 pub(crate) type CodegenSeamOwnerKey = (u8, u32, Option<Ty>, Vec<Ty>, u8, usize, u32);
@@ -630,100 +602,16 @@ fn codegen_lane_repr_rank(repr: CodegenLaneRepr) -> u8 {
     }
 }
 
-fn push_session_publication_codegen_seam(
-    publication: &TransportPosition,
-    lane: LaneId,
-    out: &mut Vec<CodegenSeamFact>,
-) {
-    let repr = CodegenLaneRepr::ValueRef;
-    match publication {
-        TransportPosition::ExecutableInput {
-            executable,
-            semantic_index,
-        } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::FunctionEntry {
-                executable: executable.clone(),
-                semantic_index: *semantic_index,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ExecutableReturn { executable } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::ReturnDelivery {
-                executable: executable.clone(),
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ReturnPayload { executable, callsite } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::ReturnContinuation {
-                executable: executable.clone(),
-                callsite: *callsite,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ResumePayload {
-            executable,
-            callsite: Some(callsite),
-            entry,
-        } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::ContinuationEntry {
-                executable: executable.clone(),
-                callsite: *callsite,
-                entry: *entry,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::ResumePayload {
-            executable,
-            callsite: None,
-            entry,
-        } => out.push(CodegenSeamFact {
-            seam: CodegenSeam::BlockParam {
-                executable: executable.clone(),
-                entry: *entry,
-            },
-            shape: None,
-            lane,
-            repr,
-        }),
-        TransportPosition::EntryCapture {
-            executable,
-            entry,
-            capture_index,
-        } => {
-            out.push(CodegenSeamFact {
-                seam: CodegenSeam::EntryCapture {
-                    executable: executable.clone(),
-                    entry: *entry,
-                    capture_index: *capture_index,
-                },
-                shape: None,
-                lane,
-                repr,
-            });
-        }
-        TransportPosition::CallArg { .. } | TransportPosition::Value { .. } => {}
-    }
-}
-
-fn required_entry_capture_transport_waits(
+fn required_entry_capture_transport_positions(
     world: &World,
-    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-) -> Vec<PullWait> {
+) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body else {
         return Vec::new();
     };
     let symbol = transport_executable_symbol(executable, world.types());
-    let mut waits = Vec::new();
+    let mut positions = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
         let entry_id = materialized
             .original_entry_ids
@@ -736,61 +624,48 @@ fn required_entry_capture_transport_waits(
                 entry: entry_id,
                 capture_index,
             };
-            if transport_shape_product_pending(context, &position) {
-                waits.push(PullWait::Product(ProductKey::TransportShape(position)));
-            }
+            positions.push(position);
         }
     }
-    waits
+    positions
 }
 
 /// Every transport-shape product an executable's ABI must have settled before it
 /// can be lowered: its input, entry-capture, resume, and local-backend positions
 /// (its return position is already driven by the materialized product). Pulling
-/// these `TransportShape` products records the executable's shapes and, through
-/// the transport component projection, publishes the callable/boundary facts and
-/// grows the demand closure. The ABI product drives them before building the ABI
-/// struct; the transport-facts-only path drives them without building anything.
-pub(crate) fn required_executable_transport_facts_waits(
+/// these `TransportShape` products supplies the exact positioned answers embedded
+/// in the executable's ABI. The ABI product drives them before building the ABI
+/// value.
+fn required_executable_transport_positions(
     world: &World,
-    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-) -> Vec<PullWait> {
-    let mut waits = Vec::new();
-    waits.extend(required_executable_input_transport_waits(
+) -> Vec<TransportPosition> {
+    let mut positions = Vec::new();
+    positions.extend(required_executable_input_transport_positions(
         world,
-        context,
         executable,
         materialized,
     ));
-    waits.extend(required_entry_capture_transport_waits(
+    positions.extend(required_entry_capture_transport_positions(
         world,
-        context,
         executable,
         materialized,
     ));
-    waits.extend(required_resume_transport_waits(
+    positions.extend(required_resume_transport_positions(world, executable, materialized));
+    positions.extend(required_local_backend_transport_positions(
         world,
-        context,
         executable,
         materialized,
     ));
-    waits.extend(required_local_backend_transport_waits(
-        world,
-        context,
-        executable,
-        materialized,
-    ));
-    waits
+    positions
 }
 
-fn required_executable_input_transport_waits(
+fn required_executable_input_transport_positions(
     world: &World,
-    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-) -> Vec<PullWait> {
+) -> Vec<TransportPosition> {
     let symbol = transport_executable_symbol(executable, world.types());
     let callable_carriers = callable_carrier_values(&materialized.body);
     let input_callable_carrier_indexes = input_indexes_for_values(&materialized.body, &callable_carriers);
@@ -808,8 +683,7 @@ fn required_executable_input_transport_waits(
                 executable: symbol.clone(),
                 semantic_index,
             };
-            transport_shape_product_pending(context, &position)
-                .then_some(PullWait::Product(ProductKey::TransportShape(position)))
+            Some(position)
         })
         .collect()
 }
@@ -859,17 +733,16 @@ fn input_indexes_for_values(body: &LoweredBody, values: &HashSet<ValueId>) -> Ha
         .collect()
 }
 
-fn required_resume_transport_waits(
+fn required_resume_transport_positions(
     world: &World,
-    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-) -> Vec<PullWait> {
+) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body else {
         return Vec::new();
     };
     let symbol = transport_executable_symbol(executable, world.types());
-    let mut waits = Vec::new();
+    let mut positions = Vec::new();
     let mut deliver_callsites = HashMap::new();
     for entry in entries {
         let Some((callsite, ControlDestination::Deliver(entry_id))) = (match &entry.tail {
@@ -905,24 +778,31 @@ fn required_resume_transport_waits(
             callsite: deliver_callsites.get(&entry_id).copied(),
             entry: entry_id,
         };
-        if transport_shape_product_pending(context, &position) {
-            waits.push(PullWait::Product(ProductKey::TransportShape(position)));
-        }
+        positions.push(position);
     }
-    waits
+    positions
 }
 
-fn required_local_backend_transport_waits(
+fn required_local_backend_transport_positions(
     world: &World,
-    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
-) -> Vec<PullWait> {
+) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body else {
         return Vec::new();
     };
     let symbol = transport_executable_symbol(executable, world.types());
-    let mut waits = Vec::new();
+    let mut positions = Vec::new();
+    positions.extend(
+        materialized
+            .runtime_demand
+            .callable_flows
+            .keys()
+            .map(|value| TransportPosition::Value {
+                executable: symbol.clone(),
+                value: *value,
+            }),
+    );
     for value in clauses
         .iter()
         .flat_map(|clause| clause.projections.iter())
@@ -933,9 +813,7 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if transport_shape_product_pending(context, &position) {
-            waits.push(PullWait::Product(ProductKey::TransportShape(position)));
-        }
+        positions.push(position);
     }
     for entry in entries {
         let (callsite, args, value) = match &entry.tail {
@@ -955,34 +833,47 @@ fn required_local_backend_transport_waits(
             executable: symbol.clone(),
             value,
         };
-        if transport_shape_product_pending(context, &value_position) {
-            waits.push(PullWait::Product(ProductKey::TransportShape(value_position)));
-        }
+        positions.push(value_position);
         for semantic_index in 0..args.len() {
             let position = TransportPosition::CallArg {
                 executable: symbol.clone(),
                 callsite,
                 semantic_index,
             };
-            if transport_shape_product_pending(context, &position) {
-                waits.push(PullWait::Product(ProductKey::TransportShape(position)));
-            }
+            positions.push(position);
         }
         let return_payload = TransportPosition::ReturnPayload {
             executable: symbol.clone(),
             callsite,
         };
-        if transport_shape_product_pending(context, &return_payload) {
-            waits.push(PullWait::Product(ProductKey::TransportShape(return_payload)));
-        }
+        positions.push(return_payload);
     }
-    waits
+    positions
 }
 
-fn transport_shape_product_pending(context: &mut ProductReadContext<'_>, position: &TransportPosition) -> bool {
-    context
-        .read_product(ProductKey::TransportShape(position.clone()))
-        .is_none()
+fn read_transport_layouts(
+    context: &mut ProductReadContext<'_>,
+    positions: impl IntoIterator<Item = TransportPosition>,
+) -> Result<Vec<(TransportPosition, TransportLayout)>, Vec<PullWait>> {
+    let mut positions = positions
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    positions.sort_by_cached_key(transport_position_global_sort_key);
+    let mut layouts = Vec::with_capacity(positions.len());
+    let mut waits = Vec::new();
+    for position in positions {
+        let key = ProductKey::TransportShape(position.clone());
+        match context.read_product(key.clone()) {
+            Some(ProductValue::TransportShape(super::super::pull::TransportShapeFact::Layout(layout))) => {
+                layouts.push((position, *layout));
+            }
+            Some(value) => panic!("transport shape produced unexpected value {value:?}"),
+            None => waits.push(PullWait::Product(key)),
+        }
+    }
+    if waits.is_empty() { Ok(layouts) } else { Err(waits) }
 }
 
 fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
@@ -1016,14 +907,14 @@ fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
     }
 }
 
-fn required_call_edge_transport_waits(
+fn required_call_edge_transport_positions(
     world: &mut World,
-    context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
+    runtime_demand: &ExecutableRuntimeDemand,
     body: &LoweredBody,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
-) -> Vec<PullWait> {
+) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = body else {
         return Vec::new();
     };
@@ -1043,13 +934,12 @@ fn required_call_edge_transport_waits(
                 .map(|summary| (*callsite, summary))
         })
         .collect::<HashMap<_, _>>();
-    let mut waits = HashSet::new();
+    let mut positions = HashSet::new();
     for entry in entries {
         match &entry.tail {
             LoweredTail::DirectCall { callsite, dest, .. } => {
-                record_return_flow_transport_waits(
-                    context,
-                    &mut waits,
+                record_return_flow_transport_positions(
+                    &mut positions,
                     &caller_symbol,
                     *callsite,
                     dest,
@@ -1067,32 +957,21 @@ fn required_call_edge_transport_waits(
             LoweredTail::ClosureCall {
                 callsite, callee, dest, ..
             } => {
-                let has_callable_flow = context
-                    .read_runtime_demand(executable)
-                    .as_ref()
-                    .is_some_and(|demand| demand.callable_flows.contains_key(callee));
+                let has_callable_flow = runtime_demand.callable_flows.contains_key(callee);
                 if has_callable_flow {
-                    push_optional_transport_shape_wait(
-                        context,
-                        &mut waits,
-                        TransportPosition::Value {
-                            executable: caller_symbol.clone(),
-                            value: *callee,
-                        },
-                    );
+                    positions.insert(TransportPosition::Value {
+                        executable: caller_symbol.clone(),
+                        value: *callee,
+                    });
                     for (semantic_index, _) in callsite_args.get(callsite).into_iter().flatten().enumerate() {
-                        push_optional_transport_shape_wait(
-                            context,
-                            &mut waits,
-                            TransportPosition::CallArg {
-                                executable: caller_symbol.clone(),
-                                callsite: *callsite,
-                                semantic_index,
-                            },
-                        );
+                        positions.insert(TransportPosition::CallArg {
+                            executable: caller_symbol.clone(),
+                            callsite: *callsite,
+                            semantic_index,
+                        });
                     }
                 }
-                let mut callees = summaries
+                let callees = summaries
                     .get(callsite)
                     .into_iter()
                     .flat_map(|summary| {
@@ -1104,26 +983,8 @@ fn required_call_edge_transport_waits(
                         })
                     })
                     .collect::<Vec<_>>();
-                if let Some(shape) = context.session().transport_shape(&TransportPosition::Value {
-                    executable: caller_symbol.clone(),
-                    value: *callee,
-                }) && let ShapeDescr::Callable(callable) = world.shape(shape)
-                    && let Some(facts) = context.session().callable_facts(*callable)
-                {
-                    for edge in &facts.direct_edges {
-                        callees.push(ExecutableKey {
-                            activation: world.activation_key(
-                                context.session().root(),
-                                edge.resolution.activation.function,
-                                edge.resolution.activation.input.as_ref(),
-                            ),
-                            need: edge.resolution.need,
-                        });
-                    }
-                }
-                record_return_flow_transport_waits(
-                    context,
-                    &mut waits,
+                record_return_flow_transport_positions(
+                    &mut positions,
                     &caller_symbol,
                     *callsite,
                     dest,
@@ -1138,74 +999,49 @@ fn required_call_edge_transport_waits(
             | LoweredTail::Halt { .. } => {}
         }
     }
-    waits.into_iter().collect()
+    positions.into_iter().collect()
 }
 
-fn record_return_flow_transport_waits(
-    context: &mut ProductReadContext<'_>,
-    waits: &mut HashSet<PullWait>,
+fn record_return_flow_transport_positions(
+    positions: &mut HashSet<TransportPosition>,
     caller_symbol: &ExecutableSymbol,
     callsite: CallSiteId,
     dest: &ControlDestination,
     callees: impl IntoIterator<Item = ExecutableKey>,
     types: &Types,
 ) {
+    let callee_symbols = callees
+        .into_iter()
+        .map(|callee| transport_executable_symbol(&callee, types));
+    for position in return_flow_transport_positions(caller_symbol, callsite, dest, callee_symbols) {
+        positions.insert(position);
+    }
+}
+
+fn return_flow_transport_positions(
+    caller: &ExecutableSymbol,
+    callsite: CallSiteId,
+    dest: &ControlDestination,
+    callees: impl IntoIterator<Item = ExecutableSymbol>,
+) -> Vec<TransportPosition> {
     let ControlDestination::Return = dest else {
-        return;
+        return Vec::new();
     };
-    push_transport_shape_wait(
-        context,
-        waits,
+    let mut positions = vec![
         TransportPosition::ExecutableReturn {
-            executable: caller_symbol.clone(),
+            executable: caller.clone(),
         },
-    );
-    push_transport_shape_wait(
-        context,
-        waits,
         TransportPosition::ReturnPayload {
-            executable: caller_symbol.clone(),
+            executable: caller.clone(),
             callsite,
         },
+    ];
+    positions.extend(
+        callees
+            .into_iter()
+            .map(|callee| TransportPosition::ExecutableReturn { executable: callee }),
     );
-    for callee in callees {
-        let callee_symbol = transport_executable_symbol(&callee, types);
-        push_transport_shape_wait(
-            context,
-            waits,
-            TransportPosition::ExecutableReturn {
-                executable: callee_symbol.clone(),
-            },
-        );
-        push_optional_transport_shape_wait(
-            context,
-            waits,
-            TransportPosition::ReturnPayload {
-                executable: callee_symbol,
-                callsite,
-            },
-        );
-    }
-}
-
-fn push_transport_shape_wait(
-    context: &mut ProductReadContext<'_>,
-    waits: &mut HashSet<PullWait>,
-    position: TransportPosition,
-) {
-    if transport_shape_product_pending(context, &position) {
-        waits.insert(PullWait::Product(ProductKey::TransportShape(position)));
-    }
-}
-
-fn push_optional_transport_shape_wait(
-    context: &mut ProductReadContext<'_>,
-    waits: &mut HashSet<PullWait>,
-    position: TransportPosition,
-) {
-    if transport_shape_product_pending(context, &position) {
-        waits.insert(PullWait::Product(ProductKey::TransportShape(position)));
-    }
+    positions
 }
 
 fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
@@ -1270,12 +1106,7 @@ fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExec
 
 pub(crate) type TransportPositionGlobalSortKey = (TransportExecutableSortKey, u8, TransportPositionLocalSortKey);
 
-/// Canonical packaging order for a GLOBAL (cross-executable) set of
-/// `TransportPosition`s: the owning executable's structural key, then the
-/// variant discriminant, then the variant-local discriminants. Structural on
-/// interned ids, so PER-PROCESS deterministic -- the same guarantee the old
-/// `format!("{position:?}")` keys gave (Debug prints those same interned ids)
-/// without formatting every position on every comparison.
+/// Canonical packaging order for a cross-executable set of transport positions.
 pub(crate) fn transport_position_global_sort_key(position: &TransportPosition) -> TransportPositionGlobalSortKey {
     let variant = match position {
         TransportPosition::ExecutableInput { .. } => 0,
@@ -1300,6 +1131,7 @@ fn materialize_call_edges(
     transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
+    runtime_demand: &ExecutableRuntimeDemand,
     body: &LoweredBody,
     original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
@@ -1344,6 +1176,7 @@ fn materialize_call_edges(
                     transport_plan,
                     executable,
                     analysis,
+                    runtime_demand,
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
                     *callee,
@@ -1473,6 +1306,7 @@ fn materialize_closure_call_edge(
     transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
+    runtime_demand: &ExecutableRuntimeDemand,
     need: ExecutableNeed,
     callsite: CallSiteId,
     callee_value: ValueId,
@@ -1481,34 +1315,6 @@ fn materialize_closure_call_edge(
     original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
-    match materialize_transport_closure_call_edge(
-        world,
-        tel,
-        root_id,
-        transport_plan,
-        executable,
-        analysis,
-        callsite,
-        callee_value,
-        result_value,
-        dest,
-        original_entry_ids,
-        callsite_args,
-    )? {
-        TransportClosureCallEdge::Direct { edge, return_ty } => {
-            return Ok(Some(MaterializedCallEdge {
-                target: CallEdge::Direct(edge),
-                return_ty,
-            }));
-        }
-        TransportClosureCallEdge::PublicIndirect { return_flow, return_ty } => {
-            return Ok(Some(MaterializedCallEdge {
-                target: CallEdge::Indirect(return_flow),
-                return_ty,
-            }));
-        }
-        TransportClosureCallEdge::Absent => {}
-    }
     let key = CallSiteKey {
         activation: executable.activation.clone(),
         callsite,
@@ -1517,7 +1323,11 @@ fn materialize_closure_call_edge(
         return Ok(None);
     };
     let Some(target) = summary.single_target().cloned() else {
-        if summary.targets.len() >= 2 {
+        let public_callable = runtime_demand
+            .value_demands
+            .get(&callee_value)
+            .is_some_and(|demand| demand.callable.is_first_class());
+        if summary.targets.len() >= 2 || public_callable {
             let return_ty =
                 public_indirect_return_ty(world, tel, root_id, analysis, Some(&summary), callsite, result_value)?;
             let return_flow = if world.types().is_empty(&return_ty) {
@@ -1563,205 +1373,6 @@ fn materialize_closure_call_edge(
     }))
 }
 
-enum TransportClosureCallEdge {
-    Direct {
-        edge: DirectCallEdge<ExecutableKey>,
-        return_ty: Ty,
-    },
-    PublicIndirect {
-        return_flow: CallReturnFlow,
-        return_ty: Ty,
-    },
-    Absent,
-}
-
-fn materialize_transport_closure_call_edge(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
-    executable: &ExecutableKey,
-    analysis: &ActivationAnalysis,
-    callsite: CallSiteId,
-    callee_value: ValueId,
-    result_value: ValueId,
-    dest: &ControlDestination,
-    original_entry_ids: &[ControlEntryId],
-    callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
-) -> Result<TransportClosureCallEdge, FatalError> {
-    let caller_symbol = transport_executable_symbol(executable, world.types());
-    let callee_position = TransportPosition::Value {
-        executable: caller_symbol.clone(),
-        value: callee_value,
-    };
-    let Some(callee_shape) = transport_plan
-        .positions
-        .get(&callee_position)
-        .map(|layout| layout.structural)
-    else {
-        return Ok(TransportClosureCallEdge::Absent);
-    };
-    let ShapeDescr::Callable(callable) = world.shape(callee_shape) else {
-        return Ok(TransportClosureCallEdge::Absent);
-    };
-    let callable = *callable;
-    let Some(facts) = transport_plan.callables.get(&callable) else {
-        return Ok(TransportClosureCallEdge::Absent);
-    };
-    let args = callsite_args.get(&callsite).ok_or_else(|| {
-        incomplete_semantic_plan(
-            tel,
-            root_id,
-            format!(
-                "missing lowered call arguments for closure callsite {}",
-                callsite.as_u32()
-            ),
-        )
-    })?;
-    let mut resolutions = boundary_resolutions_for_closure_call(
-        world,
-        transport_plan,
-        &caller_symbol,
-        callsite,
-        args,
-        &facts.boundary_ids,
-    );
-    let public_callable = !facts.boundary_ids.is_empty();
-    if resolutions.is_empty() {
-        if facts.direct_edges.is_empty() {
-            return materialize_public_indirect_closure_call_edge(
-                world,
-                tel,
-                root_id,
-                transport_plan,
-                executable,
-                analysis,
-                callsite,
-                result_value,
-                dest,
-                original_entry_ids,
-                public_callable,
-            );
-        }
-        let direct_edges = facts.direct_edges.to_vec();
-        let surface_inputs = args
-            .iter()
-            .map(|arg| analysis.value_types.get(&arg.value).copied())
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                incomplete_semantic_plan(
-                    tel,
-                    root_id,
-                    format!(
-                        "missing semantic argument types for closure callsite {} direct edge selection",
-                        callsite.as_u32()
-                    ),
-                )
-            })?;
-        let surface_inputs = world.types_mut().address_inputs(&surface_inputs);
-        resolutions = direct_edge_resolutions_for_surface(world, &direct_edges, &surface_inputs);
-    }
-    // Materialization needs ONE distinct resolution; several sources may name
-    // it several times. All-equal-to-first is the keyed-set read of that
-    // requirement — no sort-for-dedup (sorting is a barrier).
-    let Some((resolution, rest)) = resolutions.split_first() else {
-        return Ok(TransportClosureCallEdge::Absent);
-    };
-    if rest.iter().any(|candidate| candidate != resolution) {
-        return materialize_public_indirect_closure_call_edge(
-            world,
-            tel,
-            root_id,
-            transport_plan,
-            executable,
-            analysis,
-            callsite,
-            result_value,
-            dest,
-            original_entry_ids,
-            public_callable,
-        );
-    }
-    let activation = ActivationKey {
-        root: root_id,
-        function: resolution.activation.function,
-        arrow: resolution.activation.arrow,
-    };
-    let target = ExecutableKey {
-        activation,
-        need: resolution.need,
-    };
-    let callee = CallTarget::Local(target.clone());
-    let return_ty = world
-        .activation_return(&target.activation)
-        .unwrap_or_else(|| world.types_mut().none());
-    let return_flow = if world.types().is_empty(&return_ty) {
-        exact_no_return_flow(world, &callee)
-    } else {
-        call_return_flow(
-            world,
-            tel,
-            root_id,
-            transport_plan,
-            executable,
-            Some(&callee),
-            callsite,
-            dest,
-            original_entry_ids,
-            public_callable,
-        )?
-    };
-    Ok(TransportClosureCallEdge::Direct {
-        edge: DirectCallEdge {
-            callee,
-            return_flow,
-            extern_marshals: None,
-        },
-        return_ty,
-    })
-}
-
-fn materialize_public_indirect_closure_call_edge(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    root_id: RootId,
-    transport_plan: &ArtifactTransportLookup<'_>,
-    executable: &ExecutableKey,
-    analysis: &ActivationAnalysis,
-    callsite: CallSiteId,
-    result_value: ValueId,
-    dest: &ControlDestination,
-    original_entry_ids: &[ControlEntryId],
-    public_callable: bool,
-) -> Result<TransportClosureCallEdge, FatalError> {
-    if !public_callable {
-        return Ok(TransportClosureCallEdge::Absent);
-    }
-    let key = CallSiteKey {
-        activation: executable.activation.clone(),
-        callsite,
-    };
-    let summary = world.callsite_summary(&key).cloned();
-    let return_ty = public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
-    let return_flow = if world.types().is_empty(&return_ty) {
-        CallReturnFlow::NoReturn { local_source: None }
-    } else {
-        call_return_flow(
-            world,
-            tel,
-            root_id,
-            transport_plan,
-            executable,
-            None,
-            callsite,
-            dest,
-            original_entry_ids,
-            true,
-        )?
-    };
-    Ok(TransportClosureCallEdge::PublicIndirect { return_flow, return_ty })
-}
-
 fn public_indirect_return_ty(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -1796,58 +1407,6 @@ fn public_indirect_return_ty(
         ));
     }
     Ok(result_ty)
-}
-
-fn boundary_resolutions_for_closure_call(
-    world: &World,
-    transport_plan: &ArtifactTransportLookup<'_>,
-    caller_symbol: &ExecutableSymbol,
-    callsite: CallSiteId,
-    args: &[CallArg],
-    boundary_ids: &[super::super::transport::BoundaryId],
-) -> Vec<ExecutableSymbol> {
-    let Some(arg_shapes) = args
-        .iter()
-        .enumerate()
-        .map(|(semantic_index, _)| {
-            let position = TransportPosition::CallArg {
-                executable: caller_symbol.clone(),
-                callsite,
-                semantic_index,
-            };
-            transport_plan.positions.get(&position).map(|layout| layout.structural)
-        })
-        .collect::<Option<Vec<_>>>()
-    else {
-        return Vec::new();
-    };
-    let mut resolutions = Vec::new();
-    for boundary in boundary_ids.iter().copied() {
-        let boundary_descr = world.boundary(boundary);
-        if boundary_descr.surface_arg_shapes.as_ref() != arg_shapes.as_slice() {
-            continue;
-        }
-        if let Some(boundary_facts) = transport_plan.boundaries.get(&boundary) {
-            for resolution in boundary_facts.resolutions.iter().cloned() {
-                if !resolutions.contains(&resolution) {
-                    resolutions.push(resolution);
-                }
-            }
-        }
-    }
-    resolutions
-}
-
-fn direct_edge_resolutions_for_surface(
-    _world: &mut World,
-    edges: &[super::super::transport::CallableDirectEdge],
-    surface_inputs: &[Ty],
-) -> Vec<ExecutableSymbol> {
-    edges
-        .iter()
-        .filter(|edge| edge.surface_inputs.as_ref() == surface_inputs)
-        .map(|edge| edge.resolution.clone())
-        .collect()
 }
 
 fn lower_materialized_call_target(
@@ -2028,7 +1587,7 @@ fn require_transport_layout(
     transport_plan: &ArtifactTransportLookup<'_>,
     position: &TransportPosition,
 ) -> Result<super::super::pull::TransportLayout, FatalError> {
-    transport_plan.positions.get(position).copied().ok_or_else(|| {
+    transport_plan.layout_at(position).ok_or_else(|| {
         incomplete_semantic_plan(
             tel,
             root_id,
@@ -2432,9 +1991,8 @@ fn build_executable_abi_plan(
             else {
                 return None;
             };
-            let layout = *transport_plan
-                .positions
-                .get(position)
+            let layout = transport_plan
+                .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized input position {position:?}"));
             if matches!(layout.carrier, TransportCarrier::ValueRef) {
                 return Some(BackendSemanticInputLayout {
@@ -2444,19 +2002,6 @@ fn build_executable_abi_plan(
                         carrier: layout.carrier,
                         tys: Box::new([world.types_mut().any()]),
                         reprs: Box::new([AbiValueRepr::ValueRef]),
-                    },
-                });
-            }
-            let publication_contract =
-                function_entry_publication_contract(world, transport_plan.codegen_seam_facts, symbol, *semantic_index);
-            if !publication_contract.is_empty() {
-                return Some(BackendSemanticInputLayout {
-                    semantic_index: *semantic_index,
-                    layout: BackendValueLayout {
-                        structural: layout.structural,
-                        carrier: layout.carrier,
-                        tys: publication_contract.iter().map(|(ty, _)| *ty).collect(),
-                        reprs: publication_contract.iter().map(|(_, repr)| *repr).collect(),
                     },
                 });
             }
@@ -2506,9 +2051,8 @@ fn build_executable_abi_plan(
         .flat_map(|input| input.layout.reprs.iter().copied())
         .collect::<Vec<_>>();
     let return_position = &executable.transport.return_position;
-    let return_layout = *transport_plan
-        .positions
-        .get(return_position)
+    let return_layout = transport_plan
+        .layout_at(return_position)
         .unwrap_or_else(|| panic!("transport plan should publish materialized return position {return_position:?}"));
     let return_contract = if matches!(return_layout.carrier, TransportCarrier::ValueRef) {
         vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
@@ -2543,9 +2087,8 @@ fn build_executable_abi_plan(
             let TransportPosition::Value { value, .. } = position else {
                 return None;
             };
-            let layout = *transport_plan
-                .positions
-                .get(position)
+            let layout = transport_plan
+                .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized value position {position:?}"));
             let contract = if matches!(layout.carrier, TransportCarrier::ValueRef) {
                 vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
@@ -2589,9 +2132,8 @@ fn build_executable_abi_plan(
         .chain(executable.transport.resume_positions.iter())
         .chain(std::iter::once(return_position))
         .map(|position| {
-            let layout = *transport_plan
-                .positions
-                .get(position)
+            let layout = transport_plan
+                .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized return endpoint {position:?}"));
             let contract = if matches!(layout.carrier, TransportCarrier::ValueRef) {
                 vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
@@ -2640,6 +2182,7 @@ fn build_executable_abi_plan(
 fn build_abi_executable(
     executable: &MaterializedExecutable,
     plan: &ExecutableAbiPlan,
+    callable_owners: Box<[PositionedCallableConstructionOwner]>,
 ) -> Result<AbiReadyExecutable, FatalError> {
     let call_edges = executable
         .call_edges
@@ -2669,32 +2212,8 @@ fn build_abi_executable(
         effects: executable.effects,
         body: executable.body.clone(),
         call_edges,
+        callable_owners,
     })
-}
-
-fn function_entry_publication_contract(
-    world: &World,
-    facts: &[super::super::transport::CodegenSeamFact],
-    executable: &ExecutableSymbol,
-    semantic_index: usize,
-) -> Vec<(Ty, AbiValueRepr)> {
-    let mut contract = Vec::new();
-    let mut seen_lanes = HashSet::new();
-    for fact in facts.iter().filter(|fact| {
-        fact.shape.is_none()
-            && matches!(
-                &fact.seam,
-                CodegenSeam::FunctionEntry {
-                    executable: candidate,
-                    semantic_index: candidate_index,
-                } if candidate == executable && *candidate_index == semantic_index
-            )
-    }) {
-        if seen_lanes.insert(fact.lane) {
-            contract.push((world.lane(fact.lane).ty, abi_repr_from_codegen(fact.repr)));
-        }
-    }
-    contract
 }
 
 fn endpoint_seam_repr(
@@ -2794,19 +2313,6 @@ fn abi_repr_from_codegen(repr: CodegenLaneRepr) -> AbiValueRepr {
     }
 }
 
-fn codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
-    let ty = world.lane(lane).ty;
-    if world.types().is_floating(&ty) {
-        CodegenLaneRepr::RawF64
-    } else if world.types().is_integer(&ty) {
-        CodegenLaneRepr::RawInt
-    } else if world.types().is_atom_type(&ty) {
-        CodegenLaneRepr::RawAtom
-    } else {
-        CodegenLaneRepr::ValueRef
-    }
-}
-
 fn abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
     if world.types().is_floating(&ty) {
         return AbiValueRepr::RawF64;
@@ -2841,7 +2347,6 @@ fn incomplete_semantic_plan(
 mod tests {
     use super::*;
     use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, SelectedCallee};
-    use crate::compiler2::transport::{CodegenSeamFact, LaneDescr, TransportClass};
     use crate::compiler2::{ActivationKey, FunctionId};
     use crate::telemetry::ConfiguredTelemetry;
 
@@ -2890,6 +2395,35 @@ mod tests {
             activation,
             need: ExecutableNeed::Value,
         }
+    }
+
+    #[test]
+    fn return_payload_is_owned_only_by_its_caller() {
+        let mut world = World::new();
+        let caller = fake_call_executable(&mut world, 10, 11, &[]);
+        let callee = fake_call_executable(&mut world, 10, 12, &[]);
+        let caller_symbol = transport_executable_symbol(&caller, world.types());
+        let callee_symbol = transport_executable_symbol(&callee, world.types());
+        let callsite = CallSiteId::from_u32(7);
+
+        let positions = return_flow_transport_positions(
+            &caller_symbol,
+            callsite,
+            &ControlDestination::Return,
+            [callee_symbol.clone()],
+        );
+
+        assert!(positions.contains(&TransportPosition::ReturnPayload {
+            executable: caller_symbol,
+            callsite,
+        }));
+        assert!(positions.contains(&TransportPosition::ExecutableReturn {
+            executable: callee_symbol.clone(),
+        }));
+        assert!(!positions.contains(&TransportPosition::ReturnPayload {
+            executable: callee_symbol,
+            callsite,
+        }));
     }
 
     #[test]
@@ -2953,7 +2487,7 @@ mod tests {
                 callsite,
             };
             let shape = world.intern_shape(ShapeDescr::Nothing);
-            HashMap::from([
+            vec![
                 (caller_return, TransportLayout::structural(shape)),
                 (
                     payload,
@@ -2962,19 +2496,16 @@ mod tests {
                         carrier: TransportCarrier::ValueRef,
                     },
                 ),
-            ])
+            ]
         } else {
-            HashMap::new()
+            Vec::new()
         };
-        let callables = HashMap::new();
-        let boundaries = HashMap::new();
         let codegen_seam_facts = Vec::new();
         let transport_plan = ArtifactTransportLookup {
             positions: &positions,
-            callables: &callables,
-            boundaries: &boundaries,
             codegen_seam_facts: &codegen_seam_facts,
         };
+        let runtime_demand = ExecutableRuntimeDemand::default();
         let edge = materialize_closure_call_edge(
             &mut world,
             &tel,
@@ -2982,6 +2513,7 @@ mod tests {
             &transport_plan,
             &caller,
             &analysis,
+            &runtime_demand,
             ExecutableNeed::Value,
             callsite,
             ValueId::from_u32(1),
@@ -3017,43 +2549,6 @@ mod tests {
         assert_eq!(
             edge.target,
             CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
-        );
-    }
-
-    #[test]
-    fn function_entry_publication_contract_deduplicates_duplicate_lane_facts() {
-        let _tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        world.submit_code(None, "fn main(x), do: x".to_string());
-        let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
-        let function = world.root_entry(root).function;
-        let int = world.types_mut().int();
-        let lane = world.intern_lane(LaneDescr {
-            ty: int,
-            class: TransportClass::Value,
-        });
-        let executable = ExecutableSymbol {
-            activation: ActivationSymbol {
-                function,
-                arrow: int,
-                input: vec![int].into_boxed_slice(),
-            },
-            need: ExecutableNeed::Value,
-        };
-        let fact = CodegenSeamFact {
-            seam: CodegenSeam::FunctionEntry {
-                executable: executable.clone(),
-                semantic_index: 0,
-            },
-            shape: None,
-            lane,
-            repr: CodegenLaneRepr::ValueRef,
-        };
-
-        assert_eq!(
-            function_entry_publication_contract(&world, &[fact.clone(), fact], &executable, 0),
-            vec![(int, AbiValueRepr::ValueRef)],
-            "duplicate publication facts for the same function-entry lane must not widen the executable ABI",
         );
     }
 }

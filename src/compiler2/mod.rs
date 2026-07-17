@@ -133,7 +133,6 @@ mod frontdoor_test;
 #[cfg(test)]
 mod identity_test;
 #[cfg(test)]
-mod job_budget_guard;
 #[cfg(test)]
 mod namespace_test;
 #[cfg(test)]

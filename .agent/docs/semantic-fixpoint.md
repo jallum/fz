@@ -10,9 +10,8 @@ semantic side still publishes facts with two readiness levels:
   consume it as complete for now.
 
 `SeedRoot`, `SeedActivation`, and `AnalyzeActivation` shape those local facts.
-There is no root semantic-closure seal: the `SealSemanticClosure` job and its
-`SemanticClosed(root)`/`SemanticReady(root)` facts do not exist.
-Artifact readiness is pulled entirely by product keys.
+Artifact readiness is pulled entirely by product keys; no root-wide inventory
+fact stands between local semantic settlement and the requesting product.
 
 ## What an activation is today
 

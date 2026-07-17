@@ -125,8 +125,6 @@ fn transport_boundary_descriptors_are_interned_contracts() {
         published_value_lane: lane,
         published_capture_lanes: vec![lane].into_boxed_slice(),
         published_arg_lanes: vec![lane].into_boxed_slice(),
-        published_return_shape: shape,
-        published_return_lanes: vec![lane].into_boxed_slice(),
     };
 
     let first = interners.intern_boundary(boundary.clone());

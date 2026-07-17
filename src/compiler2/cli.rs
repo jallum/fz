@@ -640,7 +640,7 @@ fn emit_requested_root_dumps(
     }
     // The types/activations dumps are served from the product-path activation
     // inventory, independently of any backend/native stage drive above, so they
-    // never depend on the legacy semantic-closure seal.
+    // never depend on a root-wide semantic inventory.
     if dumps
         .iter()
         .any(|spec| matches!(spec.kind, DumpKind::Types | DumpKind::Activations))

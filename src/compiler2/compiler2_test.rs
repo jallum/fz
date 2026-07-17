@@ -466,8 +466,7 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
 fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path() {
     // enum_reduce exercises a callable boundary (Enum.reduce takes a closure).
     // The JIT and AOT front doors reach the BackendProgram through the same
-    // product driver as interp (`build_backend_product`); the legacy
-    // seal/transport ladder no longer exists (fz-go4.18.4).
+    // product driver as interp (`build_backend_product`).
     let source = include_str!("../../fixtures2/00010_enum_reduce_main.fz");
 
     // JIT front door.

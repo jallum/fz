@@ -2323,12 +2323,7 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     })?;
     let fid_v = body.b.ins().iconst(types::I32, fn_id.0 as i64);
     let nc_v = body.b.ins().iconst(types::I32, n_caps as i64);
-    let halt_repr = single_scalar_return_repr(
-        boundary.return_diverges,
-        &boundary.return_reprs,
-        boundary.return_tuple_arity,
-    )
-    .unwrap_or(ArgRepr::ValueRef);
+    let halt_repr = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef);
     let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
     let cl_ptr = body.alloc_closure(fid_v, nc_v, hk_v, body_addr);
