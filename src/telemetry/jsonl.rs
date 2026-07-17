@@ -907,7 +907,13 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         ["fz", "compiler2", "activation_analysis", "defined"] => {
             if let Some(analysis) = world.activation_analysis(activation) {
                 out.push_str(",\"semantic\":{\"reachable_clauses\":");
-                push_u64(out, analysis.reachable_clauses.len() as u64);
+                push_u64(out, analysis.entry_reachability.clauses().len() as u64);
+                out.push_str(",\"fail_reachable\":");
+                out.push_str(if analysis.entry_reachability.fail_reachable() {
+                    "true"
+                } else {
+                    "false"
+                });
                 out.push_str(",\"reachable_entries\":");
                 push_u64(out, analysis.reachable_entries.len() as u64);
                 out.push_str(",\"callsites\":");

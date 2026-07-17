@@ -15,8 +15,8 @@ use super::super::pull::{
 };
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableDemand, CallableFlowEdge, CallableFlowFact,
-    CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand, StableSortKey,
-    ground_dispatch_surfaces,
+    CallableSurface, CallableTarget, EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, ShapeDemand,
+    StableSortKey, ground_dispatch_surfaces,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -883,8 +883,8 @@ fn collect_one_executable_facts_product(
     let value_origins = collect_value_origins(&body, &callsite_return_origins);
     let return_origins = collect_return_origins(&body, &analysis);
     let entry_dispatch_inputs =
-        executable_dispatch_input_ordinals(world, activation.function, analysis.reachable_clauses.clone());
-    let callsite_needs = executable_callsite_needs(&body, &analysis.reachable_clauses, executable.need);
+        executable_dispatch_input_ordinals(world, activation.function, &analysis.entry_reachability);
+    let callsite_needs = executable_callsite_needs(&body, analysis.entry_reachability.clauses(), executable.need);
     let facts = Rc::new(ExecutableFacts {
         analysis,
         body,
@@ -1267,13 +1267,18 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> Vec<Ex
 fn executable_dispatch_input_ordinals(
     world: &World,
     function: FunctionId,
-    reachable_clauses: Vec<u32>,
+    reachability: &EntryReachability,
 ) -> HashSet<usize> {
+    if reachability.is_direct_clause() {
+        return HashSet::new();
+    }
     match world.lowered_body(function) {
         LoweredBody::Extern { .. } => HashSet::new(),
         LoweredBody::Clauses { .. } => {
-            let dispatch =
-                crate::compiler2::artifact::ExecutableDispatch::new(world.entry_dispatch(function), reachable_clauses);
+            let dispatch = crate::compiler2::artifact::ExecutableDispatch::new(
+                world.entry_dispatch(function),
+                reachability.clauses().to_vec(),
+            );
             dispatch.required_input_ordinals()
         }
     }
@@ -1344,13 +1349,16 @@ fn derive_executable_runtime_demand(
     // Live-demand propagation is the authoritative "what must be
     // materialized" pass that native codegen relies on (`env_runtime_var`).
     // Codegen lowers every structural clause regardless of
-    // `analysis.reachable_clauses`, so a clause the type-level reachability
+    // the settled entry reachability, so a clause the type-level reachability
     // analysis under-approximates as dead (e.g. a recursive base case whose
     // list slot is over-narrowed) can still reach native lowering and crash
     // when its return value was never marked live. Widen the walked clause
     // set by the trivial delta `trivial_value_clause_ids` identifies.
-    let mut walked_clauses = facts.analysis.reachable_clauses.clone();
-    walked_clauses.extend(trivial_value_clause_ids(&facts.body, &facts.analysis.reachable_clauses));
+    let mut walked_clauses = facts.analysis.entry_reachability.clauses().to_vec();
+    walked_clauses.extend(trivial_value_clause_ids(
+        &facts.body,
+        facts.analysis.entry_reachability.clauses(),
+    ));
     for clause_id in walked_clauses {
         let clause = &clauses[clause_id as usize];
         let mut live = collect_entry_live_demands(
@@ -3190,7 +3198,8 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
     let mut seen = HashSet::new();
     let mut origins = Vec::new();
     let mut pending = analysis
-        .reachable_clauses
+        .entry_reachability
+        .clauses()
         .iter()
         .map(|clause| clauses[*clause as usize].entry)
         .collect::<Vec<_>>();

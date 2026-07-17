@@ -115,12 +115,16 @@ pub(super) fn analyze_activation(
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
-    let clause_inputs = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &inputs)
+    let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &inputs);
+    let clause_inputs = dispatch_reachability
         .outcome_inputs
-        .into_iter()
+        .iter()
+        .cloned()
         .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
         .collect::<Vec<_>>();
     let reachable_clauses = clause_inputs.iter().map(|(clause, _)| *clause).collect::<Vec<_>>();
+    let entry_reachability =
+        super::super::semantic::EntryReachability::new(reachable_clauses, dispatch_reachability.fail_reachable);
 
     let mut analysis_calls = Vec::new();
     let mut reachable_entries = HashSet::new();
@@ -243,7 +247,7 @@ pub(super) fn analyze_activation(
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
-            reachable_clauses,
+            entry_reachability,
             reachable_entries: {
                 let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
                 entries.sort_by_key(|entry| entry.as_u32());

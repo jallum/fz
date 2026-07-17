@@ -481,28 +481,25 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs = bind_executable_inputs(transport, types, runtime, executable, &args)?;
-            let clause_index = if clauses.len() == 1 {
-                0
-            } else {
-                let dispatch = executable
-                    .entry_dispatch
-                    .as_ref()
-                    .ok_or_else(|| format!("backend executable {} is missing clause dispatch", executable_index))?;
-                let dispatch_inputs = semantic_inputs
-                    .iter()
-                    .map(|input| {
-                        input
-                            .as_ref()
-                            .map(|value| materialize_backend_value(transport, runtime.cur_proc(), value))
-                            .transpose()
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                select_clause(runtime, types, module, dispatch, &dispatch_inputs)?.ok_or_else(|| {
-                    format!(
-                        "function_clause: no backend entry clause matched for executable {}",
-                        executable_index
-                    )
-                })?
+            let clause_index = match &executable.entry_dispatch {
+                None => 0,
+                Some(dispatch) => {
+                    let dispatch_inputs = semantic_inputs
+                        .iter()
+                        .map(|input| {
+                            input
+                                .as_ref()
+                                .map(|value| materialize_backend_value(transport, runtime.cur_proc(), value))
+                                .transpose()
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    select_clause(runtime, types, module, dispatch, &dispatch_inputs)?.ok_or_else(|| {
+                        format!(
+                            "function_clause: no backend entry clause matched for executable {}",
+                            executable_index
+                        )
+                    })?
+                }
             };
             let clause = clauses
                 .get(clause_index)

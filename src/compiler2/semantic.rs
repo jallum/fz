@@ -547,8 +547,35 @@ impl ExecutableRuntimeDemand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryReachability {
+    clauses: Vec<u32>,
+    fail_reachable: bool,
+}
+
+impl EntryReachability {
+    pub fn new(clauses: Vec<u32>, fail_reachable: bool) -> Self {
+        Self {
+            clauses,
+            fail_reachable,
+        }
+    }
+
+    pub fn clauses(&self) -> &[u32] {
+        &self.clauses
+    }
+
+    pub fn fail_reachable(&self) -> bool {
+        self.fail_reachable
+    }
+
+    pub fn is_direct_clause(&self) -> bool {
+        !self.fail_reachable && self.clauses.len() == 1
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
-    pub reachable_clauses: Vec<u32>,
+    pub entry_reachability: EntryReachability,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
     pub latent_executables: Vec<ExecutableKey>,

@@ -633,10 +633,11 @@ surface: DeriveTypeDef -> TypeDefined(SomeModule,"t",1) = hard Ty
       <h2>Product Pulls And Artifact Projection</h2>
       <p>
         <code>AnalyzeActivation</code> publishes direct-call summaries, reached callee activations,
-        executable needs, a joined return type, and the set of reachable clauses for one rooted
-        activation. Artifact products consume those local facts directly: if a prerequisite is not
-        settled, the producer returns an exact <code>PullWait::Fact</code>; if another artifact is
-        needed, it returns <code>PullWait::Product</code>.
+        executable needs, a joined return type, and atomic entry reachability (reachable clauses
+        plus whether dispatch failure remains possible) for one rooted activation. Artifact products
+        consume those local facts directly: if a prerequisite is not settled, the producer returns
+        an exact <code>PullWait::Fact</code>; if another artifact is needed, it returns
+        <code>PullWait::Product</code>.
       </p>
       <pre><code>RootBackendProduct(root)
   waits on RootEntry(root), Recursive(entry), DispatchMask(entry)
@@ -655,7 +656,8 @@ MaterializedExecutable(E)
   waits on ActivationAnalyzed(E.activation), ReturnType(E.activation), CallSiteSummary(...)
   pulls RuntimeDemand(E), OutgoingInputEdges(E), TransportShape(ExecutableReturn(E))</code></pre>
       <p>
-        Product materialization clones one executable body, prunes unreachable clauses, rewrites
+        Product materialization clones one executable body, enters a sole reachable clause directly
+        only when failure is unreachable, prunes unreachable clauses, rewrites
         semantically cold local-control entries into explicit halt stubs, and freezes each live
         callsite to selected symbolic callee executable keys. The root product traverses exact
         reachable <code>BackendExecutable</code> product values through their symbolic call edges

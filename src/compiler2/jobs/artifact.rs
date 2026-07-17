@@ -98,15 +98,19 @@ pub(crate) fn produce_materialized_executable_product(
             let mut entries = analysis.reachable_entries.clone();
             entries.extend(
                 analysis
-                    .reachable_clauses
+                    .entry_reachability
+                    .clauses()
                     .iter()
                     .map(|clause| clauses[*clause as usize].entry),
             );
             entries.sort_by_key(|entry| entry.as_u32());
             entries.dedup();
-            (analysis.reachable_clauses.clone(), entries)
+            (analysis.entry_reachability.clauses().to_vec(), entries)
         }
-        LoweredBody::Extern { .. } => (analysis.reachable_clauses.clone(), analysis.reachable_entries.clone()),
+        LoweredBody::Extern { .. } => (
+            analysis.entry_reachability.clauses().to_vec(),
+            analysis.reachable_entries.clone(),
+        ),
     };
     let pruned = prune_lowered_body(lowered, &dispatch_outcomes, &retained_entries);
     let body = pruned.body;
@@ -1609,13 +1613,16 @@ fn callsite_needs_for_body(body: &LoweredBody, need: ExecutableNeed) -> HashMap<
 fn materialize_entry_dispatch(
     world: &World,
     executable: &ExecutableKey,
-    _analysis: &ActivationAnalysis,
+    analysis: &ActivationAnalysis,
 ) -> Option<ExecutableDispatch> {
+    if analysis.entry_reachability.is_direct_clause() {
+        return None;
+    }
     match world.lowered_body(executable.activation.function) {
         LoweredBody::Extern { .. } => None,
         LoweredBody::Clauses { .. } => Some(ExecutableDispatch::new(
             world.entry_dispatch(executable.activation.function),
-            _analysis.reachable_clauses.clone(),
+            analysis.entry_reachability.clauses().to_vec(),
         )),
     }
 }
@@ -2346,7 +2353,7 @@ fn incomplete_semantic_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, SelectedCallee};
+    use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee};
     use crate::compiler2::{ActivationKey, FunctionId};
     use crate::telemetry::ConfiguredTelemetry;
 
@@ -2474,7 +2481,7 @@ mod tests {
         );
         let result_value = ValueId::from_u32(2);
         let analysis = ActivationAnalysis {
-            reachable_clauses: Vec::new(),
+            entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             latent_executables: Vec::new(),

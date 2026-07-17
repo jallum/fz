@@ -12,9 +12,9 @@ An activation is `(root, function, input)`. Inference settles its return type by
 typing the function's **dispatch-reachable clauses** under those inputs:
 
 ```text
-inputs                                    the activation's joined input types
-reachable clauses = reachable_clause_ids(entry_dispatch, inputs)
-return            = union over reachable clauses of each clause's body type
+inputs             = the activation's joined input types
+entry reachability = reachable clauses plus whether failure remains reachable
+return             = union over reachable clauses of each clause's body type
 ```
 
 `compiler2/dispatch_reachability.rs` owns that first calculation. Its branch
@@ -25,6 +25,12 @@ intersecting the match root or subtracting the miss root. This keeps sibling
 fields correlated instead of caching independently widened projected types.
 Value-only predicates and projections the type lattice cannot represent retain
 both branches.
+
+The reachable clauses and failure bit remain one `EntryReachability` value in
+the activation-analysis fact. Runtime demand and materialization consume that
+value directly: exactly one reachable clause with unreachable failure enters
+the clause body without rebuilding the function's runtime dispatch; multiple
+clauses or a reachable failure retain the source dispatch graph.
 
 List head/tail observations are positional, while `ListSig` element types are
 homogeneous. The calculator may select an already-correlated list alternative

@@ -2225,6 +2225,102 @@ end
 }
 
 #[test]
+#[serial_test::serial]
+fn compiler2_exact_enum_with_index_mapper_enters_the_selected_clause_without_a_runtime_dispatch() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("enum_with_index_selected_clause.fz".to_string()),
+        r#"
+fn main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let (executable, materialized) = session
+        .materialized_executables()
+        .iter()
+        .find(|(executable, materialized)| {
+            function_is(&world, executable.activation.function, "with_index", 2)
+                && materialized
+                    .runtime_demand
+                    .input_demands
+                    .get(1)
+                    .is_some_and(|demand| !demand.callable.is_empty())
+        })
+        .expect("the mapper overload should materialize one with_index/2 executable");
+
+    let mapper_demand = &materialized.runtime_demand.input_demands[1];
+    assert!(matches!(mapper_demand.shape, ShapeDemand::Ignore));
+    assert_eq!(mapper_demand.callable.targets.len(), 1);
+    assert!(!mapper_demand.callable.is_first_class());
+    let abi = session
+        .abi_executables()
+        .get(executable)
+        .expect("the mapper overload should publish an ABI executable");
+    assert_eq!(
+        abi.transport
+            .layout_at(&TransportPosition::ExecutableInput {
+                executable: abi.transport.executable.clone(),
+                semantic_index: 1,
+            })
+            .map(|layout| layout.carrier),
+        Some(TransportCarrier::Absent),
+        "mapper input layout should be present in the materialized transport: {:?}",
+        abi.transport.position_layouts,
+    );
+    assert_eq!(
+        abi.semantic_inputs
+            .iter()
+            .find(|input| input.semantic_index == 1)
+            .map(|input| input.layout.reprs.as_ref()),
+        Some([].as_slice()),
+    );
+    let reachability = &world
+        .activation_analysis(&executable.activation)
+        .expect("the mapper overload should have settled semantic analysis")
+        .entry_reachability;
+    assert_eq!(reachability.clauses(), &[1]);
+    assert!(!reachability.fail_reachable());
+    assert!(reachability.is_direct_clause());
+    assert!(
+        materialized.entry_dispatch.is_none(),
+        "a settled single-clause activation with no reachable failure should not re-test its lane-free mapper input",
+    );
+}
+
+#[test]
+fn compiler2_multi_clause_activation_retains_runtime_entry_dispatch() {
+    assert_entry_dispatch_control(
+        "multi_clause_runtime_dispatch.fz",
+        r#"
+fn main(:a), do: 1
+fn main(:b), do: 2
+fn main(_), do: 3
+"#,
+        "main",
+        3,
+        false,
+    );
+}
+
+#[test]
+fn compiler2_single_reachable_clause_with_reachable_failure_retains_runtime_entry_dispatch() {
+    assert_entry_dispatch_control(
+        "single_clause_reachable_failure.fz",
+        r#"
+fn choose(:a), do: 1
+fn main(value), do: choose(value)
+"#,
+        "choose",
+        1,
+        true,
+    );
+}
+
+#[test]
 fn compiler2_runtime_demand_records_the_exact_surface_for_a_direct_lambda_call() {
     // INTENT: a lambda that is only ever invoked directly keeps exactly one
     // resolved call surface — no escape, no opacity, no boxed materialization.
@@ -4406,6 +4502,38 @@ fn demanded_executable_for_function(world: &World, session: &PullSession, name: 
         .find(|executable| function_is(world, executable.activation.function, name, arity))
         .cloned()
         .unwrap_or_else(|| panic!("demanded executable for {name}/{arity}"))
+}
+
+fn assert_entry_dispatch_control(
+    source_name: &str,
+    source: &str,
+    function_name: &str,
+    expected_clause_count: usize,
+    expected_fail_reachable: bool,
+) {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some(source_name.to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 1, ExecutableNeed::Value);
+    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+    let (executable, materialized) = driver
+        .session()
+        .materialized_executables()
+        .iter()
+        .find(|(executable, _)| function_is(&world, executable.activation.function, function_name, 1))
+        .unwrap_or_else(|| panic!("{function_name}/1 should materialize"));
+    let reachability = &world
+        .activation_analysis(&executable.activation)
+        .unwrap_or_else(|| panic!("{function_name}/1 should have settled semantic analysis"))
+        .entry_reachability;
+
+    assert_eq!(reachability.clauses().len(), expected_clause_count);
+    assert_eq!(reachability.fail_reachable(), expected_fail_reachable);
+    assert_eq!(
+        materialized.entry_dispatch.is_none(),
+        reachability.is_direct_clause(),
+        "runtime dispatch should be omitted exactly for a proven direct clause",
+    );
 }
 
 fn runtime_demands_for_frontier(session: &PullSession) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {

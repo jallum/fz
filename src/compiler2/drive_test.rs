@@ -6951,6 +6951,38 @@ fn compiler2_interp_honors_typed_entry_dispatch_from_backend_artifacts() {
 }
 
 #[test]
+fn compiler2_interp_retains_single_clause_dispatch_failure() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/single_clause_failure_backend_interp.fz".to_string()),
+        text: r#"
+extern "C" fn fz_dbg_value(any) :: any
+fn choose(:a), do: 1
+fn main(), do: choose(fz_dbg_value(:b))
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let error = compiler
+        .run_root_interp(root_id)
+        .expect_err("a nonmatching value should fail retained single-clause dispatch");
+
+    assert!(
+        error.contains("function_clause: no backend entry clause matched"),
+        "the backend interpreter should report the retained dispatch failure: {error}",
+    );
+}
+
+#[test]
 fn compiler2_runtime_self_send_activations_keep_pid_boundary() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
@@ -13233,8 +13265,10 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
             let Some(analysis) = world.activation_analysis(activation) else {
                 return;
             };
-            sink.borrow_mut()
-                .push((activation.function.as_u32() as u64, analysis.reachable_clauses.clone()));
+            sink.borrow_mut().push((
+                activation.function.as_u32() as u64,
+                analysis.entry_reachability.clauses().to_vec(),
+            ));
         },
     );
 
@@ -13654,8 +13688,10 @@ fn semantic_reachability_for_source(
             let Some(analysis) = world.activation_analysis(activation) else {
                 return;
             };
-            sink.borrow_mut()
-                .push((activation.function.as_u32() as u64, analysis.reachable_clauses.clone()));
+            sink.borrow_mut().push((
+                activation.function.as_u32() as u64,
+                analysis.entry_reachability.clauses().to_vec(),
+            ));
         },
     );
 
