@@ -9,9 +9,15 @@
   "description": "Surfaced by fz-lfp classification. run/build show {22,352,0,0,0,0,27,432} vs golden {22,352,0,0,0,0,0,0}; interp is clean (its leg was blessed and is green). Native-only scalar boxing regression -- same family fz-6jh fixed once before. Root-cause the native boxing seam (likely the k22.20-23 entry thunks boxing scalars at callable entries). Repro: fixture_matrix enum_sort (run/build legs).",
   "id": "fz-5vi",
   "labels": [],
+  "comments": [
+    {
+      "text": "VERIFIED FIXED at 89db749f6 (2026-08-21). `cargo test --test fixture_matrix -- --test-threads=1 enum_sort` = 4 passed / 0 failed; enum_sort is absent from the full single-threaded matrix red set (402 passed / 8 failed). The native-only scalar boxing {27,432} is gone -- run/build now match the golden's zero. Not fixed by a commit against this ticket: the fz-9i4/k22 carrier-authority arc removed the per-iteration Deliver envelope on the native path (see fz-88t closure note). Closing as fixed-by-other-work.",
+      "timestamp": "2026-08-21T22:37:59Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "enum_sort run/build only: extra scalar boxing {27,432} where golden and interp have zero",
   "type": "bug",
-  "updated_at": "2026-07-15T21:31:10Z"
+  "updated_at": "2026-08-21T22:37:59Z"
 }
