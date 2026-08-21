@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-21T20:37:48Z",
   "created": "2026-08-21T16:25:24Z",
   "description": "Pre-existing at 0018c110a (verified in a pristine worktree build). Repro: fn main() do NL xs = [1,2,3,4,5] NL range = 1..5 NL dbg(Enum.take(xs, 3)) NL end -- fz2 interp fails with: backend executable 11 function 65 entry 0 step evaluation failed: backend value 0 is unbound. Removing the unused range binding makes it pass. Possibly related to the historical enum_take_drop_split matrix reds (fz-go4.22). Not caused by and not fixed by the fz-9i4.7.10.2 row model.",
   "id": "fz-9in",
@@ -17,8 +18,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "interp: 'backend value 0 is unbound' on Enum.take(xs, 3) beside an unused range binding",
   "type": "bug",
-  "updated_at": "2026-08-21T20:37:03Z"
+  "updated_at": "2026-08-21T20:37:48Z"
 }
