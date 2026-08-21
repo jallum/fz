@@ -218,7 +218,7 @@ fn fz_bitstring_valid_utf8_rejects_bad_bytes() {
 #[test]
 fn fz_bitstring_valid_utf8_rejects_non_byte_aligned() {
     with_process(|process| {
-        let bytes = [b'h'];
+        let bytes = *b"h";
         let bits = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 1, 7);
         assert_eq!(fz_bitstring_valid_utf8(bits), 0);
     });
