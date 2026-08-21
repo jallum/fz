@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-15T15:10:41Z",
@@ -7,8 +7,8 @@
   "id": "fz-gk4",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "enum_reduce_suspend run/build render closure identity #fn\u003c4/3\u003e where fixture pins #fn\u003c4/2\u003e",
   "type": "bug",
-  "updated_at": "2026-07-15T15:10:41Z"
+  "updated_at": "2026-08-21T21:26:52Z"
 }
