@@ -572,6 +572,13 @@ fn emit_halt<M: cranelift_module::Module>(
     let _ = host_ctx;
     let binding = *var_env.get(&v.0).expect("unbound halt val");
     emit_halt_for_binding(body, var_env, v.0, binding);
+    // Compiler2 lowering emits `Term::Halt` only from fault traps
+    // (`halt_with_atom` / `assert_truthy`: function_clause, match_error,
+    // unreachable-control) — normal completion delivers through halt
+    // continuations instead. Mark the exit as a fault at this one site so
+    // drivers can distinguish it from success without inspecting the value.
+    let process = body.process_arg();
+    body.call_named("fz_exit_fault", &[process]);
     if is_native {
         // fz_halt already recorded process.halt_value; the
         // returned bits are unobservable but the sig requires

@@ -43,6 +43,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_halt_implicit_i64" => (&[I64, I64], &[]),
         "fz_halt_implicit_f64" => (&[I64, F64], &[]),
         "fz_halt_implicit_atom" => (&[I64, I64], &[]),
+        "fz_exit_fault" => (&[I64], &[]),
         "fz_list_cons_any" => (&[I64, I64, I64], &[I64]),
         "fz_list_cons_int" => (&[I64, I64, I64], &[I64]),
         "fz_list_cons_float" => (&[I64, F64, I64], &[I64]),

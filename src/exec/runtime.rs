@@ -325,6 +325,15 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
     /// zero entry params — the typical "main" shape for v1). Returns the
     /// fresh pid. The task is enqueued immediately; `run_until_idle()`
     /// will drive it.
+    /// Exit kind of an exited task: `None` = normal completion, `Some(atom)`
+    /// = it halted through a fault trap and the atom names the reason.
+    /// Exited tasks stay in the registry, so drivers read this after
+    /// `run_until_idle` to report faults instead of unifying them with
+    /// success.
+    pub fn exit_fault(&self, pid: PidId) -> Option<u32> {
+        self.tasks.get(&pid).and_then(|task| task.exit_fault)
+    }
+
     pub fn spawn(&mut self, fn_id: FnId) -> PidId {
         // Every fn is Tail-CC, including main. Make the entry a closure: mint
         // a synthetic inner closure carrying the raw `(cont)` main fp (via

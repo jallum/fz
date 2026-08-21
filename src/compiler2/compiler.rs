@@ -325,8 +325,20 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         let mut runtime = crate::exec::runtime::Runtime::new(&compiled, 1, tel)
             .with_module(&program.module)
             .with_output(self.output.as_ref());
-        let _root_pid = runtime.spawn(program.entry);
+        let root_pid = runtime.spawn(program.entry);
         runtime.run_until_idle();
+        // A fault-halted root must not report success (fz-bdk). The exit
+        // kind is set by the fault trap itself; render the reason atom the
+        // same way interp's abort names it.
+        if let Some(atom) = runtime.exit_fault(root_pid) {
+            let reason = program
+                .module
+                .atom_names
+                .get(atom as usize)
+                .map(String::as_str)
+                .unwrap_or("unknown_fault");
+            return Err(format!("{reason}: the root process halted through a fault trap"));
+        }
         Ok(())
     }
 

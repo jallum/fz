@@ -111,6 +111,7 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol("fz_halt_implicit_i64", ir_runtime::fz_halt_implicit_i64 as *const u8);
     builder.symbol("fz_halt_implicit_f64", ir_runtime::fz_halt_implicit_f64 as *const u8);
     builder.symbol("fz_halt_implicit_atom", ir_runtime::fz_halt_implicit_atom as *const u8);
+    builder.symbol("fz_exit_fault", ir_runtime::fz_exit_fault as *const u8);
     builder.symbol("fz_alloc_frame", ir_runtime::fz_alloc_frame as *const u8);
     builder.symbol("fz_list_cons_ref", ir_runtime::fz_list_cons_ref as *const u8);
     builder.symbol("fz_list_cons_any", ir_runtime::fz_list_cons_any as *const u8);

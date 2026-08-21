@@ -543,6 +543,69 @@ fn build_executes_map_struct_bitstring_and_enum_halt_fixtures() {
     }
 }
 
+/// fz-bdk: a runtime fault must exit nonzero and name its reason on every
+/// native path. The dispatch miss is dynamically-arising (which atom `pick`
+/// returns depends on execution), so no compile-time diagnostic can close it;
+/// the compiled trap fires -- and the process-exit boundary must report it
+/// instead of unifying fault-halt with normal completion (exit 0, silent).
+#[test]
+fn run_and_built_binary_report_runtime_dispatch_faults() {
+    let source = "fn pick(0), do: :first\n\
+                  fn pick(_), do: :third\n\n\
+                  fn handle(:first), do: 1\n\
+                  fn handle(:second), do: 2\n\n\
+                  fn main() do\n  dbg(1)\n  dbg(handle(pick(5)))\n  dbg(2)\nend\n";
+    let src_path = unique_temp_path("fz2_runtime_fault", ".fz");
+    write(&src_path, source).expect("write runtime-fault source");
+
+    let run = run_fz2_without_color(&[OsStr::new("run"), src_path.as_os_str()]);
+    let run_stdout = String::from_utf8_lossy(&run.stdout);
+    let run_stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        !run.status.success(),
+        "fz2 run must exit nonzero on a runtime fault; stdout={run_stdout:?} stderr={run_stderr:?}"
+    );
+    assert!(
+        run_stdout.contains('1') && !run_stdout.contains('2'),
+        "side effects up to the trap survive, nothing after it: {run_stdout:?}"
+    );
+    assert!(
+        run_stderr.contains("function_clause"),
+        "the fault reason must reach stderr: {run_stderr:?}"
+    );
+
+    let out_bin = unique_temp_path("fz2_runtime_fault_build", ".bin");
+    let build = run_fz2(&[
+        OsStr::new("build"),
+        src_path.as_os_str(),
+        OsStr::new("-o"),
+        out_bin.as_os_str(),
+    ]);
+    assert!(
+        build.status.success(),
+        "fz2 build should compile the runtime-fault program (the fault is dynamic); stderr={:?}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let built = Command::new(&out_bin).output().expect("run built runtime-fault binary");
+    let built_stdout = String::from_utf8_lossy(&built.stdout);
+    let built_stderr = String::from_utf8_lossy(&built.stderr);
+    assert!(
+        !built.status.success(),
+        "the built binary must exit nonzero on a runtime fault; stdout={built_stdout:?} stderr={built_stderr:?}"
+    );
+    assert!(
+        built_stdout.contains('1') && !built_stdout.contains('2'),
+        "side effects up to the trap survive, nothing after it: {built_stdout:?}"
+    );
+    assert!(
+        built_stderr.contains("function_clause"),
+        "the fault reason must reach the built binary's stderr: {built_stderr:?}"
+    );
+    let _ = remove_file(&src_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
 #[test]
 fn native_enum_take_drop_split_preserves_tuple_accumulator_lists() {
     let fixture = "fixtures2/behavior/enum_take_drop_split.fz";

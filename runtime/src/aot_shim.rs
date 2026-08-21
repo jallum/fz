@@ -585,11 +585,28 @@ pub extern "C" fn fz_aot_run_main(
 
     aot_run_queue_loop(sched);
 
+    // A fault-halted main must not report success (fz-bdk). The exit kind is
+    // set by the fault trap itself (`fz_exit_fault`); read it before teardown
+    // frees the process, and name the reason atom on stderr like the other
+    // drivers do.
+    let fault = process.exit_fault.map(|atom| {
+        process
+            .node
+            .atom_name(atom)
+            .unwrap_or_else(|| "unknown_fault".to_string())
+    });
+
     // Teardown: reclaim the leaked scheduler box. Its drop frees the task
     // table (and every process heap), the timer wheel, and the run-queue in
     // one shot — replacing the per-thread-local clears the old code ran here.
     drop(unsafe { Box::from_raw(sched) });
-    0
+    match fault {
+        Some(reason) => {
+            eprintln!("fz: {reason}: the main process halted through a fault trap");
+            1
+        }
+        None => 0,
+    }
 }
 
 /// fz-4mk.3b — register the `fz_drain_dtor_entry` shim address. Called from

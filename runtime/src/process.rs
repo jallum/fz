@@ -74,6 +74,14 @@ pub struct Process {
     /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
     pub ctx: *mut ExecCtx,
     pub halt_value: i64,
+    /// Exit kind: `None` = normal completion, `Some(atom_id)` = the process
+    /// halted through a fault trap (`function_clause`, `match_error`, …) and
+    /// the atom names the reason. Set ONLY by `fz_exit_fault`, which fault
+    /// traps call at their halt site — never inferred from `halt_value`,
+    /// which a program may legitimately set to a fault-shaped atom by
+    /// returning one. Drivers read this at the exit boundary to decide
+    /// success vs fault reporting.
+    pub exit_fault: Option<u32>,
     pub bs_builder: Option<BitWriter>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
     // construction is inlined at codegen; capture storage is schema-backed,
@@ -373,6 +381,7 @@ impl Process {
             heap: Heap::new(SIZE_TABLE[0], schemas),
             ctx: null_mut(),
             halt_value: 0,
+            exit_fault: None,
             bs_builder: None,
             node,
             bs_tuple_arity1_schema: consts.bs_tuple_arity1_schema,
