@@ -29,9 +29,11 @@
 # - same list-cons count as native;
 # - the suspended continuation is a real heap closure, same as native, but
 #   `interp` allocates a second closure (`closure_allocs = 2`,
-#   `closure_bytes = 64`) and two protocol-control structs
-#   (`struct_allocs = 2`, `struct_bytes = 80`);
-# - the rendered function identity is `#fn<3/0>`. The arity matches native's
+#   `closure_bytes = 64`). It allocates the same single protocol-control struct
+#   as native (`struct_allocs = 1`, `struct_bytes = 48`), because a tuple whose
+#   value layout does not carry `ValueRef` travels as its fields' lanes on both
+#   backends;
+# - the rendered function identity is `#fn<2/0>`. The arity matches native's
 #   because arity is a property of the source (`fn () -> ... end` takes no
 #   arguments); the leading env-schema id differs because schema ids are
 #   assigned in allocation order, which is not a semantic difference in the

@@ -10251,6 +10251,66 @@ fn reusable_cons_source_and_rebuild_share_return(program: &NativeProgram) -> boo
     })
 }
 
+/// fz-66j — `Enumerable.reduce/3` hands back a `{:cont, acc}` envelope for
+/// every element, exactly as Elixir's protocol does. The envelope is consumed
+/// lane-wise the instant it arrives: nothing ever asks for it as a heap object.
+/// Whether a tuple becomes a heap object is a representation question the value
+/// layout's carrier already answers, so both backends must answer it the same
+/// way -- otherwise the count grows with the input on one path and not the
+/// other, and `Process.heap_alloc_stats` means something different per backend.
+#[test]
+fn compiler2_jit_and_backend_interp_agree_on_reduce_envelope_materialization() {
+    let source = r#"
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
+  stats = Process.heap_alloc_stats()
+  dbg(stats[:struct_allocs])
+end
+"#;
+
+    let run_lane = |jit: bool| {
+        let tel = ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
+        compiler.submit_code(CodeSubmission {
+            name: Some("reduce_envelope_materialization.fz".to_string()),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        if jit {
+            compiler
+                .run_root_jit(root)
+                .expect("compiler2 jit should run the reduce-envelope fixture");
+        } else {
+            compiler
+                .run_root_interp(root)
+                .expect("compiler2 backend interpreter should run the reduce-envelope fixture");
+        }
+        dbg.lines()
+    };
+
+    let jit = run_lane(true);
+    let interp = run_lane(false);
+
+    assert_eq!(
+        jit.first(),
+        interp.first(),
+        "both backends should reduce to the same sum"
+    );
+    assert_eq!(
+        jit.get(1),
+        interp.get(1),
+        "jit and backend interpreter should agree on how many reduce envelopes become heap objects",
+    );
+}
+
 #[test]
 #[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters() {

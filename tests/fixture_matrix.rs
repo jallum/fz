@@ -1436,8 +1436,9 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "the public reducer bridge closure is erased on every path",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
+        "`struct_allocs = 1`",
         "`scalar_box_allocs = 3`",
-        "final list/struct/map heap headline is `368`",
+        "final list/struct/map heap headline is `112`",
     ] {
         assert!(
             readme.contains(needle),
@@ -1449,7 +1450,7 @@ fn enum_list_allocations_pin_minimum_list_cons() {
     assert_fixture_output_contains(
         "enum_list_allocations",
         "expected.txt",
-        &["5\ntrue\n15", "{5, 80, 9, 288, 0, 0, 3, 48, 0, 0}", "\n368\n"],
+        &["5\ntrue\n15", "{5, 80, 1, 32, 0, 0, 3, 48, 0, 0}", "\n112\n"],
     );
     // birth_count counts static `SplitList` ([h|t] destructure) sites across every
     // executable the whole-program native lowering produces for this root, so it
