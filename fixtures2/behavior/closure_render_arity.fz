@@ -1,0 +1,20 @@
+#---
+# purpose: "a rendered closure reports its arity, not its capture count -- fz-gk4"
+#---
+#
+# # closure_render_arity
+#
+# Both closures capture exactly one value (`total`), so a renderer that prints
+# the environment size cannot tell them apart. Their arities differ (0 and 2),
+# which is what Elixir's `#Function<.../arity>` reports and what `#fn<id/n>`
+# reports here.
+fn main() do
+  xs = [1, 2, 3]
+  total = Enum.reduce(xs, 0, fn (x, acc) -> x + acc end)
+
+  nullary = fn () -> total end
+  binary = fn (x, y) -> x + y + total end
+
+  dbg(nullary)
+  dbg(binary)
+end

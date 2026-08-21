@@ -622,11 +622,13 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 /// opaque to generated code; callers populate captures through accessors.
 /// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
 /// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
-/// at task launch.
+/// at task launch. `arity` (fz-gk4) rides the header's high half; it is the
+/// closure's user-visible parameter count, taken from the callable boundary
+/// that decides the call surface.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(
     process: *mut Process,
-    callee_fn_id: u32,
+    arity: u32,
     captured_count: u32,
     halt_kind: u32,
     body_addr: u64,
@@ -635,7 +637,7 @@ pub extern "C" fn fz_alloc_closure(
     let bits =
         (unsafe { &mut *process })
             .heap
-            .alloc_closure_slots(callee_fn_id, captured_count as usize, halt_kind as u16);
+            .alloc_closure_slots(arity as u16, captured_count as usize, halt_kind as u16);
     let addr = closure_addr_from_tagged(bits).expect("new closure bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
     closure_ref_word_from_bits(bits)
@@ -1828,9 +1830,13 @@ pub extern "C" fn fz_closure_set_capture_atom(process: *mut Process, closure_ref
 }
 
 const LAZY_CONT_CODE_OFF: usize = 0;
-const LAZY_CONT_SID_OFF: usize = 8;
+// +8 is reserved. It held the cont's spec id, which materialization passed to
+// the allocator as a target id that the closure header discarded (fz-gk4).
 const LAZY_CONT_COUNT_OFF: usize = 16;
 const LAZY_CONT_RAW_OFF: usize = 32;
+
+/// A continuation is applied to exactly the one value it receives.
+const CONT_ARITY: u16 = 1;
 const LAZY_CONT_KIND_REF: u8 = 0;
 const LAZY_CONT_KIND_I64: u8 = 1;
 const LAZY_CONT_KIND_F64: u8 = 2;
@@ -1872,9 +1878,11 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
     }
     let ptr = lazy_cont_ptr(cont_word);
     let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
-    let sid = unsafe { *(ptr.add(LAZY_CONT_SID_OFF) as *const u64) as u32 };
     let count = unsafe { lazy_cont_count(ptr) };
-    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(sid, count, 0);
+    // A continuation is applied to exactly the one value it receives.
+    let bits = (unsafe { &mut *process })
+        .heap
+        .alloc_closure_slots(CONT_ARITY, count, 0);
     let addr = closure_addr_from_tagged(bits).expect("materialized cont bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
     let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };

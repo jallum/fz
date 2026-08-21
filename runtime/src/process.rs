@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ptr::{NonNull, null, null_mut, write};
 use std::rc::Rc;
 
-use crate::any_value::{AnyValueRef, TAG_MASK, closure_flags_pack, closure_size_for_count};
+use crate::any_value::{AnyValueRef, TAG_MASK, closure_header_word, closure_size_for_count};
 use crate::bitstr::BitWriter;
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
@@ -446,8 +446,8 @@ impl Process {
     }
 
     /// fz-cps.1.7 — populate the static closure singleton table. Each
-    /// target `(cl_sid, fn_id, code_ptr)` allocates one off-heap strict
-    /// zero-capture closure and registers its tagged value at
+    /// target `(cl_sid, arity, code_ptr, halt_kind)` allocates one off-heap
+    /// strict zero-capture closure and registers its tagged value at
     /// `static_closures[cl_sid as usize]`. Idempotent only
     /// in the sense that re-calling with the same targets re-allocates;
     /// callers (`CompiledModule::make_process`) call this exactly once
@@ -456,7 +456,7 @@ impl Process {
         &mut self,
         targets: &[(
             u32,       /* cl_sid */
-            u32,       /* fn_id */
+            u32,       /* arity */
             *const u8, /* code_ptr */
             u32,       /* halt_kind */
         )],
@@ -467,13 +467,15 @@ impl Process {
             self.static_closures.resize(max + 1, null_mut());
         }
         let closure_schema = self.heap.closure_schema_id(0);
-        for (cl_sid, fn_id, code_ptr, halt_kind) in targets {
+        for (cl_sid, arity, code_ptr, halt_kind) in targets {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                let _ = fn_id;
                 write(base as *mut u32, closure_schema);
-                write(base.add(4) as *mut u32, closure_flags_pack(0, *halt_kind as u16) as u32);
+                write(
+                    base.add(4) as *mut u32,
+                    closure_header_word(0, *halt_kind as u16, *arity as u16),
+                );
                 write(base.add(8) as *mut u64, *code_ptr as u64);
             }
             self.static_closures[*cl_sid as usize] = base;
@@ -496,7 +498,9 @@ impl Process {
             let base = buf.as_ptr();
             unsafe {
                 write(base as *mut u32, closure_schema);
-                write(base.add(4) as *mut u32, closure_flags_pack(0, slot as u16) as u32);
+                // A continuation is applied to exactly the one value it
+                // receives, so its arity is 1.
+                write(base.add(4) as *mut u32, closure_header_word(0, slot as u16, 1));
                 write(base.add(8) as *mut u64, *addr as u64);
             }
             self.halt_cont_singletons[slot] = base;

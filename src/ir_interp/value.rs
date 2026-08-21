@@ -21,14 +21,18 @@ pub(crate) enum AnyValue {
     Float(f64),
     Atom(u32),
     EmptyList,
-    FnRef(FnId),
+    /// A thin function reference: the function and its arity. Arity is part of
+    /// a function reference's identity (Elixir writes one as `&f/1`), and it is
+    /// what a rendered fun reports, so it travels with the reference rather
+    /// than being reconstructed at the heap boundary (fz-gk4).
+    FnRef(FnId, u16),
     Ref(AnyValueRef),
 }
 
 impl AnyValue {
-    fn materialize_fn_ref(proc: *mut Process, fn_id: FnId) -> Result<RuntimeAnyValue, String> {
+    fn materialize_fn_ref(proc: *mut Process, fn_id: FnId, arity: u16) -> Result<RuntimeAnyValue, String> {
         let heap = &mut unsafe { &mut *proc }.heap;
-        let bits = heap.alloc_closure_slots(fn_id.0, 0, 0);
+        let bits = heap.alloc_closure_slots(arity, 0, 0);
         let p = closure_addr_from_tagged(bits).expect("new fn ref closure ptr");
         unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
         Ok(RuntimeAnyValue::heap_ptr(p, ValueKind::CLOSURE))
@@ -41,7 +45,7 @@ impl AnyValue {
             AnyValue::Float(value) => RuntimeAnyValue::float(value),
             AnyValue::Atom(value) => RuntimeAnyValue::atom(value),
             AnyValue::EmptyList => RuntimeAnyValue::empty_list(),
-            AnyValue::FnRef(fn_id) => Self::materialize_fn_ref(proc, fn_id)?,
+            AnyValue::FnRef(fn_id, arity) => Self::materialize_fn_ref(proc, fn_id, arity)?,
             AnyValue::Ref(value) => {
                 RuntimeAnyValue::from_ref(value).map_err(|err| format!("interpreter ref storage view: {err:?}"))?
             }
@@ -66,7 +70,7 @@ impl AnyValue {
             AnyValue::Float(value) => Ok(fz_box_float_for_any(proc, value)),
             AnyValue::Atom(value) => Ok(fz_box_atom_for_any(proc, value as u64)),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list().raw_word()),
-            AnyValue::FnRef(fn_id) => Ok(Self::materialize_fn_ref(proc, fn_id)?.ref_word().raw_word()),
+            AnyValue::FnRef(fn_id, arity) => Ok(Self::materialize_fn_ref(proc, fn_id, arity)?.ref_word().raw_word()),
             AnyValue::Ref(value) => Ok(value.raw_word()),
         }
     }
@@ -76,7 +80,7 @@ impl AnyValue {
             AnyValue::Null => Ok(AnyValueRef::null()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list()),
             AnyValue::Ref(value) => Ok(value),
-            AnyValue::Int(_) | AnyValue::Float(_) | AnyValue::Atom(_) | AnyValue::FnRef(_) => {
+            AnyValue::Int(_) | AnyValue::Float(_) | AnyValue::Atom(_) | AnyValue::FnRef(..) => {
                 let ref_word = self.as_ref_word(proc)?;
                 AnyValueRef::from_raw_word(ref_word)
                     .map_err(|err| format!("interpreter value ref word {ref_word:#x}: {err:?}"))
@@ -129,7 +133,7 @@ impl AnyValue {
             AnyValue::Float(value) => value.to_string(),
             AnyValue::Atom(value) => render_value(proc, RuntimeAnyValue::atom(value)),
             AnyValue::EmptyList => render_value(proc, RuntimeAnyValue::empty_list()),
-            AnyValue::FnRef(fn_id) => format!("<fn_ref {}>", fn_id.0),
+            AnyValue::FnRef(fn_id, arity) => format!("<fn_ref {}/{}>", fn_id.0, arity),
             AnyValue::Ref(value) => render_value(
                 proc,
                 RuntimeAnyValue::from_ref(value).unwrap_or(RuntimeAnyValue::null()),

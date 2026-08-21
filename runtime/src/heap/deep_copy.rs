@@ -9,8 +9,9 @@ use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
 use crate::any_value::{
     AnyValue, EMPTY_LIST, ListCons, TAG_MASK, ValueKind, bitstring_bit_len, bitstring_bytes_ptr,
-    closure_addr_from_tagged, closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr,
-    closure_halt_kind, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, struct_schema_id,
+    closure_addr_from_tagged, closure_arity, closure_capture_set, closure_capture_value, closure_captured_count,
+    closure_fn_ptr, closure_halt_kind, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
+    struct_schema_id,
 };
 use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
@@ -196,7 +197,8 @@ fn deep_copy_strict_closure(
     let captured_count = unsafe { closure_captured_count(sp as *const u8) };
     let halt_kind = unsafe { closure_halt_kind(sp as *const u8) };
     let fn_ptr = unsafe { closure_fn_ptr(sp as *const u8) };
-    let new_bits = dst_heap.alloc_closure_slots(0, captured_count, halt_kind);
+    let arity = unsafe { closure_arity(sp as *const u8) };
+    let new_bits = dst_heap.alloc_closure_slots(arity, captured_count, halt_kind);
     let dp = closure_addr_from_tagged(new_bits).expect("new closure ptr");
     forwarding.insert(sp, dp);
     unsafe { write(dp.add(8) as *mut u64, fn_ptr) };

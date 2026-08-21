@@ -87,7 +87,7 @@ pub(super) fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>)
 
 pub(super) fn unpack_callable(v: AnyValue, proc: *mut Process) -> Result<(FnId, Vec<AnyValue>), String> {
     match v {
-        AnyValue::FnRef(fn_id) => Ok((fn_id, Vec::new())),
+        AnyValue::FnRef(fn_id, _) => Ok((fn_id, Vec::new())),
         other => unpack_closure(other.value(proc)?),
     }
 }

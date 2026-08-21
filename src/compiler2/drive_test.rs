@@ -8096,6 +8096,46 @@ fn compiler2_unused_construction_call_binding_keeps_the_root_runnable() {
     );
 }
 
+/// A rendered closure reports the arity its source declares, not the size of
+/// the environment the compiler happened to give it. Both closures here carry
+/// exactly one capture, so a renderer keyed on the environment cannot tell
+/// them apart; Elixir's `#Function<.../arity>` reports the parameter count,
+/// and so does `#fn<id/arity>` (fz-gk4).
+#[test]
+fn compiler2_rendered_closure_reports_its_arity_not_its_capture_count() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/closure_render_arity.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/closure_render_arity.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect("interp must run the fixture");
+    compiler.run_root_jit(root).expect("JIT must run the fixture");
+    let arities = dbg
+        .lines()
+        .iter()
+        .map(|line| {
+            line.rsplit_once('/')
+                .and_then(|(_, tail)| tail.strip_suffix('>'))
+                .unwrap_or_else(|| panic!("rendered closure {line} must end in /<arity>>"))
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        arities,
+        vec!["0", "2", "0", "2"],
+        "both lanes must render the declared arities (0 and 2), not the capture count (1)",
+    );
+}
+
 #[test]
 fn compiler2_native_program_keeps_published_closure_calls_indirect() {
     let tel = ConfiguredTelemetry::new();
@@ -8315,10 +8355,12 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         })
         .expect("native program should publish the dtor lambda callable boundary");
     let compiled = jit_compile_native_program(&mut compiler, &program);
+    // Singletons are keyed by callable-boundary id -- the same key
+    // `fz_get_static_closure` looks them up under at runtime.
     let static_target = compiled
         .static_closure_targets()
         .iter()
-        .find(|(_, fn_id, _, _)| *fn_id == native_callable_boundary.wrapper_fn.0)
+        .find(|(cl_sid, _, _, _)| *cl_sid == native_callable_boundary.id().as_u32())
         .expect("compiled JIT module should publish one static closure target for the dtor wrapper");
     let body_ptr = compiled
         .fn_ptr(native_callable_boundary.wrapper_fn)

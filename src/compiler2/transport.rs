@@ -253,6 +253,12 @@ pub struct CodegenSeamFact {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallableDescr {
     pub function: Option<FunctionId>,
+    /// The callable's user-visible parameter count — what a rendered fun
+    /// reports (`#fn<id/arity>`, Elixir's `#Function<.../arity>`). It is fixed
+    /// by the source, unlike the capture lanes below, which demand may elide
+    /// to nothing. Functionally determined by `function`, so it never splits
+    /// an interner pool (fz-gk4).
+    pub arity: u16,
     /// The settled types of the closure's lexical captures. They remain part
     /// of callable identity even when demand elides every physical capture
     /// lane, preventing distinct groundings from pooling at the interner.

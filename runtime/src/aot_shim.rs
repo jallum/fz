@@ -392,13 +392,13 @@ pub extern "C" fn fz_aot_register_named_schemas(proc: *mut Process, blob: *const
 pub extern "C" fn fz_aot_register_static_closure(
     proc: *mut Process,
     cl_sid: u32,
-    fn_id: u32,
+    arity: u32,
     code_addr: *const u8,
     halt_kind: u32,
 ) {
     assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
     let process = unsafe { &mut *proc };
-    process.init_static_closures(&[(cl_sid, fn_id, code_addr, halt_kind)]);
+    process.init_static_closures(&[(cl_sid, arity, code_addr, halt_kind)]);
 }
 
 /// Spawn hook (fz-sched.2). Allocates a child Process, deep-copies the

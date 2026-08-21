@@ -74,12 +74,12 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
                     .brif(is_null, alloc_blk, &[][..], join_blk, &[BlockArg::Value(from_slot)]);
                 body.b.switch_to_block(alloc_blk);
                 body.b.seal_block(alloc_blk);
-                let dummy_fid = body.b.ins().iconst(types::I32, 0);
+                let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
                 let n_caps0 = body.b.ins().iconst(types::I32, 0);
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(body.jmod, halt_cont_body_id_for(runtime, hc_repr), body.b);
                 let zero_hk = body.b.ins().iconst(types::I32, 0);
-                let halt_cl = body.alloc_closure(dummy_fid, n_caps0, zero_hk, hcb_addr);
+                let halt_cl = body.alloc_closure(cont_arity, n_caps0, zero_hk, hcb_addr);
                 body.b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 body.b.switch_to_block(join_blk);
                 body.b.seal_block(join_blk);
@@ -133,7 +133,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         cont_sid,
         outer_cont_override,
     );
-    let cl_fid_v = body.b.ins().iconst(types::I32, cont_sid as i64);
+    let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
     // +1 reserves env field 0 for the synthetic outer_cont; user captures follow.
     let n_caps_v = body
         .b
@@ -141,7 +141,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         .iconst(types::I32, (cap_bindings.len() + extra_ref_captures.len() + 1) as i64);
     let zero_hk = body.b.ins().iconst(types::I32, 0);
     let cont_code_addr = fn_addr(body.jmod, cont_fid, body.b);
-    let cl_ptr = body.alloc_closure(cl_fid_v, n_caps_v, zero_hk, cont_code_addr);
+    let cl_ptr = body.alloc_closure(cont_arity, n_caps_v, zero_hk, cont_code_addr);
     let heap_safe_outer_cont = body.materialize_cont(my_outer_cont);
     body.store_closure_capture_ref_word(cl_ptr, 0, heap_safe_outer_cont);
     store_user_captures(cap_bindings, extra_ref_captures, |idx, capture| match capture {
@@ -177,6 +177,9 @@ where
         store(cap_bindings.len() + 1 + i, ClosureCapture::RefWord(extra));
     }
 }
+
+/// A continuation is applied to exactly the one value it receives.
+pub(crate) const CONT_ARITY: i64 = 1;
 
 const LAZY_CONT_HEADER_BYTES: usize = 32;
 const LAZY_CONT_KIND_REF: i64 = 0;
@@ -216,8 +219,7 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, slot_size as u32, 3));
     let code_addr = fn_addr(body.jmod, cont_fid, body.b);
     body.b.ins().stack_store(code_addr, slot, 0);
-    let sid_v = body.b.ins().iconst(types::I64, cont_sid as i64);
-    body.b.ins().stack_store(sid_v, slot, 8);
+    // +8 is a reserved hole: nothing reads it (fz-gk4).
     let captured_count_v = body.b.ins().iconst(types::I64, captured_count as i64);
     body.b.ins().stack_store(captured_count_v, slot, 16);
 

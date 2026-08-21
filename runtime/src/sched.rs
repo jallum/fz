@@ -32,7 +32,7 @@ pub fn mint_entry_thunk(heap: &mut Heap, entry_thunk_addr: *const u8, inner: *mu
     // Placeholder schema id: a scaffolding closure's schema is never consulted
     // (see `alloc_closure_slots_with_schema`), so minting does not register a
     // `ClosureEnv1` schema that would shift program schema ids.
-    let bits = heap.alloc_closure_slots_with_schema(SCAFFOLDING_SCHEMA_ID, 1, 0);
+    let bits = heap.alloc_closure_slots_with_schema(SCAFFOLDING_SCHEMA_ID, SCAFFOLDING_ARITY, 1, 0);
     let p = any_value::closure_addr_from_tagged(bits).expect("entry thunk closure ptr");
     let inner_av = AnyValue::HeapRef(
         AnyValueRef::from_heap_object(ValueKind::CLOSURE, inner as *const u8).expect("entry thunk inner closure ref"),
@@ -48,6 +48,10 @@ pub fn mint_entry_thunk(heap: &mut Heap, entry_thunk_addr: *const u8, inner: *mu
 /// schema is never consulted. See `Heap::alloc_closure_slots_with_schema`.
 const SCAFFOLDING_SCHEMA_ID: u32 = 0;
 
+/// Scheduler scaffolding closures are entered by `fz_resume`, never applied to
+/// user arguments and never rendered, so their arity is 0.
+const SCAFFOLDING_ARITY: u16 = 0;
+
 /// Mint a main-style entry's synthetic inner closure on `heap`: code is
 /// `fz_main_trampoline`, capture[0] is the raw `(cont)` main fn pointer stored
 /// as a raw int (so GC never treats it as a heap reference), and `halt_kind`
@@ -59,7 +63,7 @@ pub fn mint_main_inner(
     main_fp: *const u8,
     halt_kind: u16,
 ) -> *mut u8 {
-    let bits = heap.alloc_closure_slots_with_schema(SCAFFOLDING_SCHEMA_ID, 1, halt_kind);
+    let bits = heap.alloc_closure_slots_with_schema(SCAFFOLDING_SCHEMA_ID, SCAFFOLDING_ARITY, 1, halt_kind);
     let p = any_value::closure_addr_from_tagged(bits).expect("main inner closure ptr");
     unsafe {
         write(p.add(8) as *mut u64, main_trampoline_addr as u64);

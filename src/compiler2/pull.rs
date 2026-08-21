@@ -3769,6 +3769,7 @@ mod tests {
         let mut world = World::new();
         let callable = world.intern_callable(super::super::transport::CallableDescr {
             function: Some(FunctionId::for_test(355)),
+            arity: 0,
             capture_tys: Box::default(),
             capture_shapes: Box::default(),
             capture_lanes: Box::default(),
@@ -4549,6 +4550,7 @@ mod tests {
         let mut world = World::new();
         let callable = world.intern_callable(super::super::transport::CallableDescr {
             function: None,
+            arity: 0,
             capture_tys: Box::default(),
             capture_shapes: Box::default(),
             capture_lanes: Box::default(),
@@ -4596,6 +4598,7 @@ mod tests {
         let mut world = World::new();
         let callable = world.intern_callable(super::super::transport::CallableDescr {
             function: None,
+            arity: 0,
             capture_tys: Box::default(),
             capture_shapes: Box::default(),
             capture_lanes: Box::default(),
