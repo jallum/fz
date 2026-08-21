@@ -37,11 +37,15 @@
     {
       "text": "CURRENT RED SET, full single-threaded matrix at HEAD 89db749f6 (2026-08-21): 402 passed / 8 failed / 9 ignored, 198s.\n\n  enum_list_allocations::{run,interp,build}   -\u003e fz-66j (UNBLOCKED, re-scoped: native now 8 structs BELOW golden; interp is the defect)\n  enum_predicate_search::run                  -\u003e no live ticket; ::build recovered on its own, only run remains\n  enum_take_drop_split::{run,interp}          -\u003e fz-f98.14 / fz-f98.5 (blocked by fz-f98.9)\n  map_enumerable::interp                      -\u003e fz-km1 (NEW; fz-6fr's failure is gone, this is its successor)\n  tree::interp                                -\u003e fz-bt1 (NEW; fz-d1g closed, run/build green, interp regressed upward)\n\nRECOVERED since the last census, no commit against their tickets -- the fz-9i4/k22 carrier-authority arc: enum_sort (all 4 lanes, fz-5vi CLOSED), enum_reduce_suspend (fz-gk4 rebless), enum_predicate_search::build. fz-88t CLOSED, its design fork moot.\n\nEvery remaining red now has a live ticket except enum_predicate_search::run.",
       "timestamp": "2026-08-21T22:39:00Z"
+    },
+    {
+      "text": "enum_predicate_search::run now ticketed as the entry above -- and its nature changed: the native.rs:3123 'must be runtime-materializable' panic recorded in this ticket's STILL-RED list is GONE (interp+build green); the remaining run-lane failure is a reproducible 11.9s vs 10s budget overshoot with correct output. Every matrix red now has a live ticket.",
+      "timestamp": "2026-08-21T22:40:11Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
   "type": "bug",
-  "updated_at": "2026-08-21T22:39:00Z"
+  "updated_at": "2026-08-21T22:40:11Z"
 }
