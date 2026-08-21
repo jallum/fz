@@ -14,11 +14,15 @@
     {
       "text": "IMPLEMENTATION ATTEMPT 2026-07-09: stopped without commit. Search confirms ticket is not satisfied: native_codegen/driver.rs still has build_codegen_closure_targets, and drive_test still has an expected-failure regression referencing build_codegen_closure_targets/capture-count gap. Obvious deletion path exposed a model issue: native codegen currently assumes one FnId -\u003e NativeClosureTargetSurface, but shared Enum.find/find_value-style fixtures can produce multiple callable-boundary surfaces for the same target FnId. Correct cleanup needs a boundary-aware closure-target surface model: key explicit surfaces by boundary/direct surface, resolve direct closure calls via the closure var's boundary id when present, keep direct-only fallback for no-boundary closure calls, then delete build_codegen_closure_targets and retire the stale expected-failure test. Closure regression fixtures plus cargo test --lib and clippy were green in the attempted worktree.",
       "timestamp": "2026-07-09T22:19:04Z"
+    },
+    {
+      "text": "Implemented on branch fz-9i4.4.4/delete-closure-target-registry, draft PR #85 (base fz-go4.1/frontdoor-cli-ownership). direct_target field deleted from fz-IR (no producer since fz-9i4.4.5 direct edges); FnId-keyed registry + guards + harness/signature branches + closure-lit fast paths deleted (-834/+74). Intent tests re-expressed via call forms (green before AND after). lib 1436/0, clippy/fmt clean, acceptance fixtures green run/interp/build, full 1-thread matrix 397/7 zero new reds (3 apparent flips are schedule-dependent; also pass at pristine HEAD).",
+      "timestamp": "2026-08-21T20:09:21Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Delete the unreachable native closure-target registry and direct-call branches",
   "type": "task",
-  "updated_at": "2026-07-17T05:04:10Z"
+  "updated_at": "2026-08-21T20:09:21Z"
 }
