@@ -713,9 +713,146 @@ impl<K> Default for ContributionReplace<K> {
     }
 }
 
-/// The activation-input contribution store: per-publisher body input evidence,
-/// joined pointwise by union over the shared type store.
-pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, Vec<Ty>>;
+/// The activation-input contribution store: per-publisher correlated input
+/// rows, joined as a canonical antichain of alternatives (fz-9i4.7.10.2).
+pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, ActivationInputAlternatives>;
+
+/// Past this many alternatives the antichain widens to its single column-wise
+/// joined row. The mirror of `RETURN_WIDENING_BUDGET`: termination is a
+/// theorem for every program, not a property of lucky inputs.
+pub const ACTIVATION_INPUT_ROW_BUDGET: usize = 8;
+
+/// One correlated publication of an activation's inputs: these columns arrived
+/// together from one call analysis and may only be read together. A row is
+/// never synthesized by mixing columns of different rows — that Cartesian
+/// combination is exactly what this type exists to make unrepresentable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationInputRow {
+    columns: Vec<Ty>,
+}
+
+impl ActivationInputRow {
+    pub fn new(columns: Vec<Ty>) -> Self {
+        Self { columns }
+    }
+
+    pub fn columns(&self) -> &[Ty] {
+        &self.columns
+    }
+}
+
+/// A finite canonical antichain of correlated input rows, plus the derived
+/// column-wise joined projection.
+///
+/// The rows are the semantic authority: analysis reads them one at a time.
+/// The `joined` projection exists for consumers whose question is genuinely
+/// uncorrelated — per-column transport typing after semantic decisions — and
+/// is maintained at the single write point (`rebuild`), where the type store
+/// is at hand, so reads stay borrow-free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationInputAlternatives {
+    rows: Vec<ActivationInputRow>,
+    joined: Vec<Ty>,
+}
+
+impl ActivationInputAlternatives {
+    pub fn from_row(columns: Vec<Ty>) -> Self {
+        Self {
+            joined: columns.clone(),
+            rows: vec![ActivationInputRow::new(columns)],
+        }
+    }
+
+    pub fn rows(&self) -> &[ActivationInputRow] {
+        &self.rows
+    }
+
+    /// The column-wise joined projection: each column is the union of that
+    /// column across every row. Correlation-blind by construction — only
+    /// consumers whose question is genuinely per-column may read it.
+    pub fn joined(&self) -> &[Ty] {
+        &self.joined
+    }
+
+    pub fn push_row(&mut self, types: &mut Types, columns: Vec<Ty>) {
+        self.insert_row(types, ActivationInputRow::new(columns));
+        self.rebuild(types);
+    }
+
+    /// Insert one row, keeping the set canonical. The only permitted
+    /// compression is whole-row EQUIVALENCE — every column of the dropped row
+    /// equivalent to the corresponding column of the survivor. Deliberately
+    /// NOT template subsumption (`key_list_subsumes`): a polymorphic template
+    /// row would absorb its exact ground siblings, erasing the very
+    /// correlation this type preserves. Callers rebuild afterwards.
+    fn insert_row(&mut self, types: &Types, row: ActivationInputRow) {
+        if !self.rows.is_empty() {
+            assert_eq!(
+                self.rows[0].columns.len(),
+                row.columns.len(),
+                "one activation input fact cannot receive differing arities from one publisher",
+            );
+        }
+        if self
+            .rows
+            .iter()
+            .any(|existing| existing.columns.equivalent(&row.columns, types))
+        {
+            return;
+        }
+        self.rows.push(row);
+    }
+
+    /// Restore the canonical form: rows in a deterministic, representative-
+    /// stable order (the same `Types::display` idiom `StableSortKey` uses, so
+    /// two runs that intern equal types under different ids fold identically),
+    /// the budget widening applied, and the joined projection recomputed.
+    fn rebuild(&mut self, types: &mut Types) {
+        self.rows
+            .sort_by_cached_key(|row| row.columns.iter().map(|ty| types.display(ty)).collect::<Vec<_>>());
+        let mut joined = Vec::new();
+        for row in &self.rows {
+            joined.join_assign(&row.columns, types);
+        }
+        self.joined = joined;
+        if self.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
+            self.rows = vec![ActivationInputRow::new(self.joined.clone())];
+        }
+    }
+}
+
+impl JoinContribution for ActivationInputAlternatives {
+    type Ctx = Types;
+
+    fn bottom() -> Self {
+        Self {
+            rows: Vec::new(),
+            joined: Vec::new(),
+        }
+    }
+
+    /// Antichain union. Rows never cross-pollinate columns; the join is row
+    /// insertion under whole-row subsumption, then one canonical rebuild.
+    fn join_assign(&mut self, other: &Self, types: &mut Types) {
+        if self.rows.is_empty() {
+            self.clone_from(other);
+            return;
+        }
+        for row in &other.rows {
+            self.insert_row(types, row.clone());
+        }
+        self.rebuild(types);
+    }
+
+    fn equivalent(&self, other: &Self, types: &Types) -> bool {
+        self.rows.len() == other.rows.len()
+            && self
+                .rows
+                .iter()
+                .zip(&other.rows)
+                .all(|(left, right)| left.columns.equivalent(&right.columns, types))
+    }
+}
 
 /// One publisher's entry for a key in a conclusion's `next` map.
 enum SlotEntry<V> {
@@ -1491,11 +1628,11 @@ mod tests {
             world.types_mut(),
             publisher.clone(),
             HashSet::new(),
-            HashMap::from([(key.clone(), vec![input])]),
+            HashMap::from([(key.clone(), ActivationInputAlternatives::from_row(vec![input]))]),
             false,
         );
         assert_eq!(first.output_keys, HashSet::from([key.clone()]));
-        assert_eq!(map.get(&key), Some(&vec![input]));
+        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
 
         let rebased = map.conclude_preserving_frontier(
             world.types_mut(),
@@ -1513,7 +1650,7 @@ mod tests {
             rebased.changed_keys.is_empty(),
             "preserving an unchanged frontier should not mark the activation input dirty"
         );
-        assert_eq!(map.get(&key), Some(&vec![input]));
+        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
     }
 
     #[test]

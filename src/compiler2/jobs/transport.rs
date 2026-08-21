@@ -262,7 +262,7 @@ fn produce_generic_callable_owner(
             }
             (
                 world
-                    .activation_inputs(&executable.activation)
+                    .activation_inputs_joined(&executable.activation)
                     .unwrap_or_else(|| executable.activation.inputs(world.types()))
                     .get(*semantic_index)
                     .copied()
@@ -1187,7 +1187,7 @@ fn produce_named_transport_position(
                 return Some(PullOutcome::wait_on_fact(fact));
             }
             let ty = world
-                .activation_inputs(&executable.activation)
+                .activation_inputs_joined(&executable.activation)
                 .unwrap_or_else(|| executable.activation.inputs(world.types()))
                 .get(*semantic_index)
                 .copied()

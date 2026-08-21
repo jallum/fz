@@ -54,8 +54,8 @@ use super::runtime::{self, RuntimeModuleCode};
 use super::scheduler::{FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
-    ActivationAnalysis, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap, CallSiteSummary, CallSiteTargets,
-    CallSiteTargetsMap, ContributionReplace,
+    ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
+    CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, ContributionReplace,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -569,20 +569,22 @@ impl World {
         self.canonical_activation_key(root, function, inputs)
     }
 
-    /// The canonical inputs of an activation, once its fact exists. The key
-    /// itself carries the canonical (alpha-normalized) inputs — the fact only
-    /// records that the activation has been demanded. Body input evidence lives
-    /// in the separate `ActivationInputs(key)` fact.
-    pub(crate) fn activation_inputs(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
-        self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
-        Some(self.activation_inputs.get(key)?.clone())
-    }
-
-    pub(crate) fn activation_inputs_ref(&self, key: &ActivationKey) -> Option<&Vec<Ty>> {
+    /// The correlated body-input evidence of an activation, once its fact
+    /// exists: the canonical antichain of publisher rows. Semantic analysis
+    /// reads THIS — each row is analyzed independently, never a column mix.
+    pub(crate) fn activation_input_alternatives(&self, key: &ActivationKey) -> Option<&ActivationInputAlternatives> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
         self.activation_inputs.get(key)
+    }
+
+    /// The column-wise joined projection of the activation's input rows —
+    /// correlation-blind by construction. Only for consumers whose question is
+    /// genuinely per-column (transport lane typing), after semantic decisions.
+    pub(crate) fn activation_inputs_joined(&self, key: &ActivationKey) -> Option<Vec<Ty>> {
+        self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
+        Some(self.activation_inputs.get(key)?.joined().to_vec())
     }
 
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {
@@ -641,8 +643,8 @@ impl World {
     fn normalize_contributions(
         &mut self,
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
-    ) -> HashMap<ActivationKey, Vec<Ty>> {
-        let mut next = HashMap::<ActivationKey, Vec<Ty>>::new();
+    ) -> HashMap<ActivationKey, ActivationInputAlternatives> {
+        let mut next = HashMap::<ActivationKey, ActivationInputAlternatives>::new();
         for (activation, inputs) in contributions {
             // Canonicalize the input evidence the same whole-scope way the key is
             // built (fz-hwn.27.6, A): one shared addressing pass, so distinct
@@ -659,25 +661,15 @@ impl World {
             } else {
                 normalized
             };
+            // Each contribution stays one correlated row (fz-9i4.7.10.2):
+            // a publisher's second row for the same activation is an
+            // ALTERNATIVE, never a column-wise blend of the two.
             match next.entry(activation) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(normalized);
+                    entry.insert(ActivationInputAlternatives::from_row(normalized));
                 }
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    let current = entry.get_mut();
-                    assert_eq!(
-                        current.len(),
-                        normalized.len(),
-                        "one activation input fact cannot receive differing arities from one publisher",
-                    );
-                    for (current_input, next_input) in current.iter_mut().zip(normalized) {
-                        *current_input =
-                            if *current_input == next_input || self.types.is_equivalent(current_input, &next_input) {
-                                *current_input
-                            } else {
-                                self.types.union(*current_input, next_input)
-                            };
-                    }
+                    entry.get_mut().push_row(&mut self.types, normalized);
                 }
             }
         }

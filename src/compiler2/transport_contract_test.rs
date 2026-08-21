@@ -1313,7 +1313,7 @@ end
         })
         .map(|executable| {
             world
-                .activation_inputs(&executable.activation)
+                .activation_inputs_joined(&executable.activation)
                 .unwrap_or_else(|| executable.activation.inputs(world.types()))
         })
         .collect::<Vec<_>>();
