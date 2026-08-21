@@ -8001,6 +8001,64 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
     );
 }
 
+/// fz-bdk: a runtime fault must never report success. `handle(pick(5))` is
+/// well-typed as written -- which atom arrives depends on execution -- so the
+/// uncovered `:third` witness can only be caught by the runtime trap. Interp
+/// already surfaces that trap as a loud `Err`; the JIT driver used to run the
+/// scheduler until idle and return `Ok(())` unconditionally, discarding the
+/// fault (real side effects up to the trap, then a silent success). The exit
+/// kind is a structural fact set only by the fault-halt trap itself -- never
+/// inferred from the halted value, which a program may legitimately return.
+#[test]
+fn compiler2_jit_reports_runtime_dispatch_fault_at_the_exit_boundary() {
+    let source = r#"
+fn pick(0), do: :first
+fn pick(_), do: :third
+
+fn handle(:first), do: 1
+fn handle(:second), do: 2
+
+fn main() do
+  dbg(1)
+  dbg(handle(pick(5)))
+  dbg(2)
+end
+"#;
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("runtime_dispatch_fault.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let interp_error = compiler
+        .run_root_interp(root)
+        .expect_err("interp must abort on the uncovered dispatch witness");
+    assert!(
+        interp_error.contains("function_clause"),
+        "interp fault should name function_clause: {interp_error}"
+    );
+    let jit_error = compiler
+        .run_root_jit(root)
+        .expect_err("the JIT driver must report the runtime fault, not unify it with normal completion");
+    assert!(
+        jit_error.contains("function_clause"),
+        "JIT fault should name function_clause: {jit_error}"
+    );
+    assert_eq!(
+        dbg.lines(),
+        vec!["1".to_string(), "1".to_string()],
+        "both paths run real side effects up to the trap and nothing after it",
+    );
+}
+
 /// fz-9in: a binding can be dead while the call that produces it survives
 /// (the `1..5` Range construction allocates, so the call edge is kept even
 /// though nothing demands its result). The callee then runs with zero
