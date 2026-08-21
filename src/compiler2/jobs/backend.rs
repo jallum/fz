@@ -1820,49 +1820,55 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 value: *value,
                 literal: literal.clone(),
             },
-            LoweredStep::Tuple { value, items } => {
-                if self.value_is_proven_runtime_absent(*value) {
-                    BackendStep::Omitted { value: *value }
-                } else {
-                    BackendStep::Tuple {
-                        value: *value,
-                        items: items.clone(),
-                    }
-                }
-            }
-            LoweredStep::List { value, items, tail } => {
-                if self.value_is_proven_runtime_absent(*value) {
-                    BackendStep::Omitted { value: *value }
-                } else {
-                    BackendStep::List {
-                        value: *value,
-                        items: items.clone(),
-                        tail: *tail,
-                    }
-                }
-            }
-            LoweredStep::Map { value, entries } => BackendStep::Map {
-                value: *value,
-                entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
-            },
-            LoweredStep::MapUpdate { value, base, entries } => BackendStep::MapUpdate {
-                value: *value,
-                base: *base,
-                entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
-            },
-            LoweredStep::Struct { value, module, fields } => BackendStep::Struct {
-                value: *value,
-                module_name: self
-                    .world
-                    .module_name(*module)
-                    .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
-                    .to_string(),
-                fields: fields.clone(),
-            },
-            LoweredStep::Bitstring { value, fields } => BackendStep::Bitstring {
-                value: *value,
-                fields: fields.clone(),
-            },
+            LoweredStep::Tuple { value, items } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::Tuple {
+                    value: *value,
+                    items: items.clone(),
+                },
+            ),
+            LoweredStep::List { value, items, tail } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::List {
+                    value: *value,
+                    items: items.clone(),
+                    tail: *tail,
+                },
+            ),
+            LoweredStep::Map { value, entries } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::Map {
+                    value: *value,
+                    entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
+                },
+            ),
+            LoweredStep::MapUpdate { value, base, entries } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::MapUpdate {
+                    value: *value,
+                    base: *base,
+                    entries: entries.iter().map(|(key, value)| (key.value, *value)).collect(),
+                },
+            ),
+            LoweredStep::Struct { value, module, fields } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::Struct {
+                    value: *value,
+                    module_name: self
+                        .world
+                        .module_name(*module)
+                        .unwrap_or_else(|| panic!("struct module {} should have a name", module.as_u32()))
+                        .to_string(),
+                    fields: fields.clone(),
+                },
+            ),
+            LoweredStep::Bitstring { value, fields } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::Bitstring {
+                    value: *value,
+                    fields: fields.clone(),
+                },
+            ),
             LoweredStep::FunctionRef { value, function } => BackendStep::FunctionRef {
                 value: *value,
                 function: *function,
@@ -1962,6 +1968,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         self.value_shapes
             .get(&value)
             .is_some_and(|shape| matches!(self.world.shape(*shape), ShapeDescr::Nothing))
+    }
+
+    /// Every fresh-construction step (Tuple/List/Map/MapUpdate/Struct/
+    /// Bitstring) must respect the absence proof: when transport proves the
+    /// constructed value runtime-absent, its operands were never demanded and
+    /// may be unbound at runtime, so the step lowers as `Omitted` instead of
+    /// executing a read of never-materialized values (fz-9in: a dead binding
+    /// whose construction call survives because it allocates).
+    fn construction_step_or_omitted(&self, value: ValueId, step: BackendStep) -> BackendStep {
+        if self.value_is_proven_runtime_absent(value) {
+            BackendStep::Omitted { value }
+        } else {
+            step
+        }
     }
 
     fn lower_call_args(

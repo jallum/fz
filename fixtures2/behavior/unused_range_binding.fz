@@ -1,0 +1,8 @@
+#---
+# purpose: "an unused binding whose value is built by a separate construction call (1..5) must not starve the callee's inputs -- fz-9in"
+#---
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  range = 1..5
+  dbg(Enum.take(xs, 3))
+end
