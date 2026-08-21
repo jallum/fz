@@ -1534,7 +1534,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         env,
                         &args.iter().map(|arg| arg.value).collect::<Vec<_>>(),
                     );
-                    let direct_target = None;
                     match (return_flow.as_ref(), dest) {
                         (Some(BackendReturnFlow::Continue { source }), ControlDestination::Return) => {
                             let continuation =
@@ -1542,7 +1541,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             ctx.set_term(Term::CallClosure {
                                 ident: CallsiteIdent::from_source(Span::DUMMY),
                                 closure,
-                                direct_target,
                                 args: call_args,
                                 continuation,
                             });
@@ -1562,7 +1560,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             ctx.set_term(Term::CallClosure {
                                 ident: CallsiteIdent::from_source(Span::DUMMY),
                                 closure,
-                                direct_target,
                                 args: call_args,
                                 continuation,
                             });
@@ -1575,7 +1572,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             ctx.set_term(Term::TailCallClosure {
                                 ident: CallsiteIdent::from_source(Span::DUMMY),
                                 closure,
-                                direct_target,
                                 args: call_args,
                             });
                             Ok(())

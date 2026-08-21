@@ -87,13 +87,12 @@ inventory against compatible closed activation keys instead of raw capture
 local dispatch from the settled multi-target semantic fact. Under that
 mechanism the union-receiver fixtures sit at:
 
-- `enum_take_drop_split` — declared on all three paths, but currently red on
-  all three (native closure-target-surface mismatch on `run`/`build`, ambiguous
-  backend callable on `interp`); a real gap, not yet root-caused.
+- `enum_take_drop_split` — declared on all three paths; green on `build`,
+  red on `interp`/`run` (interp: "backend value 0 is unbound" on a plain
+  `Enum.take` beside an unused range binding, tracked as fz-9in).
 - `range_enumerable` — green on all three paths.
-- `enum_map_family` — green on `interp`; `run`/`build` stay deferred on a
-  native-codegen `ReturnLanes` arity mismatch.
-- `map_enumerable` — green on all three paths.
+- `enum_map_family` — green on all three paths.
+- `map_enumerable` — green on `run`/`build`; red on `interp`.
 - `enum_tier0`, `enumerable_protocol_dispatch` — deferred on all three paths
   (`enum_tier0` on the shared `Enum.reduce*` bridge over non-List Enumerables;
   `enumerable_protocol_dispatch` pending nominal struct-vs-map

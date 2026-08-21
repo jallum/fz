@@ -32,11 +32,8 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let value_types = &native_body.value_types;
     let is_native = native_abi_fns.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
-    let closure_target = (is_native && !is_cont_fn)
-        .then(|| env.surface.closure_target(f.id))
-        .flatten();
     // When this fn is never invoked from any fz IR site (not a direct
-    // callee, not a continuation, not a closure target), it can only
+    // callee, not a continuation), it can only
     // enter via the trampoline entry, which writes null into the frame's
     // slot 0. cont_ptr is therefore statically null at runtime;
     // emit_return can elide the load/icmp/brif dispatch and emit a
@@ -72,13 +69,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
-        } else if let Some(boundary) = closure_target {
-            // Closure-target fn entry: `(args..., self:i64, cont:i64) tail`.
-            for r in &boundary.arg_reprs {
-                append_block_param_for_repr(&mut b, entry_cl, *r);
-            }
-            b.append_block_param(entry_cl, types::I64); // self
-            b.append_block_param(entry_cl, types::I64); // cont
         } else {
             for r in my_param_reprs {
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -123,7 +113,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         this_spec_id,
         is_native,
         is_cont_fn,
-        closure_target,
         entry_cl,
     );
 
