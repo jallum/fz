@@ -6885,6 +6885,99 @@ end
     );
 }
 
+// fz-9i4.4.5: a closure-call RESULT born inside the call (`apply(add3(10), 20)`
+// returns the inner curried closure) must travel in the shape both sides agree
+// on. The callee's specialized executable returns the nested closure in its
+// grounded repr (two capture lanes); the caller's transport labels every
+// ClosureCall result PublicCallableReturn and forces one boxed ValueRef. The
+// two authorities describe the same wire differently, so native lowering
+// cannot complete while interp (which dispatches by runtime closure identity)
+// stays green. This is the checked-in curried_add fixture driven through both
+// paths.
+#[test]
+fn compiler2_jit_grounds_curried_closure_call_returns() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/curried_add.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root_id)
+        .unwrap_or_else(|error| panic!("interp should run three-level currying: {error}"));
+    compiler
+        .run_root_jit(root_id)
+        .unwrap_or_else(|error| panic!("JIT should run three-level currying: {error}"));
+    assert_eq!(
+        dbg.lines().as_slice(),
+        Vec::<String>::new().as_slice(),
+        "curried_add asserts internally; any output is a failed assertion",
+    );
+}
+
+// fz-9i4.4.5 structural pin: `apply`'s `f.(x)` callee arrives in its exact
+// (non-ValueRef) carrier with one settled target, so the callsite lowers as a
+// DIRECT edge and its return claim aliases the target's own `ExecutableReturn`
+// — no indirect closure call survives in `apply`'s lowered bodies. The
+// sibling `compiler2_native_program_calls_published_callable_values_through_
+// runtime_identity` pins the opposite pole: a boxed callee keeps the indirect
+// call and the public boxed return claim.
+#[test]
+fn compiler2_native_program_grounds_exact_carrier_closure_call_returns() {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/curried_add.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/curried_add.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "curried_add should settle before inspecting apply's closure calls",
+    );
+
+    let program = native.last(root_id).program;
+    let apply_fns = program
+        .module
+        .fns
+        .iter()
+        .filter(|function| function.name.starts_with("apply__e"))
+        .collect::<Vec<_>>();
+    assert!(!apply_fns.is_empty(), "apply should lower at least one executable");
+    let indirect_calls = apply_fns
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .filter(|block| {
+            matches!(
+                &block.terminator,
+                IrTerm::CallClosure { .. } | IrTerm::TailCallClosure { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        indirect_calls, 0,
+        "an exact-carrier singleton closure call must lower as a direct edge with a grounded return",
+    );
+}
+
 // fz-9i4.7.10.2: three `with_index` mappers coexist over one shared recursive
 // reduce activation. Each callsite publishes one CORRELATED input row — its
 // list, continuation, and reducer arrived together and may only be read

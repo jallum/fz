@@ -397,6 +397,23 @@ publication — stay individually observable through the demanded `RuntimeDemand
 product and the per-position transport products pinned in
 `transport_contract_test.rs`.
 
+A closure callsite's result is the producer fact
+`TransportOrigin::ClosureCallReturn { callsite, callee }` — which callsite, and
+which value is called; no judgment is baked in at collection. The claim is
+decided at transport-recipe evaluation from the callee VALUE's own carrier —
+the same fact `materialize_closure_call_edge` uses to choose the call form —
+so claim and call share one authority (fz-9i4.4.5). An exact (non-`ValueRef`)
+callee carrier with a settled singleton compiler-owned target lowers as a
+direct edge, and the result aliases that target's own `ExecutableReturn`:
+caller and callee read one fact and agree on the exact return lanes by
+construction (three-level currying returns its nested closure as capture
+lanes, no boxing). A `ValueRef` callee dispatches through its construction
+wrapper, whose return is the public boxed contract
+(`BackendCallableReturn::ValueRef`), and the claim stays public with it. Both
+the callee-value shape and, when present, the singleton target's return fact
+are recorded as position dependencies, so replacement or withdrawal of either
+re-settles the claim.
+
 A transport `ShapeId` is a faithful, total description of *physical runtime
 layout* and nothing else. A boxed first-class callable's VALUE shape is
 therefore one `ValueRef` value lane — the boxed pointer — and its width is a

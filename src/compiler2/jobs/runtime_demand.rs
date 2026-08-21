@@ -46,10 +46,22 @@ pub(crate) enum TransportOrigin {
     ExecutableInput(usize),
     LocalValue(ValueId),
     CallsiteReturn(CallSiteId),
-    PublicCallableReturn(CallSiteId),
+    /// The result of a closure callsite — the producer fact only: which
+    /// callsite, and which value is being called. Whether the result travels
+    /// grounded (aliasing the settled singleton target's own
+    /// `ExecutableReturn`) or public (one boxed `ValueRef` through the
+    /// construction wrapper) is decided at recipe evaluation from the callee
+    /// value's own transport carrier, never here (fz-9i4.4.5).
+    ClosureCallReturn {
+        callsite: CallSiteId,
+        callee: ValueId,
+    },
     Join(Box<[TransportOrigin]>),
     TupleValue(Box<[ValueId]>),
-    TupleField { source: ValueId, index: usize },
+    TupleField {
+        source: ValueId,
+        index: usize,
+    },
     CallableValue(LocalCallableProducer),
 }
 
@@ -3093,8 +3105,8 @@ fn collect_callsite_return_origins(body: &LoweredBody) -> HashMap<CallSiteId, Tr
             LoweredTail::DirectCall { callsite, .. } => {
                 origins.insert(callsite, TransportOrigin::CallsiteReturn(callsite));
             }
-            LoweredTail::ClosureCall { callsite, .. } => {
-                origins.insert(callsite, TransportOrigin::PublicCallableReturn(callsite));
+            LoweredTail::ClosureCall { callsite, callee, .. } => {
+                origins.insert(callsite, TransportOrigin::ClosureCallReturn { callsite, callee });
             }
             _ => {}
         }
@@ -3154,7 +3166,7 @@ fn collect_value_origins(
         sources.sort_by_key(|source| match source {
             TransportOrigin::LocalValue(value) => (0, value.as_u32()),
             TransportOrigin::CallsiteReturn(callsite) => (1, callsite.as_u32()),
-            TransportOrigin::PublicCallableReturn(callsite) => (2, callsite.as_u32()),
+            TransportOrigin::ClosureCallReturn { callsite, .. } => (2, callsite.as_u32()),
             _ => unreachable!(),
         });
         sources.dedup();
@@ -3232,9 +3244,13 @@ fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> 
             } => origins.push(TransportOrigin::CallsiteReturn(*callsite)),
             LoweredTail::ClosureCall {
                 callsite,
+                callee,
                 dest: ControlDestination::Return,
                 ..
-            } => origins.push(TransportOrigin::PublicCallableReturn(*callsite)),
+            } => origins.push(TransportOrigin::ClosureCallReturn {
+                callsite: *callsite,
+                callee: *callee,
+            }),
             LoweredTail::Value {
                 dest: ControlDestination::Deliver(target),
                 ..
@@ -3393,7 +3409,10 @@ mod tests {
         );
         assert_eq!(
             value_origins.get(&closure_value),
-            Some(&TransportOrigin::PublicCallableReturn(closure_callsite))
+            Some(&TransportOrigin::ClosureCallReturn {
+                callsite: closure_callsite,
+                callee: ValueId::from_u32(2),
+            })
         );
     }
 }
