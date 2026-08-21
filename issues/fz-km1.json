@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-21T22:38:51Z",
+  "description": "fixtures2/behavior/map_enumerable.fz via interp exits nonzero at HEAD 89db749f6 (2026-08-21):\n\n  fz2 interp: backend callable construction 1 member target 71 publishes 1 semantic input layouts for arity 2\n\nRaised by ConstructionInputEncoder::encode, src/ir_interp/backend.rs:2036 -- the guard comparing member.target_inputs.len() against target.key.activation.input_len(types). The construction wrapper describes ONE semantic input for a target whose activation has TWO. run and build lanes are green; interp only.\n\nPROVENANCE: that assertion was introduced by fz-k22.23 (8cb9b7a90, 2026-07-14, 'preserve producer callable constructions behind one public ABI'), so it PREDATES the fz-gk4 arity work (89db749f6) and is not fallout from it. Confirmed by git log -L on the line range.\n\nfz-6fr ('map_enumerable crashes all backends: ValueId(6) must be runtime-materializable, value=Absent, native.rs:3375') is CLOSED and that failure is genuinely gone -- two backends recovered and the message changed. This is the successor failure on the one remaining lane, not a reopen: different mechanism, different layer (interp construction encoding vs native materialization).\n\nThe disagreement is between the construction wrapper's published input layouts and the target activation's semantic arity -- one of the two is wrong about the call surface. Establish which side is authoritative before patching the guard; per the one-authority principle the fix belongs wherever the call surface is decided, not at the comparison.\n\nREPRO: cargo test --test fixture_matrix -- --test-threads=1 map_enumerable",
+  "id": "fz-km1",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "map_enumerable::interp: construction member publishes 1 semantic input layout for arity 2 (fz-6fr's successor failure)",
+  "type": "bug",
+  "updated_at": "2026-08-21T22:38:51Z"
+}
