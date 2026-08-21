@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::super::body::{ControlEntryId, LoweredBody, ValueId, callsite_call_args, callsite_input_modes};
+use super::super::body::{CallSiteId, ControlEntryId, LoweredBody, ValueId, callsite_call_args, callsite_input_modes};
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
@@ -708,10 +708,20 @@ fn record_generic_owner_facts(
 enum TransportRecipe {
     Terminal,
     PublicCallableReturn,
+    /// A closure-call result: grounded to the singleton target's return fact
+    /// when the callee value's carrier is exact, public boxed when the callee
+    /// is a `ValueRef` (the construction-wrapper convention).
+    ClosureCallReturn {
+        callee: TransportPosition,
+        grounded: Option<Box<TransportRecipe>>,
+    },
     Alias(TransportPosition),
     Alternatives(Vec<Self>),
     Tuple(Vec<Self>),
-    TupleField { tuple: Box<Self>, index: usize },
+    TupleField {
+        tuple: Box<Self>,
+        index: usize,
+    },
 }
 
 enum RecipeLayout {
@@ -738,6 +748,31 @@ fn evaluate_transport_recipe(
                 layout.carrier = TransportCarrier::ValueRef;
             }
             RecipeLayout::Exact(layout)
+        }
+        TransportRecipe::ClosureCallReturn { callee, grounded } => {
+            // One authority: `materialize_closure_call_edge` goes direct only
+            // when the callee value's carrier is exact; the claim grounds on
+            // exactly that condition.
+            let callee_key = ProductKey::TransportShape(callee.clone());
+            let callee_layout = match context.read_product(callee_key.clone()) {
+                Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
+                Some(value) => panic!("closure callee shape produced unexpected value {value:?}"),
+                None => return RecipeLayout::Waiting(callee_key),
+            };
+            match grounded {
+                Some(grounded) if !matches!(callee_layout.carrier, TransportCarrier::ValueRef) => {
+                    evaluate_transport_recipe(world, context, current, grounded, ty, demand, position)
+                }
+                _ => evaluate_transport_recipe(
+                    world,
+                    context,
+                    current,
+                    &TransportRecipe::PublicCallableReturn,
+                    ty,
+                    demand,
+                    position,
+                ),
+            }
         }
         TransportRecipe::Alias(child) => {
             let key = ProductKey::TransportShape(child.clone());
@@ -887,6 +922,30 @@ fn exact_direct_callable_layout(
     }))
 }
 
+/// The one callable row a closure callsite could ground its return against:
+/// a settled summary naming exactly one compiler-owned target. Whether the
+/// grounding APPLIES is decided at recipe evaluation from the callee value's
+/// own transport carrier — the same fact `materialize_closure_call_edge` uses
+/// to choose a direct edge — so claim and call share one authority.
+fn singleton_closure_call_target(
+    facts: &super::runtime_demand::ExecutableFacts,
+    callsite: &CallSiteId,
+) -> Option<(ActivationKey, ExecutableNeed)> {
+    let summary = facts.callsites().get(callsite)?;
+    let [target] = summary.targets.as_slice() else {
+        return None;
+    };
+    let (SelectedCallee::Function(_), Some(activation)) = (&target.callee, &target.activation) else {
+        return None;
+    };
+    let need = facts
+        .callsite_needs()
+        .get(callsite)
+        .copied()
+        .unwrap_or(ExecutableNeed::Value);
+    Some((activation.clone(), need))
+}
+
 fn origin_transport_recipe(
     world: &World,
     symbol: &ExecutableSymbol,
@@ -934,7 +993,29 @@ fn origin_transport_recipe(
                     .collect(),
             )
         }
-        TransportSource::PublicCallableReturn(_) => TransportRecipe::PublicCallableReturn,
+        TransportSource::ClosureCallReturn { callsite, callee } => {
+            // A closure-call result refines the authoritative callable row
+            // forward (fz-9i4.4.5): when the callee VALUE travels in its exact
+            // (non-ValueRef) carrier, `materialize_closure_call_edge` lowers
+            // the call as a direct edge to the settled singleton target, so
+            // the result aliases that executable's own return fact — caller
+            // and callee read one shape and agree by construction. A boxed
+            // callee dispatches through the construction wrapper, whose
+            // return is the public boxed contract; the claim stays public
+            // with it. The gate is deferred to recipe evaluation because the
+            // callee's carrier is itself a transport product.
+            TransportRecipe::ClosureCallReturn {
+                callee: TransportPosition::Value {
+                    executable: symbol.clone(),
+                    value: *callee,
+                },
+                grounded: singleton_closure_call_target(facts, callsite).map(|(activation, need)| {
+                    Box::new(TransportRecipe::Alias(TransportPosition::ExecutableReturn {
+                        executable: executable_symbol(&ExecutableKey { activation, need }, world.types()),
+                    }))
+                }),
+            }
+        }
         TransportSource::Join(origins) => TransportRecipe::Alternatives(
             origins
                 .iter()
@@ -1449,7 +1530,21 @@ fn append_origin_children(
                 }
             }
         }
-        TransportSource::PublicCallableReturn(_) => {}
+        TransportSource::ClosureCallReturn { callsite, callee } => {
+            // The claim depends on the callee value's carrier and, when a
+            // singleton target exists, on that target's return fact — so
+            // replacement or withdrawal of either product re-settles this
+            // position.
+            children.push(TransportPosition::Value {
+                executable: symbol.clone(),
+                value: *callee,
+            });
+            if let Some((activation, need)) = singleton_closure_call_target(facts, callsite) {
+                children.push(TransportPosition::ExecutableReturn {
+                    executable: executable_symbol(&ExecutableKey { activation, need }, world.types()),
+                });
+            }
+        }
         TransportSource::Join(origins) => {
             for origin in origins {
                 if !append_origin_children(world, executable, symbol, facts, origin, children) {
