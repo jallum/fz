@@ -2,6 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-21T22:54:00Z",
+  "close_reason": "Same root cause as fz-66j (interpreter materialized every tuple step regardless of carrier); tree::{run,interp,build} green with that fix.",
   "created": "2026-08-21T22:38:40Z",
   "description": "fixtures2/behavior/tree.fz via interp fails the full single-threaded matrix at HEAD 89db749f6 (2026-08-21). Stdout tree value and diagnostics both match exactly; ONLY the heap-stats line and the trailing byte total diverge.\n\n  expected (tree.expected.interp.txt):  allocs 6,  bytes 288,  struct_allocs 6,  struct_bytes 288  -\u003e 288\n  actual:                               allocs 11, bytes 528,  struct_allocs 11, struct_bytes 528  -\u003e 528\n\nThis is an UPWARD drift (+5 structs, +240 bytes) on a fixture whose output is correct, so per CLAUDE.md convention it needs masked-regression scrutiny and must NOT be reblessed. Every allocation is a struct -- no cons, closure, map, scalar-box or frame movement -- so the extra work is tuple materialization in the inc_tree recursion.\n\nfz-d1g ('tree::{run,interp,build} newly red vs the 74-name baseline') was CLOSED, and run/build are green today; only interp is red. So either the fz-d1g fix regressed on the interp path, or it was closed on a narrower verification than all three lanes.\n\nSUSPECTED FAMILY: the same interp-side envelope materialization isolated in fz-66j -- interp is +9 structs there where native decomposes into lanes, and this is +5 structs on a recursive tuple-returning function. Check for a shared cause before treating as independent; if it IS shared, this becomes acceptance evidence for fz-66j rather than its own fix.\n\nREPRO: cargo test --test fixture_matrix -- --test-threads=1 tree",
   "id": "fz-bt1",
@@ -13,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "tree::interp allocation regression: struct_allocs 11 vs golden 6 (528 vs 288 bytes), output correct",
   "type": "bug",
-  "updated_at": "2026-08-21T22:53:59Z"
+  "updated_at": "2026-08-21T22:54:00Z"
 }
