@@ -2399,31 +2399,44 @@ fn propagate_lambda_capture_demands(
         if callee.activation.root != executable.activation.root || callee.activation.function != function {
             continue;
         }
-        let callee_inputs = world
-            .activation_inputs(&callee.activation)
-            .unwrap_or_else(|| callee.activation.inputs(world.types()));
-        let Some(own_params) = world
-            .types_mut()
-            .own_surface_past_captures(&callee_inputs, &addressed_captures)
-        else {
-            continue;
+        // A capture prefix and its own-surface suffix are one correlated row
+        // (fz-9i4.7.10.2): match each published row whole rather than a
+        // column-wise blend that could pair one row's captures with another
+        // row's surface.
+        let callee_input_rows = match world.activation_input_alternatives(&callee.activation) {
+            Some(alternatives) => alternatives
+                .rows()
+                .iter()
+                .map(|row| row.columns().to_vec())
+                .collect::<Vec<_>>(),
+            None => vec![callee.activation.inputs(world.types())],
         };
-        if !callable.resolved.is_empty() && !callable.resolved.iter().any(|surface| surface.inputs == own_params) {
-            continue;
-        }
-        matched = true;
-        for (capture_index, (capture, demand)) in captures.iter().zip(callee_demand.input_demands.iter()).enumerate() {
-            let mut capture_surfaces = demand.callable.resolved.clone();
-            if captured_input_is_called_with_own_surface(world, function, captures.len(), capture_index) {
-                capture_surfaces.insert(CallableSurface {
-                    inputs: own_params.clone(),
-                });
+        for callee_inputs in callee_input_rows {
+            let Some(own_params) = world
+                .types_mut()
+                .own_surface_past_captures(&callee_inputs, &addressed_captures)
+            else {
+                continue;
+            };
+            if !callable.resolved.is_empty() && !callable.resolved.iter().any(|surface| surface.inputs == own_params) {
+                continue;
             }
-            callable_flows.record_direct_surfaces(facts, *capture, &capture_surfaces);
-            let mut demand = demand.clone();
-            demand.callable.resolved.extend(capture_surfaces);
-            let demand = closure_capture_boundary_demand(world, facts, callable_flows, *capture, demand, &callable);
-            note_live_demand(world, out, live, *capture, demand);
+            matched = true;
+            for (capture_index, (capture, demand)) in
+                captures.iter().zip(callee_demand.input_demands.iter()).enumerate()
+            {
+                let mut capture_surfaces = demand.callable.resolved.clone();
+                if captured_input_is_called_with_own_surface(world, function, captures.len(), capture_index) {
+                    capture_surfaces.insert(CallableSurface {
+                        inputs: own_params.clone(),
+                    });
+                }
+                callable_flows.record_direct_surfaces(facts, *capture, &capture_surfaces);
+                let mut demand = demand.clone();
+                demand.callable.resolved.extend(capture_surfaces);
+                let demand = closure_capture_boundary_demand(world, facts, callable_flows, *capture, demand, &callable);
+                note_live_demand(world, out, live, *capture, demand);
+            }
         }
     }
     if !matched {

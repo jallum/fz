@@ -74,12 +74,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Term::TailCallClosure {
-            closure,
-            args,
-            ident: _,
-            ..
-        } => {
+        Term::TailCallClosure { closure, args, .. } => {
             used.insert(*closure);
             for v in args {
                 used.insert(*v);

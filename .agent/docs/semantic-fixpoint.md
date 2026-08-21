@@ -26,17 +26,32 @@ evidence are separate facts:
 
 ```text
 Activation(key)       # demand / existence (multi-publisher; callers claim it)
-ActivationInputs(key) # joined caller evidence (cumulative; per-publisher
-                      # entries join by union; AnalyzeActivation publishers
-                      # preserve their prior frontier within an epoch)
+ActivationInputs(key) # correlated caller evidence (cumulative; per-publisher
+                      # entries join as a canonical set of whole rows —
+                      # ActivationInputAlternatives; AnalyzeActivation
+                      # publishers preserve their prior frontier within an
+                      # epoch)
 ```
 
-`world.activation_inputs(key)` reads the joined evidence once its fact is
-live. A clause whose params outnumber the joined evidence yields no evidence
+Each publication is one `ActivationInputRow`: columns that arrived together
+from one call analysis and may only be read together. Rows join by set
+insertion with whole-row equivalence dedup — never by column-wise union, which
+would invent Cartesian input combinations (fz-9i4.7.10.2). Past
+`ACTIVATION_INPUT_ROW_BUDGET` rows the set widens to its single column-wise
+joined row, so termination stays a theorem.
+
+`world.activation_input_alternatives(key)` reads the rows once the fact is
+live; `world.activation_inputs_joined(key)` reads the column-wise joined
+projection, which is correlation-blind by construction and only for consumers
+whose question is genuinely per-column (transport lane typing) after semantic
+decisions. A clause whose params outnumber a row's evidence yields no evidence
 that round — incomplete inputs never default to a type.
 
 Clause reachability is a pure compiler2 calculation over the entry
-`PatternDispatchPlan`, the shared `Types`, and that joined input row. Branch
+`PatternDispatchPlan`, the shared `Types`, and one input row at a time —
+`AnalyzeActivation` dispatches and analyzes each row independently and merges
+only post-analysis results (reachable clauses by set union, failure by OR,
+return evidence by join, call emissions by coalescing). Branch
 states retain only root input `Ty` values and are memoized by graph node plus
 root row. Edge proofs refine those roots; projected subjects are always derived
 again through `PatternSubjectRef`, so no independently cached field/head type
@@ -95,7 +110,7 @@ the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
 changes can withdraw stale contributions. This keeps fixpoint evidence from
 descending just because an intermediate clause-reachability approximation
-changed. The joined aggregate is compared by type equivalence, not raw `Ty`
+changed. The row set is compared by per-column type equivalence, not raw `Ty`
 handle equality, so representative-only changes do not dirty the scheduler.
 `ReturnType(a)` is a CUMULATIVE claim: the store
 (`ActivationMap::define_return`) joins each round's evidence by union (which

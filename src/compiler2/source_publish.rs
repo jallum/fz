@@ -671,7 +671,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     }
 
     fn note_pending_types(&mut self) -> Result<(), FatalError> {
-        let pending: Vec<_> = self.pending_types.drain(..).collect();
+        let pending = std::mem::take(&mut self.pending_types);
         for PendingType {
             name,
             params,

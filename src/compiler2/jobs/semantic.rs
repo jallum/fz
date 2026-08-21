@@ -78,9 +78,10 @@ pub(super) fn analyze_activation(
         return Ok(JobEffects::wait_on_current(activation_fact));
     }
     let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
-    let Some(inputs) = world.activation_inputs(activation) else {
+    let Some(alternatives) = world.activation_input_alternatives(activation) else {
         return Ok(JobEffects::wait_on_current(activation_inputs_fact));
     };
+    let alternatives = alternatives.clone();
 
     let function = activation.function;
     let function_fact = FactKey::FunctionDefined(function);
@@ -115,16 +116,31 @@ pub(super) fn analyze_activation(
 
     let entry_dispatch = world.entry_dispatch(function);
     let lowered_body = world.lowered_body(function);
-    let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, &inputs);
-    let clause_inputs = dispatch_reachability
-        .outcome_inputs
-        .iter()
-        .cloned()
-        .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
-        .collect::<Vec<_>>();
-    let reachable_clauses = clause_inputs.iter().map(|(clause, _)| *clause).collect::<Vec<_>>();
-    let entry_reachability =
-        super::super::semantic::EntryReachability::new(reachable_clauses, dispatch_reachability.fail_reachable);
+    // Each correlated row is dispatched and analyzed on its own
+    // (fz-9i4.7.10.2): a row's columns arrived together and only ever bind a
+    // clause together. Only post-analysis results merge — reachable clauses
+    // by set union, failure by OR, return evidence by join, call emissions by
+    // coalescing. No column of one row ever meets a column of another.
+    let mut reachable_clauses = Vec::new();
+    let mut fail_reachable = false;
+    let mut row_clause_inputs = Vec::new();
+    for row in alternatives.rows() {
+        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, row.columns());
+        fail_reachable |= dispatch_reachability.fail_reachable;
+        let clause_inputs = dispatch_reachability
+            .outcome_inputs
+            .iter()
+            .cloned()
+            .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
+            .collect::<Vec<_>>();
+        for (clause, _) in &clause_inputs {
+            if !reachable_clauses.contains(clause) {
+                reachable_clauses.push(*clause);
+            }
+        }
+        row_clause_inputs.push(clause_inputs);
+    }
+    let entry_reachability = super::super::semantic::EntryReachability::new(reachable_clauses, fail_reachable);
 
     let mut analysis_calls = Vec::new();
     let mut reachable_entries = HashSet::new();
@@ -144,7 +160,7 @@ pub(super) fn analyze_activation(
             ref entries,
             ..
         } => {
-            for (clause_id, clause_inputs) in &clause_inputs {
+            for (clause_id, clause_inputs) in row_clause_inputs.iter().flatten() {
                 let clause = &clauses[*clause_id as usize];
                 // Input evidence that has not caught up to the clause's
                 // arity cannot bind its params. Like an absent capture,
@@ -185,9 +201,12 @@ pub(super) fn analyze_activation(
         }
     }
 
-    if let Some(contract_return_ty) = activation_contract_return(world, tel, function, &inputs, &mut reads, &mut waits)?
-    {
-        return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
+    for row in alternatives.rows() {
+        if let Some(contract_return_ty) =
+            activation_contract_return(world, tel, function, row.columns(), &mut reads, &mut waits)?
+        {
+            return_evidence = refine_call_return(world, return_evidence, Some(contract_return_ty));
+        }
     }
 
     // Waits no longer bail: a waiting completion extends the job's standing

@@ -146,7 +146,7 @@ fn compiler2_execution_context_emits_after_mutation_with_an_immutable_world_borr
                     let fact = FactKey::ActivationInputs(activation.clone());
                     assert!(world.has_fact(&fact));
                     assert!(world.fact_revision(&fact).is_some());
-                    assert!(world.activation_inputs_ref(activation).is_some());
+                    assert!(world.activation_input_alternatives(activation).is_some());
                 }
                 activation_sink.set(true);
             } else if name == ["fz", "compiler2", "work_graph", "applied"] {
@@ -453,7 +453,7 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     );
 
     let observed_inputs = world
-        .activation_inputs(&key)
+        .activation_inputs_joined(&key)
         .expect("publishing activation inputs should materialize a separate body-evidence fact");
     assert_eq!(
         observed_inputs,
@@ -578,7 +578,7 @@ fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
     );
 
     assert_eq!(
-        world.activation_inputs(&key),
+        world.activation_inputs_joined(&key),
         Some(vec![list_int]),
         "one publisher should keep the first representative instead of manufacturing list | list evidence",
     );
@@ -642,7 +642,7 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
     );
 
     assert_eq!(
-        world.activation_inputs(&callee_key),
+        world.activation_inputs_joined(&callee_key),
         Some(vec![int]),
         "semantic analysis should not retract prior activation-input evidence when a callsite temporarily disappears",
     );
@@ -726,9 +726,170 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
         "retracting one publisher should republish the still-present activation-input fact when the joined body evidence changes",
     );
     assert_eq!(
-        world.activation_inputs(&key),
+        world.activation_inputs_joined(&key),
         Some(vec![input_b]),
         "the surviving publisher's input should remain as the body evidence after the stale contribution retracts",
+    );
+}
+
+/// fz-9i4.7.10.2: two correlated publications stay two whole rows. No row is
+/// ever synthesized by pairing one publication's column with another's — the
+/// Cartesian combination the pointwise join used to invent.
+#[test]
+fn compiler2_correlated_activation_input_rows_stay_alternatives() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 2);
+    assert!(world.define_recursive(function, false));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole, DispatchDemand::Whole]));
+
+    let int = world.types_mut().int();
+    let atom = world.types_mut().atom();
+    let int_list = world.types_mut().list(int);
+    let atom_list = world.types_mut().list(atom);
+    let key = world.activation_key(root, function, &[int_list, int]);
+
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: vec![
+                (key.clone(), vec![int_list, int]),
+                (key.clone(), vec![atom_list, atom]),
+            ],
+            ..JobEffects::default()
+        },
+    );
+
+    let alternatives = world
+        .activation_input_alternatives(&key)
+        .expect("correlated contributions should publish alternatives")
+        .clone();
+    let rows = alternatives
+        .rows()
+        .iter()
+        .map(|row| row.columns().to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        2,
+        "each correlated publication should survive as its own row"
+    );
+    assert!(rows.contains(&vec![int_list, int]), "the int row should survive whole");
+    assert!(
+        rows.contains(&vec![atom_list, atom]),
+        "the atom row should survive whole"
+    );
+    assert!(
+        !rows.contains(&vec![int_list, atom]) && !rows.contains(&vec![atom_list, int]),
+        "no cross-product row may be synthesized from mixed columns",
+    );
+
+    let joined = world
+        .activation_inputs_joined(&key)
+        .expect("the joined projection should exist alongside the rows");
+    let expected_joined = vec![
+        world.types_mut().union(atom_list, int_list),
+        world.types_mut().union(atom, int),
+    ];
+    let equivalent = joined
+        .iter()
+        .zip(&expected_joined)
+        .all(|(left, right)| world.types().is_equivalent(left, right));
+    assert!(
+        equivalent,
+        "the joined projection should be the column-wise union across rows",
+    );
+}
+
+/// fz-9i4.7.10.2: dropping one publisher's contribution retracts its rows and
+/// only its rows; the surviving publisher's correlation stands untouched.
+#[test]
+fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
+    assert!(world.define_recursive(function, false));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+
+    let input_a = world.types_mut().atom_lit("a");
+    let input_b = world.types_mut().atom_lit("b");
+    let key = world.activation_key(root, function, &[input_a]);
+
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![input_a])],
+            ..JobEffects::default()
+        },
+    );
+    world.complete_job(
+        Job::AnalyzeActivation(key.clone()),
+        JobEffects {
+            activation_input_contributions: vec![(key.clone(), vec![input_b])],
+            ..JobEffects::default()
+        },
+    );
+    assert_eq!(
+        world.activation_input_alternatives(&key).map(|alts| alts.rows().len()),
+        Some(2),
+        "distinct publisher rows should coexist as alternatives",
+    );
+
+    world.complete_job(Job::SeedRoot(root), JobEffects::default());
+    let rows = world
+        .activation_input_alternatives(&key)
+        .expect("the surviving publisher's fact should remain")
+        .rows()
+        .iter()
+        .map(|row| row.columns().to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        vec![vec![input_b]],
+        "withdrawing one publisher should retract exactly its row",
+    );
+}
+
+/// fz-9i4.7.10.2: the alternatives antichain is finite by construction — past
+/// `ACTIVATION_INPUT_ROW_BUDGET` rows it widens to its single column-wise
+/// joined row, mirroring `RETURN_WIDENING_BUDGET`.
+#[test]
+fn compiler2_activation_input_rows_widen_past_the_budget() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
+    assert!(world.define_recursive(function, false));
+    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+
+    let inputs = (0..=super::semantic::ACTIVATION_INPUT_ROW_BUDGET)
+        .map(|index| world.types_mut().atom_lit(&format!("row_{index}")))
+        .collect::<Vec<_>>();
+    let key = world.activation_key(root, function, &[inputs[0]]);
+
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            activation_input_contributions: inputs.iter().map(|input| (key.clone(), vec![*input])).collect(),
+            ..JobEffects::default()
+        },
+    );
+
+    let alternatives = world
+        .activation_input_alternatives(&key)
+        .expect("budget-overflowing contributions should still publish")
+        .clone();
+    assert_eq!(
+        alternatives.rows().len(),
+        1,
+        "past the row budget the antichain should widen to one joined row",
+    );
+    assert_eq!(
+        alternatives.rows()[0].columns(),
+        alternatives.joined(),
+        "the widened row should be the joined projection itself",
     );
 }
 
@@ -751,7 +912,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
             ..JobEffects::default()
         },
     );
-    assert!(world.activation_inputs(&key).is_some());
+    assert!(world.activation_inputs_joined(&key).is_some());
 
     // A blocked re-run of the same publisher lists no contributions. Pausing
     // must not withdraw the standing body evidence.
@@ -763,7 +924,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
         },
     );
     assert_eq!(
-        world.activation_inputs(&key),
+        world.activation_inputs_joined(&key),
         Some(vec![input]),
         "a waiting completion must not withdraw the publisher's standing contributions",
     );

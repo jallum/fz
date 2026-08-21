@@ -6885,6 +6885,51 @@ end
     );
 }
 
+// fz-9i4.7.10.2: three `with_index` mappers coexist over one shared recursive
+// reduce activation. Each callsite publishes one CORRELATED input row — its
+// list, continuation, and reducer arrived together and may only be read
+// together. Pointwise (column-by-column) joining of those rows invents
+// Cartesian input combinations, and normalizing the unioned reducer column
+// collapses same-function closure literals to one surviving target, routing
+// every element family through that one mapper. This test is the coexistence
+// pin: each `#[test]` sibling above proves one mapper in isolation (one row —
+// a pointwise join of one row is the identity), so only this combination
+// exposes the correlation loss.
+#[test]
+fn compiler2_jit_preserves_correlated_with_index_mapper_rows() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/enum_with_index_mapper_correlated_rows.fz".to_string()),
+        text: r#"
+fn main() do
+  dbg(Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end))
+  dbg(Enum.with_index([10, 20], fn (x, index) -> x + index end))
+  dbg(Enum.with_index([:a, :b], fn (x, index) -> {index, x} end))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_jit(root_id).unwrap_or_else(|error| {
+        panic!("Compiler2 JIT should run coexisting Enum.with_index/2 mappers: {error}");
+    });
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["[\"a!\", \"b!\"]", "[10, 21]", "[{0, :a}, {1, :b}]"],
+        "coexisting with_index mappers must each route their own element family through their own reducer",
+    );
+}
+
 // fz-hwn.23 LANDED: the value-template phantom tombstone is retired. It used to pin
 // that `Enum.with_index(…, mapper)` drove a value-template mapper activation into native
 // lowering and panicked on `is_value_template`. Cross-activation surface grounding
@@ -12019,12 +12064,12 @@ impl ActivationInputCapture {
             &["fz", "compiler2", "activation_inputs", "defined"],
             move |_, _, _, world, completion| {
                 for activation in &completion.activation_input_changed {
-                    let Some(inputs) = world.activation_inputs_ref(activation) else {
+                    let Some(inputs) = world.activation_inputs_joined(activation) else {
                         continue;
                     };
                     defs.borrow_mut().push(ActivationInputRecord {
                         activation: activation.clone(),
-                        inputs: inputs.clone(),
+                        inputs,
                     });
                 }
             },

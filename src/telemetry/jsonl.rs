@@ -882,9 +882,15 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
             }
             out.push_str("{\"activation\":");
             write_activation_key(out, activation);
-            if let Some(inputs) = world.activation_inputs_ref(activation) {
-                out.push_str(",\"inputs\":");
-                write_types(out, world, inputs);
+            if let Some(alternatives) = world.activation_input_alternatives(activation) {
+                out.push_str(",\"rows\":[");
+                for (row_index, row) in alternatives.rows().iter().enumerate() {
+                    if row_index > 0 {
+                        out.push(',');
+                    }
+                    write_types(out, world, row.columns());
+                }
+                out.push(']');
             }
             out.push('}');
         }
