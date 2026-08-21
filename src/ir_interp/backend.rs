@@ -768,7 +768,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 Ok(other) => {
                     let materialized = materialize_backend_value(transport, runtime.cur_proc(), &other)?;
                     let (fn_id, captures) = match materialized {
-                        AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
+                        AnyValue::FnRef(fn_id, _) => (fn_id, Vec::new()),
                         other => unpack_closure(other.value(runtime.cur_proc())?).map_err(|error| {
                             format!(
                                 "closure call executable={} function={} callsite={} callee_value={}: {error}",
@@ -1197,7 +1197,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     let proc = runtime.cur_proc();
                     direct_callable_value(transport, executable, proc, env, *value, *function, &[])?
                 } else {
-                    BackendBoundValue::Runtime(AnyValue::FnRef(FnId(function.as_u32())))
+                    BackendBoundValue::Runtime(AnyValue::FnRef(
+                        FnId(function.as_u32()),
+                        callable_value_arity(program, *function, 0),
+                    ))
                 };
                 env.insert(*value, bound);
             }
@@ -1238,6 +1241,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     BackendBoundValue::Runtime(make_closure(
                         runtime,
                         function.as_u32(),
+                        callable_value_arity(program, *function, captures.len()),
                         env_values(transport, runtime.cur_proc(), env, captures)?,
                     )?)
                 };
@@ -1876,6 +1880,25 @@ fn construction_wrapper_identity_fn(identity: u32) -> FnId {
     FnId(CONSTRUCTION_WRAPPER_IDENTITY_BASE | identity)
 }
 
+/// The user-visible parameter count of the callable value `function` produces:
+/// the function's own inputs less the ones its environment supplies. This is
+/// what a rendered fun reports (Elixir's `#Function<.../arity>`), and it is
+/// fixed by the source regardless of how many captures survive demand.
+///
+/// A callable described exactly by transport carries its own `CallableDescr::
+/// arity` and is read there instead. This answers for the remaining case: a
+/// callable value whose flow is neither a construction nor a direct surface,
+/// where the transported description may be the generic callable and so has no
+/// arity of its own. The program always does.
+fn callable_value_arity(program: &BackendProgram, function: FunctionId, capture_count: usize) -> u16 {
+    program
+        .executables
+        .iter()
+        .find(|executable| executable.key.activation.function == function)
+        .map(|executable| executable.semantic_inputs.len().saturating_sub(capture_count) as u16)
+        .unwrap_or(0)
+}
+
 fn construction_wrapper_for_fn(program: &BackendProgram, fn_id: FnId) -> Option<&BackendConstructionWrapper> {
     (fn_id.0 & CONSTRUCTION_WRAPPER_IDENTITY_BASE != 0)
         .then_some(fn_id.0 & !CONSTRUCTION_WRAPPER_IDENTITY_BASE)
@@ -1910,10 +1933,11 @@ fn construction_callable_value(
         ));
     }
     let fn_id = construction_wrapper_identity_fn(identity);
+    let arity = wrapper.call_arity as u16;
     let value = if captures.is_empty() {
-        AnyValue::FnRef(fn_id)
+        AnyValue::FnRef(fn_id, arity)
     } else {
-        make_closure_on_proc(proc, fn_id.0, captures.to_vec())?
+        make_closure_on_proc(proc, fn_id.0, arity, captures.to_vec())?
     };
     Ok(BackendBoundValue::Runtime(value))
 }
@@ -2166,10 +2190,11 @@ fn materialize_transport_value(
                     lanes.len()
                 ));
             }
+            let arity = callable.arity;
             if lanes.is_empty() {
-                Ok(AnyValue::FnRef(FnId(function.as_u32())))
+                Ok(AnyValue::FnRef(FnId(function.as_u32()), arity))
             } else {
-                make_closure_on_proc(proc, function.as_u32(), lanes.to_vec())
+                make_closure_on_proc(proc, function.as_u32(), arity, lanes.to_vec())
             }
         }
     }
@@ -2619,7 +2644,7 @@ fn direct_callable_capture_lanes(
         other => {
             let materialized = materialize_backend_value(transport, proc, other)?;
             let (fn_id, words) = match materialized {
-                AnyValue::FnRef(fn_id) => (fn_id, Vec::new()),
+                AnyValue::FnRef(fn_id, _) => (fn_id, Vec::new()),
                 other => unpack_closure(other.value(proc)?)?,
             };
             if fn_id.0 & CONSTRUCTION_WRAPPER_IDENTITY_BASE == 0 && FunctionId::from_fn_id(fn_id) != function {
@@ -2697,9 +2722,14 @@ fn make_tuple_on_proc(proc: *mut Process, items: Vec<AnyValue>) -> Result<AnyVal
     ))
 }
 
-fn make_closure_on_proc(proc: *mut Process, code: u32, captures: Vec<AnyValue>) -> Result<AnyValue, String> {
+fn make_closure_on_proc(
+    proc: *mut Process,
+    code: u32,
+    arity: u16,
+    captures: Vec<AnyValue>,
+) -> Result<AnyValue, String> {
     let heap = &mut unsafe { &mut *proc }.heap;
-    let bits = heap.alloc_closure_slots(code, captures.len(), 0);
+    let bits = heap.alloc_closure_slots(arity, captures.len(), 0);
     let p = closure_addr_from_tagged(bits).expect("new backend closure ptr");
     unsafe { std::ptr::write(p.add(8) as *mut u64, code as u64) };
     for (index, value) in captures.iter().enumerate() {
@@ -2711,8 +2741,13 @@ fn make_closure_on_proc(proc: *mut Process, code: u32, captures: Vec<AnyValue>) 
     ))
 }
 
-fn make_closure(runtime: &mut IrInterpRuntime, code: u32, captures: Vec<AnyValue>) -> Result<AnyValue, String> {
-    make_closure_on_proc(runtime.cur_proc(), code, captures)
+fn make_closure(
+    runtime: &mut IrInterpRuntime,
+    code: u32,
+    arity: u16,
+    captures: Vec<AnyValue>,
+) -> Result<AnyValue, String> {
+    make_closure_on_proc(runtime.cur_proc(), code, arity, captures)
 }
 
 fn drain_pending_dtors_backend<T: Telemetry + ?Sized>(

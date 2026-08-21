@@ -188,12 +188,11 @@ fn any_value_ref_struct_reads_scalar_and_heap_fields() {
 #[test]
 fn any_value_ref_closure_capture_reads_are_ported() {
     let reg = empty_registry();
-    let schema_id = reg.borrow_mut().register(Schema::tuple_of_arity(0));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let child_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let child_addr = map_addr_from_tagged(child_bits).expect("child addr");
     let closure_bits = h.alloc_closure(
-        schema_id,
+        0,
         2,
         0,
         0xfeed,
@@ -330,7 +329,6 @@ fn map_put_ref_rejects_scalar_value() {
 fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
     let reg = empty_registry();
     let struct_schema = reg.borrow_mut().register(Schema::tuple_of_arity(2));
-    let closure_schema = reg.borrow_mut().register(Schema::tuple_of_arity(0));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let child_bits = h.alloc_map_slots(&[(AnyValue::atom(1), AnyValue::int(2))]);
     let child_addr = map_addr_from_tagged(child_bits).expect("child addr");
@@ -350,7 +348,7 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
         Ok(child_addr)
     );
 
-    let closure_bits = h.alloc_closure_slots(closure_schema, 2, 0);
+    let closure_bits = h.alloc_closure_slots(0, 2, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
     h.write_closure_capture_ref(closure_ref, 0, scalar_ref)
@@ -368,7 +366,6 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
 fn any_value_ref_heap_writes_are_traced_by_gc() {
     let reg = empty_registry();
     let struct_schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
-    let closure_schema = reg.borrow_mut().register(Schema::tuple_of_arity(0));
     let mut h = Heap::new(SIZE_TABLE[0], reg);
     let key_slot = 1u64;
     let key_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &key_slot).expect("key ref");
@@ -390,7 +387,7 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
     h.write_struct_field_ref(struct_ref, 0, child_list_ref)
         .expect("write struct field");
 
-    let closure_bits = h.alloc_closure_slots(closure_schema, 1, 0);
+    let closure_bits = h.alloc_closure_slots(0, 1, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
     h.write_closure_capture_ref(closure_ref, 0, child_map_ref)
@@ -1011,7 +1008,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
     src.write_field_slot(struct_p, 0, heap_root(list_bits));
     src.write_field_slot(struct_p, 8, AnyValue::int(11));
 
-    let closure_bits = src.alloc_closure(pair_id, 1, 0, 0x1234, &[heap_root(list_bits)]);
+    let closure_bits = src.alloc_closure(0, 1, 0, 0x1234, &[heap_root(list_bits)]);
 
     let bitstring_p = src.alloc_bitstring(b"abc", 24);
 

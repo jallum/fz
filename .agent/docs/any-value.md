@@ -208,9 +208,19 @@ List cons (16 bytes): head payload word
                       link word = tail address + head-kind nibble + alias bit
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
-Closure:              schema id + flags (captured count + halt kind),
-                      code pointer, capture payload words, capture kind bytes
+Closure:              schema id + header word, code pointer,
+                      capture payload words, capture kind bytes
 ```
+
+The closure header word's low half is `flags` — captured count plus halt kind,
+the environment facts the collector sizes and traces by. Its high half is
+`arity`: the closure's user-visible parameter count, supplied by the callable
+boundary that decides the call surface. The two halves answer different
+questions and must not be confused. Arity is fixed by the source, so it is what
+a rendered fun reports (`#fn<env_schema/arity>`, matching Elixir's
+`#Function<index.uniq/arity>`); the environment half moves whenever demand
+elides a capture or inlining folds one away, which is why rendering it produced
+goldens that changed without the program changing.
 
 The list link's **alias bit** is a conservative cell-local reuse guard. A cons
 is the single owner of its tail link until it is *published*; publication turns

@@ -1190,12 +1190,12 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         .declare_func_in_func(runtime.yield_slow_path_begin_id, body.b.func);
     let process = body.process_arg();
     body.b.ins().call(slow_path_begin_fref, &[process]);
-    let fid_v = body.b.ins().iconst(types::I32, callee_sid as i64);
+    let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
     let n_caps_v = body.b.ins().iconst(types::I32, native_root_values.len() as i64);
     let stub_fref = body.jmod.declare_func_in_func(cont_id, body.b.func);
     let stub_addr = body.b.ins().func_addr(types::I64, stub_fref);
     let zero_hk = body.b.ins().iconst(types::I32, 0);
-    let cont_closure = body.alloc_closure(fid_v, n_caps_v, zero_hk, stub_addr);
+    let cont_closure = body.alloc_closure(cont_arity, n_caps_v, zero_hk, stub_addr);
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
         let mut root_ref = body.value_as_any_ref(root);

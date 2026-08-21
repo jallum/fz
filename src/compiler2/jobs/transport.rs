@@ -912,6 +912,9 @@ fn exact_direct_callable_layout(
         .collect::<Vec<_>>();
     let callable = world.intern_callable(CallableDescr {
         function: Some(target.activation.function),
+        // The activation's inputs are the environment followed by the call
+        // arguments, so what the environment does not supply is the arity.
+        arity: (target.activation_inputs.len() - capture_count) as u16,
         capture_tys: capture_tys.to_vec().into_boxed_slice(),
         capture_shapes: capture_shapes.into_boxed_slice(),
         capture_lanes: capture_lanes.into_boxed_slice(),
@@ -1044,6 +1047,17 @@ fn origin_transport_recipe(
     }
 }
 
+/// A callable value's arity, read off its own type. Every clause of one
+/// callable value takes the same argument count, so the first clause answers
+/// for all of them; a type too broad to carry clauses (`any`) reports 0.
+fn callable_ty_arity(world: &mut World, ty: Ty) -> u16 {
+    world
+        .types_mut()
+        .callable_clauses(&ty)
+        .and_then(|clauses| clauses.first().map(|clause| clause.args.len() as u16))
+        .unwrap_or(0)
+}
+
 fn produce_local_callable_construction(
     world: &mut World,
     context: &mut ProductReadContext<'_>,
@@ -1122,8 +1136,10 @@ fn produce_local_callable_construction(
         .zip(capture_demands.iter())
         .flat_map(|((layout, ty), demand)| capture_lanes_for_callable_descriptor(world, *layout, ty, demand))
         .collect::<Vec<_>>();
+    let arity = callable_ty_arity(world, callable_ty);
     let callable = world.intern_callable(CallableDescr {
         function: Some(producer.function),
+        arity,
         capture_tys: capture_tys.into_boxed_slice(),
         capture_shapes: capture_shapes.into_boxed_slice(),
         capture_lanes: capture_lanes.clone().into_boxed_slice(),
@@ -1810,6 +1826,9 @@ fn generic_callable_shape_with_resolutions(
 ) -> ShapeId {
     let callable = world.intern_callable(CallableDescr {
         function: None,
+        // A generic callable names no function, so it has no arity of its own;
+        // it is never minted into a closure value.
+        arity: 0,
         capture_tys: Box::default(),
         capture_shapes: Box::default(),
         capture_lanes: Box::default(),

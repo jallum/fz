@@ -18,7 +18,7 @@ use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, TAG_BITSTRING, TAG_CLOSURE,
     TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind, bitstring_size_for_bit_len,
     closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
-    closure_capture_value, closure_flags_pack, closure_size_for_count, heap_kind_from_tagged, heap_object_word,
+    closure_capture_value, closure_header_word, closure_size_for_count, heap_kind_from_tagged, heap_object_word,
     list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_entry_raw_kinds, map_key_kind, map_keys_ptr,
     map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot,
     struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
@@ -603,11 +603,11 @@ impl Heap {
         p
     }
 
-    /// Closure layout: `schema_id`, `flags`, raw code pointer, then
+    /// Closure layout: `schema_id`, header word, raw code pointer, then
     /// schema-backed capture fields.
-    pub fn alloc_closure_slots(&mut self, _target_id: u32, captured_count: usize, halt_kind: u16) -> u64 {
+    pub fn alloc_closure_slots(&mut self, arity: u16, captured_count: usize, halt_kind: u16) -> u64 {
         let schema_id = self.closure_schema_id(captured_count);
-        self.alloc_closure_slots_with_schema(schema_id, captured_count, halt_kind)
+        self.alloc_closure_slots_with_schema(schema_id, arity, captured_count, halt_kind)
     }
 
     /// Allocate a closure's slots writing `schema_id` verbatim instead of
@@ -619,7 +619,13 @@ impl Heap {
     /// the schema-id space the AOT runtime must keep identical to compile time
     /// (and the schema ids interpreter and codegen render). Scaffolding mints
     /// pass a placeholder `schema_id`.
-    pub fn alloc_closure_slots_with_schema(&mut self, schema_id: u32, captured_count: usize, halt_kind: u16) -> u64 {
+    pub fn alloc_closure_slots_with_schema(
+        &mut self,
+        schema_id: u32,
+        arity: u16,
+        captured_count: usize,
+        halt_kind: u16,
+    ) -> u64 {
         assert!(
             captured_count <= CLOSURE_FLAGS_CAPTURED_MASK as usize,
             "closure captured count overflow"
@@ -630,7 +636,7 @@ impl Heap {
             write(p as *mut u32, schema_id);
             write(
                 p.add(4) as *mut u32,
-                closure_flags_pack(captured_count as u16, halt_kind) as u32,
+                closure_header_word(captured_count as u16, halt_kind, arity),
             );
             write(p.add(8) as *mut u64, 0);
             if total > 16 {
@@ -642,14 +648,14 @@ impl Heap {
 
     pub fn alloc_closure(
         &mut self,
-        schema_id: u32,
+        arity: u16,
         captured_count: usize,
         halt_kind: u16,
         fn_ptr: u64,
         captures: &[AnyValue],
     ) -> u64 {
         assert!(captures.len() <= captured_count, "too many closure captures");
-        let bits = self.alloc_closure_slots(schema_id, captured_count, halt_kind);
+        let bits = self.alloc_closure_slots(arity, captured_count, halt_kind);
         let p = closure_addr_from_tagged(bits).expect("new closure ptr");
         unsafe {
             write(p.add(8) as *mut u64, fn_ptr);

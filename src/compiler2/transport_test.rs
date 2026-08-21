@@ -70,12 +70,14 @@ fn transport_descriptors_share_across_root_positions() {
     };
     let callable = interners.intern_callable(CallableDescr {
         function: Some(add),
+        arity: 0,
         capture_tys: Box::default(),
         capture_shapes: vec![shape].into_boxed_slice(),
         capture_lanes: vec![lane].into_boxed_slice(),
     });
     let same_callable = interners.intern_callable(CallableDescr {
         function: Some(add),
+        arity: 0,
         capture_tys: Box::default(),
         capture_shapes: vec![shape].into_boxed_slice(),
         capture_lanes: vec![lane].into_boxed_slice(),
@@ -92,6 +94,7 @@ fn transport_descriptors_share_across_root_positions() {
         interners.callable(callable),
         &CallableDescr {
             function: Some(add),
+            arity: 0,
             capture_tys: Box::default(),
             capture_shapes: vec![shape].into_boxed_slice(),
             capture_lanes: vec![lane].into_boxed_slice(),
@@ -115,6 +118,7 @@ fn transport_boundary_descriptors_are_interned_contracts() {
     let shape = interners.intern_shape(ShapeDescr::Lane(lane));
     let callable = interners.intern_callable(CallableDescr {
         function: Some(add),
+        arity: 0,
         capture_tys: Box::default(),
         capture_shapes: vec![shape].into_boxed_slice(),
         capture_lanes: vec![lane].into_boxed_slice(),
@@ -154,6 +158,7 @@ fn transport_callable_descriptors_include_ordered_capture_lane_payload() {
     });
     let shared_callable = interners.intern_callable(CallableDescr {
         function: None,
+        arity: 0,
         capture_tys: Box::default(),
         capture_shapes: Box::default(),
         capture_lanes: Box::default(),
@@ -161,12 +166,14 @@ fn transport_callable_descriptors_include_ordered_capture_lane_payload() {
     let shared_shape = interners.intern_shape(ShapeDescr::Callable(shared_callable));
     let int_payload = interners.intern_callable(CallableDescr {
         function: Some(add),
+        arity: 0,
         capture_tys: Box::default(),
         capture_shapes: vec![shared_shape].into_boxed_slice(),
         capture_lanes: vec![int_lane].into_boxed_slice(),
     });
     let atom_payload = interners.intern_callable(CallableDescr {
         function: Some(add),
+        arity: 0,
         capture_tys: Box::default(),
         capture_shapes: vec![shared_shape].into_boxed_slice(),
         capture_lanes: vec![atom_lane].into_boxed_slice(),
@@ -189,12 +196,14 @@ fn transport_callable_descriptors_keep_elided_capture_groundings_distinct() {
 
     let int_capture = interners.intern_callable(CallableDescr {
         function: Some(apply),
+        arity: 0,
         capture_tys: vec![int].into_boxed_slice(),
         capture_shapes: Box::default(),
         capture_lanes: Box::default(),
     });
     let atom_capture = interners.intern_callable(CallableDescr {
         function: Some(apply),
+        arity: 0,
         capture_tys: vec![atom].into_boxed_slice(),
         capture_shapes: Box::default(),
         capture_lanes: Box::default(),

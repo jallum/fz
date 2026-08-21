@@ -143,11 +143,17 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
 /// docs/cps-in-clif.md §8.2.
 ///
 /// Pack halt_kind so fz_entry_thunk can pick the matching halt-cont
-/// singleton at task launch.
+/// singleton at task launch, and the boundary's `arity` so a rendered
+/// singleton reports its own parameter count (fz-gk4).
 fn collect_static_closure_targets(
     surface: &NativeCodegenSurface<'_>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
-) -> Vec<(u32, u32, FuncId, u32)> {
+) -> Vec<(
+    u32, /* cl_sid */
+    u32, /* arity */
+    FuncId,
+    u32, /* halt_kind */
+)> {
     let mut targets = BTreeMap::new();
     for (&boundary_id, boundary) in surface
         .callable_boundaries
@@ -161,12 +167,13 @@ fn collect_static_closure_targets(
             .get(&boundary_id)
             .expect("zero-cap closure boundary must have a callable-boundary FuncId");
         let halt_kind = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef).halt_kind();
-        targets.insert(boundary_id, (boundary.target_fn.0, body_fid, halt_kind));
+        let arity = boundary.arg_reprs.len() as u32;
+        targets.insert(boundary_id, (arity, body_fid, halt_kind));
     }
 
     targets
         .into_iter()
-        .map(|(sid, (fn_id, body_fid, halt_kind))| (sid, fn_id, body_fid, halt_kind))
+        .map(|(sid, (arity, body_fid, halt_kind))| (sid, arity, body_fid, halt_kind))
         .collect()
 }
 

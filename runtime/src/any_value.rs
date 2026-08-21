@@ -461,7 +461,7 @@ mod any_value_ref_tests {
         let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
         let struct_addr = heap.alloc_struct(schema_id);
         let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8);
-        let closure_bits = heap.alloc_closure(schema_id, 0, 0, 0xfeed, &[]);
+        let closure_bits = heap.alloc_closure(0, 0, 0, 0xfeed, &[]);
         let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
         let procbin_addr = heap.alloc_bitstring(&[0u8; 65], 65 * 8);
         let resource_addr = alloc_resource(
@@ -709,6 +709,17 @@ pub fn closure_flags_halt_kind(flags: u16) -> u16 {
     flags >> CLOSURE_FLAGS_HALT_KIND_SHIFT
 }
 
+/// fz-gk4 — the closure header's second word. Its low half is `flags`
+/// (captured_count + halt_kind: how the collector sizes and traces the
+/// environment); its high half is `arity`, the closure's user-visible
+/// parameter count. Arity is what `Inspect` reports for a fun and is fixed
+/// by the source, so it stays stable under every capture-elision and
+/// inlining decision the environment half records.
+#[inline]
+pub fn closure_header_word(captured_count: u16, halt_kind: u16, arity: u16) -> u32 {
+    closure_flags_pack(captured_count, halt_kind) as u32 | ((arity as u32) << 16)
+}
+
 #[inline]
 pub fn closure_size_for_count(captured_count: usize) -> usize {
     let raw_bytes = (captured_count + 1) * 8;
@@ -739,6 +750,16 @@ pub unsafe fn closure_schema_id(addr: *const u8) -> u32 {
 #[inline]
 pub unsafe fn closure_flags(addr: *const u8) -> u16 {
     unsafe { ptr::read(addr.add(4) as *const u32) as u16 }
+}
+
+/// The closure's user-visible parameter count. See `closure_header_word`.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object.
+#[inline]
+pub unsafe fn closure_arity(addr: *const u8) -> u16 {
+    (unsafe { ptr::read(addr.add(4) as *const u32) } >> 16) as u16
 }
 
 /// # Safety
@@ -1369,7 +1390,7 @@ mod any_value_test;
 pub mod debug {
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_flags, closure_schema_id, list_addr_from_tagged,
+        bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_schema_id, list_addr_from_tagged,
         map_addr_from_tagged, map_count, map_entry_raw_kinds, procbin_addr_from_tagged, struct_addr_from_tagged,
         struct_schema_id,
     };
@@ -1595,11 +1616,15 @@ pub mod debug {
         out
     }
 
+    /// Elixir renders a fun as `#Function<index.uniq/arity>`: an opaque
+    /// identity followed by the arity. `#fn<env_schema/arity>` is the same
+    /// shape — the env schema stands in for the opaque identity (fz-gk4
+    /// follow-up: source-derived), and the arity is the fun's own.
     fn render_closure(bits: u64) -> String {
         let p = closure_addr_from_tagged(bits).unwrap();
         let schema_id = unsafe { closure_schema_id(p) };
-        let flags = unsafe { closure_flags(p) };
-        format!("#fn<{}/{}>", schema_id, flags)
+        let arity = unsafe { closure_arity(p) };
+        format!("#fn<{}/{}>", schema_id, arity)
     }
 
     fn render_list(proc: *mut Process, bits: u64) -> String {

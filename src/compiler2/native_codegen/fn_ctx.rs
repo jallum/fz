@@ -213,13 +213,13 @@ impl<'a, 'env, 'fb, M: Module> CodegenFn<'a, 'env, 'fb, M> {
 
     pub(crate) fn alloc_closure(
         &mut self,
-        func_id: ir::Value,
+        arity: ir::Value,
         captured_count: ir::Value,
         halt_kind: ir::Value,
         code_addr: ir::Value,
     ) -> ir::Value {
         let id = self.runtime.alloc_closure_id;
-        self.call1_p(id, &[func_id, captured_count, halt_kind, code_addr])
+        self.call1_p(id, &[arity, captured_count, halt_kind, code_addr])
     }
 
     pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {

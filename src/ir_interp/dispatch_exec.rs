@@ -484,7 +484,7 @@ pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyVal
         DispatchShape::Bool(false) => val.is_false(),
         DispatchShape::Nil => val.is_nil(),
         DispatchShape::Utf8Binary(bytes) => match val {
-            AnyValue::FnRef(_) => false,
+            AnyValue::FnRef(..) => false,
             other => other.value(proc).ok().is_some_and(|val| {
                 val.heap_object_word().and_then(bitstring_like_ptr).is_some_and(|p| {
                     if !unsafe { is_bitstring_like(p) } {

@@ -19,25 +19,23 @@
 # - the three-element input list allocates three cons cells;
 # - the returned suspend function allocates one closure (`closure_allocs = 1`,
 #   `closure_bytes = 48`);
-# - the `{:cont, acc}`/`{:suspended, ...}` protocol-control tuples allocate two
-#   structs (`struct_allocs = 2`, `struct_bytes = 80`);
-# - the accumulator is boxed once, at the `dbg(out)` print of the returned
-#   `{:suspended, acc, ...}` tuple (`scalar_box_allocs = 1`,
-#   `scalar_box_bytes = 16`); the per-reduce-step clause-dispatch checks on
-#   the `{:cont, acc}`/`{:suspend, acc}` protocol tag no longer box the
-#   accumulator on every step;
-# - the rendered function identity is `#fn<4/2>`.
+# - one protocol-control struct is allocated (`struct_allocs = 1`,
+#   `struct_bytes = 48`);
+# - the accumulator is never boxed (`scalar_box_allocs = 0`);
+# - the rendered function identity is `#fn<4/0>`.
 #
 # Current contract, `interp`:
 #
-# - same list-cons and struct counts as native;
+# - same list-cons count as native;
 # - the suspended continuation is a real heap closure, same as native, but
-#   `interp` never boxes the accumulator into a scalar box
-#   (`scalar_box_allocs = 0`) — it allocates a second closure instead
-#   (`closure_allocs = 2`, `closure_bytes = 64`);
-# - the rendered function identity is `#fn<3/3>`, which differs from native's
-#   `#fn<4/2>` — this is allocation-order-dependent function numbering, not a
-#   semantic difference in the suspend boundary.
+#   `interp` allocates a second closure (`closure_allocs = 2`,
+#   `closure_bytes = 64`) and two protocol-control structs
+#   (`struct_allocs = 2`, `struct_bytes = 80`);
+# - the rendered function identity is `#fn<3/0>`. The arity matches native's
+#   because arity is a property of the source (`fn () -> ... end` takes no
+#   arguments); the leading env-schema id differs because schema ids are
+#   assigned in allocation order, which is not a semantic difference in the
+#   suspend boundary.
 fn main() do
   xs = [1, 2, 3]
   out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
