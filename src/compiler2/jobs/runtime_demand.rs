@@ -2230,7 +2230,8 @@ fn propagate_steps_reverse(
         }
     }
     // `jobs/backend.rs::lower_step` packages a `TupleField` step into a real
-    // `BackendStep::TupleField` unconditionally — unlike `Tuple`/`List`, it
+    // `BackendStep::TupleField` unconditionally — unlike the fresh-construction
+    // steps (`construction_step_or_omitted`), it
     // has no `Omitted` fallback for a provably-unread projection. Native
     // codegen therefore always reads `source` to extract the field, even
     // when every field ever projected from it goes unused downstream (e.g.

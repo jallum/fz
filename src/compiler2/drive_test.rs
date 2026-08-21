@@ -8001,6 +8001,43 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
     );
 }
 
+/// fz-9in: a binding can be dead while the call that produces it survives
+/// (the `1..5` Range construction allocates, so the call edge is kept even
+/// though nothing demands its result). The callee then runs with zero
+/// materialized inputs, so every step retained in its body must respect the
+/// absence proof: a construction step whose value is proven runtime-absent
+/// must lower as `Omitted`, not execute a read of never-bound params. Before
+/// the fix this failed on interp ("backend value 0 is unbound") and panicked
+/// native lowering's bound-before-use invariant.
+#[test]
+fn compiler2_unused_construction_call_binding_keeps_the_root_runnable() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/unused_range_binding.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/unused_range_binding.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root)
+        .expect("the unused range binding must not starve the Range construction body on interp");
+    compiler
+        .run_root_jit(root)
+        .expect("the unused range binding must not starve the Range construction body on JIT");
+    assert_eq!(
+        dbg.lines(),
+        vec!["[1, 2, 3]".to_string(), "[1, 2, 3]".to_string()],
+        "Enum.take must be unaffected by the dead sibling binding",
+    );
+}
+
 #[test]
 fn compiler2_native_program_keeps_published_closure_calls_indirect() {
     let tel = ConfiguredTelemetry::new();
