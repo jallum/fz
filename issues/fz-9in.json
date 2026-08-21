@@ -10,11 +10,15 @@
     {
       "text": "Fixed on branch fz-9in/omit-absent-construction-steps, draft PR #86. Root cause: demand walk correctly leaves an undemanded construction's operands unbound, but backend emission honored the absence proof only for Tuple/List; Struct/Map/MapUpdate/Bitstring emitted unconditionally, so a surviving allocating call (1..5 Range construction) entered a body with zero materialized inputs and read never-bound params. Fix: one construction_step_or_omitted helper gating all six fresh-construction steps. New pin (interp+JIT, red at HEAD) + matrix fixture unused_range_binding (red at HEAD all three lanes). lib 1437/0, matrix 400/7 zero new reds.",
       "timestamp": "2026-08-21T20:19:58Z"
+    },
+    {
+      "text": "Audit follow-up filed as fz-0fc: BinaryOp/UnaryOp are the remaining unconditionally-emitted steps whose operands are only demanded when the result is live -- same starvation shape as this bug, latent (no repro yet; deliberately NOT gated by construction_step_or_omitted because arithmetic can trap).",
+      "timestamp": "2026-08-21T20:37:03Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "interp: 'backend value 0 is unbound' on Enum.take(xs, 3) beside an unused range binding",
   "type": "bug",
-  "updated_at": "2026-08-21T20:19:58Z"
+  "updated_at": "2026-08-21T20:37:03Z"
 }
