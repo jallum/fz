@@ -20,11 +20,15 @@
     {
       "text": "SECOND REPRO CLASS for the runtime exit-boundary hole (from the fz-9gp audit, 2026-07-15): an UNMATCHED DISPATCH ARM at runtime (spec-carrying fn whose clauses don't cover the dynamic witness, no fnp catch-all) makes JIT/AOT print prior output then SILENTLY EXIT 0, while interp panics function_clause loudly. This is exactly the ExitKind design's territory (the kept trap fires -- or in this case dispatch falls through -- and the drivers report success). The p7 arithmetic case became compile-time under fz-9gp; THIS case is dynamically-arising and cannot be static. Repro: @spec f(:first | {:acc, a}) :: a with clauses for both members, call f(:third) behind an opaque value. Also note: whether native dispatch FALL-THROUGH (vs a materialized trap) is itself sound needs checking when this ticket is worked -- silent fall-through would be a codegen gap on top of the driver gap.",
       "timestamp": "2026-07-15T21:02:23Z"
+    },
+    {
+      "text": "Implemented on branch fz-bdk/exit-kind-at-the-boundary, draft PR #87. ExitKind design from the spike, collapsed further: Process.exit_fault Option\u003cu32\u003e + ONE extern fz_exit_fault (snapshots reason from halt_value; sole caller is compiler2 Term::Halt codegen, whose only producers are the fault traps) + two driver reads (run_root_jit -\u003e Err(reason), fz_aot_run_main -\u003e stderr + exit 1). Open sub-question ANSWERED: no silent dispatch fall-through -- the built-binary pin proves the trap materializes and fires (exit_fault set). Pins red at HEAD on JIT + run + built binary. lib 1438/0, fz2_cli 20/0, runtime 210/0, matrix 400/7 zero new reds (green corpus still exits 0).",
+      "timestamp": "2026-08-21T21:01:15Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "native run/build SILENTLY swallow ill-typed expression (exit 0, empty output) where interp aborts function_clause -- opaque_fn_all_divergent parity + silent-failure bug",
   "type": "bug",
-  "updated_at": "2026-08-21T20:50:35Z"
+  "updated_at": "2026-08-21T21:01:15Z"
 }
