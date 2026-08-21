@@ -29,11 +29,15 @@
     {
       "text": "PARALLEL-FLAKE DATA POINT (from fz-yj0 verification, 2026-07-06; fz-4zs closed as dup of this + fz-0lm): 'cargo test --test fixture_matrix' in DEFAULT parallel mode gave 27, then 21, then (single-threaded) 19 failures across consecutive no-change runs, with DIFFERENT names appearing/disappearing (curried_add, defstruct_runtime, destructure_*). Same 3s-build-timeout-under-contention family already noted here + the fz-0lm concurrent-AOT-output race. OPERATIONAL GATE that works today: 'cargo test --test fixture_matrix -- --test-threads=1' is deterministic and yields the stable 19-known-red baseline; any 'fixture stays exactly N' regression check MUST be single-threaded until the timeout/race fixes (this ticket + fz-0lm) land.",
       "timestamp": "2026-07-06T21:01:48Z"
+    },
+    {
+      "text": "CI-coverage data point (PR 83 run 32504237709): with enum_map_family newly undeferred (fz-9i4.7.10.2), its run lane joins the CI timeout family -- interp and build lanes pass in CI, run exceeds its 15s budget under cargo-llvm-cov instrumentation + parallel workspace contention (locally: 8.8s debug, all three lanes green). The other 15 CI matrix reds are byte-identical to the base branch's list (curried_add run/build, enum_list_allocations x3, enum_predicate_search x2, enum_reduce_suspend x2, enum_sort x2, enum_take_drop_split x2, map_enumerable interp, tree interp).",
+      "timestamp": "2026-08-21T17:02:38Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "fixture_matrix is red on the branch (pre-existing): stale append oracle, actor_ring interp, timeout family, f98.14 AOT grind",
   "type": "bug",
-  "updated_at": "2026-07-15T14:38:58Z"
+  "updated_at": "2026-08-21T17:02:38Z"
 }
