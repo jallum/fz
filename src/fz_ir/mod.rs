@@ -560,20 +560,19 @@ pub enum Term {
     /// by the callee's entry harness; captures are not prepended to the
     /// user-visible argument list.
     ///
-    /// `direct_target` carries the exact closure body when the caller has a
-    /// singleton closure-lit target. `None` means the call stays opaque and
-    /// dispatches through the closure's published callable boundary.
+    /// The call is opaque by construction: it dispatches through the
+    /// closure's published callable boundary. Calls whose callee grounds to
+    /// an exact target are lowered as `Call`/`TailCall` direct edges by the
+    /// producer that makes that decision -- they never reach this form.
     CallClosure {
         ident: CallsiteIdent,
         closure: Var,
-        direct_target: Option<FnId>,
         args: Vec<Var>,
         continuation: Cont,
     },
     TailCallClosure {
         ident: CallsiteIdent,
         closure: Var,
-        direct_target: Option<FnId>,
         args: Vec<Var>,
     },
     Return(Var),

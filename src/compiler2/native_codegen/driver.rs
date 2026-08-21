@@ -1,5 +1,4 @@
 use super::receive::{DispatchRuntimeHelpers, declare_receive_dispatch, emit_receive_dispatch_body};
-use super::surface::NativeClosureTargetSurface;
 use super::*;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{BlockId, FnId, Module, Prim, Stmt, Term};
@@ -110,10 +109,6 @@ fn build_per_spec_schemas(body_slots: &[Option<NativeCodegenBody<'_>>]) -> Vec<S
 /// Per-spec Cranelift Signature. Native fns get typed-arity i64s +
 /// host_ctx; uniform fns get (i64, i64) -> i64. Sentinel slots get the
 /// uniform sig — they're never declared.
-///
-/// Closure-target fn shape is gated on native; uniform closure targets stay on
-/// the runtime entry path.
-#[allow(clippy::too_many_arguments)]
 fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Signature> {
     surface
         .body_slots
@@ -126,11 +121,6 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
                     &surface.param_reprs[body_slot.codegen_id as usize],
                     is_native,
                     surface.cont_fns.contains(&f.id),
-                    if is_native {
-                        surface.closure_target(f.id).map(|target| target.arg_reprs.as_slice())
-                    } else {
-                        None
-                    },
                     Some(continuation_entry_extra_count(body_slot.native_body)),
                 )
             }
@@ -156,7 +146,6 @@ fn build_fn_sigs(module: &Module, surface: &NativeCodegenSurface<'_>) -> Vec<Sig
 /// singleton at task launch.
 fn collect_static_closure_targets(
     surface: &NativeCodegenSurface<'_>,
-    fn_ids: &HashMap<u32, FuncId>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
 ) -> Vec<(u32, u32, FuncId, u32)> {
     let mut targets = BTreeMap::new();
@@ -173,26 +162,6 @@ fn collect_static_closure_targets(
             .expect("zero-cap closure boundary must have a callable-boundary FuncId");
         let halt_kind = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef).halt_kind();
         targets.insert(boundary_id, (boundary.target_fn.0, body_fid, halt_kind));
-    }
-
-    for body_slot in &surface.body_slots {
-        let Some(body_slot) = body_slot.as_ref() else {
-            continue;
-        };
-        let sid = body_slot.codegen_id;
-        if surface
-            .closure_target(body_slot.fn_id)
-            .is_none_or(|target| target.capture_count != 0)
-        {
-            continue;
-        }
-        targets.entry(sid).or_insert_with(|| {
-            let body_fid = *fn_ids
-                .get(&sid)
-                .expect("zero-cap closure-shaped spec must have a direct body FuncId");
-            let halt_kind = surface.halt_reprs[sid as usize].halt_kind();
-            (body_slot.fn_id.0, body_fid, halt_kind)
-        });
     }
 
     targets
@@ -790,49 +759,6 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
     boundaries
 }
 
-/// Establish one `target_fn -> surface` binding in the closure-target
-/// registry, enforcing the registry's producer-consistency invariant as a
-/// hard error in every build profile: two producers binding the same
-/// target must agree on the FULL surface -- capture/arg split included,
-/// since two flattened-identical surfaces that slice their lanes at
-/// different capture counts declare different entry signatures and
-/// different capture harnesses for one physical body. Both former
-/// `debug_assert_eq!`s here were compiled out in release, so a
-/// disagreement silently kept whichever producer bound first.
-///
-/// Deliberately NOT checked here: agreement with the target body's own
-/// compiled `param_reprs`. A published surface may be a strict superset of
-/// the body's params and still be sound (see the invariant note on
-/// `require_closure_target_surface_agreement` in surface.rs); body
-/// agreement is enforced only at the closure-lit direct-call consumption
-/// point in terminator.rs.
-#[cfg(test)]
-fn register_closure_target_surface(
-    targets: &mut HashMap<FnId, NativeClosureTargetSurface>,
-    target_fn: FnId,
-    context: &str,
-    surface: NativeClosureTargetSurface,
-) -> Result<(), CodegenError> {
-    match targets.get(&target_fn) {
-        Some(previous) if *previous != surface => Err(CodegenError::new(
-            crate::compiler2::artifact::incompatible_physical_abi_message(
-                format_args!("closure target fn {}", target_fn.0),
-                context,
-                format_args!("already-registered surface {previous:?}"),
-                format_args!("re-derived surface {surface:?}"),
-            ),
-        )),
-        _ => {
-            targets.insert(target_fn, surface);
-            Ok(())
-        }
-    }
-}
-
-fn build_codegen_closure_targets() -> HashMap<FnId, NativeClosureTargetSurface> {
-    HashMap::new()
-}
-
 fn collect_codegen_mid_flight_cont_keys(
     program: &crate::compiler2::NativeProgram,
     param_reprs: &[Vec<ArgRepr>],
@@ -929,7 +855,6 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
     }
 
     let callable_boundaries = build_codegen_callable_boundaries(t, program);
-    let closure_targets = build_codegen_closure_targets();
     let native_abi_fns = program
         .module
         .fns
@@ -957,7 +882,6 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         main_fn_id: Some(program.entry),
         body_slots,
         callable_boundaries,
-        closure_targets,
         mid_flight_cont_keys: collect_codegen_mid_flight_cont_keys(program, &param_reprs),
         param_reprs,
         halt_reprs,
@@ -1114,7 +1038,7 @@ pub(crate) fn compile_with_backend_surface<
         tel,
     )?;
 
-    let static_closure_targets = collect_static_closure_targets(surface, &fn_ids, &callable_boundary_fn_ids);
+    let static_closure_targets = collect_static_closure_targets(surface, &callable_boundary_fn_ids);
 
     emit_mid_flight_cont_bodies(
         backend.module_mut(),
@@ -1169,114 +1093,4 @@ pub(crate) fn compile_with_backend_surface<
     let output = backend.finalize(metadata)?;
     drop(finalize_span);
     Ok(output)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The registry-binding helper is the single enforcement point for the
-    /// registry's producer-consistency invariant: every closure-target
-    /// binding -- boundary-published or fallback-synthesized -- passes
-    /// through it. An agreeing (re)binding must land in the registry.
-    #[test]
-    fn registry_rebinding_with_identical_surface_is_established() {
-        let mut targets = HashMap::new();
-        let surface = NativeClosureTargetSurface {
-            capture_count: 1,
-            capture_reprs: vec![ArgRepr::RawAtom],
-            arg_reprs: vec![ArgRepr::RawInt],
-        };
-        for _ in 0..2 {
-            register_closure_target_surface(
-                &mut targets,
-                FnId(7),
-                "the closure-target registry (two boundaries publishing one target)",
-                surface.clone(),
-            )
-            .expect("identical rebinding must be accepted");
-        }
-        assert_eq!(targets.get(&FnId(7)), Some(&surface));
-    }
-
-    /// Two producers binding one target with different lane surfaces must
-    /// error cleanly at binding time -- before any consumer (the target's
-    /// declared Cranelift signature, its capture harness, or a direct
-    /// call's args) can be shaped from whichever surface happened to bind
-    /// first. Both former `debug_assert_eq!`s were compiled out in release,
-    /// making this disagreement a silent first-writer-wins.
-    #[test]
-    fn registry_rebinding_with_different_surface_errors_cleanly() {
-        let mut targets = HashMap::new();
-        let first = NativeClosureTargetSurface {
-            capture_count: 1,
-            capture_reprs: vec![ArgRepr::RawAtom],
-            arg_reprs: vec![ArgRepr::RawInt],
-        };
-        register_closure_target_surface(
-            &mut targets,
-            FnId(137),
-            "the closure-target registry (two boundaries publishing one target)",
-            first.clone(),
-        )
-        .expect("first binding must be accepted");
-        let err = register_closure_target_surface(
-            &mut targets,
-            FnId(137),
-            "the closure-target registry (two boundaries publishing one target)",
-            NativeClosureTargetSurface {
-                capture_count: 1,
-                capture_reprs: vec![ArgRepr::RawAtom],
-                arg_reprs: vec![ArgRepr::RawInt, ArgRepr::RawAtom],
-            },
-        )
-        .expect_err("a disagreeing rebinding must be rejected, not silently dropped");
-        let message = err.to_string();
-        assert!(
-            message.contains("closure target fn 137") && message.contains("incompatible physical ABI"),
-            "registry rejection should carry the shared physical-ABI prose: {message}"
-        );
-        assert_eq!(
-            targets.get(&FnId(137)),
-            Some(&first),
-            "the established binding must survive the rejected rebinding"
-        );
-    }
-
-    /// Two producers can derive flattened-identical surfaces that still
-    /// disagree on the capture/arg split -- and the split alone decides the
-    /// target's declared signature arity and how its entry harness
-    /// partitions params into capture loads vs arg bindings. The
-    /// producer-consistency check must be full-struct (partition-aware),
-    /// not a flattened-lane comparison.
-    #[test]
-    fn registry_rebinding_with_different_capture_split_errors_cleanly() {
-        let mut targets = HashMap::new();
-        register_closure_target_surface(
-            &mut targets,
-            FnId(9),
-            "the closure-target registry (two call sites synthesizing a fallback surface for one unpublished target)",
-            NativeClosureTargetSurface {
-                capture_count: 1,
-                capture_reprs: vec![ArgRepr::RawAtom],
-                arg_reprs: vec![ArgRepr::RawInt],
-            },
-        )
-        .expect("first binding must be accepted");
-        let err = register_closure_target_surface(
-            &mut targets,
-            FnId(9),
-            "the closure-target registry (two call sites synthesizing a fallback surface for one unpublished target)",
-            NativeClosureTargetSurface {
-                capture_count: 0,
-                capture_reprs: vec![],
-                arg_reprs: vec![ArgRepr::RawAtom, ArgRepr::RawInt],
-            },
-        )
-        .expect_err("a flattened-identical surface with a different capture/arg split must be rejected");
-        assert!(
-            err.to_string().contains("incompatible physical ABI"),
-            "the split disagreement should carry the shared physical-ABI prose: {err}"
-        );
-    }
 }

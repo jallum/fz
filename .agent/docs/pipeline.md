@@ -340,6 +340,14 @@ rediscovering the invocation carrier. Public delivery names the caller-owned
 `ReturnPayload` as its source and adapts it into the separate delivered-resume
 destination.
 
+That decision is carried by the emitted call form itself. A grounded call
+lowers as a `Call`/`TailCall` direct edge to the selected executable; a
+`CallClosure`/`TailCallClosure` term is indirect by construction and always
+dispatches through the callee value's published callable boundary. Native
+codegen consumes the form as-is — there is no per-FnId closure-target surface
+registry and no consumer-side re-derivation of a direct target from an
+indirect call.
+
 World movements arrive from the scheduler as borrowed `FactMovement` values,
 one exact final `FactState` per moved key. Product generations and reader edges
 invalidate only products that consumed a changed fact or product. Equal

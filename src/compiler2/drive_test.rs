@@ -4998,10 +4998,8 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
     );
 
     assert!(
-        native_closure_call_targets(&program)
-            .into_iter()
-            .any(|target| target.is_none()),
-        "opaque joined function values should stay explicit closure-call seams with no exact direct target",
+        native_closure_call_count(&program) > 0,
+        "opaque joined function values should stay explicit closure-call seams instead of collapsing to direct calls",
     );
 }
 
@@ -5057,9 +5055,8 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
             .all(|member| member.target_return.layout.reprs.is_empty())
     }));
     assert!(
-        native_closure_call_targets(&program)
-            .into_iter()
-            .any(|target| target.is_none())
+        native_closure_call_count(&program) > 0,
+        "opaque each callables should dispatch through indirect closure-call seams",
     );
     for boundary in &boundaries {
         let wrapper = program
@@ -5286,21 +5283,12 @@ fn compiler2_native_codegen_keeps_callable_boundary_surface_authoritative_for_ra
     }
 
     let program = native.last(root_id).program;
-    let callable_boundary_targets = program
-        .callable_boundaries
-        .iter()
-        .map(|boundary| boundary.wrapper_fn)
-        .collect::<HashSet<_>>();
-    let hinted_boundary_targets = native_closure_call_targets(&program)
-        .into_iter()
-        .flatten()
-        .filter(|target| callable_boundary_targets.contains(target))
-        .collect::<Vec<_>>();
-    assert!(
-        hinted_boundary_targets.is_empty(),
-        "closure calls to already-boundary-materialized reducer bridges should let the closure boundary own the surface, not re-infer it from direct target hints: {hinted_boundary_targets:?}"
-    );
-
+    // The defect this test used to guard -- a closure call re-inferring a
+    // boundary wrapper's surface through a `direct_target` hint -- became
+    // unrepresentable when that field was deleted: a `CallClosure` term is
+    // indirect by construction and the boundary owns its surface. What
+    // remains observable is that the bridge settles and codegen consumes
+    // the boundary-owned program.
     jit_compile_native_program(&mut compiler, &program);
 }
 
@@ -6138,7 +6126,7 @@ fn compiler2_native_program_jit_runs_enum_reduce_through_compiler2_codegen() {
 }
 
 #[test]
-fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets() {
+fn compiler2_native_program_jit_runs_enum_map_reduce_with_exact_reducer_lanes() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -6177,7 +6165,7 @@ fn compiler2_native_program_jit_runs_enum_map_reduce_with_direct_closure_targets
     assert_eq!(
         dbg.lines(),
         vec!["{[1, 3, 6, 10], 10}".to_string()],
-        "compiler2-owned native codegen should preserve Enum.map_reduce when direct closure targets capture scalar lanes exactly",
+        "compiler2-owned native codegen should preserve Enum.map_reduce when exact reducer calls capture scalar lanes exactly",
     );
     assert_no_legacy_planner_or_type_infer(
         &capture,
@@ -6224,11 +6212,10 @@ fn compiler2_native_program_jit_runs_source_lambda_sugars_through_compiler2_code
         program.callable_boundaries.is_empty() && native_callable_boundary_uses(&program).is_empty(),
         "direct-only lambda sugars should stay out of native callable-boundary inventory when they never escape",
     );
-    assert!(
-        native_closure_call_targets(&program)
-            .into_iter()
-            .all(|target| target.is_some()),
-        "direct-only lambda sugars should lower every closure call with an exact direct target before codegen",
+    assert_eq!(
+        native_closure_call_count(&program),
+        0,
+        "direct-only lambda sugars should lower every call as an exact direct call -- no indirect closure-call seam survives",
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
     let _ = compiled.run_with_output(compiler.telemetry(), &dbg, program.entry);
@@ -7982,7 +7969,7 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("enum_take_reducer_direct_target.fz".to_string()),
+        name: Some("enum_take_reducer_published_value.fz".to_string()),
         text: "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n".to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
@@ -8005,19 +7992,12 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
         .iter()
         .filter(|function| function.name.starts_with("reduce_while_cont__clause_"))
         .flat_map(|function| function.blocks.iter())
-        .filter_map(|block| match &block.terminator {
-            IrTerm::CallClosure { direct_target, .. } => Some(direct_target),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+        .filter(|block| matches!(&block.terminator, IrTerm::CallClosure { .. }))
+        .count();
 
     assert!(
-        !reducer_calls.is_empty(),
-        "the reducer loop should lower at least one first-class closure call",
-    );
-    assert!(
-        reducer_calls.iter().all(|target| target.is_none()),
-        "a generic reducer call must dispatch through the published callable value; calls: {reducer_calls:?}",
+        reducer_calls > 0,
+        "a generic reducer call must stay a first-class closure call dispatching through the published callable value",
     );
 }
 
@@ -8047,9 +8027,8 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
 
     let program = native.last(root_id).program;
     assert!(
-        native_closure_call_targets(&program).iter().any(Option::is_none),
-        "fixture should publish a closure call without a private direct target; closure targets: {:?}",
-        native_closure_call_targets(&program),
+        native_closure_call_count(&program) > 0,
+        "fixture should publish an indirect closure call through its callable boundary",
     );
 }
 
@@ -8124,14 +8103,6 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
                 }
                 | IrTerm::TailCall {
                     callee: crate::fz_ir::DirectCallTarget::Local(target),
-                    ..
-                }
-                | IrTerm::CallClosure {
-                    direct_target: Some(target),
-                    ..
-                }
-                | IrTerm::TailCallClosure {
-                    direct_target: Some(target),
                     ..
                 } => predicate_targets.contains(target),
                 _ => false,
@@ -12616,19 +12587,22 @@ fn native_executable_body(program: &NativeProgram, function: FunctionId) -> &cra
         .unwrap_or_else(|| panic!("native executable body for {function:?}"))
 }
 
-fn native_closure_call_targets(program: &NativeProgram) -> Vec<Option<FnId>> {
-    let mut out = Vec::new();
-    for function in &program.module.fns {
-        for block in &function.blocks {
-            match &block.terminator {
-                IrTerm::CallClosure { direct_target, .. } | IrTerm::TailCallClosure { direct_target, .. } => {
-                    out.push(*direct_target);
-                }
-                _ => {}
-            }
-        }
-    }
-    out
+/// Count of indirect closure-call terminators. A `CallClosure`/
+/// `TailCallClosure` term IS the indirect form: exact calls lower as
+/// `Call`/`TailCall` direct edges where the grounding decision is made.
+fn native_closure_call_count(program: &NativeProgram) -> usize {
+    program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .filter(|block| {
+            matches!(
+                block.terminator,
+                IrTerm::CallClosure { .. } | IrTerm::TailCallClosure { .. }
+            )
+        })
+        .count()
 }
 
 fn native_exact_call_targets(program: &NativeProgram) -> Vec<FnId> {
@@ -12641,14 +12615,6 @@ fn native_exact_call_targets(program: &NativeProgram) -> Vec<FnId> {
                         out.push(*fn_id);
                     }
                 }
-                IrTerm::CallClosure {
-                    direct_target: Some(fn_id),
-                    ..
-                }
-                | IrTerm::TailCallClosure {
-                    direct_target: Some(fn_id),
-                    ..
-                } => out.push(*fn_id),
                 _ => {}
             }
         }
@@ -14050,11 +14016,9 @@ end
         .iter()
         .flat_map(|function| &function.blocks)
         .filter_map(|block| match &block.terminator {
-            IrTerm::CallClosure {
-                direct_target: None,
-                continuation,
-                ..
-            } => program.bodies.iter().find(|body| body.fn_id == continuation.fn_id),
+            IrTerm::CallClosure { continuation, .. } => {
+                program.bodies.iter().find(|body| body.fn_id == continuation.fn_id)
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -14108,28 +14072,22 @@ end
     };
     assert_eq!(member.target_return.layout.reprs.as_ref(), [AbiValueRepr::RawInt]);
 
+    // The closure call surviving as a `CallClosure` term is itself the
+    // claim: a first-class construction calls through its wrapper.
     let closure_call = program
         .module
         .fns
         .iter()
         .flat_map(|function| &function.blocks)
         .find_map(|block| match &block.terminator {
-            IrTerm::CallClosure {
-                direct_target,
-                continuation,
-                ..
-            } => Some((direct_target, continuation)),
+            IrTerm::CallClosure { continuation, .. } => Some(continuation),
             _ => None,
         })
-        .expect("the captured closure should emit one closure call");
-    assert!(
-        closure_call.0.is_none(),
-        "a first-class construction must call through its wrapper"
-    );
+        .expect("the captured closure should emit one indirect closure call");
     let continuation = program
         .bodies
         .iter()
-        .find(|body| body.fn_id == closure_call.1.fn_id)
+        .find(|body| body.fn_id == closure_call.fn_id)
         .expect("the captured closure call should own a return continuation");
     assert!(matches!(
         continuation.entry_abi,

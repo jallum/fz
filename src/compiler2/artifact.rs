@@ -394,21 +394,6 @@ impl NativeCallableBoundary {
     }
 }
 
-/// One shared sentence shape for every physical-ABI agreement guard, so a
-/// mismatch reads the same whether it fired in native lowering's
-/// fallback-boundary selection, native codegen's closure-target registry,
-/// or a direct-call consumption check. The layers keep their own error
-/// types (FatalError-emitting diagnostics vs `CodegenError`); only the
-/// prose is shared.
-pub(crate) fn incompatible_physical_abi_message(
-    subject: impl std::fmt::Display,
-    consumption: impl std::fmt::Display,
-    published: impl std::fmt::Display,
-    resolved: impl std::fmt::Display,
-) -> String {
-    format!("{subject} has incompatible physical ABI at {consumption}: {published} disagrees with {resolved}")
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbiReadyExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
@@ -1190,21 +1175,18 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
             IrTerm::CallClosure {
                 ident: left_ident,
                 closure: left_closure,
-                direct_target: left_direct_target,
                 args: left_args,
                 continuation: left_cont,
             },
             IrTerm::CallClosure {
                 ident: right_ident,
                 closure: right_closure,
-                direct_target: right_direct_target,
                 args: right_args,
                 continuation: right_cont,
             },
         ) => {
             native_callsite_idents_equal(left_ident, right_ident)
                 && left_closure == right_closure
-                && left_direct_target == right_direct_target
                 && left_args == right_args
                 && native_conts_equal(left_cont, right_cont)
         }
@@ -1212,19 +1194,16 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
             IrTerm::TailCallClosure {
                 ident: left_ident,
                 closure: left_closure,
-                direct_target: left_direct_target,
                 args: left_args,
             },
             IrTerm::TailCallClosure {
                 ident: right_ident,
                 closure: right_closure,
-                direct_target: right_direct_target,
                 args: right_args,
             },
         ) => {
             native_callsite_idents_equal(left_ident, right_ident)
                 && left_closure == right_closure
-                && left_direct_target == right_direct_target
                 && left_args == right_args
         }
         (IrTerm::Return(left_var), IrTerm::Return(right_var)) | (IrTerm::Halt(left_var), IrTerm::Halt(right_var)) => {

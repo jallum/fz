@@ -1,6 +1,5 @@
 //! Entry-block harness: bind entry params and load closure captures.
 
-use super::surface::NativeClosureTargetSurface;
 use super::*;
 use crate::fz_ir::FnIr;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
@@ -28,7 +27,6 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     this_spec_id: u32,
     is_native: bool,
     is_cont_fn: bool,
-    closure_target: Option<&NativeClosureTargetSurface>,
     entry_cl: ir::Block,
 ) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
@@ -58,8 +56,6 @@ pub(crate) fn build_entry_harness<M: ClModule>(
                 &mut var_env,
                 &mut tuple_field_params,
             )
-        } else if let Some(boundary) = closure_target {
-            harness_closure_target(body, entry_blk, &params, boundary, &mut var_env)
         } else {
             harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
         }
@@ -145,50 +141,6 @@ fn harness_cont_fn<M: ClModule>(
         var_env.insert(p.0, binding);
     }
     (None, None, Some(self_val))
-}
-
-/// Closure-target fn entry harness.
-/// fz_params order:
-///   fz_params[0..n_caps]             = captures
-///   fz_params[n_caps..n_caps+n_args] = args
-/// Cranelift sig: `(args..., self, cont) tail`.
-///   params[0..n_args]  = args
-///   params[n_args]     = self  (closure ptr)
-///   params[n_args+1]   = cont  (cont SSA)
-///
-/// Captures are ordinary schema fields in the closure env. The body
-/// reads each capture as an opaque ref and coerces to its narrow
-/// capture repr internally.
-///
-/// Returns (frame_ptr, host_ctx, cont_param).
-fn harness_closure_target<M: ClModule>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    entry_blk: &crate::fz_ir::Block,
-    params: &[ir::Value],
-    boundary: &NativeClosureTargetSurface,
-    var_env: &mut HashMap<u32, CodegenValue>,
-) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
-    let n_caps = boundary.capture_count;
-    let mut param_cursor = 0;
-    let mut arg_params = entry_blk.params.iter().skip(n_caps);
-    for repr in boundary.arg_reprs.iter().copied() {
-        let binding = take_param_binding(body.b, params, &mut param_cursor, repr);
-        if let Some(p) = arg_params.next() {
-            var_env.insert(p.0, binding);
-        }
-    }
-    let self_val = params[param_cursor];
-    let cont_val = params[param_cursor + 1];
-    for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-        let binding = body.closure_capture_as_binding(self_val, k, boundary.capture_reprs[k]);
-        var_env.insert(p.0, binding);
-    }
-    debug_assert_eq!(
-        param_cursor,
-        boundary.arg_reprs.iter().map(ArgRepr::abi_arity).sum::<usize>()
-    );
-    let _ = self_val;
-    (None, None, Some(cont_val))
 }
 
 /// Plain native fn entry harness.
