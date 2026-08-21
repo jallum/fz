@@ -26,5 +26,5 @@
   "status": "in_progress",
   "title": "enum_list_allocations: THREE-WAY allocation divergence -- run/build vs interp vs golden all disagree",
   "type": "bug",
-  "updated_at": "2026-08-21T23:03:28Z"
+  "updated_at": "2026-08-21T23:03:29Z"
 }
