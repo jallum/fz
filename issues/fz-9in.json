@@ -6,9 +6,15 @@
   "description": "Pre-existing at 0018c110a (verified in a pristine worktree build). Repro: fn main() do NL xs = [1,2,3,4,5] NL range = 1..5 NL dbg(Enum.take(xs, 3)) NL end -- fz2 interp fails with: backend executable 11 function 65 entry 0 step evaluation failed: backend value 0 is unbound. Removing the unused range binding makes it pass. Possibly related to the historical enum_take_drop_split matrix reds (fz-go4.22). Not caused by and not fixed by the fz-9i4.7.10.2 row model.",
   "id": "fz-9in",
   "labels": [],
+  "comments": [
+    {
+      "text": "Fixed on branch fz-9in/omit-absent-construction-steps, draft PR #86. Root cause: demand walk correctly leaves an undemanded construction's operands unbound, but backend emission honored the absence proof only for Tuple/List; Struct/Map/MapUpdate/Bitstring emitted unconditionally, so a surviving allocating call (1..5 Range construction) entered a body with zero materialized inputs and read never-bound params. Fix: one construction_step_or_omitted helper gating all six fresh-construction steps. New pin (interp+JIT, red at HEAD) + matrix fixture unused_range_binding (red at HEAD all three lanes). lib 1437/0, matrix 400/7 zero new reds.",
+      "timestamp": "2026-08-21T20:19:58Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "interp: 'backend value 0 is unbound' on Enum.take(xs, 3) beside an unused range binding",
   "type": "bug",
-  "updated_at": "2026-08-21T20:10:41Z"
+  "updated_at": "2026-08-21T20:19:58Z"
 }
