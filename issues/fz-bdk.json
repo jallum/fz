@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-9gp"
   ],
@@ -23,8 +23,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "native run/build SILENTLY swallow ill-typed expression (exit 0, empty output) where interp aborts function_clause -- opaque_fn_all_divergent parity + silent-failure bug",
   "type": "bug",
-  "updated_at": "2026-07-15T21:02:23Z"
+  "updated_at": "2026-08-21T20:50:35Z"
 }
