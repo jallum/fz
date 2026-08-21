@@ -2,8 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
-    "fz-5vi",
-    "fz-66j"
+    "fz-5vi"
   ],
   "created": "2026-07-15T21:31:10Z",
   "description": "THE VERIFIED MECHANISM (third and final re-attribution of the ela/enum_sort scoreboard waste, 2026-07-15, IR-dump evidence): both ClosureCall sites in enum_list_allocations are ALREADY devirtualized (zero Term::CallClosure in the compiled module; BackendTail::ClosureCall.target = Some via CallEdge::Direct; direct_closure_capture_lanes succeeds -- zero-width captures). The waste fires REGARDLESS of callee directness: any call with dest ControlDestination::Deliver + return_flow Deliver routes through emit_native_direct_call_tail (native.rs:1887) -\u003e delivered_call_continuation (:2232) -\u003e deliver_entry_continuation_for_source (:2363), which synthesizes a deliver_lanes__N_M continuation MATERIALIZING the {:cont|:halt, acc} value as a real struct and BOXING the RawInt acc to ValueRef -- one struct + one scalar_box per loop iteration (ela: struct 14 vs 9, scalar 8 vs 3, both +5; enum_sort scalar {27,432}, same family). The Continue/Return-flow path (return_lane_continuation_for_source_payload) already accepts DECOMPOSED LANES and does not box. FIX DESIGN: let a shared Deliver entry accept decomposed lanes (entry.origin.input_value() currently insists on one materialized value) -- an entry-ABI/return-flow change spanning jobs/backend.rs (return-flow classification / entry origin) + jobs/native.rs (continuation emission). Acceptance: ela run/build {5,80,9,288,0,0,3,48,0,0}/368 == golden; enum_sort run/build scalar {0,0}; interp parity (its +1 struct likely the same convention amortized -- confirm); k22.25 multi-member guard + determinism byte-identity green; no other fixture moves; NO rebless. HISTORY: three attributions peeled -- construction wrappers (stale), indirect closure calls (stale at HEAD, already devirtualized), THIS (IR-verified). The slice-1 single-member fact (a9ac3324d, audited) was orphaned by this finding -- preserved as salvage, do not land without a consumer.",
@@ -27,5 +26,5 @@
   "status": "in_progress",
   "title": "shared Deliver entries must accept decomposed return lanes like Continue-flow does -- the per-iteration envelope struct+box in deliver_entry_continuation_for_source is the ela/enum_sort waste",
   "type": "bug",
-  "updated_at": "2026-08-21T22:38:14Z"
+  "updated_at": "2026-08-21T22:38:15Z"
 }
