@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-21T16:25:24Z",
+  "description": "Discovered during fz-9i4.7.10.2. dispatch_from_callsite_summary (src/compiler2/callsite_dispatch.rs) picks discriminating columns by comparing runtime_type_test_envelope of target surface_inputs, but the envelope preserves distinctions RuntimeTypePredicate (src/runtime_type_predicate.rs) cannot observe at runtime: list element types (ListShape is only Empty/NonEmpty) and closure identity (funcs collapse to fun_top; closures is a bare bool). When every semantically-discriminating column is predicate-invisible, all arms compile to the same runtime test and the FIRST arm swallows every call -- a silent misroute; and even with element-typed list preconditions the plan is unsound because [] satisfies every element-typed list test. Observed live on the tri-mapper with_index reduce_step-\u003ereduce_cont callsite mid-fz-9i4.7.10.2 (before the equivalence-dedup row model made the exercised paths single-target again); the seam remains latent. Fix direction: discriminate at the PREDICATE projection, and where no predicate-visible discriminant exists the callsite needs value-identity dispatch on the callable column (fz-go4.18.29) instead of an invented arm table.",
+  "id": "fz-83e",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "dispatch_from_callsite_summary discriminates on semantic types the runtime predicate cannot test (latent first-arm-wins misroute)",
+  "type": "bug",
+  "updated_at": "2026-08-21T16:25:24Z"
+}
