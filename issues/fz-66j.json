@@ -12,11 +12,15 @@
     {
       "text": "ROOT-CAUSED (2026-07-15, report-only -- correct per no-masked-fix): all drift localized to Enum.reduce (count/member? byte-identical to golden at HEAD). Per-commit attribution: k22.20 regressed single-target dispatch to generic indirect (+20 scalar_box native via unconditional box_scalar_for_any); k22.23 mitigated to +5 but added per-call construction-wrapper structs (+5 native/+1 interp) at a single-member site. Classification: AVOIDABLE WASTE both counters; native is the over-allocating side (per-call re-materialization vs interp amortization). NO point patch -- the fix is the folded-but-never-built k22.24-27 capability, now ticketed as fz-k22.29 (blocks this + fz-5vi). Known-good baseline 6ffdddae7 reproduces golden exactly. Do NOT rebless upward.",
       "timestamp": "2026-07-15T19:10:50Z"
+    },
+    {
+      "text": "RE-SCOPED against HEAD 89db749f6 (2026-08-21). Unblocked -- fz-88t closed, its native objective achieved by the fz-9i4/k22 carrier-authority arc.\n\nThe three-way divergence in the title still holds, but the DIRECTIONS FLIPPED and the native side is now the best of the three:\n\n  native (run+build):  {5, 80,  1,  32, 0, 0, 3, 48, 0, 0}  heap 112\n  interp:              {5, 80, 10, 320, 0, 0, 3, 48, 0, 0}  heap 400\n  golden:              {5, 80,  9, 288, 0, 0, 3, 48, 0, 0}  heap 368\n\nAll three lanes print CORRECT values (5 / true / 15). This is purely allocation accounting.\n\nThe 2026-07-15 root-cause comment ('run+build produce {5,80,14,448}/528 ... upward drift ... do NOT rebless upward') is SUPERSEDED: native no longer over-allocates at all -- it is EIGHT structs BELOW the golden. The per-iteration {:cont, acc} Deliver envelope is gone from the native path.\n\nREMAINING SCOPE, two parts:\n1. INTERP IS THE DEFECT. At 10 structs it is still materializing the envelope on every iteration, where native decomposes into lanes. fz-88t predicted a '+1 by convention' delta for interp; the live delta vs native is +9 -- that is the whole envelope, not a convention. This is the three-path-parity violation this ticket is named for, now isolated to a single path.\n2. GOLDEN IS STALE HIGH. 9 -\u003e 1 struct, 288 -\u003e 32 bytes, 368 -\u003e 112 heap. A strict DECREASE, so the rebless is safe by construction (stricter guard) and needs no separate authorization -- but it lands only AFTER interp meets the same floor, so all three paths pin one number.\n\nRISK NOTE: the seven miscompiles that stopped fz-88t (enum_predicate_search wrong values, enum_take_drop_split panic, opaque_fn_value_join/repr_seam raw heap pointers) came from relaxing the NATIVE carrier. That is not what part 1 does -- native is already correct here and must not be touched. The variant-faithfulness hazard still applies to the interp fix: entries dispatching on {:cont, b} vs {:halt, c} need the tag lane plus agreeing lane layouts.\n\nACCEPTANCE: ela green on run/interp/build against one golden; no other fixture moves (full single-threaded matrix stays at or below 8 red).",
+      "timestamp": "2026-08-21T22:38:29Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "enum_list_allocations: THREE-WAY allocation divergence -- run/build vs interp vs golden all disagree",
   "type": "bug",
-  "updated_at": "2026-08-21T22:38:15Z"
+  "updated_at": "2026-08-21T22:38:29Z"
 }
