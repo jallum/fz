@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-21T21:52:17Z",
+  "description": "fz-gk4 made the second slot of `#fn\u003ca/b\u003e` the closure's arity (Elixir's `#Function\u003cindex.uniq/arity\u003e` reports arity there). The FIRST slot is still `closure_schema_id` — the id of the interned `ClosureEnv{n}` schema, assigned in allocation order and keyed purely by capture count.\n\nConsequences:\n- Two closures with the same capture count share a rendered identity, so identity does not distinguish.\n- interp and native render different leading ids for the same program: fixtures2/behavior/enum_reduce_suspend and closure_render_arity each need a separate .expected.interp.txt golden solely for this.\n- Any change to allocation order shifts the id, so goldens that print a closure stay fragile in the one remaining slot.\n\nElixir's leading component is `new_index.uniq`: the fun's source-order index within its module plus a hash of the module's code — source-derived, stable across runs and lanes (../elixir/lib/elixir/lib/inspect.ex:589).\n\nDirection: make the env schema per closure SITE rather than per capture count. `Heap::alloc_closure_slots_with_schema` already takes a verbatim schema id, and a per-site schema is what a closure environment actually is (named capture fields), so this REMOVES the capture-count bucket rather than adding a concept. The callable-boundary id is the natural source-order key and is already in hand at every construction site.\n\nResearch first: `alloc_closure_slots_with_schema`'s doc comment warns that registering per-site schemas perturbs the schema-id space the AOT runtime must keep byte-identical to compile time. Size that before committing.\n\nAcceptance: the leading slot derives from the closure's source identity; interp and native agree on it; enum_reduce_suspend and closure_render_arity each drop to a single golden.",
+  "id": "fz-9lj",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Rendered closure identity is an allocation-order env-schema id, not a source-derived fun index",
+  "type": "bug",
+  "updated_at": "2026-08-21T21:52:17Z"
+}
