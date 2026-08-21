@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-21T16:37:56Z",
+  "description": "Today check_function_clauses / check_match_clauses (src/compiler2/source_diagnostics.rs) run a purely syntactic pattern-coverage check: clause patterns compile to a dispatch plan with no type information (preconditions empty, TypeHandle unused) and any reachable fail path over the domain of ALL values warns. That makes open-but-safe clause heads warn everywhere -- quicksort's append/qsort and the runtime library's map_list/with_index_list etc. all carry blessed no-matching-clause goldens even though every callsite in the closed program passes lists and the fall-through is unreachable.\n\nRefinement: apply the lint AFTER the semantic fixpoint has firmed up input evidence. The activation-input facts (ActivationInputAlternatives rows, fz-9i4.7.10.2) plus dispatch reachability (calculate_dispatch_reachability already computes fail_reachable per row) give exactly the needed judgment per function: warn only when a reachable input row leaves the fail path live -- i.e. the uncovered domain is actually fed, or the parameter graduates/defaults to any (the fz-f98.9 judgment) so nothing constrains callers. A function whose every observed row is covered stays silent; guarded-clause bailout can also retire since analysis handles guards.\n\nConsequences to account for: warning timing moves from source-walk (immediate, per-file) to settled-analysis (needs the fixpoint); library functions warn per USE rather than per definition, so placement/dedup of the diagnostic needs a decision (definition span with a representative feeding row, most likely); the no-matching-clause goldens across the fixture corpus (fz-lfp pins) get re-blessed, mostly to empty. Relates: fz-f98.9 (any-graduation warning is the complementary signal), fz-lfp (current goldens).",
+  "id": "fz-xqf",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Move the no-matching-clause lint after type inference: warn only when the uncovered domain is actually fed",
+  "type": "task",
+  "updated_at": "2026-08-21T16:37:56Z"
+}
