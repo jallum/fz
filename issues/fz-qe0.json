@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-21T22:40:11Z",
+  "description": "At HEAD 89db749f6 (2026-08-21) this is the ONLY matrix red without a live ticket, and it is no longer the failure the fz-go4.22 census recorded.\n\nWAS: native.rs:3123 panic, 'backend value ValueId(N) must be runtime-materializable', on BOTH run and build.\nIS:  ::interp and ::build are GREEN. ::run fails on WALL CLOCK ONLY -- 'fz2 exceeded 10s'. The panic is gone.\n\nMEASURED directly, outside the harness:\n  ./target/debug/fz2 run fixtures2/behavior/enum_predicate_search.fz\n  -\u003e 11.77s user / 11.90s total, exit 0, output CORRECT (:ok / false / true / 1 / :first)\n\nSo this is not a timeout flake and not machine contention -- it is a reproducible ~19% overshoot of the budget on a fixture that produces the right answer. Per the standing convention (tiny fixtures must complete in ms-to-tenths; \u003e1s is a correctness signal, not a perf one), 11.9s on a fixture this small means the compiler is doing a large amount of excess or repeated work on the JIT path specifically. The interp and build lanes clearing the same fixture bounds the problem to what run does differently.\n\nDO NOT fix by raising the budget -- the budget is the detector.\n\nFIRST STEP: --log-telemetry job trace, compare the job span census against the build lane (which compiles the same program without the overshoot); look for repeated productions / non-monotone re-settling in the fz-go4.18.28 transport-monolith family, which is the known shape for multi-second small fixtures.\n\nREPRO: cargo test --test fixture_matrix -- --test-threads=1 enum_predicate_search",
+  "id": "fz-qe0",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "enum_predicate_search::run exceeds the 10s fixture budget (11.9s) with correct output -- JIT-lane excess work",
+  "type": "bug",
+  "updated_at": "2026-08-21T22:40:11Z"
+}
