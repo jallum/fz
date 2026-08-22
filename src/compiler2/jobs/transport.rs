@@ -481,7 +481,7 @@ fn produce_generic_callable_owner(
         let current = ProductKey::CallableConstruction(position.clone());
         if context.pending_dependency_reaches(&key, &current) {
             let _ = context.read_product(key);
-            let members = context.pending_callable_construction_group(&current);
+            let members = context.pending_recursive_group(&current);
             let mut settled = TransportFactsBuilder::default();
             settled.merge(&builder);
             for owner in context.recursive_group_callable_owners(&members) {
@@ -1486,7 +1486,7 @@ fn produce_named_transport_position(
         ))),
         RecipeLayout::Waiting(key) => Some(PullOutcome::wait_on_product(key)),
         RecipeLayout::Recursive(mut anchors) => {
-            let members = context.pending_transport_shape_group(&current);
+            let members = context.pending_recursive_group(&current);
             anchors.extend(context.recursive_group_transport_layouts(&members));
             let layout = joined_transport_layout(world, ty, &demand, position, &anchors);
             let value = ProductValue::TransportShape(TransportShapeFact::Layout(layout));

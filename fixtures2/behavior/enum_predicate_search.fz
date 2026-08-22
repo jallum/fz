@@ -1,7 +1,7 @@
 #---
 # purpose: "Enum predicate and search functions match Elixir and halt as soon as the answer is known"
-# timeout.run_secs: 10
-# timeout.interp_secs: 15
+# timeout.run_secs: 6
+# timeout.interp_secs: 6
 # oracle: oracle.exs
 #---
 #
@@ -11,6 +11,16 @@
 #
 # The final cases would panic if the runtime kept reducing after a decisive
 # answer, so this fixture also pins the `reduce_while/3` early-exit contract.
+#
+# ## The timeouts are a detector
+#
+# This fixture is small, so a compile measured in seconds means the compiler is
+# doing repeated work, not hard work. It used to take about 12s on `run`
+# because the recursive-group gate walked settled products it could never learn
+# anything from ([[fz-qe0]]); it now takes about 3s. The overrides above are
+# held just above that, not at a comfortable distance, so the next regression of
+# that shape shows up here as a red instead of as a slightly slower suite. The
+# remaining seconds are themselves excess work and belong to [[fz-xat]].
 fn main() do
   xs = [1, 2, 3, 4]
 
