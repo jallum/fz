@@ -10251,6 +10251,63 @@ fn reusable_cons_source_and_rebuild_share_return(program: &NativeProgram) -> boo
     })
 }
 
+/// fz-km1 — `Enumerable.slice/1` returns a slicer that ignores its parameter and
+/// answers from its capture, the shape `map.fz`'s `fn (_map) -> to_list(map) end`
+/// has. Such a callable has two semantic inputs but publishes a layout for only
+/// one: an input the target never reads carries no runtime demand. A member's
+/// `target_inputs` is therefore sparse, keyed by `semantic_index` — which is why
+/// every entry carries one — and a consumer must look inputs up by that key
+/// rather than assume one entry per semantic input.
+#[test]
+fn compiler2_jit_and_backend_interp_agree_on_a_callable_that_ignores_its_argument() {
+    let source = r#"
+fn slice(xs) do
+  {:ok, 3, (fn (_arg) -> xs end)}
+end
+
+fn main() do
+  {:ok, n, slicer} = slice([1, 2, 3])
+  dbg(n)
+  dbg(slicer.([9, 9]))
+end
+"#;
+
+    let run_lane = |jit: bool| {
+        let tel = ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
+        compiler.submit_code(CodeSubmission {
+            name: Some("callable_ignoring_its_argument.fz".to_string()),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        if jit {
+            compiler
+                .run_root_jit(root)
+                .expect("compiler2 jit should run a callable that ignores its argument");
+        } else {
+            compiler
+                .run_root_interp(root)
+                .expect("compiler2 backend interpreter should run a callable that ignores its argument");
+        }
+        dbg.lines()
+    };
+
+    let jit = run_lane(true);
+    assert_eq!(jit, vec!["3", "[1, 2, 3]"], "the slicer answers from its capture");
+    assert_eq!(
+        run_lane(false),
+        jit,
+        "jit and backend interpreter should agree on a callable whose argument carries no runtime demand",
+    );
+}
+
 /// fz-66j — `Enumerable.reduce/3` hands back a `{:cont, acc}` envelope for
 /// every element, exactly as Elixir's protocol does. The envelope is consumed
 /// lane-wise the instant it arrives: nothing ever asks for it as a heap object.
