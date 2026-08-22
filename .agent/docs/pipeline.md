@@ -422,6 +422,16 @@ the callee-value shape and, when present, the singleton target's return fact
 are recorded as position dependencies, so replacement or withdrawal of either
 re-settles the claim.
 
+The carrier is also what decides whether a constructed tuple becomes a heap
+object. A tuple step whose value layout carries `ValueRef` materializes one
+runtime value; any other carrier binds the tuple as its fields' lanes, and the
+object is built later only if something genuinely asks for one. Native codegen
+and the backend interpreter both read that layout rather than each deciding for
+themselves, so the two agree on how many objects a program allocates — which is
+what makes `Process.heap_alloc_stats` mean the same thing on every path. A
+protocol envelope like `Enumerable.reduce/3`'s `{:cont, acc}`, consumed lane-wise
+the moment it arrives, therefore costs nothing on any backend.
+
 A transport `ShapeId` is a faithful, total description of *physical runtime
 layout* and nothing else. A boxed first-class callable's VALUE shape is
 therefore one `ValueRef` value lane — the boxed pointer — and its width is a

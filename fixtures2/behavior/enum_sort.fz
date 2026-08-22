@@ -36,8 +36,11 @@
 #
 # The interpreter leg is a direct-IR baseline: it does not run native
 # `ReturnDemand` / reusable-cons lowering, so it allocates more cons cells
-# (`93`) and ten protocol/control structs. The reducer-bridge closure is
-# erased on `interp` too, same as native (`closure_allocs = 0`).
+# (`93`). It allocates no protocol/control structs, because a tuple whose value
+# layout does not carry `ValueRef` travels as its fields' lanes on `interp`
+# exactly as it does in native codegen — so the two legs agree on
+# `struct_allocs = 0`. The reducer-bridge closure is erased on `interp` too,
+# same as native (`closure_allocs = 0`).
 #
 # ## The default sorter is erased from native frames
 #

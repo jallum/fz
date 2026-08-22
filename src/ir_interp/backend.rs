@@ -1059,8 +1059,8 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 env.insert(*value, BackendBoundValue::Runtime(literal_value(runtime, literal)?));
             }
             ProgramStep::Tuple { value, items } => {
-                let tuple = make_tuple(runtime, env_values(transport, runtime.cur_proc(), env, items)?)?;
-                env.insert(*value, BackendBoundValue::Runtime(tuple));
+                let bound = tuple_step_value(transport, runtime.cur_proc(), executable, env, *value, items)?;
+                env.insert(*value, bound);
             }
             ProgramStep::List { value, items, tail } => {
                 let tail_value = tail.map_or(Ok(interp_empty_list_value()), |tail| {
@@ -2706,8 +2706,46 @@ fn literal_value(
     )
 }
 
-fn make_tuple(runtime: &mut IrInterpRuntime, items: Vec<AnyValue>) -> Result<AnyValue, String> {
-    make_tuple_on_proc(runtime.cur_proc(), items)
+/// A tuple step builds a heap object only when the value's layout says the
+/// tuple travels as one runtime value. Otherwise it travels as its fields'
+/// lanes, which is what `BackendStep::Tuple` binds in native codegen: the
+/// carrier is the one authority on representation, so both backends read it
+/// rather than each deciding for themselves. Nothing is lost by staying
+/// decomposed -- `materialize_backend_value` still builds the object on demand
+/// for whoever genuinely needs one.
+fn tuple_step_value(
+    transport: &TransportStore,
+    proc: *mut Process,
+    executable: &BackendExecutable,
+    env: &HashMap<ValueId, BackendBoundValue>,
+    value: ValueId,
+    items: &[ValueId],
+) -> Result<BackendBoundValue, String> {
+    if let Some(layout) = executable.value_layouts.get(&value)
+        && !matches!(layout.carrier, TransportCarrier::ValueRef)
+        && let ShapeDescr::Tuple(fields) = transport.interners().shape(layout.structural)
+    {
+        let fields = fields.clone();
+        if fields.len() != items.len() {
+            return Err(format!(
+                "backend tuple step for value {} has {} item(s) but its layout shape has {} field(s)",
+                value.as_u32(),
+                items.len(),
+                fields.len()
+            ));
+        }
+        let mut lanes = Vec::new();
+        for (item, field_shape) in items.iter().copied().zip(fields.iter().copied()) {
+            let bound = env_get_value(env, item)?;
+            encode_runtime_value(transport, proc, &bound, field_shape, &mut lanes)?;
+        }
+        return Ok(BackendBoundValue::Transport {
+            shape: layout.structural,
+            lanes,
+        });
+    }
+    let items = env_values(transport, proc, env, items)?;
+    Ok(BackendBoundValue::Runtime(make_tuple_on_proc(proc, items)?))
 }
 
 fn make_tuple_on_proc(proc: *mut Process, items: Vec<AnyValue>) -> Result<AnyValue, String> {
