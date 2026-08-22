@@ -4,6 +4,8 @@
     "fz-k22.29"
   ],
   "blocks": [],
+  "closed_at": "2026-08-22T01:11:39Z",
+  "close_reason": "Landed as 6203da681 (PR 89): interpreter reads the value layout's carrier at ProgramStep::Tuple, matching native's BackendStep::Tuple. ela green on all three paths at {5,80,1,32,0,0,3,48,0,0}/112; tree green (fz-bt1 closed, same root cause); matrix 8 red -\u003e 4. Goldens reblessed downward, each a strict decrease with byte-identical output.",
   "created": "2026-07-15T15:10:41Z",
   "description": "Surfaced by fz-lfp classification. Golden expects {5,80,9,288,...}/368; run+build produce {5,80,14,448,...}/528; interp produces {5,80,10,320,...}/400. Three-path parity violation (run/build vs interp disagree on ALLOCATION COUNTS) plus an upward drift vs the golden (raises need masked-regression scrutiny per convention -- this may be a real allocation regression from the k22.20-23 entry-ownership work, e.g. extra callable-entry thunks). Do NOT rebless upward without root-cause. Repro: fixture_matrix enum_list_allocations.",
   "id": "fz-66j",
@@ -23,8 +25,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "enum_list_allocations: THREE-WAY allocation divergence -- run/build vs interp vs golden all disagree",
   "type": "bug",
-  "updated_at": "2026-08-21T23:03:29Z"
+  "updated_at": "2026-08-22T01:11:39Z"
 }
