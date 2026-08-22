@@ -22,11 +22,15 @@
     {
       "text": "BOOKKEEPING CORRECTION 2026-07-10: bw rejected fz-f98.14.11 -\u003e fz-f98.14 because descendants cannot block ancestors. The explicit blockers are now fz-k22.9 for enum_take_drop_split::interp ambiguity and fz-f98.6 for the native boxed-callable multi-surface/ABI incoherence. fz-f98.14.11 retains the concrete native return-lane evidence as a child note, but the non-descendant dependency edge is fz-f98.6.",
       "timestamp": "2026-07-10T15:43:29Z"
+    },
+    {
+      "text": "MATRIX REDS CLEARED at d828560c9 (fz-qe0, PR #91) -- NOT CLOSING; the convergence root this ticket owns is still open.\n\nWHAT CHANGED. All three enum_take_drop_split lanes are GREEN:\n  test matrix::enum_take_drop_split::run    ... ok\n  test matrix::enum_take_drop_split::interp ... ok\n  test matrix::enum_take_drop_split::build  ... ok\nFull matrix 410 passed / 0 failed single-threaded.\n\nThey were failing on WALL CLOCK, and fz-qe0 removed a cost shared by every Enum-heavy fixture: the recursive-group gate ran a full DFS over the entire product dependency graph per dependency per production (21.9M node visits) where it only ever needed the unsettled products, since a settled product answers a read immediately and no chain of waits runs through it. 21.9M -\u003e 9.9K node visits, same cycles found.\n\nSo the lanes were red for a reason OUTSIDE this ticket's diagnosis, and that reason is gone.\n\nWHAT DID NOT CHANGE. The fixture still takes 4.4s interp / 5.3s run / 5.4s build. By the standing convention that is still a correctness signal, and it is this ticket's O(closure x changes) monolithic reseal plus partial-publication churn -- untouched. fz-f98.14.2 (deadlock-safe settled-gating of replacing-fact publication) is still the open lever, and the blockers fz-f98.5 / fz-f98.9 / fz-f98.10 still stand.\n\nSTALE REFERENCES, re-verify before acting on this ticket:\n- The RED gate named in the body, compiler2_enum_take_drop_split_seals_without_reseal_runaway, NO LONGER EXISTS anywhere in src/. There is nothing to 're-enable when both land'. A new gate has to be written, and it should assert against telemetry (job/settle census) rather than wall clock, since wall clock is what just moved for an unrelated reason.\n- The 2026-07-10 coordinator signal says the fixture is red because interp is blocked by fz-k22.9 and native by fz-f98.14.11/fz-f98.6. All three lanes now pass, so those explanations no longer describe the observed state either -- re-derive before treating them as live.\n\nThe current excess-work population on the neighbouring Enum fixture is measured in fz-xat (2625 callable_construction settlements for 242 executables); the same census on this fixture is probably the cheapest next signal for this ticket.",
+      "timestamp": "2026-08-22T02:29:57Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 convergence runaway: enum_take_drop_split (00420) drive is 1.3s and schedule-dependent — monolithic per-root reseal over a large closure + partial-publication churn",
   "type": "bug",
-  "updated_at": "2026-07-10T15:43:30Z"
+  "updated_at": "2026-08-22T02:29:57Z"
 }
