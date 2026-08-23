@@ -23,6 +23,7 @@ Read:
 - [modules](docs/modules.md) — modules and namespaces: identity-on-reference, the Placeholder→Indexed→Scoped→Defined lifecycle, the namespace savepoint chain, two-pass scoping, and lazy runtime-library/prelude loading.
 - [externs](docs/externs.md) — the `extern "C"` FFI door: the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
+- [performance instrumentation](docs/performance-instrumentation.md) — finding where compile time goes and why work started: the `--log-telemetry` / `--emit=stats` switches, the job/product/work-start/demand-cone counters, and reading settle counts against per-settle cost.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime exit event and semantic output sink contracts, and how tests observe a run without poking process internals.
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.

@@ -568,3 +568,87 @@ fn settled_products_depend_only_on_settled_products() {
         );
     }
 }
+
+/// The demand ascent's height and its per-member re-derivation count do not
+/// grow with the size of the program.
+///
+/// `RuntimeDemand(E)` is settled by a Jacobi ascent over a whole cone of
+/// executables, so it has three independent ways to get expensive: the cone can
+/// be too big, the ascent can climb too far, or members can re-derive too often.
+/// The last two are properties of the lattice and the dirty-set skipping, not of
+/// the program, and they must stay that way -- if either started scaling with
+/// program size, demand would be super-linear and no amount of scoping the cone
+/// would fix it. Doubling the number of identical call sites doubles the cone
+/// and must leave both alone.
+///
+/// The cone SIZE is deliberately not asserted here. A cone is collected
+/// transitively and stops only at executables whose demand already settled, so
+/// from a cold root it spans the whole reachable call graph and grows with the
+/// program by construction. That is what `fz-zg4` is about; this test guards the
+/// two numbers that are supposed to be flat so that ticket can be judged by the
+/// one that is not.
+#[test]
+fn the_demand_ascent_height_does_not_grow_with_the_program() {
+    fn tallest_cone(call_sites: usize) -> crate::compiler2::DemandConeSettlement {
+        let tel = ConfiguredTelemetry::new();
+        let tallest = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::compiler2::DemandConeSettlement>));
+        let sink = std::rc::Rc::clone(&tallest);
+        tel.attach_raw_event1::<crate::compiler2::DemandConeSettlement, _>(
+            &["fz", "compiler2", "demand", "cone", "settled"],
+            move |_, _, _, cone| {
+                let mut sink = sink.borrow_mut();
+                if sink.is_none_or(|tallest| cone.members > tallest.members) {
+                    *sink = Some(*cone);
+                }
+            },
+        );
+
+        let mut source = String::from("fn main() do\n  xs = [1, 2, 3, 4]\n");
+        for bound in 0..call_sites {
+            source.push_str(&format!("  dbg(Enum.find(xs, fn (x) -> x > {bound} end))\n"));
+        }
+        source.push_str("end\n");
+
+        let mut world = World::new();
+        world.submit_code(Some("demand_ascent.fz".to_string()), source);
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+            .expect("the call-site root should settle");
+
+        let cone = tallest.borrow().expect("a demand cone should settle for this root");
+        assert!(cone.members > 0, "a settled cone should report its members");
+        cone
+    }
+
+    let small = tallest_cone(2);
+    let large = tallest_cone(4);
+
+    assert!(
+        large.members > small.members,
+        "doubling the call sites should grow the cone, or this is not measuring what it thinks: \
+         {} vs {} members",
+        small.members,
+        large.members
+    );
+    assert_eq!(
+        small.rounds, large.rounds,
+        "the ascent climbs a lattice, not a program: its round count should not move when the \
+         program grows ({} members took {} rounds, {} members took {})",
+        small.members, small.rounds, large.members, large.rounds
+    );
+
+    // Re-derivations per member is what the dirty set buys: a member whose reads
+    // did not move that round is skipped, so the ratio reflects how often a
+    // member's inputs actually move -- a lattice property. Compared as a ratio
+    // rather than a total, since the total is expected to grow with the cone.
+    let ratio = |cone: crate::compiler2::DemandConeSettlement| cone.derivations as f64 / cone.members as f64;
+    assert!(
+        (ratio(large) - ratio(small)).abs() < 1.0,
+        "per-member re-derivation should not grow with the program: {:.2} at {} members vs \
+         {:.2} at {} members",
+        ratio(small),
+        small.members,
+        ratio(large),
+        large.members
+    );
+}
