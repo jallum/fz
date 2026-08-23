@@ -24,7 +24,7 @@
       "timestamp": "2026-08-23T20:25:11Z"
     }
   ],
-  "priority": 1,
+  "priority": 2,
   "status": "open",
   "title": "RuntimeDemand is keyed per executable but computed per program: the demand cone spans the whole reachable call graph and never reuses a settled one",
   "type": "bug",
