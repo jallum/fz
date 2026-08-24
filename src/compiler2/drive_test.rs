@@ -8258,6 +8258,56 @@ fn compiler2_enum_take_drop_split_keeps_predicate_calls_exact_through_interp_and
     assert_eq!(&lines[expected.len()..], expected.as_slice());
 }
 
+/// fz-f98.17 — a callee that still carries type variables is NOT-YET-KNOWN, and
+/// a closure call must not answer it with the earned `any`.
+///
+/// `Enum.drop_while/2` reaches `List.reduce_while_cont/3`, whose body calls
+/// `reducer.(head, acc)` through a parameter. The reducer slot arrives from the
+/// `Enumerable.reduce_while/3` protocol callback, whose spec cannot instantiate
+/// it, so the callee type at that call is a bare type variable (or the real
+/// closure joined with one). Reading that as a dynamic edge earned `any`, and
+/// because the value-type join is cumulative it was never retracted once the
+/// slot grounded — leaving the callsite holding a precisely-resolved
+/// `CallSiteSummary` and an `any` value type at the same time.
+///
+/// Two distinct closures were green and three were not, so this drives three.
+/// The fz-f98.14.11 artifact guard is the detector: it refuses to materialize a
+/// public closure callsite whose settled return disagrees with its semantic
+/// result type, so a returning `any` fails the drive here.
+#[test]
+fn compiler2_variable_callee_is_absence_not_an_earned_any() {
+    let _lock = tests_support_lock().lock().unwrap();
+    tests_support_dtor_reset();
+
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/enum_hof_three_distinct_closures.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_hof_three_distinct_closures.fz").to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert_resolved(
+        compiler.drive(),
+        "one Enum HOF at three distinct closures should lower without earning `any` at its reducer call",
+    );
+
+    compiler
+        .run_root_interp(root_id)
+        .expect("three distinct closures should run in the interpreter");
+    let expected = include_str!("../../fixtures2/behavior/enum_hof_three_distinct_closures.expected.txt")
+        .lines()
+        .collect::<Vec<_>>();
+    assert_eq!(dbg.lines(), expected.as_slice());
+}
+
 #[test]
 fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();

@@ -1441,6 +1441,23 @@ fn merge_protocol_matches_by_function(
     merged
 }
 
+/// Is an unresolved callee a genuine dynamic edge — the one place a closure
+/// call may EARN `any`?
+///
+/// Only when its type is GROUND. A ground callable the engine cannot resolve to
+/// closure targets really could be anything at runtime, exactly as at a provider
+/// boundary. A callee whose type still carries type VARIABLES is a different
+/// thing entirely: the slot has not been instantiated yet, so the call has no
+/// evidence, precisely like a named target whose analysis is still pending.
+///
+/// The distinction is load-bearing because the value-type join is cumulative.
+/// `any` unioned in from a not-yet-instantiated slot is never retracted once the
+/// slot grounds, so the callsite ends up holding two disagreeing facts — a
+/// precisely-resolved `CallSiteSummary` and an `any` value type (fz-f98.17).
+fn callee_is_a_dynamic_edge(world: &World, callee_ty: Ty) -> bool {
+    !world.types().has_vars(&callee_ty)
+}
+
 fn resolve_closure_call(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -1458,8 +1475,9 @@ fn resolve_closure_call(
         return Ok((None, Some(none_ty(world))));
     }
     let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
-        // A callable value the engine cannot resolve to closure targets is a
-        // dynamic edge: `any` is earned here, as at provider boundaries.
+        if !callee_is_a_dynamic_edge(world, callee_ty) {
+            return Ok((None, None));
+        }
         return Ok((None, Some(any_ty(world))));
     };
     let mut selected_targets = Vec::new();
@@ -1512,12 +1530,13 @@ fn resolve_closure_call(
     }
 
     if selected_targets.is_empty() {
-        // A matching closure clause names a concrete target whose analysis is
-        // still pending: report no evidence yet (the `reads`/`waits` registered
-        // above re-wake this call when the target settles), never the earned
-        // `any`. Only a callee with no matching closure-shaped clause is the
-        // genuine dynamic edge that earns `any`.
-        if named_concrete_target {
+        // Two ways to reach here without a target, and both are absence of
+        // evidence: a matching closure clause named a concrete target whose
+        // analysis is still pending, or the callee is not known yet at all.
+        // Report the evidence gathered so far and let the `reads`/`waits`
+        // registered above re-wake this call; only a genuine dynamic edge
+        // earns `any`.
+        if named_concrete_target || !callee_is_a_dynamic_edge(world, callee_ty) {
             return Ok((None, return_ty));
         }
         return Ok((None, Some(any_ty(world))));
