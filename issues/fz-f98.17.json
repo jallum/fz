@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-24T20:48:54Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-f98",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "resolve_closure_call earns `any` for a callee that still carries type variables: unknown is treated as dynamic",
   "type": "bug",
-  "updated_at": "2026-08-24T20:48:54Z"
+  "updated_at": "2026-08-24T20:53:12Z"
 }
