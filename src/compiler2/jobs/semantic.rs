@@ -27,7 +27,7 @@ use super::super::scheduler::FatalError;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallSiteTargets, CallTargetSummary, SelectedCallee,
 };
-use super::super::types::{ClosureTarget, Ty};
+use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
 type SemanticValues = HashMap<ValueId, Ty>;
@@ -1441,6 +1441,23 @@ fn merge_protocol_matches_by_function(
     merged
 }
 
+/// Can any runtime value arrive in this callee slot at all?
+///
+/// Two shapes say no, for one reason: nothing inhabits them. The proven-empty
+/// type has no members by definition. A *value template* — a bare type variable
+/// — has no runtime representation, so an activation keyed with one at a callee
+/// slot is a specialization for an argument no caller can ever supply
+/// (fz-hwn.23). Either way the call cannot happen, and the Kleene reading of a
+/// call that never happens is the empty type: evidence, not absence.
+///
+/// The distinction from [`callee_is_a_dynamic_edge`] is inhabitation, not
+/// groundness. A callable that merely *carries* variables — `(int) -> a` — is a
+/// perfectly representable value (a pointer); its analysis is simply pending,
+/// which is absence. Only a bare variable is uninhabitable (fz-f98.18).
+fn callee_has_no_inhabitants(types: &Types, callee_ty: Ty) -> bool {
+    types.is_empty(&callee_ty) || types.is_value_template(&callee_ty)
+}
+
 /// Is an unresolved callee a genuine dynamic edge — the one place a closure
 /// call may EARN `any`?
 ///
@@ -1468,10 +1485,10 @@ fn resolve_closure_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
-    if world.types().is_empty(&callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
-        // Proven-empty callee or argument: the call site is dead. This is
-        // evidence (the empty type), not absence — absence short-circuits
-        // upstream before any argument reaches a call.
+    if callee_has_no_inhabitants(world.types(), callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
+        // Uninhabitable callee or proven-empty argument: the call site is dead.
+        // This is evidence (the empty type), not absence — absence
+        // short-circuits upstream before any argument reaches a call.
         return Ok((None, Some(none_ty(world))));
     }
     let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
@@ -2316,4 +2333,46 @@ fn any_ty(world: &mut World) -> Ty {
 
 fn none_ty(world: &mut World) -> Ty {
     world.types_mut().none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three answers a closure callee can give, and why they are three and
+    /// not two.
+    ///
+    /// A call is dead when nothing can arrive in its callee slot. The empty type
+    /// has no members; a bare type variable has no runtime representation, so an
+    /// activation keyed with one there is a specialization for an argument no
+    /// caller can ever supply. Both are *evidence* — the call never happens, so
+    /// its result is the empty type.
+    ///
+    /// A callable that merely carries a variable is the third answer and must
+    /// stay distinct: `(int) -> a` is a perfectly representable value whose
+    /// analysis is simply pending. Widening the death test to "has variables"
+    /// would declare live calls dead. Widening it the other way — back to `any`
+    /// — is the fz-f98.17 defect (fz-f98.18).
+    #[test]
+    fn only_an_uninhabitable_callee_makes_a_call_dead() {
+        let mut types = Types::new();
+        let never = types.none();
+        let int = types.int();
+        let alpha = types.param_alpha(0);
+        let carries_a_var = types.arrow(&[int], alpha);
+
+        assert!(
+            callee_has_no_inhabitants(&types, never),
+            "no value inhabits the empty type, so the call never happens",
+        );
+        assert!(
+            callee_has_no_inhabitants(&types, alpha),
+            "a bare type variable has no runtime representation, so nothing can be passed in that slot",
+        );
+        assert!(
+            !callee_has_no_inhabitants(&types, carries_a_var),
+            "a callable carrying an un-instantiated result is still a real pointer: absence of \
+             analysis, not absence of values",
+        );
+    }
 }

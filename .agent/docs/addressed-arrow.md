@@ -229,6 +229,14 @@ syntactic approximation of meaningful-variable groundness.
 from a dead generic activation to a real ground sibling, comparing siblings by
 their `own_surface` (by address, not raw position).
 
+The predicate reads the SLOT, not the activation. A value-template activation is
+a legitimate semantic fact — the analysis of a generic body — and pruning it
+where it is minted breaks escaped-lambda capture analysis, which reads exactly
+those facts. What is unrepresentable is the argument, so the semantics say so at
+the argument: `callee_has_no_inhabitants` makes a closure call through a bare
+variable dead, its result the empty type, and the phantom body then lowers as
+the unreachable code it is (fz-f98.18).
+
 ## Policy: normalize the key, ask the calculator everywhere else
 
 Canonicalization serves exactly one purpose — the hashable dispatch key. Every

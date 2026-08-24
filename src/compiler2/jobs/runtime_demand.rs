@@ -980,10 +980,9 @@ fn collect_callsite_input_sources(
             .copied()
             .unwrap_or(ExecutableNeed::Value);
         for target in &summary.targets {
-            let Some(activation) = target.activation.clone() else {
+            let Some(callee) = target.runtime_executable(need) else {
                 continue;
             };
-            let callee = ExecutableKey { activation, need };
             for (index, arg) in args.iter().enumerate() {
                 let Some(semantic_index) =
                     mode.semantic_index(callee.activation.input_len(world.types()), args.len(), index)
@@ -1300,12 +1299,7 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> Vec<Ex
     summary
         .targets
         .iter()
-        .filter_map(|target| {
-            target
-                .activation
-                .clone()
-                .map(|activation| ExecutableKey { activation, need })
-        })
+        .filter_map(|target| target.runtime_executable(need))
         .collect()
 }
 

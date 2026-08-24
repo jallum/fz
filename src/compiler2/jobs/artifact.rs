@@ -941,10 +941,9 @@ fn required_call_edge_transport_positions(
                     dest,
                     summaries.get(callsite).into_iter().flat_map(|summary| {
                         summary.targets.iter().filter_map(|target| {
-                            target.activation.clone().map(|activation| ExecutableKey {
-                                activation,
-                                need: callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
-                            })
+                            target.runtime_executable(
+                                callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
+                            )
                         })
                     }),
                     world.types(),
@@ -969,10 +968,9 @@ fn required_call_edge_transport_positions(
                     .into_iter()
                     .flat_map(|summary| {
                         summary.targets.iter().filter_map(|target| {
-                            target.activation.clone().map(|activation| ExecutableKey {
-                                activation,
-                                need: callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
-                            })
+                            target.runtime_executable(
+                                callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
+                            )
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1315,7 +1313,19 @@ fn materialize_closure_call_edge(
         callsite,
     };
     let Some(summary) = world.callsite_summary(&key).cloned() else {
-        return Ok(None);
+        // Behind the settled materialization gate, an absent callsite summary is
+        // the Kleene bottom — exactly as `CallTargetSummary::settled_return`
+        // reads an absent return. No callable evidence ever arrived, so this
+        // call never happens. Lower it as the dead call it is: every
+        // `ClosureCall` tail needs a return flow, and `NoReturn` is the name for
+        // one that never returns. Emitting no edge at all instead leaves native
+        // lowering with a `Deliver` destination and nothing to deliver
+        // (fz-f98.18).
+        let never = world.types_mut().none();
+        return Ok(Some(MaterializedCallEdge {
+            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
+            return_ty: never,
+        }));
     };
     let target = summary.single_target().cloned();
     let public_callable = matches!(callee_layout.carrier, TransportCarrier::ValueRef);

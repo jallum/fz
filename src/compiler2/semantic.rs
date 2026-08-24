@@ -61,6 +61,19 @@ impl CallTargetSummary {
     pub fn settled_return(&self, types: &mut Types) -> Ty {
         self.return_ty.unwrap_or_else(|| types.none())
     }
+
+    /// The runtime executable this target demands, if it names one at all.
+    ///
+    /// A provider boundary names no compiler2 activation, so it has no
+    /// executable. Everything downstream that turns a settled call target into
+    /// something the backend can emit — demand cones, transport positions,
+    /// artifact call edges — comes through this one door, so the mapping is
+    /// stated once (fz-f98.18).
+    pub fn runtime_executable(&self, need: ExecutableNeed) -> Option<ExecutableKey> {
+        self.activation
+            .clone()
+            .map(|activation| ExecutableKey { activation, need })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

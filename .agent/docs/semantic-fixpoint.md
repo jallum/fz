@@ -75,23 +75,42 @@ entry on it would suppress siblings of the one starved path. The empty type
 `none` only ever arrives as a proven fact, so the dead-call checks
 (`resolve_direct_call`'s empty-argument drop) are true statements, and `any`
 appears only where it is earned: provider boundaries, unresolvable callable
-values, mailbox binds, and the root's public inputs. "Unresolvable" is the
-narrow case — a closure call whose callee type is GROUND and carries *no*
-matching closure-shaped clause. Two other callees look unresolvable and are not,
-and `resolve_closure_call` answers both with absence (`None`) while staying
-subscribed:
+values, mailbox binds, and the root's public inputs.
 
-- one that names a concrete closure target whose analysis is merely pending this
-  round;
-- one whose type still carries type VARIABLES — the slot has not been
-  instantiated, so the call has no evidence yet. `callee_is_a_dynamic_edge` is
-  the predicate, and it is `!has_vars`.
+`resolve_closure_call` sorts every callee into exactly three answers. The line
+between the first two is INHABITATION; the line between the last two is
+GROUNDNESS. Collapsing any pair of them is a known defect class.
 
-Both matter because `ReturnType` and the value-type join are cumulative: a stale
-`any` unioned in early never retracts once the slot grounds, and the callsite
-ends up holding two disagreeing facts — a precisely-resolved `CallSiteSummary`
-and an `any` value type. The fz-f98.14.11 artifact guard is the detector that
-makes that disagreement fatal instead of silent. Published outputs:
+- **Dead — the empty type.** Nothing can arrive in the slot, so the call never
+  happens. `callee_has_no_inhabitants` is the predicate: the proven-empty type,
+  or a *value template* (`Types::is_value_template` — a bare type variable,
+  which has no runtime representation). An activation keyed with a bare variable
+  at a callee slot is a specialization for an argument no caller can ever supply
+  (fz-hwn.23), so its call is unreachable and the Kleene reading of a call that
+  never happens is `none`. That is evidence, not absence.
+- **Absent — `None`, subscription retained.** The call has no evidence *yet*.
+  Two callees look unresolvable and are not: one that names a concrete closure
+  target whose analysis is merely pending this round, and one whose type still
+  carries type VARIABLES — the slot has not been instantiated. A callable that
+  merely carries a variable, `(int) -> a`, is a real pointer at runtime; only a
+  BARE variable is uninhabitable.
+- **A dynamic edge — earned `any`.** The narrow case: a callee type that is
+  GROUND and carries *no* matching closure-shaped clause, so at runtime it
+  really could be anything. `callee_is_a_dynamic_edge` is the predicate, and it
+  is `!has_vars`.
+
+The absent/earned line matters because `ReturnType` and the value-type join are
+cumulative: a stale `any` unioned in early never retracts once the slot grounds,
+and the callsite ends up holding two disagreeing facts — a precisely-resolved
+`CallSiteSummary` and an `any` value type. The fz-f98.14.11 artifact guard is
+the detector that makes that disagreement fatal instead of silent.
+
+A dead callsite publishes no summary at all, and materialization reads that
+absence with the same Kleene rule `CallTargetSummary::settled_return` uses:
+behind the settled gate `materialize_closure_call_edge` lowers a summary-less
+closure call as `CallReturnFlow::NoReturn` over the empty type, because every
+`ClosureCall` tail needs a return flow and a call that never happens never
+returns. Published outputs:
 
 ```text
 ActivationAnalyzed(a)
