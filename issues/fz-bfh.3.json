@@ -9,9 +9,15 @@
   "id": "fz-bfh.3",
   "labels": [],
   "parent": "fz-bfh",
+  "comments": [
+    {
+      "text": "NARROWED AT HEAD (fz-f98.19 stack tip). HALF of this ticket is fixed; the\nremaining half has a new symptom and a 3-line repro.\n\nreduce/3 over a Map now WORKS:\n\n    fn main() do\n      map = %{2 =\u003e :two, 1 =\u003e :one}\n      dbg(Enum.reduce(map, 0, fn ({k, _v}, acc) -\u003e acc + k end))\n    end\n    =\u003e 3                                          CORRECT\n\nreduce/2 over a Map does not, and it does not present as \"materializes an absent\nvalue (native.rs:2826)\" any more -- it raises:\n\n    fn main() do\n      map = %{2 =\u003e :two, 1 =\u003e :one}\n      dbg(Enum.reduce(map, fn ({k, _v}, {ak, av}) -\u003e {ak + k, av} end))\n    end\n    =\u003e fz panic: \"Enum.EmptyError\"\n\nElixir yields `{3, :one}`: reduce/2 has no accumulator, so it must take the FIRST\nelement as the seed and fold the rest. `Enum.EmptyError` is what Elixir raises\nfor reduce/2 over an EMPTY enumerable, so the shape of the bug is that the Map's\nfirst element never reaches the seed path -- the enumerable is being treated as\nempty, not as producing an untyped value. Start there rather than at\nnative.rs:2826.\n\nScope note: retitle to reduce/2 only. This is now the single blocker for the\n`fz_f98_map_reduce` fixture (its reduce/3 line is correct; skipping only the\nreduce/2 line makes the fixture pass), and the FIRST of two blockers for\n`enum_tier0` (the second is fz-k22).",
+      "timestamp": "2026-08-24T22:59:17Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Enum.reduce/2 and reduce/3 over a Map materialize an absent value (native.rs:2826)",
   "type": "bug",
-  "updated_at": "2026-06-22T13:49:24Z"
+  "updated_at": "2026-08-24T22:59:17Z"
 }
