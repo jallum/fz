@@ -17,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Each distinct lambda literal drags a private copy of every shared library function it reaches: 32 identical lambdas cost 9x wall clock and 15x executables",
   "type": "bug",
-  "updated_at": "2026-08-24T14:14:54Z"
+  "updated_at": "2026-08-24T14:15:00Z"
 }
