@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-24T22:59:37Z",
+  "description": "`compiler2::drive_test::compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations`\nis disabled, and it is NOT awaiting triage: it asserts a contract fz-f98.14.11\ndeliberately superseded.\n\nThe fixture is a non-tail call whose result is discarded:\n\n    fn ping(x), do: x\n\n    fn rebuild(xs) do\n      [h | t] = xs\n      ping(0)          # result ignored\n      [h | t]\n    end\n\nThe test pins the OLD rule -- that the ignored `ping/1` result still occupies the\ncallee's delivered return lane:\n\n    assert!(matches!(continuation.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 }),\n        \"the ignored ping/1 result should still occupy the callee's delivered return lane\");\n    assert_eq!(function.block(function.entry).params, vec![Var(0), Var(1), Var(2), Var(3)]);\n    assert_eq!(function.ignored_entry_params, vec![true, false, false, false]);\n\nfz-f98.14.11 changed the rule, and says so in `jobs/transport.rs`:\n\n    // a discarded result carries no demand and must publish no lanes, the same\n    // zero its callee-side boundary derives.\n\nLowering now yields `extra_params: 0`, so the test fails on its own stale\nexpectation.\n\n## What to do\n\nThe test's REAL subject is the reusable-cons physical capability surviving a\ndelivered continuation (`physical_entry_params`, `physical_capabilities`,\n`semantic_entry_params`), and that half is still worth pinning -- it is the only\ncoverage of that path. Rewrite the lane assertions to the post-f98.14.11\ncontract and re-enable.\n\nDerive the expected shape FROM THE RULE, not from whatever lowering currently\nemits. A discarded result publishes no lane, so the continuation's entry should\ncarry only the two semantic captures plus the one hidden physical source param,\nand `ignored_entry_params` should no longer lead with the delivered-result\n`true`. If the emitted shape disagrees with that reading, the defect is in\nlowering and this ticket found it -- do not bless the output.\n\n## Checks\n\n- The test is re-enabled (no `#[ignore]`) and passes.\n- Every assertion it makes is justified by the discarded-result rule, and the\n  test says so in a comment rather than restating numbers.\n- Full lib + matrix at baseline or better.",
+  "id": "fz-f98.22",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 3,
+  "status": "open",
+  "title": "Re-enable the reusable-cons delivered-continuation test against the post-f98.14.11 discarded-result lane contract",
+  "type": "task",
+  "updated_at": "2026-08-24T22:59:37Z"
+}
