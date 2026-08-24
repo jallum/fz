@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-f98.18"
+  ],
   "blocks": [
     "fz-f98.11",
     "fz-f98.9"
@@ -24,5 +26,5 @@
   "status": "in_progress",
   "title": "Enumerable protocol boundary erases element type to any (t(a) -\u003e any)",
   "type": "bug",
-  "updated_at": "2026-08-24T20:14:03Z"
+  "updated_at": "2026-08-24T21:03:30Z"
 }
