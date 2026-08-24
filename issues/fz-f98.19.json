@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-24T21:46:05Z",
+  "description": "Two in-process compiles of the SAME root publish BackendPrograms that differ\nonly in raw `Ty` numbering. Proven by decomposing the 1.5MB assertion diff into\nper-kind id multisets:\n\n    Ty            DIFFERS, symmetric diff size 448\n    ValueId       identical multiset\n    ShapeId       identical multiset\n    FunctionId    identical multiset\n    ExecutableKey identical multiset\n\nStructure is identical; only the interner's first-intern order moved. This is\nthe exact class fz-k22.23/.28 chased (an unaudited unordered fold minting types\nin different relative order), one fold further along.\n\n## Repro\n\n    cargo test --lib compiler2::product_drive_test::compiling_the_same_root_twice_publishes_byte_identical_backend_programs\n\nThe fixture is `fixtures2/behavior/enum_predicate_search.fz` (NOT\nenum_take_drop_split -- fz-f98.18 lumped this red into that family and it is a\ndistinct root cause; the other three reds in that batch cleared with f98.18 and\nthis one did not move).\n\n## Where to look\n\nfz-k22.28 pinned the folds it found by sorting them:\n`jobs/runtime_demand.rs`'s per-cone member list and per-value callable-flow\nlist (`HashMap` folds sorted by `ValueId`/`ExecutableKey`), and\n`World::demand_activation_frontier_analyses`'s `HashSet\u003cActivationKey\u003e` frontier\nsorted by `StableSortKey`. Find the fold this fixture reaches that is NOT yet\npinned. Note [[feedback_sorting_is_a_barrier]]: a sort added here is a\ndeterminism pin at a packaging point, which is the legitimate case -- but prefer\nan ordered container at the source where one is available.\n\n## Checks\n\n- The test passes twice in a row from a clean build.\n- The fold that moved is named, and either replaced with an ordered container or\n  pinned with a comment saying which invariant the sort is standing in for.\n- Full lib + matrix at baseline or better (currently lib 1448/1 with this as the\n  only red; matrix 416/0).",
+  "id": "fz-f98.19",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 1,
+  "status": "open",
+  "title": "Ty interner numbering is nondeterministic across two in-process compiles of enum_predicate_search",
+  "type": "bug",
+  "updated_at": "2026-08-24T21:46:05Z"
+}
