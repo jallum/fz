@@ -19,9 +19,9 @@
       "timestamp": "2026-08-24T14:14:54Z"
     }
   ],
-  "priority": 2,
+  "priority": 1,
   "status": "open",
   "title": "Native callable boundary return-lane mismatch flake (opaque_fn_value_join: boundary=[ValueRef] vs body=[RawInt])",
   "type": "bug",
-  "updated_at": "2026-08-24T14:15:04Z"
+  "updated_at": "2026-08-24T14:15:10Z"
 }
