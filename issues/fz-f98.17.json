@@ -12,11 +12,15 @@
     {
       "text": "RESOLVED by commit 3f38c5983, PR #97 (draft, based on fz-f98.16/empty-list-ambiguity-is-per-position).\n\nFIX: both earned-any exits in resolve_closure_call now ask one named predicate,\ncallee_is_a_dynamic_edge = !has_vars. The second exit collapses its two absence\ncases (named-but-pending target, not-yet-known callee) into a single branch, so\nthe rule has one home and two uses. No new concept -- this is the existing\nabsence-of-evidence rule finally covering the case its own doc comment already\ndescribed.\n\nMEASURED: the N-distinct-closure ladder is flat. Was ok at 2, 6, \u003e=10 and FAIL\nat 3,4,5,7,8,9 (deterministic, 5/5 per point, non-monotone -- the shape that\nfalsified every budget-threshold explanation). Every N green now.\n\nTESTS (both proven red with the core reverted, then restored):\n- compiler2::drive_test::compiler2_variable_callee_is_absence_not_an_earned_any\n- fixtures2/behavior/enum_hof_three_distinct_closures, 3 lanes, golden owned by\n  its Elixir oracle (fz and elixir agree line for line)\n\nGATES: lib 1444 passed / 4 failed (was 1443/4, same 4 inherited, +1 new);\nmatrix 413 passed / 3 failed (was 410/3, same 3 inherited, +3 new lanes);\nclippy --workspace --all-targets clean; fmt clean.\n\nSCOPE NOT MET, stated plainly: this ticket's Checks said enum_take_drop_split\nwould compile. It does not. The  was HIDING a second, pre-existing defect\n-- a value-template activation reduce_while_cont([any], {[a1_0_e], int}, a2)\nreaching transport, whose analysis has 0 callsites because no call can supply a\nbare variable. Removing the  did not create it, it stopped masking it.\nFiled as fz-f98.18 (blocks fz-f98.10) with both falsified placements recorded so\nnobody repeats them. I did not fold f98.18 into this commit: the right placement\nneeds \u0026Types threaded through the demand-cone walk, and the naive placements\ncost 11 lib regressions. One ticket, one commit.\n\nGUIDEPOST: following the native.rs precedent (fz-hwn.27.5, name the predicate at\nthe failure site), resume_payload_ty now names key_is_value_template when that\nis the cause, instead of asserting a bare invariant.\n\nDOCS: .agent/docs/semantic-fixpoint.md -- the earned-any paragraph now lists BOTH\nnon-dynamic callees (pending target, variable-carrying type), names\ncallee_is_a_dynamic_edge, and says the guard is the detector.\n\nNOTE: no scaffolding or affordances added; all investigation probes removed\nbefore commit.",
       "timestamp": "2026-08-24T21:04:48Z"
+    },
+    {
+      "text": "CORRECTION to the previous comment: two backticked words were eaten by the shell. The two garbled sentences read:\n\n\"...the ANY was HIDING a second, pre-existing defect -- a value-template activation reduce_while_cont([any], {[a1_0_e], int}, a2) reaching transport...\"\n\nand\n\n\"Removing the ANY did not create it, it stopped masking it.\"\n\nNothing else in that comment is affected.",
+      "timestamp": "2026-08-24T21:04:57Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "resolve_closure_call earns `any` for a callee that still carries type variables: unknown is treated as dynamic",
   "type": "bug",
-  "updated_at": "2026-08-24T21:04:49Z"
+  "updated_at": "2026-08-24T21:04:57Z"
 }
