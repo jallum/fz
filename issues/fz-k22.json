@@ -10,11 +10,15 @@
     {
       "text": "DECOMPOSED (STOP-and-report; rigorous empirical investigation, no commit -- does not reduce to one clean commit). Now a tracking node for 4 slices, all reacting to 'one shared generic-HOF activation with 2+ distinct concrete closure producers' (find/find_value/find_index share List.reduce_while_cont's specialization). Minimal repro: Enum.find(xs,:none,p1) + Enum.find_value(xs,:none,p2) in one fn -\u003e identical ValueId(6)/FunctionId(183) crash on all 3 backends. Three interdependent data-model gaps must AGREE: A (closure-call multi-target edge, artifact.rs:1404), B (transport-shape generic-boxed fallback, transport.rs:2839 -- verified isolated patch exists but insufficient alone), C (PROXIMATE CAUSE: runtime-demand fixpoint marks a shared body's unrelated accumulator input as Nothing when the closure-call site has 2+ targets, runtime_demand.rs) + D (re-verify capture-target assertion). Slice B alone verified to NOT fix the crash. Chain: A,B -\u003e C (green slice) -\u003e D. Acceptance: minimal repro + enum_predicate_search green all 3 paths (known-red 11-\u003e8, feeds fz-rh2.16.6 keystone). fz-xqw/fz-hwn demand-fixpoint territory.",
       "timestamp": "2026-07-08T03:39:49Z"
+    },
+    {
+      "text": "DETECTORS, found while re-triaging disabled tests at the fz-f98.19 stack tip.\nTwo currently-disabled things fail with this ticket's exact signature and should\nre-enable with it:\n\n1. `compiler2::drive_test::compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters`\n   (lib, `#[ignore]`). Fails with:\n\n       native lowering invariant failed: backend value ValueId(0) in executable\n       ExecutableKey { activation: ActivationKey { function: FunctionId(32),\n       arrow: Ty(23) }, need: Value } must be bound before runtime use\n\n   Its `#[ignore]` reason was the generic \"red-worklist: triage + re-enable\";\n   it now names this ticket.\n\n2. The `enum_tier0` fixture (matrix, deferred on all three paths), as its SECOND\n   blocker. With its one `Enum.reduce/2` over Map line skipped (fz-bfh.3, the\n   first blocker) it prints eight further correct values and then dies with\n   `backend value 0 is unbound`.\n\nSo closing fz-k22 should be checked against both, and `enum_tier0` needs\nfz-bfh.3 AND this before it can come off deferral.",
+      "timestamp": "2026-08-24T22:59:37Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Generic Enum HOF specialized at 2+ distinct closures leaves a backend value unbound (all backends: run/interp/build)",
   "type": "bug",
-  "updated_at": "2026-07-08T03:39:49Z"
+  "updated_at": "2026-08-24T22:59:37Z"
 }
