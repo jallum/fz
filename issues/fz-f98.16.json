@@ -7,9 +7,15 @@
   "id": "fz-f98.16",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "RESOLVED by commit 7a69440b7, PR #96 (draft, based on fz-06a/envelope-only-tested-slots).\n\nROOT CAUSE, confirmed at the calculator: Types::match_arrow dropped\nempty-list-ambiguous variables from the WHOLE match instead of from the\nposition that observed the []. `([a], [a])` applied to `([int], [])` pins\na = int at parameter 1 and learns nothing at parameter 2; the global veto threw\nparameter 1's proof away, [a] stayed a free variable, and instantiating a free\nvariable in list position yields []. refine_contract_inputs then narrowed the\ncaller's good [int] argument against that [] and KEPT it, because its\nempty-intersection fallback does not fire -- [] is not the empty type, it is an\ninhabited type with one value.\n\nFIX: collect the substitution one position at a time, clean it there, union it\nin. Ambiguity is a property of the witness, not of the variable. This DELETES\nthe match-wide ambiguous_vars/ambiguous_seen sets and the surface_sigma filter\n(two call sites) rather than adding a rule -- union-on-rebind already did the\nright thing once the noise never entered. Net -19 lines of mechanism, +1\nsix-line helper. A variable every position leaves ambiguous still never enters\nthe substitution, so the pre-existing empty_list_binding_is_ambiguous test\n(`f(a) :: a` applied to []) passes unchanged.\n\nTESTS (both proven red with the fix reverted, then restored):\n- compiler2::types::arrow_match::tests::empty_list_position_does_not_veto_a_variable_another_position_pins\n  (without the fix: Underconstrained { params: [[a], [a]] })\n- fixtures2/behavior/spec_shared_var_self_composition, all 3 lanes\n  (interp/run/build), golden owned by its Elixir oracle. Covers both\n  List.reverse/2 and a user-written My.rev/2 with the same spec, so it holds\n  even if the runtime library stops spelling reverse this way. fz and Elixir\n  agree line for line.\n\nGATES: lib 1443 passed / 4 failed (was 1442/4 -- same 4 inherited\nenum_take_drop_split reds, +1 new test); matrix 410 passed / 3 failed (was\n407/3 -- same 3 inherited, +3 new lanes); clippy --workspace --all-targets\nclean; fmt clean.\n\nSCOPE: does NOT close enum_take_drop_split. Verified after the fix -- the\nfixture fails with the identical message (`public closure callsite 0 settled\nreturn ... disagrees with its semantic result type \\`any\\``). That residual is\nfz-f98.10's protocol-callback hop, which this change does not touch.\n\nDOCS: .agent/docs/addressed-arrow.md behavior 5 rewritten -- ambiguity is a\nproperty of the witness, why the substitution is per-position, and why the\nglobal veto was wrong.\n\nNOTE: no scaffolding or affordances added; nothing to schedule for removal.",
+      "timestamp": "2026-08-24T20:32:45Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A recursive fn whose @spec shares one type variable across two parameters mints a degenerate empty activation on self-composition (silent wrong answer, all three backends)",
   "type": "bug",
-  "updated_at": "2026-08-24T20:31:25Z"
+  "updated_at": "2026-08-24T20:32:45Z"
 }
