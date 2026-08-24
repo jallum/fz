@@ -19,7 +19,13 @@
 //! (`key_subsumes_with`) cannot express live here: the Known/Underconstrained/
 //! Invalid trichotomy; union-on-rebind when one variable binds several
 //! witnesses; structural-mismatch -> Invalid for arrow arity; the same for
-//! map-key presence and tuple arity; and ambiguous empty-list variables.
+//! map-key presence and tuple arity; and ambiguous empty-list witnesses.
+//!
+//! Ambiguity is a property of a WITNESS, not of a variable. `[]` is a member of
+//! every list type, so a binding it pins is noise — but only for the position
+//! that observed it. `([a], [a])` applied to `([int], [])` learns `a = int`
+//! from the first parameter and nothing from the second, so the substitution is
+//! collected per position, cleaned there, and only then unioned in.
 
 use std::collections::{HashMap, HashSet};
 
@@ -115,13 +121,13 @@ impl Types {
         }
 
         let mut sigma: Sigma<Ty> = Sigma::new();
-        let mut ambiguous_vars = HashSet::new();
-        let mut ambiguous_seen = HashSet::new();
         for (pattern, witness) in params.iter().zip(witnesses.iter()) {
-            if self.collect_match_subst(pattern, witness, &mut sigma) == MatchWitness::Invalid {
+            let mut position = Sigma::new();
+            if self.collect_match_subst(pattern, witness, &mut position) == MatchWitness::Invalid {
                 return ArrowMatch::Invalid;
             }
-            self.collect_ambiguous_empty_list_vars(pattern, witness, &mut ambiguous_vars, &mut ambiguous_seen);
+            self.drop_ambiguous_empty_list_bindings(pattern, witness, &mut position);
+            self.merge_subst_union(&mut sigma, position);
         }
 
         let closed = self.close_bounds(bounds, &sigma);
@@ -132,8 +138,7 @@ impl Types {
                 if closed.contains_key(&var) {
                     continue;
                 }
-                let surface = surface_sigma(&sigma, &ambiguous_vars);
-                let (params, result) = self.instantiated_match(params, result, &surface);
+                let (params, result) = self.instantiated_match(params, result, &sigma);
                 return ArrowMatch::Underconstrained { params, result };
             };
             let bound = self.instantiate(&bounds[&var], &closed);
@@ -149,8 +154,7 @@ impl Types {
             }
         }
 
-        let surface = surface_sigma(&closed, &ambiguous_vars);
-        let (params, result) = self.instantiated_match(params, result, &surface);
+        let (params, result) = self.instantiated_match(params, result, &closed);
         if params.iter().any(|param| self.has_vars(param)) || self.has_vars(&result) {
             ArrowMatch::Underconstrained { params, result }
         } else {
@@ -434,6 +438,22 @@ impl Types {
         }
     }
 
+    /// Drop the bindings ONE position collected through an exact `[]` witness.
+    ///
+    /// `[]` is a member of every list type, so a variable it pins could be a
+    /// list of anything: the binding is noise, not evidence. The drop is scoped
+    /// to the position that observed the `[]` because ambiguity belongs to the
+    /// witness, not to the variable — `([a], [a])` applied to `([int], [])`
+    /// learns `a = int` at the first parameter and nothing at the second, and
+    /// vetoing `a` outright would throw the first parameter's proof away
+    /// (fz-f98.16).
+    fn drop_ambiguous_empty_list_bindings(&mut self, pattern: &Ty, witness: &Ty, position: &mut Sigma<Ty>) {
+        let mut ambiguous = HashSet::new();
+        let mut seen = HashSet::new();
+        self.collect_ambiguous_empty_list_vars(pattern, witness, &mut ambiguous, &mut seen);
+        position.retain(|var, _| !ambiguous.contains(var));
+    }
+
     fn collect_ambiguous_empty_list_vars(
         &mut self,
         pattern: &Ty,
@@ -529,17 +549,6 @@ impl Types {
             }
         }
     }
-}
-
-/// Drop ambiguous empty-list variables from a substitution before it surfaces
-/// as an instantiation: a variable pinned only by `[]` could be any element
-/// type, so leaving it free keeps the result honestly underconstrained.
-fn surface_sigma(sigma: &Sigma<Ty>, ambiguous_vars: &HashSet<TypeVarId>) -> Sigma<Ty> {
-    sigma
-        .iter()
-        .filter(|(var, _)| !ambiguous_vars.contains(var))
-        .map(|(var, ty)| (*var, *ty))
-        .collect()
 }
 
 #[cfg(test)]
@@ -646,6 +655,29 @@ mod tests {
                 assert!(t.has_vars(&result), "a must stay free when pinned only by []");
             }
             other => panic!("expected Underconstrained for empty-list binding, got {other:?}"),
+        }
+    }
+
+    // The ambiguity of `[]` belongs to the POSITION that observed it, not to
+    // the variable. `List.reverse/2` is spec'd `([a], [a]) :: [a]`, so a call
+    // like `List.reverse([1, 2, 3], [])` pins `a = int` at the first parameter
+    // and learns nothing at the second. The empty-list position must not veto
+    // what the other position proved: vetoing it collapses `[a]` to `[]` and
+    // the caller's good `[int]` argument gets narrowed to the empty list.
+    #[test]
+    fn empty_list_position_does_not_veto_a_variable_another_position_pins() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let list_a = t.list(a);
+        let int = t.int();
+        let list_int = t.list(int);
+        let empty = t.empty_list();
+        match t.match_arrow(&[list_a, list_a], &list_a, &no_bounds(), &[list_int, empty]) {
+            ArrowMatch::Known { params, result } => {
+                assert_eq!(params, vec![list_int, list_int], "both parameters instantiate to [int]");
+                assert_eq!(result, list_int, "the result instantiates to [int]");
+            }
+            other => panic!("expected Known with a = int, got {other:?}"),
         }
     }
 

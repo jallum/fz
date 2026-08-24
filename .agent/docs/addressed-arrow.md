@@ -173,18 +173,29 @@ foo(x, y, z)  vs  foo(a, {b, c}, d):
 
 `match_arrow` first computes per-parameter `overlapping_witnesses` (arity
 mismatch or a disjoint parameter → `Invalid`), then `instantiate_match` collects
-a substitution `Sigma` across positions. Five behaviors live here that the
-boolean subsumption surface (`key_subsumes_with`) cannot express, and are the
-reason contract matching is this calculator rather than that one:
+a substitution `Sigma` **one position at a time**, cleans that position, and
+unions it in. Five behaviors live here that the boolean subsumption surface
+(`key_subsumes_with`) cannot express, and are the reason contract matching is
+this calculator rather than that one:
 
 1. the `Known`/`Underconstrained`/`Invalid` trichotomy, not a bool;
 2. union-on-rebind (`merge_subst_union`) — a variable binding several witnesses
    across positions takes their union, not the first;
 3. structural-mismatch → `Invalid` for arrow arity;
 4. the same for map-key presence and tuple arity;
-5. ambiguous empty-list vars (`collect_ambiguous_empty_list_vars`): a variable
-   pinned only by `[]` could be a list of anything, so `surface_sigma` drops it
-   and it stays free, keeping the result honestly `Underconstrained`.
+5. ambiguous empty-list witnesses (`drop_ambiguous_empty_list_bindings`): `[]`
+   is a member of every list type, so a binding it pins is noise and is dropped.
+
+The ambiguity in (5) belongs to the **witness**, not to the variable, which is
+why the substitution is collected and cleaned per position before (2) unions it
+in. `([a], [a])` applied to `([int], [])` learns `a = int` from the first
+parameter and nothing from the second, and answers `Known` with both parameters
+`[int]`. A variable *every* position leaves ambiguous simply never enters
+`Sigma`, so it stays free and the verdict is honestly `Underconstrained` — the
+`f(a) :: a` applied to `[]` case. Vetoing such a variable globally instead would
+discard what another position proved: `[a]` would collapse to `[]`, and a good
+`[int]` argument would be narrowed to the empty list by `refine_contract_inputs`
+(whose empty-intersection fallback does not fire, because `[]` is not empty).
 
 `ContractArrow::apply` is then a thin loop: for each clause, read
 `arrow_params`/`arrow_result`, call `match_arrow` with the bounds sidecar, and
