@@ -9,9 +9,15 @@
   "id": "fz-bfh.2",
   "labels": [],
   "parent": "fz-bfh",
+  "comments": [
+    {
+      "text": "RE-VERIFIED AT HEAD (fz-f98.19 stack tip). BOTH stated symptoms PASS in\nisolation. This ticket looks stale; confirm and close.\n\n    fn main() do\n      range = 1..7//2\n      dbg(Enum.reduce(range, fn (x, acc) -\u003e x * acc end))\n    end\n    =\u003e 105                              (reduce/2 over Range: OK)\n\n    fn main() do\n      map = %{2 =\u003e :two, 1 =\u003e :one}\n      dbg(Enum.reduce_while(map, [], fn ({k, v}, acc) -\u003e {:cont, [{k, v} | acc]} end))\n    end\n    =\u003e [{2, :two}, {1, :one}]           (reduce_while/3 over Map: OK)\n\nNo `settled_callable_boundary` multi-surface error on either. Found while\nre-triaging the deferred `enum_tier0` fixture, which cited this ticket among\nfour blockers; two of the other three (fz-bfh.1, fz-bfh.4) are already closed.\n\nBefore closing, check whether the multi-surface error needs a DIFFERENT repro\nthan the two above -- the ticket title names the mechanism, and it is possible\nthe mechanism survives while these two surfaces stopped triggering it. If no\nrepro can be produced at HEAD, close it.",
+      "timestamp": "2026-08-24T22:59:16Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Enum.reduce/2 over Range and reduce_while/3 over Map hit settled_callable_boundary multi-surface error",
   "type": "bug",
-  "updated_at": "2026-06-22T13:49:24Z"
+  "updated_at": "2026-08-24T22:59:16Z"
 }
