@@ -129,6 +129,48 @@ The revision is a change token, not a content hash: stores report `changed`
 only on real content movement (equal joins are quiet), and subscribers wake on
 `old_revision != new_revision`.
 
+## Wake order is not correctness, but it is reproducibility
+
+"Any fair schedule reaches the same fixpoint" is a statement about fact
+CONTENT. It is not a statement about the artifact. Two things downstream read
+the schedule itself:
+
+- the type interner mints ids as arena positions, so the order fresh types are
+  first requested IS their numbering;
+- a keep-first merge keeps whichever conclusion arrived first.
+
+So a hash-random wake order publishes a different `BackendProgram` for the same
+input — same structure, different `Ty` ids — while every fact is correct. That
+is why order is preserved end to end rather than restored afterwards:
+
+    job emits outputs (Vec, source order)
+      -> dedupe_job_facts                  keeps order (OrderedSet, not HashSet)
+      -> FactReplace::output_keys          keeps order
+      -> DependencyIndex::outputs          keeps order
+      -> mark_dirty                        iterates in that order
+      -> pending_changes                   drained in that order
+      -> enqueue_dependents                subscribers/waiters in registration order
+      -> job order                         -> intern order -> Ty ids
+
+`OrderedSet` (`ordered_set.rs`) is the single insertion-ordered membership set
+behind every hop. Losing the order at ANY hop is sufficient to lose
+reproducibility, and each hop that loses it merely moves where the divergence
+first shows.
+
+Two non-cures, both tried and rejected. Sorting needs a comparator that does not
+depend on what is being minted, and Debug-text sorts are what fz-k22.21 had to
+remove. A global after-the-fact renumbering pass of the interner is worse: it is
+a barrier that needs the whole arena, it invalidates `Ty` as a stable handle for
+every memo keyed by it, and it would leave the work order nondeterministic while
+making only the ids look stable — hiding the defect instead of removing it.
+
+Two tests hold this. `compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order`
+is the causal one and names the first swapped pair;
+`compiling_the_same_root_twice_publishes_byte_identical_backend_programs` is the
+end state. Both compile twice in ONE process, which is what exposes the hazard:
+`RandomState` is seeded per `HashMap` instance, so the second compile's maps
+iterate differently from the first's.
+
 ## The drive loop
 
 ```text

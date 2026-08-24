@@ -5,6 +5,7 @@ use std::hash::Hash;
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
 use super::facts::{ClaimShape, FactChange, FactMovement, FactTable, FactUse};
+use super::ordered_set::OrderedSet;
 
 /// Why a job entered the agenda. This is observation-only: it never changes
 /// which job runs or in what order, it only tags each work-start so a running
@@ -81,7 +82,7 @@ impl WorkStartTally {
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
-    pub outputs: HashSet<F>,
+    pub outputs: OrderedSet<F>,
     pub changed: Vec<FactChange<F>>,
     pub movements: Vec<FactMovement<F>>,
     pub enqueued: Vec<J>,
@@ -192,7 +193,7 @@ where
         self.facts.keys()
     }
 
-    pub fn output_keys(&self, job: &J) -> HashSet<F> {
+    pub fn output_keys(&self, job: &J) -> OrderedSet<F> {
         self.deps.output_keys(job)
     }
 
