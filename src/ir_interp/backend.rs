@@ -1855,13 +1855,34 @@ fn direct_callable_value(
             captures.len()
         ));
     }
+    // The callable descriptor's `capture_lanes` is the one authority on how
+    // many lanes the construction carries, and it can be wider than the sum
+    // of the captures' structural widths: a capture whose structural shape is
+    // width 0 may still own one descriptor lane, carrying the value boxed
+    // (native's construction lowering assigns those extra lanes to width-0
+    // captures greedily in capture order). A width-0 capture that owns no
+    // lane is fully erased -- its value may legitimately be unbound (its own
+    // input published no layout), so it must be skipped without ever reading
+    // the environment.
+    let structural_width: usize = callable
+        .capture_shapes
+        .iter()
+        .map(|shape| transport.interners().shape_width(*shape))
+        .sum();
+    let mut extra_lanes = callable.capture_lanes.len().saturating_sub(structural_width);
     let mut lanes = Vec::new();
-    for (capture, shape) in captures.iter().copied().zip(callable.capture_shapes.iter().copied()) {
-        if transport.interners().shape_width(shape) == 0 {
-            continue;
+    for (capture, capture_shape) in captures.iter().copied().zip(callable.capture_shapes.iter().copied()) {
+        if transport.interners().shape_width(capture_shape) == 0 {
+            if extra_lanes == 0 {
+                continue;
+            }
+            extra_lanes -= 1;
+            let bound = env_get_value(env, capture)?;
+            lanes.push(materialize_backend_value(transport, proc, &bound)?);
+        } else {
+            let bound = env_get_value(env, capture)?;
+            encode_runtime_value(transport, proc, &bound, capture_shape, &mut lanes)?;
         }
-        let bound = env_get_value(env, capture)?;
-        encode_runtime_value(transport, proc, &bound, shape, &mut lanes)?;
     }
     if lanes.len() != callable.capture_lanes.len() {
         return Err(format!(

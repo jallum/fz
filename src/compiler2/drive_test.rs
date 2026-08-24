@@ -10308,6 +10308,97 @@ end
     );
 }
 
+/// fz-6gb — a lambda literal's *identity* must not fan functions that merely
+/// TRANSPORT it out into per-call-site copies. Elixir compiles one body for
+/// `Enum.find/2` no matter how many `fn` literals a program writes; in fz,
+/// a function that neither calls through a callable nor captures one into a
+/// lambda it constructs treats closure brands as freight, and every
+/// same-surface brand shares its activation. Identity-CONSUMING functions
+/// deliberately stay split: `find/3` captures the predicate into its wrapper
+/// lambda, and the wrapper calls it, so those two specialize per brand —
+/// that is the direct-dispatch trade
+/// `compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs`
+/// pins. The marginal cost of a call site is therefore three executables
+/// (its lambda, the constructor's split, the wrapper's split), not the
+/// seven it was when the pure transporters `find/2` and three
+/// `reduce_while/3`s respecialized too. This pins the
+/// correlation-preserving regime below `ACTIVATION_INPUT_ROW_BUDGET`; past
+/// the budget the evidence rows collapse to their join and the
+/// identity-consuming splits merge too (a 32-site program settles 45
+/// executables -- 13 shared plus one per lambda -- where it compiled 233
+/// before).
+#[test]
+fn compiler2_same_shape_lambda_literals_share_the_library_chain() {
+    let source_for = |sites: usize| {
+        let mut source = String::from("fn main() do\n  xs = [1, 2, 3, 4]\n");
+        for bound in 0..sites {
+            source.push_str(&format!("  dbg(Enum.find(xs, fn (x) -> x > {bound} end))\n"));
+        }
+        source.push_str("end\n");
+        source
+    };
+
+    let run_lane = |sites: usize, jit: bool| {
+        let tel = ConfiguredTelemetry::new();
+        let backend = BackendProgramCapture::new();
+        backend.install(&tel);
+        let dbg = DbgCapture::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("lambda_literals_{sites}.fz")),
+            text: source_for(sites),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        if jit {
+            compiler
+                .run_root_jit(root)
+                .expect("compiler2 jit should run same-shape lambda literals");
+        } else {
+            compiler
+                .run_root_interp(root)
+                .expect("compiler2 backend interpreter should run same-shape lambda literals");
+        }
+        (dbg.lines(), backend.last(root).program.executables.len())
+    };
+
+    let (one_site_out, one_site_executables) = run_lane(1, true);
+    assert_eq!(
+        one_site_out,
+        vec!["1"],
+        "Enum.find([1,2,3,4], &(&1 > 0)) is 1, as in Elixir"
+    );
+
+    let (two_site_out, two_site_executables) = run_lane(2, true);
+    assert_eq!(
+        two_site_out,
+        vec!["1", "2"],
+        "each site finds its own first match, as in Elixir"
+    );
+    assert_eq!(
+        run_lane(2, false).0,
+        two_site_out,
+        "jit and backend interpreter should agree when two lambda brands share the library chain"
+    );
+
+    // The second call site's marginal cost is its own lambda plus the two
+    // identity-consuming specializations (`find/3` captures the predicate
+    // into its wrapper; the wrapper calls it) -- never a private copy of the
+    // transport-only chain (`find/2`, the `reduce_while/3`s).
+    assert_eq!(
+        two_site_executables,
+        one_site_executables + 3,
+        "a second same-shape lambda literal should add its own executable and the \
+         two identity-consuming splits, not respecialize the transport chain \
+         ({one_site_executables} -> {two_site_executables})"
+    );
+}
+
 /// fz-66j — `Enumerable.reduce/3` hands back a `{:cont, acc}` envelope for
 /// every element, exactly as Elixir's protocol does. The envelope is consumed
 /// lane-wise the instant it arrives: nothing ever asks for it as a heap object.
