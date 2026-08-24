@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-6gb"
+  ],
   "created": "2026-06-26T19:48:00Z",
   "description": "PRE-EXISTING at HEAD (flakes ~50% on clean HEAD, independent of fz-f98.14.10.4 — transport PLAN is now stable, lib joined-callable test 20/20). matrix opaque_fn_value_join::build/run flakes on a native JIT/AOT boundary-return-lane mismatch: 'callable boundary return lanes must match: boundary=[ValueRef], body=[RawInt]'. DISTINCT subsystem from the transport shape-graph (14.10.4) — this is non-monotone boundary-return-lane derivation in native lowering (the callable-boxing-seam family, [[project_fz_callable_boxing_seam]]). A sorted_boundaries determinism attempt did not fully fix it and destabilized the input-anchor path (reverted). Likely the same earned-vs-fallback / schedule-independence discipline as 14.10.4 but in the return-lane path. Its own ticket; does not block 14.10.",
   "id": "fz-f98.14.11",
@@ -21,5 +23,5 @@
   "status": "open",
   "title": "Native callable boundary return-lane mismatch flake (opaque_fn_value_join: boundary=[ValueRef] vs body=[RawInt])",
   "type": "bug",
-  "updated_at": "2026-08-24T14:14:54Z"
+  "updated_at": "2026-08-24T14:15:04Z"
 }
