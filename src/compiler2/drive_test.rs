@@ -10308,6 +10308,76 @@ end
     );
 }
 
+/// fz-f98.14.11 — an indirect closure call's return payload is the CALLSITE
+/// RESULT's contract, not the caller's own return. `Enum.each`'s step
+/// discards the mapper's result:
+///
+/// ```fz
+/// fnp each_step(entry, acc, fun) do
+///   fun.(entry)
+///   acc
+/// end
+/// ```
+///
+/// so the callsite's delivered payload carries no demand and must publish no
+/// lanes -- the same zero the callee-side boundary derives (`return_form:
+/// Absent`, the contract `opaque_fn_each_absent_return` pins). Before this
+/// landed, the payload layout was derived from the CALLER's return type and
+/// demand -- `each_step` returns a demanded `acc`, so the discarded result
+/// published a one-lane ValueRef delivery while the boundary delivered zero
+/// lanes, and the two halves of one calling convention were compiled against
+/// different contracts (the caller's continuation read an unwritten register:
+/// the `fz_closure_get_capture_atom` SIGABRT).
+#[test]
+fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the opaque each root should settle");
+
+    let each_step_id = function_id(&functions, "each_step", 3);
+    let program = backend.last(root).program;
+    let mut checked = 0;
+    for executable in &program.executables {
+        if executable.key.activation.function != each_step_id {
+            continue;
+        }
+        let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let crate::compiler2::BackendTail::ClosureCall { return_flow, .. } = &entry.tail else {
+                continue;
+            };
+            let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
+                panic!("each_step's discarded mapper call should deliver its (empty) payload");
+            };
+            checked += 1;
+            assert!(
+                source.layout.reprs.is_empty(),
+                "a discarded indirect call result must publish no return lanes; \
+                 the callsite payload claimed {:?} while the callee boundary delivers zero",
+                source.layout.reprs
+            );
+        }
+    }
+    assert!(checked > 0, "each_step should contain the indirect mapper callsite");
+}
+
 /// fz-6gb — a lambda literal's *identity* must not fan functions that merely
 /// TRANSPORT it out into per-call-site copies. Elixir compiles one body for
 /// `Enum.find/2` no matter how many `fn` literals a program writes; in fz,

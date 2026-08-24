@@ -1,5 +1,5 @@
 use super::facts::FactUse;
-use super::keying::DispatchDemand;
+use super::keying::{BodyKeying, DispatchDemand};
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
@@ -432,7 +432,13 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_recursive(function, true));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: true,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Ignore]));
 
     // A recursive fn's non-dispatch slot collapses to its convergence class
@@ -472,7 +478,13 @@ fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "partition", 4);
-    assert!(world.define_recursive(function, true));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: true,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(
         function,
         vec![
@@ -508,7 +520,13 @@ fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "split_while_cont", 3);
-    assert!(world.define_recursive(function, true));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: true,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(
         function,
         vec![
@@ -554,7 +572,13 @@ fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "subtract", 1);
-    assert!(world.define_recursive(function, false));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
 
     let int = world.types_mut().int();
@@ -613,9 +637,21 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let caller = world.reference_function(ModuleId::GLOBAL, "caller", 1);
     let callee = world.reference_function(ModuleId::GLOBAL, "callee", 1);
-    assert!(world.define_recursive(caller, true));
+    assert!(world.define_body_keying(
+        caller,
+        BodyKeying {
+            recursive: true,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(caller, vec![DispatchDemand::Whole]));
-    assert!(world.define_recursive(callee, true));
+    assert!(world.define_body_keying(
+        callee,
+        BodyKeying {
+            recursive: true,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(callee, vec![DispatchDemand::Whole]));
 
     let int = world.types_mut().int();
@@ -665,7 +701,13 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "delete_first", 2);
-    assert!(world.define_recursive(function, true));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: true,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(
         function,
         vec![
@@ -693,7 +735,13 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_recursive(function, false));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
 
     let input_a = world.types_mut().atom_lit("a");
@@ -741,7 +789,13 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 2);
-    assert!(world.define_recursive(function, false));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole, DispatchDemand::Whole]));
 
     let int = world.types_mut().int();
@@ -810,7 +864,13 @@ fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_recursive(function, false));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
 
     let input_a = world.types_mut().atom_lit("a");
@@ -861,7 +921,13 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_recursive(function, false));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
 
     let inputs = (0..=super::semantic::ACTIVATION_INPUT_ROW_BUDGET)
@@ -899,7 +965,13 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
     let function = world.reference_function(ModuleId::GLOBAL, "loop", 1);
-    assert!(world.define_recursive(function, false));
+    assert!(world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: false,
+            consumes_callable_identity: true
+        }
+    ));
     assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
 
     let input = world.types_mut().int_lit(1);

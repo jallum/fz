@@ -39,7 +39,7 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
-use super::keying::{DispatchDemand, DispatchMaskMap, RecursiveMap};
+use super::keying::{BodyKeying, BodyKeyingMap, DispatchDemand, DispatchMaskMap};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
@@ -124,8 +124,7 @@ pub struct World {
     bodies: LoweredBodyMap,
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
-    recursive: RecursiveMap,
-    calls_closures: RecursiveMap,
+    body_keying: BodyKeyingMap,
     dispatch_masks: DispatchMaskMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
@@ -235,8 +234,7 @@ impl World {
             bodies: LoweredBodyMap::new(),
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
-            recursive: RecursiveMap::new(),
-            calls_closures: RecursiveMap::new(),
+            body_keying: BodyKeyingMap::new(),
             dispatch_masks: DispatchMaskMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
@@ -653,7 +651,11 @@ impl World {
             // observed vars stay distinct and the evidence shares the key's
             // canonical form. Idempotent on already-addressed contributions.
             let normalized = self.types.address_inputs(&inputs);
-            let normalized = if self.recursive.get(activation.function).copied().unwrap_or(false) {
+            let normalized = if self
+                .body_keying
+                .get(activation.function)
+                .is_some_and(|keying| keying.recursive)
+            {
                 let mask = self
                     .dispatch_masks
                     .get(activation.function)
@@ -1098,20 +1100,11 @@ impl World {
         impls
     }
 
-    pub(crate) fn define_recursive(&mut self, function: FunctionId, recursive: bool) -> bool {
-        self.recursive.define(function, recursive)
-    }
-
-    /// Body-shape keying fact, co-produced with `Recursive` by
-    /// `Job::DeriveRecursive` under the same `FactKey::Recursive` arm: does
-    /// this function's body CONSUME callable identity -- call through a
-    /// callable, or capture into a lambda it constructs? Such a body's
-    /// activations key on precise closure brands (direct dispatch, and
-    /// correlation between construction sites and the closures they make); a
-    /// body that only transports callables does not, and its key may treat
-    /// brands as freight.
-    pub(crate) fn define_calls_closures(&mut self, function: FunctionId, calls_closures: bool) -> bool {
-        self.calls_closures.define(function, calls_closures)
+    /// The one body-shape keying fact behind `FactKey::Recursive`: both
+    /// answers (recursion, callable-identity consumption) publish as one
+    /// value, so keying can never observe one without the other.
+    pub(crate) fn define_body_keying(&mut self, function: FunctionId, keying: BodyKeying) -> bool {
+        self.body_keying.define(function, keying)
     }
 
     pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<DispatchDemand>) -> bool {
@@ -1748,27 +1741,23 @@ impl World {
             .get(function)
             .expect("activation keying should wait for dispatch mask facts before activation")
             .clone();
-        let recursive = *self
-            .recursive
+        let keying = *self
+            .body_keying
             .get(function)
             .expect("activation keying should wait for recursive facts before activation");
         // The arrow is the PRECISE evidence: address the whole input vector in one
         // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address
         // to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
         let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
-        if !recursive {
-            // A non-recursive body that never calls through a callable only
+        if !keying.recursive {
+            // A non-recursive body that never consumes callable identity only
             // TRANSPORTS the closures that reach it, so closure identity is
             // freight, not meaning: erase the literals from non-dispatch
             // slots and every same-surface brand shares one activation
-            // (fz-6gb). A body that does call through a callable consumes
-            // that identity -- its specializations buy direct dispatch -- so
-            // it keeps the precise key. Evidence is precise either way.
-            let calls_closures = *self
-                .calls_closures
-                .get(function)
-                .expect("activation keying should wait for recursive facts before activation");
-            if calls_closures {
+            // (fz-6gb). A consuming body keeps the precise key -- its
+            // specializations buy direct dispatch. Evidence is precise
+            // either way.
+            if keying.consumes_callable_identity {
                 return key;
             }
             let arrow = self.types.erase_transported_closure_identities(key.arrow, &mask);
