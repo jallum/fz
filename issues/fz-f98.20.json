@@ -6,10 +6,10 @@
   "description": "`jobs/transport.rs` derives a position's type by looking the value up in\n`facts.analysis().value_types` and defaulting a miss to `any`. That default is\nthe fz-f98.17 defect: a hole becomes a wrong answer the cumulative join can\nnever retract, and the callsite ends up holding two disagreeing facts.\n\nfz-f98.18 removed two of them (the entry-capture pair, now `entry_capture_ty`,\nproven dead across lib + matrix before being converted to an invariant) and\nfz-hwn.27.5 had already converted the resume-payload one (`resume_payload_ty`).\nTEN remain:\n\n    272, 292, 307, 352, 1080, 1090, 1331, 1358, 1441, 1482\n\n## The sharpest one first\n\nLine ~352 and `resume_payload_ty` (~1290) derive the type of the SAME position\nkind -- `TransportPosition::ResumePayload` -- and disagree: one defaults to\n`any`, the other panics naming `key_is_value_template`. One position kind, two\nanswers. Collapse them onto the strict one.\n\n## Method that worked in fz-f98.18\n\nReplace the default with `unwrap_or_else(|| panic!(...))`, run `cargo test --lib`\nand `cargo test --test fixture_matrix -- --test-threads=1`, and count probe hits.\nZero hits across both is evidence the default is dead and can become an\ninvariant. A hit is evidence the value can legitimately be absent -- in which\ncase say WHY in place, and say what the right answer is (`none` for a dead\nposition is usually it, never `any`).\n\n## Checks\n\n- Each of the ten is either removed or carries a comment justifying it with the\n  evidence above.\n- The two ResumePayload derivations are one derivation.\n- Full lib + matrix at baseline or better.",
   "id": "fz-f98.20",
   "labels": [],
-  "parent": "fz-f98",
+  "parent": "fz-kdt",
   "priority": 2,
   "status": "open",
   "title": "Audit the ten remaining unwrap_or_else(any) type defaults in transport.rs",
   "type": "task",
-  "updated_at": "2026-08-24T21:46:17Z"
+  "updated_at": "2026-08-25T01:08:09Z"
 }
