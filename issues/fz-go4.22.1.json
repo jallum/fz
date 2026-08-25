@@ -7,7 +7,6 @@
   "description": "Parent: fz-go4.22. RESOLVED at main 417c5b0b5 -- no flake observed.\n\n## What this reported\n\n`matrix::tail_recursion::interp` was an ACTIVE (non-deferred, non-ignored) test\nthat flaked even single-threaded and in isolation: observed passing 2/2 then\nfailing 2/2 in the same session, on both a worktree and a pristine checkout at\nd49562986 (2026-07-04). Suspected to be the .28.6 schedule-dependence family.\n\n## What is true now\n\n    for i in 1..10: cargo test --test fixture_matrix -- --test-threads=1 tail_recursion\n    ok ok ok ok ok ok ok ok ok ok\n\nTen consecutive single-threaded runs, all green, all three lanes each time.\n\nClosed on the absence of a flake. Note that the suspected root was\nschedule-dependence, and the compiler's job schedule is now DETERMINISTIC by\nconstruction (fz-f98.19: a job's fact emission order is preserved end to end, so\ntwo compiles of the same input run the same jobs in the same order, pinned by\n`compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order`). If the\ndiagnosis was right, that removed the mechanism.\n\nTen runs cannot prove a flake is gone. If it returns, reopening is cheap -- but\nreopen with the two divergent outcomes captured (wrong-answer flip vs\npass/crash flip), which the original ticket asked for and never got.",
   "id": "fz-go4.22.1",
   "labels": [],
-  "parent": "fz-go4.22",
   "priority": 2,
   "status": "closed",
   "title": "tail_recursion::interp is flaky (non-deterministic pass/fail) even single-threaded in isolation",
