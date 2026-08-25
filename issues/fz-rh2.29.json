@@ -10,7 +10,6 @@
   "labels": [
     "epic"
   ],
-  "parent": "fz-rh2",
   "priority": 1,
   "status": "closed",
   "title": "Compiler2 incremental runtime demand: dissolve the seal's demand fixpoint into per-executable facts",

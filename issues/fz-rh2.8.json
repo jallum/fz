@@ -7,7 +7,6 @@
   "description": "Goal: consume settled Compiler2 closure facts mechanically. Signal: materialization, ABI, interpreter/JIT/AOT adapters never publish semantic facts or discover reachability, and backend work resumes only after the fixpoint-cleanup arc makes the closure boundary honest, quieter, and lazy.",
   "id": "fz-rh2.8",
   "labels": [],
-  "parent": "fz-rh2",
   "priority": 2,
   "status": "closed",
   "title": "Compiler2 artifact boundary and backend adapters",

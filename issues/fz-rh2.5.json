@@ -13,7 +13,6 @@
   "description": "Goal: make code contributions define identity without lowering bodies. Change: IndexCode creates CodeState, module/function definitions, owned expanded ClauseAst/FunctionAst, and namespace bindings. Check: quicksort plus foo defines all functions but creates no LoweredBody/Activation/Executable facts.",
   "id": "fz-rh2.5",
   "labels": [],
-  "parent": "fz-rh2",
   "priority": 1,
   "status": "closed",
   "title": "Compiler2 front door: index code into owned expanded function definitions",

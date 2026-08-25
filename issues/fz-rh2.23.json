@@ -7,7 +7,6 @@
   "description": "Since fz-rh2.21/.22 the compiler2:: lib scope completes in ~13s and is verified by name-set delta; exactly four pre-existing failures remain (rooted at/before the 18.5 WIP commit), now cheap to iterate on: compiler2::drive_test::compiler2_native_program_joins_callable_resume_before_materializing_closure_call, compiler2::port_interp_test::case_joined_fn_ref_remains_callable, compiler2::port_lower_test::guard_and_binding_reuse_single_list_head_extraction, compiler2::port_resolve_test::spec_unknown_type_is_resolve_error. Diagnose each before fixing; they may share a root with the fz-rh2.17.5.x sweeps (callable/interface residue). Goal: compiler2:: green minus only fz-rh2.20's stack-overflow test, so the scope can become a hard gate.",
   "id": "fz-rh2.23",
   "labels": [],
-  "parent": "fz-rh2",
   "comments": [
     {
       "text": "fz-rh2.20 landed (dbb7bd621): the suite no longer needs any --skip. The goal line simplifies to: these four failures are ALL that stands between compiler2:: and green-as-a-hard-gate.",
