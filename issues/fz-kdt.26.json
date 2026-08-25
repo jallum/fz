@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:39:47Z",
+  "description": "`world.function_type_struct_refs(function)` (world.rs:899) returns ONE vec per\nfunction covering `@spec` params/result/constraints, the extern contract, and\nevery clause's param annotations. It is written from a single walk at\nsource_publish.rs:404-412, which appends all three families into one\n`struct_refs`.\n\nTHREE jobs iterate the whole vec and take a `StructDefined` wait on every entry:\n\n    jobs/contract.rs:63   derive_function_contract\n    jobs/dispatch.rs:132  plan_entry_dispatch\n    jobs/body.rs:267      LowerFunction\n\nSo `plan_entry_dispatch` waits on a struct referenced only by an `@spec` return\ntype, `derive_function_contract` waits on one referenced only by a param\nannotation, and `LowerFunction` waits on both. `body.rs:267`'s own comment\ndescribes it as waiting on \"the extern spec's struct refs\", though the vec also\ncarries `@spec` and param-annotation refs.\n\n## This is a REFINEMENT, not a correctness bug -- and that is verified\n\nThe shared vec is a SUPERSET of what each consumer's own positions need, so there\nis no under-wait and no silent-drop path. `dedup_module_ids` (world.rs:892-894)\nalready collapses repeats. Waiting on an extra `StructDefined` that settles adds\na harmless read edge; waiting on a non-struct surfaces the not-a-struct error\nregardless of which job reports it.\n\n## Fix\n\nSplit the recorded refs per-consumer -- spec, guard/param-annotation, extern --\nso each job waits only on the structs its own positions reference. The single\nwalk in source_publish.rs already visits the three families separately (three\ndistinct loops at lines 405-411), so the split is at the RECORDING end, not a new\ntraversal.\n\n## What the old ticket got wrong\n\nIt names TWO consumers. A third (body.rs:267) was added afterwards and\nover-waits the same way, so the split must cover all three call sites.\n\n## Checks\n\n- After the split, a function whose `@spec` names `%A{}` and whose param\n  annotation names `%B{}` has `plan_entry_dispatch` waiting on\n  `StructDefined(B)` only, and `derive_function_contract` on `StructDefined(A)`\n  only.\n- Telemetry-observed: the per-job wait set shrinks on a fixture with disjoint\n  spec/annotation struct refs; total drive work unchanged or lower.\n- Coordinate with fz-b6w and the fz-rh2.17.5.6.10 obligation model, which share\n  this walk.",
+  "id": "fz-kdt.26",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "function_type_struct_refs is one shared wait-set read by three consumers, each over-waiting on the others' struct references",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:39:47Z"
+}
