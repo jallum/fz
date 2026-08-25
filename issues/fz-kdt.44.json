@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T02:14:30Z",
+  "description": "## Goal\n\nMake fact settledness transitively sound without recalculating a formula whose input content did not change.\n\nToday FactSlot is settled when its own publishers are clean. If A becomes unready while retaining the same current content, a formula B that reads Current(A) can remain locally settled even though A may still move. Scheduler::complete propagates readiness-only movement to Settled and SettledPresence readers, but not through Current readers. Finality is therefore local, not dependency-transitive.\n\n## Output contract\n\nFor a formula B that reads Current(A):\n\n- while A is dirty, Settled(B) is unavailable;\n- if A concludes with unchanged content, B becomes final again without evaluating B;\n- if A's content changes, B evaluates because its recorded input revision moved;\n- this readiness dependency propagates through chains and cycles;\n- adding or replacing a read updates finality incrementally;\n- no cell value is cleared merely to represent unready state.\n\nFinality is dependency state, not a pass. No SCC/group inventory, epoch object, root scan, graph sweep, or reader recomputation may be introduced unless a failing test proves the simpler incremental model insufficient.\n\n## TDD strategy\n\nStart with scheduler-level red tests:\n\n1. A -\u003e B -\u003e C: dirty A without changing content. Settled(C) becomes unavailable; B and C evaluation counts remain unchanged; all become settled again when A concludes unchanged.\n2. Same chain with A content movement: only the transitive content readers evaluate.\n3. A \u003c-\u003e B monotone cycle: peers read Current values, downstream Settled waits until the cycle is quiescent, and each evaluation is revision-caused.\n4. Add an edge during ascent: standing values remain; only affected finality and content readers move.\n5. Retraction/rebase: replacement reaches the correct fixed point without stale settled reads.\n\nThe tempting one-line change that sends readiness-only movement through enqueue_dependents(Current) must be tested first and rejected if it recalculates B on unchanged A; correctness alone is insufficient when the model promises minimal work.\n\n## Telemetry acceptance\n\nConsumes fz-kdt.34.\n\n- readiness propagation and content wakes are distinguishable;\n- a readiness-only change produces zero formula evaluations;\n- every non-initial formula evaluation names a content revision that moved since its own prior conclusion;\n- no full dependency scan occurs;\n- repeated runs produce identical causal work traces.\n\n## Documentation\n\nClarify Current content, local publisher cleanliness, and transitive finality as separate concepts. Remove the quiescent-group epoch proposal if this contract is satisfied without it.",
+  "id": "fz-kdt.44",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Make settledness transitively sound without recalculating unchanged formulas",
+  "type": "task",
+  "updated_at": "2026-08-25T02:14:30Z"
+}
