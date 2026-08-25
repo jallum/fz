@@ -31,11 +31,15 @@
     {
       "text": "SUPERSEDED by  under the fz-kdt re-baseline epic. This description was rewritten to current truth today; rather than leave a rewritten ticket sitting in an old epic alongside its own stale comment history, the live content moves to  and this one closes. Work continues in .",
       "timestamp": "2026-08-25T01:08:30Z"
+    },
+    {
+      "text": "CORRECTION to the previous comment, which named an empty successor -- a scripting error posted it before the replacement was created.\n\nSUPERSEDED by fz-kdt.4 under the fz-kdt re-baseline epic.\n\nThe structural finding stands unchanged; what was stale was every number attached to it. fz-6gb cut executable fanout ~5x (32-lambda ladder: 233 executables -\u003e 45), so the 231-member cone this ticket was filed against came from an input five times larger than today's. fz-kdt.4 carries the current table, the correction that the demand fixpoint's graph is the call graph UNION its reverse, and an instruction to re-measure before designing. Work continues there.",
+      "timestamp": "2026-08-25T01:09:02Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "RuntimeDemand is keyed per executable but computed per program: the demand cone spans the whole reachable call graph and never reuses a settled one",
   "type": "bug",
-  "updated_at": "2026-08-25T01:08:30Z"
+  "updated_at": "2026-08-25T01:09:02Z"
 }
