@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-f98.4"
-  ],
+  "blocks": [],
   "closed_at": "2026-07-10T16:25:13Z",
   "close_reason": "Landed 0aa00f6f7 fz-f98.7: thread range reduce2 first accumulator. Range.reduce now routes only the internal `{:cont, :first}` reduce/2 sentinel through the first-step bootstrap, while ordinary Range Enumerable.reduce/3 continues through the original reduce_cont path. Removed the fz_f98_range_reduce2 run/interp/build defers and added production-path interp/JIT guards plus Range reduce3 halt/suspend regression guards. Audit verdict: pass-with-nits. Coordinator gates on integration: cargo test range_reduce --lib passed (6 tests); cargo test --test fixture_matrix fz_f98_range_reduce2 passed (3/3); direct fz2 interp/run/build for fixture printed 105; direct Range reduce3 halt/suspend repro preserved {:halted, 3} and suspended accumulator on interp/run; cargo test --lib passed (1320 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed. Residual multi-call Range reduce2 callable-materialization edge filed as fz-f98.15.",
   "created": "2026-06-24T20:43:45Z",
