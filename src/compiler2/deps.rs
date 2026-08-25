@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 use super::facts::FactUse;
+use super::ordered_set::OrderedSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedWait<J, F> {
@@ -9,59 +10,13 @@ pub struct UnresolvedWait<J, F> {
     pub jobs: Vec<J>,
 }
 
-/// An insertion-ordered membership set: iteration order is registration
-/// order, not the per-process `RandomState` order a bare `HashSet` would
-/// produce. `Scheduler::enqueue_dependents` iterates a fact's subscribers and
-/// waiters to decide which job to enqueue next, so a hash-random order here
-/// would make job execution order — and therefore which job's conclusion
-/// lands "first" at a keep-first merge downstream — vary run to run for the
-/// exact same input. Mirrors the `order: Vec` + membership-set idiom already
-/// used for deterministic dedup elsewhere in compiler2 (`Agenda`,
-/// `quoted_surface`'s `group_order`).
-#[derive(Debug, Clone)]
-struct JobSet<J> {
-    order: Vec<J>,
-    members: HashSet<J>,
-}
-
-impl<J> Default for JobSet<J> {
-    fn default() -> Self {
-        Self {
-            order: Vec::new(),
-            members: HashSet::new(),
-        }
-    }
-}
-
-impl<J: Clone + Eq + Hash> JobSet<J> {
-    fn insert(&mut self, job: J) {
-        if self.members.insert(job.clone()) {
-            self.order.push(job);
-        }
-    }
-
-    fn remove(&mut self, job: &J) {
-        if self.members.remove(job) {
-            self.order.retain(|existing| existing != job);
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.order.is_empty()
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &J> {
-        self.order.iter()
-    }
-}
-
 #[derive(Debug)]
 pub struct DependencyIndex<J, F> {
     reads: HashMap<J, HashSet<FactUse<F>>>,
-    subscribers: HashMap<FactUse<F>, JobSet<J>>,
+    subscribers: HashMap<FactUse<F>, OrderedSet<J>>,
     waits: HashMap<J, HashSet<FactUse<F>>>,
-    waiters: HashMap<FactUse<F>, JobSet<J>>,
-    outputs: HashMap<J, HashSet<F>>,
+    waiters: HashMap<FactUse<F>, OrderedSet<J>>,
+    outputs: HashMap<J, OrderedSet<F>>,
 }
 
 impl<J, F> Default for DependencyIndex<J, F> {
@@ -140,7 +95,7 @@ where
         }
     }
 
-    pub fn replace_outputs(&mut self, job: J, next_outputs: HashSet<F>) {
+    pub fn replace_outputs(&mut self, job: J, next_outputs: OrderedSet<F>) {
         if next_outputs.is_empty() {
             self.outputs.remove(&job);
         } else {
@@ -148,7 +103,7 @@ where
         }
     }
 
-    pub fn output_keys(&self, job: &J) -> HashSet<F> {
+    pub fn output_keys(&self, job: &J) -> OrderedSet<F> {
         self.outputs.get(job).cloned().unwrap_or_default()
     }
 

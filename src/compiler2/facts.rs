@@ -1,3 +1,4 @@
+use super::ordered_set::OrderedSet;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
@@ -106,7 +107,10 @@ pub struct FactMovement<F> {
 #[derive(Debug, Clone)]
 pub struct FactReplace<F> {
     pub changed: Vec<FactChange<F>>,
-    pub output_keys: HashSet<F>,
+    /// The keys this job now publishes, in the order the job emitted them.
+    /// That order is load-bearing: it becomes the wake order downstream
+    /// (fz-f98.19).
+    pub output_keys: OrderedSet<F>,
 }
 
 /// One fact: the set of jobs that currently claim it, plus a monotonic
@@ -209,11 +213,11 @@ where
     pub fn replace_outputs(
         &mut self,
         job: &J,
-        previous_output_keys: &HashSet<F>,
+        previous_output_keys: &OrderedSet<F>,
         outputs: Vec<F>,
         changed_keys: Vec<F>,
     ) -> FactReplace<F> {
-        let mut output_keys = HashSet::new();
+        let mut output_keys = OrderedSet::default();
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
         }
@@ -230,14 +234,18 @@ where
                 "job marked a fact changed that it neither publishes nor previously owned"
             );
         }
-        let touched = previous_output_keys
+        // Emission order first, then whatever this job used to own and no longer
+        // does. Both halves are ordered, so `touched` is too — and `touched`
+        // becomes the wake order (fz-f98.19).
+        let touched = output_keys
             .iter()
             .cloned()
-            .chain(output_keys.iter().cloned())
-            .collect::<HashSet<_>>();
+            .chain(previous_output_keys.iter().cloned())
+            .collect::<OrderedSet<_>>();
 
         let mut changed = Vec::new();
-        for key in touched {
+        for key in &touched {
+            let key = key.clone();
             let mut slot = self.slots.remove(&key).unwrap_or_default();
             let old_revision = slot.revision();
             let old_settled = slot.is_settled();
@@ -286,7 +294,7 @@ where
     /// listed keys — a blocked publisher is not vouching yet; the caller marks
     /// the job's full claim set dirty after extending.
     pub fn extend_outputs(&mut self, job: &J, outputs: Vec<F>, changed_keys: Vec<F>) -> FactReplace<F> {
-        let mut output_keys = HashSet::new();
+        let mut output_keys = OrderedSet::default();
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
         }
@@ -330,7 +338,7 @@ where
         FactReplace { changed, output_keys }
     }
 
-    pub fn mark_dirty(&mut self, job: &J, output_keys: &HashSet<F>) -> Vec<FactChange<F>> {
+    pub fn mark_dirty(&mut self, job: &J, output_keys: &OrderedSet<F>) -> Vec<FactChange<F>> {
         let mut changed = Vec::new();
         for key in output_keys {
             let Some(slot) = self.slots.get_mut(key) else {

@@ -45,6 +45,7 @@ use super::module_interface::{
     ModuleReferenceExpectationMap,
 };
 use super::namespace::{Namespace, NamespaceStore, NamespaceSymbol};
+use super::ordered_set::OrderedSet;
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap, protocol_domain_tag,
@@ -2104,8 +2105,17 @@ fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalErr
     FatalError
 }
 
+/// Drop repeats, keep the order the job emitted them in.
+///
+/// A job may name the same fact twice; the fact table refuses duplicates, so
+/// they are dropped here. What must NOT be dropped is the order: a job's
+/// emission order becomes the order its dependents wake, which becomes the
+/// order fresh types reach the interner. Deduping through a `HashSet` scrambled
+/// every job's outputs at the one place they all funnel through, which is how
+/// two compiles of the same input published different raw `Ty` numbering
+/// (fz-f98.19).
 fn dedupe_job_facts(facts: Vec<FactKey>) -> Vec<FactKey> {
-    facts.into_iter().collect::<HashSet<_>>().into_iter().collect()
+    facts.into_iter().collect::<OrderedSet<_>>().iter().cloned().collect()
 }
 
 fn callable_match_score(fixed_arity: usize, variadic: bool, actual_arity: usize) -> Option<CallableMatchScore> {

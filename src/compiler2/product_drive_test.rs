@@ -99,45 +99,100 @@ fn compiling_the_same_root_twice_through_the_jit_reaches_the_same_outcome() {
     }
 }
 
-/// fz-k22.21 raised this one level past bare success/failure (the JIT-outcome
-/// check above): it proved the *set of executables* published for the root
-/// (which function/need pairs got compiled) was invariant, but stopped short
-/// of full `BackendProgram` struct equality because the interner
-/// (`types/mod.rs::TypeInterner::intern`, first-intern-order `u32` ids) still
-/// minted a handful of types in a different relative order between two
-/// in-process compiles -- an unaudited unordered fold inside the fz-k22.23
-/// callable-flow actual-use closure (reduce/predicate continuation
-/// construction). fz-k22.28 traced and pinned every remaining unordered fold
-/// on that path (`jobs/runtime_demand.rs`'s per-cone member list and
-/// per-value callable-flow list, both `HashMap` folds sorted by `ValueId`/
-/// `ExecutableKey` now instead of native iteration order, plus
-/// `World::demand_activation_frontier_analyses`'s `HashSet<ActivationKey>`
-/// frontier sorted by `StableSortKey`), so raw `BackendProgram` equality --
-/// including every `Ty` an executable's signature or body carries -- is now
-/// provable, not just the executable inventory's shape.
+/// Compiles `enum_predicate_search` and reports both halves of the determinism
+/// contract: the ordered sequence of jobs the drive actually ran (observed
+/// through the production `fz.compiler2.job` span, not a test-only hook) and
+/// the `BackendProgram` it published.
+fn compile_enum_predicate_search() -> (Vec<Job>, super::BackendProgram) {
+    let tel = ConfiguredTelemetry::new();
+    let jobs: std::rc::Rc<std::cell::RefCell<Vec<Job>>> = Default::default();
+    let recorded = std::rc::Rc::clone(&jobs);
+    tel.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
+        &["fz", "compiler2", "job"],
+        move |_, _, _, job| recorded.borrow_mut().push(job.clone()),
+        |_, _, _, _, _, _| {},
+        |_, _, _, _| {},
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .compile_root_jit(root)
+        .unwrap_or_else(|error| panic!("expected the fixture to compile, got {error}"));
+    let program = compiler.world().backend_program(root);
+    (jobs.take(), program)
+}
+
+/// Same input, same work — the CAUSAL half of the determinism contract.
+///
+/// Job order is not an implementation detail. It decides which conclusion lands
+/// first at a keep-first merge, and it decides the order fresh types reach the
+/// interner, whose ids are arena positions. So a run-to-run difference here is
+/// what makes the published `BackendProgram` irreproducible, and it is where a
+/// determinism defect actually lives.
+///
+/// Its sibling below asserts the end state instead. Both are needed and neither
+/// subsumes the other: this one names the cause and fails at the first swapped
+/// pair; that one proves nothing downstream reintroduced a hazard. Byte
+/// equality alone is a 1.5MB inequality message that names nothing (fz-f98.19).
+#[test]
+fn compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order() {
+    let (jobs_a, _) = compile_enum_predicate_search();
+    let (jobs_b, _) = compile_enum_predicate_search();
+
+    let divergence = jobs_a.iter().zip(jobs_b.iter()).position(|(a, b)| a != b);
+    assert!(
+        divergence.is_none() && jobs_a.len() == jobs_b.len(),
+        "compiling the same root twice must run the same jobs in the same order; \
+         first run drove {} jobs, second drove {}{}",
+        jobs_a.len(),
+        jobs_b.len(),
+        divergence.map_or(String::new(), |at| format!(
+            ", and they first diverge at job {at}:\n  first:  {:?}\n  second: {:?}",
+            jobs_a[at], jobs_b[at]
+        )),
+    );
+}
+
+/// The END STATE of the determinism contract: same input, byte-identical
+/// artifact -- including every raw `Ty` an executable's signature or body
+/// carries, not just the executable inventory's shape.
+///
+/// Raw `Ty` equality is a valid comparand HERE and nowhere else. A `Ty` is an
+/// arena index in one `World`, so comparing ids across two worlds is normally
+/// far too strong a bar -- one extra incidental intern shifts every later id
+/// without changing what the program means. What makes it sound in this test is
+/// that both compiles run the same binary over the same input in one process:
+/// the code path is identical, so the ONLY thing that can renumber the arena is
+/// nondeterminism. Under those conditions "different ids" implies "different
+/// work order", which is a real defect. Do not lift this comparison to
+/// cross-process, cross-version, or cached-artifact equivalence; that needs a
+/// canonical externalized form, which does not exist yet (fz-f98.21) and cannot
+/// be faked from `{:?}` -- `HashMap`'s own Debug order is unstable, so the
+/// rendering differs run to run even when the structs are equal.
+///
+/// fz-k22.21 raised this past bare success/failure (the JIT-outcome check
+/// above), and fz-k22.28 pinned the folds that minted types AS THEY ITERATED
+/// (`jobs/runtime_demand.rs`'s per-cone member list and per-value
+/// callable-flow list, `World::demand_activation_frontier_analyses`'s
+/// frontier). fz-f98.19 is the same disease one layer down: the folds that
+/// reorder JOB WAKES, whose effect on the interner is second-order. Its cause
+/// is named by the sibling test above; this one additionally catches a
+/// nondeterminism that never reaches job order -- an unordered fold inside a
+/// single job that only reorders what it emits -- so neither test subsumes the
+/// other.
 #[test]
 fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
-    fn compile_enum_predicate_search() -> super::BackendProgram {
-        let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(tel);
-        compiler.submit_code(CodeSubmission {
-            name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
-            text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
-        });
-        let root = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".to_string(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-        compiler
-            .compile_root_jit(root)
-            .unwrap_or_else(|error| panic!("expected the fixture to compile, got {error}"));
-        compiler.world().backend_program(root)
-    }
-
-    let program_a = compile_enum_predicate_search();
-    let program_b = compile_enum_predicate_search();
+    let (_, program_a) = compile_enum_predicate_search();
+    let (_, program_b) = compile_enum_predicate_search();
 
     assert_eq!(
         program_a, program_b,
