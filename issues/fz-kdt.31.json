@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:41:27Z",
+  "description": "Demand gates BinaryOp/UnaryOp operands on RESULT liveness\n(src/compiler2/jobs/runtime_demand.rs:2170-2180):\n\n    LoweredStep::BinaryOp { value, left, right, .. } =\u003e {\n        if !take_live_demand(live, *value).is_ignore() {\n            note_live_demand(world, out, live, *left, RuntimeDemand::whole());\n            note_live_demand(world, out, live, *right, RuntimeDemand::whole());\n        }\n    }\n\nbut EMISSION is unconditional (src/compiler2/jobs/backend.rs:1887-1897): both\nsteps map straight to `BackendStep::BinaryOp`/`UnaryOp` with no\n`construction_step_or_omitted` gate. That helper (backend.rs:1979) is applied\nonly to the six fresh-construction steps -- Tuple, List, Map, MapUpdate, Struct,\nBitstring (backend.rs:1823-1868).\n\nSo an `Ignore`-demanded result leaves its operands unmaterialized while the step\nis still emitted: the fz-9in shape, one step kind over.\n\n## Could not reproduce -- six attempts, all correct\n\n- unused `_z = 10 / d` in an allocating callee beside `Enum.take` -- the op\n  EXECUTED (operands were materialized), so no starvation\n- `t == u` over two locally-built tuples\n- `[9|xs] == xs`\n- `range == range` beside `Enum.take` (the exact fz-9in shape)\n- `%{a: 1} == m`\n- a bare `r == r` expression statement in a separate callee taking a Range param\n\nAll printed the expected `[0, 1]` / `[1, 2, 3]` on interp and, where run, JIT.\n\nSo the acceptance criterion is still unmet in BOTH directions: neither a repro\nnor a proof of unreachability. Keep it as a first-place-to-look note, and do not\nspend budget hunting a repro speculatively -- fz-6fr already failed to build one\nfor the sibling case.\n\n## Two notes for a future probe\n\n- The probe commit the old ticket cites (2b5451677) is NOT reachable in this\n  squashed history.\n- Its parenthetical `!m` is not fz syntax (`` `!` is not an operator; use `not`\n  ``), so that operand form has to be spelled differently.\n\n## Checks\n\nEither a fixture where an Ignore-demanded BinaryOp/UnaryOp result leaves its\noperands unmaterialized and the emitted step faults, or a written argument that\nthe combination is unreachable by construction -- with the reason recorded at\nbackend.rs:1887 so the asymmetry with the construction steps is explained\nin place rather than rediscovered.",
+  "id": "fz-kdt.31",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "BinaryOp/UnaryOp steps are emitted unconditionally while demand gates their operands on result liveness",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:41:27Z"
+}
