@@ -276,90 +276,116 @@ impl ProductMemo {
         self.produced.get(key).map(|entry| &entry.dependencies.products)
     }
 
+    /// Has `key` settled -- does reading it answer now, with a value it already
+    /// holds? A displaced product has not: it is waiting to be produced again.
+    #[cfg(test)]
+    pub(crate) fn is_settled(&self, key: &ProductKey) -> bool {
+        self.produced.contains_key(key)
+    }
+
+    /// Every `reader -> dependency` edge the memo holds, over the produced,
+    /// displaced and in-flight products alike.
+    #[cfg(test)]
+    pub(crate) fn dependency_edges(&self) -> impl Iterator<Item = (&ProductKey, &ProductKey)> {
+        self.pending_dependencies
+            .iter()
+            .chain(
+                self.produced
+                    .iter()
+                    .chain(self.displaced.iter())
+                    .map(|(key, entry)| (key, &entry.dependencies)),
+            )
+            .flat_map(|(key, dependencies)| dependencies.products.keys().map(move |dependency| (key, dependency)))
+    }
+
     pub fn contains_in_progress(&self, key: &ProductKey) -> bool {
         self.in_progress.contains(key)
     }
 
-    fn pending_dependency_reaches(&self, from: &ProductKey, target: &ProductKey) -> bool {
-        let mut pending = vec![from.clone()];
+    /// Does `from` reach `target` by following the dependencies of products
+    /// that have not settled?
+    ///
+    /// Both askers -- the recursive-group gate and the strong component that
+    /// gate leads to -- are asking one question: would waiting on this
+    /// dependency deadlock, because it is itself waiting on me? Only an
+    /// unsettled product can be waiting on anything. A settled one answers a
+    /// read immediately with the value it already holds, so no chain of waits
+    /// runs through it and the walk has nothing to learn by stepping into one.
+    /// `settled_products_depend_only_on_settled_products` pins the memo state
+    /// that makes ignoring them lossless rather than merely safe.
+    ///
+    /// `overlay` supplies the dependencies of a product that is mid-production
+    /// and so has none recorded in the memo yet.
+    fn dependency_reaches(
+        &self,
+        from: &ProductKey,
+        target: &ProductKey,
+        overlay: Option<(&ProductKey, &ProductDependencies)>,
+    ) -> bool {
+        let mut pending = vec![from];
         let mut seen = HashSet::new();
         while let Some(key) = pending.pop() {
-            if key == *target {
+            if key == target {
                 return true;
             }
-            if !seen.insert(key.clone()) {
+            if !seen.insert(key) {
                 continue;
             }
-            if let Some(dependencies) = self.product_dependencies_for_group(&key) {
-                pending.extend(dependencies.products.keys().cloned());
+            let dependencies = match overlay {
+                Some((current, dependencies)) if key == current => Some(dependencies),
+                _ => self.unsettled_product_dependencies(key),
+            };
+            if let Some(dependencies) = dependencies {
+                pending.extend(dependencies.products.keys());
             }
         }
         false
     }
 
+    /// The products that are mutually reachable with `current`: the recursive
+    /// group that has to settle as one because no member can be believed
+    /// before the others are.
+    ///
+    /// Only unsettled products are candidates, for the same reason
+    /// `dependency_reaches` only walks them: a settled product is already
+    /// believed, so it is not waiting on this group and does not belong to it.
     fn pending_strong_component(
         &self,
         current: &ProductKey,
         current_dependencies: &ProductDependencies,
-        member: fn(&ProductKey) -> bool,
     ) -> Vec<ProductKey> {
+        let overlay = Some((current, current_dependencies));
         let mut candidates = self
             .pending_dependencies
             .keys()
-            .chain(self.produced.keys())
             .chain(self.displaced.keys())
-            .filter(|key| member(key))
-            .cloned()
+            .filter(|key| key.kind() == current.kind())
             .collect::<HashSet<_>>();
-        candidates.insert(current.clone());
+        candidates.insert(current);
         candidates
             .into_iter()
             .filter(|candidate| {
-                self.dependency_reaches_with_current(current, candidate, current, current_dependencies, member)
-                    && self.dependency_reaches_with_current(candidate, current, current, current_dependencies, member)
+                self.dependency_reaches(current, candidate, overlay)
+                    && self.dependency_reaches(candidate, current, overlay)
             })
+            .cloned()
             .collect()
-    }
-
-    fn dependency_reaches_with_current(
-        &self,
-        from: &ProductKey,
-        target: &ProductKey,
-        current: &ProductKey,
-        current_dependencies: &ProductDependencies,
-        member: fn(&ProductKey) -> bool,
-    ) -> bool {
-        let mut pending = vec![from.clone()];
-        let mut seen = HashSet::new();
-        while let Some(key) = pending.pop() {
-            if key == *target {
-                return true;
-            }
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            let dependencies = if &key == current {
-                Some(current_dependencies)
-            } else {
-                self.product_dependencies_for_group(&key)
-            };
-            if let Some(dependencies) = dependencies {
-                pending.extend(
-                    dependencies
-                        .products
-                        .keys()
-                        .filter(|dependency| member(dependency))
-                        .cloned(),
-                );
-            }
-        }
-        false
     }
 
     fn product_dependencies_for_group(&self, key: &ProductKey) -> Option<&ProductDependencies> {
         self.pending_dependencies
             .get(key)
             .or_else(|| self.produced.get(key).map(|entry| &entry.dependencies))
+            .or_else(|| self.displaced.get(key).map(|entry| &entry.dependencies))
+    }
+
+    /// The dependencies of `key` if `key` has not settled: either it is in
+    /// flight and has recorded some, or it was displaced and is waiting to be
+    /// produced again. A settled product is deliberately absent -- see
+    /// `dependency_reaches`, the only caller.
+    fn unsettled_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
+        self.pending_dependencies
+            .get(key)
             .or_else(|| self.displaced.get(key).map(|entry| &entry.dependencies))
     }
 
@@ -1481,24 +1507,15 @@ impl<'s> ProductReadContext<'s> {
         self.read_product_entry(key)
     }
 
+    /// Would reading `from` close a cycle back onto `target`, the product being
+    /// produced right now? A `true` answer means `from` belongs to `target`'s
+    /// recursive group and must settle with it rather than be waited on.
     pub(crate) fn pending_dependency_reaches(&self, from: &ProductKey, target: &ProductKey) -> bool {
-        self.session.memo.pending_dependency_reaches(from, target)
+        self.session.memo.dependency_reaches(from, target, None)
     }
 
-    pub(crate) fn pending_transport_shape_group(&self, current: &ProductKey) -> Vec<ProductKey> {
-        self.session
-            .memo
-            .pending_strong_component(current, &self.dependencies, |key| {
-                matches!(key, ProductKey::TransportShape(_))
-            })
-    }
-
-    pub(crate) fn pending_callable_construction_group(&self, current: &ProductKey) -> Vec<ProductKey> {
-        self.session
-            .memo
-            .pending_strong_component(current, &self.dependencies, |key| {
-                matches!(key, ProductKey::CallableConstruction(_))
-            })
+    pub(crate) fn pending_recursive_group(&self, current: &ProductKey) -> Vec<ProductKey> {
+        self.session.memo.pending_strong_component(current, &self.dependencies)
     }
 
     pub(crate) fn recursive_group_transport_layouts(&self, members: &[ProductKey]) -> Vec<TransportLayout> {

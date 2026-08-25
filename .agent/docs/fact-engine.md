@@ -196,7 +196,13 @@ Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
 and `RuntimeDemand(E)` discover executable dependency groups from settled
 call-edge facts; recursive `TransportShape(position)` and
 `CallableConstruction(position)` products settle their position groups from
-external anchors. Each group publishes every member atomically. Each memo entry
+external anchors. A producer discovers its group by asking whether the
+dependency it is about to wait on reaches back to it; that walk, and the strong
+component it gates, follow the dependencies of unsettled products only. A
+settled product answers a read with the value it already holds, so it waits on
+nothing and no cycle of waits runs through it — and a settled product never
+depends on an unsettled one, so nothing is missed by not stepping into it.
+Each group publishes every member atomically. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
 fact-use states. Every member of a settled group retains the union of the
 group's external product and fact dependencies when every duplicate dependency

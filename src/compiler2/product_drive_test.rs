@@ -511,3 +511,60 @@ fn fatal_error_end_to_end_did_not_settle_on_a_real_drive() {
         format!("compiler2 backend product for root {} did not settle", root.as_u32())
     );
 }
+
+/// A settled product depends only on settled products.
+///
+/// `ProductMemo::dependency_reaches` -- the recursive-group gate and the strong
+/// component behind it -- walks only the dependencies of products that have not
+/// settled. Its justification is that a wait cycle cannot run through a settled
+/// product: reading one returns the value it already holds, so nothing waits on
+/// it and it waits on nothing. This test pins the memo state that makes that
+/// true, and so makes skipping settled products lossless rather than merely
+/// safe: if a settled product could depend on an unsettled one, a real cycle
+/// could route through it and the walk would answer `false` where the answer is
+/// `true`, waiting on a dependency that is waiting back.
+///
+/// A closure passed through a runtime-library reducer is the shape that builds
+/// the widest graph: callable constructions, transport shapes, runtime demand
+/// and executable facts all take part, and the two recursive kinds both appear.
+#[test]
+fn settled_products_depend_only_on_settled_products() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("settled_dependencies.fz".to_string()),
+        "fn main() do\n  dbg(Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end))\nend\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the reducer root should settle");
+    let memo = driver.session().memo();
+
+    let unsettled = memo
+        .dependency_edges()
+        .filter(|(reader, _)| memo.is_settled(reader))
+        .filter(|(_, dependency)| !memo.is_settled(dependency))
+        .map(|(reader, dependency)| (reader.kind(), dependency.kind()))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        unsettled.is_empty(),
+        "settled products should hold no dependency on an unsettled product, \
+         or a wait cycle could route through one: {unsettled:?}"
+    );
+
+    // Guard against the assertion above passing vacuously: the two kinds whose
+    // recursive groups the walk serves must both be present and both self-loop,
+    // so this drive really did exercise the graph the walk is pruning.
+    let kinds = memo
+        .dependency_edges()
+        .map(|(reader, dependency)| (reader.kind(), dependency.kind()))
+        .collect::<std::collections::BTreeSet<_>>();
+    for kind in ["transport_shape", "callable_construction"] {
+        assert!(
+            kinds.contains(&(kind, kind)),
+            "{kind} should depend on its own kind here, or this drive is not exercising \
+             the recursive groups the walk serves (edges: {kinds:?})"
+        );
+    }
+}
