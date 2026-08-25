@@ -14,11 +14,15 @@
     {
       "text": "CI EVIDENCE, and the tripwire that was supposed to catch this has been retired.\n\nThis fixture's ~3s compile has been blowing its wall-clock cap on EVERY CI run of\nthe fz-go4.1..fz-f98.19 stack -- PRs #80, #90, #91, #92 and #99 -- as\n\n    ---- matrix::enum_predicate_search::run ----\n    fz2 exceeded 6s; stderr:\n\nIt went unnoticed because from #93 to #98 the lib suite failed first and cargo's\nfail-fast meant the matrix never ran. fz-f98.19 made the lib suite green, the\nmatrix ran again, and the long-standing failure surfaced.\n\nMeasured, debug build, fast dev machine:\n\n    enum_predicate_search   3.15s   cap 6s    CI: FAILED\n    enum_take_drop_split    6.1s    cap 15s   CI: passed\n\nSo CI needs more than ~2x the local time even for the fixture that passes. The\ncaps are now 15s on both, documented in the fixture header as HANG BACKSTOPS\nthat are deliberately too loose to notice a perf regression, and the perf gate\nmoves to a work-count ceiling in fz-f98.23 (which cites this ticket's 2625\ncallable_construction settlements for 242 executables as the number to assert).\n\nNothing here changes the underlying finding: 3.15s to compile a 24-line program\nis excess work, and by [[feedback_tiny_fixture_slowness_is_correctness]] that is\na correctness signal. This ticket is still the fix. What changed is that its\ndetector is no longer a stopwatch calibrated on one machine.",
       "timestamp": "2026-08-24T23:26:02Z"
+    },
+    {
+      "text": "SUPERSEDED by  under the fz-kdt re-baseline epic. This description was rewritten to current truth today; rather than leave a rewritten ticket sitting in an old epic alongside its own stale comment history, the live content moves to  and this one closes. Work continues in .",
+      "timestamp": "2026-08-25T01:08:31Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "enum_predicate_search still compiles for ~3s after the settled-product pruning: 2625 callable_construction settlements for 242 executables",
   "type": "bug",
-  "updated_at": "2026-08-25T01:01:25Z"
+  "updated_at": "2026-08-25T01:08:31Z"
 }
