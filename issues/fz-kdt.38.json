@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:43:26Z",
+  "description": "Nothing stops the public surface from growing: no `#![warn(unreachable_pub)]` or\nequivalent exists in src/, runtime/src/, Cargo.toml, clippy.toml or .github/.\n\n## Verified at main 417c5b0b5\n\nThe RUNTIME half matches the old ticket exactly. `runtime/src/heap/mod.rs:23`\ndeclares `mod gc;` -- PRIVATE, inside `pub mod heap` -- and\n`grep -rn \"^\\s*pub fn \" runtime/src/heap/gc | wc -l` -\u003e 17. All 17 are\nunreachable, which is precisely the ticket's \"17 function candidates, all under\nruntime/src/heap/gc\".\n\nThe FZ half: src/lib.rs exports only `pub mod compiler2`, `pub mod ground_value`,\n`pub mod types`, plus `pub use function_surface::FunctionSurface` and\n`pub use telemetry::sink::NullTelemetry`. Everything else is a private `mod`.\n\nThere are 765 `pub fn` in src/, of which 169 sit in fully-private top-level\nmodules and are unreachable BY CONSTRUCTION:\n\n    telemetry 60, fz_ir 32, diag 22, exec 17, ir_codegen 9, source 9,\n    modules 8, ast 4, parser 4, type_expr 2, ir_dce 1, ir_interp 1\n\nsrc/compiler2/mod.rs declares 39 of its 41 submodules as private `mod` (only\n`pub mod pull` and `pub(crate) mod callsite_dispatch` differ), so the large\nmajority of the 594 `pub fn` under src/compiler2 are candidates too, minus\nwhatever `pub use` re-exports pull types into reach.\n\n## Could not verify\n\nThe headline numbers -- 655 unreachable public items, 357 function/method\ncandidates. `cargo rustc -p fz --lib -- -D unreachable_pub` recompiles the crate,\nwhich was not available during triage. The counts above are a LOWER BOUND on the\nfz side and an exact match on the runtime side. Re-take the baseline before\nslicing.\n\n## Correction to the old strategy note\n\nIt says \"Do not touch exported API in src/lib.rs (`run`, `FunctionSurface`,\n`compiler2`, `types`)\". There is no `run` in src/lib.rs today. The guard list\nneeds `ground_value` and `NullTelemetry` ADDED and `run` DROPPED.\n\n## Checks\n\n- A fresh `-D unreachable_pub` baseline is recorded before any slicing.\n- `#![warn(unreachable_pub)]` (or the clippy equivalent) is enabled so the\n  surface cannot silently regrow -- without a ratchet this ticket recurs.\n- src/lib.rs's five exported items stay exported.",
+  "id": "fz-kdt.38",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Restrict unreachable public functions to crate visibility, and add a ratchet so the surface cannot regrow",
+  "type": "task",
+  "updated_at": "2026-08-25T01:43:26Z"
+}
