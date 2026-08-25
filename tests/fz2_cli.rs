@@ -177,10 +177,38 @@ fn assert_aot_link_telemetry(path: &Path, context: &str) {
     ] {
         assert!(log.contains(name), "{context} should emit {name}; log=\n{log}");
     }
+    // WHICH archive `fz2 build` may use is decided by the environment, not by
+    // the build. A coverage run cannot link the embedded archive -- it is
+    // instrumented -- so `runtime_archive_plan` deliberately rebuilds a clean
+    // one into an isolated target dir. CI runs this whole suite under
+    // `cargo llvm-cov`, so asserting "embedded" unconditionally asserts the
+    // developer's environment rather than the contract. Assert the source the
+    // environment mandates, and keep it exact in both directions so a build
+    // that silently rebuilds outside coverage is still a failure.
+    let expected_source = if coverage_environment() {
+        "isolated_coverage_build"
+    } else {
+        "embedded"
+    };
     assert!(
-        log.contains(r#""source":"embedded""#),
-        "{context} should identify the embedded runtime archive; log=\n{log}"
+        log.contains(&format!(r#""source":"{expected_source}""#)),
+        "{context} should resolve the {expected_source} runtime archive; log=\n{log}"
     );
+}
+
+/// Mirrors `aot_link::coverage_env_present`, which is crate-private and cannot
+/// be reached from an integration test that observes `fz2` as a subprocess.
+/// Both read the same four variables; they must agree.
+fn coverage_environment() -> bool {
+    fn mentions_coverage(name: &str) -> bool {
+        std::env::var(name)
+            .map(|value| value.contains("instrument-coverage") || value.contains("llvm-cov"))
+            .unwrap_or(false)
+    }
+    std::env::var_os("CARGO_LLVM_COV").is_some()
+        || std::env::var_os("LLVM_PROFILE_FILE").is_some()
+        || mentions_coverage("RUSTFLAGS")
+        || mentions_coverage("CARGO_ENCODED_RUSTFLAGS")
 }
 
 fn output_text(out: &Output) -> String {
