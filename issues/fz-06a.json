@@ -10,11 +10,15 @@
     {
       "text": "FIXED at 5964cdd73 (PR #95, stacked on #94). Elixir-checked: the same dispatch shape (dispatch on arg 2, args 1 and 3 pass through) returns 6 and 1 under elixir, and fz returns 6 and 1 on both interp and run.\n\nGates: lib 1442 passed (up one, the new invariant), no regressions; matrix 407/410 unchanged; clippy --workspace 0 warnings; fmt clean.\n\nNOTE FOR fz-f98.10: this closes the untested-SLOT half of the var-\u003eany leak only. The falsified nested-var experiment (recorded in this ticket's description) is direct evidence for f98.10's own framing -- that the remaining collapse is a TYPE MODEL problem (preserve variables and instantiate them) and not something a widening rule can fix at the dispatch layer. Anyone starting f98.10 should read that experiment first: preserving nested vars naively costs 15 lib failures, so the model has to make the variable resolvable rather than merely un-widened.",
       "timestamp": "2026-08-24T19:52:19Z"
+    },
+    {
+      "text": "VERIFIED AT main 417c5b0b5 (landed via PR #95, squash-merged as 304169561).\n\nThis ticket's scope is the untested-SLOT half of the var-\u003eany leak, and it is\ndone: `calculate_dispatch_reachability` now envelopes only the input ordinals\nsome test in the plan actually reads, pinned by\n`a_slot_no_test_looks_at_keeps_its_type_variable`, with the pre-existing\n`bare_template_inputs_are_refined_as_runtime_values` still holding for tested\nslots. Full lib + matrix green on main.\n\nIts stated SCOPE caveat has since been resolved elsewhere, so nothing is left\nhanging: \"it does NOT close enum_take_drop_split, which still fails on the same\nguard from a residual `[any]` arriving through a TESTED list slot\". That residual\nturned out not to be an envelope problem at all -- fz-f98.16 (empty-list\nambiguity per position), fz-f98.17 (a variable-carrying callee is absence, not a\ndynamic edge) and fz-f98.18 (an uninhabitable callee makes the call dead) closed\nit, and enum_take_drop_split is green on all three lanes.\n\nThe falsified nested-var experiment recorded in the description stands as\nevidence for fz-f98.10 and should be read before anyone starts it. Closing.",
+      "timestamp": "2026-08-25T00:56:50Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Dispatch reachability graduates untested input slots to any, poisoning the clause parameter types it also produces",
   "type": "bug",
-  "updated_at": "2026-08-24T19:52:19Z"
+  "updated_at": "2026-08-25T00:56:50Z"
 }
