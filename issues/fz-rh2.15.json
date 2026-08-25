@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-rh2.16.6"
-  ],
+  "blocks": [],
   "closed_at": "2026-07-06T18:05:33Z",
   "close_reason": "Satisfied: fz_ir::ExternDecl no longer carries legacy ret_descr/semantic_contract payloads; native extern handoff uses compiler2 backend facts.",
   "created": "2026-06-09T14:54:55Z",
