@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-kdt.13",
     "fz-kdt.4"
   ],
   "created": "2026-08-25T01:42:25Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Fact engine: cyclic reactive cells settle through one quiescent epoch",
   "type": "task",
-  "updated_at": "2026-08-25T01:59:44Z"
+  "updated_at": "2026-08-25T01:59:45Z"
 }
