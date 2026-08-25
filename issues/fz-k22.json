@@ -19,11 +19,15 @@
     {
       "text": "SUPERSEDED by  under the fz-kdt re-baseline epic. This description was rewritten to current truth today; rather than leave a rewritten ticket sitting in an old epic alongside its own stale comment history, the live content moves to  and this one closes. Work continues in .",
       "timestamp": "2026-08-25T01:08:29Z"
+    },
+    {
+      "text": "CORRECTION to the previous comment, which named an empty successor -- a scripting error posted it before the replacement was created.\n\nSUPERSEDED by fz-kdt.3 under the fz-kdt re-baseline epic.\n\nThis ticket's stated minimal repro no longer reproduces at main 417c5b0b5: two Enum.find/3 calls with distinct closures return 3 / :none / 3 correctly on interp, run and build, and enum_predicate_search -- which this ticket promised to unblock -- has been green for some time. The live repros are different and are restated in fz-kdt.3. Work continues there.",
+      "timestamp": "2026-08-25T01:08:53Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Generic Enum HOF leaves a backend value unbound: reusable-cons exit counters + enum_tier0",
   "type": "bug",
-  "updated_at": "2026-08-25T01:08:29Z"
+  "updated_at": "2026-08-25T01:08:53Z"
 }
