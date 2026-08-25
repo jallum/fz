@@ -5,13 +5,13 @@
   "closed_at": "2026-08-25T01:58:39Z",
   "close_reason": "The motivating seal runaway no longer exists, and a two-tier provisional-publication model would duplicate consistency ownership. fz-kdt.34 now owns the single generic concept: monotone current cells plus a quiescent group epoch for consumers requiring finality.",
   "created": "2026-08-25T01:44:28Z",
-  "description": "Closed as a redundant consistency model.\n\nThe motivating seal runaway no longer exists. A separate provisional-publication tier would duplicate ownership with the reactive fact graph.\n\nfz-kdt.34 owns the single replacement invariant: peers may consume monotone current cell values, while consumers requiring finality wait on the same dependency group's quiescent epoch. No independent implementation remains here.",
+  "description": "Closed as a redundant consistency model.\n\nThe motivating seal runaway no longer exists. A provisional-publication tier and an explicit group-epoch object both duplicate concepts already present in current values, dependency readiness, and settled reads.\n\nfz-kdt.44 owns the one remaining contract: settledness must be transitively sound, while readiness-only movement must not recalculate formulas whose input content is unchanged. No independent implementation remains here.",
   "id": "fz-kdt.42",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
   "status": "closed",
-  "title": "Folded: quiescent epochs replace provisional publication",
+  "title": "Folded: transitive settledness replaces provisional publication",
   "type": "task",
-  "updated_at": "2026-08-25T02:00:35Z"
+  "updated_at": "2026-08-25T02:16:23Z"
 }
