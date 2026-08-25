@@ -14,11 +14,15 @@
     {
       "text": "SUPERSEDED by  under the fz-kdt re-baseline epic.\n\nMeasured at main 417c5b0b5: the activations/ReturnType-widening half is FIXED (4 identical dump hashes; the dbg/1 widening flip does not reproduce), and enum_tier0's reported answer conflation and lane-2 decode aborts do not reproduce either (4 byte-identical runs). The backend-dump half survives but is a RENDERING defect, not a fixpoint one -- the two dumps are identical as a multiset of 49150 lines, so only the print order varies. That is fz-f98.21's canonical-form problem. Restated at that scope in ; work continues there.",
       "timestamp": "2026-08-25T01:12:30Z"
+    },
+    {
+      "text": "CORRECTION -- the previous comment named an empty successor; a leading '--' in the new ticket's title was parsed as a flag and the create failed before the close ran.\n\nSUPERSEDED by fz-kdt.6 under the fz-kdt re-baseline epic.\n\nMeasured at main 417c5b0b5: the activations/ReturnType-widening half is FIXED (4 identical dump hashes; the dbg/1 widening flip does not reproduce), and enum_tier0's reported answer conflation and lane-2 decode aborts do not reproduce either (4 byte-identical runs). The backend-dump half survives but is a RENDERING defect, not a fixpoint one -- the two dumps are identical as a multiset of 49150 lines, so only the print order varies. That is fz-f98.21's canonical-form problem. Restated at that scope in fz-kdt.6; work continues there.",
+      "timestamp": "2026-08-25T01:12:42Z"
     }
   ],
   "priority": 3,
   "status": "closed",
   "title": "Backend dump and activation return types are run-to-run nondeterministic at base",
   "type": "bug",
-  "updated_at": "2026-08-25T01:12:30Z"
+  "updated_at": "2026-08-25T01:12:42Z"
 }
