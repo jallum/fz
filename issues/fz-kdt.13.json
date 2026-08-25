@@ -7,9 +7,15 @@
   "id": "fz-kdt.13",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "FOLDED FROM THREE TICKETS. fz-f98.5 ('telemetry-first convergence audit'), fz-f98.14 ('convergence runaway: drive is 1.3s') and fz-bfh.6 ('demand/analysis re-derivation volume, ~1.8k') were evaluated independently by three different agents, and all three arrived at the same measurement on the same fixture: 1382 AnalyzeActivation spans out of 2593 job spans on enum_take_drop_split.\n\nThey differed only in what they blamed, and each blame was stale in its own way: f98.5 blamed a schedule-dependent Seal\u003c-\u003eDeriveRuntimeDemand\u003c-\u003eTransport cycle (all those job kinds now grep to zero); f98.14 blamed SealSemanticClosure's monolithic reseal (deleted); bfh.6 paired AnalyzeActivation with DeriveRuntimeDemand re-derivation (runtime demand is now a pull product that settles 3 times per drive, not 1.8k).\n\nPer [[feedback_fold_concordant_ideas]] they are one ticket. Keeping three would have had three people measure the same number and re-derive three dead diagnoses.",
+      "timestamp": "2026-08-25T01:36:13Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "enum_take_drop_split spends 2.2s in 1382 AnalyzeActivation runs for 73 seeded activations, deterministically",
   "type": "bug",
-  "updated_at": "2026-08-25T01:35:38Z"
+  "updated_at": "2026-08-25T01:36:13Z"
 }
