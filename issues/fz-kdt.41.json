@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-kdt.13"
-  ],
+  "blocks": [],
   "created": "2026-08-25T01:44:01Z",
   "description": "## Goal\n\nExpose enough production telemetry to prove whether activation analysis behaves like a spreadsheet: an activation formula runs initially or because an exact input cell changed, and unchanged output stops propagation.\n\nThis is the measurement prerequisite for fz-kdt.13, not an optimization ticket.\n\n## Current gap\n\nThe public fz.compiler2.job span identifies only the job kind, so 1,382 AnalyzeActivation runs cannot be grouped by activation key. The CLI telemetry stream also omits the activation-input, return-type, activation-analysis, and callsite movements needed to attribute each rerun to its changed ground.\n\n## Output contract\n\nFor every AnalyzeActivation completion, public telemetry can determine:\n\n- stable activation identity without hot-path display formatting;\n- initial demand versus the exact read/wait revision movement that woke it;\n- rebased or ordinary monotone ascent;\n- which output fact keys semantically changed;\n- which readers those changes woke;\n- blocked versus concluded state.\n\nReuse the scheduler's authoritative dependency/revision state. Do not create a second telemetry-only dependency ledger or eagerly format compiler types.\n\n## Acceptance\n\n- A small activation chain proves every non-initial analysis has an unobserved dependency revision.\n- An analysis with semantic-equivalent outputs records no changed output and wakes no downstream reader.\n- Two runs of each target fixture yield identical per-activation evaluation/change histograms.\n- enum_take_drop_split and fz_f98_range_map_converges can be reduced to distinct activation counts, evaluations per activation, changed-input causes, changed-output counts, and downstream wakes from the public log alone.\n- Telemetry-disabled runs do not materialize display strings or cloned inventories.\n- Documentation describes the fields and the change-proportional invariant.",
   "id": "fz-kdt.41",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "Expose activation-cell identity and revision causality in public telemetry",
   "type": "task",
-  "updated_at": "2026-08-25T01:58:39Z"
+  "updated_at": "2026-08-25T01:59:45Z"
 }
