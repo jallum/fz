@@ -1806,7 +1806,7 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
         context: &mut ProductReadContext<'_>,
         executable: &ExecutableKey,
     ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_runtime_demand_product(self.world, context, executable)
+        super::jobs::runtime_demand::produce_runtime_demand_product(self.world, self.telemetry, context, executable)
     }
 
     fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, _root: RootId) -> PullOutcome {

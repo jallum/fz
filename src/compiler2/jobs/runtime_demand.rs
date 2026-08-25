@@ -21,6 +21,7 @@ use super::super::semantic::{
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::semantic::executable_callsite_needs;
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 #[derive(Debug, PartialEq)]
 pub struct ExecutableFacts {
@@ -315,8 +316,28 @@ impl CallableFlowBuilder {
 /// strictly grows the member set — memos are only recorded once publication is
 /// quiescent, members never leave the cone, and at least the moved external
 /// joins — so the loop terminates within the finite demanded universe.
-pub(crate) fn produce_runtime_demand_product(
+/// What one demand-cone settlement cost, in the terms that drive it.
+///
+/// A cone is collected transitively from its anchor and stops only at
+/// executables whose demand has already settled, so `members` -- not the single
+/// executable the product key names -- is the real unit of work behind a
+/// `RuntimeDemand(E)` answer. `rounds` is the height the Jacobi ascent climbed
+/// and `derivations` is how many member re-derivations it actually ran, which
+/// is well below `members * rounds` because a member whose reads did not move
+/// is skipped. Together they separate the three ways this product can get
+/// expensive -- a cone that is too big, an ascent that climbs too far, or
+/// members that re-derive too often -- which a wall-clock number cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DemandConeSettlement {
+    pub members: u64,
+    pub external_members: u64,
+    pub rounds: u64,
+    pub derivations: u64,
+}
+
+pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
     world: &mut World,
+    tel: &T,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
@@ -346,7 +367,7 @@ pub(crate) fn produce_runtime_demand_product(
             ),
             None => {}
         }
-        let settled = match settle_demand_cone(world, context, &graph) {
+        let settled = match settle_demand_cone(world, tel, context, &graph) {
             Ok(settled) => settled,
             Err(waits) => return product_waits(waits),
         };
@@ -539,8 +560,9 @@ fn collect_demand_cone(
     }
 }
 
-fn settle_demand_cone(
+fn settle_demand_cone<T: Telemetry>(
     world: &mut World,
+    tel: &T,
     context: &mut ProductReadContext<'_>,
     graph: &DemandGraph,
 ) -> Result<SettledDemandCone, HashSet<PullWait>> {
@@ -622,6 +644,7 @@ fn settle_demand_cone(
     let mut bootstrapped: HashSet<ExecutableKey> = HashSet::new();
     let mut dirty: HashSet<&ExecutableKey> = members.iter().collect();
     let mut rounds = 0_u32;
+    let mut derivations = 0_u64;
     loop {
         rounds += 1;
         // Invert the per-caller contribution store once per round: each
@@ -695,6 +718,7 @@ fn settle_demand_cone(
                 continue;
             }
             let facts = graph.facts.get(member).expect("every cone member has facts");
+            derivations += 1;
             let (demand, member_contributions) =
                 derive_member_demand(world, context, member, facts, &reads, &mut waits);
             let demand_changed = iterates.get(member) != Some(&demand);
@@ -737,6 +761,15 @@ fn settle_demand_cone(
                 .cloned()
                 .collect();
             if unnamed.is_empty() {
+                tel.raw_event1(
+                    &["fz", "compiler2", "demand", "cone", "settled"],
+                    &DemandConeSettlement {
+                        members: members.len() as u64,
+                        external_members: graph.external.len() as u64,
+                        rounds: u64::from(rounds),
+                        derivations,
+                    },
+                );
                 return Ok(SettledDemandCone {
                     demands: iterates,
                     contributions,

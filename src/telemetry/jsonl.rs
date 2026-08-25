@@ -189,6 +189,12 @@ impl JsonlBackend {
             &["fz", "compiler2", "pull", "session", "finished"],
             "session",
         );
+        Self::install_raw_value::<crate::compiler2::DemandConeSettlement>(
+            telemetry,
+            &backend,
+            &["fz", "compiler2", "demand", "cone", "settled"],
+            "cone",
+        );
         Self::install_raw_value::<crate::compiler2::pull::ProductKey>(
             telemetry,
             &backend,
@@ -794,6 +800,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "phase", ..]
             | ["fz", "compiler2", "pull", "product", "settled"]
             | ["fz", "compiler2", "work", "started"]
+            | ["fz", "compiler2", "demand", "cone", "settled"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
             | ["fz", "compiler2", "job"]
@@ -1160,6 +1167,18 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "transport_count");
         out.push(':');
         push_u64(out, transport_count);
+    } else if let Some(cone) = opaque.downcast_ref::<crate::compiler2::DemandConeSettlement>() {
+        for (name, value) in [
+            ("members", cone.members),
+            ("external_members", cone.external_members),
+            ("rounds", cone.rounds),
+            ("derivations", cone.derivations),
+        ] {
+            out.push(',');
+            write_str_lit(out, name);
+            out.push(':');
+            push_u64(out, value);
+        }
     } else if let Some(session) = opaque.downcast_ref::<crate::compiler2::PullSession>() {
         let work_starts = session.work_starts();
         for (name, value) in [
