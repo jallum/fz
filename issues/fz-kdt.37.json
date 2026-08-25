@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:42:58Z",
+  "description": "The feature is genuinely unbuilt. `grep -rn\n\"GRADUATED_TO_ANY\\|DEFAULTED_TO_ANY\\|graduated\" src/diag/codes.rs\nsrc/compiler2/` returns 0 hits, so neither `TYPE_PARAM_GRADUATED_TO_ANY` nor\n`TYPE_STRUCT_FIELD_DEFAULTED_TO_ANY` exists.\n\nThe machinery is ready and unchanged: `World::emit_warning_once` (world.rs:2808),\n`WarningDiagnosticKey` dedup (world.rs:90), two live callers\n(jobs/source.rs:268, jobs/contract.rs:113).\n\n## THE BLAST-RADIUS MEASUREMENT IS STALE -- re-take it before planning\n\nThe 2026-06-25 comment clustered ~101 newly-failing tests into three roots and\nconcluded \"the ~101 is dominated by ONE root (f98.10 protocol erasure)\", then\nrecommended \"BURN DOWN THE ROOT FIRST ... then land f98.9 fatal with only the\nsmall residual disabled\".\n\nBoth of the roots it named are now CLOSED: fz-f98.10 and fz-f98.12. Only the\nthird (fz-f98.11, now fz-kdt.14, itself described as downstream) remains open --\nand it has been re-scoped: the operator cluster it was filed against is clean\neverywhere observable, and what survives is Map's Enumerable element erasing to a\ntuple of `any`.\n\nSo the sequencing constraint's precondition HAS BEEN MET, and the \"lib 89 failed\n/ matrix 57\" numbers must be re-measured before anyone plans around them.\n\n## The motivating example is also fixed\n\nThe comment says this warning \"would have caught\" Range's fields being `any`.\n`src/modules/runtime_library/range.fz:6` now declares\n`@type t :: %Range{first: integer, last: integer, step: integer}`, so that bug no\nlonger exists to catch. Find a current motivating example before building the\ndetector, or the warning ships with no demonstrated value.\n\n## Could not measure\n\nThe current graduated-`any` population. Doing so requires implementing the\ndetection this ticket is about; there is no existing telemetry event that\nsurfaces a param position widening to `any`.\n\n## Recommended first step\n\nRe-run the detection prototype and re-take the blast radius against the current\ntree. Only then decide non-fatal-lint-first versus gate-behind-the-roots -- the\nold decision was made against a world where 100 tests failed and two of the three\nroots were open.",
+  "id": "fz-kdt.37",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Warn when a parameter or struct field type is graduated or defaulted to any",
+  "type": "task",
+  "updated_at": "2026-08-25T01:42:58Z"
+}
