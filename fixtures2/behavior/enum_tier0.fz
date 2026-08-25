@@ -2,9 +2,9 @@
 # purpose: "Enum tier-0 functions return Elixir-style public values across List, Range, and Map"
 # oracle: oracle.exs
 # timeout.interp_secs: 15
-# defer.build: two live blockers: Enum.reduce/2 over Map (fz-bfh.3) then fz-k22 (unbound backend value)
-# defer.interp: two live blockers: Enum.reduce/2 over Map (fz-bfh.3) then fz-k22 (unbound backend value)
-# defer.run: two live blockers: Enum.reduce/2 over Map (fz-bfh.3) then fz-k22 (unbound backend value)
+# defer.build: two live blockers: Enum.reduce/2 over Map (fz-kdt.1) then fz-kdt.3 (unbound backend value)
+# defer.interp: two live blockers: Enum.reduce/2 over Map (fz-kdt.1) then fz-kdt.3 (unbound backend value)
+# defer.run: two live blockers: Enum.reduce/2 over Map (fz-kdt.1) then fz-kdt.3 (unbound backend value)
 #---
 #
 # Exercises the reduce-based public `Enum` surface that later Enum functions build
@@ -21,9 +21,9 @@
 #
 #   1. `Enum.reduce(map, fn ...)` -- reduce/2 with no accumulator over a Map --
 #      raises `Enum.EmptyError`. Elixir yields `{3, :one}`. reduce/3 over Map
-#      works, so this is the remaining half of fz-bfh.3.
+#      works, so this is the remaining half of fz-kdt.1.
 #   2. With that one line skipped the fixture prints eight more correct values
-#      and then dies with `backend value 0 is unbound`, which is fz-k22's
+#      and then dies with `backend value 0 is unbound`, which is fz-kdt.3's
 #      signature.
 #
 # So this is two bugs from green, and both are named. Do not re-triage from the

@@ -1,11 +1,11 @@
 #---
 # purpose: "fz-f98: Enum.reduce/2 and reduce/3 over Map do not materialize absent values"
-# defer.build: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-bfh.3)
-# defer.interp: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-bfh.3)
-# defer.run: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-bfh.3)
+# defer.build: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-kdt.1)
+# defer.interp: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-kdt.1)
+# defer.run: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-kdt.1)
 #---
 #
-# Regression target for fz-bfh.3, re-triaged 2026-08-24: ONE bug from green.
+# Regression target for fz-kdt.1, re-triaged 2026-08-24: ONE bug from green.
 # The reduce/3 line below is correct at HEAD (prints 3); only reduce/2 -- the
 # no-accumulator form, which must take the first element as the seed -- still
 # fails, and it fails as `Enum.EmptyError` rather than by dropping value

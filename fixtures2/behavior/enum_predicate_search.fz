@@ -18,7 +18,7 @@
 # doing repeated work, not hard work. It used to take about 12s on `run`
 # because the recursive-group gate walked settled products it could never learn
 # anything from ([[fz-qe0]]); it now takes about 3s (3.15s, debug, on a fast dev
-# machine). The remaining seconds are excess work and belong to [[fz-xat]].
+# machine). The remaining seconds are excess work and belong to [[fz-kdt.5]].
 #
 # The overrides above used to be held just above that as a tripwire. That does
 # not work and has been retired. A wall-clock budget calibrated on dev hardware
@@ -32,7 +32,7 @@
 # clear of the runners even under instrumentation. It exists to catch a genuine
 # hang, and it is deliberately too loose to notice a perf regression. Twenty
 # seconds to compile the program below is an abysmal number and is accepted only
-# until [[fz-xat]] lands; it is not evidence that anything here is acceptable.
+# until [[fz-kdt.5]] lands; it is not evidence that anything here is acceptable.
 #
 # The perf detector this replaces has to be work-based, not time-based -- assert
 # the settlement count from the telemetry job trace, which is machine
