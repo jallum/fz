@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:40:55Z",
+  "description": "Integer division by zero aborts the host process instead of raising an fz error.\nFound while re-verifying fz-0fc; unrelated to that ticket's demand question (it\nbehaves identically with and without demand).\n\n## Repro\n\n    fn main() do\n      d = 0\n      dbg(10 / d)\n    end\n\n    interp:  thread 'main' panicked at src/ir_interp/extern_call.rs:124:5:\n             attempt to divide by zero\n             ... panic in a function that cannot unwind -\u003e abort\n    run:     exit 132 (SIGILL), NO message at all\n    build:   same silent exit 132\n\nELIXIR:\n\n    ** (ArithmeticError) bad argument in arithmetic expression\n\nSo Elixir raises a catchable, named error with a source location. fz gives a\nRust panic on one lane and a silent SIGILL on the other two.\n\nThe `run`/`build` behaviour is the worse half: a program that divides by zero\nexits 132 with no diagnostic, no message, and nothing pointing at the source.\n\n## Why it matters beyond the message\n\n- It is a HOST abort, not an fz-level fault, so nothing in the language can\n  observe or handle it, and the process teardown path (resource destructors,\n  telemetry flush) does not run.\n- The three lanes disagree, which violates three-path parity\n  ([[feedback_three_path_parity]]).\n\n## Checks\n\n- `10 / 0` produces the same fz-level error on interp, run and build, with a\n  source span, and does not panic the host or exit 132.\n- The error is named and matches Elixir's shape (`ArithmeticError`-equivalent,\n  \"bad argument in arithmetic expression\").\n- `rem`/`%` by zero is covered by the same path.\n- Float division by zero follows whatever the language decides -- Elixir raises\n  for `1/0` on integers; check `1.0/0.0` separately before assuming.\n- Full lib + matrix green.\n\nNo existing ticket covers this: `bw list --all -g` for \"divide\", \"by zero\" and\n\"SIGILL\" finds nothing.",
+  "id": "fz-kdt.28",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Division by zero aborts the host process instead of raising an fz error; run and build exit 132 silently",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:40:55Z"
+}
