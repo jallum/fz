@@ -6,9 +6,15 @@
   "description": "Goal\n\nMake fixtures2 the single authoritative fixture system. A behavioral source under fixtures2/behavior owns its program, purpose, matrix policy, and optional compiler-shape contract through the shared fixture metadata parser. Directory membership owns behavioral participation, and every applicable compiler2 frontdoor runs unless the source declares a narrow path deferral.\n\nImplemented foundation\n\n- fz-9i4.1 defined the shared metadata model and parser.\n- fz-9i4.2 taught fixture_matrix to execute single-file fixtures2 behavioral fixtures.\n- fz-9i4.3 migrated the legacy fixtures/\u003cname\u003e/{README,input.fz,...} corpus and deleted legacy discovery.\n- The migration's original deferrals have all been removed. Compiler defects subsequently revealed by the honest matrix belong to their compiler subsystem; they do not extend this migration epic indefinitely.\n\nRemaining finite closeout\n\n- fz-9i4.7.8 restores the proven 87 percent line-coverage floor that was temporarily lowered during migration.\n- fz-9i4.8 deletes residual old fixture-model metadata, dead APIs, stale documentation, and orphan sidecars.\n\nAcceptance\n\nfixtures2/behavior is the sole behavioral discovery root; one parser owns behavioral and compiler-contract frontmatter; no old budget workflow or legacy path vocabulary remains; the coverage floor is restored; tests and documentation describe the three compiler2 paths run, interp, and build. Once those two closeout tickets land, close this epic. Ongoing compiler correctness tickets may use these fixtures as regression signals but do not block fixture unification.",
   "id": "fz-9i4",
   "labels": [],
+  "comments": [
+    {
+      "text": "COMPLETE at main 417c5b0b5 as an epic; its two remaining work items are rehomed.\n\nIts primary acceptance is done: 'ls -d fixtures' -\u003e No such file or directory. fixtures2/behavior is the sole behavioral discovery root, 140 fixtures, matrix 416/0 with 3 deferred fixtures each naming a live blocker.\n\nThe two closeout children were both genuine and both moved: fz-9i4.7.8 -\u003e fz-kdt.23 (.coverage-threshold is still the temporary 84 lowered in PR #80, and the measurement it cited is from a commit not on this history line), fz-9i4.8 -\u003e fz-kdt.20 (50 fixtures carrying 500 dead budget.* lines, a parse arm with no evaluator, and GOLDEN.md still documenting a four-path matrix that runs three).\n\nfz-9i4.4 closed separately -- verified: NativeClosureTargetSurface has 0 occurrences, NativeCodegenSurface has no closure_targets field, and build_codegen_closure_targets survives only in a comment describing its deleted loop. fz-9i4.7.5.1 -\u003e fz-kdt.29, upgraded: an impossible resource field access does not merely widen to any, it aborts the host process on run and build.\n\nfz-9i4.8 was the one ticket in this whole re-baseline that was accurate line-for-line as filed.",
+      "timestamp": "2026-08-25T01:45:58Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Unify behavioural fixtures on fixtures2",
   "type": "epic",
-  "updated_at": "2026-07-15T14:39:54Z"
+  "updated_at": "2026-08-25T01:45:58Z"
 }
