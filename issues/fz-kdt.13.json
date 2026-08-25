@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [
     "fz-kdt.34"
   ],
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "Split activation analysis at truthful semantic decision boundaries",
   "type": "bug",
-  "updated_at": "2026-08-25T13:32:17Z"
+  "updated_at": "2026-08-25T15:25:50Z"
 }
