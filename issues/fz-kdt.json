@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:08:04Z",
+  "description": "The backlog accumulated faster than it was maintained. At the point this epic was\nopened there were 79 open/in-progress tickets, 64 of them filed in June/July\n2026, and most described a world that no longer exists: symptoms fixed by\nunrelated work, repros that no longer reproduce, named tests that have been\ndeleted, and measurements taken against inputs since shrunk by 5x.\n\nThat is worse than a big backlog. A ticket whose description is stale sends the\nnext person to the wrong file, and one whose repro passes wastes a whole session\nbefore anyone doubts the ticket instead of the code.\n\n## What this epic is\n\nThe re-baselined backlog. Every child here has been RE-VERIFIED against main\n417c5b0b5 -- the merge point of the fz-go4.1..fz-f98.24 stack, where the suite is\nfully green (lib 1454/0, matrix 416/0, fz2_cli 20/0, aot_variadic_open 1/0,\ndoc-tests 210/0, on CI as well as locally).\n\n## The rule\n\n- A ticket whose defect no longer reproduces is CLOSED, with the evidence and an\n  explicit note that it closed on absence of a repro rather than an attributed\n  fix, plus instructions to file fresh rather than reopen.\n- A ticket that is STILL VALID is rewritten as a new child of this epic, stating\n  only what is true now, and the original is closed pointing at the successor.\n- No contradictory comment layers. If the description is wrong, the description\n  changes. A ticket is persistent memory; it should read as current state, not\n  as an archaeological record.\n\n## What a child must carry\n\n- A repro that was RUN, with its actual output, not a remembered one.\n- Where the old ticket was wrong, said plainly, so nobody re-derives the dead\n  diagnosis.\n- Checks that are decidable.\n- Elixir's answer where the subject is language behaviour.",
+  "id": "fz-kdt",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Re-baseline the compiler backlog against main 417c5b0b5",
+  "type": "task",
+  "updated_at": "2026-08-25T01:08:04Z"
+}
