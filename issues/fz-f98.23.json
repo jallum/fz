@@ -7,9 +7,15 @@
   "id": "fz-f98.23",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "SCOPE NOTE, because a commit already carries this ticket's name.\n\n`fz-f98.23: retire a wall-clock tripwire that was always red on CI` (main\n120c86192, PR #102) landed only the RETIREMENT half -- the caps moved to 20s and\nthe fixture header now says plainly that they are hang backstops, deliberately\ntoo loose to notice a perf regression.\n\nThis ticket's actual subject, the REPLACEMENT, is not done. None of its Checks\nare met:\n\n    enum_predicate_search carries a work ceiling                NOT MET\n    the ceiling is derived from emitted telemetry               NOT MET\n    the wall-clock overrides stay loose and documented          holds\n\nSo there is currently NO perf detector on that fixture at all. That is the gap\nthis ticket closes, and `git log` should not be read as closure.",
+      "timestamp": "2026-08-25T00:57:40Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Replace the wall-clock perf tripwire with a work-count ceiling from telemetry",
   "type": "task",
-  "updated_at": "2026-08-24T23:25:50Z"
+  "updated_at": "2026-08-25T00:57:40Z"
 }
