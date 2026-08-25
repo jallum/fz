@@ -35,7 +35,21 @@ pub(crate) struct FunctionFactMap<T> {
     slots: Vec<Option<T>>,
 }
 
-pub(crate) type RecursiveMap = FunctionFactMap<bool>;
+/// The body-shape keying fact `Job::DeriveRecursive` publishes under
+/// `FactKey::Recursive`: both answers live in one value so a consumer can
+/// never observe one without the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BodyKeying {
+    /// Reaches itself through the static call graph: its activation keys
+    /// convergence-collapse so the ascent settles (fz-y6w).
+    pub(crate) recursive: bool,
+    /// Calls through a callable, constructs a lambda, or is a capture-holding
+    /// lambda: closure brands are meaning to this body, so its keys stay
+    /// precise. A body with neither treats brands as freight (fz-6gb).
+    pub(crate) consumes_callable_identity: bool,
+}
+
+pub(crate) type BodyKeyingMap = FunctionFactMap<BodyKeying>;
 pub(crate) type DispatchMaskMap = FunctionFactMap<Vec<DispatchDemand>>;
 
 impl<T> FunctionFactMap<T>

@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::super::body::{CallSiteId, ControlEntryId, LoweredBody, ValueId, callsite_call_args, callsite_input_modes};
+use super::super::body::{
+    CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId, callsite_call_args,
+    callsite_input_modes,
+};
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
@@ -1230,6 +1233,30 @@ fn produce_local_callable_construction(
     })
 }
 
+/// The callsite's result value and whether the call sits in tail position
+/// (`ControlDestination::Return`), where the result aliases the caller's
+/// return. `None` when the callsite id names no call tail in this body.
+fn callsite_result(facts: &super::runtime_demand::ExecutableFacts, callsite: CallSiteId) -> Option<(ValueId, bool)> {
+    let LoweredBody::Clauses { entries, .. } = facts.body() else {
+        return None;
+    };
+    entries.iter().find_map(|entry| match &entry.tail {
+        LoweredTail::DirectCall {
+            value,
+            callsite: tail_callsite,
+            dest,
+            ..
+        }
+        | LoweredTail::ClosureCall {
+            value,
+            callsite: tail_callsite,
+            dest,
+            ..
+        } if *tail_callsite == callsite => Some((*value, matches!(dest, ControlDestination::Return))),
+        _ => None,
+    })
+}
+
 fn resume_payload_value(facts: &ExecutableFacts, entry: ControlEntryId) -> ValueId {
     match facts.body() {
         LoweredBody::Clauses { entries, .. } => entries
@@ -1413,7 +1440,7 @@ fn produce_named_transport_position(
             if !context.read_fact(world, fact.clone()) {
                 return Some(PullOutcome::wait_on_fact(fact));
             }
-            let Some(ty) = world.activation_return(&executable.activation) else {
+            let Some(caller_return_ty) = world.activation_return(&executable.activation) else {
                 return Some(bottom_transport_shape(world));
             };
             recipe = origin_transport_recipe(
@@ -1424,7 +1451,26 @@ fn produce_named_transport_position(
                     .callsite_return_origin(*callsite)
                     .expect("every return payload must have a normalized callsite origin"),
             );
-            (ty, runtime.return_demand)
+            // The payload is the CALLSITE RESULT's contract. A tail-positioned
+            // call's result IS the caller's return, so those alias; a
+            // delivered result has its own value, whose type and demand are
+            // the contract -- a discarded result carries no demand and must
+            // publish no lanes, the same zero its callee-side boundary
+            // derives. Deriving the delivered case from the caller's OWN
+            // return instead compiled the two halves of one calling
+            // convention against different lane counts (fz-f98.14.11).
+            match callsite_result(&facts, *callsite) {
+                Some((value, false)) => (
+                    facts
+                        .analysis()
+                        .value_types
+                        .get(&value)
+                        .copied()
+                        .unwrap_or_else(|| world.types_mut().any()),
+                    runtime.value_demands.get(&value).cloned().unwrap_or_default(),
+                ),
+                _ => (caller_return_ty, runtime.return_demand),
+            }
         }
         TransportPosition::EntryCapture {
             entry, capture_index, ..

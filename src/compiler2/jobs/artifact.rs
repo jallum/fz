@@ -1397,12 +1397,16 @@ fn public_indirect_return_ty(
             ),
         )
     })?;
-    if settled_return.is_some_and(|settled_return| !world.types().is_equivalent(&settled_return, &result_ty)) {
+    if let Some(settled_return) =
+        settled_return.filter(|settled_return| !world.types().is_equivalent(settled_return, &result_ty))
+    {
+        let settled = world.types().display(&settled_return);
+        let semantic = world.types().display(&result_ty);
         return Err(incomplete_semantic_plan(
             tel,
             root_id,
             format!(
-                "public closure callsite {} settled return disagrees with its semantic result type",
+                "public closure callsite {} settled return `{settled}` disagrees with its semantic result type `{semantic}`",
                 callsite.as_u32()
             ),
         ));

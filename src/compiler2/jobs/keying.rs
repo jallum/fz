@@ -8,7 +8,7 @@ use crate::dispatch_matrix::{ListRegion, ProjectionKind, Region, RegionPredicate
 use super::super::body::{LoweredBody, LoweredStep, LoweredTail};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
-use super::super::keying::DispatchDemand;
+use super::super::keying::{BodyKeying, DispatchDemand};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
@@ -39,7 +39,13 @@ pub(super) fn derive_recursive(
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
-        let changed = world.define_recursive(function, false) | world.define_calls_closures(function, false);
+        let changed = world.define_body_keying(
+            function,
+            BodyKeying {
+                recursive: false,
+                consumes_callable_identity: false,
+            },
+        );
         return Ok(JobEffects {
             outputs: vec![FactKey::Recursive(function)],
             changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
@@ -63,14 +69,17 @@ pub(super) fn derive_recursive(
         });
     }
 
-    let recursive = reaches_self(function, &graph);
-    // Co-produced under the same `Recursive` fact arm: consumers gated on that
-    // fact (activation keying) see both values or neither, and a move in
-    // EITHER value must publish as a change -- a body edit can flip
-    // identity-consumption without touching recursion, and keying dependents
-    // re-derive off this one fact.
-    let changed = world.define_recursive(function, recursive)
-        | world.define_calls_closures(function, body_consumes_callable_identity(world, function));
+    // One fact, one value: a body edit can flip identity-consumption without
+    // touching recursion, and keying dependents re-derive off this fact --
+    // publishing both answers as one struct makes a half-defined or
+    // half-signalled state unrepresentable.
+    let changed = world.define_body_keying(
+        function,
+        BodyKeying {
+            recursive: reaches_self(function, &graph),
+            consumes_callable_identity: body_consumes_callable_identity(world, function),
+        },
+    );
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::Recursive(function)],
