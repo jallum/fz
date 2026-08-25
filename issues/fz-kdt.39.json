@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:43:27Z",
+  "description": "DECISION TICKET, reserved by the user (\"User wants to DISCUSS the design before\nimplementation\"). Nothing here is decidable by running anything.\n\n## Now unblocked -- all three blockers are closed\n\nfz-yj0, fz-usm.3 and fz-usm.4 are all CLOSED. The old blocked-by list should be\nconsidered cleared.\n\n## Premise verified at main 417c5b0b5\n\nThe GroundValue fold landed. `src/ground_value.rs:129`:\n\n    pub enum MapKey { Atom(String), Int(i64) }\n\nwith the doc \"This is the single canonical `{Atom, Int}` key shape:\n`crate::types` re-exports it as `crate::types::MapKey` rather than defining its\nown\". So question (a) -- should map field keys be `GroundValue` rather than\natom/int-only? -- is still open and still meaningful: `MapKey` is the {Atom, Int}\nprojection, NOT the full GroundValue.\n\n`MapSig` (src/compiler2/types/sigs.rs:110-112) is still exactly\n\n    pub(crate) struct MapSig { pub fields: BTreeMap\u003cMapKey, Ty\u003e }\n\nNo `rest` axis. The doc at sigs.rs:103-105 still literally says \"Keys are\nconcrete singleton values (atoms, ints, strs); arbitrary-keyed maps fall back to\n`map_top`\", so the lossy approximation is unchanged.\n\n## Two questions to settle\n\n(a) Should map field keys be `GroundValue` rather than the atom/int projection?\n(b) Should `MapSig` gain a `rest` axis so a homogeneous `map(k, v)` is\n    expressible, instead of falling back to `map_top`?\n\n`@spec f(map(atom, integer))` currently errors\n`expected 0 type argument(s), got 2 'map'`, which is the surface consequence.\n\n## Drift and a small inconsistency to fold in\n\n- The 2026-07-06 comment's \"against HEAD 927c4b752\" is stale; `MapKey` now lives\n  in src/ground_value.rs, not src/types/map.rs as fz-yj0's body says.\n- sigs.rs:103-105 claims keys may be \"strs\", but `MapKey` has only Atom and Int.\n  That doc/code disagreement is worth fixing in whatever lands here.",
+  "id": "fz-kdt.39",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Decide whether map field keys are GroundValue and whether MapSig gains a rest axis for homogeneous map(k,v)",
+  "type": "task",
+  "updated_at": "2026-08-25T01:43:27Z"
+}
