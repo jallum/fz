@@ -7,9 +7,15 @@
   "id": "fz-go4.18",
   "labels": [],
   "parent": "fz-go4",
+  "comments": [
+    {
+      "text": "COMPLETE at main 417c5b0b5. Its stated goal -- delete the legacy seal/transport spine so native/JIT/AOT reach the backend through the same product boundary as interp -- is done.\n\nEvery entity it says 'cannot be deleted' greps to ZERO hits in src/: SealSemanticClosure, DeriveTransportPlan, DeriveRuntimeDemand, SemanticReady, SemanticClosed. 'transport_plan' survives only as the test helper pull_transport_plan_for_test; there is no world.transport_plan store and no side-read of it. root_executable_frontier survives only as two comments recording its own deletion (scheduler.rs:126: 'the one production caller, was deleted in fz-go4.18.4-fix').\n\nThe front door is the guarded product path: compiler.rs:125-141 native_program_for_root -- 'Native/JIT/AOT reach the backend through the SAME product boundary as interp.'\n\nIts stated symptom 'HEAD lib suite is RED: 926/8 failed' is false: lib is 1454/0.\n\nEvery child is resolved. The residue that was real moved to fz-kdt.40 (unjustified callable facts) and fz-kdt.41 (cross-round AnalyzeActivation re-runs, whose telemetry acceptance criterion had to be rewritten because the 'changed:bool' field it depends on was never landed).",
+      "timestamp": "2026-08-25T01:45:05Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Compiler2 native pull cutover: move native/JIT/AOT off the legacy seal/transport ladder",
   "type": "bug",
-  "updated_at": "2026-06-29T11:18:28Z"
+  "updated_at": "2026-08-25T01:45:05Z"
 }
