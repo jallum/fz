@@ -2030,14 +2030,21 @@ impl ConstructionInputEncoder<'_> {
         args: &[T],
         mut resolve_arg: impl FnMut(&T) -> Result<BackendBoundValue, String>,
     ) -> Result<Vec<AnyValue>, String> {
+        // `target_inputs` is sparse: an input the target never reads publishes no
+        // layout at all, which is why every entry carries its own
+        // `semantic_index`. What must hold is that each published index addresses
+        // a real input, since the lookups below are by that key and it indexes
+        // `semantic_values` / `explicit_values`.
         let semantic_arity = self.target.key.activation.input_len(self.types);
-        if self.member.target_inputs.len() != semantic_arity {
+        if let Some(input) = self
+            .member
+            .target_inputs
+            .iter()
+            .find(|input| input.semantic_index >= semantic_arity)
+        {
             return Err(format!(
-                "backend callable construction {} member target {} publishes {} semantic input layouts for arity {}",
-                self.wrapper.identity,
-                self.target_index,
-                self.member.target_inputs.len(),
-                semantic_arity
+                "backend callable construction {} member target {} publishes semantic input {} for arity {}",
+                self.wrapper.identity, self.target_index, input.semantic_index, semantic_arity
             ));
         }
         let physical_capture_count = self
