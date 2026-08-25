@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-f98.5"
-  ],
+  "blocks": [],
   "created": "2026-06-25T13:15:27Z",
   "description": "CORRECTED ROOT of the f98.5 reducer over-monomorphization (see fz-f98.5 thread). Enum.to_list(1..3) infers the range element type as int|float though every value is int. Traced: Range struct fields (defstruct [:first,:last,:step]) are typed ANY (defstruct carries no field types; the @type t :: %Range{first: integer,...} annotation is not applied to the fields). The value crosses the Enumerable protocol boundary (t(a)) and the concrete %Range{} field types are erased, so reduce_cont/reduce_step destructure first/last/step as any. Then current = current + step is any + any, and the + operator overload set (ii-\u003einteger, if/fi/ff-\u003efloat) admits BOTH the integer and float guards for any operands, so it returns the union int|float. That spurious float floods the shared reducer's element type and drives the int vs int|float sibling activations (f98.5/f98.6).\n\nCompare Elixir (../elixir/lib/elixir/lib/range.ex): @type t :: %Range{first: limit, last: limit, step: step} with limit::integer. Elixir is dynamically typed so that typespec is advisory (Dialyzer-only). fz is STATICALLY typed, so the same declaration must be load-bearing.\n\nWORK: make declared types actually constrain inferred types -- (a) apply a struct's @type field types to its defstruct schema so %Range{} fields are integer not any; (b) ensure the declared field/param types survive the protocol/destructure boundary (do not erase concrete struct field types to any when a value flows through t(a)). Contract narrowing already exists for direct calls (refine_contract_inputs intersects input with the @spec param surface) -- the gap is struct fields + protocol-boundary erasure. Guardrail: full lib suite + matrix; the fz_f98 fixtures should show int (not int|float) range elements after.",
   "id": "fz-f98.8",
