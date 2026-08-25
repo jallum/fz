@@ -6,9 +6,15 @@
   "description": "Goal\nFinish the work that was intentionally left outside fz-bin after protocol dispatch itself landed.\n\nSignal (unified root)\nInvestigation collapsed the reduce failures to ONE root: the shared Enum.reduce* bridge callable's surface/return type is not a convergent, identity-correlated fixed point over non-List Enumerables (fz-f98). Its symptoms, all one defect:\n- fz-bfh.1 reduce/3 over Range + scalar acc crashes (lane mismatch / driver.rs:971 / transport.rs:2587 missing CallableFlowFact).\n- fz-bfh.2 reduce/2 over Range and reduce_while/3 over Map hit settled_callable_boundary \"names multiple boundaries\".\n- fz-bfh.3 reduce/2,3 over Map materialize an absent value (native.rs:2826).\n- fz-bfh.4 reduce over Range+Map together never converges (semantic-drive storm).\nOne non-List shape + a captured callable settles wrong (the crashes); two non-List shapes never settle (the storm). fz-f98 is the single fix; .1-.4 are its regression targets.\n\nIndependent items remain:\n- fz-x2n delete the dead callable-boundary fallback and fail-loud on multi-surface divergence (a hardening sibling, not the root).\n- fz-9i4.7.3 enum_map_family native direct-closure fast-path arity.\n- fz-bv3 struct-vs-map nominal dispatch.\n\nStrategy\nFix the root once in fz-f98 (identity-correlated boundary + monotone-convergent surface join), then verify each regression target green on interp + run + build and close it. Do not special-case any Enum helper or Enumerable impl. fz-x2n / fz-9i4.7.3 / fz-bv3 are independent and can proceed in parallel.",
   "id": "fz-bfh",
   "labels": [],
+  "comments": [
+    {
+      "text": "COMPLETE at main 417c5b0b5. Its four regression targets were re-run as symptom shapes on interp, run and against Elixir:\n\n    reduce/3 over Range      15   (elixir 15)\n    reduce/2 over Range      15   (elixir 15)\n    reduce/3 over Map         3   (elixir 3)\n    reduce_while/3 over Map    1   (elixir 1)\n    reduce/2 over List         6   (elixir 6)\n\nNo lane mismatch, no settled_callable_boundary multi-surface error, no storm.\n\nONE CORRECTION to its ledger: fz-bfh.3 is marked [x] but was closed on the reduce/3 half only. Enum.reduce/2 over a Map still raises Enum.EmptyError where Elixir gives {3, :one}. That is re-filed and open as fz-kdt.1, and two deferred fixtures name it.\n\nIts other open children resolved as: fz-f98 closed (root defect fixed), fz-bv3 -\u003e fz-kdt.27 (still genuine, but its membership_operator repro was dead -- that fixture passes 3/3 and carries no defer lines), fz-x2n DELETED (three of its four named deletion targets were already gone, and the fourth was a non-defect: the debug_assert it wanted made loud is unreachable by construction because boundary ids are vector indices), fz-bfh.6 folded into fz-kdt.13 with two others measuring the same number.",
+      "timestamp": "2026-08-25T01:45:57Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Retire fz-bin follow-up deferrals",
   "type": "epic",
-  "updated_at": "2026-06-22T13:49:14Z"
+  "updated_at": "2026-08-25T01:45:57Z"
 }
