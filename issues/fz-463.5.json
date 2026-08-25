@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-463.4"
   ],
-  "blocks": [
-    "fz-463.6"
-  ],
+  "blocks": [],
   "closed_at": "2026-06-26T21:35:26Z",
   "close_reason": "Retargeted transport, materialization, and fixture helpers from SemanticClosure payload reads to root executable frontier facts; removed the semantic_closure accessor.",
   "created": "2026-06-26T20:24:26Z",
