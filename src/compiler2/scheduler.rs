@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use super::agenda::Agenda;
 use super::deps::{DependencyIndex, UnresolvedWait};
-use super::facts::{ClaimShape, FactChange, FactMovement, FactTable, FactUse};
+use super::facts::{ClaimShape, FactChange, FactMovement, FactState, FactTable, FactUse};
 use super::ordered_set::OrderedSet;
 
 /// Why a job entered the agenda. This is observation-only: it never changes
@@ -70,6 +70,33 @@ pub struct WorkStartTally {
     pub root_scans: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum JobCause<F> {
+    Demand(WorkStartReason),
+    FactDemand {
+        reason: WorkStartReason,
+        fact: F,
+    },
+    FactMovement {
+        fact: FactUse<F>,
+        old: FactState,
+        new: FactState,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeStatus {
+    Enqueued,
+    Coalesced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wake<J, F> {
+    pub job: J,
+    pub cause: JobCause<F>,
+    pub status: WakeStatus,
+}
+
 impl WorkStartTally {
     /// Jobs that entered the agenda with no attributable sanctioned reason.
     /// Must stay zero on every sanctioned path: a reintroduced push (a
@@ -82,6 +109,9 @@ impl WorkStartTally {
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
+    /// Every cause accumulated while this job was pending. Agenda coalescing
+    /// removes duplicate evaluations, not the evidence that made one needed.
+    pub causes: Vec<JobCause<F>>,
     pub outputs: OrderedSet<F>,
     pub changed: Vec<FactChange<F>>,
     pub movements: Vec<FactMovement<F>>,
@@ -92,6 +122,7 @@ pub struct AppliedStep<J, F> {
     /// source — there is no standing-conclusion coalescing left to conflate it
     /// with.
     pub coalesced: Vec<J>,
+    pub wakes: Vec<Wake<J, F>>,
     pub blocked: Vec<FactUse<F>>,
 }
 
@@ -120,6 +151,8 @@ pub struct Scheduler<J, F> {
     /// agenda (deduped coalescing does not count) under each
     /// `WorkStartReason`. Observation-only — see `WorkStartReason`.
     work_starts: HashMap<WorkStartReason, u64>,
+    pending_causes: HashMap<J, OrderedSet<JobCause<F>>>,
+    running_causes: HashMap<J, Vec<JobCause<F>>>,
     /// How many times a whole-fact-table scan (`fact_keys`) has been taken.
     /// The pull-cutover anti-pattern is a producer discovering work by
     /// scanning every fact instead of following named dependencies; this
@@ -150,6 +183,8 @@ where
             deps: DependencyIndex::new(),
             rebased: HashSet::new(),
             work_starts: HashMap::new(),
+            pending_causes: HashMap::new(),
+            running_causes: HashMap::new(),
             root_scans: 0,
         }
     }
@@ -238,6 +273,15 @@ where
     /// pending and this call coalesced into it — not a new work start, so
     /// the tally does not count it).
     pub fn enqueue(&mut self, job: J, reason: WorkStartReason) -> bool {
+        self.enqueue_with_cause(job, reason, JobCause::Demand(reason))
+    }
+
+    pub fn enqueue_for_fact(&mut self, job: J, reason: WorkStartReason, fact: F) -> bool {
+        self.enqueue_with_cause(job, reason, JobCause::FactDemand { reason, fact })
+    }
+
+    fn enqueue_with_cause(&mut self, job: J, reason: WorkStartReason, cause: JobCause<F>) -> bool {
+        self.pending_causes.entry(job.clone()).or_default().insert(cause);
         let started = self.agenda.enqueue(job);
         if started {
             *self.work_starts.entry(reason).or_insert(0) += 1;
@@ -246,7 +290,14 @@ where
     }
 
     pub fn pop(&mut self) -> Option<J> {
-        self.agenda.pop()
+        let job = self.agenda.pop()?;
+        let causes = self
+            .pending_causes
+            .remove(&job)
+            .map(|causes| causes.iter().cloned().collect())
+            .unwrap_or_default();
+        self.running_causes.insert(job.clone(), causes);
+        Some(job)
     }
 
     /// Apply one job completion. The semantics bifurcate on `waits`:
@@ -266,6 +317,7 @@ where
         outputs: Vec<F>,
         changed: Vec<F>,
     ) -> AppliedStep<J, F> {
+        let causes = self.running_causes.remove(job).unwrap_or_default();
         let waiting = !waits.is_empty();
         // A conclusion discharges the rebase; a blocked run has not yet
         // re-derived its claims from the shifted ground, so it stays pending.
@@ -299,6 +351,7 @@ where
 
         let mut enqueued = Vec::new();
         let mut coalesced = Vec::new();
+        let mut wakes = Vec::new();
         let mut coalesced_seen = HashSet::new();
         let mut pending_changes = replaced.changed.clone();
         pending_changes.extend(dirtied);
@@ -315,46 +368,56 @@ where
                 let shift = retraction || (revision_bump && (was_rebased || !change.key.is_cumulative()));
                 self.enqueue_dependents(
                     FactUse::current(change.key.clone()),
+                    &change,
                     shift,
                     &mut pending_changes,
                     &mut enqueued,
                     &mut coalesced,
                     &mut coalesced_seen,
+                    &mut wakes,
                 );
                 self.enqueue_dependents(
                     FactUse::settled(change.key.clone()),
+                    &change,
                     shift,
                     &mut pending_changes,
                     &mut enqueued,
                     &mut coalesced,
                     &mut coalesced_seen,
+                    &mut wakes,
                 );
                 if change.readiness_changed() {
                     self.enqueue_dependents(
                         FactUse::settled_presence(change.key.clone()),
+                        &change,
                         false,
                         &mut pending_changes,
                         &mut enqueued,
                         &mut coalesced,
                         &mut coalesced_seen,
+                        &mut wakes,
                     );
                 }
             } else if change.readiness_changed() {
                 self.enqueue_dependents(
                     FactUse::settled(change.key.clone()),
+                    &change,
                     false,
                     &mut pending_changes,
                     &mut enqueued,
                     &mut coalesced,
                     &mut coalesced_seen,
+                    &mut wakes,
                 );
                 self.enqueue_dependents(
                     FactUse::settled_presence(change.key.clone()),
+                    &change,
                     false,
                     &mut pending_changes,
                     &mut enqueued,
                     &mut coalesced,
                     &mut coalesced_seen,
+                    &mut wakes,
                 );
             }
             moved_keys.insert(change.key);
@@ -367,11 +430,13 @@ where
             })
             .collect();
         AppliedStep {
+            causes,
             outputs: replaced.output_keys,
             changed: replaced.changed,
             movements,
             enqueued,
             coalesced,
+            wakes,
             blocked,
         }
     }
@@ -380,34 +445,66 @@ where
     /// re-enters the agenda under `WorkStartReason::ChangedRevisionWake` --
     /// the one work-start reason that is never passed in by a caller, since
     /// it names the wake mechanism itself, not an external demand.
-    fn enqueue_step(&mut self, job: J, enqueued: &mut Vec<J>, coalesced: &mut Vec<J>, coalesced_seen: &mut HashSet<J>) {
+    fn enqueue_step(
+        &mut self,
+        job: J,
+        cause: JobCause<F>,
+        enqueued: &mut Vec<J>,
+        coalesced: &mut Vec<J>,
+        coalesced_seen: &mut HashSet<J>,
+    ) -> WakeStatus {
+        self.pending_causes.entry(job.clone()).or_default().insert(cause);
         if self.agenda.enqueue(job.clone()) {
             *self
                 .work_starts
                 .entry(WorkStartReason::ChangedRevisionWake)
                 .or_insert(0) += 1;
             enqueued.push(job);
+            WakeStatus::Enqueued
         } else if coalesced_seen.insert(job.clone()) {
             coalesced.push(job);
+            WakeStatus::Coalesced
+        } else {
+            WakeStatus::Coalesced
         }
     }
 
     fn enqueue_dependents(
         &mut self,
         fact_use: FactUse<F>,
+        change: &FactChange<F>,
         shift: bool,
         pending_changes: &mut Vec<FactChange<F>>,
         enqueued: &mut Vec<J>,
         coalesced: &mut Vec<J>,
         coalesced_seen: &mut HashSet<J>,
+        wakes: &mut Vec<Wake<J, F>>,
     ) {
+        let cause = JobCause::FactMovement {
+            old: FactState {
+                revision: change.old_revision,
+                settled: change.old_settled,
+            }
+            .projected(&fact_use),
+            new: FactState {
+                revision: change.new_revision,
+                settled: change.new_settled,
+            }
+            .projected(&fact_use),
+            fact: fact_use.clone(),
+        };
         for job in self.deps.subscribers(&fact_use) {
             let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
             pending_changes.extend(dirtied);
             if shift {
                 self.rebased.insert(job.clone());
             }
-            self.enqueue_step(job, enqueued, coalesced, coalesced_seen);
+            let status = self.enqueue_step(job.clone(), cause.clone(), enqueued, coalesced, coalesced_seen);
+            wakes.push(Wake {
+                job,
+                cause: cause.clone(),
+                status,
+            });
         }
 
         for job in self.deps.waiters(&fact_use) {
@@ -420,7 +517,12 @@ where
             if shift {
                 self.rebased.insert(job.clone());
             }
-            self.enqueue_step(job, enqueued, coalesced, coalesced_seen);
+            let status = self.enqueue_step(job.clone(), cause.clone(), enqueued, coalesced, coalesced_seen);
+            wakes.push(Wake {
+                job,
+                cause: cause.clone(),
+                status,
+            });
         }
     }
 }

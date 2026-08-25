@@ -27,6 +27,7 @@ type Event0 = dyn Fn(&[&'static str], u64, u64);
 type Event1 = dyn Fn(&[&'static str], u64, u64, &dyn Any);
 type Event2 = dyn Fn(&[&'static str], u64, u64, &dyn Any, &dyn Any);
 type Event3 = dyn Fn(&[&'static str], u64, u64, &dyn Any, &dyn Any, &dyn Any);
+type Event4 = dyn Fn(&[&'static str], u64, u64, &dyn Any, &dyn Any, &dyn Any, &dyn Any);
 type Span0 = dyn Fn(&[&'static str], u64, u64);
 type Span1 = dyn Fn(&[&'static str], u64, u64, &dyn Any);
 type Span2 = dyn Fn(&[&'static str], u64, u64, &dyn Any, &dyn Any);
@@ -40,6 +41,7 @@ enum RawEventCallback {
     One(Box<Event1>),
     Two(Box<Event2>),
     Three(Box<Event3>),
+    Four(Box<Event4>),
 }
 
 struct RawEventEntry {
@@ -336,6 +338,7 @@ impl ConfiguredTelemetry {
     attach_raw_event!(attach_raw_event1, One, A a);
     attach_raw_event!(attach_raw_event2, Two, A a, B b);
     attach_raw_event!(attach_raw_event3, Three, A a, B b, C c);
+    attach_raw_event!(attach_raw_event4, Four, A a, B b, C c, D d);
 
     pub fn attach_raw_lifecycle<F>(&self, prefix: &[&'static str], handler: F) -> HandlerId
     where
@@ -467,6 +470,7 @@ impl ConfiguredTelemetry {
     dispatch_raw_event!(dispatch_raw_event1, One, a);
     dispatch_raw_event!(dispatch_raw_event2, Two, a, b);
     dispatch_raw_event!(dispatch_raw_event3, Three, a, b, c);
+    dispatch_raw_event!(dispatch_raw_event4, Four, a, b, c, d);
 
     dispatch_raw_span_start!(start_raw_span0, Zero);
     dispatch_raw_span_start!(start_raw_span1, One, a);
@@ -586,6 +590,7 @@ impl Telemetry for ConfiguredTelemetry {
     forward_raw_event!(dispatch_raw_event1, a);
     forward_raw_event!(dispatch_raw_event2, a, b);
     forward_raw_event!(dispatch_raw_event3, a, b, c);
+    forward_raw_event!(dispatch_raw_event4, a, b, c, d);
 
     forward_raw_span_start!(start_raw_span0);
     forward_raw_span_start!(start_raw_span1, a);

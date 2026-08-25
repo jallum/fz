@@ -18,7 +18,9 @@ and artifact emission.
 - **`Agenda`** — a `VecDeque` plus a `HashSet`. `enqueue` is idempotent while a
   job is pending (a job queued ten times runs once); `pop` clears the set so a
   later fact change can queue it again. This is coalescing: duplicate *pending*
-  work is suppressed, changed work never is.
+  work is suppressed, changed work never is. Every distinct demand or
+  fact-movement cause stays attached to the pending job, so the one evaluation
+  can account for all evidence coalesced into it.
 - **`FactTable`** — one `FactSlot` per `FactKey`. A slot holds the set of
   `publishers` claiming the fact, the `dirty_publishers` queued to re-run, and
   a `revision` counter. Slots hold no values — typed values live in `World`
@@ -128,6 +130,13 @@ overwrites. The scheduler classifies every content change:
 The revision is a change token, not a content hash: stores report `changed`
 only on real content movement (equal joins are quiet), and subscribers wake on
 `old_revision != new_revision`.
+
+Each wake records the exact `FactUse`, its projected old/new `FactState`, the
+reader, and whether the agenda enqueued or coalesced it. `AppliedStep::causes`
+then carries those records into the reader's completion. External demand uses
+the same channel; fact-producer expansion records the exact demanded
+`FactKey`, not only `BlockedWaiterExpansion`. This is observation carried by
+the authoritative agenda edge, not a second dependency graph.
 
 ## Wake order is not correctness, but it is reproducibility
 

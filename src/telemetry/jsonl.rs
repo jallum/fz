@@ -216,6 +216,108 @@ impl JsonlBackend {
                 );
             },
         );
+        let causal_product_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event4::<
+            crate::compiler2::World,
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::ProductEntry,
+            crate::compiler2::pull::ProductFinish,
+            _,
+        >(
+            &["fz", "compiler2", "pull", "product", "settled"],
+            move |name, span_id, parent_span_id, world, product, entry, finish| {
+                causal_product_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        world: crate::telemetry::opaque(world),
+                        product: crate::telemetry::opaque(product),
+                        entry: crate::telemetry::opaque(entry),
+                        finish: crate::telemetry::opaque(finish),
+                    },
+                );
+            },
+        );
+        let evaluated_product_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event4::<
+            crate::compiler2::World,
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::PullOutcome,
+            crate::compiler2::pull::ProductDependencies,
+            _,
+        >(
+            &["fz", "compiler2", "pull", "product", "evaluated"],
+            move |name, span_id, parent_span_id, world, product, outcome, dependencies| {
+                evaluated_product_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        world: crate::telemetry::opaque(world),
+                        product: crate::telemetry::opaque(product),
+                        outcome: crate::telemetry::opaque(outcome),
+                        dependencies: crate::telemetry::opaque(dependencies),
+                    },
+                );
+            },
+        );
+        for event in ["cache_hit", "displaced"] {
+            let state_backend = Rc::clone(&backend);
+            telemetry.attach_raw_event3::<
+                crate::compiler2::World,
+                crate::compiler2::pull::ProductKey,
+                crate::compiler2::pull::ProductEntry,
+                _,
+            >(
+                &["fz", "compiler2", "pull", "product", event],
+                move |name, span_id, parent_span_id, world, product, entry| {
+                    state_backend.handle_raw_event(
+                        name,
+                        span_id,
+                        parent_span_id,
+                        crate::metadata! {
+                            world: crate::telemetry::opaque(world),
+                            product: crate::telemetry::opaque(product),
+                            entry: crate::telemetry::opaque(entry),
+                        },
+                    );
+                },
+            );
+        }
+        let reentered_product_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::pull::ProductKey, _>(
+            &["fz", "compiler2", "pull", "product", "reentered"],
+            move |name, span_id, parent_span_id, world, product| {
+                reentered_product_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        world: crate::telemetry::opaque(world),
+                        product: crate::telemetry::opaque(product),
+                    },
+                );
+            },
+        );
+        let product_group_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event2::<crate::compiler2::World, Vec<(
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::ProductFinish,
+        )>, _>(
+            &["fz", "compiler2", "pull", "product", "group_settled"],
+            move |name, span_id, parent_span_id, world, group| {
+                product_group_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        world: crate::telemetry::opaque(world),
+                        group: crate::telemetry::opaque(group),
+                    },
+                );
+            },
+        );
         let native_backend = Rc::clone(&backend);
         telemetry.attach_raw_event2::<crate::compiler2::RootId, crate::compiler2::BackendProgram, _>(
             &["fz", "compiler2", "native_program", "reusable_cons"],
@@ -798,7 +900,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
         ev.name,
         ["fz", "compiler2", "pull", "session", ..]
             | ["fz", "compiler2", "pull", "phase", ..]
-            | ["fz", "compiler2", "pull", "product", "settled"]
+            | ["fz", "compiler2", "pull", "product", ..]
             | ["fz", "compiler2", "work", "started"]
             | ["fz", "compiler2", "demand", "cone", "settled"]
             | ["fz", "compiler2", "drive", "stalled"]
@@ -853,6 +955,8 @@ fn write_event(out: &mut String, ev: &Event<'_, '_, '_>, time_ns: u64) {
 }
 
 fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
+    use crate::compiler2::StableSortKey as _;
+
     let Some(world) = ev
         .metadata
         .get("world")
@@ -860,6 +964,49 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
     else {
         return;
     };
+    if matches!(
+        ev.name,
+        ["fz", "compiler2", "job"] | ["fz", "compiler2", "work_graph", "applied"]
+    ) && let Some(completion) = ev
+        .metadata
+        .get("completion")
+        .and_then(Value::downcast_ref::<crate::compiler2::JobCompletion>)
+    {
+        out.push_str(",\"causality\":");
+        write_job_causality(out, world, completion);
+    }
+    if ev.name.starts_with(&["fz", "compiler2", "pull", "product"])
+        && let Some(product) = ev
+            .metadata
+            .get("product")
+            .and_then(Value::downcast_ref::<crate::compiler2::ProductKey>)
+    {
+        out.push_str(",\"product_causality\":");
+        write_product_causality(out, world, product, ev);
+    }
+    if ev.name == ["fz", "compiler2", "pull", "product", "group_settled"]
+        && let Some(group) = ev
+            .metadata
+            .get("group")
+            .and_then(Value::downcast_ref::<Vec<(crate::compiler2::ProductKey, crate::compiler2::pull::ProductFinish)>>)
+    {
+        out.push_str(",\"product_group\":[");
+        let mut members = group
+            .iter()
+            .map(|(key, finish)| (key.stable_sort_key(world.types()), finish))
+            .collect::<Vec<_>>();
+        members.sort_by(|left, right| left.0.cmp(&right.0));
+        for (index, (product_id, finish)) in members.into_iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"product_id\":");
+            write_str_lit(out, &product_id);
+            write_product_finish(out, finish);
+            out.push('}');
+        }
+        out.push(']');
+    }
     if ev.name == ["fz", "compiler2", "callsite", "defined"] {
         if let Some(callsite) = ev
             .metadata
@@ -888,7 +1035,7 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                 out.push(',');
             }
             out.push_str("{\"activation\":");
-            write_activation_key(out, activation);
+            write_activation_key_value(out, activation);
             if let Some(alternatives) = world.activation_input_alternatives(activation) {
                 out.push_str(",\"rows\":[");
                 for (row_index, row) in alternatives.rows().iter().enumerate() {
@@ -939,6 +1086,238 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
             }
         }
         _ => {}
+    }
+}
+
+fn write_product_causality(
+    out: &mut String,
+    world: &crate::compiler2::World,
+    product: &crate::compiler2::ProductKey,
+    event: &Event<'_, '_, '_>,
+) {
+    use crate::compiler2::StableSortKey as _;
+
+    out.push_str("{\"product_id\":");
+    write_str_lit(out, &product.stable_sort_key(world.types()));
+    out.push_str(",\"action\":");
+    write_str_lit(out, event.name.last().copied().unwrap_or("product"));
+    let finish = event
+        .metadata
+        .get("finish")
+        .and_then(Value::downcast_ref::<crate::compiler2::pull::ProductFinish>);
+    if let Some(entry) = event
+        .metadata
+        .get("entry")
+        .and_then(Value::downcast_ref::<crate::compiler2::pull::ProductEntry>)
+    {
+        if finish.is_none() {
+            out.push_str(",\"generation\":");
+            push_u64(out, entry.generation);
+        }
+        out.push_str(",\"dependencies\":");
+        write_product_dependencies(out, world, &entry.dependencies);
+    }
+    if let Some(dependencies) = event
+        .metadata
+        .get("dependencies")
+        .and_then(Value::downcast_ref::<crate::compiler2::pull::ProductDependencies>)
+    {
+        out.push_str(",\"dependencies\":");
+        write_product_dependencies(out, world, dependencies);
+    }
+    if let Some(finish) = finish {
+        write_product_finish(out, finish);
+    }
+    out.push('}');
+}
+
+fn write_product_finish(out: &mut String, finish: &crate::compiler2::pull::ProductFinish) {
+    out.push_str(",\"previous_generation\":");
+    match finish.previous_generation {
+        Some(generation) => push_u64(out, generation),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"generation\":");
+    push_u64(out, finish.generation);
+    out.push_str(",\"changed\":");
+    out.push_str(if finish.changed { "true" } else { "false" });
+    out.push_str(",\"reproduced\":");
+    out.push_str(if finish.reproduced { "true" } else { "false" });
+}
+
+fn write_product_dependencies(
+    out: &mut String,
+    world: &crate::compiler2::World,
+    dependencies: &crate::compiler2::pull::ProductDependencies,
+) {
+    use crate::compiler2::StableSortKey as _;
+
+    out.push_str("{\"products\":[");
+    let mut products = dependencies
+        .products
+        .iter()
+        .map(|(key, generation)| (key.stable_sort_key(world.types()), generation))
+        .collect::<Vec<_>>();
+    products.sort_by(|left, right| left.0.cmp(&right.0));
+    for (index, (product_id, generation)) in products.into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"product_id\":");
+        write_str_lit(out, &product_id);
+        out.push_str(",\"generation\":");
+        match generation {
+            Some(generation) => push_u64(out, *generation),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+    }
+    out.push_str("],\"facts\":[");
+    let mut facts = dependencies
+        .facts
+        .iter()
+        .map(|(fact, state)| (fact.fact().stable_sort_key(world.types()), fact_use_kind(fact), state))
+        .collect::<Vec<_>>();
+    facts.sort_by(|left, right| (left.0.as_str(), left.1).cmp(&(right.0.as_str(), right.1)));
+    for (index, (fact_id, use_kind, state)) in facts.into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"fact_id\":");
+        write_str_lit(out, &fact_id);
+        out.push_str(",\"use\":");
+        write_str_lit(out, use_kind);
+        out.push_str(",\"state\":");
+        write_fact_state(out, *state);
+        out.push('}');
+    }
+    out.push_str("]}");
+}
+
+fn write_job_causality(
+    out: &mut String,
+    world: &crate::compiler2::World,
+    completion: &crate::compiler2::JobCompletion,
+) {
+    use crate::compiler2::StableSortKey as _;
+
+    out.push_str("{\"formula_id\":");
+    write_str_lit(out, &completion.job.stable_sort_key(world.types()));
+    out.push_str(",\"causes\":[");
+    for (index, cause) in completion.causes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_job_cause(out, world, cause);
+    }
+    out.push_str("],\"changed_facts\":[");
+    for (index, change) in completion.changed.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"fact_id\":");
+        write_str_lit(out, &change.key.stable_sort_key(world.types()));
+        out.push_str(",\"old\":");
+        write_fact_state(
+            out,
+            crate::compiler2::FactState {
+                revision: change.old_revision,
+                settled: change.old_settled,
+            },
+        );
+        out.push_str(",\"new\":");
+        write_fact_state(
+            out,
+            crate::compiler2::FactState {
+                revision: change.new_revision,
+                settled: change.new_settled,
+            },
+        );
+        out.push('}');
+    }
+    out.push_str("],\"wakes\":[");
+    for (index, wake) in completion.wakes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"formula_id\":");
+        write_str_lit(out, &wake.job.stable_sort_key(world.types()));
+        out.push_str(",\"status\":");
+        write_str_lit(
+            out,
+            match wake.status {
+                crate::compiler2::WakeStatus::Enqueued => "enqueued",
+                crate::compiler2::WakeStatus::Coalesced => "coalesced",
+            },
+        );
+        out.push_str(",\"cause\":");
+        write_job_cause(out, world, &wake.cause);
+        out.push('}');
+    }
+    out.push_str("]}");
+}
+
+fn write_job_cause(
+    out: &mut String,
+    world: &crate::compiler2::World,
+    cause: &crate::compiler2::JobCause<crate::compiler2::FactKey>,
+) {
+    use crate::compiler2::StableSortKey as _;
+
+    match cause {
+        crate::compiler2::JobCause::Demand(reason) => {
+            out.push_str("{\"kind\":\"demand\",\"reason\":");
+            write_str_lit(out, work_start_reason(*reason));
+            out.push('}');
+        }
+        crate::compiler2::JobCause::FactDemand { reason, fact } => {
+            out.push_str("{\"kind\":\"fact_demand\",\"reason\":");
+            write_str_lit(out, work_start_reason(*reason));
+            out.push_str(",\"fact_id\":");
+            write_str_lit(out, &fact.stable_sort_key(world.types()));
+            out.push('}');
+        }
+        crate::compiler2::JobCause::FactMovement { fact, old, new } => {
+            out.push_str("{\"kind\":\"fact_movement\",\"use\":");
+            write_str_lit(out, fact_use_kind(fact));
+            out.push_str(",\"fact_id\":");
+            write_str_lit(out, &fact.fact().stable_sort_key(world.types()));
+            out.push_str(",\"old\":");
+            write_fact_state(out, *old);
+            out.push_str(",\"new\":");
+            write_fact_state(out, *new);
+            out.push('}');
+        }
+    }
+}
+
+fn write_fact_state(out: &mut String, state: crate::compiler2::FactState) {
+    out.push_str("{\"revision\":");
+    match state.revision {
+        Some(revision) => push_u64(out, revision),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"settled\":");
+    out.push_str(if state.settled { "true" } else { "false" });
+    out.push('}');
+}
+
+fn fact_use_kind(fact: &crate::compiler2::FactUse<crate::compiler2::FactKey>) -> &'static str {
+    match fact {
+        crate::compiler2::FactUse::Current(_) => "current",
+        crate::compiler2::FactUse::Settled(_) => "settled",
+        crate::compiler2::FactUse::SettledPresence(_) => "settled_presence",
+    }
+}
+
+fn work_start_reason(reason: crate::compiler2::WorkStartReason) -> &'static str {
+    match reason {
+        crate::compiler2::WorkStartReason::Ignition => "ignition",
+        crate::compiler2::WorkStartReason::ChangedRevisionWake => "changed_revision_wake",
+        crate::compiler2::WorkStartReason::StandingRootFrontier => "standing_root_frontier",
+        crate::compiler2::WorkStartReason::ActivationFrontier => "activation_frontier",
+        crate::compiler2::WorkStartReason::BlockedWaiterExpansion => "blocked_waiter_expansion",
+        crate::compiler2::WorkStartReason::Unclassified => "unclassified",
     }
 }
 
@@ -1193,6 +1572,8 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             ),
             ("unsanctioned_work_starts", work_starts.unclassified),
             ("root_scans", work_starts.root_scans),
+            ("recursive_group_candidates", session.recursive_group_candidates()),
+            ("dependency_reach_visits", session.dependency_reach_visits()),
         ] {
             out.push(',');
             write_str_lit(out, name);
@@ -1468,6 +1849,14 @@ fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey)
     write_str_lit(out, "function_id");
     out.push(':');
     push_u64(out, key.function.as_u32() as u64);
+}
+
+fn write_activation_key_value(out: &mut String, key: &crate::compiler2::ActivationKey) {
+    out.push_str("{\"root_id\":");
+    push_u64(out, key.root.as_u32() as u64);
+    out.push_str(",\"function_id\":");
+    push_u64(out, key.function.as_u32() as u64);
+    out.push('}');
 }
 
 fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {

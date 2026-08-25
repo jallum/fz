@@ -129,6 +129,29 @@ impl ClaimShape for FactKey {
     }
 }
 
+impl StableSortKey<Types> for FactKey {
+    fn stable_sort_key(&self, types: &Types) -> String {
+        match self {
+            Self::Activation(key) => format!("Activation({})", key.stable_sort_key(types)),
+            Self::ActivationInputs(key) => format!("ActivationInputs({})", key.stable_sort_key(types)),
+            Self::ActivationAnalyzed(key) => format!("ActivationAnalyzed({})", key.stable_sort_key(types)),
+            Self::ReturnType(key) => format!("ReturnType({})", key.stable_sort_key(types)),
+            Self::CallSiteTargets(key) => format!(
+                "CallSiteTargets({}, {})",
+                key.activation.stable_sort_key(types),
+                key.callsite.as_u32()
+            ),
+            Self::CallSiteSummary(key) => format!(
+                "CallSiteSummary({}, {})",
+                key.activation.stable_sort_key(types),
+                key.callsite.as_u32()
+            ),
+            Self::Executable(key) => format!("Executable({})", key.stable_sort_key(types)),
+            other => format!("{other:?}"),
+        }
+    }
+}
+
 pub type WorkGraph = Scheduler<Job, FactKey>;
 
 #[derive(Debug, Clone, Default)]
@@ -243,14 +266,14 @@ impl World {
         if !self.work_graph.has_run(&job) {
             // Never run: no wake source exists yet, so only a fresh demand
             // can start it.
-            self.work_graph.enqueue(job, reason);
+            self.work_graph.enqueue_for_fact(job, reason, target_fact.clone());
             return true;
         }
         if self.work_graph.rebased(&job) {
             // Ground shifted since its last conclusion: its claims are
             // unsettled whether or not it names `target_fact` or is
             // currently paused on waits, so it must re-run to re-derive them.
-            self.work_graph.enqueue(job, reason);
+            self.work_graph.enqueue_for_fact(job, reason, target_fact.clone());
             return true;
         }
         if self.work_graph.output_keys(&job).contains(target_fact) {

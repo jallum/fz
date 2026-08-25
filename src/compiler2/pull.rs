@@ -5,6 +5,7 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -22,6 +23,7 @@ use super::facts::{FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, RootId};
 use super::jobs::runtime_demand::ExecutableFacts;
 use super::scheduler::WorkStartTally;
+use super::semantic::StableSortKey;
 use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
@@ -84,6 +86,34 @@ impl ProductKey {
             | Self::IncomingInputRelations(_)
             | Self::TransportShape(_)
             | Self::CallableConstruction(_) => None,
+        }
+    }
+}
+
+impl StableSortKey<super::types::Types> for ProductKey {
+    fn stable_sort_key(&self, types: &super::types::Types) -> String {
+        match self {
+            Self::RootBackendProduct(root) => format!("RootBackendProduct({})", root.as_u32()),
+            Self::BackendExecutable(key) => format!("BackendExecutable({})", key.stable_sort_key(types)),
+            Self::AbiExecutable(key) => format!("AbiExecutable({})", key.stable_sort_key(types)),
+            Self::MaterializedExecutable(key) => {
+                format!("MaterializedExecutable({})", key.stable_sort_key(types))
+            }
+            Self::ExecutableEffects(key) => format!("ExecutableEffects({})", key.stable_sort_key(types)),
+            Self::ExecutableFacts(key) => format!("ExecutableFacts({})", key.stable_sort_key(types)),
+            Self::RuntimeDemand(key) => format!("RuntimeDemand({})", key.stable_sort_key(types)),
+            Self::OutgoingEdgeFrontier(root) => format!("OutgoingEdgeFrontier({})", root.as_u32()),
+            Self::OutgoingInputEdges(key) => format!("OutgoingInputEdges({})", key.stable_sort_key(types)),
+            Self::IncomingInputRelations(root) => format!("IncomingInputRelations({})", root.as_u32()),
+            Self::IncomingInputSlot(slot) => format!(
+                "IncomingInputSlot({},{})",
+                slot.executable.stable_sort_key(types),
+                slot.semantic_index
+            ),
+            Self::TransportShape(position) => format!("TransportShape({})", position.stable_sort_key(types)),
+            Self::CallableConstruction(position) => {
+                format!("CallableConstruction({})", position.stable_sort_key(types))
+            }
         }
     }
 }
@@ -247,24 +277,42 @@ pub struct ProductMemo {
     dirty_descendants: HashSet<ProductKey>,
     in_progress: HashSet<ProductKey>,
     invalidated_in_progress: HashSet<ProductKey>,
+    recursive_group_candidates: Cell<u64>,
+    dependency_reach_visits: Cell<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct ProductEntry {
-    value: ProductValue,
-    generation: u64,
-    dependencies: ProductDependencies,
+pub(crate) struct ProductEntry {
+    pub(crate) value: ProductValue,
+    pub(crate) generation: u64,
+    pub(crate) dependencies: ProductDependencies,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ProductDependencies {
-    products: HashMap<ProductKey, Option<u64>>,
-    facts: HashMap<FactUse<FactKey>, FactState>,
+pub(crate) struct ProductDependencies {
+    pub(crate) products: HashMap<ProductKey, Option<u64>>,
+    pub(crate) facts: HashMap<FactUse<FactKey>, FactState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProductFinish {
+    pub(crate) previous_generation: Option<u64>,
+    pub(crate) generation: u64,
+    pub(crate) changed: bool,
+    pub(crate) reproduced: bool,
 }
 
 impl ProductMemo {
     pub fn get(&self, key: &ProductKey) -> Option<&ProductValue> {
         self.produced.get(key).map(|entry| &entry.value)
+    }
+
+    fn entry(&self, key: &ProductKey) -> Option<&ProductEntry> {
+        self.produced.get(key)
+    }
+
+    fn displaced_entry(&self, key: &ProductKey) -> Option<&ProductEntry> {
+        self.displaced.get(key)
     }
 
     pub fn generation(&self, key: &ProductKey) -> Option<u64> {
@@ -325,6 +373,7 @@ impl ProductMemo {
         let mut pending = vec![from];
         let mut seen = HashSet::new();
         while let Some(key) = pending.pop() {
+            self.dependency_reach_visits.set(self.dependency_reach_visits.get() + 1);
             if key == target {
                 return true;
             }
@@ -362,6 +411,8 @@ impl ProductMemo {
             .filter(|key| key.kind() == current.kind())
             .collect::<HashSet<_>>();
         candidates.insert(current);
+        self.recursive_group_candidates
+            .set(self.recursive_group_candidates.get() + candidates.len() as u64);
         candidates
             .into_iter()
             .filter(|candidate| {
@@ -420,10 +471,19 @@ impl ProductMemo {
     }
 
     fn finish(&mut self, key: &ProductKey, value: ProductValue, dependencies: ProductDependencies) -> bool {
+        self.finish_with_status(key, value, dependencies).is_some()
+    }
+
+    fn finish_with_status(
+        &mut self,
+        key: &ProductKey,
+        value: ProductValue,
+        dependencies: ProductDependencies,
+    ) -> Option<ProductFinish> {
         self.in_progress.remove(key);
         if self.invalidated_in_progress.remove(key) {
             self.produced.remove(key);
-            return false;
+            return None;
         }
         let previous = self.produced.remove(key).or_else(|| self.displaced.remove(key));
         self.remove_reader_dependencies(key, previous.as_ref().map(|entry| &entry.dependencies));
@@ -452,15 +512,28 @@ impl ProductMemo {
         } else {
             self.refresh_reader_dirtiness(key);
         }
-        true
+        Some(ProductFinish {
+            previous_generation: previous.as_ref().map(|entry| entry.generation),
+            generation,
+            changed,
+            reproduced: previous.is_some(),
+        })
     }
 
+    #[cfg(test)]
     fn finish_group(&mut self, members: Vec<(ProductKey, ProductValue, ProductDependencies)>) -> bool {
+        self.finish_group_with_status(members).is_some()
+    }
+
+    fn finish_group_with_status(
+        &mut self,
+        members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
+    ) -> Option<Vec<(ProductKey, ProductFinish)>> {
         let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
         assert_eq!(member_keys.len(), members.len());
         if member_keys.iter().any(|key| self.invalidated_in_progress.contains(key)) {
             self.reject_group(&member_keys);
-            return false;
+            return None;
         }
 
         let mut group_dependencies = ProductDependencies::default();
@@ -475,7 +548,7 @@ impl ProductMemo {
                     .is_some_and(|recorded| recorded != generation)
                 {
                     self.reject_group(&member_keys);
-                    return false;
+                    return None;
                 }
                 group_dependencies.products.insert(dependency.clone(), *generation);
             }
@@ -486,7 +559,7 @@ impl ProductMemo {
                     .is_some_and(|recorded| recorded != state)
                 {
                     self.reject_group(&member_keys);
-                    return false;
+                    return None;
                 }
                 group_dependencies.facts.insert(fact.clone(), *state);
             }
@@ -499,6 +572,7 @@ impl ProductMemo {
             self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| &entry.dependencies));
             self.take_pending_dependencies(&key);
             let changed = previous.as_ref().is_none_or(|entry| entry.value != value);
+            let previous_generation = previous.as_ref().map(|entry| entry.generation);
             let generation = previous.as_ref().map_or(1, |entry| {
                 if changed {
                     entry.generation + 1
@@ -506,10 +580,20 @@ impl ProductMemo {
                     entry.generation
                 }
             });
-            prepared.push((key, value, group_dependencies.clone(), generation, changed));
+            prepared.push((
+                key,
+                value,
+                group_dependencies.clone(),
+                ProductFinish {
+                    previous_generation,
+                    generation,
+                    changed,
+                    reproduced: previous.is_some(),
+                },
+            ));
         }
 
-        for (key, value, dependencies, generation, _) in &prepared {
+        for (key, value, dependencies, finish) in &prepared {
             self.install_reader_dependencies(key, dependencies);
             self.fact_stale_dependencies.remove(key);
             self.dirty_descendants.remove(key);
@@ -517,19 +601,23 @@ impl ProductMemo {
                 key.clone(),
                 ProductEntry {
                     value: value.clone(),
-                    generation: *generation,
+                    generation: finish.generation,
                     dependencies: dependencies.clone(),
                 },
             );
         }
-        for (key, _, _, _, changed) in prepared {
-            if changed {
+        let finishes = prepared
+            .iter()
+            .map(|(key, _, _, finish)| (key.clone(), *finish))
+            .collect();
+        for (key, _, _, finish) in prepared {
+            if finish.changed {
                 self.invalidate_readers(&key);
             } else {
                 self.refresh_reader_dirtiness(&key);
             }
         }
-        true
+        Some(finishes)
     }
 
     fn reject_group(&mut self, member_keys: &HashSet<ProductKey>) {
@@ -1050,6 +1138,14 @@ impl PullSession {
         self.producer_pokes
     }
 
+    pub(crate) fn recursive_group_candidates(&self) -> u64 {
+        self.memo.recursive_group_candidates.get()
+    }
+
+    pub(crate) fn dependency_reach_visits(&self) -> u64 {
+        self.memo.dependency_reach_visits.get()
+    }
+
     /// The recorded work-start attribution snapshot (per-reason agenda-entry
     /// counts plus whole-fact-table scans). Zero until `record_work_starts`
     /// runs at finish time.
@@ -1491,7 +1587,7 @@ fn effect_relevant_inputs(materialized: &MaterializedExecutable) -> (EffectSumma
 pub struct ProductReadContext<'s> {
     session: &'s mut PullSession,
     dependencies: ProductDependencies,
-    finished_group: bool,
+    finished_group: Vec<(ProductKey, ProductFinish)>,
 }
 
 impl<'s> ProductReadContext<'s> {
@@ -1499,7 +1595,7 @@ impl<'s> ProductReadContext<'s> {
         Self {
             session,
             dependencies: ProductDependencies::default(),
-            finished_group: false,
+            finished_group: Vec::new(),
         }
     }
 
@@ -1609,11 +1705,16 @@ impl<'s> ProductReadContext<'s> {
                 (key, value, dependencies)
             })
             .collect();
-        self.finished_group = self.session.memo.finish_group(entries);
-        if !self.finished_group {
-            self.dependencies = ProductDependencies::default();
+        match self.session.memo.finish_group_with_status(entries) {
+            Some(finishes) => {
+                self.finished_group = finishes;
+                true
+            }
+            None => {
+                self.dependencies = ProductDependencies::default();
+                false
+            }
         }
-        self.finished_group
     }
 
     fn read_product_entry(&mut self, key: ProductKey) -> Option<&ProductValue> {
@@ -1686,12 +1787,16 @@ impl<'s> ProductReadContext<'s> {
         self.session
     }
 
-    fn into_dependencies(self) -> (ProductDependencies, bool) {
+    fn into_dependencies(self) -> (ProductDependencies, Vec<(ProductKey, ProductFinish)>) {
         (self.dependencies, self.finished_group)
     }
 }
 
 pub trait ProductProducers {
+    fn telemetry_world(&self) -> Option<&World> {
+        None
+    }
+
     fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
     fn produce_backend_executable(
         &mut self,
@@ -1757,6 +1862,10 @@ impl<'w, 'a, T: crate::telemetry::Telemetry> WorldProductProducers<'w, 'a, T> {
 }
 
 impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<'_, '_, T> {
+    fn telemetry_world(&self) -> Option<&World> {
+        Some(self.world)
+    }
+
     fn produce_root_backend_product(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome {
         super::jobs::backend::produce_root_backend_product(self.world, self.telemetry, context, root)
     }
@@ -1922,18 +2031,31 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         if let Some(stale) = self.session.memo.stale_dependency(&key) {
             self.session.memo.prepare_stale_for_reproduction(&stale);
             if stale != key {
+                self.emit_displaced(producers, &stale);
                 return PullOutcome::wait_on_product(stale);
             }
         }
-        if let Some(value) = self.session.memo.get(&key) {
-            self.emit("cache_hit", &key);
-            return PullOutcome::Produced(value.clone());
+        if let Some(entry) = self.session.memo.entry(&key) {
+            let value = entry.value.clone();
+            if let Some(world) = producers.telemetry_world() {
+                self.tel
+                    .raw_event3(&["fz", "compiler2", "pull", "product", "cache_hit"], world, &key, entry);
+            } else {
+                self.emit("cache_hit", &key);
+            }
+            return PullOutcome::Produced(value);
         }
         if self.session.memo.is_displaced(&key) {
+            self.emit_displaced(producers, &key);
             self.session.discard_product_side_effects(&key);
         }
         if !self.session.memo.begin(key.clone()) {
-            self.emit("reentered", &key);
+            if let Some(world) = producers.telemetry_world() {
+                self.tel
+                    .raw_event2(&["fz", "compiler2", "pull", "product", "reentered"], world, &key);
+            } else {
+                self.emit("reentered", &key);
+            }
             return PullOutcome::Waiting(vec![PullWait::Product(key)]);
         }
 
@@ -1960,6 +2082,15 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             }
         };
         let (dependencies, finished_group) = context.into_dependencies();
+        if let Some(world) = producers.telemetry_world() {
+            self.tel.raw_event4(
+                &["fz", "compiler2", "pull", "product", "evaluated"],
+                world,
+                &key,
+                &outcome,
+                &dependencies,
+            );
+        }
         if let PullOutcome::Waiting(waits) = &outcome {
             for wait in waits {
                 if let PullWait::Product(product) = wait {
@@ -1970,21 +2101,29 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
 
         match outcome {
             PullOutcome::Produced(value) => {
-                if finished_group {
-                    self.tel
-                        .raw_event2(&["fz", "compiler2", "pull", "product", "settled"], &key, &value);
+                if !finished_group.is_empty() {
+                    if let Some(world) = producers.telemetry_world() {
+                        self.tel.raw_event2(
+                            &["fz", "compiler2", "pull", "product", "group_settled"],
+                            world,
+                            &finished_group,
+                        );
+                    }
+                    let finish = finished_group
+                        .iter()
+                        .find_map(|(member, finish)| (member == &key).then_some(*finish))
+                        .expect("the current product belongs to its finished group");
+                    self.emit_settled(producers, &key, &finish);
                     return PullOutcome::Produced(value);
                 }
-                let settled = self.session.memo.finish(&key, value.clone(), dependencies);
-                if !settled {
+                let finish = self.session.memo.finish_with_status(&key, value.clone(), dependencies);
+                let Some(finish) = finish else {
                     self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
-                    PullOutcome::Waiting(waits)
-                } else {
-                    self.tel
-                        .raw_event2(&["fz", "compiler2", "pull", "product", "settled"], &key, &value);
-                    PullOutcome::Produced(value)
-                }
+                    return PullOutcome::Waiting(waits);
+                };
+                self.emit_settled(producers, &key, &finish);
+                PullOutcome::Produced(value)
             }
             PullOutcome::Waiting(waits) => {
                 self.session.memo.unblock(&key, dependencies);
@@ -1995,6 +2134,36 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
 
     fn emit(&self, event: &'static str, key: &ProductKey) {
         self.tel.raw_event1(&["fz", "compiler2", "pull", "product", event], key);
+    }
+
+    fn emit_displaced(&self, producers: &impl ProductProducers, key: &ProductKey) {
+        let Some(entry) = self.session.memo.displaced_entry(key) else {
+            return;
+        };
+        if let Some(world) = producers.telemetry_world() {
+            self.tel
+                .raw_event3(&["fz", "compiler2", "pull", "product", "displaced"], world, key, entry);
+        }
+    }
+
+    fn emit_settled(&self, producers: &impl ProductProducers, key: &ProductKey, finish: &ProductFinish) {
+        let entry = self
+            .session
+            .memo
+            .entry(key)
+            .expect("a successful product settlement installs its entry");
+        if let Some(world) = producers.telemetry_world() {
+            self.tel.raw_event4(
+                &["fz", "compiler2", "pull", "product", "settled"],
+                world,
+                key,
+                entry,
+                finish,
+            );
+        } else {
+            self.tel
+                .raw_event2(&["fz", "compiler2", "pull", "product", "settled"], key, &entry.value);
+        }
     }
 }
 
@@ -2034,10 +2203,20 @@ mod tests {
                 &["fz", "compiler2", "pull", "product", "cache_hit"],
                 move |_, _, _, _| cache_hits.set(cache_hits.get() + 1),
             );
+            let cache_hits = Rc::clone(&capture.cache_hits);
+            telemetry.attach_raw_event3::<World, ProductKey, ProductEntry, _>(
+                &["fz", "compiler2", "pull", "product", "cache_hit"],
+                move |_, _, _, _, _, _| cache_hits.set(cache_hits.get() + 1),
+            );
             let produced = Rc::clone(&capture.produced);
             telemetry.attach_raw_event2::<ProductKey, ProductValue, _>(
                 &["fz", "compiler2", "pull", "product", "settled"],
                 move |_, _, _, _, _| produced.set(produced.get() + 1),
+            );
+            let produced = Rc::clone(&capture.produced);
+            telemetry.attach_raw_event4::<World, ProductKey, ProductEntry, ProductFinish, _>(
+                &["fz", "compiler2", "pull", "product", "settled"],
+                move |_, _, _, _, _, _, _| produced.set(produced.get() + 1),
             );
             capture
         }

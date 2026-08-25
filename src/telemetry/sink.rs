@@ -116,6 +116,7 @@ pub trait Telemetry {
     raw_event_core!(dispatch_raw_event1, _a);
     raw_event_core!(dispatch_raw_event2, _a, _b);
     raw_event_core!(dispatch_raw_event3, _a, _b, _c);
+    raw_event_core!(dispatch_raw_event4, _a, _b, _c, _d);
 
     raw_span_start_core!(start_raw_span0);
     raw_span_start_core!(start_raw_span1, _a);
@@ -689,6 +690,7 @@ pub trait TelemetryExt: Telemetry {
     raw_event_ext!(raw_event1, dispatch_raw_event1, A a);
     raw_event_ext!(raw_event2, dispatch_raw_event2, A a, B b);
     raw_event_ext!(raw_event3, dispatch_raw_event3, A a, B b, C c);
+    raw_event_ext!(raw_event4, dispatch_raw_event4, A a, B b, C c, D d);
 
     #[cfg(test)]
     raw_span_ext!(

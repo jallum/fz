@@ -5554,9 +5554,15 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
     let tel = ConfiguredTelemetry::new();
     let demand_productions = Rc::new(Cell::new(0_u64));
     let demand_sink = Rc::clone(&demand_productions);
-    tel.attach_raw_event2::<crate::compiler2::ProductKey, crate::compiler2::pull::ProductValue, _>(
+    tel.attach_raw_event4::<
+        crate::compiler2::World,
+        crate::compiler2::ProductKey,
+        crate::compiler2::pull::ProductEntry,
+        crate::compiler2::pull::ProductFinish,
+        _,
+    >(
         &["fz", "compiler2", "pull", "product", "settled"],
-        move |_, _, _, product, _| {
+        move |_, _, _, _, product, _, _| {
             if product.kind() == "runtime_demand" {
                 demand_sink.set(demand_sink.get() + 1);
             }

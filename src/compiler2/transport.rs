@@ -12,7 +12,8 @@ use std::ops::Range;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ExecutableNeed, FunctionId};
-use super::types::Ty;
+use super::semantic::StableSortKey;
+use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -377,6 +378,78 @@ impl TransportPosition {
             | Self::CallArg { executable, .. }
             | Self::EntryCapture { executable, .. }
             | Self::Value { executable, .. } => executable,
+        }
+    }
+}
+
+impl StableSortKey<Types> for ExecutableSymbol {
+    fn stable_sort_key(&self, types: &Types) -> String {
+        let input = self
+            .activation
+            .input
+            .iter()
+            .map(|ty| types.display(ty))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "ExecutableSymbol(function={},arrow={},input=[{}],need={:?})",
+            self.activation.function.as_u32(),
+            types.display(&self.activation.arrow),
+            input,
+            self.need
+        )
+    }
+}
+
+impl StableSortKey<Types> for TransportPosition {
+    fn stable_sort_key(&self, types: &Types) -> String {
+        match self {
+            Self::ExecutableInput {
+                executable,
+                semantic_index,
+            } => format!(
+                "ExecutableInput({},{semantic_index})",
+                executable.stable_sort_key(types)
+            ),
+            Self::ExecutableReturn { executable } => {
+                format!("ExecutableReturn({})", executable.stable_sort_key(types))
+            }
+            Self::ResumePayload {
+                executable,
+                callsite,
+                entry,
+            } => format!(
+                "ResumePayload({},{:?},{})",
+                executable.stable_sort_key(types),
+                callsite.map(|id| id.as_u32()),
+                entry.as_u32()
+            ),
+            Self::ReturnPayload { executable, callsite } => format!(
+                "ReturnPayload({},{})",
+                executable.stable_sort_key(types),
+                callsite.as_u32()
+            ),
+            Self::CallArg {
+                executable,
+                callsite,
+                semantic_index,
+            } => format!(
+                "CallArg({},{},{semantic_index})",
+                executable.stable_sort_key(types),
+                callsite.as_u32()
+            ),
+            Self::EntryCapture {
+                executable,
+                entry,
+                capture_index,
+            } => format!(
+                "EntryCapture({},{},{capture_index})",
+                executable.stable_sort_key(types),
+                entry.as_u32()
+            ),
+            Self::Value { executable, value } => {
+                format!("Value({},{})", executable.stable_sort_key(types), value.as_u32())
+            }
         }
     }
 }

@@ -289,6 +289,7 @@ fn raw_boundary_inventory_exercises_fixed_arities() {
     let t = ConfiguredTelemetry::new();
     t.attach_raw_event0(&["fz", "raw", "zero"], |_, _, _| {});
     t.attach_raw_event3::<u8, u16, u32, _>(&["fz", "raw", "three"], |_, _, _, _, _, _| {});
+    t.attach_raw_event4::<u8, u16, u32, u64, _>(&["fz", "raw", "four"], |_, _, _, _, _, _, _| {});
     t.attach_raw_span0_0(&["fz", "raw", "span0"], |_, _, _| {}, |_, _, _, _| {}, |_, _, _, _| {});
     t.attach_raw_span2_0::<u8, u16, _, _, _>(
         &["fz", "raw", "span2"],
@@ -305,9 +306,11 @@ fn raw_boundary_inventory_exercises_fixed_arities() {
     let a = 1_u8;
     let b = 2_u16;
     let c = 3_u32;
+    let d = 4_u64;
 
     t.raw_event0(&["fz", "raw", "zero"]);
     t.raw_event3(&["fz", "raw", "three"], &a, &b, &c);
+    t.raw_event4(&["fz", "raw", "four"], &a, &b, &c, &d);
     t.raw_span0_0(&["fz", "raw", "span0"]).stop0();
     t.raw_span2_0(&["fz", "raw", "span2"], &a, &b).stop0();
     t.raw_span0_1::<u64>(&["fz", "raw", "exception"]).exception();

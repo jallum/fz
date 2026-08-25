@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
@@ -213,6 +214,185 @@ fn jsonl_backend_shows_precipitating_compiler2_actions() {
             && log.contains("\"activation_frontier\":"),
         "compiler2 jsonl log should project world state from the borrowed authority:\n{log}"
     );
+    assert!(
+        log.contains("\"formula_id\":\"SeedRoot(RootId(0))\"")
+            && log.contains("\"causes\":[{\"kind\":\"demand\",\"reason\":\"ignition\"}]")
+            && log.contains("\"changed_facts\":[]"),
+        "compiler2 jsonl log should expose stable formula identity and exact evaluation causality:\n{log}"
+    );
+}
+
+#[test]
+fn jsonl_backend_exposes_stable_product_identity_generations_and_dependencies() {
+    let (buf, writer) = vec_writer();
+    let tel = ConfiguredTelemetry::new();
+    JsonlBackend::new_writer(writer).install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("product_causality.fz".to_string()),
+        text: "fn main(), do: 1".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root)
+        .expect("the product trace fixture should run");
+    drop(compiler);
+
+    let log = String::from_utf8(buf.borrow().clone()).expect("jsonl log should stay utf-8");
+    assert!(
+        log.contains("\"action\":\"evaluated\"")
+            && log.contains("\"action\":\"settled\"")
+            && log.contains("\"product_id\":\"RootBackendProduct(0)\"")
+            && log.contains("\"previous_generation\":null")
+            && log.contains("\"generation\":1")
+            && log.contains("\"changed\":true")
+            && log.contains("\"dependencies\":{\"products\":[")
+            && log.contains("\"recursive_group_candidates\":")
+            && log.contains("\"dependency_reach_visits\":"),
+        "compiler2 jsonl log should expose product identity and causal state from the product memo:\n{log}"
+    );
+}
+
+#[test]
+fn compiler2_causal_work_multiset_is_stable_across_repeated_runs() {
+    fn causal_trace() -> Vec<String> {
+        let (buf, writer) = vec_writer();
+        let tel = ConfiguredTelemetry::new();
+        JsonlBackend::new_writer(writer).install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("causal_trace.fz".to_string()),
+            text: "fn main(), do: 1".to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler
+            .run_root_interp(root)
+            .expect("the causal trace fixture should run");
+        drop(compiler);
+
+        let log = String::from_utf8(buf.borrow().clone()).expect("jsonl log should stay utf-8");
+        let mut trace = log
+            .lines()
+            .filter_map(|line| {
+                let event: serde_json::Value = serde_json::from_str(line)
+                    .unwrap_or_else(|error| panic!("telemetry line should be JSON: {error}: {line}"));
+                ["causality", "product_causality", "product_group"]
+                    .into_iter()
+                    .find_map(|field| event.get(field).map(|value| format!("{field}:{value}")))
+            })
+            .collect::<Vec<_>>();
+        trace.sort();
+        trace
+    }
+
+    assert_eq!(causal_trace(), causal_trace());
+}
+
+#[test]
+fn target_fixture_public_logs_are_self_sufficient_causal_work_traces() {
+    for (name, source) in [
+        (
+            "enum_take_drop_split",
+            include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+        ),
+        (
+            "fz_f98_range_map_converges",
+            include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
+        ),
+        (
+            "enum_predicate_search",
+            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        ),
+    ] {
+        let (buf, writer) = vec_writer();
+        let tel = ConfiguredTelemetry::new();
+        JsonlBackend::new_public_writer(writer).install(&tel);
+        let dbg = crate::exec::runtime::DbgCapture::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("{name}.fz")),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler
+            .run_root_interp(root)
+            .unwrap_or_else(|error| panic!("{name} should compile and run while tracing causal work: {error}"));
+        drop(compiler);
+
+        let log = String::from_utf8(buf.borrow().clone()).expect("public log should stay utf-8");
+        let events = log
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .unwrap_or_else(|error| panic!("{name} public telemetry must be JSON: {error}: {line}"))
+            })
+            .collect::<Vec<_>>();
+        let causal = events
+            .iter()
+            .filter_map(|event| event.get("causality"))
+            .collect::<Vec<_>>();
+        assert!(!causal.is_empty(), "{name} should expose job causality");
+        assert!(
+            causal.iter().all(|record| {
+                record["formula_id"].as_str().is_some_and(|id| !id.contains("Ty("))
+                    && record["causes"].as_array().is_some_and(|causes| !causes.is_empty())
+                    && record["changed_facts"].is_array()
+                    && record["wakes"].is_array()
+            }),
+            "{name} job records should carry stable identity, exact causes, changes, and wakes"
+        );
+        let formula_ids = causal
+            .iter()
+            .filter_map(|record| record["formula_id"].as_str())
+            .collect::<HashSet<_>>();
+        assert!(
+            formula_ids.len() > 1,
+            "{name} should expose distinct formula identities"
+        );
+
+        let products = events
+            .iter()
+            .filter_map(|event| event.get("product_causality"))
+            .collect::<Vec<_>>();
+        assert!(!products.is_empty(), "{name} should expose product causality");
+        assert!(
+            products.iter().all(|record| {
+                record["product_id"].as_str().is_some_and(|id| !id.contains("Ty(")) && record["action"].is_string()
+            }),
+            "{name} product records should carry stable identity and action"
+        );
+        assert!(
+            products
+                .iter()
+                .filter(|record| record["action"] == "evaluated")
+                .all(|record| record["dependencies"].is_object()),
+            "{name} product evaluations should carry exact dependency states"
+        );
+        assert!(
+            products
+                .iter()
+                .filter(|record| record["action"] == "settled")
+                .all(|record| record["generation"].is_u64() && record["changed"].is_boolean()),
+            "{name} product settlements should carry generation movement"
+        );
+    }
 }
 
 #[test]

@@ -33,15 +33,19 @@ a new counter that appears empty in the JSONL is usually missing one of them.
 
 ## What the stream carries
 
-**Job spans** — `fz.compiler2.job`, `span_start`/`span_stop`, carrying the job
-kind. Pair them by `span_id` for a per-kind time and count census. This covers
+**Job spans** — `fz.compiler2.job`, `span_start`/`span_stop`. The stop carries
+`causality.formula_id`, every demand or exact fact movement coalesced into the
+evaluation, exact changed facts, and downstream wakes. Group by `formula_id`,
+not job kind; pair spans by `span_id` only when timing is useful. This covers
 the drive loop only; a product settled during a pull is not a job.
 
-**Product settles** — `fz.compiler2.pull.product.settled`, carrying the product
-kind. There is no span, so cost is attributed by taking the gap between an event
-and the one before it. One event per settled *group*, not per key: a product
-that settles a recursive group publishes its members atomically and reports
-once.
+**Product work** — `fz.compiler2.pull.product.evaluated` carries a stable
+`product_id`, produced/waiting outcome, and exact product-generation/fact-state
+dependencies. `settled` adds previous/current generation and whether the value
+changed or was reproduced. `cache_hit`, `displaced`, and `reentered` separate
+reuse from churn. `group_settled` names every atomically published member.
+Session totals include recursive-group candidates and dependency-reach visits.
+No event-time gap needs to stand in for identity or cause.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
 `WorkStartTally`: `ignition`, `changed_revision_wake`, `standing_root_frontier`,
@@ -51,6 +55,8 @@ agenda must name a sanctioned reason. `unsanctioned_work_starts` and `root_scans
 are zero, and `compiler2::work_start_reason_test` holds them there: a
 reintroduced job-pushes-job path lands in `Unclassified` by construction, and a
 producer that discovers work by scanning the fact table shows up in `root_scans`.
+The corresponding job completion names the exact demanded fact, so the reason
+count can be audited rather than trusted as an aggregate.
 
 **Demand cones** — `fz.compiler2.demand.cone.settled` carries `members`,
 `external_members`, `rounds`, `derivations`. `RuntimeDemand(E)` is settled by a
@@ -72,9 +78,11 @@ typed payload directly, which is how a test asserts on a counter rather than on
 elapsed time. `compiler2::telemetry_dump_test` holds two `#[ignore]`d harnesses
 that dump a full JSONL trace for one-off analysis.
 
-Prefer asserting a count, a round, or a work-start reason over asserting a
-duration — the first three are properties of the program and the lattice, and
-the last is a property of the machine.
+Prefer asserting a causal work multiset over asserting a duration: formula or
+product identity, moved dependency, changed output, and downstream wake are
+properties of the program and dependency graph. The three Enum performance
+fixtures parse only public JSONL and require this stable identity vocabulary
+without raw `Ty` ids.
 
 ## Reading the numbers
 

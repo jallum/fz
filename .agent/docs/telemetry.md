@@ -281,24 +281,28 @@ are produced for the positions and boundaries named by demanded executable
 products. Tests assert ShapeId relationships from the demanded
 `MaterializedTransportPlan` when correctness depends on sharing.
 
-`ProductDriver` (`pull.rs`) exposes three `[fz, compiler2, pull, product, *]`
-leaves. `cache_hit` and `reentered` carry the existing raw `ProductKey` and
-identify paths that do not run a producer. `settled` carries the raw
-`ProductKey` and authoritative `ProductValue` only after memo settlement
-succeeds. Waiting outcomes do not claim completion. There is no `requested`,
-`produced`, `waited`, or generic `finished` alias.
+`ProductDriver` (`pull.rs`) exposes the memo lifecycle under
+`[fz, compiler2, pull, product, *]`. `evaluated` carries the exact dependency
+states observed by one producer evaluation and its produced/waiting outcome.
+`settled` carries the authoritative memo entry plus previous/current
+generation, semantic-change, and reproduction state. `cache_hit`, `displaced`,
+and `reentered` identify paths that do not begin a fresh first production.
+`group_settled` names every member and generation result of one atomic
+recursive publication. Waiting outcomes never claim settlement.
 
-Transport uses the same product events. A settled `TransportShape(position)` or
-`CallableConstruction(position)` event carries the raw `ProductKey` and
-`ProductValue`; handlers inspect the borrowed position-owned answer directly.
-There is no parallel projection, component, or solve event.
+Transport uses the same product events. Raw handlers receive `World`,
+`ProductKey`, and borrowed memo authorities; JSONL projects a stable
+`product_id` with types rendered through `Types::display`, never raw `Ty` ids.
+Dependency maps are sorted only at the JSON sink. Compiler execution does not
+format identities or clone inventories when telemetry is disabled.
 
 `[fz, compiler2, pull, session, finished]` (`pull.rs::PullSession::emit_finished`,
 called from `ProductDriver::finish_session`) fires once per pull session, when
 the driving front door finishes demanding the session's products. It carries
 the raw `PullSession`, from which handlers derive its root and demanded
 set cardinalities, `producer_pokes`, per-reason work-start breakdown,
-`unsanctioned_work_starts`, and `root_scans` during the callback. The emitter
+`unsanctioned_work_starts`, `root_scans`, recursive-group candidates, and
+dependency-reach visits during the callback. The emitter
 does not duplicate those values into measurements. This is the root-level
 authority a handler reads to assert product-path work stayed bounded, and
 `work_start_reason_test`'s
@@ -391,6 +395,17 @@ stored return changes. Event presence is the change signal; handlers read the
 settled return from `World`. `return_type.widened` is a separate raw
 `World`-plus-key event emitted only when the widening operator coarsens the
 candidate.
+
+The public job-span stop adds a `causality` object. `formula_id` is stable
+across type-arena numbering; `causes` names initial demand or exact projected
+fact movement; `changed_facts` carries old/new revision and readiness; and
+`wakes` names the downstream formula, cause, and enqueue/coalesce result.
+Agenda coalescing therefore removes duplicate evaluations without erasing why
+the remaining evaluation ran. Public product events add the corresponding
+`product_causality` or `product_group` object with stable identity,
+dependencies, generations, cache/displacement/reproduction state, and group
+membership. Work-count tests consume these fields directly; counts no longer
+stand in for identity or causality.
 
 `root.submitted` carries raw `World` and `RootId`. `code.submitted` carries raw
 `World` with the submitted `CodeId` or runtime registration. Protocol callback

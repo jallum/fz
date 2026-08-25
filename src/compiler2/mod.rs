@@ -90,8 +90,11 @@ pub use module_interface::{
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, PullSession};
-pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler, WorkStartReason, WorkStartTally};
+pub use scheduler::{
+    AppliedStep, DriveOutcome, FatalError, JobCause, Scheduler, Wake, WakeStatus, WorkStartReason, WorkStartTally,
+};
 pub use scope::ScopeSnapshot;
+pub(crate) use semantic::StableSortKey;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, CallTargetSummary,
     CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace, EntryReachability,

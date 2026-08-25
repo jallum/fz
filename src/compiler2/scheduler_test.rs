@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler};
+use super::{
+    Agenda, AppliedStep, DependencyIndex, FactState, FactUse, JobCause, Scheduler, WakeStatus, WorkStartReason,
+};
 use crate::compiler2::facts::ClaimShape;
 
 type TestScheduler = Scheduler<u32, &'static str>;
@@ -33,6 +35,115 @@ fn complete(
     changed: Vec<&'static str>,
 ) -> AppliedStep<u32, &'static str> {
     scheduler.complete(&job, reads, waits, outputs, changed)
+}
+
+#[test]
+fn compiler2_scheduler_carries_all_coalesced_revision_causes_to_one_evaluation() {
+    let mut scheduler = TestScheduler::new();
+    let reader = 3_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("left"), current("right")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let left = complete(
+        &mut scheduler,
+        1,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["left"],
+        vec!["left"],
+    );
+    assert_eq!(left.wakes[0].status, WakeStatus::Enqueued);
+    let right = complete(
+        &mut scheduler,
+        2,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["right"],
+        vec!["right"],
+    );
+    assert_eq!(right.wakes[0].status, WakeStatus::Coalesced);
+
+    assert_eq!(scheduler.pop(), Some(reader));
+    let conclusion = complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("left"), current("right")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        conclusion.causes,
+        vec![
+            JobCause::FactMovement {
+                fact: current("left"),
+                old: FactState {
+                    revision: None,
+                    settled: false
+                },
+                new: FactState {
+                    revision: Some(1),
+                    settled: false
+                },
+            },
+            JobCause::FactMovement {
+                fact: current("right"),
+                old: FactState {
+                    revision: None,
+                    settled: false
+                },
+                new: FactState {
+                    revision: Some(1),
+                    settled: false
+                },
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiler2_scheduler_names_initial_demand_as_the_evaluation_cause() {
+    let mut scheduler = TestScheduler::new();
+    assert!(scheduler.enqueue(7, WorkStartReason::Ignition));
+    assert_eq!(scheduler.pop(), Some(7));
+    let conclusion = complete(
+        &mut scheduler,
+        7,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(conclusion.causes, vec![JobCause::Demand(WorkStartReason::Ignition)]);
+}
+
+#[test]
+fn compiler2_scheduler_names_the_exact_fact_demanded_from_a_blocked_frontier() {
+    let mut scheduler = TestScheduler::new();
+    assert!(scheduler.enqueue_for_fact(7, WorkStartReason::BlockedWaiterExpansion, "needed"));
+    assert_eq!(scheduler.pop(), Some(7));
+    let conclusion = complete(
+        &mut scheduler,
+        7,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    assert_eq!(
+        conclusion.causes,
+        vec![JobCause::FactDemand {
+            reason: WorkStartReason::BlockedWaiterExpansion,
+            fact: "needed",
+        }]
+    );
 }
 
 #[test]

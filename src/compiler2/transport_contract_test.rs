@@ -37,9 +37,9 @@ impl PullTelemetryCapture {
             produced: Rc::new(RefCell::new(Vec::new())),
         };
         let produced = Rc::clone(&capture.produced);
-        telemetry.attach_raw_event2::<ProductKey, ProductValue, _>(
+        telemetry.attach_raw_event4::<World, ProductKey, crate::compiler2::pull::ProductEntry, crate::compiler2::pull::ProductFinish, _>(
             &["fz", "compiler2", "pull", "product", "settled"],
-            move |_, _, _, product, _| produced.borrow_mut().push(product.clone()),
+            move |_, _, _, _, product, _, _| produced.borrow_mut().push(product.clone()),
         );
         capture
     }
