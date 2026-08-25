@@ -4,6 +4,7 @@
     "fz-f98"
   ],
   "blocks": [],
+  "closed_at": "2026-08-25T00:59:56Z",
   "created": "2026-06-22T13:29:27Z",
   "description": "Parent: fz-bfh. RESOLVED -- no repro survives at main 417c5b0b5.\n\n## What this reported\n\n`Enum.reduce/2` over a Range and `Enum.reduce_while/3` over a Map both hit a\n`settled_callable_boundary` multi-surface error.\n\n## What is true now\n\nBoth surfaces work, individually and together in one program, on interp and run:\n\n    range = 1..7//2\n    map   = %{2 =\u003e :two, 1 =\u003e :one}\n    Enum.reduce(range, fn (x, acc) -\u003e x * acc end)                    =\u003e 105\n    Enum.reduce_while(map, [], fn ({k,v}, acc) -\u003e {:cont, [{k,v}|acc]} end)\n                                                     =\u003e [{2, :two}, {1, :one}]\n    Enum.reduce(range, 0, fn (x, acc) -\u003e acc + x end)                 =\u003e 16\n    Enum.reduce_while(range, 0, fn (x, acc) -\u003e {:cont, acc + x} end)  =\u003e 16\n\nNo `settled_callable_boundary` error on any of them. The combined program was\ntried specifically because the ticket names a MULTI-SURFACE error -- one surface\npassing proves less than several passing together -- and it is clean too.\n\nClosed on the absence of a repro, not on a fix commit: the mechanism was retired\nsomewhere in the fz-6gb / fz-f98.14.11 / fz-f98.16..19 arc without being\nattributed here. If the multi-surface error reappears, file fresh with the new\nrepro rather than reopening this -- the surfaces named above are no longer the\nway in.\n\nFound while re-triaging the deferred `enum_tier0` fixture, which cited this\nticket among four blockers; two of the other three (fz-bfh.1, fz-bfh.4) were\nalready closed, and the live one is fz-bfh.3.",
   "id": "fz-bfh.2",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Enum.reduce/2 over Range and reduce_while/3 over Map hit settled_callable_boundary multi-surface error",
   "type": "bug",
   "updated_at": "2026-08-25T00:59:56Z"
