@@ -9896,7 +9896,16 @@ fn compiler2_native_program_routes_nontail_if_join_flow_through_continuation_ent
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
+// Triaged 2026-08-24: this is NOT awaiting triage, it asserts a contract
+// fz-f98.14.11 deliberately superseded. Its param-shape half pins the OLD rule
+// that a discarded call result still occupies a delivered return lane
+// (`extra_params: 1`); the rule is now that a discarded result carries no demand
+// and publishes no lanes, so lowering yields `extra_params: 0`. Its real
+// subject -- the reusable-cons capability surviving a delivered continuation --
+// is unaffected and still worth pinning. Re-enabling means rewriting the lane
+// assertions to the new contract, deriving the expected shape from the rule
+// rather than from whatever lowering currently emits. See fz-f98.22.
+#[ignore = "asserts the pre-fz-f98.14.11 discarded-result lane contract; see fz-f98.22"]
 fn compiler2_native_program_transports_reusable_cons_caps_through_delivered_continuations() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
@@ -10580,7 +10589,11 @@ end
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
+// Triaged 2026-08-24: blocked on fz-k22, not awaiting triage. It fails with
+// that ticket's exact signature -- "backend value ValueId(0) ... must be bound
+// before runtime use" (native.rs's unbound-value invariant) -- so this test is
+// one of fz-k22's detectors and re-enables with it.
+#[ignore = "blocked on fz-k22: generic Enum HOF leaves a backend value unbound"]
 fn compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters() {
     let source = r#"
 fn ping(x), do: x
@@ -13640,7 +13653,6 @@ fn compiler2_corpus_never_engages_return_widening_shard_0() {
 }
 
 #[test]
-#[ignore = "red-worklist: triage + re-enable"]
 fn compiler2_corpus_never_engages_return_widening_shard_1() {
     sweep_corpus_for_return_widening(1, 4);
 }
