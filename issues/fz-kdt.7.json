@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:13:46Z",
+  "description": "From the fz-k22.13 audit, carried forward with corrected names.\n\n`OrderedSet::remove` (src/compiler2/ordered_set.rs) does `members.remove` (O(1))\nplus `order.retain` (O(n) over the whole list), and it is called from\n`replace_reads` / `replace_waits` on EVERY job re-run, once per\npreviously-subscribed fact. A fact with large subscriber fan-out could hit\nO(n^2).\n\n## What changed since filing\n\nThe ticket named `JobSet` in deps.rs; that type no longer exists. fz-f98.19\ngeneralized it into `OrderedSet\u003cT\u003e` in its own module and widened its use: it now\nbacks the fact subscribers/waiters (as JobSet did) AND `DependencyIndex::outputs`\nand `FactReplace::output_keys`, because a job's fact emission order turned out to\nbe load-bearing for reproducibility.\n\nSo the same `remove` is now on more paths than when this was filed, and the\nconcern is broader rather than narrower. The measurement, however, is still\nabsent -- nobody has profiled it hot.\n\n## Not urgent, and deliberately so\n\nNo measurable delta on current fixtures at filing time (quicksort 0.022s vs\n0.026s). This is a watch item: profile before large-fanout workloads, not a\nchange to make speculatively.\n\nOptions if it ever profiles hot: index-assisted swap-remove, or tombstone +\ncompact. Note that swap-remove would DESTROY insertion order, which is now\nload-bearing -- see fz-f98.19 -- so it is no longer an option here without an\nexplicit order-preserving variant.\n\n## Minimum acceptable outcome\n\nA comment in ordered_set.rs acknowledging the tradeoff against `Agenda`, which\nuses a VecDeque and never needs retain because pop_front is its only removal.\nThe two are not the same idiom; the resemblance is directional, not literal, and\nthe current module doc does not say so.\n\n## Checks\n\n- Either a profile showing `OrderedSet::remove` is not hot on a large-fanout\n  workload, or a fix that preserves insertion order.\n- ordered_set.rs documents the retain cost and why Agenda escapes it.",
+  "id": "fz-kdt.7",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "OrderedSet::remove is an O(n) retain on the hottest fixpoint paths (was JobSet, now wider)",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:13:46Z"
+}
