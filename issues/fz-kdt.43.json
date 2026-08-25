@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:46:26Z",
+  "description": "DECISION TICKET -- needs the user. `send/2`'s contract accepts raw integers, and\nthe corpus depends on it.\n\n## Premise verified at main 417c5b0b5\n\n    src/modules/runtime_library/kernel.fz:75-76\n      @spec send(pid | integer, t) :: t when t: any\n      fn send(pid, msg), do: fz_send(pid, msg)\n\n    runtime/src/ir_runtime.rs:468\n      pub extern \"C\" fn fz_send_ref(process: *mut Process,\n                                    receiver_pid_bits: u64,\n                                    msg_ref_word: u64) -\u003e u64\n\nRaw bits, no registry. `Process` (process.fz) exposes only `heap_alloc_stats/0`.\nNo `register`, no `whereis`, no named processes anywhere in runtime/src.\n\n15 fixture files use `send(1, ...)` -- e.g. 00016_spawn_then_receive.fz,\n00290_spawn_send_receive.fz (`fn child(), do: send(1, 42)`),\n00521_relay_process.fz.\n\n## The gap is NARROWER than the old ticket said\n\nThe old ticket implies no `self()`, no registry and no pid-threading exist.\n`self()` DOES exist (`extern \"C\" fn fz_self() :: pid`, kernel.fz:8, exposed at\n:72), and pid-threading via closure capture works today:\n\n    fn main() do\n      parent = self()\n      dbg(parent)                                  =\u003e 1\n      spawn(fn () -\u003e send(parent, 42) end)\n      dbg(receive do x -\u003e x end)                   =\u003e 42\n    end\n\nA pid renders as a bare integer, which is exactly why `send(1, ...)` works at\nall. So a CAPTURING child can already obtain the parent's pid. It is specifically\nthe ZERO-CAPTURE child, `spawn(\u0026child/0)`, that has no route to the parent's pid\n-- that is the real gap.\n\n## The three options, unchanged\n\n(a) Keep integer addressing as documented fz semantics.\n(b) Add a registry / named processes and tighten the spec to `pid | name`.\n(c) Have spawn supply the parent pid to children.\n\nElixir's contract is `pid | port | atom` (registered name), never an arbitrary\ninteger.\n\nWhichever is chosen, the 15 fixtures using `send(1, ...)` are the migration\nsurface, and the answer determines whether `pid` stays representationally an\ninteger.\n\nCount drift in the old ticket: 15 fixtures, not ~16.",
+  "id": "fz-kdt.43",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Decide the send/2 addressing contract: raw integer pids work only because a pid renders as an integer",
+  "type": "task",
+  "updated_at": "2026-08-25T01:46:26Z"
+}
