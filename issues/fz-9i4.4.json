@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:13:29Z",
   "created": "2026-06-13T01:22:23Z",
   "description": "Goal\n\nFinish the callable-boundary architecture established by fz-k22.23. One producer-owned callable construction carries its correlated members behind one public callable boundary. Exact executable calls use DirectCallTarget::Local; first-class callable values are invoked indirectly through their public boundary. Native codegen must not retain a second per-FnId closure-target model or reconstruct capture and argument ABI from consumers.\n\nCurrent proof\n\nProduction native lowering emits CallClosure and TailCallClosure with direct_target=None. build_codegen_closure_targets returns an empty map. Concrete direct executable calls and NativeCallableBoundaryId wrappers own the live direct and public paths respectively. The former closure-target registry and its direct-target branches are therefore unreachable alternate representations.\n\nWork\n\nfz-9i4.4.4 deletes NativeClosureTargetSurface, NativeCodegenSurface.closure_targets, build_codegen_closure_targets, test-only registry and rebinding mechanics, dead direct-target entry/signature/terminator branches, and stale tests and documentation. Preserve producer-owned callable construction members, public boundary wrappers, and concrete direct-call facts.\n\nAcceptance\n\nNo native layer reconstructs a callable surface from FnId, consumer inputs, or sibling inventory. Representative captured, curried, divergent-caller, distinct-Enum, zero-capture, and resource-destructor closures pass interp, run, and build. Library tests and strict clippy pass.",
   "id": "fz-9i4.4",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Complete the callable-boundary cutover by deleting the retired native closure-target model",
   "type": "bug",
-  "updated_at": "2026-08-25T01:13:28Z"
+  "updated_at": "2026-08-25T01:13:29Z"
 }
