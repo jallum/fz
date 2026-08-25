@@ -7,9 +7,15 @@
   "id": "fz-f98.24",
   "labels": [],
   "parent": "fz-f98",
+  "comments": [
+    {
+      "text": "SCOPE NOTE, because a commit already carries this ticket's name.\n\n`fz-f98.24: don't trust an inherited $CARGO...` (main 417c5b0b5, PR #103) landed\nboth DEFECTS -- `cargo_for_runtime_build` no longer trusts an inherited `$CARGO`,\nand the CLI test asserts the archive source the environment mandates rather than\nthe developer's. `cargo test --test fz2_cli` is 20/0 with and without\n`CARGO_LLVM_COV=1`.\n\nWhat is NOT done is this ticket's residual, which the commit CREATED:\n`tests/fz2_cli.rs::coverage_environment` duplicates\n`aot_link::coverage_env_present`. Two copies of one predicate will drift.\nPreferred fix remains option 2 in the description -- have the test assert what\nfz2 DECIDED from its `resolve_runtime_archive` telemetry rather than re-deriving\nthe decision, which deletes the duplicate instead of sharing it.\n\nAlso outstanding: documenting the real local gate. `cargo test --lib` plus the\nmatrix is not what CI runs; CI runs `cargo test --tests` over every target, and\n`fz2_cli` / `aot_variadic_open` were outside the local gate entirely, which is\nhow a pre-existing failure survived an entire 14-PR stack unnoticed.",
+      "timestamp": "2026-08-25T00:57:40Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz2 build trusted an inherited $CARGO, and its CLI test asserted the developer's environment",
   "type": "bug",
-  "updated_at": "2026-08-25T00:00:08Z"
+  "updated_at": "2026-08-25T00:57:40Z"
 }
