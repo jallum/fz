@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.34"
+  ],
   "blocks": [],
   "created": "2026-08-25T02:15:03Z",
   "description": "## Goal\n\nMake runtime-demand derivation schedule-order independent before moving it onto the reactive scheduler.\n\nsettle_demand_cone currently sorts members by StableSortKey because deriving callable-flow facts mints fresh Ty combinations as a side effect. Its comment states that HashMap iteration order otherwise changes type-interning order and downstream identities. A reactive worklist intentionally evaluates only changed formulas and therefore cannot preserve a global member order.\n\n## Output contract\n\n- Deriving one executable's runtime demand is a pure function of authoritative facts and current demand inputs, modulo semantic type interning.\n- Evaluating independent demand formulas in different orders produces semantically and externally identical facts and byte-identical backend programs.\n- No demand formula depends on a prior formula having minted a raw Ty id first.\n- Determinism comes from canonical data, not a sorting barrier or scheduler order.\n\n## TDD strategy\n\n1. Add a focused harness that evaluates the same independent/cyclic demand formulas in several explicit orders and compares canonical demand/callable-flow facts plus backend output.\n2. Instrument type creation in derive_callable_flow_facts_for_executable_product, ground_dispatch_surfaces, callable boundary contributions, and related own_surface/boundary-demand paths.\n3. Move type construction to the earliest authoritative fact, reuse an existing canonical type, or make the interning key structurally canonical.\n4. Delete the StableSortKey ordering dependency and its explanatory workaround once the shuffled-order test is green.\n\nDo not add another sort, stable-id translation table, or demand-local type cache.\n\n## Telemetry acceptance\n\nConsumes fz-kdt.34.\n\n- order-shuffled runs publish the same semantic facts and causal work multiset;\n- raw scheduler order may differ without changing output;\n- no type-mint event is attributable solely to which independent demand formula ran first.\n\n## Checks\n\n- Focused order-shuffle test.\n- Existing byte-identical backend-program determinism tests.\n- Both target fixtures across interp, run, and build.\n- Full lib and single-threaded fixture matrix.\n- Documentation removes the claim that demand settlement requires a stable global member order.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Make runtime-demand derivation order-independent before reactive scheduling",
   "type": "bug",
-  "updated_at": "2026-08-25T02:15:03Z"
+  "updated_at": "2026-08-25T02:16:21Z"
 }
