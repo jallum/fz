@@ -11,7 +11,7 @@
   "parent": "fz-kdt",
   "priority": 1,
   "status": "closed",
-  "title": "Expose activation-cell identity and revision causality in public telemetry",
+  "title": "Folded: revision-causality telemetry belongs to the reactive-cell engine",
   "type": "task",
-  "updated_at": "2026-08-25T02:00:25Z"
+  "updated_at": "2026-08-25T02:00:35Z"
 }
