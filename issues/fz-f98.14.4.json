@@ -7,7 +7,6 @@
   "description": "backend.rs:90 unconditionally enqueues LowerNativeProgram for every RootKind::Runtime root. run_root_interp (compiler.rs:151) drives only to LowerBackendProgram and never consumes native; only compile_root_jit/aot demand it. For interp, the runtime root's ~30 native bodies are pure waste (no artifact above the demanded product). FIX: delete the backend.rs:90 follow_up; ensure the JIT/AOT/native-dump front doors transitively DEMAND native for every root they need (incl. runtime functions). CRITICAL VERIFY before landing: when compile_root_jit/run_root_jit/compile_root_aot drive the USER root to LowerNativeProgram, is the runtime included in the user root's whole-program NativeProgram, or does JIT separately consume the runtime ROOT's NativeProgram? If the latter, removing the push without wiring the demand breaks JIT — the change must wire native demand to reach runtime roots, not just delete the push. Acceptance: interp produces NO native for the fixture; JIT+AOT tests stay green; full suite regression-free.",
   "id": "fz-f98.14.4",
   "labels": [],
-  "parent": "fz-f98.14",
   "priority": 1,
   "status": "closed",
   "title": "Remove backend-\u003enative push: native lowering is demand-only (JIT/AOT/dump), not pushed for Runtime roots",
