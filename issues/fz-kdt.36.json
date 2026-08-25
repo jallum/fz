@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:42:57Z",
+  "description": "`check_function_clauses` (src/compiler2/source_diagnostics.rs:41) is purely\nSYNTACTIC. It builds `PatternRow::\u003cTy\u003e` rows with `preconditions: Vec::new()` and\n`guard: None`, and bails entirely on guards and externs:\n\n    if surface.extern_abi.is_some()\n        || surface.clauses.iter().any(|clause| clause.guard.is_some()) {\n        return;\n    }\n\nSo it warns from clause SHAPE alone, with no knowledge of which inputs a function\ncan actually receive.\n\n## Measured consequence\n\n44 `warning[type/no-matching-clause]` occurrences across 19\n`fixtures2/behavior/*.diagnostics` files. 25 of the 44 point at RUNTIME LIBRARY\nsources -- runtime:Enum.fz 21, runtime:List.fz 2, runtime:Range.fz 1,\nruntime:Map.fz 1 -- i.e. library functions warn once per USE SITE, in fixtures\nthat never call the un-matched shape.\n\n`fixtures2/behavior/quicksort.expected.diagnostics` still carries exactly the two\nwarnings the old ticket names, on `fn append([h | t], ys)` and\n`fn qsort([p | rest])`.\n\n## The proposed mechanism is available\n\n`ActivationInputAlternatives` exists (semantic.rs:766) and\n`calculate_dispatch_reachability` still computes `fail_reachable` per row\n(dispatch_reachability.rs:22, field at :15). Moving the lint after type inference\nand warning only when the failure row is genuinely reachable is buildable today.\n\n## Why this is a judgment call, not a bug\n\nIt is a decision about where a lint lives and what gets re-blessed. Moving it\nchanges 44 golden lines across 19 files, and it trades a conservative\nalways-warn for a precision-dependent warn -- which is only as good as the\nreachability analysis under it.\n\n## What the old ticket got wrong\n\nThe two runtime library functions it names, `map_list` and `with_index_list`, NO\nLONGER EXIST (`grep -rn \"fn map_list\\|fn with_index_list\"\nsrc/modules/runtime_library/*.fz` -\u003e 0 hits). The CLASS it points at is intact;\nsubstitute runtime:Enum.fz, which carries 21 of the 44 blessed warnings.\n\nIts stated blockers are fz-f98.11 (now fz-kdt.14) and fz-f98.9 (now fz-kdt.36).\n\n## Checks\n\n- A library function warns only where its un-matched shape is actually reachable;\n  quicksort's two warnings either survive with a reachability justification or\n  disappear.\n- The 44 blessed warnings across 19 diagnostics files are re-derived, and the\n  diff is explained per file rather than blanket-blessed.",
+  "id": "fz-kdt.36",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Move the no-matching-clause lint after type inference so it warns only on a reachable failure row",
+  "type": "task",
+  "updated_at": "2026-08-25T01:42:57Z"
+}
