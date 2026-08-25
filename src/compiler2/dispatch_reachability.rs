@@ -25,8 +25,24 @@ pub(crate) fn calculate_dispatch_reachability(
     inputs: &[Ty],
 ) -> DispatchReachability {
     let any = types.any();
+    // The runtime envelope answers "what could this be at runtime", which is
+    // `any` for a type variable -- right for deciding reachability, since no
+    // runtime test can test a variable. But these same roots are refined into
+    // `outcome_inputs`, which TYPES each clause's parameters, and there a
+    // variable means not-yet-known rather than "anything". Envelope only the
+    // slots some test actually looks at: a slot no test names cannot change
+    // any outcome, so passing it through unchanged keeps the fixpoint's
+    // pending bindings intact (fz-f98.14.11).
+    let tested = tested_input_ordinals(plan);
     let roots = (0..plan.input_count)
-        .map(|ordinal| types.runtime_envelope(inputs.get(ordinal).copied().unwrap_or(any)))
+        .map(|ordinal| {
+            let input = inputs.get(ordinal).copied().unwrap_or(any);
+            if tested.contains(&ordinal) {
+                types.runtime_envelope(input)
+            } else {
+                input
+            }
+        })
         .collect::<Vec<_>>();
     let mut calculator = ReachabilityCalculator {
         types,
@@ -201,6 +217,24 @@ fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateT
     Some(PredicateTarget { ty, exact })
 }
 
+/// The input ordinals some test in the plan reads, directly or through a
+/// projection. Guards are conservative: a guard's inputs are not modelled
+/// here, so every ordinal a guard could observe is treated as tested.
+fn tested_input_ordinals(plan: &PatternDispatchPlan<Ty>) -> HashSet<usize> {
+    if !plan.guards.is_empty() {
+        return (0..plan.input_count).collect();
+    }
+    plan.graph
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            DispatchNode::Test { predicate, .. } => plan.subject_ref(predicate.subject),
+            _ => None,
+        })
+        .filter_map(subject_input)
+        .collect()
+}
+
 fn subject_input(subject: &PatternSubjectRef) -> Option<usize> {
     match subject {
         PatternSubjectRef::Input(ordinal) => Some(*ordinal as usize),
@@ -286,6 +320,15 @@ mod tests {
     fn row(pattern: Pattern, body_id: u32) -> PatternRow<Ty> {
         PatternRow {
             patterns: vec![Spanned::dummy(pattern)],
+            preconditions: Vec::new(),
+            guard: None,
+            body_id,
+        }
+    }
+
+    fn row2(first: Pattern, second: Pattern, body_id: u32) -> PatternRow<Ty> {
+        PatternRow {
+            patterns: vec![Spanned::dummy(first), Spanned::dummy(second)],
             preconditions: Vec::new(),
             guard: None,
             body_id,
@@ -748,6 +791,51 @@ mod tests {
         assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
         assert!(!reachability.fail_reachable);
         assert_eq!(reachability.max_root_slots, plan.input_count);
+    }
+
+    /// fz-f98.14.11 — a slot no test looks at comes back exactly as it went
+    /// in. The runtime envelope answers "what could this be at runtime", which
+    /// is `any` for a type variable, and that is right for deciding which
+    /// clauses a value can reach. But the refined inputs are also what types
+    /// the clause's parameters, and there a variable means NOT-YET-KNOWN, not
+    /// "anything" -- graduating it to `any` there loses the binding the
+    /// fixpoint is still working out, and cumulative joins never take it back.
+    /// A slot that appears in no test cannot change any test's outcome, so it
+    /// needs no envelope at all.
+    #[test]
+    fn a_slot_no_test_looks_at_keeps_its_type_variable() {
+        let plan = pattern_dispatch_from_source(SourcePatternRows {
+            input_count: 2,
+            rows: vec![
+                row2(Pattern::Atom("x".to_string()), Pattern::Wildcard, 0),
+                row2(Pattern::Wildcard, Pattern::Wildcard, 1),
+            ],
+        })
+        .expect("atom patterns should compile");
+        let mut types = Types::new();
+        let tested = types.type_var(TypeVarId(0));
+        let untested = types.type_var(TypeVarId(1));
+
+        let reachability = calculate_dispatch_reachability(&mut types, &plan, &[tested, untested]);
+
+        assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
+        assert!(
+            !reachability.outcome_inputs.is_empty(),
+            "both clauses should be reachable with refined inputs"
+        );
+        let any = types.any();
+        for (outcome, inputs) in &reachability.outcome_inputs {
+            assert_eq!(
+                inputs[1],
+                untested,
+                "outcome {outcome:?}: the untested slot should keep its variable, got `{}`",
+                types.display(&inputs[1])
+            );
+            assert!(
+                !types.is_equivalent(&inputs[1], &any),
+                "outcome {outcome:?}: the untested slot must not graduate to any"
+            );
+        }
     }
 
     #[test]
