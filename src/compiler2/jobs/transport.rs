@@ -316,16 +316,10 @@ fn produce_generic_callable_owner(
         TransportPosition::EntryCapture {
             entry, capture_index, ..
         } => {
-            let capture = match facts.body() {
-                LoweredBody::Clauses { entries, .. } => entries
-                    .get(entry.as_u32() as usize)
-                    .and_then(|entry| entry.captures.get(*capture_index)),
-                LoweredBody::Extern { .. } => None,
-            };
+            let capture = entry_capture_value(facts, *entry, *capture_index)
+                .expect("an entry-capture position must name a capture value");
             (
-                capture
-                    .and_then(|capture| facts.analysis().value_types.get(capture).copied())
-                    .unwrap_or_else(|| world.types_mut().any()),
+                entry_capture_ty(executable, facts, capture),
                 runtime
                     .entry_capture_demands
                     .get(entry)
@@ -1270,16 +1264,49 @@ fn resume_payload_value(facts: &ExecutableFacts, entry: ControlEntryId) -> Value
     }
 }
 
+/// The value an entry-capture position names, if the entry has that capture.
+fn entry_capture_value(facts: &ExecutableFacts, entry: ControlEntryId, capture_index: usize) -> Option<ValueId> {
+    match facts.body() {
+        LoweredBody::Clauses { entries, .. } => entries
+            .get(entry.as_u32() as usize)
+            .and_then(|entry| entry.captures.get(capture_index))
+            .copied(),
+        LoweredBody::Extern { .. } => None,
+    }
+}
+
+/// The analyzed type of an entry capture — an invariant, not a lookup with a
+/// fallback.
+///
+/// This used to default a missing type to `any`, the same silent lie
+/// fz-f98.17 removed from the semantic layer: a capture whose type the analysis
+/// never produced is a hole, and `any` turns it into a wrong answer that the
+/// cumulative join can never retract. The default is provably dead — the whole
+/// lib suite and the fixture matrix run without reaching it — so it says so out
+/// loud instead (fz-f98.18). Its sibling `resume_payload_ty` below is the same
+/// shape for the same reason.
+fn entry_capture_ty(executable: &ExecutableKey, facts: &ExecutableFacts, capture: ValueId) -> Ty {
+    facts.analysis().value_types.get(&capture).copied().unwrap_or_else(|| {
+        panic!("an entry capture must have an analyzed type: {capture:?} in executable {executable:?}")
+    })
+}
+
 fn resume_payload_ty(types: &Types, executable: &ExecutableKey, facts: &ExecutableFacts, entry: ControlEntryId) -> Ty {
     let value = resume_payload_value(facts, entry);
     facts.analysis().value_types.get(&value).copied().unwrap_or_else(|| {
         // fz-hwn.27.5 — name the predicate at the failure site, as native
         // lowering does. An executable whose activation inputs are a value
         // template is not a runtime specialization: no call can supply a bare
-        // variable, so its body analyses nothing and its delivered values have
-        // no types. Reaching transport at all is the fz-hwn.23 phantom, and the
-        // cure is pruning the activation before transport — never defaulting
-        // the type to `any`, which is the defect fz-f98.17 removed upstream.
+        // variable, so a call THROUGH such a slot is dead and its delivered
+        // value never exists.
+        //
+        // The cure is not pruning the activation — that was tried at three
+        // boundaries and falsified; value-template activations are legitimate
+        // semantic facts and some of them do materialize. The cure is upstream
+        // in the semantics: `callee_has_no_inhabitants` makes the call dead and
+        // gives it the empty type, so the value has a type and this arm never
+        // fires (fz-f98.18). Defaulting to `any` here is the defect fz-f98.17
+        // removed.
         if types.key_is_value_template(&executable.activation.inputs(types)) {
             panic!(
                 "transport invariant failed: resume payload value {:?} in executable {:?} has no \
@@ -1488,24 +1515,13 @@ fn produce_named_transport_position(
         TransportPosition::EntryCapture {
             entry, capture_index, ..
         } => {
-            let capture = match facts.body() {
-                LoweredBody::Clauses { entries, .. } => entries
-                    .get(entry.as_u32() as usize)
-                    .and_then(|entry| entry.captures.get(*capture_index))
-                    .copied(),
-                LoweredBody::Extern { .. } => None,
-            }?;
+            let capture = entry_capture_value(&facts, *entry, *capture_index)?;
             recipe = TransportRecipe::Alias(TransportPosition::Value {
                 executable: symbol,
                 value: capture,
             });
             (
-                facts
-                    .analysis()
-                    .value_types
-                    .get(&capture)
-                    .copied()
-                    .unwrap_or_else(|| world.types_mut().any()),
+                entry_capture_ty(executable, &facts, capture),
                 runtime
                     .entry_capture_demands
                     .get(entry)
