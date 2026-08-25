@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:00:23Z",
+  "description": "Two loose ends from fz-f98.24, both about tests knowing things they should be\ntold.\n\n## 1. A duplicated coverage predicate that will drift\n\n`tests/fz2_cli.rs::coverage_environment` re-derives\n`aot_link::coverage_env_present` -- the same four variables (`CARGO_LLVM_COV`,\n`LLVM_PROFILE_FILE`, and coverage mentions in `RUSTFLAGS` /\n`CARGO_ENCODED_RUSTFLAGS`). The integration test observes `fz2` as a subprocess\nand cannot call the crate-private original, so it guesses what fz2 will decide.\n\nPreferred fix DELETES the duplicate rather than sharing it: have the test assert\nwhat fz2 ACTUALLY DECIDED from its own `resolve_runtime_archive` telemetry span,\nwhich already carries `source`, instead of predicting the decision from the\nenvironment. That follows [[feedback_tests_use_production_paths]] and removes\nthe coupling entirely.\n\nSharing the predicate (making it `pub(crate)` plus a test-support seam) is the\nfallback if the telemetry cannot express the invariant.\n\n## 2. The documented local gate is not what CI runs\n\n`cargo test --lib` plus the fixture matrix is what everything in this epic was\ngated on. CI runs `cargo test --tests` over EVERY target, and `fz2_cli` and\n`aot_variadic_open` were outside the local gate entirely. That is how a\npre-existing `fz2_cli` failure survived a 14-PR stack unnoticed, hidden behind\ncargo's fail-fast:\n\n    lib fails    -\u003e matrix never runs\n    matrix fails -\u003e fz2_cli never runs\n\nTwo of those layers were only discovered by fixing the layer above.\n\nWrite the real gate down wherever the contributor-facing gate lives, including\nthat the coverage-sensitive targets need a `CARGO_LLVM_COV=1` pass -- neither\ndefect in fz-f98.24 reproduced without it.\n\n## Checks\n\n- `tests/fz2_cli.rs` has no copy of the coverage predicate.\n- `cargo test --test fz2_cli` passes with AND without `CARGO_LLVM_COV=1`.\n- The gate documentation names every test target and the coverage pass.",
+  "id": "fz-f98.25",
+  "labels": [],
+  "parent": "fz-f98",
+  "priority": 3,
+  "status": "open",
+  "title": "Delete the duplicated coverage predicate, and document the gate CI actually runs",
+  "type": "task",
+  "updated_at": "2026-08-25T01:00:23Z"
+}
