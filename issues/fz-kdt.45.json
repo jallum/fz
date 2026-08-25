@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T02:14:30Z",
+  "description": "## Goal\n\nMove ExecutableFacts into the authoritative scheduler fact graph and delete its product-layer identity.\n\nRuntime demand cannot become an ordinary reactive fact while its immutable semantic input is ProductKey::ExecutableFacts(E): scheduler jobs read facts, product producers read products, and adding a fact-to-product bridge would preserve two ownership authorities.\n\n## Output contract\n\n- ExecutableFacts(E) has one FactKey and one producer job.\n- Its value is stored once in World and re-borrowed by demand, transport, and artifact consumers.\n- The producer depends on the exact settled semantic facts it already projects: ActivationAnalyzed, LoweredBody, EntryDispatch, and the activation's CallSiteSummary facts.\n- Movement of any dependency invalidates only ExecutableFacts(E) and its recorded readers.\n- No consumer reconstructs or separately caches the projection.\n- No scheduler job reads ProductMemo, and no compatibility adapter remains.\n\n## TDD strategy\n\n1. Add a production-path test that observes one ExecutableFacts(E) publication and exact dependency reads.\n2. Prove equal reproduction does not revise the fact or wake readers.\n3. Prove one callsite-summary change invalidates only executable facts for the owning activation/executable.\n4. Move the store and producer into World/scheduler.\n5. Repoint runtime-demand and transport consumers.\n6. Delete ProductKey::ExecutableFacts, ProductValue::ExecutableFacts, produce_executable_facts_product, read_executable_facts, and their pull-driver branches.\n\n## Telemetry acceptance\n\nConsumes fz-kdt.34.\n\n- publication count equals the distinct demanded executable inventory;\n- equal reproduction has zero downstream wakes;\n- no product settlement of kind executable_facts remains;\n- no new root scan or unsanctioned work start;\n- repeated runs have identical causal traces.\n\n## Checks\n\n- Focused fact/scheduler and transport tests.\n- Both target fixtures remain byte-correct on interp, run, and build.\n- Full lib and single-threaded fixture matrix.\n- Clippy with warnings denied.\n- Fact-engine, pipeline, and semantic-fixpoint docs updated; obsolete product documentation removed.",
+  "id": "fz-kdt.45",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Move ExecutableFacts into the fact graph; delete its product boundary",
+  "type": "task",
+  "updated_at": "2026-08-25T02:14:30Z"
+}
