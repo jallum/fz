@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:18:15Z",
   "created": "2026-08-21T22:22:16Z",
   "description": "Two gaps let a workspace-clippy failure reach CI on fz-gk4 (PR 88), where the lint job had been green on PRs 85/86/87.\n\n1. .githooks/pre-commit runs:\n     cargo clippy --all-targets -- -D warnings\n   CI (.github/workflows/ci.yml, lint job) runs:\n     cargo clippy --workspace --all-targets -- -D warnings\n   Without --workspace the hook never lints the fz-runtime crate, so unused\n   bindings in runtime/src/heap/heap_test.rs passed the hook and failed CI. The\n   hook's own header comment claims it 'Mirrors the CI lint job', which is what\n   made the gap invisible.\n\n   Same divergence in cargo check: hook uses --all, CI's coverage run is\n   --workspace. Worth aligning both while in there.\n\n2. There is no pre-push hook at all. core.hooksPath points at\n   /Users/j5n/Workspace/fz/.githooks, which contains only pre-commit. Push is\n   ungated, so a --no-verify commit or an amend that skips the hook reaches the\n   remote unchecked.\n\nFix: make the hook literally invoke the same commands as the CI lint job\n(single source of truth -- consider a script both call, so they cannot drift\nagain). Decide separately whether a pre-push hook is wanted; if so, keep it to\nthe lint job only, since the full test job takes 13-16 min.\n\nNote for whoever picks this up: the CI *test* job is red on every recent PR\n(85, 86, 87, 88) from pre-existing fixture_matrix reds, so 'CI is green' is not\ncurrently a merge signal for that job -- only lint is. That makes the lint gap\nmore consequential than it looks.",
   "id": "fz-94y",
@@ -13,7 +14,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "pre-commit hook does not mirror CI lint: clippy runs without --workspace, and there is no pre-push hook",
   "type": "bug",
   "updated_at": "2026-08-25T01:18:15Z"
