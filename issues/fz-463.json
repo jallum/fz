@@ -10,11 +10,15 @@
     {
       "text": "SUB-ARC: seal DELETION precursor (post .1-.5 reduction). Map (spike + artifact-ladder survey vs HEAD a705cec2e): the seal's ONLY residual load-bearing role is membership-completeness barrier for the ROOT artifact fan-in. Prototype deletion failed (compiler2_unreachable_control, artifact.rs:1132-1140) because MaterializeRoot pruned reachability on an INCOMPLETE frontier then the backend executed the premature artifact. Critical path to deletion: .7 (MaterializeExecutable per-exec split, prune rides per-exec settledness) -\u003e .8 KEYSTONE (assemblers converge by frontier-subscription+quiescence, the salsa replacement for the SemanticClosed barrier; artifacts consumed only at drive-quiet) -\u003e .9 (artifact ladder push-\u003edemand) -\u003e .6 reopened (delete the seal, flip RED gate GREEN). .10 = P2 salsa-efficiency (per-exec abi/emission/backend, kill whole-closure re-clone); irreducible whole-root residue = emission dense ordinals + backend atom/struct tables + transport capture-layout solve (stay assemblers).",
       "timestamp": "2026-06-26T23:27:39Z"
+    },
+    {
+      "text": "COMPLETE at main 417c5b0b5. Every entity this epic exists to remove is gone:\n\n    grep -rn 'SealSemanticClosure|SemanticClosed|SemanticReady|define_semantic_closure|MaterializeRoot|DeriveAbiReady|DeriveEmissionReady|DeriveTransportPlan|LowerBackendProgram' src/ runtime/\n    (no output)\n\nThe Job enum (drive.rs:49-70) has no root-assembler variant; the artifact ladder ends at two demand-pulled roots, BuildBackendProduct(RootId) and LowerNativeProgram(RootId). FactKey has no SemanticClosed.\n\n'follow_up' exists nowhere in src/ except as the FORBIDDEN shape named in scheduler.rs:41 and in the test name product_driver_names_prerequisites_without_follow_up_jobs -- i.e. .9's push-to-pull conversion is landed and PINNED. pull_only_guard passes 5/5, asserting unsanctioned_work_starts == 0 and root_scans == 0.\n\nPer-executable rungs (.7/.10) exist as pull products. Telemetry on three fixtures shows materialized_executable == abi_executable == backend_executable == outgoing_input_edges, one per executable (18/18/18/18 on quicksort, 12 on enum_reduce_operator_ref, 6 on make_resource) -- so fz-go4.18.18's '2x per executable' claim was also false.\n\nEvery measurement in the body is unreproducible: 'seal fires ~329x', 'total jobs ~4965', 'callsite.defined re-derive 4881'. There is no seal to fire, and those world-key events no longer reach the public telemetry sink at all.\n\nThe only residue was three orphaned types, now fz-kdt.15 -- a fifteen-line deletion where a P1 epic keystone used to be.",
+      "timestamp": "2026-08-25T01:45:58Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "[EPIC] Compiler2: strangle the semantic seal — frontier-driven membership, no whole-closure recompute",
   "type": "bug",
-  "updated_at": "2026-06-26T23:27:39Z"
+  "updated_at": "2026-08-25T01:45:58Z"
 }
