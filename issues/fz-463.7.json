@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-463.8"
-  ],
+  "blocks": [],
   "created": "2026-06-26T23:27:15Z",
   "description": "Today MaterializeRoot (artifact.rs:49-163) is a one-shot whole-closure clone: it iterates the entire root_executable_frontier (artifact.rs:76), clones+prunes every reachable body (artifact.rs:102-106 via prune_lowered_body over analysis.reachable_clauses/reachable_entries), and rewrites cold entries to halt stubs (specialize_entry -\u003e UNREACHABLE_CONTROL_ATOM, artifact.rs:1132-1140). This is the rung that triggered compiler2_unreachable_control in the prototype seal-deletion: pruning on an INCOMPLETE frontier false-stubs entries that become reachable later.\n\nDO: mirror the proven transport split (DeriveExecutableTransport -\u003e ExecutableTransport(E) fanned in by DeriveTransportPlan via assemble_transport_plan, transport.rs:707/887-912/1632-1648). Introduce MaterializeExecutable(E): per-executable body clone+prune, GATED on that executable's settled ActivationAnalyzed(E.activation) + ExecutableTransport(E). Prune correctness now rides per-executable settledness (each executable's reachable set is final when ITS analysis is settled), not the whole-root seal barrier. MaterializeRoot becomes a thin assembler fanning in MaterializeExecutable(E) over the current frontier (re-enqueue-self-on-unsettled, like transport.rs:903-910).\n\nREMOVES: the whole-closure one-shot prune and its dependence on SemanticClosed-as-completeness for reachability correctness. One commit. Blocks fz-463.8.",
   "id": "fz-463.7",
