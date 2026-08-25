@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:13:47Z",
   "created": "2026-07-10T19:38:36Z",
   "description": "From the fz-k22.13 audit. JobSet (insertion-ordered subscriber/waiter set, deps.rs:36-59) does remove via members.remove (O(1)) + order.retain (O(n) over the whole per-fact subscriber list), called from replace_reads/replace_waits on EVERY job re-run, once per previously-subscribed fact. No measurable delta on current fixtures (quicksort 0.022s vs 0.026s), but a fact with large subscriber fan-out could hit O(n^2). Options if it ever profiles hot: index-assisted swap-remove, or tombstone+compact. At minimum add a comment in deps.rs acknowledging the tradeoff vs Agenda (VecDeque pop_front never needs retain -- different access pattern, the \"same idiom\" claim is directional not literal).",
   "id": "fz-gbs",
@@ -13,8 +14,8 @@
     }
   ],
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "compiler2 deps.rs JobSet::remove is O(n) retain in the hottest fixpoint loop -- watch item / profile before large-fanout workloads",
   "type": "bug",
-  "updated_at": "2026-08-25T01:13:46Z"
+  "updated_at": "2026-08-25T01:13:47Z"
 }
