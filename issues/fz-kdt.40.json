@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:44:01Z",
+  "description": "The callable inventory has no guard that every entry is JUSTIFIED. A `CallableId`\nthat matches no upstream flow at all would be caught by nothing.\n\n## Verified at main 417c5b0b5\n\nThe deletion this records is real:\n\n    $ grep -rn \"assert_no_unreachable_callable_facts\" src/ runtime/ tests/  -\u003e nothing\n    $ grep -rn \"collect_callable_shapes\"              src/ runtime/ tests/  -\u003e nothing\n\nThe inventory it wants guarded is real and still there: `CallableFacts` /\n`pub callable_facts: HashMap\u003cCallableId, CallableFacts\u003e` at\nsrc/compiler2/artifact.rs:35,73.\n\n## The property is genuinely untested\n\nEvery assertion touching `callable_facts` in transport_contract_test.rs runs\nFLOW -\u003e CALLABLE (completeness), never the reverse:\n\n    :4855  assert_callable_facts_match_upstream_flow  -- handed a callable you\n           already selected, checks its resolutions project the upstream flow\n    :4873  asserts boundary_ids.len() \u003c= first_class_surfaces.len()\n           assert_boundary_resolutions_match_upstream_flow panics with\n           \"boundary {boundary:?} should have upstream first-class edge evidence\"\n    :4300  assert_eq!(matching_callables.len(), 1, ...) -- partial injectivity\n\nNONE of them iterates the inventory and asserts every entry is justified.\n`grep -rn \"unjustified|orphan|unreachable_callable\"` across the test files\nreturns only an unrelated quoted_surface_test.rs hit about `@spec`.\n\n## The three justification paths all still exist\n\n- structural `ShapeDescr::Callable` (native.rs:4161 `shape_contains_callable`)\n- boundary callables (`BoundaryFacts` / `boundary_ids`)\n- the arrow-typed lane path\n\nThe fixture pair wanted for the third is live:\n`compiler2_transport_plan_preserves_enumerable_suspend_continuation_captures`\n(transport_contract_test.rs:1462) with `assert_suspend_continuation_captures` at\n:1596.\n\n## Caveat\n\nThis does not claim the inventory currently HOLDS a garbage entry -- and neither\ndid the original. It claims the guard is missing, which is true. Coverage debt,\ncorrectly framed.\n\nVerified accurate as filed; nothing in it was stale. fz-go4.18.9, cited as the\norigin of the audit, is closed.",
+  "id": "fz-kdt.40",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "No test guards against unreachable or unjustified callable facts in the product inventory",
+  "type": "task",
+  "updated_at": "2026-08-25T01:44:01Z"
+}
