@@ -14,11 +14,15 @@
     {
       "text": "DETECTORS, found while re-triaging disabled tests at the fz-f98.19 stack tip.\nTwo currently-disabled things fail with this ticket's exact signature and should\nre-enable with it:\n\n1. `compiler2::drive_test::compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters`\n   (lib, `#[ignore]`). Fails with:\n\n       native lowering invariant failed: backend value ValueId(0) in executable\n       ExecutableKey { activation: ActivationKey { function: FunctionId(32),\n       arrow: Ty(23) }, need: Value } must be bound before runtime use\n\n   Its `#[ignore]` reason was the generic \"red-worklist: triage + re-enable\";\n   it now names this ticket.\n\n2. The `enum_tier0` fixture (matrix, deferred on all three paths), as its SECOND\n   blocker. With its one `Enum.reduce/2` over Map line skipped (fz-bfh.3, the\n   first blocker) it prints eight further correct values and then dies with\n   `backend value 0 is unbound`.\n\nSo closing fz-k22 should be checked against both, and `enum_tier0` needs\nfz-bfh.3 AND this before it can come off deferral.",
       "timestamp": "2026-08-24T22:59:37Z"
+    },
+    {
+      "text": "SUPERSEDED by  under the fz-kdt re-baseline epic. This description was rewritten to current truth today; rather than leave a rewritten ticket sitting in an old epic alongside its own stale comment history, the live content moves to  and this one closes. Work continues in .",
+      "timestamp": "2026-08-25T01:08:29Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Generic Enum HOF leaves a backend value unbound: reusable-cons exit counters + enum_tier0",
   "type": "bug",
-  "updated_at": "2026-08-25T01:02:58Z"
+  "updated_at": "2026-08-25T01:08:29Z"
 }
