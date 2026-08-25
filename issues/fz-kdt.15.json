@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:36:37Z",
+  "description": "The seal is gone. `SealSemanticClosure`, `define_semantic_closure`,\n`SemanticClosed`, `SemanticReady` and `MaterializeRoot` all grep to ZERO hits in\nsrc/, and jobs/artifact.rs materializes per executable through\n`ProductKey::MaterializedExecutable` / `PullOutcome`.\n\nThree types survived the removal with no live user:\n\n    SemanticClosure       src/compiler2/semantic.rs:599\n    SemanticClosureSlot   src/compiler2/semantic.rs:887\n    SemanticClosureMap    src/compiler2/semantic.rs:892, impl at :1227\n\n## Proof of deadness\n\n    $ grep -rn \"SemanticClosure\" src/ tests/ | grep -v \"src/compiler2/semantic.rs\"\n    src/compiler2/mod.rs:98:    ... SemanticClosure, SemanticClosureMap, ShapeDemand,\n\nThat single re-export is the only outside reference. `SemanticClosureMap::define`\nis never called; the struct is never constructed; no `World` field holds one.\nThe `pub use` from a `pub mod` is what suppresses the dead-code warning.\n\n## Do\n\nDelete all three types and their entries in the `pub use` at\nsrc/compiler2/mod.rs:98.\n\n## Checks\n\n- `grep -rn \"SemanticClosure\" src/ tests/` returns nothing.\n- Full lib + matrix green, zero warnings.\n\n## What the old ticket (fz-463.6) got wrong\n\nIt asked to delete the `SealSemanticClosure` job (drive.rs, jobs/root.rs:134-376)\nand `define_semantic_closure` (world.rs) -- neither exists -- and to re-enable\nand flip two `#[ignore]`d tests,\n`compiler2_enum_take_drop_split_seals_without_reseal_runaway` and\n`compiler2_transport_input_components_are_schedule_independent`, BOTH of which\nhave been deleted from the tree. It was also blocked on fz-463.7/.8/.9; the\nartifact ladder is already per-executable pull, so that block was stale. What\nremains of a P1 epic keystone is a fifteen-line deletion.",
+  "id": "fz-kdt.15",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "Delete the orphaned SemanticClosure types left behind by the seal removal",
+  "type": "task",
+  "updated_at": "2026-08-25T01:36:37Z"
+}
