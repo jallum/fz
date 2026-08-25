@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:34:38Z",
+  "description": "fz-usm.4 added `TypeExpr::Map` and its resolver arm, but the map type is only\nreachable in a `@spec` RETURN position. In a PARAMETER position it is a parse\nerror.\n\n## Repro (prebuilt target/debug/fz2, verified independently)\n\n    @spec g(%{b: integer}) :: any\n    fn g(m), do: m\n    fn main(), do: dbg(g(%{b: 2}))\n\n    error[parse/expected-token]: expected `)` after @spec param list, got eof\n      --\u003e d.fz:1:27\n\nReturn position is fine -- `@spec g(any) :: %{b: integer}` prints `%{:b =\u003e 2}`.\n\n## Root cause\n\n`FragmentCursor::collect_type_tokens` (src/compiler2/quoted_function.rs:1501)\nincrements bracket depth on `Tok::LParen | Tok::LBrack | Tok::LBrace` only. `%{`\nlexes as the SINGLE token `Tok::PercentLBrace` (src/parser/lexer.rs:65), so the\nopen never counts while the closing `}` decrements depth to -1.\n`TypeTokenBoundary::stops_before` (:1409) short-circuits on `depth != 0`, so the\nterminating `)` is not treated as a boundary; collection runs to EOF and\n`expect_rparen` (:1132) fails.\n\nReturn position escapes only because `TypeTokenBoundary::TypeBody` stops on\n`When | Eof` and would consume to EOF regardless.\n\n## Controls that isolate it\n\n    @spec g({integer, integer}) :: any    works  -- plain LBrace is counted\n    @spec g(%P{}) :: any                  works  -- `%Mod{` lexes as three tokens\n    @spec g(%{b: integer}, integer)       fails  -- not an arity-1 artifact\n\nOnly `%{` breaks. The same depth bug latently affects\n`TypeTokenBoundary::SpecInfixOperand` (the `@spec` infix form) and\n`TypeTokenBoundary::Constraint` (a `%{...}` inside a `when` constraint) -- both\nshould be covered by the fix and by tests.\n\nELIXIR accepts `@spec g(%{atom =\u003e integer}) :: :ok` in parameter position. There\nis no param/return asymmetry in Elixir typespec syntax.\n\n## Fix\n\nCount `Tok::PercentLBrace` as depth-opening in `collect_type_tokens`. Consider\nmaking the token classification one helper so a future paired-delimiter token\ncannot be missed the same way.\n\n## Checks\n\n- The four probes above: param-position map type parses and runs; the struct and\n  tuple controls stay green.\n- A `when` constraint carrying a `%{...}` type parses.\n- Full lib + matrix at baseline or better.\n\n## Provenance\n\nFiled from fz-usm, whose original framing is fully obsolete: there is now ONE\n`CONSTRUCTORS` registry (resolve.rs:109) including `map`, so \"built-in type\nconstructors resolved 3 inconsistent ways\" and \"map is expressible zero ways\"\nare both false. `:: tuple` was deliberately excluded by the closed fz-usm.6 and\nis pinned by two tests, so it is not a gap. `map(k,v)` is the deferred fz-usm.5\ndecision. This parse bug is the one live defect that survey found.",
+  "id": "fz-kdt.12",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "A map type in a @spec parameter position fails to parse: collect_type_tokens does not count PercentLBrace toward bracket depth",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:34:38Z"
+}
