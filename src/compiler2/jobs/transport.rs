@@ -1270,14 +1270,27 @@ fn resume_payload_value(facts: &ExecutableFacts, entry: ControlEntryId) -> Value
     }
 }
 
-fn resume_payload_ty(facts: &ExecutableFacts, entry: ControlEntryId) -> Ty {
+fn resume_payload_ty(types: &Types, executable: &ExecutableKey, facts: &ExecutableFacts, entry: ControlEntryId) -> Ty {
     let value = resume_payload_value(facts, entry);
-    facts
-        .analysis()
-        .value_types
-        .get(&value)
-        .copied()
-        .expect("a resume payload value must have an analyzed type")
+    facts.analysis().value_types.get(&value).copied().unwrap_or_else(|| {
+        // fz-hwn.27.5 — name the predicate at the failure site, as native
+        // lowering does. An executable whose activation inputs are a value
+        // template is not a runtime specialization: no call can supply a bare
+        // variable, so its body analyses nothing and its delivered values have
+        // no types. Reaching transport at all is the fz-hwn.23 phantom, and the
+        // cure is pruning the activation before transport — never defaulting
+        // the type to `any`, which is the defect fz-f98.17 removed upstream.
+        if types.key_is_value_template(&executable.activation.inputs(types)) {
+            panic!(
+                "transport invariant failed: resume payload value {:?} in executable {:?} has no \
+                 analyzed type because the activation is a value template — a value-template \
+                 activation reached transport and cannot be materialized (fz-hwn.23; predicate \
+                 key_is_value_template)",
+                value, executable,
+            )
+        }
+        panic!("a resume payload value must have an analyzed type: {value:?} in executable {executable:?}")
+    })
 }
 
 fn produce_named_transport_position(
@@ -1519,7 +1532,7 @@ fn produce_named_transport_position(
                 });
             }
             (
-                resume_payload_ty(&facts, *entry),
+                resume_payload_ty(world.types(), executable, &facts, *entry),
                 runtime.value_demands.get(&value).cloned().unwrap_or_default(),
             )
         }

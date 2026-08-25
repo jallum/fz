@@ -76,13 +76,22 @@ entry on it would suppress siblings of the one starved path. The empty type
 (`resolve_direct_call`'s empty-argument drop) are true statements, and `any`
 appears only where it is earned: provider boundaries, unresolvable callable
 values, mailbox binds, and the root's public inputs. "Unresolvable" is the
-narrow case — a closure call whose callee type carries *no* matching
-closure-shaped clause. A callee that does name a concrete closure target whose
-analysis is merely pending this round is absence of evidence (`None`), not a
-dynamic edge: `resolve_closure_call` returns `None` and stays subscribed rather
-than earning `any`, because `ReturnType` is cumulative and a stale `any` unioned
-in early would never retract once the target settled to its real type. Published
-outputs:
+narrow case — a closure call whose callee type is GROUND and carries *no*
+matching closure-shaped clause. Two other callees look unresolvable and are not,
+and `resolve_closure_call` answers both with absence (`None`) while staying
+subscribed:
+
+- one that names a concrete closure target whose analysis is merely pending this
+  round;
+- one whose type still carries type VARIABLES — the slot has not been
+  instantiated, so the call has no evidence yet. `callee_is_a_dynamic_edge` is
+  the predicate, and it is `!has_vars`.
+
+Both matter because `ReturnType` and the value-type join are cumulative: a stale
+`any` unioned in early never retracts once the slot grounds, and the callsite
+ends up holding two disagreeing facts — a precisely-resolved `CallSiteSummary`
+and an `any` value type. The fz-f98.14.11 artifact guard is the detector that
+makes that disagreement fatal instead of silent. Published outputs:
 
 ```text
 ActivationAnalyzed(a)
