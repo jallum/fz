@@ -110,6 +110,33 @@ fn clean_runtime_build_scrubs_coverage_and_target_env() {
     assert!(!should_scrub_for_clean_runtime_build(OsStr::new("CARGO_HOME")));
 }
 
+/// `fz2 build` is reached from an ARBITRARY environment -- a user's shell, a CI
+/// step, another tool's subprocess -- so `$CARGO` may be inherited garbage that
+/// names nothing. The clean-runtime rebuild already refuses to trust inherited
+/// coverage settings; an inherited cargo path is the same hazard and gets the
+/// same treatment. Honoring it blindly made `fz2 build` die with ENOENT under
+/// coverage, where the clean rebuild is the only path that shells out at all.
+#[test]
+fn the_clean_runtime_rebuild_does_not_trust_an_inherited_cargo_that_names_nothing() {
+    assert_eq!(
+        cargo_for_runtime_build(Some(OsStr::new("/definitely/not/cargo"))),
+        OsString::from("cargo"),
+        "a CARGO naming no file is garbage, not configuration: resolve cargo from PATH instead",
+    );
+    assert_eq!(
+        cargo_for_runtime_build(None),
+        OsString::from("cargo"),
+        "with no CARGO set at all, resolve cargo from PATH",
+    );
+
+    let real = std::env::current_exe().expect("the test binary is a file that exists");
+    assert_eq!(
+        cargo_for_runtime_build(Some(real.as_os_str())),
+        real.into_os_string(),
+        "a CARGO that names a real executable is honored -- cargo sets it for a reason",
+    );
+}
+
 /// Selection must come from Cargo's own artifact report, never from
 /// filesystem mtime. Fabricate a decoy `libfz_runtime-*.a` whose mtime is
 /// newer than the archive Cargo actually reports as this build's output; a

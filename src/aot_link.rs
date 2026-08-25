@@ -262,8 +262,7 @@ fn locate_runtime_staticlib(
         )));
     }
 
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let mut cmd = Command::new(cargo);
+    let mut cmd = Command::new(cargo_for_runtime_build(env::var_os("CARGO").as_deref()));
     cmd.arg("build")
         .arg("--manifest-path")
         .arg(&manifest)
@@ -331,6 +330,26 @@ fn scrub_coverage_env(cmd: &mut Command) {
         if should_scrub_for_clean_runtime_build(&key) {
             cmd.env_remove(key);
         }
+    }
+}
+
+/// The cargo binary to invoke for the runtime rebuild.
+///
+/// Cargo sets `$CARGO` for the processes it spawns, and honoring it is right
+/// when cargo really did set it — a workspace may be driven by a specific
+/// toolchain's cargo. But `fz2 build` is reached from an ARBITRARY environment:
+/// a user's shell, a CI step, another tool's subprocess. The variable may be
+/// inherited garbage that names nothing, and this rebuild is the only place
+/// `fz2 build` shells out, so a bad value is fatal to the whole command.
+///
+/// The clean-runtime rebuild already refuses to trust inherited coverage
+/// settings ([`should_scrub_for_clean_runtime_build`]). An inherited cargo path
+/// is the same hazard and gets the same treatment: honor it only when it names
+/// a file that exists, otherwise resolve `cargo` from `PATH`.
+fn cargo_for_runtime_build(configured: Option<&OsStr>) -> OsString {
+    match configured {
+        Some(cargo) if Path::new(cargo).is_file() => cargo.to_os_string(),
+        _ => OsString::from("cargo"),
     }
 }
 
