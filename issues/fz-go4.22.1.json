@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-07-04T11:38:14Z",
-  "description": "Found by the fz-go4.22 re-enable batch (2026-07-04, at 6912ad3de/d49562986). matrix::tail_recursion::interp is an ACTIVE (non-deferred, non-ignored) test that is FLAKY even single-threaded and in isolation: observed passing 2/2 then failing 2/2 in the same session on BOTH the worktree and the pristine coordinator checkout at d49562986. This is worse than a deterministic red or an ignored test — an active flaky test poisons the fixture_matrix run-to-run (it is one of the ~19 matrix failures but intermittently). Distinct from the deterministic reds (native.rs:3123, enum_take_drop_split codegen, actor_ring). Likely the .28.6 nondeterminism family (schedule-dependent interp result) but must be confirmed: reproduce, capture the two divergent outcomes (is it a wrong-answer flip like repr_seam_enum_count_after_reduce2, or a pass/crash flip?), and trace whether it's the ReturnType-widening / demand-cone-membership variance. If it is .28.6-rooted, fold into that fix; if distinct, own ticket. Meanwhile it should NOT be trusted as a green gate.",
+  "description": "Parent: fz-go4.22. RESOLVED at main 417c5b0b5 -- no flake observed.\n\n## What this reported\n\n`matrix::tail_recursion::interp` was an ACTIVE (non-deferred, non-ignored) test\nthat flaked even single-threaded and in isolation: observed passing 2/2 then\nfailing 2/2 in the same session, on both a worktree and a pristine checkout at\nd49562986 (2026-07-04). Suspected to be the .28.6 schedule-dependence family.\n\n## What is true now\n\n    for i in 1..10: cargo test --test fixture_matrix -- --test-threads=1 tail_recursion\n    ok ok ok ok ok ok ok ok ok ok\n\nTen consecutive single-threaded runs, all green, all three lanes each time.\n\nClosed on the absence of a flake. Note that the suspected root was\nschedule-dependence, and the compiler's job schedule is now DETERMINISTIC by\nconstruction (fz-f98.19: a job's fact emission order is preserved end to end, so\ntwo compiles of the same input run the same jobs in the same order, pinned by\n`compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order`). If the\ndiagnosis was right, that removed the mechanism.\n\nTen runs cannot prove a flake is gone. If it returns, reopening is cheap -- but\nreopen with the two divergent outcomes captured (wrong-answer flip vs\npass/crash flip), which the original ticket asked for and never got.",
   "id": "fz-go4.22.1",
   "labels": [],
   "parent": "fz-go4.22",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "tail_recursion::interp is flaky (non-deterministic pass/fail) even single-threaded in isolation",
   "type": "bug",
-  "updated_at": "2026-07-04T11:38:14Z"
+  "updated_at": "2026-08-25T01:07:36Z"
 }
