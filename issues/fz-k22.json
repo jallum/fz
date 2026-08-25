@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:08:29Z",
   "created": "2026-07-07T19:15:32Z",
   "description": "A generic Enum higher-order body reaches the backend referencing a value that\nwas never materialized: \"backend value N is unbound\" /\n\"native attempted to materialize absent value as runtime value\".\n\n## THE ORIGINAL REPRO NO LONGER REPRODUCES -- do not start from it\n\nThis was filed saying two call sites of the same generic Enum HOF with DIFFERENT\nclosures already breaks, and that fixing it unblocks `enum_predicate_search` on\nall three paths. Both statements are false at main 417c5b0b5:\n\n    fn main() do\n      xs = [1, 2, 3, 4]\n      dbg(Enum.find(xs, :none, fn (x) -\u003e x \u003e 2 end))\n      dbg(Enum.find(xs, :none, fn (x) -\u003e x \u003e 9 end))\n      dbg(Enum.find_value(xs, :none, fn (x) -\u003e if x \u003e 2, do: x, else: nil end))\n    end\n    interp / run / build  =\u003e  3 :none 3     ALL CORRECT\n\n`enum_predicate_search` is green on all three lanes, and a 32-distinct-lambda\n`Enum.find` ladder compiles and runs correctly (45 executables, 0.95s) after\nfz-6gb. The two-distinct-closure case is fixed; whatever survives needs a\nnarrower trigger.\n\n## LIVE REPROS at main 417c5b0b5\n\nTwo things still fail with this ticket's exact signature, and both re-enable\nwith it:\n\n1. `compiler2::drive_test::compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters`\n   -- currently `#[ignore]`d naming this ticket. Fails with:\n\n       native lowering invariant failed: backend value ValueId(0) in executable\n       ExecutableKey { activation: ActivationKey { function: FunctionId(32),\n       arrow: Ty(23) }, need: Value } must be bound before runtime use\n\n2. The `enum_tier0` fixture (matrix, deferred on all three paths), as its SECOND\n   blocker. With its one `Enum.reduce/2` over Map line skipped (fz-bfh.3, the\n   first blocker) it prints eight further correct values and then dies with\n   `backend value 0 is unbound`.\n\nStart from (1): it is a lib test, it is deterministic, and its fixture is small.\n\n## Likely locus, unchanged\n\nActivation specialization keying / demand-derived value materialization when one\ngeneric body is specialized at 2+ distinct closure surfaces, where a\nper-specialization value is demanded by one path but not materialized for the\nother. Same family as fz-xqw (SpecKey/BodyKey planner split).\n\nNote that fz-6gb has since changed the keying substantially -- bodies that merely\ntransport a closure brand now treat it as freight and share a key, while bodies\nthat CONSUME callable identity keep precise keys. Re-read\n`World::canonical_activation_key` and `erase_transported_closure_identities`\nbefore assuming the old specialization picture.\n\n## Checks\n\n- `compiler2_jit_and_backend_interp_agree_on_reusable_cons_exit_counters` is\n  re-enabled (no `#[ignore]`) and passes.\n- `enum_tier0` gets past the unbound-value failure (it still needs fz-bfh.3 to\n  come off deferral entirely).\n- Full lib + matrix at baseline or better.",
   "id": "fz-k22",
@@ -21,7 +22,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Generic Enum HOF leaves a backend value unbound: reusable-cons exit counters + enum_tier0",
   "type": "bug",
   "updated_at": "2026-08-25T01:08:29Z"
