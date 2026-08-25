@@ -5,13 +5,13 @@
   "closed_at": "2026-08-25T01:59:46Z",
   "close_reason": "Folded into fz-kdt.34. Revision causality and formula identity are generic scheduler-owned telemetry, not an activation-specific prerequisite or second observation ledger.",
   "created": "2026-08-25T01:44:01Z",
-  "description": "Folded into fz-kdt.34.\n\nFormula identity, dependency-revision causality, output changes, and downstream wakes are scheduler-owned facts. They will be exposed once through the generic reactive-cell telemetry contract in fz-kdt.34, not through an activation-specific observation path.\n\nfz-kdt.13 consumes that generic signal to correct activation-analysis cell boundaries. No independent implementation remains here.",
+  "description": "Folded into fz-kdt.34.\n\nFormula identity, exact revision/generation causes, changed output keys, and downstream wakes are one observability contract for scheduler and product work. They are exposed from the engines' authoritative state, not through an activation-specific ledger.\n\nfz-kdt.13 consumes that generic signal. No independent implementation remains here.",
   "id": "fz-kdt.41",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 1,
   "status": "closed",
-  "title": "Folded: revision-causality telemetry belongs to the reactive-cell engine",
+  "title": "Folded: work identity and causality belong to generic telemetry",
   "type": "task",
-  "updated_at": "2026-08-25T02:00:35Z"
+  "updated_at": "2026-08-25T02:16:23Z"
 }
