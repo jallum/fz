@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:42:25Z",
+  "description": "Every named entity is present exactly as filed; nothing has dissolved. Re-verified\nat main 417c5b0b5.\n\nBoth PullSession side channels still exist, still structural twins\n(src/compiler2/pull.rs:811-822):\n\n    return_demand_contributions / return_demand_contributors / return_demands\n    input_demand_contributions  / input_demand_contributors  / input_demands\n\nThe imperative invalidation this ticket wants deleted is still there:\n\n    pull.rs:1092  replace_settled_return_demand_contributions\n    pull.rs:1123  recompute_return_demand\n    pull.rs:1178  replace_settled_input_demand_contributions\n    pull.rs:1209  recompute_input_demand\n\n`TargetDemandContribution` -- the coupling that forces the two to move together\n-- is at jobs/runtime_demand.rs:515, used at :506, :643, :809, :823.\n\nThe SCC-internal solver itself is `settle_demand_cone`\n(jobs/runtime_demand.rs:563, called from :370).\n\n## The prerequisite still does not exist\n\nNo settled-GROUP epoch fact primitive: `FactKey` (drive.rs:88-120) has no\ngroup/epoch/SCC variant, and `ClaimShape::is_cumulative` (drive.rs:126-129) knows\nonly ReturnType and ActivationInputs.\n\n## Standing position\n\nThis matches [[feedback_scc_inner_solver_is_tolerated_debt]]: the SCC-settled\ndemand solver is a REMOVAL TARGET, not a precedent to extend. \"Consistent with\nthat precedent\" justifies nothing here.\n\nCoordinate with fz-kdt.4 (the demand cone is the whole call graph) -- both are\nabout the same solver, and fz-kdt.4's stratification question may determine\nwhether this dissolution is even needed or whether the cone stops being one blob\nfirst.\n\nLine drift: `settle_demand_cone` was cited via runtime_demand.rs:286-323 in the\nsibling ticket; it is now :563.",
+  "id": "fz-kdt.34",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Dissolve the SCC-internal demand solver; its prerequisite settled-GROUP epoch fact does not exist",
+  "type": "task",
+  "updated_at": "2026-08-25T01:42:25Z"
+}
