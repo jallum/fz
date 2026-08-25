@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:41:58Z",
+  "description": "Three expectation stores are append-only with no retraction path. Verified at\nmain 417c5b0b5:\n\n    StructExpectationMap          src/compiler2/structdef.rs:103\n      references / fields, both HashMap\u003cModuleId, Vec\u003c..\u003e\u003e\n      record_reference (:115) and record_field (:125) are contains-then-push\n      no clear, no remove, no generation field\n\n    ModuleInterface.expectations  src/compiler2/module_interface.rs:123\n      record_expectation (:169) contains-then-push\n      inherit_expectations_from (:176) blindly re-records every prior\n        expectation with no staleness filter\n      called from World::merge_module_interface_expectations (world.rs:753)\n\n    ModuleReferenceExpectationMap module_interface.rs:90-107\n      HashMap\u003cModuleId, Vec\u003c..\u003e\u003e, record (:102) same shape, no removal\n\n## Why it cannot fire today, by construction\n\n`CodeMap::define` (code.rs:60) always mints `CodeId(self.slots.len() as u32)` and\npushes. `grep -rn \"fn update_code|watch_mode|resubmit\" src/compiler2/` returns\nNOTHING. There is no in-place code-update primitive, so no edit can retract a\nreference, and a stale expectation can never be consulted.\n\nThat makes this LATENT -- and it becomes live the moment the compiler stays\nresident and recompiles on file change, which is the direction fz-kdt.4 (demand\ncone) is also blocked on.\n\n## The design question, which is what this ticket is for\n\nNot settleable by running anything:\n\n- Should retraction be generation-scoped (bump a generation on code redefinition,\n  ignore expectations from older generations) or requester-revision-scoped?\n- Should the three stores FOLD into one? They are three instances of the same\n  idea -- \"module M is expected to provide X, recorded by requester R\" -- with\n  three separate append-only vecs and three separate contains-then-push methods.\n  Per [[feedback_fold_concordant_ideas]] that is worth answering before adding a\n  retraction mechanism to each of them separately.\n\n## Line drift in the old ticket\n\n`record_expectation` is module_interface.rs:169 (was cited ~123-132, which is now\nthe `expectations` field). `merge_module_interface_expectations` is world.rs:753\n(was ~1057-1064). What it calls \"StructExpectationMap::record\" is actually TWO\nmethods, `record_reference` and `record_field`.",
+  "id": "fz-kdt.32",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "Three expectation stores are append-only with no retraction, and are three instances of one idea",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:41:58Z"
+}
