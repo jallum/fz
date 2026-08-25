@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:17:57Z",
   "created": "2026-08-22T02:24:44Z",
   "description": "fz-qe0 (recursive-group walk no longer steps into settled products) sped every Enum-heavy fixture up. Several timeout overrides that existed to accommodate the old cost are now dead weight -- an override far above the real cost is a disabled detector.\n\nMEASURED at fz-qe0 HEAD, debug build, unloaded machine (interp / run / build):\n  enum_tier0                  0.7 / 0.9 / 0.9 s   -- override: interp 15s   =\u003e REMOVE, default 3s covers it\n  fz_f98_range_map_converges  0.8 / 1.0 / 1.0 s   -- override: interp 15s   =\u003e REMOVE, default 3s covers it\n  enum_map_family             2.1 / 2.8 / 2.9 s   -- override: 15/15/15     =\u003e LOWER (near the 3s default; keep headroom)\n  enum_take_drop_split        4.4 / 5.3 / 5.4 s   -- override: 15/15/15     =\u003e LOWER to ~8s\n  enum_predicate_search       2.6 / 3.1 / 3.1 s   -- already lowered to 6/6 by fz-qe0\n\nLowering a budget is safe by construction (a stricter guard), so this needs no masked-regression scrutiny -- only a check that output stays correct. Re-measure before choosing numbers: these were taken on one unloaded machine and CI may be slower, so leave real headroom rather than trimming to the measurement.\n\nSEPARATE FINDING, fix it here: fixtures2/behavior/enum_tier0.fz says 'The interp timeout override is temporary; fz-g58.52 owns restoring the default'. There is no fz-g58.52 -- 'bw show fz-g58.52' reports no such issue. The pointer is dangling, so the override had no live owner. Point the fixture at this ticket or drop the sentence with the override.",
   "id": "fz-1iw",
@@ -13,8 +14,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Retire the now-unneeded fixture timeout overrides (enum_tier0, fz_f98_range_map_converges); enum_tier0 cites a ticket that no longer exists",
   "type": "task",
-  "updated_at": "2026-08-25T01:17:56Z"
+  "updated_at": "2026-08-25T01:17:57Z"
 }
