@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:41:59Z",
+  "description": "`function_contract_is_enforced` (src/compiler2/jobs/semantic.rs:1645, called from\n`apply_function_contract` at :1620) gates spec enforcement on the CALLSITE's\ncode:\n\n    surface.extern_abi.is_none()\n      \u0026\u0026 !world.is_bootstrap(CodeId::from_source(violation_span.code_id))\n\nso library-internal callsites are exempt while user callsites are enforced. Its\ndoc comment (:1634-1644) states the joined-evidence rationale and names the\nretirement condition in-code.\n\nEnforcement is live at user callsites -- observed directly:\n\n    error[spec/violation]: call to `+/2` violates its @spec for arguments\n      (int | :fallback, int)\n\n## The retirement condition has NOT been met\n\nThe gate retires when activation evidence is correlation-sound, i.e. when the\nfz-463 arc lands the CallSiteTargets/completeness-barrier replacement.\nfz-463.3 (the CallSiteTargets split keystone) is CLOSED, but the barrier\nreplacement is not done.\n\nNote that fz-463 itself is being retired as an epic during the fz-kdt\nre-baseline -- most of its children turned out to be already-landed or\nalready-deleted. Before starting this ticket, establish what \"correlation-sound\"\nnow means against the current tree rather than against that epic's description.\n\n## The witness set needs re-deriving -- do not trust the old one\n\nThe old ticket names three lib tests as witnesses. ONE DOES NOT EXIST:\n`grep -rn \"capture_abi\" src/ tests/ fixtures2/` returns no matches, and no test\nis named `capture_abi_correlated`. The other two survive under longer names:\n\n    compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts   drive_test.rs:5514\n    compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling drive_test.rs:5553\n\nTreating \"3 lib tests\" as a known set is no longer safe.\n\n## Checks\n\n- The gate is deleted and the full suite is green, OR the reason it must stay is\n  recorded at semantic.rs:1645 with what specifically is not yet\n  correlation-sound.\n- A re-derived witness set is named in the ticket before the attempt, replacing\n  the stale one.",
+  "id": "fz-kdt.33",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Enforce specs at library-internal callsites once activation evidence is correlation-sound",
+  "type": "task",
+  "updated_at": "2026-08-25T01:41:59Z"
+}
