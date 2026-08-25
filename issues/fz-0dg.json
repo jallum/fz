@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:14:01Z",
   "created": "2026-08-21T21:52:25Z",
   "description": "fz-gk4 removed the only reader of the lazy-continuation descriptor's spec-id slot: `fz_materialize_cont` used to pass it to `alloc_closure_slots` as a target id the closure header discarded. `build_lazy_cont_descriptor` (src/compiler2/native_codegen/closure.rs) no longer writes it, and `LAZY_CONT_SID_OFF` is gone from runtime/src/ir_runtime.rs; +8 is now a documented hole inside a 32-byte header whose live fields are code pointer (+0) and capture count (+16).\n\nThe descriptor is a stack slot, so the waste is per mid-flight-yield frame rather than heap-resident, which is why this is not urgent.\n\nAcceptance: either compact the header (watch the 16-byte alignment `LAZY_CONT_RAW_OFF = 32` currently guarantees) or put a live field in the hole. Either way the reserved-hole comments in both files go away.",
   "id": "fz-0dg",
@@ -13,7 +14,7 @@
     }
   ],
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "Lazy cont descriptor carries a reserved 8-byte hole at +8",
   "type": "task",
   "updated_at": "2026-08-25T01:14:01Z"
