@@ -26,11 +26,15 @@
     {
       "text": "STAYS OPEN, and the commit that carries this ticket's name landed only half of it.\n\n`fz-zg4: make the demand cone's cost visible in telemetry` (main d439b3acf, PR\n#92) added the `fz.compiler2.demand.cone.settled` counter and the\n`the_demand_ascent_height_does_not_grow_with_the_program` pin. That is the\nMEASUREMENT this ticket needed, not the fix. None of this ticket's Checks are\nmet:\n\n    external_members \u003e 0 on the ladder                       NOT MET\n    members for a cone anchored at a leaf is small           NOT MET\n    the flat numbers stay flat                               holds\n    lib + matrix at baseline                                 holds\n\nAnyone reading `git log` should not take the commit prefix as closure.\n\nRE-MEASURE BEFORE STARTING. fz-6gb has landed and closed, and it predicted this\nticket's input would shrink: \"cone size is downstream of executable count\". It\nwas right. The 32-site ladder that produced the 231-member cone in this ticket's\ntable now compiles to 45 executables, not 233:\n\n    n     executables (was -\u003e now)\n    1     16  -\u003e 14\n    2     23  -\u003e 17\n    4     37  -\u003e 23\n    32    233 -\u003e 45\n\nSo the measured ladder in this description is against an input ~5x larger than\ntoday's. Re-run it before designing anything -- the cost figures (~350ms of 3.1s\nat n=32, per-settle 2.1ms -\u003e 116.7ms) are stale, and the structural question\n(\"why must a cone be collected cold at all -- external_members = 0 is an\nORDERING outcome, not a missing mechanism\") is the part that survives unchanged.\n\nThe 2026-08-23 correction on this ticket -- that the demand fixpoint's dependency\ngraph is the call graph UNION its reverse, so call-graph SCC decomposition\nmeasures the wrong graph -- also still stands and is the most valuable thing\nhere. Read it first.",
       "timestamp": "2026-08-25T00:57:27Z"
+    },
+    {
+      "text": "SUPERSEDED by  under the fz-kdt re-baseline epic. This description was rewritten to current truth today; rather than leave a rewritten ticket sitting in an old epic alongside its own stale comment history, the live content moves to  and this one closes. Work continues in .",
+      "timestamp": "2026-08-25T01:08:30Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "RuntimeDemand is keyed per executable but computed per program: the demand cone spans the whole reachable call graph and never reuses a settled one",
   "type": "bug",
-  "updated_at": "2026-08-25T01:01:08Z"
+  "updated_at": "2026-08-25T01:08:30Z"
 }
