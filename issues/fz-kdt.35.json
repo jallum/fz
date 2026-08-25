@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:42:26Z",
+  "description": "Demand walks reachable clauses PLUS a trivial delta; codegen lowers ALL clauses.\nThe delta's gate excludes any clause that builds a value through steps, so a\nTuple/Const-returning clause that reachability under-approximates as dead can\nstill reach native lowering with a value that was never marked live.\n\nThe gate (src/compiler2/jobs/runtime_demand.rs:69-81):\n\n    fn trivial_value_clause_ids(body: \u0026LoweredBody, reachable: \u0026[u32]) -\u003e Vec\u003cu32\u003e {\n        ...\n        .filter(|clause_id| {\n            let clause = \u0026clauses[*clause_id as usize];\n            let entry = \u0026entries[clause.entry.as_u32() as usize];\n            entry.steps.is_empty() \u0026\u0026 matches!(entry.tail, LoweredTail::Value { .. })\n        })\n\n`entry.steps.is_empty()` plus the bare-`Value` tail requirement together exclude\nevery clause that builds a tuple or const via steps.\n\nThe widening site and its rationale are intact\n(jobs/runtime_demand.rs:1388-1400): \"Codegen lowers every structural clause\nregardless of the settled entry reachability, so a clause the type-level\nreachability analysis under-approximates as dead can still reach native lowering\nand crash when its return value was never marked live.\"\n\n## Clauses that fall outside the gate today\n\n    src/modules/runtime_library/list.fz:21  fn reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}\n    src/modules/runtime_library/list.fz:53  fnp reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}\n    src/modules/runtime_library/map.fz:33   fnp reduce(_map, _count, {:halt, acc}, _reducer), do: {:halted, acc}\n    plus the {:suspended, acc, fn () -\u003e ... end} clauses at list.fz:23/55 and map.fz:35\n\nEach returns a CONSTRUCTED tuple, so each carries steps and a non-bare-Value\ntail.\n\n## Deliberately parked\n\nNo concrete crash reproduces it, and fz-6fr already failed to construct one for\nthe sibling case. This is a first-place-to-look note, not work to schedule. It\nbecomes actionable when a materialize-absent crash surfaces with a\nTuple/Const-returning pruned clause in the trace.\n\nVerified accurate as filed -- every entity, line number and clause shape checks\nout. `k22.8` in the title is history, not a live entity.",
+  "id": "fz-kdt.35",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "The trivial-clause widening gate excludes Tuple/Const-only clauses, leaving a latent demand-starvation gap",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:42:26Z"
+}
