@@ -9,9 +9,15 @@
   "id": "fz-go4.18.28.6",
   "labels": [],
   "parent": "fz-go4.18.28",
+  "comments": [
+    {
+      "text": "SUPERSEDED by  under the fz-kdt re-baseline epic.\n\nMeasured at main 417c5b0b5: the activations/ReturnType-widening half is FIXED (4 identical dump hashes; the dbg/1 widening flip does not reproduce), and enum_tier0's reported answer conflation and lane-2 decode aborts do not reproduce either (4 byte-identical runs). The backend-dump half survives but is a RENDERING defect, not a fixpoint one -- the two dumps are identical as a multiset of 49150 lines, so only the print order varies. That is fz-f98.21's canonical-form problem. Restated at that scope in ; work continues there.",
+      "timestamp": "2026-08-25T01:12:30Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Backend dump and activation return types are run-to-run nondeterministic at base",
   "type": "bug",
-  "updated_at": "2026-07-04T23:33:03Z"
+  "updated_at": "2026-08-25T01:12:30Z"
 }
