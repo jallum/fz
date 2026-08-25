@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-f98.9"
-  ],
+  "blocks": [],
   "closed_at": "2026-07-10T15:49:54Z",
   "close_reason": "Landed 227c93601 fz-f98.12: guard pid boundary for self send activations. Added production-path compiler2 telemetry regression proving Kernel.self/0 returns pid and Kernel.send/2 plus Kernel.fz_send/2 receive [pid, int], not any. Audit verdict: pass. Coordinator gates on integration: focused guard passed; existing self/send runtime test passed; cargo test --lib passed (1315 passed, 6 ignored); cargo clippy --all-targets -- -D warnings passed.",
   "created": "2026-06-25T14:37:33Z",
