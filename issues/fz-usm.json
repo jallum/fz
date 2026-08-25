@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:46:00Z",
   "created": "2026-06-21T18:47:39Z",
   "description": "Built-in type CONSTRUCTORS are represented three inconsistent ways, with gaps. This is type-system completeness; it is NOT a blocker for protocol dispatch (fz-bin), which dispatches on resolved Tys, not source type names -- fix it on its own merits.\n\nGROUNDED (resolve.rs + type_expr.rs):\n1. STRUCTURAL TypeExpr variants: [T] List, {T,U} Tuple, %Mod{...} StructRecord, (A,B)-\u003eR Arrow, A|B Union, literals.\n2. NAMED nullary builtins: Builtin enum + builtin_from_name (asserts no args) -- nil/bool/integer/float/cpointer/binary/atom/any/never/utf8/pid/ref.\n3. NAMED parametric builtins: 'list', 'resource' -- INLINE special-cases in classify_name (resolve.rs:332-337), because the Builtin enum is nullary-only.\n\nSYMPTOMS:\n- 'list' is expressible THREE ways ([T], 'list', 'list(T)'); redundant.\n- 'map' is expressible ZERO ways: no %{K=\u003eV} TypeExpr variant, not a builtin, not special-cased, no alias -\u003e ':: map' = 'unknown type name map'. The type LANGUAGE cannot express a map type at all, despite maps being a first-class value (Map module, map_top, Enumerable Map impl).\n- Adding 'if name == \"map\"' would be a FOURTH ad-hoc patch on the parametric-special-case pattern -- slop.\n\nINTENT / FIX (one source of truth, correct by construction):\n- Unify built-in type-constructor resolution: a single registry mapping name -\u003e (arity, constructor) covering BOTH nullary and parametric, retiring the inline 'list'/'resource' special-cases.\n- Make maps first-class in the type language: a %{K=\u003eV} structural form (parity with [T] for lists) and/or a uniform map(k,v) constructor.\n- Audit the full constructor set (list, map, tuple, resource, scalars) for parity.\n\nVERIFY: ':: map', map(k,v), %{...} type, ':: list', ':: tuple' all resolve; type_expr resolution tests; lib+matrix green. RELATED (sibling foundational gap, also independent): fz-bv3 (Region::Type over a struct type panics at runtime).",
   "id": "fz-usm",
@@ -13,8 +14,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "[BUG] Built-in type constructors resolved 3 inconsistent ways; no map type",
   "type": "bug",
-  "updated_at": "2026-08-25T01:45:59Z"
+  "updated_at": "2026-08-25T01:46:00Z"
 }
