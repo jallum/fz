@@ -1,0 +1,21 @@
+#---
+# purpose: "capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch"
+# oracle: oracle.exs
+#---
+#
+# # lambda_sugars
+#
+# Exercises the fz-g58.15 lambda desugar surface. Capture shorthand becomes an
+# ordinary lambda, and guarded multi-clause anonymous functions dispatch through
+# the same pattern machinery as `case`.
+fn main() do
+  add = &(&1 + &2)
+  classify = fn
+    0 -> :zero
+    n when n > 0 -> :pos
+    _ -> :other
+  end
+
+  dbg(add.(20, 22))
+  dbg({classify.(0), classify.(2), classify.(-1)})
+end

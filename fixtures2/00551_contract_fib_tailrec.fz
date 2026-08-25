@@ -1,0 +1,22 @@
+#---
+# purpose: tail-recursive fibonacci keeps its clause partition and self-tailcall stable
+# root: main/0
+# assert.metric.semantic.activations: 2
+# assert.metric.semantic.executables: 2
+# assert.metric.semantic.callsites: 11
+# assert.metric.call_edges.count: 11
+# assert.metric.return_type.widened: 0
+# assert.edge: fib/3[int, int, int] | @67-87 | direct | fib/3
+# assert.edge: main/0[] | @169-182 | direct | fib/3
+# snapshot.call_edges: call_edges
+#---
+fn fib(0, a, _), do: a
+fn fib(1, _, b), do: b
+fn fib(n, a, b), do: fib(n - 1, b, a + b)
+
+fn main() do
+  dbg(fib(0, 0, 1))
+  dbg(fib(1, 0, 1))
+  dbg(fib(10, 0, 1))
+  dbg(fib(20, 0, 1))
+end

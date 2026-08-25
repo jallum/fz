@@ -1,0 +1,16 @@
+#---
+# purpose: "native reducer tuple accumulators preserve list tails across callbacks"
+#---
+#
+# `Enum.reduce_while/3` carries `{acc, n}` through a callback boundary. Native
+# codegen must keep the runtime list tail in the first tuple field; type-only
+# evidence that the initial value was `[]` is not enough to erase the tail.
+fn main() do
+  dbg(collect([1, 2, 3]))
+end
+
+fnp collect(xs) do
+  finish(Enum.reduce_while(xs, {[], 0}, fn (entry, {acc, n}) -> {:cont, {[entry | acc], n + 1}} end))
+end
+
+fnp finish({acc, _n}), do: acc

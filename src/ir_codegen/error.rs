@@ -1,5 +1,4 @@
-use crate::diag::codes::CODEGEN_SCHEMA_MISSING;
-use crate::diag::{Diagnostic, Span};
+use crate::source::Span;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
@@ -22,9 +21,6 @@ impl CodegenError {
     pub fn with_span(mut self, span: Span) -> Self {
         self.span = span;
         self
-    }
-    pub fn to_diagnostic(&self) -> Diagnostic {
-        Diagnostic::error(CODEGEN_SCHEMA_MISSING, format!("codegen: {}", self.message), self.span)
     }
 }
 impl Display for CodegenError {

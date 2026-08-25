@@ -27,9 +27,9 @@
 use crate::any_value::debug::render_value;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TAG_BITSTRING, TAG_FWD, TAG_MASK,
-    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_flags_pack, closure_fn_ptr,
-    closure_halt_kind, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
-    object_size, struct_addr_from_tagged, struct_schema_id,
+    TAG_PROCBIN, ValueKind, closure_addr_from_tagged, closure_capture_value, closure_captured_count,
+    closure_flags_pack, closure_fn_ptr, closure_halt_kind, closure_schema_id, heap_object_word, list_addr_from_tagged,
+    map_addr_from_tagged, map_count, map_entry, object_size, struct_addr_from_tagged, struct_schema_id,
 };
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
@@ -102,6 +102,13 @@ fn heap_ref_word(tag: ValueKind, addr: *const u8) -> u64 {
         .raw_word()
 }
 
+fn list_rebuild_reused_source(source: AnyValueRef, rebuilt: AnyValueRef) -> bool {
+    // `Heap::reuse_or_alloc_list_cons_raw_kind` reports in-place reuse by
+    // returning the original source cons ref; fallback allocation returns a
+    // distinct fresh cons ref.
+    rebuilt == source
+}
+
 fn closure_ref_word_from_bits(bits: u64) -> u64 {
     let addr = closure_addr_from_tagged(bits).expect("closure heap bits");
     heap_ref_word(ValueKind::CLOSURE, addr)
@@ -139,12 +146,11 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     let reductions_per_quantum = p.reductions_per_quantum;
     let reductions_executed = p.reductions_executed;
     let reduction_yields = p.reduction_yields;
-    let allocation_pressure_yields = p.allocation_pressure_yields;
     let yield_reasons = p.yield_reasons;
     let max_yield_continuation_bytes = p.max_yield_continuation_bytes;
     let min_yield_continuation_margin_before_bytes = p.min_yield_continuation_margin_before_bytes;
     let min_yield_continuation_margin_after_bytes = p.min_yield_continuation_margin_after_bytes;
-    let mut entries = Vec::with_capacity(33);
+    let mut entries = Vec::with_capacity(32);
     entries.push((
         AnyValue::atom(process_atom_id(process, "allocs")),
         AnyValue::int(snapshot.total.allocs as i64),
@@ -186,10 +192,6 @@ pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     entries.push((
         AnyValue::atom(process_atom_id(process, "reduction_yields")),
         AnyValue::int(reduction_yields as i64),
-    ));
-    entries.push((
-        AnyValue::atom(process_atom_id(process, "allocation_pressure_yields")),
-        AnyValue::int(allocation_pressure_yields as i64),
     ));
     entries.push((
         AnyValue::atom(process_atom_id(process, "yield_reasons")),
@@ -359,6 +361,19 @@ pub extern "C" fn fz_halt_implicit_f64(process: *mut Process, val: f64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_halt_implicit_atom(process: *mut Process, atom_id: u64) {
     (unsafe { &mut *process }).halt_value = atom_id as i64;
+}
+
+/// fz-bdk — mark this process's halt as a fault at the exit boundary.
+/// Called by fault traps (compiler2 `Term::Halt` codegen: `function_clause`,
+/// `match_error`, unreachable-control) immediately after the matching
+/// `fz_halt_implicit_*` recorded the reason atom into `halt_value`. The
+/// snapshot makes the exit KIND a structural fact set at the trap site;
+/// drivers must never re-derive it by inspecting `halt_value`, which a
+/// program can legitimately set to any atom by returning one.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_exit_fault(process: *mut Process) {
+    let process = unsafe { &mut *process };
+    process.exit_fault = Some(process.halt_value as u32);
 }
 
 #[unsafe(no_mangle)]
@@ -607,11 +622,13 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 /// opaque to generated code; callers populate captures through accessors.
 /// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
 /// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
-/// at task launch.
+/// at task launch. `arity` (fz-gk4) rides the header's high half; it is the
+/// closure's user-visible parameter count, taken from the callable boundary
+/// that decides the call surface.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(
     process: *mut Process,
-    callee_fn_id: u32,
+    arity: u32,
     captured_count: u32,
     halt_kind: u32,
     body_addr: u64,
@@ -620,7 +637,7 @@ pub extern "C" fn fz_alloc_closure(
     let bits =
         (unsafe { &mut *process })
             .heap
-            .alloc_closure_slots(callee_fn_id, captured_count as usize, halt_kind as u16);
+            .alloc_closure_slots(arity as u16, captured_count as usize, halt_kind as u16);
     let addr = closure_addr_from_tagged(bits).expect("new closure bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
     closure_ref_word_from_bits(bits)
@@ -1289,11 +1306,8 @@ pub extern "C" fn fz_map_get_ref(process: *mut Process, map_ref_word: u64, key_r
 
 fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRef) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
-        let rs = unsafe { ResourceStub::from_raw(map.resource_addr().expect("resource map get")) };
         let _ = key;
-        return AnyValueRef::from_scalar_slot(ValueKind::INT, rs.payload_slot())
-            .expect("resource integer payload ref")
-            .raw_word();
+        return nil_atom_ref().raw_word();
     }
     if map.tag() == ValueKind::STRUCT && key.tag() == ValueKind::ATOM {
         let atom_id = key.load_atom().expect("struct field atom key");
@@ -1311,19 +1325,14 @@ fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRe
         .heap
         .read_map_value_ref(map, key)
         .expect("fz_map_get_ref")
-        .unwrap_or_else(|| {
-            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
-        })
+        .unwrap_or_else(nil_atom_ref)
         .raw_word()
 }
 
 fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyValue) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
-        let rs = unsafe { ResourceStub::from_raw(map.resource_addr().expect("resource map get")) };
         let _ = key;
-        return AnyValueRef::from_scalar_slot(ValueKind::INT, rs.payload_slot())
-            .expect("resource integer payload ref")
-            .raw_word();
+        return nil_atom_ref().raw_word();
     }
     if map.tag() == ValueKind::STRUCT
         && let AnyValue::Atom(atom_id) = key
@@ -1342,9 +1351,7 @@ fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyVa
         .heap
         .read_map_value_for_any_key(map, key)
         .expect("fz_map_get scalar key")
-        .unwrap_or_else(|| {
-            AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
-        })
+        .unwrap_or_else(nil_atom_ref)
         .raw_word()
 }
 
@@ -1352,6 +1359,15 @@ fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyVa
 pub extern "C" fn fz_map_get_atom_key_ref(process: *mut Process, map_ref_word: u64, atom_id: u64) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_atom_key_ref map");
     fz_map_get_scalar_key_ref(process, map, AnyValue::atom(atom_id as u32))
+}
+
+fn resource_payload_ref(resource: AnyValueRef) -> AnyValueRef {
+    let stub = unsafe { ResourceStub::from_raw(resource.resource_addr().expect("resource payload")) };
+    AnyValueRef::from_scalar_slot(ValueKind::INT, stub.payload_slot()).expect("resource integer payload ref")
+}
+
+fn nil_atom_ref() -> AnyValueRef {
+    AnyValueRef::from_scalar_slot(ValueKind::ATOM, &NIL_ATOM_REF_SLOT).expect("static nil atom ref")
 }
 
 #[unsafe(no_mangle)]
@@ -1577,14 +1593,26 @@ pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_reuse_or_cons_tail_ref(process: *mut Process, list_ref_word: u64, tail_ref_word: u64) -> u64 {
-    let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_tail_ref list");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_tail_ref tail");
-    (unsafe { &mut *process })
+pub extern "C" fn fz_list_reuse_or_cons_parts(
+    process: *mut Process,
+    list_ref_word: u64,
+    head_raw: u64,
+    head_kind_tag: u64,
+    tail_ref_word: u64,
+) -> u64 {
+    let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_parts list");
+    let head_kind = ValueKind::new(head_kind_tag as u8).expect("fz_list_reuse_or_cons_parts head kind");
+    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_parts tail");
+    let process = unsafe { &mut *process };
+    process.reusable_cons_attempts = process.reusable_cons_attempts.saturating_add(1);
+    let result = process
         .heap
-        .reuse_or_alloc_list_cons_tail(list, tail)
-        .expect("fz_list_reuse_or_cons_tail_ref")
-        .raw_word()
+        .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail)
+        .expect("fz_list_reuse_or_cons_parts");
+    if list_rebuild_reused_source(list, result) {
+        process.reusable_cons_reused = process.reusable_cons_reused.saturating_add(1);
+    }
+    result.raw_word()
 }
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
@@ -1617,6 +1645,9 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
         .node
         .atom_name(field_atom_id as u32)
         .unwrap_or_else(|| panic!("unknown field atom id {}", field_atom_id));
+    if value_ref.tag() == ValueKind::RESOURCE && field_name == "value" {
+        return resource_payload_ref(value_ref).raw_word();
+    }
     (unsafe { &mut *process })
         .heap
         .read_struct_named_field_ref(value_ref, &field_name)
@@ -1681,10 +1712,34 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
     if is_lazy_cont_ref(closure_ref_word) {
         return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) };
     }
-    let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_ref");
-    closure_capture_ref(value, index as usize)
-        .expect("fz_closure_get_capture_ref")
-        .raw_word()
+    let value = AnyValueRef::from_raw_word(closure_ref_word).unwrap_or_else(|err| {
+        panic!(
+            "fz_closure_get_capture_ref idx={} invalid any value ref {:#x}: {:?}",
+            index, closure_ref_word, err
+        )
+    });
+    if value.tag() != ValueKind::CLOSURE {
+        panic!(
+            "fz_closure_get_capture_ref idx={} expected closure ref, got tag {:?} word={:#x}",
+            index,
+            value.tag(),
+            closure_ref_word
+        );
+    }
+    match closure_capture_ref(value, index as usize) {
+        Ok(capture) => capture.raw_word(),
+        Err(err) => {
+            let addr = value.closure_addr().expect("fz_closure_get_capture_ref closure");
+            panic!(
+                "fz_closure_get_capture_ref idx={} schema_id={} captured_count={} code_ptr={:#x}: {:?}",
+                index,
+                unsafe { closure_schema_id(addr) },
+                unsafe { closure_captured_count(addr) },
+                unsafe { closure_fn_ptr(addr) },
+                err
+            )
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1775,9 +1830,13 @@ pub extern "C" fn fz_closure_set_capture_atom(process: *mut Process, closure_ref
 }
 
 const LAZY_CONT_CODE_OFF: usize = 0;
-const LAZY_CONT_SID_OFF: usize = 8;
+// +8 is reserved. It held the cont's spec id, which materialization passed to
+// the allocator as a target id that the closure header discarded (fz-gk4).
 const LAZY_CONT_COUNT_OFF: usize = 16;
 const LAZY_CONT_RAW_OFF: usize = 32;
+
+/// A continuation is applied to exactly the one value it receives.
+const CONT_ARITY: u16 = 1;
 const LAZY_CONT_KIND_REF: u8 = 0;
 const LAZY_CONT_KIND_I64: u8 = 1;
 const LAZY_CONT_KIND_F64: u8 = 2;
@@ -1819,9 +1878,11 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
     }
     let ptr = lazy_cont_ptr(cont_word);
     let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
-    let sid = unsafe { *(ptr.add(LAZY_CONT_SID_OFF) as *const u64) as u32 };
     let count = unsafe { lazy_cont_count(ptr) };
-    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(sid, count, 0);
+    // A continuation is applied to exactly the one value it receives.
+    let bits = (unsafe { &mut *process })
+        .heap
+        .alloc_closure_slots(CONT_ARITY, count, 0);
     let addr = closure_addr_from_tagged(bits).expect("materialized cont bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
     let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };
@@ -1945,6 +2006,26 @@ pub extern "C" fn fz_promote_f64(raw_int: i64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
     a % b
+}
+
+/// Checked `==` between a dynamic `AnyValueRef` and an unboxed int/atom raw
+/// payload, with no allocation on either side. `expected_tag` is an
+/// `INT`/`ATOM` `ValueKind` tag byte. Reads `ref_word`'s runtime tag and
+/// returns false (not a panic) whenever it doesn't match `expected_tag`, so
+/// codegen can call this whenever one side of an `==`/`!=` is natively
+/// unboxed (a literal, a monomorphized parameter, a projected pattern tag,
+/// etc. — e.g. matching a `:cont`/`:halt` protocol tag, or an `Enum.member?`
+/// scan against an int argument) without first proving the other side's
+/// static type — the proof `fz_value_eq_ref`'s generic path would otherwise
+/// need before it could avoid materializing the unboxed side into a heap
+/// scalar box.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u64) -> u64 {
+    let value = any_value_ref_from_word(ref_word, "fz_value_eq_raw_const");
+    let Some(expected_tag) = ValueKind::new(expected_tag as u8) else {
+        return 0;
+    };
+    u64::from(value.tag() == expected_tag && value.storage_raw() == Ok(raw))
 }
 
 #[unsafe(no_mangle)]

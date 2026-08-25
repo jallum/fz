@@ -1,0 +1,11 @@
+
+fn build(acc, n) do
+  if n == 0 do
+    acc
+  else
+    step = fn () -> build([n | acc], n - 1) end
+    step.()
+  end
+end
+
+fn main(), do: dbg(build([], 5))

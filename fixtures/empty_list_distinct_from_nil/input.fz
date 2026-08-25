@@ -1,5 +1,0 @@
-fn main() do
-  dbg(nil)
-  dbg([])
-  dbg([1, 2, 3])
-end

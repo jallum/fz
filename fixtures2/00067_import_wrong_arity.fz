@@ -1,0 +1,7 @@
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 1]
+  fn run(x), do: add(x)
+end

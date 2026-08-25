@@ -75,42 +75,13 @@ impl fmt::Display for ModuleNameParseError {
 impl Error for ModuleNameParseError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct QualifiedName {
-    pub module: Option<ModuleName>,
-    pub name: String,
-}
-
-impl QualifiedName {
-    pub fn in_module(module: ModuleName, name: impl Into<String>) -> Self {
-        Self {
-            module: Some(module),
-            name: name.into(),
-        }
-    }
-
-    /// Display spelling used by current flattened IR names.
-    pub fn dotted(&self) -> String {
-        match &self.module {
-            Some(module) => format!("{}.{}", module, self.name),
-            None => self.name.clone(),
-        }
-    }
-}
-
-impl fmt::Display for QualifiedName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.dotted())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ExportKey {
+pub struct Mfa {
     pub module: ModuleName,
     pub name: String,
     pub arity: usize,
 }
 
-impl ExportKey {
+impl Mfa {
     pub fn new(module: ModuleName, name: impl Into<String>, arity: usize) -> Self {
         Self {
             module,
@@ -120,7 +91,7 @@ impl ExportKey {
     }
 }
 
-impl fmt::Display for ExportKey {
+impl fmt::Display for Mfa {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}/{}", self.module, self.name, self.arity)
     }

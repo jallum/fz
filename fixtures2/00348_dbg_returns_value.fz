@@ -1,0 +1,4 @@
+fn main() do
+  x = dbg(41)
+  dbg(x + 1)
+end

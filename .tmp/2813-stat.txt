@@ -1,0 +1,44 @@
+commit c8a28dbefc30bdc8e1c828eb5abeb04f9c953d22
+Author: Jason Allum <21417+jallum@users.noreply.github.com>
+Date:   Fri Jul 3 18:56:39 2026 -0400
+
+    fz-go4.18.28.13: prune the transport consult ledger to live closure membership
+    
+    record_transport_closure_consult built a full cross-product of consulted
+    executables x closure members and was never pruned when
+    drop_solved_transport_closure/clear_solved_transport_closures evicted the
+    closure cover, so the ledger grew monotonically for the session (quicksort
+    ~420 edges, reverse ~380, never reclaimed).
+    
+    SolvedTransportClosure now carries its own `consulted` set. Installing a
+    closure into the cover (record_solved_transport_closure) installs its
+    consult edges as the SAME dense product in lockstep; dropping a closure
+    (drop_solved_transport_closure, including the displacement path and the
+    epoch-wide clear_solved_transport_closures sweep) retracts exactly those
+    edges. clear_solved_transport_closures now hands back the drained closures
+    so invalidate_transport_products can defer the retraction until after its
+    walk (which still needs the pre-clear ledger to reach every consult
+    dependent) finishes.
+    
+    Kept the dense cross-product form: closures are disjoint by construction
+    (a member belongs to at most one live closure), so every edge is owned
+    outright by exactly one closure and precise removal needs no reference
+    counting. A sparser consulted->representative star risks under-invalidation
+    (a consulted fact's movement must retract every member's shape, not just
+    one), so density was kept and only the lifetime was fixed.
+    
+    Added two direct-construction unit tests
+    (transport_closure_consult_ledger_prunes_displaced_closure_on_resolve,
+    transport_closure_consult_ledger_prunes_on_epoch_invalidation) proving
+    edges are retracted precisely on both the disjoint re-solve path and the
+    epoch-wide invalidation path; both fail without the fix. Single-shot
+    fixture ledger sizes are unchanged (quicksort 420, reverse 380 -- no
+    re-solve happens in one compile), and the fixture matrix's pre-existing
+    21-name failure set is unchanged. Both .28.5 contract tests
+    (compiler2_transport_consult_ledger_displaces_co_members_on_demand_movement,
+    compiler2_transport_world_fact_ledger_displaces_co_members_on_return_type_movement)
+    stay green.
+
+ src/compiler2/jobs/transport.rs |  17 ++-
+ src/compiler2/pull.rs           | 260 +++++++++++++++++++++++++++++++++++-----
+ 2 files changed, 238 insertions(+), 39 deletions(-)

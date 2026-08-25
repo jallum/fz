@@ -1,2 +1,0 @@
-fn inc(n) do n + 1 end
-fn main(), do: dbg(inc(41))

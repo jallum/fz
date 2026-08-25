@@ -1,0 +1,11 @@
+fn child(parent) do
+  send(parent, {:reply, :tag, 99})
+end
+fn main() do
+  me = self()
+  spawn(fn () -> child(me) end)
+  v = receive do
+    {:reply, :tag, val} -> val
+  end
+  dbg(v)
+end

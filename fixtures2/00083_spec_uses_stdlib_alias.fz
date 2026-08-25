@@ -1,0 +1,4 @@
+defmodule M do
+  @spec run(keyword(integer)) :: nil
+  fn run(_), do: nil
+end

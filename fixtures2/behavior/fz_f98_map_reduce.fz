@@ -1,0 +1,15 @@
+#---
+# purpose: "fz-f98: Enum.reduce/2 and reduce/3 over Map do not materialize absent values"
+# defer.build: fz-f98 shared Enum.reduce* bridge callable surface loses Map reduce value evidence
+# defer.interp: fz-f98 shared Enum.reduce* bridge callable surface loses Map reduce value evidence
+# defer.run: fz-f98 shared Enum.reduce* bridge callable surface loses Map reduce value evidence
+#---
+#
+# Regression target for fz-bfh.3. Direct Enumerable.Map.reduce works; only the
+# public Enum bridge with a captured reducer currently drops value evidence.
+fn main() do
+  map = %{2 => :two, 1 => :one}
+
+  dbg(Enum.reduce(map, fn ({k, _v}, {ak, av}) -> {ak + k, av} end))
+  dbg(Enum.reduce(map, 0, fn ({k, _v}, acc) -> acc + k end))
+end

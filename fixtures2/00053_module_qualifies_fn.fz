@@ -1,0 +1,3 @@
+defmodule M do
+  fn f(x), do: x + 1
+end

@@ -1,0 +1,5 @@
+fn rx_pinned(want) do
+  receive do
+    {^want, payload} -> payload
+  end
+end

@@ -1,0 +1,285 @@
+//! Compiler2's callee-owned function contract facts.
+//!
+//! A contract is the resolved type surface declared by source. Direct-call
+//! resolution applies it to observed arguments before minting callee
+//! activations or deriving callable-boundary demand.
+//!
+//! A contract clause is one interned ADDRESSED ARROW plus its variable bounds
+//! (fz-hwn.27.9). The arrow's variables are structural addresses — the resolver
+//! assigns them at the binder (fz-hwn.27.14), so two alpha-equivalent contracts
+//! intern byte-identical — and the bounds are keyed by those same addresses, so
+//! application instantiates the arrow through the bounds sidecar with no bespoke
+//! substitution. The hand-rolled witness/substitution walk that used to live here
+//! is the Types calculator now (`Types::match_arrow`, `types::arrow_match`,
+//! fz-hwn.27.4); contract application is a calculator decision on the arrow.
+//! Input-domain projection likewise delegates substitution to
+//! `Types::instantiate`, closing dependent bounds to a fixed point while leaving
+//! unbounded or cyclic variables polymorphic.
+
+use std::collections::{BTreeSet, HashMap};
+
+use crate::type_expr::ResolvedSpecDecl;
+
+use super::identity::FunctionId;
+use super::protocol::ProtocolDomainObligation;
+use super::types::{ArrowMatch, Ty, TypeVarId, Types};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedContractArrow {
+    decl: ResolvedSpecDecl<Ty>,
+    protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+}
+
+impl ResolvedContractArrow {
+    pub(crate) fn classify(types: &Types, decl: ResolvedSpecDecl<Ty>) -> Self {
+        let protocol_domain_obligations = types.protocol_domain_obligations(
+            decl.params.iter().copied().chain(std::iter::once(decl.result)),
+            &decl.constraints,
+        );
+        Self {
+            decl,
+            protocol_domain_obligations,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_obligations(
+        decl: ResolvedSpecDecl<Ty>,
+        protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+    ) -> Self {
+        Self {
+            decl,
+            protocol_domain_obligations,
+        }
+    }
+}
+
+/// One resolved contract clause: the addressed arrow surface and its
+/// address-keyed variable bounds. Protocol-domain obligations are classified
+/// from the resolved `Ty` marker tags, so current structural enforceability is
+/// derived from `protocol_domain_obligations.is_empty()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractArrow {
+    pub arrow: Ty,
+    pub bounds: HashMap<TypeVarId, Ty>,
+    pub protocol_domain_obligations: BTreeSet<ProtocolDomainObligation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionContract {
+    pub arrows: Vec<ContractArrow>,
+}
+
+/// The contract applied to observed arguments: the instantiated parameter
+/// surface of each clause that matched (used to refine the call's inputs), and
+/// the joined result. The per-clause result is folded into `result`, so the
+/// matched arrows carry only the parameter projection the caller consumes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedFunctionContract {
+    pub matched_arrows: Vec<Vec<Ty>>,
+    pub result: Option<Ty>,
+    pub satisfied: bool,
+    pub enforceable: bool,
+    pub enforceable_satisfied: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct FunctionContractMap {
+    slots: Vec<Option<FunctionContract>>,
+}
+
+impl FunctionContract {
+    pub fn from_resolved(types: &mut Types, arrows: Vec<ResolvedSpecDecl<Ty>>) -> Self {
+        let arrows = arrows
+            .into_iter()
+            .map(|decl| ResolvedContractArrow::classify(types, decl))
+            .collect();
+        Self::from_classified_arrows(types, arrows)
+    }
+
+    pub(crate) fn from_classified_arrows(types: &mut Types, arrows: Vec<ResolvedContractArrow>) -> Self {
+        Self {
+            arrows: arrows
+                .into_iter()
+                .map(|arrow| ContractArrow {
+                    // params/result arrive addressed from the resolver binder
+                    // (fz-hwn.27.14), so this packs them into the interned arrow
+                    // surface; the bounds are already keyed by those addresses.
+                    arrow: types.arrow(&arrow.decl.params, arrow.decl.result),
+                    bounds: arrow.decl.constraints,
+                    protocol_domain_obligations: arrow.protocol_domain_obligations,
+                })
+                .collect(),
+        }
+    }
+
+    pub(crate) fn input_domain_rows(&self, types: &mut Types) -> Vec<Vec<Ty>> {
+        self.arrows.iter().map(|arrow| arrow.input_domain_row(types)).collect()
+    }
+
+    pub fn apply(&self, types: &mut Types, arg_tys: &[Ty]) -> AppliedFunctionContract {
+        let mut matched_arrows = Vec::new();
+        let mut result = None;
+        let mut matched_any = false;
+        let mut enforceable = false;
+        let mut enforceable_matched = false;
+        for clause in &self.arrows {
+            let clause_enforceable = clause.protocol_domain_obligations.is_empty();
+            enforceable |= clause_enforceable;
+            let params = types.arrow_params(&clause.arrow);
+            let clause_result = types
+                .arrow_result(&clause.arrow)
+                .expect("a contract clause is an arrow with a result slot");
+            match types.match_arrow(&params, &clause_result, &clause.bounds, arg_tys) {
+                ArrowMatch::Known {
+                    params,
+                    result: matched,
+                } => {
+                    result = Some(match result {
+                        Some(current) => types.union(current, matched),
+                        None => matched,
+                    });
+                    matched_arrows.push(params);
+                    matched_any = true;
+                    enforceable_matched |= clause_enforceable;
+                }
+                ArrowMatch::Underconstrained { params, result: _ } => {
+                    matched_arrows.push(params);
+                    matched_any = true;
+                    enforceable_matched |= clause_enforceable;
+                }
+                ArrowMatch::Invalid => {}
+            }
+        }
+        if enforceable && !enforceable_matched && self.arrow_set_covers(types, arg_tys) {
+            enforceable_matched = true;
+            matched_any = true;
+            for clause in &self.arrows {
+                let Some(narrowed) = self.narrow_args_to_clause(types, clause, arg_tys) else {
+                    continue;
+                };
+                let params = types.arrow_params(&clause.arrow);
+                let clause_result = types
+                    .arrow_result(&clause.arrow)
+                    .expect("a contract clause is an arrow with a result slot");
+                if let ArrowMatch::Known {
+                    params,
+                    result: matched,
+                } = types.match_arrow(&params, &clause_result, &clause.bounds, &narrowed)
+                {
+                    result = Some(match result {
+                        Some(current) => types.union(current, matched),
+                        None => matched,
+                    });
+                    matched_arrows.push(params);
+                }
+            }
+        }
+        AppliedFunctionContract {
+            matched_arrows,
+            result,
+            satisfied: self.arrows.is_empty() || matched_any,
+            enforceable,
+            enforceable_satisfied: !enforceable || enforceable_matched,
+        }
+    }
+
+    /// Arrow-SET coverage of a ground argument row: no single arrow accepted
+    /// the arguments, but the arguments may still be covered member-by-member
+    /// by different arrows (e.g. `(int | float, int)` against `+/2`'s
+    /// `(int, int)` and `(float, int)` clauses). The argument product is a
+    /// tuple type and each enforceable ground clause domain is a tuple type,
+    /// so coverage is exactly tuple subsumption against the domain union —
+    /// the Types calculator decides it set-theoretically, decomposing unions
+    /// across positions. Clause domains that still carry variables after
+    /// closing their bounds are skipped (conservative: skipping never widens
+    /// coverage), and non-ground arguments never reach a violation anyway.
+    fn arrow_set_covers(&self, types: &mut Types, arg_tys: &[Ty]) -> bool {
+        if arg_tys.iter().any(|ty| types.has_vars(ty)) {
+            return false;
+        }
+        let mut domain: Option<Ty> = None;
+        for clause in &self.arrows {
+            if !clause.protocol_domain_obligations.is_empty() {
+                continue;
+            }
+            let row = clause.input_domain_row(types);
+            if row.len() != arg_tys.len() || row.iter().any(|param| types.has_vars(param)) {
+                continue;
+            }
+            let row_tuple = types.tuple(&row);
+            domain = Some(match domain {
+                Some(current) => types.union(current, row_tuple),
+                None => row_tuple,
+            });
+        }
+        let Some(domain) = domain else {
+            return false;
+        };
+        let observed = types.tuple(arg_tys);
+        types.is_subtype(&observed, &domain)
+    }
+
+    /// The argument row narrowed positionally into one clause's domain, or
+    /// `None` when the clause overlaps no member of the arguments.
+    fn narrow_args_to_clause(&self, types: &mut Types, clause: &ContractArrow, arg_tys: &[Ty]) -> Option<Vec<Ty>> {
+        let row = clause.input_domain_row(types);
+        if row.len() != arg_tys.len() {
+            return None;
+        }
+        let mut narrowed = Vec::with_capacity(arg_tys.len());
+        for (arg, param) in arg_tys.iter().zip(row.iter()) {
+            if types.has_vars(param) {
+                narrowed.push(*arg);
+                continue;
+            }
+            let overlap = types.intersect(*arg, *param);
+            if types.is_empty(&overlap) {
+                return None;
+            }
+            narrowed.push(overlap);
+        }
+        Some(narrowed)
+    }
+}
+
+impl ContractArrow {
+    fn input_domain_row(&self, types: &mut Types) -> Vec<Ty> {
+        types
+            .arrow_params(&self.arrow)
+            .into_iter()
+            .map(|param| instantiate_domain(types, param, &self.bounds))
+            .collect()
+    }
+}
+
+fn instantiate_domain(types: &mut Types, mut domain: Ty, bounds: &HashMap<TypeVarId, Ty>) -> Ty {
+    let closed = types.close_bounds(bounds, &HashMap::new());
+    domain = types.instantiate(&domain, &closed);
+    domain
+}
+
+impl FunctionContractMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn define(&mut self, function: FunctionId, contract: FunctionContract) -> bool {
+        self.ensure(function);
+        let slot = &mut self.slots[function.as_u32() as usize];
+        let changed = slot.as_ref() != Some(&contract);
+        *slot = Some(contract);
+        changed
+    }
+
+    pub fn get(&self, function: FunctionId) -> Option<&FunctionContract> {
+        self.slots.get(function.as_u32() as usize)?.as_ref()
+    }
+
+    fn ensure(&mut self, function: FunctionId) {
+        let index = function.as_u32() as usize;
+        if self.slots.len() <= index {
+            self.slots.resize_with(index + 1, || None);
+        }
+    }
+}

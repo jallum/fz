@@ -262,6 +262,7 @@ pub extern "C" fn fz_aot_setup(
         resume_addr: null(),
         timers: TimerWheel::new(),
         ctx: ExecCtx {
+            output: Some(crate::output::STDOUT_OUTPUT_HOOK),
             spawn: Some(aot_spawn_hook),
             spawn_opt: Some(aot_spawn_opt_hook),
             send: Some(aot_send_hook),
@@ -391,13 +392,13 @@ pub extern "C" fn fz_aot_register_named_schemas(proc: *mut Process, blob: *const
 pub extern "C" fn fz_aot_register_static_closure(
     proc: *mut Process,
     cl_sid: u32,
-    fn_id: u32,
+    arity: u32,
     code_addr: *const u8,
     halt_kind: u32,
 ) {
     assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
     let process = unsafe { &mut *proc };
-    process.init_static_closures(&[(cl_sid, fn_id, code_addr, halt_kind)]);
+    process.init_static_closures(&[(cl_sid, arity, code_addr, halt_kind)]);
 }
 
 /// Spawn hook (fz-sched.2). Allocates a child Process, deep-copies the
@@ -584,11 +585,28 @@ pub extern "C" fn fz_aot_run_main(
 
     aot_run_queue_loop(sched);
 
+    // A fault-halted main must not report success (fz-bdk). The exit kind is
+    // set by the fault trap itself (`fz_exit_fault`); read it before teardown
+    // frees the process, and name the reason atom on stderr like the other
+    // drivers do.
+    let fault = process.exit_fault.map(|atom| {
+        process
+            .node
+            .atom_name(atom)
+            .unwrap_or_else(|| "unknown_fault".to_string())
+    });
+
     // Teardown: reclaim the leaked scheduler box. Its drop frees the task
     // table (and every process heap), the timer wheel, and the run-queue in
     // one shot — replacing the per-thread-local clears the old code ran here.
     drop(unsafe { Box::from_raw(sched) });
-    0
+    match fault {
+        Some(reason) => {
+            eprintln!("fz: {reason}: the main process halted through a fault trap");
+            1
+        }
+        None => 0,
+    }
 }
 
 /// fz-4mk.3b — register the `fz_drain_dtor_entry` shim address. Called from
@@ -672,7 +690,6 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         (*proc_ptr).state = ProcessState::Running;
         (*proc_ptr).reset_reduction_budget();
         (*proc_ptr).ctx = &mut (*sched).ctx;
-        (*proc_ptr).heap.set_owner(proc_ptr);
         debug_assert!(!(*proc_ptr).ctx.is_null(), "aot ctx installed");
     };
 

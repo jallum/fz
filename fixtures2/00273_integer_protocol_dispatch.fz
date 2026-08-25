@@ -1,0 +1,9 @@
+defprotocol Integerish do
+  fn id(value)
+end
+
+defimpl Integerish, for: Integer do
+  fn id(value), do: value + 1
+end
+
+fn main(), do: Integerish.id(41)

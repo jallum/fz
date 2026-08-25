@@ -19,7 +19,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -42,6 +42,9 @@ jobs:
       - run: cargo audit
       - run: cargo test --workspace --doc
       - run: |
+          # .coverage-threshold is temporarily lowered (84) while fz-9i4.7
+          # defers the broad red compiler2 fixtures; fz-9i4.7.8 restores it to
+          # 87 as those fixtures re-enable. Keep it a bare number — it is cat'd.
           cargo llvm-cov \
             --all-features \
             --workspace \

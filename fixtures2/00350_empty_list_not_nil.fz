@@ -1,0 +1,2 @@
+fn f(nil), do: 1
+fn main(), do: f([])

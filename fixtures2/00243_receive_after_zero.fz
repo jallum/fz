@@ -1,0 +1,7 @@
+fn main() do
+  v = receive do
+    {:never, _} -> 11
+  after 0 -> 12
+  end
+  dbg(v)
+end

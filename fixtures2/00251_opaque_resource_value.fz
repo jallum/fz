@@ -1,0 +1,13 @@
+defmodule R do
+  @type t :: opaque resource(integer)
+
+  fn get_value(h), do: h.value
+end
+
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+
+fn main() do
+  r = make_resource(99, &dwrap/1)
+  assert(R.get_value(r) == 99)
+end

@@ -1,0 +1,8 @@
+fn is_pos(0) do false end
+fn is_pos(n) do n > 0 end
+fn main() do
+  case 5 do
+    n when is_pos(n) -> dbg(1)
+    _ -> dbg(0)
+  end
+end

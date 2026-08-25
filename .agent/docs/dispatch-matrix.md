@@ -35,15 +35,30 @@ classify equal regions with different outcomes as duplicate coverage or as an
 ambiguity. `analyze_type_coverage` computes covered and residual receiver
 domains, distinguishing closed coverage from open residuals.
 
-`collect_protocol_dispatch_matrix_candidates` is the protocol producer. It reads
-planner facts and classifies a protocol callsite as ordinary static dispatch, no
-local dispatch, or a specificity-ordered matrix over visible local impls. A
-closed receiver union gets one direct-call outcome per covering local impl and no
-fallback; an open, erased, or provider-only overlap gets an explicit residual
-fallback outcome that preserves the protocol stub path. The frontend rewrite hook
-lowers the compiled `DispatchGraph` into the current `TypeTest`/`If` IR shape:
-closed graph `Fail` tails become the final direct `else`, while open residual
-fallbacks become the original stub call.
+Protocol call dispatch is callsite-owned in compiler2. `jobs/semantic.rs`
+settles each callsite as a `CallSiteSummary` with one `CallTargetSummary` per
+viable impl target. Single-target summaries stay direct. Multi-target summaries
+are consumed later by `compiler2::callsite_dispatch::dispatch_from_callsite_summary`,
+which builds a `PatternDispatchPlan<Ty>` from the receiver-narrowed
+`CallTargetSummary.surface_inputs` and assigns opaque body ids to the viable
+targets. The artifact rung then materializes a `CallEdge::Dispatch`: the plan is
+the runtime type-test graph, while each `DispatchCallArm` carries the existing
+impl `CallTarget`, return flow, and extern marshal facts outside
+`DispatchMatrix`. Dispatch misses are unreachable for closed receiver unions and
+lower to an explicit halt/trap path; there is no residual protocol-stub outcome
+in the matrix.
+
+A fired trap is reported at the process-exit boundary as a fault, not unified
+with normal completion. Compiler2's `Term::Halt` codegen (the only producer is
+the fault traps: `function_clause`, `match_error`, unreachable-control) calls
+`fz_exit_fault` after recording the reason atom into `halt_value`, setting
+`Process.exit_fault = Some(atom)`. Normal completion never touches the field,
+and drivers never infer fault-ness from `halt_value` (a program may
+legitimately return a fault-shaped atom). `Compiler2::run_root_jit` reads the
+root task's `exit_fault` after `run_until_idle` and returns the reason as an
+`Err`; `fz_aot_run_main` reads it before teardown, names the reason on stderr,
+and exits nonzero. The backend interpreter needs no marker — its trap is a
+Rust `Err` that already propagates to the CLI.
 
 `pattern_dispatch_from_source` is the source-pattern producer. It consumes the
 AST-facing `SourcePatternRows`, extracts positive proof paths into `Order::Source`
@@ -53,7 +68,26 @@ Inline lowering for function heads, `case`, and `with else`, plus interpreter
 receive probes and native receive codegen, walk the resulting
 `PatternDispatchPlan` directly. Receive accept/reject policy is not encoded in
 `DispatchMatrix`; selective receive remains a producer/outcome policy layered
-above the same regions.
+above the same regions. For selective receive specifically, the winning outcome
+is not "put the message somewhere and revisit it later". A hit outcome is a
+projected outcome-closure payload for the winning clause body; a miss outcome is
+"append the full message to the mailbox and stay parked".
+
+Compiler2 semantic reachability is another consumer, not another dispatch
+model. `compiler2/dispatch_reachability.rs` interprets the graph's edge proofs
+against root input `Ty` rows and uses plan-owned `PatternSubjectRef` paths to
+derive every tested projection. It never stores types by `SubjectId` and never
+adds type/domain policy to this generic module. Before traversal, a runtime
+envelope replaces bare inference templates in positive, recursively inspectable
+tuple/list/map/resource slots with `any`, narrows unresolved negative exclusions
+instead of widening them, and preserves callable arrows that the pattern graph
+cannot inspect. Negative finite variable branches are erased while preserving
+their concrete axes; negative cofinite branches with excluded variable IDs
+become empty. A cofinite variable axis with no excluded IDs remains ordinary
+top. Exact tuple projections lift to their roots;
+ambiguous positional list projections keep both edges. Each reachable outcome
+retains its refined root inputs for clause analysis, so reachability and clause
+binding consume the same proof.
 
 ## Vocabulary Boundary
 
@@ -72,7 +106,7 @@ DispatchMatrix has three layers that must stay separate:
 
 Future dispatch changes should add producers on top of this model instead of
 adding one-off pattern, protocol, or planner dispatch passes. Graph compilation
-is tested with fake outcome handles, protocol direct-call / residual outcomes,
-and source-pattern-derived pattern outcomes. Protocol dispatch and source-pattern
+is tested with fake outcome handles, callsite-dispatch arm ids, and
+source-pattern-derived pattern outcomes. Protocol dispatch and source-pattern
 dispatch share the same decision model; runtime helper names that still say
 "matcher" are ABI vocabulary, not a separate compiler data model.

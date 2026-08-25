@@ -42,12 +42,7 @@ pub type SpawnOptHook =
 /// handles the deep-copy into the receiver's heap and the wake-up.
 pub type SendHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64);
 
-/// Output sink signature on the binary side. `emit_print_line` (the `dbg` /
-/// print render seam, shared by both engines) forwards each rendered line so
-/// the binary can emit it as a telemetry event on the current Runtime's sink.
-/// Production stdout still happens at the `emit_print_line` call site; this is
-/// the additional observation channel.
-pub type OutputHook = extern "C" fn(tel: *const (), line_ptr: *const u8, line_len: usize);
+pub type OutputHook = unsafe extern "C" fn(context: *const (), line_ptr: *const u8, line_len: usize);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
 /// the binary side. The runtime crate forwards the raw integer payload and an

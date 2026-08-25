@@ -1,8 +1,0 @@
-fn main() do
-  xs = [1, 2, 3]
-  out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
-
-  dbg(out)
-  stats = Process.heap_alloc_stats()
-  dbg(stats)
-end

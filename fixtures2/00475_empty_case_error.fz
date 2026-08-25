@@ -1,0 +1,1 @@
+fn f() do case 1 do end end

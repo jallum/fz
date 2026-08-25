@@ -1,0 +1,11 @@
+defmodule A do
+  fn f(), do: 1
+end
+defmodule B do
+  fn f(), do: 2
+end
+defmodule User do
+  import A
+  import B
+  fn run(), do: f()
+end

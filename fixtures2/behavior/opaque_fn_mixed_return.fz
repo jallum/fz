@@ -1,0 +1,21 @@
+#---
+# purpose: "opaque call through a multi-clause function value whose selected clause depends on the argument's runtime type"
+#---
+#
+# # opaque_fn_mixed_return
+#
+# `mapper`'s integer clause returns a value; its atom clause diverges through
+# `panic`, so the published callable boundary carries one returning and one
+# divergent member. The taken path selects the integer clause and prints `2`.
+fn mapper(x :: integer), do: x + 1
+fn mapper(x :: atom), do: panic(x)
+fn invoke(f, x), do: f.(x)
+
+fn main() do
+  n = Process.heap_alloc_stats()[:allocs]
+  x = case n < n + 1 do
+    true -> 1
+    _ -> :bad
+  end
+  dbg(invoke(mapper, x))
+end

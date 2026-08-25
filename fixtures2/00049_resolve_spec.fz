@@ -1,0 +1,4 @@
+@type tkf_elem :: integer
+@type tkf_box(a) :: [a]
+@spec tkf_f(tkf_box(float), tkf_elem) :: x when x: tkf_box(tkf_elem)
+fn tkf_f(p, q), do: q

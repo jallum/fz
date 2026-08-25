@@ -1,6 +1,0 @@
-error[lower/unbound]: unbound: missing_var
-  --> fixtures/errors/lower-unbound/input.fz:2:3
-   |
- 2 |   missing_var
-   |   ^^^^^^^^^^^
-   |

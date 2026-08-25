@@ -1,0 +1,150 @@
+//! Compiler2 function-contract derivation jobs.
+//!
+//! A contract is the callee-owned declared surface for one function. Semantic
+//! call resolution consumes it to refine observed arguments before waking
+//! activations or callable-boundary demand.
+
+use crate::ast::Attribute;
+use crate::diag::Diagnostic;
+use crate::diag::codes;
+use crate::diag::driver::emit_through;
+use crate::extern_contract::extern_semantic_contract;
+
+use super::super::contract::FunctionContract;
+use super::super::dispatch_reachability::calculate_dispatch_reachability;
+use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::identity::FunctionId;
+use super::super::scheduler::FatalError;
+use super::super::world::World;
+
+pub(super) fn derive_function_contract(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
+    let Some(_) = world.function_defined_revision(function) else {
+        return Ok(world.wait_for_function_definition(function));
+    };
+    if !world.function_declares_contract(function) {
+        return Ok(JobEffects::default());
+    }
+
+    let (source, surface) = world.function_definition(function);
+    let declared_specs = surface
+        .attrs
+        .iter()
+        .filter_map(|attr| match attr {
+            Attribute::Spec(spec) => Some(spec.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let specs = if !declared_specs.is_empty() {
+        declared_specs
+    } else if let Some(spec) = extern_semantic_contract(&surface) {
+        vec![spec]
+    } else {
+        Vec::new()
+    };
+
+    let mut reads = vec![FactKey::FunctionDefined(function)];
+    let mut waits = Vec::new();
+    for referenced in world.function_type_refs(function).iter().cloned() {
+        let fact = FactKey::TypeDefined(referenced);
+        if world.has_fact(&fact) {
+            reads.push(fact);
+        } else {
+            waits.push(fact);
+        }
+    }
+    // Same wait, `StructDefined` side: a `%Mod{...}` in this contract needs
+    // `Mod`'s precise field order before `resolve_spec_decl` can classify it,
+    // exactly as the `TypeDefined` loop above waits on referenced aliases
+    // (fz-rh2.17.5.6.10).
+    for module in world.function_type_struct_refs(function).iter().copied() {
+        let fact = FactKey::StructDefined(module);
+        if world.has_fact(&fact) {
+            reads.push(fact);
+        } else {
+            waits.push(fact);
+        }
+    }
+    let check_head = surface.extern_abi.is_none() && !surface.clauses.is_empty();
+    if check_head {
+        let fact = FactKey::EntryDispatch(function);
+        if world.has_fact(&fact) {
+            reads.push(fact);
+        } else {
+            waits.push(fact);
+        }
+    }
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            waits: current_uses(waits),
+            ..JobEffects::default()
+        });
+    }
+
+    // A spec that fails to resolve is the user's error, not the engine's:
+    // report it and let the diagnosed spec constrain nothing. Resolved
+    // sibling specs still contribute, and the contract fact still publishes
+    // so consumers never block on a diagnosed declaration.
+    let mut contract = Vec::with_capacity(specs.len());
+    for spec in &specs {
+        match world.resolve_spec_decl(source.namespace, spec) {
+            Ok(resolved) => contract.push(resolved),
+            Err(error) => emit_job_diagnostic(
+                tel,
+                Diagnostic::error(
+                    codes::RESOLVE_TYPE_ALIAS,
+                    format!(
+                        "compiler2 could not resolve function contract for `{}`: {}",
+                        surface.name, error.msg
+                    ),
+                    error.span,
+                ),
+            ),
+        }
+    }
+    let contract = FunctionContract::from_resolved(world.types_mut(), contract);
+    if check_head && contract_has_reachable_fail(world, function, &contract) {
+        let diagnostic = super::super::source_diagnostics::function_head_warning(&surface)
+            .expect("a source function with clauses has a final clause");
+        super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
+    }
+    Ok(publish_contract(world, tel, function, reads, contract))
+}
+
+fn contract_has_reachable_fail(world: &mut World, function: FunctionId, contract: &FunctionContract) -> bool {
+    if contract.arrows.is_empty() {
+        return false;
+    }
+    let plan = world.entry_dispatch(function);
+    contract.input_domain_rows(world.types_mut()).into_iter().any(|params| {
+        params.len() == plan.input_count
+            && calculate_dispatch_reachability(world.types_mut(), &plan, &params).fail_reachable
+    })
+}
+
+fn publish_contract(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+    reads: Vec<FactKey>,
+    contract: FunctionContract,
+) -> JobEffects {
+    let changed = super::super::drive::ExecutionContext::new(world, tel).define_function_contract(function, contract);
+    JobEffects {
+        reads: current_uses(reads),
+        outputs: vec![FactKey::FunctionContract(function)],
+        changed: changed
+            .then_some(FactKey::FunctionContract(function))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    }
+}
+
+fn emit_job_diagnostic(tel: &impl crate::telemetry::Telemetry, diagnostic: Diagnostic) {
+    emit_through(tel, &[diagnostic]);
+}

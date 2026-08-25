@@ -2,9 +2,27 @@
 name = "fz"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [workspace]
 members = ["runtime"]
+
+[workspace.lints.rust]
+# `runtime` uses `cfg(loom)` to swap in loom's synchronization primitives for
+# model checking. Teach the whole workspace that this cfg is intentional so the
+# runtime can inherit the workspace lint contract without a crate-local carveout.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[workspace.lints.clippy]
+redundant_clone = "warn"
+map_clone = "warn"
+iter_cloned_collect = "warn"
+implicit_clone = "warn"
+useless_conversion = "warn"
+unnecessary_to_owned = "warn"
+
+[lints]
+workspace = true
 
 [dependencies]
 libc = "0.2"
@@ -19,6 +37,7 @@ target-lexicon = "0.13"
 fz-runtime = { path = "runtime" }
 smallvec = { version = "1.15.1", default-features = false }
 rustyline = { version = "18.0.0", default-features = false }
+serde_json = "1"
 
 [dev-dependencies]
 # fz-fkv — fixture matrix uses libtest-mimic so each (fixture, path) pair
@@ -26,6 +45,7 @@ rustyline = { version = "18.0.0", default-features = false }
 # named individually instead of collapsing into one `fixture_matrix ... ok`).
 libtest-mimic = "0.8"
 serial_test = "3"
+syn = { version = "2", features = ["full", "visit"] }
 
 [[test]]
 name = "fixture_matrix"

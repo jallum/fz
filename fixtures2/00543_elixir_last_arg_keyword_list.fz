@@ -1,0 +1,16 @@
+# Source-surface coverage:
+# Mirrors ../elixir/lib/elixir/test/elixir/code_normalizer/quoted_ast_test.exs
+# test "last arg keyword list".
+fn main() do
+  foo([])
+  foo(x: y)
+  foo(x: 1 + 2)
+  foo(x: y, p: q)
+  foo(a, x: y, p: q)
+  {[]}
+  {[a: b]}
+  {x, a: b}
+  foo(else: a)
+  foo(catch: a)
+  foo |> [bar: :baz]
+end

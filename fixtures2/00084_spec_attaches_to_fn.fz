@@ -1,0 +1,4 @@
+defmodule M do
+  @spec add1(integer) :: integer
+  fn add1(n), do: n + 1
+end

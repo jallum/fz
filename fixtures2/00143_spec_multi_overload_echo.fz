@@ -1,0 +1,10 @@
+defmodule M do
+  @spec echo(integer) :: integer
+  @spec echo(float) :: float
+  fn echo(x :: integer), do: x
+  fn echo(x :: float), do: x
+end
+fn main() do
+  dbg(M.echo(1))
+  dbg(M.echo(1.5))
+end

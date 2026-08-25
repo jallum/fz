@@ -33,6 +33,7 @@
 - Have descriptions that explain in eli5 _style_ (no need to _say it) why we're making the change, what we've changed, and how it works -- with examples.
 
 ## Best Practices
+- Local correctness does not guarantee global architectural alignment.
 - Data-model -> up, so that the problem is correct-by-construction.
 - For semantic compiler bugs, use the strategy trigger in `.agent/strategies.md`.
 - Prefer short functions with crisp names over comments.
@@ -42,3 +43,4 @@
 - Code should live in the right modules, modules should live in the right places.
 - Tests should observe telemetry wherever possible. Not available? Consider judiciously adding (or extending) events.
 - Tests should clearly state the _intent_ that they're capturing, and not just mechanically assert it.
+- "patching" is the _wrong_ way to look at writing software -- patches on top of patches just creates AI-slop. Instead, it's best to step back and take a wider look at the problem. There is usually a holistic solution that makes the intial problem melt away.

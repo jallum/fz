@@ -1,0 +1,4 @@
+
+fn count(0, acc), do: acc
+fn count(n, acc), do: count(n - 1, acc + 1)
+fn main(), do: count(100000, 0)

@@ -1,0 +1,2 @@
+fn foo(), do: 42
+fn main(), do: foo()

@@ -1,0 +1,7 @@
+defprotocol P do
+  fn each(x)
+end
+
+defimpl P, for: List do
+  fn each(x, extra), do: x
+end

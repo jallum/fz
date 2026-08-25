@@ -1,0 +1,4 @@
+
+fn check(x :: integer), do: 10
+fn check(_), do: 2
+fn main(), do: check(42) + check(:foo)

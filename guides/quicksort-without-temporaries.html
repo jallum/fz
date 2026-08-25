@@ -143,7 +143,7 @@ the function's normal type signature. Possible answers include:</p>
   <li><code>TupleFields(2)</code> &mdash; the caller is going to destructure
       this pair immediately, so hand back two Tail-CC values, do not build a
       tuple.</li>
-  <li><code>TupleFields(2)</code> composed with owned-cons reuse &mdash; the
+  <li><code>TupleFields(2)</code> composed with reusable-cons transport &mdash; the
       same callsite can ask for two register-returned fields while the list
       builder recycles input cells in place.</li>
 </ul>
@@ -160,8 +160,8 @@ cells in place. Codegen emits exactly that shape.</p>
       <code>lo</code> and <code>hi</code> directly as two Tail-CC values. No
       tuple is allocated.</li>
   <li>The list-producing recursions build their cons cells <em>forward</em>
-      (tail-recursion-modulo-cons) with an O(1) continuation, and owned-cons
-      reuse recycles input cells in place. The work the outer
+      (tail-recursion-modulo-cons) with an O(1) continuation, and reusable-cons
+      transport recycles input cells in place. The work the outer
       <code>append</code> would have done &mdash; walking the low list and
       re-allocating a copy with a new tail &mdash; collapses to that
       forward build.</li>

@@ -1,0 +1,4 @@
+defmodule User do
+  alias Missing.Path
+  fn run(), do: nil
+end

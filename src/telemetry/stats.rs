@@ -5,15 +5,15 @@
 //! to call `print_summary()` after the compilation run, or to inspect
 //! counts in tests.
 //!
-//! Only `EventKind::Event` ticks are counted; span start/stop events are
-//! filtered out so the summary reflects user-visible pipeline events, not
-//! span bookkeeping.
+//! Raw span lifecycle is counted as `.start`, `.stop`, and `.exception` rows,
+//! so stats accounts for timed compiler work without registering for payloads.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use super::handler::{Event, Handler};
+use super::bus::ConfiguredTelemetry;
+use super::handler::{Event, EventKind, Handler, HandlerId};
 
 struct Inner {
     counts: BTreeMap<String, u64>,
@@ -38,6 +38,15 @@ impl StatsHandler {
         Box::new(SharedStats {
             inner: self.inner.clone(),
         })
+    }
+
+    pub fn install(&self, telemetry: &ConfiguredTelemetry) -> (HandlerId, HandlerId) {
+        let legacy = telemetry.attach(&[], self.handler());
+        let inner = Rc::clone(&self.inner);
+        let raw = telemetry.attach_raw_lifecycle(&[], move |name, kind, _, _, _| {
+            record(&inner, name, kind);
+        });
+        (legacy, raw)
     }
 
     /// Copy of the current event counts, keyed by `.`-joined name.
@@ -72,13 +81,20 @@ struct SharedStats {
 
 impl Handler for SharedStats {
     fn handle(&self, ev: &Event<'_, '_, '_>) {
-        if ev.kind.is_span() {
-            return;
-        }
-        let key = ev.name.join(".");
-        let mut inner = self.inner.borrow_mut();
-        *inner.counts.entry(key).or_insert(0) += 1;
+        record(&self.inner, ev.name, ev.kind);
     }
+}
+
+fn record(inner: &Rc<RefCell<Inner>>, name: &[&str], kind: EventKind) {
+    let mut key = name.join(".");
+    match kind {
+        EventKind::Event => {}
+        EventKind::SpanStart => key.push_str(".start"),
+        EventKind::SpanStop => key.push_str(".stop"),
+        EventKind::SpanException => key.push_str(".exception"),
+    }
+    let mut inner = inner.borrow_mut();
+    *inner.counts.entry(key).or_insert(0) += 1;
 }
 
 #[cfg(test)]

@@ -1,0 +1,20 @@
+#---
+# purpose: "an argument outside every member of a cross-kind union @spec domain is rejected at compile time"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+#
+# # spec_violation_cross_kind_union
+#
+# `M.f`'s domain is the cross-kind union `:first | {:acc, a}`. The atom
+# `:third` is accepted by neither member, so the call is a fatal
+# `spec/violation` on every path. The union's atom member must not shield
+# an uncovered witness from the veto (it only accepts witnesses that
+# actually land in it, like `:first`).
+defmodule M do
+  @spec f(:first | {:acc, a}) :: a
+  fn f(:first), do: panic("empty")
+  fn f({:acc, acc}), do: acc
+end
+
+fn main(), do: dbg(M.f(:third))

@@ -1,7 +1,8 @@
 use super::*;
 use crate::diag::Diagnostics;
 use crate::diag::diagnostic::DiagCode;
-use crate::diag::span::Span;
+use crate::diag::render::Renderer;
+use crate::source::{SourceMap, Span};
 use crate::telemetry::capture::vec_writer;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,25 +18,36 @@ use std::rc::Rc;
 
 #[test]
 fn report_through_emits_event_per_diagnostic() {
-    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+    use crate::telemetry::{Capture, ConfiguredTelemetry};
 
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
-    tel.attach(&[], cap.handler());
+    cap.install(&tel, &[]);
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&observed);
+    tel.attach_raw_event1::<Diagnostic, _>(&["fz", "diag"], move |_, _, _, diagnostic| {
+        sink.borrow_mut()
+            .push((diagnostic.severity, diagnostic.code.0, diagnostic.message.clone()));
+    });
 
     let mut sm = SourceMap::new();
-    let fid = sm.add_file("a.fz", "fn x(), do: :ok\n");
+    let fid = sm.add_code(Some("a.fz"), "fn x(), do: :ok\n");
     let warn = Diagnostic::warning(DiagCode("a/w"), "warned", Span::new(fid, 0, 1));
     let err = Diagnostic::error(DiagCode("a/e"), "broken", Span::new(fid, 2, 3));
 
-    emit_through(&tel, None, &[warn.clone(), err.clone()]);
+    emit_through(&tel, &[warn, err]);
 
     assert_eq!(cap.count(&["fz", "diag", "warning"]), 1);
     assert_eq!(cap.count(&["fz", "diag", "error"]), 1);
     let w_ev = cap.last(&["fz", "diag", "warning"]).unwrap();
     assert!(w_ev.metadata.get("diagnostic").is_none());
-    assert!(matches!(w_ev.metadata.get("code"), Some(Value::Str(_))));
-    assert!(matches!(w_ev.metadata.get("message"), Some(Value::Str(_))));
+    assert_eq!(
+        observed.borrow().as_slice(),
+        &[
+            (Severity::Warning, "a/w", "warned".to_string()),
+            (Severity::Error, "a/e", "broken".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -44,10 +56,10 @@ fn report_or_exit_renders_byte_identical_to_direct_path() {
     // path), then drive the new bus-routed path into a captured writer
     // and compare bytes.
     use crate::diag::style::ColorMode;
-    use crate::telemetry::{ConfiguredTelemetry, DiagRenderer};
+    use crate::telemetry::{ConfiguredTelemetry, diag_render::DiagRenderer};
 
     let mut sm = SourceMap::new();
-    let fid = sm.add_file("t.fz", "fn main(), do: :ok\n");
+    let fid = sm.add_code(Some("t.fz"), "fn main(), do: :ok\n");
     let mut ds = Diagnostics::new();
     ds.push(Diagnostic::warning(DiagCode("test/w"), "headline", Span::new(fid, 0, 2)).with_label("here"));
     ds.push(Diagnostic::error(DiagCode("test/e"), "boom", Span::new(fid, 3, 5)));
@@ -57,11 +69,8 @@ fn report_or_exit_renders_byte_identical_to_direct_path() {
     let (buf, w) = vec_writer();
     let sm_shared = Rc::new(RefCell::new(sm.clone()));
     let tel = ConfiguredTelemetry::new();
-    tel.attach(
-        &["fz", "diag"],
-        Box::new(DiagRenderer::new_to_writer(sm_shared, w, ColorMode::Never)),
-    );
-    emit_through(&tel, None, ds.as_slice());
+    DiagRenderer::new_to_writer(sm_shared, w, ColorMode::Never).install(&tel);
+    emit_through(&tel, ds.as_slice());
     let actual = String::from_utf8(buf.borrow().clone()).unwrap();
     assert_eq!(actual, expected);
 }

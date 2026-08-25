@@ -1,0 +1,7 @@
+fn main() do
+  xs = [1, 2]
+  dbg(xs)
+  stats = Process.heap_alloc_stats()
+  dbg(stats[:list_cons_allocs])
+  dbg(stats[:map_allocs])
+end

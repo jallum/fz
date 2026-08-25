@@ -2,22 +2,12 @@
 
 use std::ptr::{read, write};
 
-use super::YIELD_CONTINUATION_RESERVE_BYTES;
 use super::fragment::{Fragment, classify_fragment};
 use super::schema::SchemaRegistry;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, ValueKind, map_count, map_key_kind, map_keys_ptr, map_tag_ptr,
     map_value_kind, map_values_ptr, object_size_with_struct_payload,
 };
-
-pub(super) fn allocation_watermark_for(block_start: *mut u8, block_size: usize) -> *mut u8 {
-    assert!(
-        block_size > YIELD_CONTINUATION_RESERVE_BYTES,
-        "heap block must leave continuation reserve"
-    );
-    let offset = block_size - YIELD_CONTINUATION_RESERVE_BYTES;
-    unsafe { block_start.add(offset) }
-}
 
 pub(super) fn strict_object_size(bits: u64, schemas: &SchemaRegistry) -> usize {
     object_size_with_struct_payload(bits, |schema_id| schemas.get(schema_id).allocation_payload_size())

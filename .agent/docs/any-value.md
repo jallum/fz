@@ -41,7 +41,9 @@ owns packing, projection, and the platform difference behind the word.
 - **`AnyValue`**: the by-value enum a host caller decodes a ref into —
   `Null`, `EmptyList`, `Int(i64)`, `Float(u64)`, `Atom(u32)`, `HeapRef(AnyValueRef)`.
   A scalar `AnyValue` has no address; `ref_word()` panics on a scalar because a
-  scalar needs object-local storage before it can become a ref.
+  scalar needs object-local storage before it can become a ref. The interpreter's
+  temporary `FnRef` view materializes a closure before a public boundary and
+  returns its tagged ref word; the heap object's raw storage address is not a ref.
 - **Container object-local metadata**: each heap object stores payload words
   plus its own kind bytes (see Container Storage). This is *not* a reusable
   `{value, kind}` carrier — there is no public value model other than the ref.
@@ -192,7 +194,7 @@ stack/heap pointer is tagged by OR-ing the top-byte tag word directly, with no
 address-mask clear. On x86_64 canonical refs the high bits are cleared with
 `ishl_imm` then `ushr_imm` before OR-ing the tag word. Keeping codegen on
 `AnyValueRefPacking` rather than a hardcoded mask is what keeps
-`fz dump --emit clif` aligned with the runtime packing model.
+compiler2 CLIF dumps aligned with the runtime packing model.
 
 ## Container Storage
 
@@ -206,9 +208,19 @@ List cons (16 bytes): head payload word
                       link word = tail address + head-kind nibble + alias bit
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
-Closure:              schema id + flags (captured count + halt kind),
-                      code pointer, capture payload words, capture kind bytes
+Closure:              schema id + header word, code pointer,
+                      capture payload words, capture kind bytes
 ```
+
+The closure header word's low half is `flags` — captured count plus halt kind,
+the environment facts the collector sizes and traces by. Its high half is
+`arity`: the closure's user-visible parameter count, supplied by the callable
+boundary that decides the call surface. The two halves answer different
+questions and must not be confused. Arity is fixed by the source, so it is what
+a rendered fun reports (`#fn<env_schema/arity>`, matching Elixir's
+`#Function<index.uniq/arity>`); the environment half moves whenever demand
+elides a capture or inlining folds one away, which is why rendering it produced
+goldens that changed without the program changing.
 
 The list link's **alias bit** is a conservative cell-local reuse guard. A cons
 is the single owner of its tail link until it is *published*; publication turns

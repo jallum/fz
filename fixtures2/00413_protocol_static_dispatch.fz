@@ -1,0 +1,9 @@
+defprotocol Collectable do
+  fn id(value)
+end
+
+defimpl Collectable, for: List do
+  fn id(value), do: value
+end
+
+fn main(), do: Collectable.id([1])

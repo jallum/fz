@@ -1,0 +1,10 @@
+fn main() do
+  me = self()
+  send(me, %{other: 1})
+  send(me, %{name: nil})
+  send(me, %{name: :later})
+  v = receive do
+    %{name: n} -> n
+  end
+  dbg(v)
+end

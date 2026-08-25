@@ -1,5 +1,0 @@
-fn main() do
-  [h | t] = [10, 20, 30]
-  assert(h == 10, "cons head binds")
-  assert(t == [20, 30], "cons tail binds")
-end

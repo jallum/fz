@@ -8,8 +8,8 @@
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
 use crate::any_value::{
-    AnyValueRef, closure_addr_from_tagged, closure_capture_copy, closure_capture_set_ref_word, closure_flags,
-    closure_flags_captured, closure_flags_halt_kind, closure_schema_id,
+    AnyValueRef, closure_addr_from_tagged, closure_arity, closure_capture_copy, closure_capture_set_ref_word,
+    closure_flags, closure_flags_captured, closure_flags_halt_kind,
 };
 use crate::heap::Heap;
 use crate::process::Process;
@@ -111,7 +111,7 @@ pub fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_val
     );
     let outcome_slots = template_slots + bound_vals.len();
     let outcome_bits = heap.alloc_closure_slots(
-        unsafe { closure_schema_id(template_addr as *const u8) },
+        unsafe { closure_arity(template_addr as *const u8) },
         outcome_slots,
         closure_flags_halt_kind(flags),
     );

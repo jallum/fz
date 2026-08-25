@@ -1,0 +1,6 @@
+fn main() do
+  m = %{a: 1, b: 2}
+  m2 = %{m | a: 99}
+  dbg(m)
+  dbg(m2)
+end

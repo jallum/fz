@@ -1,0 +1,5 @@
+fn make_adder(k), do: fn(x) -> x + k end
+fn main() do
+  f = make_adder(10)
+  f.(5)
+end

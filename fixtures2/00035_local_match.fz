@@ -1,0 +1,5 @@
+
+fn main() do
+  {:ok, n} = {:ok, 42}
+  n
+end

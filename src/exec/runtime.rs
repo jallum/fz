@@ -30,13 +30,11 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::ir_interp::make_resource_in_current_process;
-use crate::telemetry::Telemetry;
-#[cfg(test)]
-use crate::telemetry::handler::{Event, Handler};
-use crate::telemetry::value::opaque;
+use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::{AnyValue, AnyValueRef};
 use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
 use fz_runtime::park::materialize_outcome_closure;
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::procbin::mso_drop_all_deferred;
@@ -48,14 +46,12 @@ use std::collections::{HashMap, VecDeque};
 use std::ptr::{null, null_mut};
 #[cfg(test)]
 use std::rc::Rc;
-use std::slice::from_raw_parts;
-use std::str::from_utf8;
 use std::time::{Duration, Instant};
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
 /// completion on the calling thread.
-pub struct Runtime<'a> {
+pub struct Runtime<'a, T: Telemetry + ?Sized> {
     compiled: &'a CompiledModule,
     tasks: HashMap<PidId, Box<Process>>,
     run_queue: VecDeque<PidId>,
@@ -77,50 +73,23 @@ pub struct Runtime<'a> {
     /// Observability sink. The run loop emits `fz.runtime.process_exited`
     /// at each task exit (see `ExitRecord`), which is the seam tests observe
     /// instead of poking task internals.
-    tel: &'a dyn Telemetry,
+    tel: &'a T,
+    output: &'a dyn OutputSink,
 }
 
-/// The facts observed when a task exits, projected from its `Process`. This is
-/// the single place that reads `Process` internals for the
-/// `fz.runtime.process_exited` event: the scalars become event measurements,
-/// and a `ProcessExitCapture` reconstructs an `ExitRecord` from them. Sync
-/// handlers needing a field this projection omits can downcast the event's
-/// opaque `process` metadata directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExitRecord {
     pub pid: PidId,
     pub halt_value: i64,
     pub live_count: usize,
     pub bytes_used: usize,
+    pub reusable_cons_attempts: u64,
+    pub reusable_cons_reused: u64,
 }
 
 impl ExitRecord {
-    pub fn project(pid: PidId, process: &Process) -> Self {
-        Self {
-            pid,
-            halt_value: process.halt_value,
-            live_count: process.heap.live_count(),
-            bytes_used: process.heap.bytes_used(),
-        }
-    }
-
-    /// The single emit site for `fz.runtime.process_exited`, shared by the
-    /// compiled and interpreter schedulers so the event shape is identical
-    /// across engines (durable measurements + opaque `&Process`).
-    pub fn emit(tel: &dyn Telemetry, pid: PidId, process: &Process) {
-        let exit = Self::project(pid, process);
-        tel.execute(
-            &["fz", "runtime", "process_exited"],
-            &crate::measurements! {
-                halt_value: exit.halt_value,
-                live_count: exit.live_count as u64,
-                bytes_used: exit.bytes_used as u64,
-            },
-            &crate::metadata! {
-                pid: exit.pid as u64,
-                process: opaque(process),
-            },
-        );
+    pub fn emit<T: Telemetry + ?Sized>(tel: &T, pid: &PidId, process: &Process) {
+        tel.raw_event2(&["fz", "runtime", "process_exited"], pid, process);
     }
 }
 
@@ -128,39 +97,31 @@ impl ExitRecord {
 /// runtime crate dispatches through when fz_spawn / fz_send fire from
 /// JIT'd code. They translate the raw-u32 hook ABI back into the
 /// FnId/PidId newtypes Runtime expects and call the existing impls.
-extern "C" fn spawn_hook_thunk(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> u32 {
-    spawn_closure_via(sender, scheduler, closure_bits)
+extern "C" fn spawn_hook_thunk<T: Telemetry + ?Sized>(
+    sender: *mut Process,
+    scheduler: *mut (),
+    closure_bits: u64,
+) -> u32 {
+    spawn_closure_via::<T>(sender, scheduler, closure_bits)
 }
 
-extern "C" fn spawn_opt_hook_thunk(
+extern "C" fn spawn_opt_hook_thunk<T: Telemetry + ?Sized>(
     sender: *mut Process,
     scheduler: *mut (),
     closure_bits: u64,
     _min_heap_size: u32,
 ) -> u32 {
-    spawn_closure_via(sender, scheduler, closure_bits)
+    spawn_closure_via::<T>(sender, scheduler, closure_bits)
 }
 
-extern "C" fn send_hook_thunk(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
+extern "C" fn send_hook_thunk<T: Telemetry + ?Sized>(
+    sender: *mut Process,
+    scheduler: *mut (),
+    receiver_pid: u32,
+    msg_ref_word: u64,
+) {
     let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
-    send_via(sender, scheduler, receiver_pid, msg_ref);
-}
-
-/// Output sink for `dbg`/print: the runtime's `emit_print_line` forwards each
-/// rendered line through `ExecCtx.output` (per-context, set at scheduler entry)
-/// with the context's telemetry sink. Emits it as `fz.runtime.dbg` — the
-/// observation channel beside production stdout — engine-uniformly. `tel` is the
-/// erased `&dyn Telemetry` the scheduler stored in the ExecCtx; null = no sink.
-pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, line_len: usize) {
-    if tel.is_null() {
-        return;
-    }
-    // ExecCtx.tel is `(&sink) as *const &dyn Telemetry` — a thin pointer to the
-    // scheduler's `&dyn Telemetry`; deref it back to the fat reference.
-    let tel: &dyn Telemetry = unsafe { *(tel as *const &dyn Telemetry) };
-    let bytes = unsafe { from_raw_parts(line_ptr, line_len) };
-    let line = from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
-    tel.event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
+    send_via::<T>(sender, scheduler, receiver_pid, msg_ref);
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
@@ -199,16 +160,16 @@ extern "C" fn make_resource_hook_thunk(
 /// fz-yxs/fz-st5 — installed via `install_timer_schedule_hook`. Called
 /// by `fz_receive_park_matched` when the after-clause carries a real
 /// timeout. Routes through `CURRENT_RUNTIME`'s `TimerWheel`.
-extern "C" fn timer_schedule_hook_thunk(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
-    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
+extern "C" fn timer_schedule_hook_thunk<T: Telemetry + ?Sized>(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'_, T>) };
     rt.timers.schedule(pid, Duration::from_millis(after_ms))
 }
 
-extern "C" fn timer_cancel_hook_thunk(scheduler: *mut (), timer_id: u64) {
+extern "C" fn timer_cancel_hook_thunk<T: Telemetry + ?Sized>(scheduler: *mut (), timer_id: u64) {
     if scheduler.is_null() {
         return;
     }
-    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'_, T>) };
     rt.timers.cancel(timer_id);
 }
 
@@ -216,12 +177,12 @@ extern "C" fn timer_cancel_hook_thunk(scheduler: *mut (), timer_id: u64) {
 /// from a closure. Deep-copies the closure into the new task's heap and
 /// records it as a pending closure entry for the child task's next quantum.
 /// Panics outside a running Runtime.
-pub fn spawn_closure_via(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> PidId {
+pub fn spawn_closure_via<T: Telemetry + ?Sized>(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> PidId {
     assert!(
         !scheduler.is_null(),
         "spawn() called with no scheduler in the execution context"
     );
-    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'_, T>) };
     rt.spawn_closure(sender, closure_bits)
 }
 
@@ -234,12 +195,17 @@ pub fn spawn_closure_via(sender: *mut Process, scheduler: *mut (), closure_bits:
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, msg: AnyValueRef) {
+pub fn send_via<T: Telemetry + ?Sized>(
+    sender: *mut Process,
+    scheduler: *mut (),
+    receiver_pid: PidId,
+    msg: AnyValueRef,
+) {
     assert!(
         !scheduler.is_null(),
         "send() called with no scheduler in the execution context"
     );
-    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'_, T>) };
     assert!(!sender.is_null(), "send() called with no sender process");
     let sender = unsafe { &mut *sender };
     if sender.pid == receiver_pid {
@@ -321,11 +287,11 @@ pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, m
     }
 }
 
-impl<'a> Runtime<'a> {
+impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
     /// Create a Runtime bound to `compiled`. `workers` configures the pool
     /// size; v1 only supports 1 (panics otherwise so the limitation is
     /// loud, not silent).
-    pub fn new(compiled: &'a CompiledModule, workers: usize, tel: &'a dyn Telemetry) -> Self {
+    pub fn new(compiled: &'a CompiledModule, workers: usize, tel: &'a T) -> Self {
         assert!(
             workers == 1,
             "v1 only supports pool size 1; multi-worker is a follow-up to fz-ul4.19.1"
@@ -338,7 +304,13 @@ impl<'a> Runtime<'a> {
             timers: TimerWheel::new(),
             module: None,
             tel,
+            output: &STDOUT_OUTPUT,
         }
+    }
+
+    pub fn with_output(mut self, output: &'a dyn OutputSink) -> Self {
+        self.output = output;
+        self
     }
 
     /// fz-swt.10 — attach the IR Module so the `MakeResourceHook` thunk
@@ -353,6 +325,15 @@ impl<'a> Runtime<'a> {
     /// zero entry params — the typical "main" shape for v1). Returns the
     /// fresh pid. The task is enqueued immediately; `run_until_idle()`
     /// will drive it.
+    /// Exit kind of an exited task: `None` = normal completion, `Some(atom)`
+    /// = it halted through a fault trap and the atom names the reason.
+    /// Exited tasks stay in the registry, so drivers read this after
+    /// `run_until_idle` to report faults instead of unifying them with
+    /// success.
+    pub fn exit_fault(&self, pid: PidId) -> Option<u32> {
+        self.tasks.get(&pid).and_then(|task| task.exit_fault)
+    }
+
     pub fn spawn(&mut self, fn_id: FnId) -> PidId {
         // Every fn is Tail-CC, including main. Make the entry a closure: mint
         // a synthetic inner closure carrying the raw `(cont)` main fp (via
@@ -429,24 +410,25 @@ impl<'a> Runtime<'a> {
         // future scheduler-bound FFI fns can reach back. Pointer is
         // This Runtime, erased to *mut () for the per-context dispatch table
         // below; the callbacks re-narrow it back to &mut Runtime.
-        let self_ptr = self as *mut Runtime<'a> as *mut ();
+        let self_ptr = self as *mut Runtime<'a, T> as *mut ();
         // The per-context dispatch table for this Runtime: the same scheduler
-        // handle, telemetry sink, module, and callbacks installed above as
+        // handle, output context, module, and callbacks installed above as
         // thread-globals, gathered into one value each task points its `ctx`
         // at. Lives on this stack frame, which outlives every quantum below.
         // Populated now; dispatch still reads the globals until the `fz-vdt`
         // arc moves each reader onto `process->ctx`.
+        let output = OutputContext::new(self.output);
         let mut exec_ctx = ExecCtx {
             scheduler: self_ptr,
-            tel: (&self.tel) as *const &dyn Telemetry as *const (),
+            output_context: output.as_ptr(),
             module: self.module.map_or(null(), |m| m as *const _ as *const ()),
-            spawn: Some(spawn_hook_thunk),
-            spawn_opt: Some(spawn_opt_hook_thunk),
-            send: Some(send_hook_thunk),
-            output: Some(output_hook_thunk),
+            spawn: Some(spawn_hook_thunk::<T>),
+            spawn_opt: Some(spawn_opt_hook_thunk::<T>),
+            send: Some(send_hook_thunk::<T>),
+            output: Some(OUTPUT_HOOK),
             make_resource: self.module.is_some().then_some(make_resource_hook_thunk),
-            timer_schedule: Some(timer_schedule_hook_thunk),
-            timer_cancel: Some(timer_cancel_hook_thunk),
+            timer_schedule: Some(timer_schedule_hook_thunk::<T>),
+            timer_cancel: Some(timer_cancel_hook_thunk::<T>),
         };
         let ctx_ptr: *mut ExecCtx = &mut exec_ctx;
         loop {
@@ -462,8 +444,6 @@ impl<'a> Runtime<'a> {
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
-            let owner: *mut Process = &mut *task;
-            task.heap.set_owner(owner);
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
             self.compiled.run_quantum(&mut task);
             // Possible post-quantum states (fz-ul4.19.3):
@@ -517,9 +497,17 @@ impl<'a> Runtime<'a> {
                 // the pinned register, like every other scheduler-facing entry.
                 let drain_addr = self.compiled.drain_dtor_entry_addr;
                 while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
+                    let payload_tag = AnyValueRef::from_raw_word(payload_ref)
+                        .expect("pending dtor payload should be a valid value ref")
+                        .tag();
+                    assert_eq!(
+                        payload_tag,
+                        fz_runtime::any_value::ValueKind::INT,
+                        "pending dtor payload should stay boxed as an integer ref",
+                    );
                     let _ = unsafe { call2(drain_addr, ptr, closure, payload_ref) };
                 }
-                ExitRecord::emit(self.tel, pid, &task);
+                ExitRecord::emit(self.tel, &pid, &task);
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
                 // wake.
@@ -566,26 +554,8 @@ impl<'a> Runtime<'a> {
             }
         }
     }
-
-    /// Read-only access to a task (for tests / inspection).
-    #[cfg(test)]
-    pub fn task(&self, pid: PidId) -> Option<&Process> {
-        self.tasks.get(&pid).map(|b| &**b)
-    }
-
-    /// fz-yxs/fz-st5 — test-only mutable accessor. Lets the unit tests
-    /// in this module pre-seed a receiver with a `wait`
-    /// record before driving the sender-probe path.
-    #[cfg(test)]
-    pub fn task_mut(&mut self, pid: PidId) -> Option<&mut Process> {
-        self.tasks.get_mut(&pid).map(|b| &mut **b)
-    }
 }
 
-/// Test seam: a telemetry handler that projects each `fz.runtime.process_exited`
-/// event into an owned `ExitRecord` (read from the durable measurements). Tests
-/// attach it to a `ConfiguredTelemetry`, run, then read the records — observing
-/// the run instead of poking the `Process`.
 #[cfg(test)]
 pub struct ProcessExitCapture {
     records: Rc<RefCell<Vec<ExitRecord>>>,
@@ -599,25 +569,32 @@ impl ProcessExitCapture {
         }
     }
 
-    pub fn handler(&self) -> Box<dyn Handler> {
-        Box::new(ProcessExitHandler {
-            records: self.records.clone(),
-        })
-    }
-
-    pub fn last(&self) -> Option<ExitRecord> {
-        self.records.borrow().last().copied()
+    pub fn install(&self, telemetry: &crate::telemetry::ConfiguredTelemetry) {
+        let records = Rc::clone(&self.records);
+        telemetry.attach_raw_event2::<PidId, Process, _>(
+            &["fz", "runtime", "process_exited"],
+            move |_, _, _, pid, process| {
+                records.borrow_mut().push(ExitRecord {
+                    pid: *pid,
+                    halt_value: process.halt_value,
+                    live_count: process.heap.live_count(),
+                    bytes_used: process.heap.bytes_used(),
+                    reusable_cons_attempts: process.reusable_cons_attempts,
+                    reusable_cons_reused: process.reusable_cons_reused,
+                });
+            },
+        );
     }
 
     pub fn by_pid(&self, pid: PidId) -> Option<ExitRecord> {
         self.records.borrow().iter().copied().find(|record| record.pid == pid)
     }
+
+    pub fn last(&self) -> Option<ExitRecord> {
+        self.records.borrow().last().copied()
+    }
 }
 
-/// Test seam: records the `fz.runtime.dbg` line stream. Attach to a
-/// `ConfiguredTelemetry`, run, then read `lines()` — the telemetry-based
-/// replacement for the old `TEST_CAPTURE` print buffer. Works for both
-/// engines, since both route output through `route_output_to`.
 #[cfg(test)]
 pub struct DbgCapture {
     lines: Rc<RefCell<Vec<String>>>,
@@ -631,8 +608,8 @@ impl DbgCapture {
         }
     }
 
-    pub fn handler(&self) -> Box<dyn Handler> {
-        Box::new(DbgHandler {
+    pub fn sink(&self) -> Box<dyn OutputSink> {
+        Box::new(DbgSink {
             lines: self.lines.clone(),
         })
     }
@@ -643,60 +620,24 @@ impl DbgCapture {
 }
 
 #[cfg(test)]
-struct DbgHandler {
+impl OutputSink for DbgCapture {
+    fn emit(&self, bytes: &[u8]) {
+        self.lines
+            .borrow_mut()
+            .push(std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>").to_string());
+    }
+}
+
+#[cfg(test)]
+struct DbgSink {
     lines: Rc<RefCell<Vec<String>>>,
 }
 
 #[cfg(test)]
-impl Handler for DbgHandler {
-    fn handle(&self, ev: &Event<'_, '_, '_>) {
-        use crate::telemetry::value::Value;
-        if ev.name != ["fz", "runtime", "dbg"] {
-            return;
-        }
-        if let Some(Value::Str(s)) = ev.metadata.get("line") {
-            self.lines.borrow_mut().push(s.as_ref().to_string());
-        }
+impl OutputSink for DbgSink {
+    fn emit(&self, bytes: &[u8]) {
+        self.lines
+            .borrow_mut()
+            .push(std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>").to_string());
     }
 }
-
-#[cfg(test)]
-struct ProcessExitHandler {
-    records: Rc<RefCell<Vec<ExitRecord>>>,
-}
-
-#[cfg(test)]
-impl Handler for ProcessExitHandler {
-    fn handle(&self, ev: &Event<'_, '_, '_>) {
-        use crate::telemetry::value::Value;
-        if ev.name != ["fz", "runtime", "process_exited"] {
-            return;
-        }
-        let pid = match ev.metadata.get("pid") {
-            Some(Value::U64(v)) => *v as PidId,
-            _ => 0,
-        };
-        let halt_value = match ev.measurements.get("halt_value") {
-            Some(Value::I64(v)) => *v,
-            _ => 0,
-        };
-        let live_count = match ev.measurements.get("live_count") {
-            Some(Value::U64(v)) => *v as usize,
-            _ => 0,
-        };
-        let bytes_used = match ev.measurements.get("bytes_used") {
-            Some(Value::U64(v)) => *v as usize,
-            _ => 0,
-        };
-        self.records.borrow_mut().push(ExitRecord {
-            pid,
-            halt_value,
-            live_count,
-            bytes_used,
-        });
-    }
-}
-
-#[cfg(test)]
-#[path = "runtime_test.rs"]
-mod runtime_test;

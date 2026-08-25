@@ -1,0 +1,57 @@
+#---
+# purpose: "Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary"
+#---
+#
+# # enum_reduce_suspend
+#
+# Pins the materialization boundary for `Enumerable.reduce_list/3` suspend:
+#
+# ```fz
+# Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x})
+# ```
+#
+# The suspend clause returns `{:suspended, acc, fn () -> ... end}`. That closure
+# is a source value, not an internal native continuation edge, so it remains a
+# real heap closure even as native call continuations become direct or lazy.
+#
+# Current contract, native `run`/`build`:
+#
+# - the three-element input list allocates three cons cells;
+# - the returned suspend function allocates one closure (`closure_allocs = 1`,
+#   `closure_bytes = 48`);
+# - one protocol-control struct is allocated (`struct_allocs = 1`,
+#   `struct_bytes = 48`);
+# - the accumulator is never boxed (`scalar_box_allocs = 0`);
+# - the rendered function identity is `#fn<4/0>`.
+#
+# Current contract, `interp`:
+#
+# - same list-cons count as native;
+# - the suspended continuation is a real heap closure, same as native, but
+#   `interp` allocates a second closure (`closure_allocs = 2`,
+#   `closure_bytes = 64`). It allocates the same single protocol-control struct
+#   as native (`struct_allocs = 1`, `struct_bytes = 48`), because a tuple whose
+#   value layout does not carry `ValueRef` travels as its fields' lanes on both
+#   backends;
+# - the rendered function identity is `#fn<2/0>`. The arity matches native's
+#   because arity is a property of the source (`fn () -> ... end` takes no
+#   arguments); the leading env-schema id differs because schema ids are
+#   assigned in allocation order, which is not a semantic difference in the
+#   suspend boundary.
+fn main() do
+  xs = [1, 2, 3]
+  out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
+
+  dbg(out)
+  stats = Process.heap_alloc_stats()
+  dbg({
+    stats[:list_cons_allocs],
+    stats[:list_cons_bytes],
+    stats[:struct_allocs],
+    stats[:struct_bytes],
+    stats[:closure_allocs],
+    stats[:closure_bytes],
+    stats[:scalar_box_allocs],
+    stats[:scalar_box_bytes]
+  })
+end

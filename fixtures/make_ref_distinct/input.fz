@@ -1,5 +1,0 @@
-fn main() do
-  a = make_ref()
-  b = make_ref()
-  refute(a == b)
-end

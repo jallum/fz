@@ -1,0 +1,8 @@
+
+defmodule X do
+  defmodule Y do
+    defmodule Z do
+      fn func(), do: 20
+    end
+  end
+end

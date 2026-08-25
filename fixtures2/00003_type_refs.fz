@@ -1,0 +1,6 @@
+@type tkf_target :: integer
+@type tkf_param :: integer
+@type tkf_box(a) :: list(a)
+@type tkf_wrapper :: tkf_box(tkf_target)
+@spec tkf_uses(tkf_target, a) :: a
+fn tkf_uses(x :: tkf_param, y), do: x

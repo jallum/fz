@@ -37,6 +37,20 @@ fn bytes_round_trip() {
 }
 
 #[test]
+fn borrowed_bytes_are_event_scoped_until_a_handler_retains_them() {
+    let bytes = [1_u8, 2, 3];
+    let value = Value::from(bytes.as_slice());
+    match &value {
+        Value::BorrowedBytes(observed) => assert!(std::ptr::eq(observed.as_ptr(), bytes.as_ptr())),
+        other => panic!("expected borrowed bytes, got {other:?}"),
+    }
+    match value.to_owned_durable() {
+        Some(Value::Bytes(observed)) => assert_eq!(&*observed, bytes.as_slice()),
+        other => panic!("expected handler-owned bytes, got {other:?}"),
+    }
+}
+
+#[test]
 fn is_numeric_classifies_correctly() {
     assert!(Value::I64(1).is_numeric());
     assert!(Value::U64(1).is_numeric());
@@ -54,6 +68,7 @@ fn tag_is_stable_lower_snake() {
     assert_eq!(Value::from("s").tag(), "str");
     assert_eq!(Value::from(vec!["a".to_string()]).tag(), "str_seq");
     assert_eq!(Value::Bytes(Arc::from(vec![])).tag(), "bytes");
+    assert_eq!(Value::BorrowedBytes(&[]).tag(), "borrowed_bytes");
 }
 
 #[test]
@@ -71,6 +86,11 @@ fn opaque_round_trip_downcasts_during_event_lifetime() {
     assert_eq!(v.tag(), "opaque");
     assert_eq!(v.downcast_ref::<usize>(), Some(&42usize));
     assert!(v.downcast_ref::<String>().is_none());
+    let opaque = match v {
+        Value::Opaque(opaque) => opaque,
+        other => panic!("expected opaque value, got {other:?}"),
+    };
+    assert_eq!(opaque.type_name(), std::any::type_name::<usize>());
 }
 
 #[test]

@@ -1,0 +1,14 @@
+#---
+# purpose: resource payloads do not leak through non-atom map indexing outside the owning module
+#---
+defmodule R do
+  @type t :: opaque resource(integer)
+
+  fn make(), do: make_resource(42, &drop/1)
+  fn drop(_), do: nil
+end
+
+fn main() do
+  h = R.make()
+  dbg(h[0])
+end

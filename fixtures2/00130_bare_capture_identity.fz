@@ -1,0 +1,4 @@
+fn main() do
+  f = &1
+  f.(42)
+end

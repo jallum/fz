@@ -1,0 +1,8 @@
+fn pick(:left), do: :one
+fn pick(:right), do: :two
+fn pick(_), do: :other
+
+fn main() do
+  f = &pick/1
+  {f.(:left), f.(:right)}
+end

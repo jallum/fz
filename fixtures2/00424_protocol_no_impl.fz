@@ -1,0 +1,9 @@
+defprotocol P do
+  fn each(value)
+end
+
+defimpl P, for: List do
+  fn each(value), do: value
+end
+
+fn main(), do: P.each(42)

@@ -1,0 +1,20 @@
+#---
+# purpose: "source defstruct construction and field access works for named structs"
+#---
+#
+# # defstruct runtime
+#
+# Pins `%Module{}` construction from a source `defstruct` declaration and atom-key
+# field access through dot syntax. The struct is intentionally not `Range`, so the
+# AOT path must register named schemas generically.
+defmodule Point do
+  defstruct [:x, :y]
+
+  fn new(x, y), do: %Point{x: x, y: y}
+end
+
+fn main() do
+  point = Point.new(3, 4)
+  dbg(point.x)
+  dbg(point.y)
+end

@@ -1,5 +1,0 @@
-fn add1(n) do n + 1 end
-
-fn main() do
-  dbg(add1(41))
-end

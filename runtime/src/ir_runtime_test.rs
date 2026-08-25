@@ -132,10 +132,6 @@ fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
     );
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "reductions_executed"), 0);
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "reduction_yields"), 0);
-    assert_eq!(
-        map_int_value_by_atom_name(process, stats_ref, "allocation_pressure_yields"),
-        0
-    );
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "yield_reasons"), 0);
     assert_eq!(
         map_int_value_by_atom_name(process, stats_ref, "max_yield_continuation_bytes"),
@@ -222,7 +218,7 @@ fn fz_bitstring_valid_utf8_rejects_bad_bytes() {
 #[test]
 fn fz_bitstring_valid_utf8_rejects_non_byte_aligned() {
     with_process(|process| {
-        let bytes = [b'h'];
+        let bytes = *b"h";
         let bits = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 1, 7);
         assert_eq!(fz_bitstring_valid_utf8(bits), 0);
     });
@@ -370,5 +366,50 @@ fn alloc_bitstring_const_large_payload_is_procbin() {
             let bp = bitstring_byte_ptr(bits as *const u8);
             assert_eq!(from_raw_parts(bp, payload.len()), payload.as_slice());
         }
+    });
+}
+
+fn list_ref_from_bits(bits: u64) -> AnyValueRef {
+    let addr = list_addr_from_tagged(bits).expect("list addr");
+    AnyValueRef::from_heap_object(ValueKind::LIST, addr).expect("list ref")
+}
+
+#[test]
+fn list_reuse_or_cons_parts_updates_process_counters() {
+    with_process(|process| {
+        let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
+        let new_tail = process.heap.alloc_list_cons_slot(AnyValue::int(2), EMPTY_LIST_BITS);
+        let source = process.heap.alloc_list_cons_slot(AnyValue::int(0), old_tail);
+        let reused_word = fz_list_reuse_or_cons_parts(
+            process as *mut Process,
+            list_ref_from_bits(source).raw_word(),
+            7,
+            ValueKind::ATOM.tag() as u64,
+            list_ref_from_bits(new_tail).raw_word(),
+        );
+
+        assert_eq!(reused_word, list_ref_from_bits(source).raw_word());
+        assert_eq!(process.reusable_cons_attempts, 1);
+        assert_eq!(process.reusable_cons_reused, 1);
+
+        let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(3), EMPTY_LIST_BITS);
+        let new_tail = process.heap.alloc_list_cons_slot(AnyValue::int(4), EMPTY_LIST_BITS);
+        let source = process.heap.alloc_list_cons_slot(AnyValue::int(9), old_tail);
+        let source_ref = list_ref_from_bits(source);
+        process
+            .heap
+            .mark_published_ref_aliased(source_ref)
+            .expect("publish source");
+        let fallback_word = fz_list_reuse_or_cons_parts(
+            process as *mut Process,
+            source_ref.raw_word(),
+            11,
+            ValueKind::INT.tag() as u64,
+            list_ref_from_bits(new_tail).raw_word(),
+        );
+
+        assert_ne!(fallback_word, source_ref.raw_word());
+        assert_eq!(process.reusable_cons_attempts, 2);
+        assert_eq!(process.reusable_cons_reused, 1);
     });
 }

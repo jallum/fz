@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ptr::{NonNull, null, null_mut, write};
 use std::rc::Rc;
 
-use crate::any_value::{AnyValueRef, TAG_MASK, closure_flags_pack, closure_size_for_count};
+use crate::any_value::{AnyValueRef, TAG_MASK, closure_header_word, closure_size_for_count};
 use crate::bitstr::BitWriter;
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
@@ -22,8 +22,7 @@ use crate::park::ParkRecord;
 
 pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
 pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
-pub const YIELD_REASON_ALLOCATION_PRESSURE: u8 = 1 << 1;
-pub const YIELD_REASON_EXPLICIT: u8 = 1 << 2;
+pub const YIELD_REASON_EXPLICIT: u8 = 1 << 1;
 
 pub struct AlignedClosureStorage {
     ptr: NonNull<u8>,
@@ -66,7 +65,7 @@ impl Drop for AlignedClosureStorage {
 pub struct Process {
     pub heap: Heap,
     /// Execution-context dispatch table for this task: scheduler services,
-    /// telemetry sink, and IR module, reached explicitly by BIFs instead of
+    /// output context, and IR module, reached explicitly by BIFs instead of
     /// through thread-local singletons. Set by the owning scheduler (JIT
     /// `Runtime`, interpreter, or AOT shim) at each quantum entry; the pointee
     /// outlives any FFI call made under this process. Null until a scheduler
@@ -75,6 +74,14 @@ pub struct Process {
     /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
     pub ctx: *mut ExecCtx,
     pub halt_value: i64,
+    /// Exit kind: `None` = normal completion, `Some(atom_id)` = the process
+    /// halted through a fault trap (`function_clause`, `match_error`, …) and
+    /// the atom names the reason. Set ONLY by `fz_exit_fault`, which fault
+    /// traps call at their halt site — never inferred from `halt_value`,
+    /// which a program may legitimately set to a fault-shaped atom by
+    /// returning one. Drivers read this at the exit boundary to decide
+    /// success vs fault reporting.
+    pub exit_fault: Option<u32>,
     pub bs_builder: Option<BitWriter>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
     // construction is inlined at codegen; capture storage is schema-backed,
@@ -150,19 +157,15 @@ pub struct Process {
     pub reductions_executed: u64,
     /// Cumulative yields caused by ordinary reduction-budget exhaustion.
     pub reduction_yields: u64,
-    /// Cumulative yields caused by allocation pressure expiring the current
-    /// reduction budget.
-    pub allocation_pressure_yields: u64,
-    /// Compact reason bits pending for the next scheduler boundary. Allocation
-    /// pressure (`expire_current_budget`) and the yielding back edge both set
-    /// bits here; the boundary consumes them via `finish_yield_report` (which
-    /// attributes the cumulative cause counters) and `boundary_maintenance`
-    /// (which clears them). A bit can therefore be observed standing on a
-    /// running process — e.g. a tail allocation trips the watermark after the
-    /// final back edge and the process exits before yielding. The cumulative
-    /// `reduction_yields` / `allocation_pressure_yields` counters, not this
-    /// transient bitfield, are the authoritative yield-cause telemetry.
-    /// See `YIELD_REASON_*`.
+    /// Cumulative reusable-cons attempts performed by runtime list rebuilds.
+    pub reusable_cons_attempts: u64,
+    /// Cumulative reusable-cons attempts that rewrote the source cons in place.
+    pub reusable_cons_reused: u64,
+    /// Compact reason bits pending for the next scheduler boundary. A yielding
+    /// back edge sets the reduction bit, and the boundary consumes it via
+    /// `finish_yield_report` and `boundary_maintenance`. GC pressure is tracked
+    /// on the heap, not here: collection has no authority to force a scheduler
+    /// yield. See `YIELD_REASON_*`.
     pub yield_reasons: u8,
     /// Heap margin sampled before the compiled yield slow path starts building
     /// its scheduler continuation. Zero means no active sample.
@@ -311,6 +314,10 @@ impl Node {
         self.atoms.borrow().name(id).map(str::to_owned)
     }
 
+    pub fn atom_names(&self) -> Vec<String> {
+        self.atoms.borrow().by_id.clone()
+    }
+
     /// Replace the atom table (interpreter REPL code-image refresh).
     pub fn reset_atoms(&self, names: &[String]) {
         self.atoms.borrow_mut().reset_from(names);
@@ -374,6 +381,7 @@ impl Process {
             heap: Heap::new(SIZE_TABLE[0], schemas),
             ctx: null_mut(),
             halt_value: 0,
+            exit_fault: None,
             bs_builder: None,
             node,
             bs_tuple_arity1_schema: consts.bs_tuple_arity1_schema,
@@ -394,7 +402,8 @@ impl Process {
             reductions_per_quantum,
             reductions_executed: 0,
             reduction_yields: 0,
-            allocation_pressure_yields: 0,
+            reusable_cons_attempts: 0,
+            reusable_cons_reused: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,
@@ -430,9 +439,15 @@ impl Process {
         )
     }
 
+    /// Clear scheduler-owned pointers before handing this process back to a
+    /// non-scheduler subsystem such as the quoted-source heap.
+    pub fn detach_runtime_state(&mut self) {
+        self.ctx = null_mut();
+    }
+
     /// fz-cps.1.7 — populate the static closure singleton table. Each
-    /// target `(cl_sid, fn_id, code_ptr)` allocates one off-heap strict
-    /// zero-capture closure and registers its tagged value at
+    /// target `(cl_sid, arity, code_ptr, halt_kind)` allocates one off-heap
+    /// strict zero-capture closure and registers its tagged value at
     /// `static_closures[cl_sid as usize]`. Idempotent only
     /// in the sense that re-calling with the same targets re-allocates;
     /// callers (`CompiledModule::make_process`) call this exactly once
@@ -441,7 +456,7 @@ impl Process {
         &mut self,
         targets: &[(
             u32,       /* cl_sid */
-            u32,       /* fn_id */
+            u32,       /* arity */
             *const u8, /* code_ptr */
             u32,       /* halt_kind */
         )],
@@ -452,13 +467,15 @@ impl Process {
             self.static_closures.resize(max + 1, null_mut());
         }
         let closure_schema = self.heap.closure_schema_id(0);
-        for (cl_sid, fn_id, code_ptr, halt_kind) in targets {
+        for (cl_sid, arity, code_ptr, halt_kind) in targets {
             let mut buf = AlignedClosureStorage::zeroed();
             let base = buf.as_ptr();
             unsafe {
-                let _ = fn_id;
                 write(base as *mut u32, closure_schema);
-                write(base.add(4) as *mut u32, closure_flags_pack(0, *halt_kind as u16) as u32);
+                write(
+                    base.add(4) as *mut u32,
+                    closure_header_word(0, *halt_kind as u16, *arity as u16),
+                );
                 write(base.add(8) as *mut u64, *code_ptr as u64);
             }
             self.static_closures[*cl_sid as usize] = base;
@@ -481,7 +498,9 @@ impl Process {
             let base = buf.as_ptr();
             unsafe {
                 write(base as *mut u32, closure_schema);
-                write(base.add(4) as *mut u32, closure_flags_pack(0, slot as u16) as u32);
+                // A continuation is applied to exactly the one value it
+                // receives, so its arity is 1.
+                write(base.add(4) as *mut u32, closure_header_word(0, slot as u16, 1));
                 write(base.add(8) as *mut u64, *addr as u64);
             }
             self.halt_cont_singletons[slot] = base;
@@ -513,58 +532,15 @@ impl Process {
     }
 
     pub fn finish_yield_report(&mut self, remaining_reductions: i32, reason: u8) {
-        // When allocation pressure expired the budget mid-quantum, the
-        // reductions genuinely burned up to that point were already banked by
-        // `expire_budget`, while `reductions_remaining` was still truthful.
-        // Zeroing it there makes `reductions_per_quantum - remaining` an
-        // invalid "burned" derivation, so re-deriving here would credit a
-        // whole phantom quantum. In that case bank only the work done *since*
-        // expiry — the cost of the back edge that finally observed the zeroed
-        // budget and yielded; otherwise derive burned the normal way.
-        let already_banked =
-            (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE;
-        let burned = if already_banked {
-            (-i64::from(remaining_reductions)).max(0)
-        } else {
-            i64::from(self.reductions_per_quantum) - i64::from(remaining_reductions)
-        };
+        let burned = i64::from(self.reductions_per_quantum) - i64::from(remaining_reductions);
         self.reductions_remaining = remaining_reductions;
         if burned > 0 {
             self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
         }
-        // Count cause off the accumulated reasons, not just this report's
-        // bits: allocation pressure expires the budget directly on the
-        // Process during the quantum (see `expire_budget`), so the back edge
-        // that finally yields reports only REDUCTIONS while the
-        // ALLOCATION_PRESSURE bit is already standing on `yield_reasons`.
         self.yield_reasons |= reason;
-        let allocation_pressure =
-            (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE;
-        if allocation_pressure {
-            self.allocation_pressure_yields = self.allocation_pressure_yields.saturating_add(1);
-        } else if (self.yield_reasons & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
+        if (self.yield_reasons & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
             self.reduction_yields = self.reduction_yields.saturating_add(1);
         }
-    }
-
-    /// Force the reduction budget to expire so the next back edge yields,
-    /// recording `reason`. Allocation pressure rides this path: it must drive
-    /// `reductions_remaining` to zero to trip the single hot-path back-edge
-    /// check. Before zeroing, bank the reductions genuinely burned so far —
-    /// once per quantum, guarded on the reason bit — so the later
-    /// `finish_yield_report` cannot misread the zeroed budget as a full
-    /// quantum of work. See `finish_yield_report`.
-    pub fn expire_budget(&mut self, reason: u8) {
-        let first_pressure =
-            reason == YIELD_REASON_ALLOCATION_PRESSURE && (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == 0;
-        if first_pressure {
-            let burned = i64::from(self.reductions_per_quantum) - i64::from(self.reductions_remaining);
-            if burned > 0 {
-                self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
-            }
-        }
-        self.reductions_remaining = 0;
-        self.yield_reasons |= reason;
     }
 
     pub fn clear_yield_reasons(&mut self) {
@@ -591,7 +567,6 @@ impl Process {
 
     pub fn needs_boundary_gc(&self) -> bool {
         self.heap.should_gc()
-            || (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE
     }
 
     pub fn begin_yield_continuation_allocation(&mut self, margin_before: usize) {
@@ -629,9 +604,7 @@ fn min_nonzero(current: u64, candidate: u64) -> u64 {
 // `CurrentProcessGuard`, and the `current_process()`/`try_current_process()`
 // accessors are gone. Every FFI/BIF now receives its `*mut Process` explicitly
 // (in the pinned register for compiled code, threaded as a parameter for the
-// interpreter), and the heap reaches its owning process for allocation-pressure
-// budget expiry through `Heap::owner` (set per quantum at scheduler entry).
-// This is what lets two schedulers be live at once on one thread.
+// interpreter). This is what lets two schedulers be live at once on one thread.
 
 #[cfg(test)]
 #[path = "process_test.rs"]

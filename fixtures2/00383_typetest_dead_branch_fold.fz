@@ -1,0 +1,3 @@
+fn check(x :: integer) do :is_int end
+fn check(x) do :other end
+fn main(), do: dbg(check(42))

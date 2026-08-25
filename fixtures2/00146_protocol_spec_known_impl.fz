@@ -1,0 +1,13 @@
+defprotocol Enumerable do
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule M do
+  @spec use(Enumerable.t(integer)) :: integer
+  fn use(xs), do: 1
+end
+fn main(), do: dbg(M.use([1]))

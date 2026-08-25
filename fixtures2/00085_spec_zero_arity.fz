@@ -1,0 +1,4 @@
+defmodule M do
+  @spec one() :: integer
+  fn one(), do: 1
+end

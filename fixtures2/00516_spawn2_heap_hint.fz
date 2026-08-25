@@ -1,0 +1,5 @@
+fn main() do
+  parent = self()
+  spawn(fn () -> send(parent, 42) end, 4096)
+  receive do x -> x end
+end

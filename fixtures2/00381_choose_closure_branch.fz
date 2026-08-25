@@ -1,0 +1,8 @@
+fn choose(f, a, b) do
+  if f.(a, b) do
+    a
+  else
+    b
+  end
+end
+fn main(), do: choose(fn (x, y) -> x <= y end, 1, 2)

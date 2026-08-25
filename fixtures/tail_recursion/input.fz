@@ -1,6 +1,0 @@
-fn count(0, acc), do: acc
-fn count(n, acc), do: count(n - 1, acc + 1)
-
-fn main() do
-  assert(count(100000, 0) == 100000, "100k-deep self-recursion accumulates and must TCO")
-end

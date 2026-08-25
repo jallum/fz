@@ -1,0 +1,4 @@
+fn f(v) do
+  with {:ok, x} <- v do x else :err -> 0 end
+end
+fn main() do dbg(f(:err)) end

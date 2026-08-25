@@ -1,0 +1,260 @@
+//! Per-function Cranelift body emission.
+
+use super::*;
+use crate::fz_ir::{Block, FnIr, PhysicalCapability, SourceInfo, Stmt, Term, Var};
+use crate::ir_dce::classify_var_uses;
+use crate::source::Span;
+use crate::types::{ClosureTypes, Types};
+use cranelift_codegen::{
+    Context,
+    ir::{self, InstBuilder, types},
+};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use fz_runtime::heap::Schema;
+use std::collections::HashMap;
+
+pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
+    jmod: &mut M,
+    t: &mut T,
+    ctx: &mut Context,
+    fbctx: &mut FunctionBuilderContext,
+    env: &CodegenEnv<'_>,
+    schemas: &[Schema],
+    f: &FnIr,
+    this_spec_id: u32,
+    source: &SourceInfo,
+) -> Result<(), CodegenError> {
+    let param_reprs = env.param_reprs;
+    let native_abi_fns = env.native_abi_fns;
+    let cont_target_fns = env.cont_target_fns;
+    let cont_fns = env.cont_fns;
+    let native_body = env.body_native(this_spec_id);
+    let value_types = &native_body.value_types;
+    let is_native = native_abi_fns.contains(&f.id);
+    let is_cont_fn = cont_fns.contains(&f.id);
+    // When this fn is never invoked from any fz IR site (not a direct
+    // callee, not a continuation), it can only
+    // enter via the trampoline entry, which writes null into the frame's
+    // slot 0. cont_ptr is therefore statically null at runtime;
+    // emit_return can elide the load/icmp/brif dispatch and emit a
+    // halt-only path. `cont_target_fns` is the set of FnIds ever
+    // referenced from fz IR.
+    let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
+    let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
+
+    let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
+    for blk in &f.blocks {
+        let cl_blk = b.create_block();
+        block_map.insert(blk.id.0, cl_blk);
+    }
+    let entry_cl = *block_map.get(&f.entry.0).unwrap();
+    if is_native {
+        // Native fn entry: one block_param per fz arg whose type matches
+        // param_reprs[i] (F64 for raw float, I64 for raw int or tagged).
+        // No frame_ptr; native fns run synchronously inside their caller
+        // and never visit the trampoline.
+        let my_param_reprs = &param_reprs[this_spec_id as usize];
+        if is_cont_fn {
+            // Cont fn entry: result's Cranelift type matches
+            // my_param_reprs[0].cl_type(). Body sees the value in its
+            // native shape — no coerce at entry.
+            //
+            // Scheduler-resumed receive continuations override the default
+            // one-result input shape via their settled continuation ABI: their bound
+            // values and captures are loaded from the closure env, leaving
+            // only `self` in the Tail-CC signature.
+            let extras_count = continuation_entry_extra_count(native_body);
+            for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
+                let _ = i;
+                append_block_param_for_repr(&mut b, entry_cl, *r);
+            }
+            b.append_block_param(entry_cl, types::I64); // self
+        } else {
+            for r in my_param_reprs {
+                append_block_param_for_repr(&mut b, entry_cl, *r);
+            }
+            b.append_block_param(entry_cl, types::I64); // cont
+        }
+    } else {
+        b.append_block_param(entry_cl, types::I64); // frame_ptr
+        b.append_block_param(entry_cl, types::I64); // host_ctx
+    }
+
+    for blk in &f.blocks {
+        if blk.id == f.entry {
+            continue;
+        }
+        let cl_blk = *block_map.get(&blk.id.0).unwrap();
+        for _ in &blk.params {
+            b.append_block_param(cl_blk, types::I64);
+        }
+    }
+
+    b.switch_to_block(entry_cl);
+    b.seal_block(entry_cl);
+
+    // One machine for the whole function. Its cache starts empty: the entry
+    // harness never reads the cache -- it produces the inputs the cache is then
+    // populated from. Builder, module, cache, and import table are bound once,
+    // here.
+    let mut cache = CodegenCache::default();
+    let mut body = CodegenFn::new(env, &mut b, jmod, &mut cache);
+    let EntryHarnessOut {
+        mut var_env,
+        frame_ptr,
+        host_ctx,
+        cont_param,
+        tuple_field_params,
+    } = build_entry_harness(
+        &mut body,
+        env,
+        schemas,
+        f,
+        this_spec_id,
+        is_native,
+        is_cont_fn,
+        entry_cl,
+    );
+
+    {
+        let (if_only, all_used) = classify_var_uses(f);
+        body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
+        body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
+        body.cache.tuple_field_params = tuple_field_params;
+        body.cache.reusable_cons_sources = reusable_cons_sources(f);
+    }
+    // Walk blocks in declared order with entry first.
+    let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
+    if let Some(eb) = f.blocks.iter().find(|b| b.id == f.entry) {
+        order.push(eb);
+    }
+    for blk in &f.blocks {
+        if blk.id != f.entry {
+            order.push(blk);
+        }
+    }
+
+    for blk in &order {
+        let cl_blk = *block_map.get(&blk.id.0).unwrap();
+        if blk.id != f.entry {
+            body.b.switch_to_block(cl_blk);
+            let params: Vec<ir::Value> = body.b.block_params(cl_blk).to_vec();
+            let mut param_cursor = 0;
+            for p in &blk.params {
+                let repr = native_body
+                    .block_param_reprs
+                    .get(p)
+                    .copied()
+                    .map(arg_repr_from_compiler2)
+                    .unwrap_or(ArgRepr::ValueRef);
+                var_env.insert(p.0, take_param_binding(body.b, &params, &mut param_cursor, repr));
+            }
+        }
+
+        // Per-stmt source location: ir_lower records spans into
+        // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
+        // Compiler2 CLIF dumps can render `; @file:line:col` comments.
+        let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
+        let block_env = None;
+        for (idx, stmt) in blk.stmts.iter().enumerate() {
+            let span = stmt_spans.and_then(|v| v.get(idx)).copied().unwrap_or(Span::DUMMY);
+            body.b.set_srcloc(span_to_srcloc(span));
+            let Stmt::Let(v, prim) = stmt;
+            let out = lower_prim(&mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env)?;
+            if !matches!(out, LowerOut::DeadUnit) {
+                let binding = match out {
+                    LowerOut::StrictConst(value) => {
+                        body.cache.static_scalar_consts.insert(v.0, value);
+                        let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
+                        CodegenValue::known(raw, value.kind())
+                    }
+                    LowerOut::Strict(value) => value,
+                    LowerOut::ValueRefWord(value) => CodegenValue::any_ref(value),
+                    LowerOut::ValueRef(value) => CodegenValue::any_ref(value),
+                    _ => {
+                        let repr = if out.is_raw_f64() {
+                            ArgRepr::RawF64
+                        } else if out.is_raw_i64() {
+                            ArgRepr::RawInt
+                        } else if out.is_condition() {
+                            ArgRepr::Condition
+                        } else {
+                            ArgRepr::ValueRef
+                        };
+                        CodegenValue::from_abi_value(out.value(), repr)
+                    }
+                };
+                var_env.insert(v.0, binding);
+            }
+        }
+        // Terminator gets its own srcloc (often the same as the last
+        // stmt for Return blocks; distinct for Call/Goto).
+        let term_span = source.term_span.get(&(f.id, blk.id)).copied().unwrap_or(Span::DUMMY);
+        body.b.set_srcloc(span_to_srcloc(term_span));
+
+        // Repr-aware Goto coercion. Mirrors coerce_call_args but for
+        // intra-function block edges. Each arg is coerced to the repr
+        // the target block param actually needs (derived from
+        // compiler2 value_types), so RawInt values flow through without a
+        // box/unbox round-trip at block joins.
+        if let Term::Goto(target, args) = &blk.terminator {
+            if !block_map.contains_key(&target.0) {
+                return Err(CodegenError::new(format!(
+                    "block {:?} in {}#{} jumps to an unknown successor {:?}",
+                    blk.id, f.name, f.id.0, target
+                )));
+            }
+            for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
+                let want = native_body
+                    .block_param_reprs
+                    .get(param)
+                    .copied()
+                    .map(arg_repr_from_compiler2)
+                    .unwrap_or(ArgRepr::ValueRef);
+                let vb = *var_env.get(&arg.0).expect("unbound goto arg");
+                if let Some(coerced) = body.coerce_goto_arg(vb, want) {
+                    var_env.insert(arg.0, coerced);
+                }
+            }
+        }
+
+        emit_terminator(
+            &mut body,
+            t,
+            env,
+            schemas,
+            &var_env,
+            blk,
+            &block_map,
+            is_native,
+            is_cont_fn,
+            this_spec_id,
+            f.id,
+            cont_ptr_known_null,
+            frame_ptr,
+            host_ctx,
+            cont_param,
+            value_types,
+            block_env,
+        )?;
+    }
+
+    for blk in &f.blocks {
+        let cl_blk = *block_map.get(&blk.id.0).unwrap();
+        if blk.id != f.entry {
+            body.b.seal_block(cl_blk);
+        }
+    }
+    drop(body);
+    b.finalize();
+    Ok(())
+}
+
+fn reusable_cons_sources(f: &FnIr) -> HashMap<u32, Var> {
+    f.physical_capabilities
+        .iter()
+        .map(|fact| match fact.capability {
+            PhysicalCapability::ReusableConsCell { rebuilt_head } => (rebuilt_head.0, fact.source),
+        })
+        .collect()
+}

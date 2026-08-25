@@ -1,11 +1,9 @@
 use std::fmt;
+use std::rc::Rc;
 use std::str::from_utf8;
 
-use crate::diag::Diagnostic;
-use crate::diag::codes::LEX_UNEXPECTED_CHAR;
-use crate::diag::{FileId, Span};
-use crate::measurements;
-use crate::telemetry::{Metadata, Telemetry, Value};
+use crate::source::{Id as CodeId, Span};
+use crate::telemetry::{RawSpanTelemetry, Telemetry};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -34,6 +32,7 @@ pub enum Tok {
     Defimpl,
     Alias,
     Import,
+    Require,
     Do,
     End,
     If,
@@ -112,7 +111,45 @@ impl fmt::Display for Tok {
     }
 }
 
-#[derive(Debug, Clone)]
+/// True for tokens whose grammar production is exclusively infix/postfix —
+/// they never begin a fresh expression as a prefix. `Minus` and `Percent`
+/// are the deliberate exceptions among the operator tokens, because both are
+/// dual prefix/infix in fz's grammar: `parse_prefix` accepts `-` as unary
+/// negation and `%` as a `%Foo{...}` struct literal, while `infix_bp` also
+/// gives them subtraction and modulo. A `-` or `%` leading a fresh physical
+/// line is therefore the start of a new statement (unary negation / struct
+/// literal), not a continuation. This mirrors Elixir's `unary_op` token
+/// classification (elixir_tokenizer.erl), which never swallows a preceding
+/// eol for an ambiguous prefix-capable operator; `%` has no modulo in Elixir,
+/// so that dual role is fz-specific and must be excluded here explicitly.
+fn is_infix_only_continuation(tok: &Tok) -> bool {
+    matches!(
+        tok,
+        Tok::Dot
+            | Tok::Eq
+            | Tok::Or
+            | Tok::And
+            | Tok::EqEq
+            | Tok::NotEq
+            | Tok::Lt
+            | Tok::LtEq
+            | Tok::Gt
+            | Tok::GtEq
+            | Tok::Pipe
+            | Tok::In
+            | Tok::ColonColon
+            | Tok::SlashSlash
+            | Tok::PlusPlus
+            | Tok::MinusMinus
+            | Tok::Concat
+            | Tok::DotDot
+            | Tok::Plus
+            | Tok::Star
+            | Tok::Slash
+    )
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub tok: Tok,
     pub span: Span,
@@ -129,8 +166,8 @@ pub struct Token {
 pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
-    file: FileId,
-    source_name: Option<String>,
+    code_id: CodeId,
+    source_name: Option<Rc<str>>,
 }
 
 #[derive(Debug)]
@@ -147,27 +184,20 @@ impl fmt::Display for LexError {
     }
 }
 
-impl LexError {
-    /// Promote a lex-time error into a structured Diagnostic. The headline
-    /// is the lexer's message; the primary span is the offending byte.
-    pub fn to_diagnostic(&self) -> Diagnostic {
-        // The lexer currently reports every lex-time failure with the
-        // same code and a specific message/span.
-        Diagnostic::error(LEX_UNEXPECTED_CHAR, self.msg.clone(), self.span)
-    }
-}
-
 impl<'a> Lexer<'a> {
-    pub fn with_source_name(src: &'a str, source_name: impl Into<String>) -> Self {
-        Self::with_file_and_source_name(src, FileId(0), source_name)
+    /// Test-only convenience: unit tests that only care about token shape,
+    /// not source identity, don't need to name a real `CodeId`.
+    #[cfg(test)]
+    pub fn with_source_name(src: &'a str, source_name: impl AsRef<str>) -> Self {
+        Self::with_code_id_and_source_name(src, CodeId(0), source_name)
     }
 
-    pub fn with_file_and_source_name(src: &'a str, file: FileId, source_name: impl Into<String>) -> Self {
+    pub fn with_code_id_and_source_name(src: &'a str, code_id: CodeId, source_name: impl AsRef<str>) -> Self {
         Self {
             src: src.as_bytes(),
             pos: 0,
-            file,
-            source_name: Some(source_name.into()),
+            code_id,
+            source_name: Some(Rc::from(source_name.as_ref())),
         }
     }
 
@@ -182,7 +212,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn span_from(&self, start: usize) -> Span {
-        Span::new(self.file, start as u32, self.pos as u32)
+        Span::new(self.code_id, start as u32, self.pos as u32)
     }
 
     fn eat_while(&mut self, mut pred: impl FnMut(u8) -> bool) {
@@ -339,8 +369,20 @@ impl<'a> Lexer<'a> {
         String::from_utf8(bytes).map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))
     }
 
-    fn read_quoted_binary(&mut self) -> Result<Tok, LexError> {
-        Ok(Tok::Binary(self.read_quoted_binary_bytes()?))
+    fn keyword_value_starts_after_colon(&self) -> bool {
+        matches!(
+            self.peek(0),
+            None | Some(b' ')
+                | Some(b'\t')
+                | Some(b'\r')
+                | Some(b'\n')
+                | Some(b'#')
+                | Some(b')')
+                | Some(b']')
+                | Some(b'}')
+                | Some(b',')
+                | Some(b';')
+        )
     }
 
     fn err(&self, msg: String) -> LexError {
@@ -351,7 +393,7 @@ impl<'a> Lexer<'a> {
         let start = if self.pos == 0 { 0 } else { end.saturating_sub(1) };
         LexError {
             msg,
-            span: Span::new(self.file, start, end),
+            span: Span::new(self.code_id, start, end),
         }
     }
 
@@ -367,6 +409,7 @@ impl<'a> Lexer<'a> {
             "defimpl" => Tok::Defimpl,
             "alias" => Tok::Alias,
             "import" => Tok::Import,
+            "require" => Tok::Require,
             "do" => Tok::Do,
             "end" => Tok::End,
             "if" => Tok::If,
@@ -640,14 +683,33 @@ impl<'a> Lexer<'a> {
                 }
             },
 
-            b'"' => self.read_quoted_binary()?,
+            b'"' => {
+                let bytes = self.read_quoted_binary_bytes()?;
+                if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
+                    self.bump();
+                    if self.keyword_value_starts_after_colon() {
+                        Tok::KwKey(
+                            String::from_utf8(bytes)
+                                .map_err(|e| self.err(format!("invalid UTF-8 in string: {}", e)))?,
+                        )
+                    } else {
+                        return Err(self.err("keyword argument must be followed by space after quoted key".into()));
+                    }
+                } else {
+                    Tok::Binary(bytes)
+                }
+            }
             c if c.is_ascii_digit() => self.read_number()?,
             c if Self::ident_start(c) => {
                 let name = self.read_ident();
                 // `name:` (but not `::`) is a keyword-list key like `do:`.
                 if self.peek(0) == Some(b':') && self.peek(1) != Some(b':') {
                     self.bump();
-                    Tok::KwKey(name)
+                    if self.keyword_value_starts_after_colon() {
+                        Tok::KwKey(name)
+                    } else {
+                        return Err(self.err(format!("keyword argument must be followed by space after: {}:", name)));
+                    }
                 } else {
                     Self::keyword_or_ident(name)
                 }
@@ -665,33 +727,57 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    /// Opens a `[fz, lexer, pass]` span and emits a
-    /// `[fz, lexer, tokens_built]` event with the final token count on
-    /// success. The span's stop event records elapsed_ns.
-    pub fn tokenize(mut self, tel: &dyn Telemetry) -> Result<Vec<Token>, LexError> {
-        use crate::telemetry::TelemetryExt;
-        let metadata = self.telemetry_metadata();
-        let _span = tel.span(LEX_PASS_NAME, metadata.clone());
-        let mut out = Vec::new();
+    /// Owns the eol/continuation decision at tokenize time (Elixir model:
+    /// elixir_tokenizer.erl's `add_token_with_eol`/`previous_was_eol`). A
+    /// physical newline is emitted as a first-class `Tok::Newline`. When
+    /// the next real token is one that can *only* be infix/postfix — it has
+    /// no unary/prefix production, see [`is_infix_only_continuation`] — any
+    /// run of `Newline`s immediately before it is dropped, so the token
+    /// continues the previous expression regardless of which line it
+    /// starts. Tokens that double as a prefix (`Minus`, `Percent`, and
+    /// anything else `parse_prefix` accepts) are excluded on purpose: a
+    /// leading `-` or `%` after a real newline always starts a fresh
+    /// statement (unary negation / `%Foo{...}` struct literal), never a
+    /// continuation of the previous one — this is what lets the parser's
+    /// Pratt loop stop at a bare `Newline` by construction, with no
+    /// lookahead heuristic required downstream.
+    pub fn tokenize<T: RawSpanTelemetry + ?Sized>(mut self, tel: &T) -> Result<Vec<Token>, LexError> {
+        let _span = start_lexer_pass(tel, &self.code_id, &self.source_name);
+        let mut out: Vec<Token> = Vec::new();
         loop {
             let t = self.next_token()?;
             let done = matches!(t.tok, Tok::Eof);
+            if is_infix_only_continuation(&t.tok) {
+                while matches!(out.last().map(|last| &last.tok), Some(Tok::Newline)) {
+                    out.pop();
+                }
+            }
             out.push(t);
             if done {
-                tel.execute(TOKENS_BUILT_NAME, &measurements! { count: out.len() }, &metadata);
+                emit_tokens_built(tel, &self.code_id, &self.source_name, &out);
                 return Ok(out);
             }
         }
     }
+}
 
-    fn telemetry_metadata(&self) -> Metadata<'static> {
-        let mut metadata = Metadata::new();
-        metadata.0.push(("file_id", Value::from(self.file.0)));
-        if let Some(source_name) = &self.source_name {
-            metadata.0.push(("source_name", Value::from(source_name.clone())));
-        }
-        metadata
-    }
+fn start_lexer_pass<'a, T: RawSpanTelemetry + ?Sized>(
+    tel: &'a T,
+    code: &CodeId,
+    source_name: &Option<Rc<str>>,
+) -> <T as RawSpanTelemetry>::Span2_0<'a, CodeId, Option<Rc<str>>> {
+    use crate::telemetry::TelemetryExt;
+    tel.raw_span2_0(LEX_PASS_NAME, code, source_name)
+}
+
+fn emit_tokens_built<T: Telemetry + ?Sized>(
+    tel: &T,
+    code: &CodeId,
+    source_name: &Option<Rc<str>>,
+    tokens: &Vec<Token>,
+) {
+    use crate::telemetry::TelemetryExt;
+    tel.raw_event3(TOKENS_BUILT_NAME, code, source_name, tokens);
 }
 
 const LEX_PASS_NAME: &[&str] = &["fz", "lexer", "pass"];

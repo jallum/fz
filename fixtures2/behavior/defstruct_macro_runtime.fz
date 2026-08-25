@@ -1,0 +1,28 @@
+#---
+# purpose: "macro-emitted defstruct construction and field access reaches the backend: StructDef facts, not the deleted module_struct_fields/struct_schemas source scan, are authoritative for schema lookup"
+#---
+#
+# # macro-emitted defstruct runtime
+#
+# The old `module_struct_fields`/`struct_schemas` scan was a raw `find_map`
+# over top-level `ScopeForm::Struct` source forms, so it never saw a
+# `defstruct` a macro expanded into a module body (macro expansions surface as
+# `ScopeForm::MacroCall`, not `ScopeForm::Struct`). Backend struct-schema
+# lookup now reads the fact-backed `StructDef` store instead, which does see
+# macro-emitted structs -- so `Point`, entirely defined through
+# `make_struct/1`, must still construct and field-access correctly end to end.
+defmacro make_struct(fields) do
+  {:defstruct, %{}, [fields]}
+end
+
+defmodule Point do
+  make_struct([:x, :y])
+
+  fn new(x, y), do: %Point{x: x, y: y}
+end
+
+fn main() do
+  point = Point.new(3, 4)
+  dbg(point.x)
+  dbg(point.y)
+end

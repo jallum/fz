@@ -3,6 +3,9 @@ name = "fz-runtime"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["staticlib", "rlib"]
 
@@ -23,7 +26,3 @@ serial_test = "3"
 # every legal thread interleaving. See `runtime/RUNNING_LOOM.md`.
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
-
-# fz-q8d.3 — silence rustc's unexpected_cfgs lint for the loom cfg seam.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

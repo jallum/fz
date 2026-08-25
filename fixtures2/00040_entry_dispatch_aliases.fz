@@ -1,0 +1,10 @@
+
+defmodule Sample do
+  @type count :: integer
+
+  fn positive(n), do: n > 0
+
+  fn wanted(n :: count) when positive(n), do: {:pos, n}
+  fn wanted(0), do: :zero
+  fn wanted(_), do: :fallback
+end

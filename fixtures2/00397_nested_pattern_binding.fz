@@ -1,0 +1,6 @@
+fn pick({:ok, [h | _t]}), do: h
+fn pick(:error), do: :error
+
+fn main() do
+  {pick({:ok, [1]}), pick(:error)}
+end

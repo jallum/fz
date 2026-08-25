@@ -1,0 +1,6 @@
+# Source-surface coverage:
+# Mirrors ../elixir/lib/elixir/test/elixir/kernel/parser_test.exs
+# test "with no parens".
+fn main() do
+  1..foo do end//bar bat
+end

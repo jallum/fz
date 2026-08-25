@@ -1,0 +1,5 @@
+
+fn positive(n), do: n > 0
+fn within(limit, n), do: positive(n + limit)
+fn wanted({:ok, {n, _}}), do: within(1, n)
+fn wanted(_), do: false

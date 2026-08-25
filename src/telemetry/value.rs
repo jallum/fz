@@ -6,10 +6,9 @@
 
 use std::any::{Any, type_name};
 use std::borrow::Cow;
-use std::fmt;
 use std::sync::Arc;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct OpaqueRef<'a> {
     type_name: &'static str,
     value: &'a dyn Any,
@@ -26,13 +25,9 @@ impl<'a> OpaqueRef<'a> {
     pub fn downcast_ref<T: Any>(self) -> Option<&'a T> {
         self.value.downcast_ref::<T>()
     }
-}
 
-impl fmt::Debug for OpaqueRef<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OpaqueRef")
-            .field("type_name", &self.type_name)
-            .finish_non_exhaustive()
+    pub fn type_name(self) -> &'static str {
+        self.type_name
     }
 }
 
@@ -45,6 +40,7 @@ pub enum Value<'a> {
     Str(Cow<'a, str>),
     StrSeq(Arc<[String]>),
     Bytes(Arc<[u8]>),
+    BorrowedBytes(&'a [u8]),
     Opaque(OpaqueRef<'a>),
 }
 
@@ -70,6 +66,7 @@ impl<'a> Value<'a> {
             Value::Str(v) => Some(Value::Str(Cow::Owned(v.clone().into_owned()))),
             Value::StrSeq(v) => Some(Value::StrSeq(v.clone())),
             Value::Bytes(v) => Some(Value::Bytes(v.clone())),
+            Value::BorrowedBytes(v) => Some(Value::Bytes(Arc::from(*v))),
             Value::Opaque(_) => None,
         }
     }
@@ -93,6 +90,7 @@ impl<'a> Value<'a> {
             Value::Str(_) => "str",
             Value::StrSeq(_) => "str_seq",
             Value::Bytes(_) => "bytes",
+            Value::BorrowedBytes(_) => "borrowed_bytes",
             Value::Opaque(_) => "opaque",
         }
     }
@@ -172,6 +170,11 @@ impl From<Arc<[u8]>> for Value<'_> {
 impl From<Vec<u8>> for Value<'_> {
     fn from(v: Vec<u8>) -> Self {
         Value::Bytes(Arc::from(v))
+    }
+}
+impl<'a> From<&'a [u8]> for Value<'a> {
+    fn from(v: &'a [u8]) -> Self {
+        Value::BorrowedBytes(v)
     }
 }
 

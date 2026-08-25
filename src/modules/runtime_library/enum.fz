@@ -17,9 +17,9 @@ defmodule Enum do
     )
   end
 
-  @spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: b
+  @spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
   fn reduce_while(enumerable, acc, reducer) do
-    reduce_finish(Enumerable.reduce(enumerable, {:cont, acc}, reducer))
+    Enumerable.reduce_while(enumerable, acc, reducer)
   end
 
   @spec each(Enumerable.t(a), (a) -> any) :: :ok
@@ -158,8 +158,13 @@ defmodule Enum do
   @spec take_every(Enumerable.t(a), integer) :: [a]
   fn take_every(_enumerable, 0), do: []
   fn take_every(enumerable, 1), do: to_list(enumerable)
-  fn take_every(enumerable, nth) when nth > 1 do
-    take_every_finish(reduce(enumerable, {[], 0}, fn (entry, state) -> take_every_step(entry, state, nth) end))
+  fn take_every(_enumerable, nth) when nth < 0, do: panic("Enum.OutOfBoundsError")
+  fn take_every(enumerable, nth) do
+    take_every_finish(
+      reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
+        {:cont, if countdown == 0, do: {[entry | acc], nth - 1}, else: {acc, countdown - 1}}
+      end)
+    )
   end
 
   @spec drop(Enumerable.t(a), integer) :: [a]
@@ -169,14 +174,28 @@ defmodule Enum do
 
   @spec drop_while(Enumerable.t(a), (a) -> any) :: [a]
   fn drop_while(enumerable, fun) do
-    drop_while_finish(reduce(enumerable, {[], true}, fn (entry, state) -> drop_while_step(entry, state, fun) end))
+    drop_while_finish(
+      reduce_while(enumerable, {[], true}, fn (entry, {acc, dropping}) ->
+        {:cont,
+         if dropping do
+           if fun.(entry), do: {acc, true}, else: {[entry | acc], false}
+         else
+           {[entry | acc], false}
+         end}
+      end)
+    )
   end
 
   @spec drop_every(Enumerable.t(a), integer) :: [a]
   fn drop_every(_enumerable, 1), do: []
   fn drop_every(enumerable, 0), do: to_list(enumerable)
-  fn drop_every(enumerable, nth) when nth > 1 do
-    drop_every_finish(reduce(enumerable, {[], 0}, fn (entry, state) -> drop_every_step(entry, state, nth) end))
+  fn drop_every(_enumerable, nth) when nth < 0, do: panic("Enum.OutOfBoundsError")
+  fn drop_every(enumerable, nth) do
+    drop_every_finish(
+      reduce_while(enumerable, {[], 0}, fn (entry, {acc, countdown}) ->
+        {:cont, if countdown == 0, do: {acc, nth - 1}, else: {[entry | acc], countdown - 1}}
+      end)
+    )
   end
 
   @spec split(Enumerable.t(a), integer) :: {[a], [a]}
@@ -186,12 +205,13 @@ defmodule Enum do
   @spec split_while(Enumerable.t(a), (a) -> any) :: {[a], [a]}
   fn split_while(enumerable, fun) do
     split_pair_finish(
-      reduce(enumerable, {[], []}, fn
-        (entry, {left, []}) ->
-          if fun.(entry), do: {[entry | left], []}, else: {left, [entry]}
-
-        (entry, {left, right}) ->
-          {left, [entry | right]}
+      reduce_while(enumerable, {[], []}, fn (entry, {left, right}) ->
+        {:cont,
+         if right == [] do
+           if fun.(entry), do: {[entry | left], []}, else: {left, [entry]}
+         else
+           {left, [entry | right]}
+         end}
       end)
     )
   end
@@ -199,8 +219,8 @@ defmodule Enum do
   @spec split_with(Enumerable.t(a), (a) -> any) :: {[a], [a]}
   fn split_with(enumerable, fun) do
     split_pair_finish(
-      reduce(enumerable, {[], []}, fn (entry, {left, right}) ->
-        if fun.(entry), do: {[entry | left], right}, else: {left, [entry | right]}
+      reduce_while(enumerable, {[], []}, fn (entry, {left, right}) ->
+        {:cont, if fun.(entry), do: {[entry | left], right}, else: {left, [entry | right]}}
       end)
     )
   end
@@ -214,22 +234,32 @@ defmodule Enum do
   @spec slice(Enumerable.t(a)) :: {:ok, integer, any} | {:error, any}
   fn slice(_enumerable), do: {:error, :unsupported}
 
+  @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, () -> any}) :: a
   fnp reduce_finish({:done, acc}), do: acc
   fnp reduce_finish({:halted, acc}), do: acc
   fnp reduce_finish({:suspended, acc, _continuation}), do: acc
 
+  @spec reduce_first_step(a, :first | {:acc, a}, (a, a) -> a) :: {:cont, {:acc, a}}
   fnp reduce_first_step(entry, :first, _reducer), do: {:cont, {:acc, entry}}
   fnp reduce_first_step(entry, {:acc, acc}, reducer), do: {:cont, {:acc, reducer.(entry, acc)}}
+  fnp reduce_first_step(_entry, _state, _reducer), do: panic("Enum.ReduceStateError")
 
-  fnp reduce_first_finish(result), do: reduce_first_acc(reduce_finish(result))
+  @spec reduce_first_finish({:done, :first | {:acc, a}} | {:halted, :first | {:acc, a}} | {:suspended, :first | {:acc, a}, () -> any}) :: a
+  fnp reduce_first_finish({:done, state}), do: reduce_first_acc(state)
+  fnp reduce_first_finish({:halted, state}), do: reduce_first_acc(state)
+  fnp reduce_first_finish({:suspended, state, _continuation}), do: reduce_first_acc(state)
+  fnp reduce_first_finish(_result), do: panic("Enum.ReduceStateError")
+  @spec reduce_first_acc(:first | {:acc, a}) :: a
   fnp reduce_first_acc(:first), do: panic("Enum.EmptyError")
   fnp reduce_first_acc({:acc, acc}), do: acc
+  fnp reduce_first_acc(_state), do: panic("Enum.ReduceStateError")
 
   fnp each_step(entry, acc, fun) do
     fun.(entry)
     acc
   end
 
+  @spec count_result({:ok, integer} | {:error, any}, Enumerable.t(a)) :: integer
   fnp count_result({:ok, count}, _enumerable), do: count
   fnp count_result({:error, _module}, enumerable), do: count(enumerable, fn (_entry) -> true end)
 
@@ -292,6 +322,7 @@ defmodule Enum do
   fnp with_index_list([], _index, _fun), do: []
   fnp with_index_list([head | tail], index, fun), do: [fun.(head, index) | with_index_list(tail, index + 1, fun)]
 
+  @spec map_every_list([a], integer, integer, (a) -> a) :: [a]
   fnp map_every_list([], _nth, _index, _fun), do: []
   fnp map_every_list([head | tail], nth, index, fun) do
     next = if (index % nth) == 0, do: fun.(head), else: head
@@ -330,6 +361,7 @@ defmodule Enum do
     if value, do: {:halt, {:found, index}}, else: {:cont, {:not_found, index + 1}}
   end
 
+  @spec find_index_finish({:found, integer} | {:not_found, integer}) :: integer | nil
   fnp find_index_finish({:found, index}), do: index
   fnp find_index_finish({:not_found, _index}), do: nil
 
@@ -344,8 +376,8 @@ defmodule Enum do
 
   fnp take_positive(enumerable, amount) do
     take_positive_finish(
-      reduce_while(enumerable, {[], amount}, fn (entry, state) ->
-        take_positive_step(entry, state)
+      reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
+        if remaining == 1, do: {:halt, {[entry | acc], 0}}, else: {:cont, {[entry | acc], remaining - 1}}
       end)
     )
   end
@@ -356,48 +388,33 @@ defmodule Enum do
   @spec take_positive_finish({[a], integer}) :: [a]
   fnp take_positive_finish({acc, _amount}), do: reverse_list(acc)
 
-  @spec take_every_step(a, {[a], integer}, integer) :: {[a], integer}
-  fnp take_every_step(entry, {acc, 0}, nth), do: {[entry | acc], nth - 1}
-  fnp take_every_step(_entry, {acc, countdown}, _nth), do: {acc, countdown - 1}
   @spec take_every_finish({[a], integer}) :: [a]
   fnp take_every_finish({acc, _countdown}), do: reverse_list(acc)
 
   fnp drop_positive(enumerable, amount) do
-    drop_positive_finish(reduce(enumerable, {[], amount}, fn (entry, state) -> drop_positive_step(entry, state) end))
+    drop_positive_finish(
+      reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
+        {:cont, if remaining > 0, do: {acc, remaining - 1}, else: {[entry | acc], 0}}
+      end)
+    )
   end
 
-  @spec drop_positive_step(a, {[a], integer}) :: {[a], integer}
-  fnp drop_positive_step(_entry, {acc, amount}) when amount > 0, do: {acc, amount - 1}
-  fnp drop_positive_step(entry, {acc, _amount}), do: {[entry | acc], 0}
   @spec drop_positive_finish({[a], integer}) :: [a]
   fnp drop_positive_finish({acc, _amount}), do: reverse_list(acc)
 
-  @spec drop_while_step(a, {[a], bool}, (a) -> any) :: {[a], bool}
-  fnp drop_while_step(entry, {acc, true}, fun) do
-    if fun.(entry), do: {acc, true}, else: {[entry | acc], false}
-  end
-
-  fnp drop_while_step(entry, {acc, false}, _fun), do: {[entry | acc], false}
   @spec drop_while_finish({[a], bool}) :: [a]
   fnp drop_while_finish({acc, _dropping}), do: reverse_list(acc)
 
-  @spec drop_every_step(a, {[a], integer}, integer) :: {[a], integer}
-  fnp drop_every_step(_entry, {acc, 0}, nth), do: {acc, nth - 1}
-  fnp drop_every_step(entry, {acc, countdown}, _nth), do: {[entry | acc], countdown - 1}
   @spec drop_every_finish({[a], integer}) :: [a]
   fnp drop_every_finish({acc, _countdown}), do: reverse_list(acc)
 
   fnp split_positive(enumerable, count) do
     split_counted_finish(
-      reduce(enumerable, {[], [], count}, fn (entry, state) ->
-        split_positive_step(entry, state)
+      reduce_while(enumerable, {[], [], count}, fn (entry, {left, right, remaining}) ->
+        {:cont, if remaining > 0, do: {[entry | left], right, remaining - 1}, else: {left, [entry | right], 0}}
       end)
     )
   end
-
-  @spec split_positive_step(a, {[a], [a], integer}) :: {[a], [a], integer}
-  fnp split_positive_step(entry, {left, right, count}) when count > 0, do: {[entry | left], right, count - 1}
-  fnp split_positive_step(entry, {left, right, _count}), do: {left, [entry | right], 0}
 
   @spec split_counted_finish({[a], [a], integer}) :: {[a], [a]}
   fnp split_counted_finish({left, right, _count}), do: {reverse_list(left), reverse_list(right)}
@@ -421,7 +438,9 @@ defmodule Enum do
     split_sort_list(tail, [left_head | left], [right_head | right])
   end
 
+  @spec reverse_list([a]) :: [a]
   fnp reverse_list(list), do: reverse_list(list, [])
+  @spec reverse_list([a], [b]) :: [a | b]
   fnp reverse_list([], acc), do: acc
   fnp reverse_list([head | tail], acc), do: reverse_list(tail, [head | acc])
 

@@ -1,0 +1,9 @@
+defmodule Contracts do
+  defprotocol Collectable do
+    fn id(value)
+  end
+
+  defimpl Collectable, for: List do
+    fn id(value), do: 42
+  end
+end

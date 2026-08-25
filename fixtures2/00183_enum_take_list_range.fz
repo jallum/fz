@@ -1,0 +1,9 @@
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  range = 1..5
+  dbg(Enum.take(xs, 3))
+  dbg(Enum.take(xs, 0))
+  dbg(Enum.take(xs, 9))
+  dbg(Enum.take(xs, -2))
+  dbg(Enum.take(range, -2))
+end

@@ -1,0 +1,4 @@
+# Source-surface coverage:
+# Mirrors ../elixir/lib/elixir/test/elixir/kernel/parser_test.exs
+# test "invalid keyword list in tuple/binary".
+fn main(), do: {foo: :bar, baz: :bar}

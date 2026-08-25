@@ -1,0 +1,9 @@
+fn main() do
+  me = self()
+  send(me, :skip)
+  send(me, %{name: 42, age: 30})
+  v = receive do
+    %{name: n} -> n
+  end
+  dbg(v)
+end

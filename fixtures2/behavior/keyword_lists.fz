@@ -1,0 +1,14 @@
+#---
+# purpose: "Elixir-style keyword lists lower to ordinary lists of atom/value tuples"
+#---
+fn echo(opts), do: opts
+fn echo(opts, more), do: opts ++ more
+
+fn main() do
+  assert([a: 1, b: 2] == [{:a, 1}, {:b, 2}], "keyword list lowers to a list of atom/value tuples")
+  assert(echo(timeout: 10, retry: true) == [{:timeout, 10}, {:retry, true}], "trailing keyword args collect into a keyword list")
+  with_do = echo(label: :work) do
+    42
+  end
+  assert(with_do == [{:label, :work}, {:do, 42}], "a trailing do-block after a paren call with keyword args appends a second keyword-list argument (Elixir never merges do: into a preceding keyword-list arg)")
+end

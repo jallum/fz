@@ -1,0 +1,7 @@
+fn count([]), do: 0
+fn count([_head | tail]), do: count(tail) + 1
+fn count(_value), do: 99
+
+fn main() do
+  count([1, 2]) + count([]) + count(%{a: 1}) + count(42)
+end

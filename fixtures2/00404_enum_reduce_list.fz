@@ -1,0 +1,3 @@
+fn main() do
+  dbg(Enum.reduce([1, 2, 3], 0, fn (x, a) -> x + a end))
+end

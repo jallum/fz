@@ -1,5 +1,0 @@
-fn main() do
-  dbg(40 + 2)
-  dbg(100 - 7)
-  dbg(6 * 7)
-end

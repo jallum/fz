@@ -1,0 +1,6 @@
+fn rx() do
+  receive do
+    {:ping, _} -> 1
+    {:pong, _} -> 2
+  end
+end

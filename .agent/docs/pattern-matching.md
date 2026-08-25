@@ -93,14 +93,32 @@ means the guard fails, not that the surrounding match halts.
 
 ## Diagnostics
 
-`src/dispatch_matrix/pattern/source.rs` uses the same producer. It normalizes guards to
-`true` for coverage analysis, compiles the rows to a `PatternDispatchPlan`, and
-walks the `DispatchGraph`:
+`src/dispatch_matrix/pattern/source.rs` uses the same producer for domain-free
+coverage. It normalizes guards to `true`, compiles the rows to a
+`PatternDispatchPlan`, and walks the `DispatchGraph`:
 
 - `find_unreachable_rows` reports row body ids that no graph path reaches.
-- `is_inexhaustive_with_domains` reports whether some path reaches `Fail`.
-- `KnownSubjectDomain::List` lets a known-list subject count as covered when both
-  empty-list and cons regions are present.
+- `is_inexhaustive` reports whether some path reaches `Fail` for unconstrained
+  inputs.
+
+Declared function domains use the Types-backed reachability calculator after
+both `FunctionContract` and `EntryDispatch` settle. Each `ContractArrow` keeps
+its parameter row intact; the calculator evaluates that row against the shared
+plan and the function is exhaustive only when every valid row makes `Fail`
+unreachable. It does not union argument columns or enumerate products. Guard
+tests remain conservative, so a guard-false path can still prove fallthrough.
+Each row instantiates its arrow parameters through that arrow's bounds using
+`Types::instantiate`. Dependent bounds close to a fixed point; unbounded or
+cyclic variables remain polymorphic and therefore conservative.
+This deterministic closure belongs specifically to
+`FunctionContract::input_domain_rows` for diagnostics. Ordinary dependent-bound
+call matching is a separate unresolved path and must not be inferred from this
+diagnostic behavior.
+
+Definition-time diagnostics still walk function bodies immediately. Only a
+declared function's head check is deferred to contract derivation. Functions
+without contracts retain the domain-free check, and an empty contract produced
+after a resolution error does not create a coverage domain.
 
 Diagnostics should not reimplement matching with syntax walkers. If a warning
 depends on dispatch reachability, ask the dispatch graph.

@@ -1,0 +1,6 @@
+defmodule M do
+  @type id :: integer
+  @spec lookup(id) :: id
+  fn lookup(x), do: x
+end
+fn main(), do: dbg(M.lookup(7))

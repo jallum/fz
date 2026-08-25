@@ -41,31 +41,26 @@ fn explicit_runtime_archive_override_wins_over_coverage_detection() {
 }
 
 #[test]
-fn ordinary_debug_binary_uses_sibling_target_dir() {
-    let exe = Path::new("/repo/target/debug/fz");
+fn override_requires_an_absolute_existing_archive() {
+    let relative = resolve_runtime_archive_plan(RuntimeArchivePlan::EnvOverride(PathBuf::from("libfz_runtime.a")))
+        .expect_err("relative override must be rejected");
+    assert!(relative.to_string().contains("must be an absolute"));
 
-    let plan = runtime_archive_plan(exe, None, false);
-
-    assert_eq!(
-        plan,
-        RuntimeArchivePlan::Sibling {
-            target_dir: PathBuf::from("/repo/target/debug")
-        }
-    );
+    let missing = resolve_runtime_archive_plan(RuntimeArchivePlan::EnvOverride(PathBuf::from(
+        "/missing/libfz_runtime.a",
+    )))
+    .expect_err("missing override must be rejected");
+    assert!(missing.to_string().contains("runtime archive is missing"));
 }
 
 #[test]
-fn deps_binary_uses_parent_target_dir() {
-    let exe = Path::new("/repo/target/debug/deps/fz-abc123");
+fn ordinary_plan_uses_the_existing_embedded_archive_independent_of_executable_location() {
+    let plan = runtime_archive_plan(Path::new("/elsewhere/fz2"), None, false);
+    let archive = resolve_runtime_archive_plan(plan).expect("build script must produce the embedded archive");
 
-    let plan = runtime_archive_plan(exe, None, false);
-
-    assert_eq!(
-        plan,
-        RuntimeArchivePlan::Sibling {
-            target_dir: PathBuf::from("/repo/target/debug")
-        }
-    );
+    assert_eq!(archive.source, RuntimeArchiveSource::Embedded);
+    assert!(archive.path.is_absolute());
+    assert!(archive.path.is_file());
 }
 
 #[test]
@@ -113,4 +108,138 @@ fn clean_runtime_build_scrubs_coverage_and_target_env() {
 
     assert!(!should_scrub_for_clean_runtime_build(OsStr::new("PATH")));
     assert!(!should_scrub_for_clean_runtime_build(OsStr::new("CARGO_HOME")));
+}
+
+/// Selection must come from Cargo's own artifact report, never from
+/// filesystem mtime. Fabricate a decoy `libfz_runtime-*.a` whose mtime is
+/// newer than the archive Cargo actually reports as this build's output; a
+/// mtime-based picker would return the decoy, but the deterministic selector
+/// must still return the archive named in the `compiler-artifact` message.
+#[test]
+fn runtime_staticlib_selection_ignores_decoy_newer_mtime_archive() {
+    use std::fs::{create_dir_all, write as fs_write};
+    use std::thread::sleep;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join(format!(
+        "fz_aot_link_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    create_dir_all(&dir).expect("create temp dir");
+
+    let authoritative = dir.join("libfz_runtime-19d6c6c451fa0f44.a");
+    fs_write(&authoritative, b"real archive").expect("write authoritative archive");
+
+    // Give the decoy a strictly newer mtime than the authoritative archive,
+    // as would happen when a concurrent, unrelated build refreshes a stale
+    // hashed archive mid-run.
+    sleep(Duration::from_millis(10));
+    let decoy = dir.join("libfz_runtime-deadbeefcafefeed.a");
+    fs_write(&decoy, b"stale archive with a newer mtime").expect("write decoy archive");
+
+    let authoritative_mtime = authoritative.metadata().unwrap().modified().unwrap();
+    let decoy_mtime = decoy.metadata().unwrap().modified().unwrap();
+    assert!(
+        decoy_mtime > authoritative_mtime,
+        "decoy must have the newer mtime for this test to prove anything"
+    );
+
+    let cargo_stdout = format!(
+        concat!(
+            r#"{{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#libc@0.2.0","target":{{"kind":["lib"],"name":"libc"}},"filenames":["/repo/target/debug/deps/liblibc-aaaa.rlib"]}}"#,
+            "\n",
+            r#"{{"reason":"build-script-executed","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0"}}"#,
+            "\n",
+            r#"{{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0","target":{{"kind":["staticlib","rlib"],"name":"fz_runtime"}},"filenames":["{authoritative}","{rlib}"]}}"#,
+        ),
+        authoritative = authoritative.display(),
+        rlib = dir.join("libfz_runtime-19d6c6c451fa0f44.rlib").display(),
+    );
+
+    let selected = runtime_staticlib_from_cargo_messages(cargo_stdout.as_bytes())
+        .expect("cargo message names a staticlib artifact");
+
+    assert_eq!(
+        selected, authoritative,
+        "selection must follow Cargo's compiler-artifact message, not the newer-mtime decoy"
+    );
+    assert_ne!(selected, decoy);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A single cargo invocation can legitimately report `fz-runtime` more than
+/// once (e.g. the lib target and a unit-test binary both trigger a
+/// `compiler-artifact` message with `target.name == "fz_runtime"`). The
+/// selector must pick deterministically rather than panic or pick
+/// ambiguously; it does so by taking the FIRST matching message in stream
+/// order (`Iterator::find_map` over `lines()`), so this pins "first match
+/// wins" as the intended contract.
+#[test]
+fn runtime_staticlib_selection_is_deterministic_across_multiple_fz_runtime_artifacts() {
+    let cargo_stdout = concat!(
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#libc@0.2.0","target":{"kind":["lib"],"name":"libc"},"filenames":["/repo/target/debug/deps/liblibc-aaaa.rlib"]}"#,
+        "\n",
+        // First fz_runtime artifact message: the one that must win.
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0","target":{"kind":["staticlib","rlib"],"name":"fz_runtime"},"filenames":["/repo/target/debug/deps/libfz_runtime-1111111111111111.a","/repo/target/debug/deps/libfz_runtime-1111111111111111.rlib"]}"#,
+        "\n",
+        // Second fz_runtime artifact message (e.g. the test-harness build of
+        // the same crate): must NOT override the first match.
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0","target":{"kind":["staticlib","rlib"],"name":"fz_runtime"},"filenames":["/repo/target/debug/deps/libfz_runtime-2222222222222222.a","/repo/target/debug/deps/libfz_runtime-2222222222222222.rlib"]}"#,
+    );
+
+    // Confirm this fixture actually exercises the multi-match corner before
+    // trusting what the selector does with it.
+    let fz_runtime_artifact_count = cargo_stdout
+        .lines()
+        .filter(|line| line.contains(r#""name":"fz_runtime""#))
+        .count();
+    assert_eq!(
+        fz_runtime_artifact_count, 2,
+        "fixture must contain at least two fz_runtime compiler-artifact messages"
+    );
+
+    let selected = runtime_staticlib_from_cargo_messages(cargo_stdout.as_bytes())
+        .expect("cargo message names a staticlib artifact");
+
+    assert_eq!(
+        selected,
+        PathBuf::from("/repo/target/debug/deps/libfz_runtime-1111111111111111.a"),
+        "selection must deterministically take the first fz_runtime compiler-artifact message"
+    );
+}
+
+/// When cargo's message stream never names an `fz_runtime` compiler-artifact
+/// (e.g. only unrelated dependency artifacts and build-script messages are
+/// present), the selector must return `None` so the caller can surface a loud
+/// error, rather than silently returning a wrong path or panicking.
+#[test]
+fn runtime_staticlib_selection_returns_none_when_no_fz_runtime_artifact_is_reported() {
+    let cargo_stdout = concat!(
+        r#"{"reason":"compiler-artifact","package_id":"path+file:///repo/runtime#libc@0.2.0","target":{"kind":["lib"],"name":"libc"},"filenames":["/repo/target/debug/deps/liblibc-aaaa.rlib"]}"#,
+        "\n",
+        r#"{"reason":"build-script-executed","package_id":"path+file:///repo/runtime#fz-runtime@0.1.0"}"#,
+    );
+
+    // Confirm the fixture truly has zero fz_runtime compiler-artifact
+    // messages before trusting the `None` result below.
+    let fz_runtime_artifact_count = cargo_stdout
+        .lines()
+        .filter(|line| line.contains(r#""reason":"compiler-artifact""#) && line.contains(r#""name":"fz_runtime""#))
+        .count();
+    assert_eq!(
+        fz_runtime_artifact_count, 0,
+        "fixture must not contain any fz_runtime compiler-artifact message"
+    );
+
+    let selected = runtime_staticlib_from_cargo_messages(cargo_stdout.as_bytes());
+
+    assert_eq!(
+        selected, None,
+        "absence of an fz_runtime compiler-artifact message must surface as None (the caller's ok_or_else error path), not a silent fallback"
+    );
 }

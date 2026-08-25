@@ -26,7 +26,15 @@ macro_rules! kv_newtype {
             }
 
             pub fn from_pairs(pairs: impl IntoIterator<Item = (&'static str, Value<'a>)>) -> Self {
-                Self(pairs.into_iter().collect())
+                let pairs: KvVec<'a> = pairs.into_iter().collect();
+                debug_assert!(
+                    pairs
+                        .iter()
+                        .enumerate()
+                        .all(|(index, (key, _))| pairs[..index].iter().all(|(prior, _)| prior != key)),
+                    "duplicate telemetry key"
+                );
+                Self(pairs)
             }
 
             pub fn iter(&self) -> std::slice::Iter<'_, (&'static str, Value<'a>)> {

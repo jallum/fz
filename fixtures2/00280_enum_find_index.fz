@@ -1,0 +1,5 @@
+fn main() do
+  xs = [1, 2, 3, 4]
+  dbg(Enum.find_index(xs, fn (x) -> (x % 2) == 0 end))
+  dbg(Enum.find_index(xs, fn (x) -> x > 9 end))
+end

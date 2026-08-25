@@ -1,0 +1,6 @@
+fn pick([]), do: :empty
+fn pick([h | _t]), do: h
+
+fn main() do
+  {pick([]), pick([1])}
+end

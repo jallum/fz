@@ -1,6 +1,4 @@
 use super::*;
-use crate::modules::identity::ModuleName;
-use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
 
 /// fn identity(x) = x
 fn build_identity() -> FnIr {
@@ -64,14 +62,12 @@ fn fresh_vars_are_unique() {
 
 #[test]
 fn physical_entry_params_are_not_semantic_key_inputs() {
-    use crate::types::Types;
-
     let mut b = FnBuilder::new(FnId(0), "with_physical");
     let head = b.fresh_var();
     let source = b.fresh_var();
     let value = b.fresh_var();
     let entry = b.block(vec![source, value]);
-    b.record_owned_cons_reuse_capability(head, source);
+    b.record_reusable_cons_cell(head, source);
     b.set_terminator(entry, Term::Return(value));
     let fn_ir = b.build();
 
@@ -80,15 +76,34 @@ fn physical_entry_params_are_not_semantic_key_inputs() {
         fn_ir.physical_capabilities,
         vec![PhysicalCapabilityFact {
             source,
-            capability: PhysicalCapability::OwnedConsReuse { head },
+            capability: PhysicalCapability::ReusableConsCell { rebuilt_head: head },
         }]
     );
     assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
+}
 
-    let mut t = crate::types::new();
-    let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
-    assert!(key[0].is_none());
-    assert!(key[1].is_some());
+#[test]
+fn local_reusable_cons_sources_do_not_become_physical_entry_params() {
+    let mut b = FnBuilder::new(FnId(0), "local_reusable_cons");
+    let entry = b.block(vec![]);
+    let source = b.let_(entry, Prim::Const(Const::Int(1)));
+    let head = b.let_(entry, Prim::Const(Const::Int(2)));
+    b.record_reusable_cons_cell(head, source);
+    b.set_terminator(entry, Term::Return(head));
+    let fn_ir = b.build();
+
+    assert!(
+        fn_ir.physical_entry_params.is_empty(),
+        "local reusable-cons sources should stay local metadata, not hidden entry params",
+    );
+    assert_eq!(
+        fn_ir.physical_capabilities,
+        vec![PhysicalCapabilityFact {
+            source,
+            capability: PhysicalCapability::ReusableConsCell { rebuilt_head: head },
+        }],
+        "the reusable-cons capability should still be recorded for local codegen consumption",
+    );
 }
 
 #[test]
@@ -128,116 +143,8 @@ fn module_holds_multiple_fns_and_lookup_by_name() {
     mb.add_fn(build_add1());
     let m = mb.build();
     assert_eq!(m.fns.len(), 2);
-    assert!(m.fn_by_name("identity").is_some());
-    assert!(m.fn_by_name("add1").is_some());
-    assert!(m.fn_by_name("missing").is_none());
     assert_eq!(m.fn_by_id(FnId(0)).name, "identity");
     assert_eq!(m.fn_by_id(FnId(1)).name, "add1");
-}
-
-#[test]
-fn lto_rewrites_external_call_edge_to_direct_fn_id() {
-    let ident = CallsiteIdent::synthetic();
-    let mut caller = FnBuilder::new(FnId(0), "caller");
-    let entry = caller.block(vec![]);
-    caller.set_terminator(
-        entry,
-        Term::TailCall {
-            ident: ident.clone(),
-            callee: FnId(999),
-            args: Vec::new(),
-            is_back_edge: false,
-        },
-    );
-    let mut target = FnBuilder::new(FnId(1), "A.f");
-    let target_entry = target.block(vec![]);
-    target.set_terminator(target_entry, Term::Halt(Var(0)));
-    let mut mb = ModuleBuilder::new();
-    mb.add_fn(caller.build());
-    mb.add_fn(target.build());
-    let mut module = mb.build();
-    let export = ExportKey::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
-    module.external_call_edges.push(ExternalCallEdge {
-        callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
-        target: export.clone(),
-    });
-    let exports = [(export, FnId(1))].into_iter().collect();
-
-    assert_eq!(module.rewrite_external_calls_for_lto(&exports), Ok(1));
-    assert!(module.external_call_edges.is_empty());
-    match &module.fn_by_id(FnId(0)).block(BlockId(0)).terminator {
-        Term::TailCall { callee, .. } => assert_eq!(*callee, FnId(1)),
-        other => panic!("expected TailCall, got {:?}", other),
-    }
-}
-
-#[test]
-fn lto_reports_missing_external_call_target() {
-    let ident = CallsiteIdent::synthetic();
-    let mut caller = FnBuilder::new(FnId(0), "caller");
-    let entry = caller.block(vec![]);
-    caller.set_terminator(
-        entry,
-        Term::TailCall {
-            ident: ident.clone(),
-            callee: FnId(999),
-            args: Vec::new(),
-            is_back_edge: false,
-        },
-    );
-    let mut mb = ModuleBuilder::new();
-    mb.add_fn(caller.build());
-    let mut module = mb.build();
-    let export = ExportKey::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
-    module.external_call_edges.push(ExternalCallEdge {
-        callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
-        target: export.clone(),
-    });
-    let exports = BTreeMap::new();
-
-    assert_eq!(
-        module.rewrite_external_calls_for_lto(&exports),
-        Err(ExternalLinkError::MissingTarget(export))
-    );
-    assert!(!module.external_call_edges.is_empty());
-}
-
-#[test]
-fn lto_export_map_comes_from_validated_interfaces() {
-    let mut target = FnBuilder::new(FnId(7), "Math.add");
-    let target_entry = target.block(vec![Var(0), Var(1)]);
-    target.set_terminator(target_entry, Term::Halt(Var(0)));
-    let mut mb = ModuleBuilder::new();
-    mb.add_fn(target.build());
-    let module = mb.build();
-
-    let math = ModuleName::from_segments(vec!["Math".to_string()]);
-    let mut interfaces = BTreeMap::new();
-    interfaces.insert(
-        math.clone(),
-        ModuleInterface {
-            name: math.clone(),
-            abi_version: FZ_INTERFACE_ABI_VERSION,
-            imports: Vec::new(),
-            exports: vec![InterfaceFn {
-                name: "add".to_string(),
-                arity: 2,
-                specs: vec![InterfaceSpec {
-                    params: vec!["Ident(\"integer\")".to_string(), "Ident(\"integer\")".to_string()],
-                    result: "Ident(\"integer\")".to_string(),
-                }],
-                name_span: Span::DUMMY,
-            }],
-            types: Vec::new(),
-            protocols: Vec::new(),
-            protocol_impls: Vec::new(),
-            docs: None,
-            fingerprint_inputs: Vec::new(),
-        },
-    );
-
-    let key = ExportKey::new(math, "add", 2);
-    assert_eq!(module.interface_export_map(&interfaces).get(&key), Some(&FnId(7)));
 }
 
 #[test]
@@ -307,7 +214,7 @@ fn term_call_with_continuation_round_trips() {
         entry,
         Term::Call {
             ident: CallsiteIdent::synthetic(),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![x],
             continuation: Cont {
                 fn_id: FnId(7),
@@ -329,7 +236,7 @@ fn term_tail_call() {
         entry,
         Term::TailCall {
             ident: CallsiteIdent::synthetic(),
-            callee: FnId(0),
+            callee: DirectCallTarget::Local(FnId(0)),
             args: vec![x],
             is_back_edge: false,
         },

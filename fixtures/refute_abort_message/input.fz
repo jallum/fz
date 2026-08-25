@@ -1,3 +1,0 @@
-fn main() do
-  refute(1 == 1, "custom refute message")
-end

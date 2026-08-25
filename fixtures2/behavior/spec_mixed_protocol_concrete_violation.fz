@@ -1,0 +1,28 @@
+#---
+# purpose: "a protocol-domain @spec overload does not mask concrete @spec violations"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+#
+# # spec_mixed_protocol_concrete_violation
+#
+# `M.use/1` has one protocol-domain overload and one concrete float overload.
+# Protocol-domain arrows are not yet enforced by this structural check, but that
+# must not disable enforcement for the concrete arrow. The integer call is
+# rejected by every enforceable concrete arrow and must produce `spec/violation`
+# on run, interp, and build.
+defprotocol Enumerable do
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule M do
+  @spec use(Enumerable.t(integer)) :: integer
+  @spec use(float) :: float
+  fn use(n), do: n
+end
+
+fn main(), do: dbg(M.use(41))

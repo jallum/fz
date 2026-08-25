@@ -1,0 +1,483 @@
+use std::collections::HashMap;
+
+use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
+use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, Types};
+use crate::compiler2::artifact::{
+    BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
+    BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
+    NativeConstructionMember, NativeEntryAbi, NativeProgram,
+};
+use crate::compiler2::pull::TransportCarrier;
+use crate::compiler2::transport::{BoundaryId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore};
+use crate::compiler2::types::Ty;
+use crate::fz_ir::{
+    Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
+};
+
+fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (RootId, FunctionId, ActivationKey) {
+    let mut functions = FunctionMap::new();
+    let function = functions.reference(ModuleId::GLOBAL, "main", 0);
+    let mut roots = RootMap::new();
+    let root = roots.define(RootEntry {
+        function,
+        input: input.clone(),
+        need: ExecutableNeed::Value,
+        kind: RootKind::Runtime,
+    });
+    let activation = ActivationKey::from_inputs(root, function, &input, _types);
+    (root, function, activation)
+}
+
+#[derive(Default)]
+struct TestTransportShapes {
+    transport: TransportStore,
+}
+
+#[test]
+fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
+    fn assert_closed(program: BackendProgram) {
+        let BackendProgram {
+            backend_revision: _,
+            entry: _,
+            atom_names: _,
+            struct_schemas: _,
+            executables,
+            construction_wrappers: _,
+        } = program;
+        for executable in executables {
+            let BackendExecutable {
+                key: _,
+                entry_dispatch: _,
+                return_ty: _,
+                param_reprs: _,
+                semantic_inputs: _,
+                return_layout: _,
+                runtime_demand: _,
+                value_types: _,
+                value_layouts: _,
+                effects: _,
+                body: _,
+            } = executable;
+        }
+    }
+
+    let _ = assert_closed as fn(BackendProgram);
+}
+
+impl TestTransportShapes {
+    fn scalar_shape(&mut self, ty: Ty) -> (ShapeId, LaneId) {
+        let lane = self.transport.interners_mut().intern_lane(LaneDescr {
+            ty,
+            class: TransportClass::Value,
+        });
+        let shape = self.transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        (shape, lane)
+    }
+}
+
+#[test]
+fn compiler2_native_program_contract_test_shapes_use_one_interner() {
+    let mut types = Types::new();
+    let int = types.int();
+    let float = types.float();
+    let mut shapes = TestTransportShapes::default();
+    let (int_shape, _) = shapes.scalar_shape(int);
+    let (float_shape, _) = shapes.scalar_shape(float);
+
+    assert_ne!(
+        int_shape, float_shape,
+        "contract fixtures must allocate transport ids from one interner; fresh stores can assign the same ShapeId to different descriptors",
+    );
+}
+
+#[test]
+fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
+    let mut types = Types::new();
+    let int = types.int();
+    let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
+    let mut shapes = TestTransportShapes::default();
+    let (return_shape, _) = shapes.scalar_shape(int);
+    let executable = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    let entry_fn = FnId(0);
+    let identity_fn = FnId(1);
+    let wrapper_fn = FnId(2);
+
+    let mut module = Module::default();
+    module.fns.push(FnIr {
+        id: entry_fn,
+        name: "main".to_string(),
+        frame_schema_id: 0,
+        blocks: vec![Block {
+            id: BlockId(0),
+            params: vec![Var(0)],
+            stmts: Vec::new(),
+            terminator: Term::Return(Var(0)),
+        }],
+        entry: BlockId(0),
+        category: FnCategory::User,
+        owner_module: String::new(),
+        ignored_entry_params: vec![false],
+        physical_entry_params: Vec::new(),
+        physical_capabilities: Vec::new(),
+    });
+    module.fn_idx.insert(entry_fn, 0);
+
+    let marshals = HashMap::from([(
+        ExternMarshalSite {
+            block: BlockId(0),
+            stmt_idx: 0,
+            arg_idx: 0,
+        },
+        ExternTy::I64,
+    )]);
+    let program = NativeProgram {
+        backend_revision: 7,
+        entry: entry_fn,
+        module,
+        bodies: vec![NativeBody {
+            fn_id: entry_fn,
+            origin: NativeBodyOrigin::Executable(executable.clone()),
+            entry_abi: NativeEntryAbi::Direct,
+            param_reprs: vec![AbiValueRepr::RawInt],
+            return_ty: int,
+            return_reprs: vec![AbiValueRepr::RawInt],
+            return_tuple_arity: None,
+            block_param_reprs: HashMap::new(),
+            value_types: HashMap::from([(Var(0), int)]),
+            extern_marshals: marshals.clone(),
+            effects: EffectSummary::default(),
+        }],
+        callable_boundaries: vec![NativeCallableBoundary {
+            id: NativeCallableBoundaryId(0),
+            identity_fn,
+            wrapper_fn,
+            captures: Box::default(),
+            capture_reprs: Box::default(),
+            call_arity: 1,
+            return_form: BackendCallableReturn::ValueRef,
+            task_halt_repr: None,
+            members: Box::new([NativeConstructionMember {
+                boundary: BoundaryId::for_test(0),
+                target_fn: entry_fn,
+                target: executable.clone(),
+                surface_inputs: Box::new([int]),
+                capture_semantic_inputs: Box::default(),
+                surface_semantic_inputs: Box::new([0]),
+                target_inputs: Box::new([BackendSemanticInputLayout {
+                    semantic_index: 0,
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                }]),
+                target_return: BackendReturnLayout {
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                    diverges: false,
+                },
+            }]),
+            selection: None,
+        }],
+    };
+
+    assert_eq!(
+        program.entry, entry_fn,
+        "the native handoff should name one CPS/native entry body"
+    );
+    assert_eq!(
+        program.bodies[0].origin,
+        NativeBodyOrigin::Executable(executable.clone()),
+        "the body contract should keep executable identity on the body record instead of an external planner shell",
+    );
+    assert_eq!(
+        program.bodies[0].entry_abi,
+        NativeEntryAbi::Direct,
+        "the body contract should say whether a body is a direct entry or a continuation entry",
+    );
+    assert_eq!(
+        program.bodies[0].extern_marshals, marshals,
+        "the body contract should carry concrete extern marshal classes inline for native codegen",
+    );
+    assert_eq!(
+        program.callable_boundaries[0].identity_fn, identity_fn,
+        "callable boundaries should carry a callable identity for closure construction sites",
+    );
+    assert_eq!(
+        program.callable_boundaries[0].members[0].target, executable,
+        "callable boundary members should name the executable they adapt",
+    );
+}
+
+#[test]
+fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
+    let mut types = Types::new();
+    let int = types.int();
+    let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
+    let mut shapes = TestTransportShapes::default();
+    let (return_shape, _) = shapes.scalar_shape(int);
+    let executable = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    let entry_fn = FnId(0);
+    let cont_fn = FnId(1);
+    let identity_fn = FnId(2);
+    let wrapper_fn = FnId(3);
+
+    let mut module = Module::default();
+    module.externs.push(ExternDecl {
+        id: ExternId(0),
+        fz_name: "libc::open".to_string(),
+        symbol: "open".to_string(),
+        params: vec![ExternTy::CString, ExternTy::I64],
+        variadic: true,
+        ret: ExternTy::I64,
+    });
+    module.extern_idx.insert(ExternId(0), 0);
+    module.fns.push(FnIr {
+        id: entry_fn,
+        name: "main".to_string(),
+        frame_schema_id: 0,
+        blocks: vec![Block {
+            id: BlockId(0),
+            params: vec![Var(0)],
+            stmts: Vec::new(),
+            terminator: Term::Return(Var(0)),
+        }],
+        entry: BlockId(0),
+        category: FnCategory::User,
+        owner_module: String::new(),
+        ignored_entry_params: vec![false],
+        physical_entry_params: Vec::new(),
+        physical_capabilities: Vec::new(),
+    });
+    module.fn_idx.insert(entry_fn, 0);
+    module.fns.push(FnIr {
+        id: cont_fn,
+        name: "main__k0".to_string(),
+        frame_schema_id: 0,
+        blocks: vec![Block {
+            id: BlockId(1),
+            params: vec![Var(1)],
+            stmts: Vec::new(),
+            terminator: Term::Return(Var(1)),
+        }],
+        entry: BlockId(1),
+        category: FnCategory::CpsCont,
+        owner_module: String::new(),
+        ignored_entry_params: vec![false],
+        physical_entry_params: Vec::new(),
+        physical_capabilities: Vec::new(),
+    });
+    module.fn_idx.insert(cont_fn, 1);
+
+    let extern_site = ExternMarshalSite {
+        block: BlockId(0),
+        stmt_idx: 0,
+        arg_idx: 0,
+    };
+    let program = NativeProgram {
+        backend_revision: 7,
+        entry: entry_fn,
+        module,
+        bodies: vec![
+            NativeBody {
+                fn_id: entry_fn,
+                origin: NativeBodyOrigin::Executable(executable.clone()),
+                entry_abi: NativeEntryAbi::Direct,
+                param_reprs: vec![AbiValueRepr::RawInt],
+                return_ty: int,
+                return_reprs: vec![AbiValueRepr::RawInt],
+                return_tuple_arity: None,
+                block_param_reprs: HashMap::new(),
+                value_types: HashMap::from([(Var(0), int)]),
+                extern_marshals: HashMap::from([(extern_site, ExternTy::CString)]),
+                effects: EffectSummary::default(),
+            },
+            NativeBody {
+                fn_id: cont_fn,
+                origin: NativeBodyOrigin::Continuation {
+                    owner: entry_fn,
+                    index: 0,
+                },
+                entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
+                param_reprs: vec![AbiValueRepr::ValueRef],
+                return_ty: int,
+                return_reprs: vec![AbiValueRepr::ValueRef],
+                return_tuple_arity: None,
+                block_param_reprs: HashMap::new(),
+                value_types: HashMap::from([(Var(1), int)]),
+                extern_marshals: HashMap::new(),
+                effects: EffectSummary::default(),
+            },
+        ],
+        callable_boundaries: vec![NativeCallableBoundary {
+            id: NativeCallableBoundaryId(0),
+            identity_fn,
+            wrapper_fn,
+            captures: Box::default(),
+            capture_reprs: Box::default(),
+            call_arity: 1,
+            return_form: BackendCallableReturn::ValueRef,
+            task_halt_repr: None,
+            members: Box::new([NativeConstructionMember {
+                boundary: BoundaryId::for_test(0),
+                target_fn: entry_fn,
+                target: executable.clone(),
+                surface_inputs: Box::new([int]),
+                capture_semantic_inputs: Box::default(),
+                surface_semantic_inputs: Box::new([0]),
+                target_inputs: Box::new([BackendSemanticInputLayout {
+                    semantic_index: 0,
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                }]),
+                target_return: BackendReturnLayout {
+                    layout: BackendValueLayout {
+                        structural: return_shape,
+                        carrier: TransportCarrier::Absent,
+                        tys: Box::new([int]),
+                        reprs: Box::new([AbiValueRepr::RawInt]),
+                    },
+                    diverges: false,
+                },
+            }]),
+            selection: None,
+        }],
+    };
+
+    assert_eq!(
+        program.entry, entry_fn,
+        "native codegen should read the root entry directly from NativeProgram instead of SpecRegistry or reachable-spec tables",
+    );
+    assert_eq!(
+        program.module.fns.len(),
+        2,
+        "native codegen should read the prepared CPS/native body inventory directly from NativeProgram.module instead of a rebuilt prepared Module shell",
+    );
+    assert_eq!(
+        program.bodies[0].return_ty, int,
+        "native codegen should read effective return types from NativeBody.return_ty instead of ModulePlan.effective_returns",
+    );
+    assert_eq!(
+        program.bodies[0].return_reprs,
+        vec![AbiValueRepr::RawInt],
+        "native codegen should read return lane reprs from NativeBody instead of re-deriving them through planner state",
+    );
+    assert_eq!(
+        program.bodies[0].value_types.get(&Var(0)),
+        Some(&int),
+        "native codegen should read per-value type answers from NativeBody.value_types instead of SpecPlan.vars",
+    );
+    assert_eq!(
+        program.callable_boundaries[0].members[0].target, executable,
+        "native codegen should read callable-member inventory from NativeProgram.callable_boundaries",
+    );
+    assert_eq!(
+        program.module.externs[0].symbol, "open",
+        "native codegen should read extern declarations from NativeProgram.module instead of a rebuilt prepared Module input",
+    );
+    assert_eq!(
+        program.bodies[0].extern_marshals.get(&extern_site),
+        Some(&ExternTy::CString),
+        "native codegen should read concrete extern wire classes from NativeBody.extern_marshals instead of AbiFacts or planner recomputation",
+    );
+    assert_eq!(
+        program.bodies[1].entry_abi,
+        NativeEntryAbi::Continuation { extra_params: 1 },
+        "native codegen should classify continuation entries from NativeBody.entry_abi instead of cont_fns or cont_extras_count side tables",
+    );
+    assert_eq!(
+        program.bodies[1].origin,
+        NativeBodyOrigin::Continuation {
+            owner: entry_fn,
+            index: 0
+        },
+        "native codegen should recover helper ownership from NativeBody.origin instead of planner reachability metadata",
+    );
+}
+
+#[test]
+fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authority() {
+    let mut types = Types::new();
+    let int = types.int();
+    let (_, _, stub_activation) = stub_activation_key(&mut types, vec![int]);
+    let executable = ExecutableKey {
+        activation: stub_activation,
+        need: ExecutableNeed::Value,
+    };
+    let entry_fn = FnId(0);
+
+    let mut module = Module::default();
+    module.externs.push(ExternDecl {
+        id: ExternId(0),
+        fz_name: "libc::puts".to_string(),
+        symbol: "puts".to_string(),
+        params: vec![ExternTy::CString],
+        variadic: false,
+        ret: ExternTy::I64,
+    });
+    module.extern_idx.insert(ExternId(0), 0);
+    module.fns.push(FnIr {
+        id: entry_fn,
+        name: "main".to_string(),
+        frame_schema_id: 0,
+        blocks: vec![Block {
+            id: BlockId(0),
+            params: vec![Var(0)],
+            stmts: Vec::new(),
+            terminator: Term::Return(Var(0)),
+        }],
+        entry: BlockId(0),
+        category: FnCategory::User,
+        owner_module: String::new(),
+        ignored_entry_params: vec![false],
+        physical_entry_params: Vec::new(),
+        physical_capabilities: Vec::new(),
+    });
+    module.fn_idx.insert(entry_fn, 0);
+
+    let marshal_site = ExternMarshalSite {
+        block: BlockId(0),
+        stmt_idx: 0,
+        arg_idx: 0,
+    };
+    let program = NativeProgram {
+        backend_revision: 7,
+        entry: entry_fn,
+        module,
+        bodies: vec![NativeBody {
+            fn_id: entry_fn,
+            origin: NativeBodyOrigin::Executable(executable),
+            entry_abi: NativeEntryAbi::Direct,
+            param_reprs: vec![AbiValueRepr::RawInt],
+            return_ty: int,
+            return_reprs: vec![AbiValueRepr::RawInt],
+            return_tuple_arity: None,
+            block_param_reprs: HashMap::new(),
+            value_types: HashMap::from([(Var(0), int)]),
+            extern_marshals: HashMap::from([(marshal_site, ExternTy::CString)]),
+            effects: EffectSummary::default(),
+        }],
+        callable_boundaries: Vec::new(),
+    };
+
+    assert_eq!(
+        program.bodies[0].extern_marshals.get(&marshal_site),
+        Some(&ExternTy::CString),
+        "compiler2-native codegen must treat NativeBody.extern_marshals as authority",
+    );
+}

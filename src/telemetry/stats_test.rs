@@ -1,15 +1,15 @@
 use super::*;
-use crate::telemetry::{ConfiguredTelemetry, Metadata, Telemetry as _};
+use crate::telemetry::{ConfiguredTelemetry, Metadata, RawSpanStop1 as _, TelemetryExt as _};
 
 #[test]
 fn counts_events_by_name() {
     let tel = ConfiguredTelemetry::new();
     let stats = StatsHandler::new();
-    tel.attach(&[], stats.handler());
+    stats.install(&tel);
 
-    tel.emit(&["fz", "lexer", "pass"]);
-    tel.emit(&["fz", "lexer", "pass"]);
-    tel.emit(&["fz", "parse", "done"]);
+    tel.event_lazy(&["fz", "lexer", "pass"], Metadata::new);
+    tel.event_lazy(&["fz", "lexer", "pass"], Metadata::new);
+    tel.event_lazy(&["fz", "parse", "done"], Metadata::new);
 
     let counts = stats.counts();
     assert_eq!(counts.get("fz.lexer.pass"), Some(&2));
@@ -18,22 +18,25 @@ fn counts_events_by_name() {
 }
 
 #[test]
-fn span_events_not_counted() {
-    use crate::telemetry::TelemetryExt;
-
+fn raw_lifecycle_counts_events_starts_stops_and_exceptions() {
     let tel = ConfiguredTelemetry::new();
     let stats = StatsHandler::new();
-    tel.attach(&[], stats.handler());
+    stats.install(&tel);
 
-    let _span = tel.span(&["fz", "test", "span"], Metadata::new());
-    drop(_span);
-
-    tel.emit(&["fz", "test", "event"]);
+    let value = 1_u64;
+    tel.raw_event1(&["fz", "test", "event"], &value);
+    tel.raw_span1_1::<u64, u64>(&["fz", "test", "span"], &value)
+        .stop1(&value);
+    tel.raw_span1_1::<u64, u64>(&["fz", "test", "failed"], &value)
+        .exception();
 
     let counts = stats.counts();
-    assert_eq!(counts.get("fz.test.event"), Some(&1), "event should be counted");
-    assert_eq!(counts.get("fz.test.span"), None, "span events must not appear");
-    assert_eq!(stats.total(), 1);
+    assert_eq!(counts.get("fz.test.event"), Some(&1));
+    assert_eq!(counts.get("fz.test.span.start"), Some(&1));
+    assert_eq!(counts.get("fz.test.span.stop"), Some(&1));
+    assert_eq!(counts.get("fz.test.failed.start"), Some(&1));
+    assert_eq!(counts.get("fz.test.failed.exception"), Some(&1));
+    assert_eq!(stats.total(), 5);
 }
 
 #[test]
@@ -47,11 +50,11 @@ fn empty_bus_has_empty_counts() {
 fn sorted_alphabetically() {
     let tel = ConfiguredTelemetry::new();
     let stats = StatsHandler::new();
-    tel.attach(&[], stats.handler());
+    stats.install(&tel);
 
-    tel.emit(&["z", "last"]);
-    tel.emit(&["a", "first"]);
-    tel.emit(&["m", "middle"]);
+    tel.event_lazy(&["z", "last"], Metadata::new);
+    tel.event_lazy(&["a", "first"], Metadata::new);
+    tel.event_lazy(&["m", "middle"], Metadata::new);
 
     let keys: Vec<_> = stats.counts().into_keys().collect();
     assert_eq!(keys, vec!["a.first", "m.middle", "z.last"]);

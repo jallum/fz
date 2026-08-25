@@ -1,20 +1,9 @@
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, UnOp};
+use crate::fz_ir::{BinOp, FnId, UnOp};
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_captured_count, closure_fn_ptr};
 use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_eq_ref};
 use fz_runtime::process::Process;
 use std::ptr::null_mut;
-
-pub(super) fn const_to_interp(c: &Const) -> AnyValue {
-    match c {
-        Const::Int(n) => AnyValue::Int(*n),
-        Const::Atom(id) => AnyValue::Atom(*id),
-        Const::Nil => interp_nil_value(),
-        Const::True => interp_bool_value(true),
-        Const::False => interp_bool_value(false),
-        Const::Float(f) => AnyValue::Float(*f),
-    }
-}
 
 pub(super) fn eval_binop(proc: *mut Process, op: BinOp, a: AnyValue, b: AnyValue) -> Result<AnyValue, String> {
     macro_rules! int_arith {
@@ -98,7 +87,7 @@ pub(super) fn unpack_closure(v: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>)
 
 pub(super) fn unpack_callable(v: AnyValue, proc: *mut Process) -> Result<(FnId, Vec<AnyValue>), String> {
     match v {
-        AnyValue::FnRef(fn_id) => Ok((fn_id, Vec::new())),
+        AnyValue::FnRef(fn_id, _) => Ok((fn_id, Vec::new())),
         other => unpack_closure(other.value(proc)?),
     }
 }

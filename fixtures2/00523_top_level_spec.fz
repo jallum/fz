@@ -1,0 +1,3 @@
+@spec add1(integer) :: integer
+fn add1(n), do: n + 1
+fn main() do dbg(add1(41)) end

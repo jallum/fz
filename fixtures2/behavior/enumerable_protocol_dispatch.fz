@@ -1,0 +1,22 @@
+#---
+# purpose: "Enumerable protocol dispatch covers List, Range, and Map receivers"
+# oracle: oracle.exs
+# defer.build: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
+# defer.interp: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
+# defer.run: fz-bv3 map+struct protocol dispatch still needs nominal struct-vs-map tests
+#---
+#
+# Exercises a closed-union `Enumerable.count/1` call whose receiver can be a
+# list, a `Range` struct, or a map. The mixed receiver forces protocol dispatch
+# to emit runtime type arms for all three impl targets.
+fn counted(value), do: Enumerable.count(value)
+
+fn main() do
+  values = [[9, 8, 7], Range.new(1, 9, 2), %{1 => :one, 2 => :two}]
+
+  result = case values do
+    [list, r, map] -> {counted(list), counted(r), counted(map)}
+    _ -> :bad_shape
+  end
+  dbg(result)
+end

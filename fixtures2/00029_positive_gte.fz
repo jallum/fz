@@ -1,0 +1,1 @@
+fn positive(n), do: n >= 0

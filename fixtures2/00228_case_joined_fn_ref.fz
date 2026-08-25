@@ -1,0 +1,10 @@
+fn add_a(x, acc), do: acc + x
+fn add_b(x, acc), do: acc + x
+
+fn main() do
+  reducer = case 0 == 0 do
+    true -> add_a
+    _ -> add_b
+  end
+  reducer.(1, 0)
+end

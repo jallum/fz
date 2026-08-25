@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::type_expr::opaque_owner_module;
 use crate::types::Types;
 use std::fmt::{self, Display, Formatter};
@@ -20,6 +21,7 @@ impl Display for OpaqueVisibilityError {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn check_brand_mint_visibility(brand_tag: &str, using_module: &str) -> Result<(), OpaqueVisibilityError> {
     let Some(owner) = opaque_owner_module(brand_tag) else {
         return Ok(());

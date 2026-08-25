@@ -1,0 +1,34 @@
+fn handle_get(ref, from, key) do
+  send(from, {:reply, ref, key})
+  server()
+end
+
+fn server() do
+  receive do
+    {:get, ref, from, key} -> handle_get(ref, from, key)
+    {:stop} -> nil
+  end
+end
+
+fn main() do
+  s = spawn(server)
+  ref_a = make_ref()
+  ref_b = make_ref()
+  me = self()
+
+  send(s, {:get, ref_a, me, 1})
+  send(s, {:get, ref_b, me, 2})
+
+  val_b = receive do
+    {:reply, ^ref_b, v} -> v
+  after
+    500 -> :timeout
+  end
+
+  val_a = receive do
+    {:reply, ^ref_a, v} -> v
+  end
+
+  dbg(val_a + val_b)
+  send(s, {:stop})
+end

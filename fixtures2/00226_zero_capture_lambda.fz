@@ -1,0 +1,6 @@
+fn apply(f, x), do: f.(x)
+fn main() do
+  f = fn (x) -> x end
+  r = apply(f, 41)
+  r
+end

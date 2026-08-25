@@ -1,0 +1,1 @@
+fn wanted(n), do: n

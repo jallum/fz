@@ -1,0 +1,5 @@
+defmodule User do
+  import Math, only: [add: 2]
+  @spec run(integer, integer) :: integer
+  fn run(x, y), do: add(x, y)
+end

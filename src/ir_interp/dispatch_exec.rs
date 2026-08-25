@@ -6,14 +6,15 @@ use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, prepared_key_name,
 };
 use crate::dispatch_matrix::{
-    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchConst,
-    DispatchNode, EdgeEvidence, GraphNodeId, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
+    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
+    EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
 use crate::fz_ir::Module;
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::ir_runtime::{
-    fz_bs_field_spec, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_matcher_map_get_ref, fz_struct_get_field_ref,
+    fz_bs_begin, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_field_ref, fz_bs_reader_init_ref, fz_bs_write_field_ref,
+    fz_matcher_map_get_ref, fz_struct_get_field_ref,
 };
 use fz_runtime::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::process::Process;
@@ -25,26 +26,43 @@ pub(super) struct DispatchExecState {
     direct_bindings: HashMap<String, AnyValue>,
 }
 
-pub(super) fn execute_dispatch(
+pub(super) fn execute_dispatch_inputs<TypeHandle, F>(
     runtime: &mut IrInterpRuntime,
     module: &Module,
-    plan: &PatternDispatchPlan,
-    root: AnyValue,
+    plan: &PatternDispatchPlan<TypeHandle>,
+    inputs: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
-) -> Option<(u32, Vec<(String, AnyValue)>)> {
-    let mut state = DispatchExecState::default();
-    execute_dispatch_node(runtime, module, plan, plan.graph.root, &[root], pinned, &mut state)
+    state: &mut DispatchExecState,
+    type_match: &mut F,
+) -> Option<(u32, Vec<(String, AnyValue)>)>
+where
+    F: FnMut(&mut IrInterpRuntime, &Module, &TypeHandle, AnyValue) -> Option<bool>,
+{
+    execute_dispatch_node(
+        runtime,
+        module,
+        plan,
+        plan.graph.root,
+        inputs,
+        pinned,
+        state,
+        type_match,
+    )
 }
 
-pub(super) fn execute_dispatch_node(
+pub(super) fn execute_dispatch_node<TypeHandle, F>(
     runtime: &mut IrInterpRuntime,
     module: &Module,
-    plan: &PatternDispatchPlan,
+    plan: &PatternDispatchPlan<TypeHandle>,
     node_id: GraphNodeId,
     inputs: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
     state: &mut DispatchExecState,
-) -> Option<(u32, Vec<(String, AnyValue)>)> {
+    type_match: &mut F,
+) -> Option<(u32, Vec<(String, AnyValue)>)>
+where
+    F: FnMut(&mut IrInterpRuntime, &Module, &TypeHandle, AnyValue) -> Option<bool>,
+{
     match plan.graph.node(node_id)? {
         DispatchNode::Fail => None,
         DispatchNode::Outcome { outcome, .. } => {
@@ -73,6 +91,7 @@ pub(super) fn execute_dispatch_node(
                 inputs,
                 pinned,
                 &mut true_state,
+                type_match,
             ) {
                 if apply_edge_evidence(
                     runtime,
@@ -83,22 +102,31 @@ pub(super) fn execute_dispatch_node(
                     pinned,
                     &mut true_state,
                 ) {
-                    execute_dispatch_node(runtime, module, plan, on_match.target, inputs, pinned, &mut true_state)
+                    execute_dispatch_node(
+                        runtime,
+                        module,
+                        plan,
+                        on_match.target,
+                        inputs,
+                        pinned,
+                        &mut true_state,
+                        type_match,
+                    )
                 } else {
-                    execute_dispatch_node(runtime, module, plan, on_miss.target, inputs, pinned, state)
+                    execute_dispatch_node(runtime, module, plan, on_miss.target, inputs, pinned, state, type_match)
                 }
             } else {
-                execute_dispatch_node(runtime, module, plan, on_miss.target, inputs, pinned, state)
+                execute_dispatch_node(runtime, module, plan, on_miss.target, inputs, pinned, state, type_match)
             }
         }
     }
 }
 
-fn apply_edge_evidence(
+fn apply_edge_evidence<TypeHandle>(
     runtime: &mut IrInterpRuntime,
     module: &Module,
-    plan: &PatternDispatchPlan,
-    evidence: &EdgeEvidence,
+    plan: &PatternDispatchPlan<TypeHandle>,
+    evidence: &EdgeEvidence<TypeHandle>,
     inputs: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
     state: &mut DispatchExecState,
@@ -144,10 +172,10 @@ fn cache_dispatch_subject(
     }
 }
 
-pub(super) fn resolve_dispatch_subject(
+pub(super) fn resolve_dispatch_subject<TypeHandle>(
     proc: *mut Process,
     module: &Module,
-    plan: &PatternDispatchPlan,
+    plan: &PatternDispatchPlan<TypeHandle>,
     subject: SubjectId,
     inputs: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
@@ -194,8 +222,8 @@ pub(super) fn resolve_dispatch_subject(
     cache_dispatch_subject(subject, value, state)
 }
 
-fn apply_direct_bitstring_bindings(
-    plan: &PatternDispatchPlan,
+fn apply_direct_bitstring_bindings<TypeHandle>(
+    plan: &PatternDispatchPlan<TypeHandle>,
     field_subject: SubjectId,
     value: AnyValue,
     state: &mut DispatchExecState,
@@ -208,21 +236,30 @@ fn apply_direct_bitstring_bindings(
     }
 }
 
-fn dispatch_region_hit(
+fn dispatch_region_hit<TypeHandle, F>(
     runtime: &mut IrInterpRuntime,
     module: &Module,
-    plan: &PatternDispatchPlan,
+    plan: &PatternDispatchPlan<TypeHandle>,
     subject: SubjectId,
-    region: &Region,
-    evidence: &EdgeEvidence,
+    region: &Region<TypeHandle>,
+    evidence: &EdgeEvidence<TypeHandle>,
     inputs: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
     state: &mut DispatchExecState,
-) -> bool {
+    type_match: &mut F,
+) -> bool
+where
+    F: FnMut(&mut IrInterpRuntime, &Module, &TypeHandle, AnyValue) -> Option<bool>,
+{
     match region {
-        Region::Any => true,
-        Region::Never => false,
-        Region::Type(_) => true,
+        Region::Type(ty) => {
+            let Some(value) =
+                resolve_dispatch_subject(runtime.cur_proc(), module, plan, subject, inputs, pinned, state)
+            else {
+                return false;
+            };
+            type_match(runtime, module, ty, value).unwrap_or(false)
+        }
         Region::Equal(ComparisonValue::Const(value)) => {
             resolve_dispatch_subject(runtime.cur_proc(), module, plan, subject, inputs, pinned, state)
                 .is_some_and(|v| dispatch_const_eq(runtime.cur_proc(), module, v, value))
@@ -289,35 +326,39 @@ fn dispatch_region_hit(
         Region::Guard(guard) => plan
             .guards
             .get(guard.0 as usize)
-            .and_then(|expr| eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state))
+            .and_then(|expr| eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state, type_match))
             .is_some_and(|value| !(value.is_false() || value.is_nil())),
     }
 }
 
-pub(super) fn eval_dispatch_guard(
+pub(super) fn eval_dispatch_guard<TypeHandle, F>(
     runtime: &mut IrInterpRuntime,
     module: &Module,
-    plan: &PatternDispatchPlan,
-    expr: &PatternGuardExpr,
+    plan: &PatternDispatchPlan<TypeHandle>,
+    expr: &PatternGuardExpr<TypeHandle>,
     inputs: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
     state: &mut DispatchExecState,
-) -> Option<AnyValue> {
+    type_match: &mut F,
+) -> Option<AnyValue>
+where
+    F: FnMut(&mut IrInterpRuntime, &Module, &TypeHandle, AnyValue) -> Option<bool>,
+{
     Some(match expr {
-        PatternGuardExpr::Const(c) => dispatch_const_to_value(module, c)?,
+        PatternGuardExpr::Const(c) => dispatch_const_to_value(runtime.cur_proc(), module, c)?,
         PatternGuardExpr::Subject(subject) => {
             resolve_dispatch_subject(runtime.cur_proc(), module, plan, *subject, inputs, pinned, state)?
         }
         PatternGuardExpr::Pinned(pinned_id) => load_pinned_dispatch_value(plan, *pinned_id, inputs, pinned)?,
         PatternGuardExpr::Unary { op, expr } => {
-            let v = eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state)?;
+            let v = eval_dispatch_guard(runtime, module, plan, expr, inputs, pinned, state, type_match)?;
             match op {
                 PatternGuardUnaryOp::Not => interp_bool_value(v.is_false() || v.is_nil()),
                 PatternGuardUnaryOp::Neg => AnyValue::Int(-guard_int(v)?),
             }
         }
         PatternGuardExpr::Binary { op, lhs, rhs } => {
-            let l = eval_dispatch_guard(runtime, module, plan, lhs, inputs, pinned, state)?;
+            let l = eval_dispatch_guard(runtime, module, plan, lhs, inputs, pinned, state, type_match)?;
             let short = match op {
                 PatternGuardBinOp::And if l.is_false() || l.is_nil() => Some(interp_bool_value(false)),
                 PatternGuardBinOp::Or if !(l.is_false() || l.is_nil()) => Some(interp_bool_value(true)),
@@ -326,7 +367,7 @@ pub(super) fn eval_dispatch_guard(
             if let Some(v) = short {
                 return Some(v);
             }
-            let r = eval_dispatch_guard(runtime, module, plan, rhs, inputs, pinned, state)?;
+            let r = eval_dispatch_guard(runtime, module, plan, rhs, inputs, pinned, state, type_match)?;
             match op {
                 PatternGuardBinOp::Add => AnyValue::Int(guard_int(l)? + guard_int(r)?),
                 PatternGuardBinOp::Sub => AnyValue::Int(guard_int(l)? - guard_int(r)?),
@@ -348,17 +389,17 @@ pub(super) fn eval_dispatch_guard(
         } => {
             let values = dispatch_inputs
                 .iter()
-                .map(|input| eval_dispatch_guard(runtime, module, plan, input, inputs, pinned, state))
+                .map(|input| eval_dispatch_guard(runtime, module, plan, input, inputs, pinned, state, type_match))
                 .collect::<Option<Vec<_>>>()?;
             let mut dispatch_state = DispatchExecState::default();
-            let (body_id, _) = execute_dispatch_node(
+            let (body_id, _) = execute_dispatch_inputs(
                 runtime,
                 module,
                 &dispatch.plan,
-                dispatch.plan.graph.root,
                 &values,
                 pinned,
                 &mut dispatch_state,
+                type_match,
             )?;
             let body = dispatch.bodies.get(body_id as usize)?;
             eval_dispatch_guard(
@@ -369,57 +410,81 @@ pub(super) fn eval_dispatch_guard(
                 &values,
                 pinned,
                 &mut dispatch_state,
+                type_match,
             )?
         }
     })
 }
 
-fn load_pinned_dispatch_value(
-    plan: &PatternDispatchPlan,
+fn load_pinned_dispatch_value<TypeHandle>(
+    plan: &PatternDispatchPlan<TypeHandle>,
     pinned: PinnedValueId,
     inputs: &[AnyValue],
     pinned_values: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
     let p = plan.pinned.get(pinned.0 as usize)?;
-    if let Some(var) = p.var {
-        return inputs.get(var.0 as usize).copied();
+    if let Some(input) = p.input {
+        return inputs.get(input as usize).copied();
     }
     pinned_values.get(&p.name).copied()
 }
 
-pub(super) fn dispatch_const_to_value(module: &Module, c: &DispatchConst) -> Option<AnyValue> {
-    match c {
-        DispatchConst::Int(n) => Some(AnyValue::Int(*n)),
-        DispatchConst::FloatBits(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
-        DispatchConst::AtomName(name) => module
+pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &GroundValue) -> Option<AnyValue> {
+    use crate::ground_value::DispatchShape;
+    match c
+        .as_dispatch_shape()
+        .expect("dispatch_const_to_value only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(n) => Some(AnyValue::Int(n)),
+        DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
+        DispatchShape::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .map(|id| AnyValue::Atom(id as u32)),
-        DispatchConst::Bool(value) => Some(interp_bool_value(*value)),
-        DispatchConst::Nil => Some(interp_nil_value()),
-        DispatchConst::EmptyList => Some(interp_empty_list_value()),
-        DispatchConst::Utf8Binary(_) => None,
+        DispatchShape::Bool(value) => Some(interp_bool_value(value)),
+        DispatchShape::Nil => Some(interp_nil_value()),
+        DispatchShape::Utf8Binary(bytes) => utf8_binary_const_value(proc, bytes),
     }
 }
 
-pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: &DispatchConst) -> bool {
-    match value {
-        DispatchConst::Int(n) => val.as_i64() == Some(*n),
-        DispatchConst::FloatBits(bits) => {
-            matches!(val, AnyValue::Float(f) if f.to_bits() == *bits)
+fn utf8_binary_const_value(proc: *mut Process, bytes: &[u8]) -> Option<AnyValue> {
+    fz_bs_begin(proc);
+    for byte in bytes {
+        fz_bs_write_field_ref(
+            proc,
+            AnyValue::Int(i64::from(*byte)).as_ref_word(proc).ok()?,
+            dispatch_bit_type_tag(BitstringFieldKind::Integer),
+            1,
+            8,
+            1,
+            dispatch_endian_tag(BitstringEndian::Big),
+            0,
+        );
+    }
+    interp_value_from_ref_word(fz_bs_finalize(proc), "dispatch utf8 guard literal").ok()
+}
+
+pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: &GroundValue) -> bool {
+    use crate::ground_value::DispatchShape;
+    match value
+        .as_dispatch_shape()
+        .expect("dispatch_const_eq only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(n) => val.as_i64() == Some(n),
+        DispatchShape::Float(bits) => {
+            matches!(val, AnyValue::Float(f) if f.to_bits() == bits)
         }
-        DispatchConst::AtomName(name) => module
+        DispatchShape::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .is_some_and(|id| val.is_atom_id(id as u32)),
-        DispatchConst::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
-        DispatchConst::Bool(false) => val.is_false(),
-        DispatchConst::Nil => val.is_nil(),
-        DispatchConst::EmptyList => val.is_empty_list(),
-        DispatchConst::Utf8Binary(bytes) => match val {
-            AnyValue::FnRef(_) => false,
+        DispatchShape::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
+        DispatchShape::Bool(false) => val.is_false(),
+        DispatchShape::Nil => val.is_nil(),
+        DispatchShape::Utf8Binary(bytes) => match val {
+            AnyValue::FnRef(..) => false,
             other => other.value(proc).ok().is_some_and(|val| {
                 val.heap_object_word().and_then(bitstring_like_ptr).is_some_and(|p| {
                     if !unsafe { is_bitstring_like(p) } {
@@ -431,19 +496,19 @@ pub(super) fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyVal
                     }
                     let ptr = unsafe { bitstring_byte_ptr(p) };
                     let slice = unsafe { from_raw_parts(ptr, bytes.len()) };
-                    slice == bytes.as_slice()
+                    slice == bytes
                 })
             }),
         },
     }
 }
 
-pub(super) fn dispatch_map_lookup(
+pub(super) fn dispatch_map_lookup<TypeHandle>(
     proc: *mut Process,
-    plan: &PatternDispatchPlan,
+    plan: &PatternDispatchPlan<TypeHandle>,
     module: &Module,
     map: AnyValue,
-    key: &DispatchConst,
+    key: &GroundValue,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
     if !map.value(proc).ok().is_some_and(is_map_value) {
@@ -464,34 +529,37 @@ pub(super) fn dispatch_map_lookup(
     }
 }
 
-pub(super) fn dispatch_const_key_value(
-    plan: &PatternDispatchPlan,
+pub(super) fn dispatch_const_key_value<TypeHandle>(
+    plan: &PatternDispatchPlan<TypeHandle>,
     module: &Module,
-    key: &DispatchConst,
+    key: &GroundValue,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
-    match key {
-        DispatchConst::Int(n) => Some(AnyValue::Int(*n)),
-        DispatchConst::FloatBits(bits) => Some(AnyValue::Float(f64::from_bits(*bits))),
-        DispatchConst::Bool(value) => Some(interp_bool_value(*value)),
-        DispatchConst::Nil => Some(interp_nil_value()),
-        DispatchConst::AtomName(name) => module
+    use crate::ground_value::DispatchShape;
+    match key
+        .as_dispatch_shape()
+        .expect("dispatch_const_key_value only ever sees a dispatch-matrix const")
+    {
+        DispatchShape::Int(n) => Some(AnyValue::Int(n)),
+        DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
+        DispatchShape::Bool(value) => Some(interp_bool_value(value)),
+        DispatchShape::Nil => Some(interp_nil_value()),
+        DispatchShape::Atom(name) => module
             .atom_names
             .iter()
             .position(|n| n == name)
             .map(|id| AnyValue::Atom(id as u32)),
-        DispatchConst::Utf8Binary(_) => plan
+        DispatchShape::Utf8Binary(_) => plan
             .prepared_keys
             .iter()
             .position(|prepared| prepared == key)
             .and_then(|index| pinned.get(&prepared_key_name(index)).copied()),
-        DispatchConst::EmptyList => None,
     }
 }
 
-pub(super) fn dispatch_read_bitstring(
+pub(super) fn dispatch_read_bitstring<TypeHandle>(
     proc: *mut Process,
-    plan: &PatternDispatchPlan,
+    plan: &PatternDispatchPlan<TypeHandle>,
     subject: SubjectId,
     value: RuntimeAnyValue,
     shape: &BitstringShape,
@@ -562,7 +630,11 @@ pub(super) fn dispatch_read_bitstring(
     bit_len.as_i64() == pos.as_i64()
 }
 
-fn bitstring_field_subject(plan: &PatternDispatchPlan, source: SubjectId, index: u32) -> Option<SubjectId> {
+fn bitstring_field_subject<TypeHandle>(
+    plan: &PatternDispatchPlan<TypeHandle>,
+    source: SubjectId,
+    index: u32,
+) -> Option<SubjectId> {
     plan.matrix.subjects.iter().find_map(|subject| match &subject.source {
         SubjectSource::Projection(projection)
             if projection.source == source && projection.kind == ProjectionKind::BitstringField(index) =>

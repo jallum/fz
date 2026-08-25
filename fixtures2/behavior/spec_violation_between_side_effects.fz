@@ -1,0 +1,18 @@
+#---
+# purpose: "an ill-typed expression between real side effects is rejected at compile time, so no partial output ever escapes"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+#
+# # spec_violation_between_side_effects
+#
+# `dbg(1)` would print before `:bad + 1` faulted at runtime, and native
+# drivers used to swallow that fault after the partial output escaped. The
+# Kernel arithmetic `@spec`s reject the middle expression at compile time on
+# every path, so neither `1` nor `2` is ever printed and the program never
+# runs.
+fn main() do
+  dbg(1)
+  dbg(:bad + 1)
+  dbg(2)
+end

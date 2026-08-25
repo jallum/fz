@@ -1,0 +1,12 @@
+fn descending(left, right), do: left >= right
+fn by_key(left, right) do
+  {left_key, _left_tag} = left
+  {right_key, _right_tag} = right
+  left_key <= right_key
+end
+
+fn main() do
+  dbg(Enum.sort([3, 1, 2, 1, 5, 4]))
+  dbg(Enum.sort([3, 1, 2, 1, 5, 4], descending))
+  dbg(Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key))
+end

@@ -1,0 +1,4 @@
+fn parse(<<len, payload::binary-size(len), rest::binary>>) do
+  {len, payload, rest}
+end
+fn main(), do: dbg(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))

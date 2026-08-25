@@ -1,0 +1,6 @@
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  fn run(), do: valid?(<<104, 105>>)
+end
+
+fn main(), do: User.run()

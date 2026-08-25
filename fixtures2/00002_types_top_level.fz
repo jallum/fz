@@ -1,0 +1,4 @@
+@type tkf_alpha :: integer
+@type tkf_beta(a) :: {a, a}
+
+fn main(), do: 1

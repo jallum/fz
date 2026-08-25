@@ -1,7 +1,7 @@
 //! Per-task execution context.
 //!
 //! `ExecCtx` is hung off every `Process` (via `Process.ctx`) so that the
-//! per-task FFI fns (BIFs) reach scheduler services, the telemetry sink, and
+//! per-task FFI fns (BIFs) reach scheduler services, the output context, and
 //! the IR module through an **explicit pointer** rather than thread-local
 //! singletons. Whichever scheduler owns the `Process` — the JIT `Runtime`, the
 //! interpreter, or the AOT shim — builds one `ExecCtx` and points its
@@ -9,7 +9,7 @@
 //!
 //! The runtime crate cannot name the binary's `Runtime`, `Telemetry`, or
 //! `fz_ir::Module` types (the staticlib does not link against the codegen
-//! crate — see `scheduler_hooks`), so the scheduler handle, telemetry sink,
+//! crate — see `scheduler_hooks`), so the scheduler handle, output context,
 //! and module are type-erased here and re-narrowed by the binary-side
 //! callbacks, the same bridging the hook fn-pointers already do.
 //!
@@ -35,9 +35,8 @@ pub struct ExecCtx {
     /// Type-erased scheduler handle — `*mut Runtime<'_>` on the JIT path, the
     /// AOT scheduler state on the AOT path. The callbacks below re-narrow it.
     pub scheduler: *mut (),
-    /// Type-erased telemetry sink (`*const dyn Telemetry` in the binary) that
-    /// the `output` callback routes `dbg`/print lines to.
-    pub tel: *const (),
+    /// Type-erased scheduler-owned context that receives `dbg`/print bytes.
+    pub output_context: *const (),
     /// Type-erased `*const fz_ir::Module` for `make_resource` dtor resolution.
     pub module: *const (),
 
@@ -56,7 +55,7 @@ impl ExecCtx {
     pub const fn empty() -> Self {
         Self {
             scheduler: null_mut(),
-            tel: null(),
+            output_context: null(),
             module: null(),
             spawn: None,
             spawn_opt: None,

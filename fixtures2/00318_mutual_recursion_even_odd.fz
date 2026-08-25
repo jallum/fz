@@ -1,0 +1,5 @@
+fn even(0), do: true
+fn even(n), do: odd(n - 1)
+fn odd(0), do: false
+fn odd(n), do: even(n - 1)
+fn main(), do: even(10)

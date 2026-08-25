@@ -1,0 +1,8 @@
+fn pick(x, fun) do
+  next = cond do
+    x == 0 -> fun.(x)
+    true -> x
+  end
+  [next]
+end
+fn main() do dbg(pick(0, fn (x) -> x + 1 end)) end

@@ -1,0 +1,4 @@
+fn main() do
+  dbg(4.0)
+  dbg(2.5)
+end

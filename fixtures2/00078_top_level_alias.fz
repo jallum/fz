@@ -1,0 +1,7 @@
+defmodule Outer do
+  defmodule Inner do
+    fn value(), do: 42
+  end
+end
+alias Outer.Inner, as: I
+fn main(), do: I.value()

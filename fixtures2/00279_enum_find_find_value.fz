@@ -1,0 +1,5 @@
+fn main() do
+  xs = [1, 2, 3, 4]
+  dbg(Enum.find(xs, fn (x) -> x > 2 end))
+  dbg(Enum.find_value(xs, fn (x) -> if (x % 2) == 0, do: {:even, x}, else: false end))
+end

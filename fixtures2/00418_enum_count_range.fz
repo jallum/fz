@@ -1,0 +1,4 @@
+fn main() do
+  dbg(Enum.take([1, 2, 3, 4, 5], 3))
+  dbg(Enum.count(1..5))
+end
