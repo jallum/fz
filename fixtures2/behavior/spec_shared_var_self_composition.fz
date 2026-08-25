@@ -1,0 +1,32 @@
+#---
+# purpose: "A spec variable shared across two parameters keeps what one position pins when the other observes []"
+# oracle: oracle.exs
+#---
+#
+# Regression target for fz-f98.16. `List.reverse/2` is spec'd
+# `([a], [a]) :: [a]`, so `List.reverse(xs, [])` observes `[int]` at the first
+# parameter and the empty list at the second. `[]` is a member of every list
+# type, so it pins nothing about `a` -- but it must not veto what the first
+# parameter proved. When it did, `[a]` collapsed to `[]`, the caller's good
+# `[int]` argument was narrowed to the empty list, and a second call consuming
+# the first call's result specialized to the base clause and returned its
+# initial accumulator.
+#
+# The user-defined `My.rev/2` is the same shape written out, so the fixture
+# fails whether or not the runtime library happens to spell reverse this way.
+defmodule My do
+  @spec rev([a], [a]) :: [a]
+  fn rev([], tail), do: tail
+  fn rev([h | t], acc), do: rev(t, [h | acc])
+end
+
+fn main() do
+  acc = List.reverse([1, 2, 3], [])
+  dbg(acc)
+  dbg(List.reverse(acc, []))
+  dbg(List.reverse(List.reverse([4, 5, 6], []), []))
+
+  mine = My.rev([1, 2, 3], [])
+  dbg(mine)
+  dbg(My.rev(mine, []))
+end
