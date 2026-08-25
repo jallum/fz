@@ -18,7 +18,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Generic Enum HOF specialized at 2+ distinct closures leaves a backend value unbound (all backends: run/interp/build)",
+  "title": "Generic Enum HOF leaves a backend value unbound: reusable-cons exit counters + enum_tier0",
   "type": "bug",
-  "updated_at": "2026-08-25T01:02:53Z"
+  "updated_at": "2026-08-25T01:02:58Z"
 }
