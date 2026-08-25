@@ -125,6 +125,7 @@ pub struct World {
     guard_dispatches: GuardDispatchMap,
     entry_dispatches: EntryDispatchMap,
     recursive: RecursiveMap,
+    calls_closures: RecursiveMap,
     dispatch_masks: DispatchMaskMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
@@ -235,6 +236,7 @@ impl World {
             guard_dispatches: GuardDispatchMap::new(),
             entry_dispatches: EntryDispatchMap::new(),
             recursive: RecursiveMap::new(),
+            calls_closures: RecursiveMap::new(),
             dispatch_masks: DispatchMaskMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
@@ -1100,6 +1102,18 @@ impl World {
         self.recursive.define(function, recursive)
     }
 
+    /// Body-shape keying fact, co-produced with `Recursive` by
+    /// `Job::DeriveRecursive` under the same `FactKey::Recursive` arm: does
+    /// this function's body CONSUME callable identity -- call through a
+    /// callable, or capture into a lambda it constructs? Such a body's
+    /// activations key on precise closure brands (direct dispatch, and
+    /// correlation between construction sites and the closures they make); a
+    /// body that only transports callables does not, and its key may treat
+    /// brands as freight.
+    pub(crate) fn define_calls_closures(&mut self, function: FunctionId, calls_closures: bool) -> bool {
+        self.calls_closures.define(function, calls_closures)
+    }
+
     pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<DispatchDemand>) -> bool {
         self.dispatch_masks.define(function, mask)
     }
@@ -1743,7 +1757,22 @@ impl World {
         // to distinct `[a0,a1]` and never collapse to the phantom `[a0,a0]`.
         let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
         if !recursive {
-            return key;
+            // A non-recursive body that never calls through a callable only
+            // TRANSPORTS the closures that reach it, so closure identity is
+            // freight, not meaning: erase the literals from non-dispatch
+            // slots and every same-surface brand shares one activation
+            // (fz-6gb). A body that does call through a callable consumes
+            // that identity -- its specializations buy direct dispatch -- so
+            // it keeps the precise key. Evidence is precise either way.
+            let calls_closures = *self
+                .calls_closures
+                .get(function)
+                .expect("activation keying should wait for recursive facts before activation");
+            if calls_closures {
+                return key;
+            }
+            let arrow = self.types.erase_transported_closure_identities(key.arrow, &mask);
+            return super::identity::ActivationKey { arrow, ..key };
         }
         // Bounded specialization (fz-y6w): the dispatch KEY is a whole-arrow
         // convergence collapse of that evidence — recursive non-dispatch slots

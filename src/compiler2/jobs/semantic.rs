@@ -1087,28 +1087,24 @@ fn rebuild_coalesced_call_emission(
             SelectedCallee::Function(function) => {
                 // `surface_inputs` is the declared call surface only -- a
                 // closure target's real activation carries a leading
-                // capture-environment slot that `surface_inputs` never
+                // capture-environment prefix that `surface_inputs` never
                 // names. Rebuilding from `surface_inputs` alone silently
-                // drops that capture slot and hands `call_emission_for_function`
+                // drops that prefix and hands `call_emission_for_function`
                 // an under-arity input vector, which mints a truncated
-                // activation. The kept activation's own `.inputs()` still
-                // carries the true capture prefix, so splice today's
-                // widened surface back onto it instead of substituting
-                // for it.
-                let captures_len = target
-                    .activation
-                    .as_ref()
-                    .map(|activation| {
-                        activation
-                            .input_len(world.types())
-                            .saturating_sub(target.surface_inputs.len())
-                    })
-                    .unwrap_or(0);
-                let mut input_types = target
-                    .activation
-                    .as_ref()
-                    .map(|activation| activation.inputs(world.types()))
-                    .unwrap_or_default();
+                // activation. The prefix is EVIDENCE, and the target already
+                // recorded its full evidence vector in `activation_inputs` --
+                // the kept activation's KEY is not a substitute, because a
+                // convergence-collapsed key names a capture slot by an
+                // address var, and rebuilding from the key would publish
+                // key-language vars as activation-input evidence (fz-6gb).
+                // Every `Function` target records its evidence vector when it
+                // is built; a target without one has nothing to rebuild FROM,
+                // so keep the settled emission rather than minting an
+                // under-arity activation from surface inputs alone.
+                let Some(mut input_types) = target.activation_inputs.clone() else {
+                    return Ok(call);
+                };
+                let captures_len = input_types.len().saturating_sub(target.surface_inputs.len());
                 input_types.truncate(captures_len);
                 input_types.extend(target.surface_inputs.iter().copied());
                 let Some(rebuilt) = call_emission_for_function(

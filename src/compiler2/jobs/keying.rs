@@ -39,7 +39,7 @@ pub(super) fn derive_recursive(
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
-        let changed = world.define_recursive(function, false);
+        let changed = world.define_recursive(function, false) | world.define_calls_closures(function, false);
         return Ok(JobEffects {
             outputs: vec![FactKey::Recursive(function)],
             changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
@@ -64,13 +64,55 @@ pub(super) fn derive_recursive(
     }
 
     let recursive = reaches_self(function, &graph);
-    let changed = world.define_recursive(function, recursive);
+    // Co-produced under the same `Recursive` fact arm: consumers gated on that
+    // fact (activation keying) see both values or neither, and a move in
+    // EITHER value must publish as a change -- a body edit can flip
+    // identity-consumption without touching recursion, and keying dependents
+    // re-derive off this one fact.
+    let changed = world.define_recursive(function, recursive)
+        | world.define_calls_closures(function, body_consumes_callable_identity(world, function));
     Ok(JobEffects {
         reads: current_uses(reads),
         outputs: vec![FactKey::Recursive(function)],
         changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
         ..JobEffects::default()
     })
+}
+
+/// Does this function's body CONSUME callable identity -- call through a
+/// callable value, or capture values into a lambda it constructs? A call
+/// consumes identity directly (the specialization buys direct dispatch); a
+/// construction bakes the captured value's identity into a new closure whose
+/// downstream consumers depend on the correlation, so the constructor must
+/// stay split per identity too. A body that does neither only transports
+/// callables, and brands are freight to it. `ClosureCall` only occurs as an
+/// entry tail and `Lambda` only as a step, so scanning the flat entry list
+/// covers every dispatch arm, branch, and receive clause.
+fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool {
+    // A closure's captures ARE identity: whatever a capturing lambda does with
+    // a capture -- call it, or pass it to something that does -- its consumers
+    // depend on the correlation between the construction site and the captured
+    // values, and that correlation is transitive through any chain of
+    // capture-holding lambdas. So a function with capture params is
+    // identity-laden by definition, without needing a flow analysis to prove
+    // where the captures end up.
+    if world
+        .function_source(function)
+        .is_some_and(|source| !source.capture_params.is_empty())
+    {
+        return true;
+    }
+    match world.lowered_body(function) {
+        LoweredBody::Extern { .. } => false,
+        LoweredBody::Clauses { clauses, entries, .. } => {
+            let step_constructs = |step: &LoweredStep| matches!(step, LoweredStep::Lambda { .. });
+            entries.iter().any(|entry| {
+                matches!(entry.tail, LoweredTail::ClosureCall { .. }) || entry.steps.iter().any(step_constructs)
+            }) || clauses
+                .iter()
+                .any(|clause| clause.projections.iter().any(step_constructs))
+        }
+    }
 }
 
 /// Derives which function inputs participate in entry dispatch.

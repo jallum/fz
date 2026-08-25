@@ -691,6 +691,32 @@ impl Types {
         self.arrow(&collapsed, ret)
     }
 
+    /// The transported-callable key collapse (fz-6gb): erase closure LITERALS
+    /// from the arrow's non-dispatch slots, leaving everything else -- data
+    /// types, callable surfaces, dispatch-relevant slots -- exactly as the
+    /// evidence stated it. Two closures with the same surface then key one
+    /// activation of a function that only carries them, while a slot the
+    /// function dispatches on keeps brand identity. Unlike
+    /// [`convergence_collapse`], no slot becomes an address var: this erasure
+    /// is value-language throughout, so nothing key-shaped can leak into
+    /// evidence.
+    pub(crate) fn erase_transported_closure_identities(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
+        let Some(sig) = self.descr(&arrow).pure_arrow() else {
+            return arrow;
+        };
+        let params = sig.args.clone();
+        let ret = sig.ret;
+        let erased = params
+            .iter()
+            .enumerate()
+            .map(|(slot, param)| match mask.get(slot).unwrap_or(&DispatchDemand::Whole) {
+                DispatchDemand::Ignore => self.erase_closure_identity(param),
+                _ => *param,
+            })
+            .collect::<Vec<_>>();
+        self.arrow(&erased, ret)
+    }
+
     pub(crate) fn convergence_collapse_evidence_inputs(&mut self, inputs: &[Ty], mask: &[DispatchDemand]) -> Vec<Ty> {
         inputs
             .iter()
