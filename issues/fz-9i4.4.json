@@ -7,9 +7,15 @@
   "id": "fz-9i4.4",
   "labels": [],
   "parent": "fz-k22",
+  "comments": [
+    {
+      "text": "VERIFIED DONE at main 417c5b0b5.\n\nEvery deletion this ticket names has happened:\n\n    NativeClosureTargetSurface            0 occurrences in src/\n    NativeCodegenSurface.closure_targets  field does not exist (surface.rs:29-43)\n    build_codegen_closure_targets         survives only inside a drive_test comment\n                                          describing its 'deleted consistency loop'\n\nThe remaining `static_closure_targets` in native_codegen/driver.rs and\nir_codegen/ is a DIFFERENT mechanism -- AOT static closure registration -- not the\nretired per-FnId closure-target model this ticket is about. Do not delete it on\nthe strength of a name match.\n\nClosing.",
+      "timestamp": "2026-08-25T01:13:28Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Complete the callable-boundary cutover by deleting the retired native closure-target model",
   "type": "bug",
-  "updated_at": "2026-07-15T14:38:46Z"
+  "updated_at": "2026-08-25T01:13:28Z"
 }
