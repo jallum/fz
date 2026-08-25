@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-25T01:00:09Z",
   "created": "2026-08-25T00:00:08Z",
   "description": "FIXED at main 417c5b0b5 (PR #103). Both defects closed.\n\nSurfaced when fz-f98.23 cleared the last matrix red and `cargo test --tests`\nreached the `fz2_cli` target for the first time in the fz-go4.1..fz-f98.24\nstack's history -- cargo's fail-fast had stopped before it on every prior run.\nBoth defects were reachable only under coverage, which is how CI runs the suite.\n\n## 1. The clean-runtime rebuild trusted an inherited $CARGO\n\n`aot_link::locate_runtime_staticlib` did\n\n    let cargo = env::var_os(\"CARGO\").unwrap_or_else(|| OsString::from(\"cargo\"));\n\n`fz2 build` is reached from an arbitrary environment, so `$CARGO` may be\ninherited garbage. `build_stays_on_compiler2_telemetry_and_links_a_native_binary`\nsets `CARGO=/definitely/not/cargo` precisely to prove `fz2 build` does not depend\non it, and the whole command died with ENOENT. That rebuild is the only place\n`fz2 build` shells out, and the only path taken under coverage.\n\nFIX: `cargo_for_runtime_build` honors `$CARGO` only when it names a file that\nexists, otherwise resolves `cargo` from PATH -- the same refusal-to-trust the\nrebuild already applies to inherited coverage settings. It takes the value as an\nargument rather than reading the environment, so it is unit-testable without\nmutating process state.\n\n## 2. The CLI test asserted the developer's environment\n\nIt required `\"source\":\"embedded\"`, but under coverage `runtime_archive_plan`\ndeliberately rebuilds a clean archive (the embedded one is instrumented and\ncannot be linked) and reports `\"source\":\"isolated_coverage_build\"`. The expected\nsource now comes from the environment and is exact in BOTH directions, so a\nbuild that silently rebuilds outside coverage is still a failure.\n\n## Verified\n\n    cargo test --test fz2_cli                      20/0\n    CARGO_LLVM_COV=1 cargo test --test fz2_cli     20/0\n\n## Successor\n\nThe fix introduced a duplicated coverage predicate and exposed a gate gap; both\nare fz-f98.25.",
   "id": "fz-f98.24",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz2 build trusted an inherited $CARGO, and its CLI test asserted the developer's environment",
   "type": "bug",
   "updated_at": "2026-08-25T01:00:09Z"
