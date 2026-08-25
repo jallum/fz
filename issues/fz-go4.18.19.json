@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-go4.18.21"
-  ],
+  "blocks": [],
   "closed_at": "2026-07-02T13:25:09Z",
   "created": "2026-07-02T01:11:03Z",
   "description": "fz-go4.18.12 finding 3 (feedstock item 3 root-caused; affects main + every macro function on every fixture, not macro-specific). Two independent requesters (SeedRoot and DeriveRecursive/DeriveDispatchMask) enqueue the same producer as a wait-restart follow_up; when the second enqueue lands AFTER the producer already concluded, the scheduler runs a full byte-identical re-execution (second fire concludes changed:[] with identical lowered_body/entry_dispatch) instead of observing the fact already exists. FIX: suppress the enqueue (or no-op the run) when the awaited fact already exists / the producer already concluded unchanged. Locus: the jobs' JobEffects wait_on_current follow-ups + Scheduler::enqueue dedup. ACCEPTANCE: DeriveDispatchMask/DeriveRecursive/LowerFunction/PlanEntryDispatch/BuildMacroExecutable fire 1x per key on the corpus (any re-fire justified by a real input revision); suite green 3x.",
