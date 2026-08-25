@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:39:16Z",
+  "description": "`.coverage-threshold` currently reads `84`. It was lowered from `87` in\n`d5438ba08` (PR #80, 2026-08-24) as construction scaffolding, and\n`.github/workflows/ci.yml:45-47` says so in as many words:\n\n    # .coverage-threshold is temporarily lowered (84) while fz-9i4.7\n    # defers the broad red compiler2 fixtures; fz-9i4.7.8 restores it to\n    # 87 as those fixtures re-enable. Keep it a bare number -- it is cat'd.\n\nThe condition that justified the slack is gone. fz-9i4.7 is CLOSED, and the\nexplicit path deferrals are down to 9 `defer.\u003clane\u003e` lines across three fixtures\n-- enum_tier0 (fz-kdt.1, fz-kdt.3), fz_f98_map_reduce (fz-kdt.1),\nenumerable_protocol_dispatch (fz-bv3) -- each naming a live blocker.\n\n## Work\n\nMEASURE FIRST, then set the floor to the strongest value the current line\nuniverse actually supports. The intent is 87. Do not change fixtures, deferrals,\nor production code in this ticket, and do not rebaseline downward.\n\n## Correction to the previous description\n\nIt cited `939fdacdf` reporting 87,072/97,750 = 89.0762% covered with\n`--fail-under-lines 87` passing. That commit is NOT an ancestor of main\n(`git merge-base --is-ancestor 939fdacdf HEAD` fails), and it predates the\nlowering, so it is not evidence about the current tree. It also said \"11 explicit\npath deferrals across four fixtures\"; it is 9 across three. Take a fresh\nmeasurement rather than trusting either number.\n\n## Checks\n\n- `cat .coverage-threshold` reads 87.\n- `cargo llvm-cov --all-features --workspace --fail-under-lines \"$(cat .coverage-threshold)\"`\n  passes on a fresh run.\n- The temporary comment in .github/workflows/ci.yml naming this ticket is deleted\n  in the same commit -- the scaffolding note goes when the scaffolding does.",
+  "id": "fz-kdt.23",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Restore the 87 percent coverage floor: .coverage-threshold is still the temporary 84 lowered in PR 80",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:39:16Z"
+}
