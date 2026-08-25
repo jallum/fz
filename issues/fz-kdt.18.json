@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-25T01:37:33Z",
+  "description": "Documentation must be provable fact. The `Certain` variant's doc comment at\nsrc/compiler2/world.rs:2143-2146 says:\n\n    /// A plain `fn`/`fnp`/`defmacro`/`defmodule`/`defprotocol`/`defimpl` head\n    /// names the wanted name+arity statically: scoping this code is\n    /// guaranteed to publish the function (or the reference is to a form\n    /// scoping cannot change its mind about).\n\n`code_surface_function_match` (world.rs:2149-2182) does the OPPOSITE for the last\nthree. `ScopeForm::Module`, `ScopeForm::Protocol` and `ScopeForm::ProtocolImpl`\nsit in the catch-all arm at world.rs:2170-2175 that returns\n`FunctionSurfaceMatch::None`, alongside Alias/Import/Require/Struct.\n\nThat is CORRECT -- none of those forms defines a GLOBAL function -- so the fix is\nthe COMMENT, not the code.\n\nThe only sources of `Certain` are:\n\n    world.rs:2155-2159   ScopeForm::Function with matching name and arity\n    world.rs:2161-2167   ScopeForm::CompilerService whose source defines the function\n    world.rs:2219-2230   item_macro_call_match on a reserved macro head\n\n## What the old ticket got wrong\n\nOnly its line numbers -- it cited world.rs:3072-3076 for the doc and\nworld.rs:3099-3105 for the arms. `FunctionSurfaceMatch` now lives at\nworld.rs:2136 and the arms at 2149-2182, and the `Certain` doc has also lost the\nenum-position/rank framing the old ticket quoted, so a blind line-based edit\nwould miss. The substance was right.\n\n## Checks\n\n- The `Certain` doc lists only `fn`/`fnp`/`defmacro` heads, compiler-service\n  sources, and reserved-head item-macro calls -- nothing the match arms send to\n  `None`.\n- No code change; lib green and clippy clean.",
+  "id": "fz-kdt.18",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "FunctionSurfaceMatch::Certain doc names defmodule/defprotocol/defimpl heads that the code routes to None",
+  "type": "bug",
+  "updated_at": "2026-08-25T01:37:33Z"
+}
