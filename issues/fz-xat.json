@@ -19,11 +19,15 @@
     {
       "text": "SUPERSEDED by  under the fz-kdt re-baseline epic. This description was rewritten to current truth today; rather than leave a rewritten ticket sitting in an old epic alongside its own stale comment history, the live content moves to  and this one closes. Work continues in .",
       "timestamp": "2026-08-25T01:08:31Z"
+    },
+    {
+      "text": "CORRECTION to the previous comment, which named an empty successor -- a scripting error posted it before the replacement was created.\n\nSUPERSEDED by fz-kdt.5 under the fz-kdt re-baseline epic.\n\nThe excess work is still real (3.15s to compile a 24-line program) but two things around it changed: fz-6gb may have moved the executable count these ratios are computed against, and the fixture budget is no longer the detector -- it was retired after failing on EVERY CI run of the fz-go4.1..fz-f98.24 stack. fz-kdt.5 carries both corrections and points at fz-f98.23 for the replacement detector. Work continues there.",
+      "timestamp": "2026-08-25T01:09:11Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "enum_predicate_search still compiles for ~3s after the settled-product pruning: 2625 callable_construction settlements for 242 executables",
   "type": "bug",
-  "updated_at": "2026-08-25T01:08:31Z"
+  "updated_at": "2026-08-25T01:09:11Z"
 }
