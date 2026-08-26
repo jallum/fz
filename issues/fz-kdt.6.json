@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-26T14:36:26Z",
   "created": "2026-08-25T01:12:42Z",
   "description": "Two dump kinds were reported run-to-run nondeterministic. One is fixed; the other\nsurvives at the RENDERING layer only, which makes it a different defect than\nfiled.\n\n## Fixed: the fixpoint is deterministic\n\nThe original ticket's sharpest claim was that the settled fact content itself\nwobbled -- `Kernel.dbg/1([int]|[])`'s return type flipping between `[int] | []`\nand a widened `int | float | binary | atom | ... | any` across runs of\n`fz_f98_range_map_converges`, i.e. a schedule-dependent ReturnType fixpoint\nend-state where one state was WIDENED.\n\n    fz2 interp fz_f98_range_map_converges.fz --dump activations   x4\n    2d2f45046cf0f33c  2d2f45046cf0f33c  2d2f45046cf0f33c  2d2f45046cf0f33c\n\nFour identical hashes. The widening flip is gone. fz-f98.19 is the likely\nreason: a job's fact emission order is now preserved end to end, so two compiles\nof the same input run the same jobs in the same order, pinned by\n`compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order`.\n\nThe reported downstream symptoms are also gone: `enum_tier0`'s \"answer\nconflation\" (three consecutive base runs giving three different outputs, with\nthe reduce sum and the count printing each other's answers) does not reproduce --\nfour runs, byte-identical output. Neither does the intermittent \"backend expected\nruntime lane 2\" decode abort.\n\n## Still true, but it is a RENDERING defect\n\n    fz2 interp map_enumerable.fz --dump backend   x4\n    e11bd656fc3b3b6f  6664c908a93db836  3972f43b2990cd05  96b0a16601d842a7\n\nFour different hashes -- but the difference is pure ORDER:\n\n    wc -l    49150 / 49150\n    diff \u003c(sort dump_1) \u003c(sort dump_2)   -\u003e  empty\n\nIdentical as a multiset of lines. The backend program's CONTENT is deterministic;\nonly the order the dump prints it in is not. That is `HashMap` iteration order in\nthe rendering, not a fixpoint wobble, and it is the same root as fz-f98.21: there\nis no canonical serialization of a `BackendProgram`, so `{:?}`-derived output is\nunstable even when the structs are equal (measured there: substituting `Ty(n)`\nfor its display rendering still yields two different 1.7M-char strings for equal\nstructs).\n\n## What to do\n\nByte-level product fingerprinting -- the original motivation, from\nfz-go4.18.28.1 -- needs a canonical rendering, which is fz-f98.21's subject. This\nticket should either fold into it or be limited to \"make `--dump backend` emit in\na deterministic order\", which is the same work at a smaller scope.\n\nDo NOT reopen this as a fixpoint bug. The fixpoint half is measured green above,\nand chasing it there would be chasing something that has already moved.\n\n## Checks\n\n- `--dump backend` produces identical bytes across repeated runs of the same\n  input.\n- The activations dump stays stable (it is today).\n- Whatever mechanism is used is shared with fz-f98.21's canonical form rather\n  than being a second renderer.",
   "id": "fz-kdt.6",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Backend dump is run-to-run unstable in ORDER only; the fixpoint half of go4.18.28.6 is fixed",
   "type": "bug",
-  "updated_at": "2026-08-26T14:36:25Z"
+  "updated_at": "2026-08-26T14:36:26Z"
 }
