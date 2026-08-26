@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.34"
+  ],
   "blocks": [
     "fz-kdt.4"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Make runtime-demand derivation order-independent before reactive scheduling",
   "type": "bug",
-  "updated_at": "2026-08-26T14:44:21Z"
+  "updated_at": "2026-08-26T14:45:43Z"
 }
