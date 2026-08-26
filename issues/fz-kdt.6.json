@@ -7,9 +7,15 @@
   "id": "fz-kdt.6",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "FOLDED INTO fz-f98.21. This ticket's own closing advice was \"needs a canonical\nrendering, which is fz-f98.21's subject. This ticket should either fold into it\nor be limited to 'make --dump backend emit in a deterministic order', which is\nthe same work at a smaller scope.\" Taking the first option; f98.21 now carries\n`--dump backend` byte-stability as an explicit check.\n\nOne correction before it goes, so the next person does not inherit it: this\nticket's diagnosis (\"the difference is pure ORDER... identical as a multiset of\nlines\") is FIXTURE-SPECIFIC. It was measured on map_enumerable. On\n00420_enum_take_drop_split the SORTED dumps also differ:\n\n    md5 of sort(dump) x3 -\u003e 4a153a56..., dca72f12..., 76a5f8f1...\n    16 differing lines, same 309,892 line count, same byte length\n\nThe differences are `Ty(n)` ids (the dump is `{:#?}`-pretty-printed, so ids sit\non their own line -- grep 'Ty([0-9]*)' finds nothing, which is a trap). So there\nis a SECOND mechanism this ticket missed: run-to-run arena renumbering, not just\nrendering order. Root-caused into four clusters -- three are upstream mint-order\ndependence (fz-kdt.47) and one is an interner canonicalization gap (fz-kdt.48).\n\nThe \"Do NOT reopen this as a fixpoint bug\" advice stands and is still correct:\nprogram output and the entire public work sequence are byte-identical across\nruns. It was the \"rendering only\" half that was too narrow.",
+      "timestamp": "2026-08-26T14:36:25Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Backend dump is run-to-run unstable in ORDER only; the fixpoint half of go4.18.28.6 is fixed",
   "type": "bug",
-  "updated_at": "2026-08-25T01:12:42Z"
+  "updated_at": "2026-08-26T14:36:25Z"
 }
