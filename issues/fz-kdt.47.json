@@ -11,9 +11,15 @@
   "id": "fz-kdt.47",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "REPRO (this ticket had none). Run-to-run type minting divergence, root-caused\ninto clusters, on 00420_enum_take_drop_split, release, 4 separate processes.\n\nMethod: dump `(id, Types::display(Ty(id)))` for every arena slot at the end of a\ncompile, once per process, and diff. Four different arenas, identical length\n(1,424 slots), exactly 16 differing lines in four clusters:\n\n    a1_v0 \u003c-\u003e a1_v1, a4_v0 \u003c-\u003e a4_v1, a4_u0_1_v0 \u003c-\u003e a4_u0_1_v1   address vars\n    {:cont,A}|{:cont,B} \u003c-\u003e A|B                                   (two clusters)\n    ids 1006-1009                                                 -\u003e fz-kdt.48\n\nTHIS ticket owns the first three: genuinely different types whose MINT ORDER\ndepends on upstream iteration order. The interner itself is not at fault --\n`TypeInterner::intern` (`types/mod.rs:125`) dedupes on `Descr` equality and\nassigns `Ty(arena.len())`, a pure function of its call SEQUENCE. So a differing\narena proves the call sequence differs, which is precisely this ticket's subject.\n\nThe address-var cluster is the sharpest lead: `Types.address_vars` is documented\nas \"keyed by the address path so the same address always yields the same\nTypeVarId, making the addressed arrow canonical by construction\" -- yet `a4_v1`\nis minted BEFORE `a4_v0` in some runs. Whatever iterates the variable set before\nminting is the order-dependent site.\n\nThe fourth cluster is NOT this ticket: it is an interner canonicalization gap\n(two slots holding equivalent types) filed as fz-kdt.48.\n\nAlso note the \"no divergence observed\" boundary: across those runs the program\noutput and the entire public work SEQUENCE were byte-identical. The renumbering\ndoes not currently flip observable work -- but it feeds two production sorts\n(fz-kdt.49), and the current log cannot distinguish identical work from an\nidentical kind-sequence with permuted identities until fz-kdt.34 lands.\n\nFinally: fz-f98.21's canonical external form deliberately makes THIS defect\ninvisible (every position renders the same). That is by design -- canonical form\nmeasures the artifact, this ticket measures the cause. Neither replaces the other.",
+      "timestamp": "2026-08-26T14:37:18Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Make runtime-demand derivation order-independent before reactive scheduling",
   "type": "bug",
-  "updated_at": "2026-08-25T02:16:23Z"
+  "updated_at": "2026-08-26T14:37:18Z"
 }
