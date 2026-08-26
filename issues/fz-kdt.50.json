@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-26T14:36:54Z",
+  "description": "`is_public_compiler2_trace_event` (`telemetry/jsonl.rs:793`) allowlists three\nevent names that nothing emits:\n\n    [\"fz\", \"compiler2\", \"work\", \"started\"]\n    [\"fz\", \"compiler2\", \"pull\", \"phase\", ..]\n    [\"fz\", \"compiler2\", \"drive\", \"stalled\"]\n\nConfirmed two ways: no emit site anywhere in `src/`, and 0 occurrences of each in\na real 17,574-event public log (`--log-telemetry`, 00420_enum_take_drop_split).\n\nA dead allowlist row reads as \"this signal exists and was empty this run\", which\nis worse than its absence -- it sends an investigator looking for a switch to\nturn on.\n\n## `drive.stalled` looks like a rename that lost its other half\n\nThe emitted event is `fz.compiler2.drive.demand_on_stall` (`drive.rs:497`,\nprojected at `jsonl.rs:371`), carrying `(\u0026usize producer_pokes,\n\u0026HashSet\u003cFactKey\u003e demanded_facts)`. It is NOT allowlisted, so the public log\ncannot see stall behaviour at all while advertising a `drive.stalled` row that\nnever fires.\n\nNote fz-kdt.34 wants exactly that payload for its \"work-start reason and exact\ndemanded fact/product\" contract line, so allowlisting `demand_on_stall` may land\nthere instead; this ticket then just deletes the three dead rows.\n\n## Checks\n\n- Every allowlist row has an emitter, proven by a test that fails when a row has\n  none (walk the allowlist, assert each name is emitted somewhere) -- otherwise\n  this regrows.\n- The three rows are deleted, or their emitters written.",
+  "id": "fz-kdt.50",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "Three public-trace allowlist rows have no emitter anywhere in the tree",
+  "type": "bug",
+  "updated_at": "2026-08-26T14:36:54Z"
+}
