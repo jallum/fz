@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.34"
+  ],
   "blocks": [
     "fz-kdt.4"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Move ExecutableFacts into the fact graph; delete its product boundary",
   "type": "task",
-  "updated_at": "2026-08-25T02:16:22Z"
+  "updated_at": "2026-08-26T14:45:42Z"
 }
