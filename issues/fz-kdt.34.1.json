@@ -8,7 +8,6 @@
   "description": "Every later child asserts against the PUBLIC trace. There is no helper that\ncaptures it in-process, so the first child cannot write its own red test.\n\n`JsonlBackend::new_public_writer` (`jsonl.rs:736`) already applies the exact\nproduction allowlist (`is_public_compiler2_trace_event`) and is exercised today\nonly by two writer-ERROR tests (`jsonl_test.rs:88`, `:163`) -- nothing captures\ncontent. `capture::vec_writer` supplies the sink. No subprocess, no temp file.\n\n## Deliver\n\n- A helper that compiles a source and returns the parsed public event stream,\n  in emission order.\n- Query surface the later children need: events by name, spans paired by\n  `span_id`, metadata by key, parent/child span nesting.\n- It reads ONLY the public allowlisted trace. A helper that peeks at a\n  non-public event defeats the point of every acceptance check built on it.\n\n## Red test\n\nA two-formula fact chain: one changed fact and one unchanged conclusion produce\nan exact, ordered causal trace. (Ticket TDD 1, at harness level.)\n\n## Checks\n\n- The helper is used by its own test, not just defined.\n- No production code changes.",
   "id": "fz-kdt.34.1",
   "labels": [],
-  "parent": "fz-kdt.34",
   "priority": 1,
   "status": "open",
   "title": "Public-log content capture helper for tests",
