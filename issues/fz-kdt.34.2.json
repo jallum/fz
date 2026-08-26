@@ -12,9 +12,10 @@
   "description": "The public log cannot group 1,382 `AnalyzeActivation` evaluations by activation,\nbecause identity is thrown away at the projection boundary.\n\n    jsonl.rs:1081  Job          -\u003e job_kind(job), a bare variant name\n    jsonl.rs:1298  ProductKey   -\u003e key.kind()\n    jsonl.rs:1462  write_activation_key -\u003e root_id + function_id, DROPS arrow\n\n## Scope: WITHIN-run identity only\n\nWithin one process a raw `Ty` id is stable, so grouping needs nothing more than\nthe structural fields plus the raw arrow id. That is free -- no rendering, no\n`Types` lookup.\n\nCROSS-run comparison is a different requirement with a different answer\n(fz-f98.21's faithful canonical form) and belongs to the acceptance child. Do\nNOT render types through `Types::display` here as a shortcut: display is\nmeasured NOT injective (`Ty(83)` and `Ty(253)` both render `([int]) -\u003e r0` while\n`253 \u003c: 83`), so it would silently conflate distinct activations.\n\n## The mechanical obstacle\n\nIdentity is rendered today in `write_opaque` (`jsonl.rs:1072`), which receives an\n`OpaqueRef` and has NO `\u0026World`/`\u0026Types`. Rendering must move into\n`write_compiler2_semantic` (`jsonl.rs:855`), which already takes the whole\n`Event` and already correlates sibling metadata (`world` + `completion`) for\n`activation_inputs.defined`. This is a restructuring of the opaque renderer, not\na rename -- budget for it.\n\n## Deliver\n\n- Identity for `Job`, `FactKey`, `ProductKey`, `CallSiteKey`, `TransportPosition`\n  on the events that carry them.\n- Emit sites unchanged: they keep passing raw keys plus the owning authority.\n  A telemetry-disabled run must render nothing.\n\n## Red test\n\nTwo activations of the same function are distinguishable in the public log.\n\n## Checks\n\n- `production_telemetry_boundaries_are_raw_and_allocation_free` (`world_test.rs:13`)\n  still passes.\n- No new allocation at any emit site.",
   "id": "fz-kdt.34.2",
   "labels": [],
+  "parent": "fz-kdt.34",
   "priority": 1,
   "status": "open",
   "title": "Render formula and product IDENTITY in the public log",
   "type": "task",
-  "updated_at": "2026-08-26T14:39:16Z"
+  "updated_at": "2026-08-26T14:45:40Z"
 }
