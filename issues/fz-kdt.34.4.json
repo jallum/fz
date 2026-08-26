@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-26T14:38:36Z",
+  "description": "Product settlement is systematically under-reported. Measured on\n00420_enum_take_drop_split: 3 `runtime_demand` settled events for a compile in\nwhich \u003e=237 distinct RuntimeDemand products settled. 98.7% invisible.\n\n## Two silent paths\n\n- `ProductMemo::finish_group` (`pull.rs:458`) inserts N-1 members into `produced`\n  with no event; `ProductDriver::pull` emits only for `key` (`pull.rs:1974`).\n- `ProductReadContext::publish_product` (`pull.rs:1671`) calls `memo.finish` with\n  no telemetry at all. Callers: `jobs/runtime_demand.rs:482` (the demand cone's\n  co-publication of every non-anchor member) and `jobs/artifact.rs:189`.\n\n## Emit where membership exists\n\nOne settled event per settled member, from the layer that owns the settle --\n`finish`, `finish_group`, `publish_product`. Carry generation and\nchanged-vs-reproduced, both already computed and discarded (`pull.rs:422`).\nGroup membership is known inside `finish_group` and nowhere downstream:\n`into_dependencies` returns only `(ProductDependencies, bool)` (`pull.rs:1689`).\n\n## Do NOT change the settled event's arity as the fix\n\n`raw_event3` exists (`sink.rs:691`) and the borrows are available, BUT bus\ndispatch is runtime variant-matched, not type-checked (`bus.rs:140`; the\ndowncast falls through to `else { return; }`). Changing\n`(\u0026ProductKey, \u0026ProductValue)` to arity 3 would SILENTLY disable five existing\nhandlers including the JSONL projection itself (`jsonl.rs:205`), emptying the\nproduct rows with no compile error. Any signature change here needs a test that\nproves the handler still fires.\n\nCurrent consumers to keep green: `jsonl.rs:205`, `transport_contract_test.rs:40`,\n`drive_test.rs:5557`, `pull.rs:2038`, `jsonl_test.rs:350`.\n\n## Also\n\n- Allowlist `pull.product.cache_hit` / `reentered` (`pull.rs:1929`, `:1936`) --\n  emitted today but not public, so the log cannot separate a cache hit from a\n  settle. Add `displaced`.\n- Add `pull.rs`, `product_drive.rs`, `jobs/runtime_demand.rs` to the\n  `production_telemetry_boundaries_are_raw_and_allocation_free` scan list\n  (`world_test.rs:13`). The product emit sites are currently unguarded; all\n  three already pass the guard's checks.\n\n## Red test\n\nTDD 4: a recursive product group with distinct ProductKeys and generations --\nevery member observable, membership attributable.\n\n## Feeds\n\nfz-kdt.5 is reasoning about settle counts that are floors; see its comment.",
+  "id": "fz-kdt.34.4",
+  "labels": [],
+  "parent": "fz-kdt.34",
+  "priority": 2,
+  "status": "open",
+  "title": "Product causality: emit every settlement, with generation and group membership",
+  "type": "task",
+  "updated_at": "2026-08-26T14:38:36Z"
+}
