@@ -9,9 +9,9 @@
   "id": "fz-f98.21",
   "labels": [],
   "parent": "fz-kdt",
-  "priority": 2,
+  "priority": 1,
   "status": "open",
   "title": "Canonical external form: one faithful, id-free rendering for Ty and BackendProgram",
   "type": "task",
-  "updated_at": "2026-08-26T14:39:17Z"
+  "updated_at": "2026-08-26T14:39:30Z"
 }
