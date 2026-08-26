@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.34.3"
+    "fz-kdt.34.3",
+    "fz-kdt.34.4"
   ],
   "blocks": [],
   "created": "2026-08-26T14:39:03Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Acceptance: causal work counts on the three target fixtures, and cross-run equality",
   "type": "task",
-  "updated_at": "2026-08-26T14:39:16Z"
+  "updated_at": "2026-08-26T14:39:17Z"
 }
