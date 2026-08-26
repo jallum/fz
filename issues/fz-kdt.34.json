@@ -14,9 +14,15 @@
   "id": "fz-kdt.34",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "DECOMPOSED into fz-kdt.34.1 .. .34.6, and one structural finding worth flagging\nat the parent.\n\n    .34.1 public-log capture harness\n       |\n    .34.2 identity in the log (within-run; raw ids, no rendering)\n       |\n       +-- .34.3 job causality (Wake + work_graph.applied)\n       +-- .34.4 per-member product settlement\n       +-- .34.5 work-start attribution\n                   |\n                   +-- .34.6 acceptance + cross-run equality  \u003c- also blocked by fz-f98.21\n\n## Two corrections to this ticket's own premises, both measured\n\n1. \"The raw job span already carries Job, World, and JobCompletion\" is true and\n   is the WRONG seam. The span covers 2 of 5 completion sites (0\n   `BuildBackendProduct` spans observed against 3 `backend_program.defined`\n   events). `fz.compiler2.work_graph.applied` fires at all five and is merely\n   un-allowlisted. See .34.3.\n\n2. Cross-run comparison cannot be done on raw `Ty` ids (measured run-unstable)\n   NOR through `Types::display` (measured non-injective: `Ty(83)` and `Ty(253)`\n   both render `([int]) -\u003e r0` while `253 \u003c: 83`). It needs fz-f98.21's faithful\n   canonical form, which is now a dependency of .34.6 and raised to P1.\n\nThat last point makes fz-f98.21 arc-critical: fz-kdt.44, .45, .47 and .4 all\ncarry \"repeated runs produce identical causal work multisets/traces\" in their\nacceptance, so they inherit the same requirement. Chasing structural determinism\ninstead is unbounded work -- see f98.21's \"The choice this ticket makes\".\n\n## Ordering note\n\n.34.1 first, not last: every later child asserts against the public log, and no\ncontent-capture helper exists today, so an identity-first ordering would have\nleft .34.2 unable to write its own red test.",
+      "timestamp": "2026-08-26T14:39:31Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Expose formula identity and revision causality for scheduler and product work",
   "type": "task",
-  "updated_at": "2026-08-25T15:25:51Z"
+  "updated_at": "2026-08-26T14:39:31Z"
 }
