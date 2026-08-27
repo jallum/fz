@@ -1079,6 +1079,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "kind");
         out.push(':');
         write_str_lit(out, job_kind(job));
+        write_job_identity(out, job);
     } else if let Some(outcome) =
         opaque.downcast_ref::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::FactKey>>()
     {
@@ -1100,6 +1101,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                 write_str_lit(out, "job_kind");
                 out.push(':');
                 write_str_lit(out, job_kind(job));
+                write_job_identity(out, job);
             }
             crate::compiler2::DriveOutcome::TimedOut { jobs_ran, pending_jobs } => {
                 write_str_lit(out, "timed_out");
@@ -1253,31 +1255,13 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "enqueued");
         out.push(':');
         push_u64(out, step.enqueued.len() as u64);
-        out.push(',');
-        write_str_lit(out, "blocked");
-        out.push(':');
-        out.push('[');
-        let mut blocked = step
-            .blocked
-            .iter()
-            .map(|wait| fact_kind(wait.fact()))
-            .collect::<Vec<_>>();
-        blocked.sort_unstable();
-        for (index, kind) in blocked.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            write_str_lit(out, kind);
-        }
-        out.push(']');
+        write_blocked(out, &step.blocked);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
         write_activation_key(out, key);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::CallSiteKey>() {
-        out.push(',');
-        write_str_lit(out, "callsite");
-        out.push(':');
-        push_u64(out, key.callsite.as_u32() as u64);
-        write_activation_key(out, &key.activation);
+        write_callsite_key_identity(out, key);
+    } else if let Some(position) = opaque.downcast_ref::<crate::compiler2::transport::TransportPosition>() {
+        write_transport_position(out, position);
     } else if let Some(function) = opaque.downcast_ref::<crate::compiler2::FunctionRef>() {
         out.push(',');
         write_str_lit(out, "module_id");
@@ -1296,6 +1280,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "kind");
         out.push(':');
         write_str_lit(out, key.kind());
+        write_product_key_identity(out, key);
     } else if let Some(outcome) = opaque.downcast_ref::<crate::compiler2::pull::PullOutcome>() {
         out.push(',');
         write_str_lit(out, "status");
@@ -1360,6 +1345,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "kind");
         out.push(':');
         write_str_lit(out, job_kind(&completion.job));
+        write_job_identity(out, &completion.job);
         out.push(',');
         write_str_lit(out, "rebased");
         out.push(':');
@@ -1372,24 +1358,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "enqueued");
         out.push(':');
         push_u64(out, completion.step.enqueued.len() as u64);
-        out.push(',');
-        write_str_lit(out, "blocked");
-        out.push(':');
-        out.push('[');
-        let mut blocked = completion
-            .step
-            .blocked
-            .iter()
-            .map(|wait| fact_kind(wait.fact()))
-            .collect::<Vec<_>>();
-        blocked.sort_unstable();
-        for (index, kind) in blocked.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            write_str_lit(out, kind);
-        }
-        out.push(']');
+        write_blocked(out, &completion.step.blocked);
     } else if let Some(world) = opaque.downcast_ref::<crate::compiler2::World>() {
         let (codes, roots, frontier) = world.telemetry_counts();
         out.push(',');
@@ -1468,6 +1437,305 @@ fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey)
     write_str_lit(out, "function_id");
     out.push(':');
     push_u64(out, key.function.as_u32() as u64);
+    out.push(',');
+    write_str_lit(out, "arrow");
+    out.push(':');
+    push_u64(out, key.arrow.as_u32() as u64);
+}
+
+fn write_id_field(out: &mut String, key: &'static str, id: u32) {
+    out.push(',');
+    write_str_lit(out, key);
+    out.push(':');
+    push_u64(out, id as u64);
+}
+
+fn write_code_id(out: &mut String, code: crate::compiler2::CodeId) {
+    write_id_field(out, "code_id", code.as_u32());
+}
+
+fn write_module_id(out: &mut String, module: crate::compiler2::ModuleId) {
+    write_id_field(out, "module_id", module.as_u32());
+}
+
+fn write_function_id(out: &mut String, function: crate::compiler2::FunctionId) {
+    write_id_field(out, "function_id", function.as_u32());
+}
+
+fn write_root_id(out: &mut String, root: crate::compiler2::RootId) {
+    write_id_field(out, "root_id", root.as_u32());
+}
+
+fn write_type_name(out: &mut String, name: &crate::compiler2::TypeName) {
+    write_module_id(out, name.module);
+    out.push(',');
+    write_str_lit(out, "name");
+    out.push(':');
+    write_str_lit(out, &name.name);
+    out.push(',');
+    write_str_lit(out, "arity");
+    out.push(':');
+    push_u64(out, name.arity as u64);
+}
+
+fn write_executable_need(out: &mut String, need: crate::compiler2::ExecutableNeed) {
+    use crate::compiler2::ExecutableNeed;
+    out.push(',');
+    write_str_lit(out, "need");
+    out.push(':');
+    match need {
+        ExecutableNeed::Value => write_str_lit(out, "value"),
+        ExecutableNeed::TupleFields(n) => {
+            write_str_lit(out, "tuple_fields");
+            out.push(',');
+            write_str_lit(out, "tuple_fields");
+            out.push(':');
+            push_u64(out, n as u64);
+        }
+    }
+}
+
+fn write_executable_key(out: &mut String, key: &crate::compiler2::ExecutableKey) {
+    write_activation_key(out, &key.activation);
+    write_executable_need(out, key.need);
+}
+
+fn write_callsite_id(out: &mut String, callsite: crate::compiler2::CallSiteId) {
+    write_id_field(out, "callsite", callsite.as_u32());
+}
+
+fn write_control_entry_id(out: &mut String, entry: crate::compiler2::ControlEntryId) {
+    write_id_field(out, "entry", entry.as_u32());
+}
+
+fn write_semantic_index(out: &mut String, semantic_index: usize) {
+    write_id_field(out, "semantic_index", semantic_index as u32);
+}
+
+fn write_callsite_key_identity(out: &mut String, key: &crate::compiler2::CallSiteKey) {
+    write_callsite_id(out, key.callsite);
+    write_activation_key(out, &key.activation);
+}
+
+/// `TransportPosition`'s variant kind — analogous to `job_kind`/`fact_kind`,
+/// kept alongside `write_transport_position_body` since both are driven by
+/// the same match.
+fn transport_position_kind(position: &crate::compiler2::transport::TransportPosition) -> &'static str {
+    use crate::compiler2::transport::TransportPosition;
+    match position {
+        TransportPosition::ExecutableInput { .. } => "ExecutableInput",
+        TransportPosition::ExecutableReturn { .. } => "ExecutableReturn",
+        TransportPosition::ResumePayload { .. } => "ResumePayload",
+        TransportPosition::ReturnPayload { .. } => "ReturnPayload",
+        TransportPosition::CallArg { .. } => "CallArg",
+        TransportPosition::EntryCapture { .. } => "EntryCapture",
+        TransportPosition::Value { .. } => "Value",
+    }
+}
+
+fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transport::ActivationSymbol) {
+    out.push(',');
+    write_str_lit(out, "function_id");
+    out.push(':');
+    push_u64(out, symbol.function.as_u32() as u64);
+    out.push(',');
+    write_str_lit(out, "arrow");
+    out.push(':');
+    push_u64(out, symbol.arrow.as_u32() as u64);
+    out.push(',');
+    write_str_lit(out, "input");
+    out.push(':');
+    out.push('[');
+    for (index, ty) in symbol.input.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_u64(out, ty.as_u32() as u64);
+    }
+    out.push(']');
+}
+
+fn write_executable_symbol(out: &mut String, symbol: &crate::compiler2::transport::ExecutableSymbol) {
+    write_activation_symbol(out, &symbol.activation);
+    write_executable_need(out, symbol.need);
+}
+
+/// Appends the identity fields of `position` beyond its `kind` (which the
+/// caller writes first, either flat or as the first field of a nested
+/// object) — the owning executable's identity plus whatever
+/// callsite/entry/semantic_index/capture_index/value_id the variant carries.
+fn write_transport_position_body(out: &mut String, position: &crate::compiler2::transport::TransportPosition) {
+    use crate::compiler2::transport::TransportPosition;
+    write_executable_symbol(out, position.executable());
+    match position {
+        TransportPosition::ExecutableInput { semantic_index, .. } => {
+            write_semantic_index(out, *semantic_index);
+        }
+        TransportPosition::ExecutableReturn { .. } => {}
+        TransportPosition::ResumePayload { callsite, entry, .. } => {
+            if let Some(callsite) = callsite {
+                write_callsite_id(out, *callsite);
+            }
+            write_control_entry_id(out, *entry);
+        }
+        TransportPosition::ReturnPayload { callsite, .. } => {
+            write_callsite_id(out, *callsite);
+        }
+        TransportPosition::CallArg {
+            callsite,
+            semantic_index,
+            ..
+        } => {
+            write_callsite_id(out, *callsite);
+            write_semantic_index(out, *semantic_index);
+        }
+        TransportPosition::EntryCapture {
+            entry, capture_index, ..
+        } => {
+            write_control_entry_id(out, *entry);
+            write_id_field(out, "capture_index", *capture_index as u32);
+        }
+        TransportPosition::Value { value, .. } => {
+            write_id_field(out, "value_id", value.as_u32());
+        }
+    }
+}
+
+/// Flat rendering for an event whose sole payload is a `TransportPosition`
+/// (the standalone `write_opaque` downcast arm): appends `"kind"` plus the
+/// identity body directly under the enclosing object.
+fn write_transport_position(out: &mut String, position: &crate::compiler2::transport::TransportPosition) {
+    out.push(',');
+    write_str_lit(out, "kind");
+    out.push(':');
+    write_str_lit(out, transport_position_kind(position));
+    write_transport_position_body(out, position);
+}
+
+/// Nested rendering for a `TransportPosition` carried inside a `ProductKey`
+/// (`TransportShape`/`CallableConstruction`), whose own `"kind"` field
+/// already names the product — the position's identity goes under
+/// `"position"` so the two `kind`s never collide.
+fn write_transport_position_field(out: &mut String, position: &crate::compiler2::transport::TransportPosition) {
+    out.push_str(",\"position\":{\"kind\":");
+    write_str_lit(out, transport_position_kind(position));
+    write_transport_position_body(out, position);
+    out.push('}');
+}
+
+/// The identity payload for a `Job`, shared by the `Job` arm and the
+/// `JobCompletion` arm (a completion carries the job it completed).
+fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
+    use crate::compiler2::Job;
+    match job {
+        Job::IndexCode(code) | Job::ScopeCode(code) => write_code_id(out, *code),
+        Job::DefineModule(module) | Job::DefineModuleInterface(module) => write_module_id(out, *module),
+        Job::PublishFunctionSource(function)
+        | Job::ExpandFunctionSource(function)
+        | Job::DefineFunction(function)
+        | Job::DeriveFunctionContract(function)
+        | Job::LowerFunction(function)
+        | Job::ReifyGuardDispatch(function)
+        | Job::PlanEntryDispatch(function)
+        | Job::BuildMacroExecutable(function)
+        | Job::DeriveRecursive(function)
+        | Job::DeriveDispatchMask(function) => write_function_id(out, *function),
+        Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
+        Job::SeedRoot(root) | Job::BuildBackendProduct(root) | Job::LowerNativeProgram(root) => {
+            write_root_id(out, *root)
+        }
+        Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
+    }
+}
+
+/// The identity payload for a `FactKey`, shared by the `blocked` wait lists
+/// (`AppliedStep`, `JobCompletion`) and any event that carries a `FactKey`
+/// directly.
+fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
+    use crate::compiler2::FactKey;
+    match fact {
+        FactKey::CodeIndexed(code) | FactKey::CodeScoped(code) => write_code_id(out, *code),
+        FactKey::ModuleIndexed(module)
+        | FactKey::ModuleDefined(module)
+        | FactKey::ModuleInterface(module)
+        | FactKey::StructDefined(module)
+        | FactKey::ProtocolDispatch(module)
+        | FactKey::ProtocolImplProviders(module) => write_module_id(out, *module),
+        FactKey::FunctionSource(function)
+        | FactKey::FunctionSourceStash(function)
+        | FactKey::ExpandedFunctionSource(function)
+        | FactKey::FunctionDefined(function)
+        | FactKey::FunctionContract(function)
+        | FactKey::LoweredBody(function)
+        | FactKey::GuardDispatch(function)
+        | FactKey::EntryDispatch(function)
+        | FactKey::MacroExecutable(function)
+        | FactKey::Recursive(function)
+        | FactKey::DispatchMask(function) => write_function_id(out, *function),
+        FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
+        FactKey::RootEntry(root) | FactKey::BackendProgram(root) | FactKey::NativeProgram(root) => {
+            write_root_id(out, *root)
+        }
+        FactKey::Activation(key)
+        | FactKey::ActivationInputs(key)
+        | FactKey::ActivationAnalyzed(key)
+        | FactKey::ReturnType(key) => write_activation_key(out, key),
+        FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
+        FactKey::Executable(key) => write_executable_key(out, key),
+    }
+}
+
+/// One blocked-wait entry as a self-contained `{"kind":...,...}` string, so
+/// callers can sort the *rendered identities* (a presentation-boundary sort,
+/// deterministic — not a sort over `FactKey` itself) rather than the bare
+/// kind strings the old rendering compared.
+fn render_fact_identity(fact: &crate::compiler2::FactKey) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("{\"kind\":");
+    write_str_lit(&mut rendered, fact_kind(fact));
+    write_fact_identity(&mut rendered, fact);
+    rendered.push('}');
+    rendered
+}
+
+fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::compiler2::FactKey>]) {
+    out.push_str(",\"blocked\":[");
+    let mut rendered = blocked
+        .iter()
+        .map(|wait| render_fact_identity(wait.fact()))
+        .collect::<Vec<_>>();
+    rendered.sort();
+    for (index, entry) in rendered.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(entry);
+    }
+    out.push(']');
+}
+
+/// The identity payload for a `ProductKey`, appended after its `"kind"`.
+fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductKey) {
+    use crate::compiler2::ProductKey;
+    match key {
+        ProductKey::RootBackendProduct(root)
+        | ProductKey::OutgoingEdgeFrontier(root)
+        | ProductKey::IncomingInputRelations(root) => write_root_id(out, *root),
+        ProductKey::BackendExecutable(executable)
+        | ProductKey::AbiExecutable(executable)
+        | ProductKey::MaterializedExecutable(executable)
+        | ProductKey::ExecutableEffects(executable)
+        | ProductKey::ExecutableFacts(executable)
+        | ProductKey::RuntimeDemand(executable)
+        | ProductKey::OutgoingInputEdges(executable) => write_executable_key(out, executable),
+        ProductKey::IncomingInputSlot(slot) => {
+            write_executable_key(out, &slot.executable);
+            write_semantic_index(out, slot.semantic_index);
+        }
+        ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) => {
+            write_transport_position_field(out, position);
+        }
+    }
 }
 
 fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {

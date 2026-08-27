@@ -272,3 +272,84 @@ fn compile_flushes_the_complete_stream_past_the_pre_drop_auto_flush() {
         "the complete stream must include the pull session finishing, not just the pre-drop prefix"
     );
 }
+
+/// fz-kdt.34.2's acceptance scenario: one function, `identity/1`, activated
+/// at two different input types (an integer and an atom). Verified to
+/// actually produce two `AnalyzeActivation` job spans sharing `function_id`
+/// (see `analyze_activation_job_spans_distinguish_two_activations_of_one_function`)
+/// before this const was finalized.
+const SAME_FUNCTION_TWO_TYPES_SOURCE: &str =
+    "fn identity(x), do: x\nfn main() do\n  identity(1)\n  identity(:atom)\nend\n";
+
+/// Before fz-kdt.34.2, `write_opaque` rendered a `Job` as a bare variant
+/// name — every `AnalyzeActivation` job span carried only
+/// `"kind":"AnalyzeActivation"`, making the 1,382 separate activations a
+/// real compile can produce indistinguishable in the public log. This proves
+/// the projection now renders within-run identity: two activations of the
+/// SAME function (`identity/1`, called once with an int and once with an
+/// atom) show equal `function_id` and different `arrow` in the public
+/// stream.
+#[test]
+fn analyze_activation_job_spans_distinguish_two_activations_of_one_function() {
+    let trace = PublicTrace::compile(SAME_FUNCTION_TWO_TYPES_SOURCE);
+    assert!(matches!(trace.outcome, DriveOutcome::Resolved));
+
+    let job_spans = trace.spans_named(&["fz", "compiler2", "job"]);
+    let analyze_activations: Vec<(u64, u64)> = job_spans
+        .iter()
+        .filter_map(|span| {
+            let job = span.start.metadata_key("job")?;
+            if job.get("kind").and_then(|v| v.as_str()) != Some("AnalyzeActivation") {
+                return None;
+            }
+            let function_id = job.get("function_id")?.as_u64()?;
+            let arrow = job.get("arrow")?.as_u64()?;
+            Some((function_id, arrow))
+        })
+        .collect();
+
+    assert!(
+        analyze_activations.len() >= 2,
+        "expected at least two AnalyzeActivation job spans with function_id/arrow metadata, got {analyze_activations:?}"
+    );
+
+    let mut arrows_by_function: std::collections::HashMap<u64, std::collections::HashSet<u64>> =
+        std::collections::HashMap::new();
+    for (function_id, arrow) in &analyze_activations {
+        arrows_by_function.entry(*function_id).or_default().insert(*arrow);
+    }
+    assert!(
+        arrows_by_function.values().any(|arrows| arrows.len() >= 2),
+        "expected two AnalyzeActivation job spans with EQUAL function_id and DIFFERENT arrow \
+         (two activations of one function distinguishable in the public log): {analyze_activations:?}"
+    );
+}
+
+/// A settled `backend_executable` product carries identity beyond `"kind"`:
+/// the activation it was built for (`function_id`, `arrow`) and which need
+/// it answers (`need`).
+#[test]
+fn backend_executable_product_settled_carries_identity_beyond_kind() {
+    let trace = PublicTrace::compile(SAME_FUNCTION_TWO_TYPES_SOURCE);
+    assert!(matches!(trace.outcome, DriveOutcome::Resolved));
+
+    let settled = trace.events_named(&["fz", "compiler2", "pull", "product", "settled"]);
+    let backend_executable = settled
+        .iter()
+        .filter_map(|ev| ev.metadata_key("product"))
+        .find(|product| product.get("kind").and_then(|v| v.as_str()) == Some("backend_executable"))
+        .unwrap_or_else(|| panic!("expected a settled backend_executable product in {settled:?}"));
+
+    assert!(
+        backend_executable.get("function_id").and_then(|v| v.as_u64()).is_some(),
+        "backend_executable product metadata missing function_id: {backend_executable:?}"
+    );
+    assert!(
+        backend_executable.get("arrow").and_then(|v| v.as_u64()).is_some(),
+        "backend_executable product metadata missing arrow: {backend_executable:?}"
+    );
+    assert!(
+        backend_executable.get("need").and_then(|v| v.as_str()).is_some(),
+        "backend_executable product metadata missing need: {backend_executable:?}"
+    );
+}

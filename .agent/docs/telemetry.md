@@ -230,6 +230,25 @@ handlers derive timing and presentation fields only after matching these raw
 signatures. There is no separate per-outcome drive stop schema, extra
 `job_fatal` event, or redundant `fact_published` stream.
 
+The public JSONL projection (`jsonl.rs::write_opaque`) renders `Job`,
+`FactKey`, `ProductKey`, `CallSiteKey`, and `TransportPosition` as
+within-run identity, not a bare variant name: each carries its raw payload
+ids (`root_id`, `function_id`, `arrow`, `code_id`, `module_id`, `callsite`,
+`entry`, `semantic_index`, `need`, ...) alongside `kind`. `arrow` is the
+interned `Ty`'s raw handle (`Ty::as_u32`), never `Types::display` — display
+is measured non-injective and would conflate distinct activations that
+happen to render the same. This is what lets a reader of the public log
+distinguish, for example, the many separate `AnalyzeActivation` evaluations
+one real compile can produce, each a different `(root, function, arrow)`
+triple where the projection used to render only `"kind":"AnalyzeActivation"`
+for all of them alike. `ExecutableKey` and `TransportPosition`'s
+`ExecutableSymbol` render the same way nested inside a `ProductKey`
+(`BackendExecutable`, `TransportShape`, ...): activation identity plus
+`need` (`"value"` or `"tuple_fields"` with a count). The blocked-wait lists
+on `AppliedStep` and `JobCompletion` render each waited-on `FactKey` as its
+own identity object, sorted as rendered strings (a presentation-boundary
+sort) rather than as bare kind strings.
+
 When the agenda drains with unresolved waiters, `ExecutionContext::drive()`
 (`drive.rs`) runs its stall pass: it demands every submitted root's entry
 analysis and, for each blocked waiter's fact not already demanded since the
