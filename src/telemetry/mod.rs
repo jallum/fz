@@ -38,6 +38,8 @@ pub mod diag_render;
 pub mod event;
 pub mod handler;
 pub mod jsonl;
+#[cfg(test)]
+pub mod public_trace;
 pub mod sink;
 pub mod stats;
 pub mod value;

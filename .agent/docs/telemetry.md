@@ -63,6 +63,16 @@ and does not enable raw events. Concrete handlers:
 - `Capture` (`capture.rs`) — the test handler; copies events into an owned
   buffer for assertions. Gated behind `#[cfg(test)]`.
 
+**`PublicTrace`** (`public_trace.rs`, `#[cfg(test)]`) — parses the rendered
+public JSONL text a `JsonlBackend::new_public_writer` produces, the same
+allowlisted stream `fz2 --log-telemetry` writes in production. `compile`
+drives a source string to completion behind a public-only writer inside an
+inner scope, drops the `Compiler2` so the buffered backend flushes its tail,
+then parses the shared buffer into ordered `PublicEvent`s and paired
+`PublicSpan`s. It parses text rather than reusing `Capture` because `Capture`
+attaches ahead of the allowlist and would expose pre-projection `Any`
+payloads a production reader of the JSONL stream never sees.
+
 **Legacy compatibility surface** — `Event`, `Measurements`, `Metadata`, and
 `Value` remain for legacy emitters and tests. They do not define the production
 compiler2 payload model and do not enable raw events or spans.
