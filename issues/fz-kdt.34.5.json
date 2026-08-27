@@ -6,14 +6,15 @@
   "blocks": [
     "fz-kdt.34.6"
   ],
+  "closed_at": "2026-08-27T02:16:18Z",
   "created": "2026-08-26T14:39:03Z",
   "description": "The ticket's contract line \"work-start reason and exact demanded fact/product\"\nhas no coverage today.\n\n`World::demand_fact_producer` (`drive.rs:185`) emits nothing. `WorkStartReason`\nis only ever aggregated into `WorkStartTally` (`scheduler.rs:160`) and reported\nonce per session -- so the log says 873 work starts were\n`BlockedWaiterExpansion` but never which fact caused any one of them.\n\n## The cheap existing answer\n\n`fz.compiler2.drive.demand_on_stall` already carries\n`(\u0026usize producer_pokes, \u0026HashSet\u003cFactKey\u003e demanded_facts)` (`drive.rs:497`,\nprojected `jsonl.rs:371`) and is NOT allowlisted. Allowlist it and project full\n`FactKey`s rather than kinds. Add the `WorkStartReason` if per-expansion\nattribution needs it.\n\nPrefer this to inventing a new event: check what already exists before adding an\nemitter (`.agent/docs/telemetry.md` emit-point rules).\n\n## Red test\n\nTDD 3: pin a blocked wait and its exact fact-to-producer expansion.\n\n## Note for fz-kdt.46\n\nThat ticket replaces the drain-time unresolved-wait scan with edge-triggered\npulls and asserts \"every BlockedWaiterExpansion names the exact newly recorded\nFactUse that caused it\". This child is what makes that assertion writable.\n\nInteraction with fz-kdt.50: that ticket deletes three dead allowlist rows, one of\nwhich (`drive.stalled`) looks like the lost half of a rename of\n`demand_on_stall`. If this child allowlists `demand_on_stall`, say so there.",
   "id": "fz-kdt.34.5",
   "labels": [],
   "parent": "fz-kdt.34",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Work-start attribution: name the exact demanded fact and its reason",
   "type": "task",
-  "updated_at": "2026-08-26T14:45:41Z"
+  "updated_at": "2026-08-27T02:16:18Z"
 }
