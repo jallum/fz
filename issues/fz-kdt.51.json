@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-27T02:16:43Z",
+  "description": "Found during fz-kdt.34.5: `demand_on_stall` reached ZERO handlers on HEAD.\nThe emit passes `\u0026u64 producer_pokes` (drive.rs stall pass); the JSONL attach\nwas typed `attach_raw_event2::\u003cusize, HashSet\u003cFactKey\u003e, _\u003e`. Bus dispatch is\nruntime type-matched with silent fall-through (`bus.rs`: downcast miss -\u003e\n`else { return; }`), so the mismatch compiled clean and the event silently\nvanished -- for as long as the handler existed. Nobody noticed because absence\nis invisible.\n\nThis is the same hazard class fz-kdt.34.4 documented for arity changes, now\nproven live for TYPE drift on an existing handler. Every\n`attach_raw_event*`/`attach_raw_span*` registration is one refactor away from\ngoing dead with no compile error and no test failure.\n\n## Deliver\n\nForce agreement between emit sites and attachments so drift is a hard failure,\nnot a silent drop. Candidate shapes (pick after research, prefer\ncorrect-by-construction over an audit):\n\n- Shared payload type aliases or a typed event-name registry: the name and its\n  payload tuple declared ONCE, both emit and attach reference it (drift = type\n  error).\n- Failing that: a coverage test that drives one real compile with a counting\n  handler per registered raw attachment and asserts every attachment matched\n  at least one event whose name it registered for (catches dead-on-every-\n  compile handlers like this one; document the events a trivial compile\n  genuinely never fires and probe them individually).\n- One-off audit of all current registrations against their emit sites is the\n  floor, not the fix -- record findings here if done first.\n\nfz-kdt.34.5 fixed the one known instance (retyped to u64) and its TDD-3 test\nnow pins demand_on_stall content publicly, so THIS event cannot silently die\nagain. The others remain unguarded.",
+  "id": "fz-kdt.51",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Silently-dead typed handlers: force emit/attach type agreement",
+  "type": "bug",
+  "updated_at": "2026-08-27T02:16:43Z"
+}
