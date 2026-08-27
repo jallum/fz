@@ -341,17 +341,36 @@ are produced for the positions and boundaries named by demanded executable
 products. Tests assert ShapeId relationships from the demanded
 `MaterializedTransportPlan` when correctness depends on sharing.
 
-`ProductDriver` (`pull.rs`) exposes three `[fz, compiler2, pull, product, *]`
-leaves. `cache_hit` and `reentered` carry the existing raw `ProductKey` and
-identify paths that do not run a producer. `settled` carries the raw
-`ProductKey` and authoritative `ProductValue` only after memo settlement
-succeeds. Waiting outcomes do not claim completion. There is no `requested`,
-`produced`, `waited`, or generic `finished` alias.
+`ProductDriver`/`ProductMemo` (`pull.rs`) expose four
+`[fz, compiler2, pull, product, *]` leaves, all public (allowlisted in
+`jsonl.rs::is_public_compiler2_trace_event`). `cache_hit` and `reentered` carry
+the existing raw `ProductKey` and identify paths that do not run a producer.
+`displaced` carries the raw `ProductKey` of a settled product the memo just
+displaced (rejected group member, or a reader invalidated by a changed
+dependency, stale fact, or explicit reproduction) -- Waiting outcomes do not
+claim completion, and there is no `requested`, `produced`, `waited`, or generic
+`finished` alias.
+
+`settled` is the memo's own act of installing a value, not the driver's: it
+fires once per PRODUCT that actually settles, from inside `ProductMemo::finish`
+and `ProductMemo::finish_group` -- the single authority for both. A group
+settle (`finish_group`, e.g. a callable-construction or transport-shape SCC)
+fires once per member, not once for the anchor `ProductDriver::pull` happened
+to be pulling; `ProductReadContext::publish_product`'s co-published members
+(a demand cone's non-anchor executables, an effect SCC's non-anchor
+executables) settle through the same `finish` authority and are equally
+visible. The event carries the raw `ProductKey`, the authoritative
+`ProductValue`, and a stack-built `ProductSettlement { generation, changed,
+group }`: `generation` and `changed` are the memo's own bookkeeping (no
+longer discarded after computation), and `group` is `Some(id)` for every
+member of one group settle (a monotone id, distinct per settle, `None`
+outside a group).
 
 Transport uses the same product events. A settled `TransportShape(position)` or
-`CallableConstruction(position)` event carries the raw `ProductKey` and
-`ProductValue`; handlers inspect the borrowed position-owned answer directly.
-There is no parallel projection, component, or solve event.
+`CallableConstruction(position)` event carries the raw `ProductKey`,
+`ProductValue`, and `ProductSettlement`; handlers inspect the borrowed
+position-owned answer directly. There is no parallel projection, component, or
+solve event.
 
 `[fz, compiler2, pull, session, finished]` (`pull.rs::PullSession::emit_finished`,
 called from `ProductDriver::finish_session`) fires once per pull session, when

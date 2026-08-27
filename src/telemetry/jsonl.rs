@@ -57,12 +57,21 @@ fn note_codegen_projection() {
     CODEGEN_PROJECTIONS.with(|count| count.set(count.get() + 1));
 }
 
+/// The buffered writer's auto-flush threshold: a write that pushes the
+/// internal buffer to at least this many bytes flushes immediately. Every
+/// production constructor uses this; only the `#[cfg(test)]`
+/// `new_public_writer_with_threshold` seam overrides it, to force a
+/// deterministic mid-stream flush boundary a test can reason about instead
+/// of one that depends on incidental total byte volume.
+const DEFAULT_FLUSH_THRESHOLD: usize = 64 * 1024;
+
 pub struct JsonlBackend {
     writer: RefCell<Box<dyn Write>>,
     buffer: RefCell<Vec<u8>>,
     start: Instant,
     public_compiler2_trace: bool,
     buffered: bool,
+    flush_threshold: usize,
 }
 
 impl JsonlBackend {
@@ -70,10 +79,11 @@ impl JsonlBackend {
         let f = File::create(path)?;
         Ok(Self {
             writer: RefCell::new(Box::new(f)),
-            buffer: RefCell::new(Vec::with_capacity(64 * 1024)),
+            buffer: RefCell::new(Vec::with_capacity(DEFAULT_FLUSH_THRESHOLD)),
             start: Instant::now(),
             public_compiler2_trace: false,
             buffered: false,
+            flush_threshold: DEFAULT_FLUSH_THRESHOLD,
         })
     }
 
@@ -202,9 +212,14 @@ impl JsonlBackend {
             "product",
         );
         let product_backend = Rc::clone(&backend);
-        telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductValue, _>(
+        telemetry.attach_raw_event3::<
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::ProductValue,
+            crate::compiler2::pull::ProductSettlement,
+            _,
+        >(
             &["fz", "compiler2", "pull", "product", "settled"],
-            move |name, span_id, parent_span_id, product, value| {
+            move |name, span_id, parent_span_id, product, value, settlement| {
                 product_backend.handle_raw_event(
                     name,
                     span_id,
@@ -212,6 +227,7 @@ impl JsonlBackend {
                     crate::metadata! {
                         product: crate::telemetry::opaque(product),
                         value: crate::telemetry::opaque(value),
+                        settlement: crate::telemetry::opaque(settlement),
                     },
                 );
             },
@@ -725,10 +741,11 @@ impl JsonlBackend {
     pub fn new_writer(w: impl Write + 'static) -> Self {
         Self {
             writer: RefCell::new(Box::new(w)),
-            buffer: RefCell::new(Vec::with_capacity(64 * 1024)),
+            buffer: RefCell::new(Vec::with_capacity(DEFAULT_FLUSH_THRESHOLD)),
             start: Instant::now(),
             public_compiler2_trace: false,
             buffered: false,
+            flush_threshold: DEFAULT_FLUSH_THRESHOLD,
         }
     }
 
@@ -737,6 +754,19 @@ impl JsonlBackend {
         let mut backend = Self::new_writer(w);
         backend.public_compiler2_trace = true;
         backend.buffered = true;
+        backend
+    }
+
+    /// A public-projection writer whose auto-flush threshold is `threshold`
+    /// bytes instead of the production 64KB -- lets a test that reasons
+    /// about the buffered/Drop-flush boundary itself (not about production
+    /// content) pick a threshold no natural compile's byte volume can
+    /// coincidentally straddle, rather than depending on incidental total
+    /// output size lining up (or not) with a fixed 64KB boundary.
+    #[cfg(test)]
+    pub fn new_public_writer_with_threshold(w: impl Write + 'static, threshold: usize) -> Self {
+        let mut backend = Self::new_public_writer(w);
+        backend.flush_threshold = threshold;
         backend
     }
 }
@@ -752,7 +782,7 @@ impl Handler for JsonlBackend {
         buf.push('\n');
         let mut buffer = self.buffer.borrow_mut();
         buffer.extend_from_slice(buf.as_bytes());
-        if !self.buffered || buffer.len() >= 64 * 1024 {
+        if !self.buffered || buffer.len() >= self.flush_threshold {
             let mut writer = self.writer.borrow_mut();
             write_buffer(&mut **writer, &mut buffer);
         }
@@ -799,6 +829,9 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
         ["fz", "compiler2", "pull", "session", ..]
             | ["fz", "compiler2", "pull", "phase", ..]
             | ["fz", "compiler2", "pull", "product", "settled"]
+            | ["fz", "compiler2", "pull", "product", "cache_hit"]
+            | ["fz", "compiler2", "pull", "product", "reentered"]
+            | ["fz", "compiler2", "pull", "product", "displaced"]
             | ["fz", "compiler2", "work", "started"]
             | ["fz", "compiler2", "demand", "cone", "settled"]
             | ["fz", "compiler2", "drive", "stalled"]
@@ -1302,6 +1335,22 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(':');
         write_str_lit(out, key.kind());
         write_product_key_identity(out, key);
+    } else if let Some(settlement) = opaque.downcast_ref::<crate::compiler2::pull::ProductSettlement>() {
+        out.push(',');
+        write_str_lit(out, "generation");
+        out.push(':');
+        push_u64(out, settlement.generation);
+        out.push(',');
+        write_str_lit(out, "changed");
+        out.push(':');
+        out.push_str(if settlement.changed { "true" } else { "false" });
+        out.push(',');
+        write_str_lit(out, "group");
+        out.push(':');
+        match settlement.group {
+            Some(group) => push_u64(out, group),
+            None => out.push_str("null"),
+        }
     } else if let Some(outcome) = opaque.downcast_ref::<crate::compiler2::pull::PullOutcome>() {
         out.push(',');
         write_str_lit(out, "status");

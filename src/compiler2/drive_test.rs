@@ -5554,11 +5554,29 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
     let tel = ConfiguredTelemetry::new();
     let demand_productions = Rc::new(Cell::new(0_u64));
     let demand_sink = Rc::clone(&demand_productions);
-    tel.attach_raw_event2::<crate::compiler2::ProductKey, crate::compiler2::pull::ProductValue, _>(
+    // fz-kdt.34.4: `pull.product.settled` now fires once per settled
+    // PRODUCT (memo-authoritative), not once per `ProductDriver::pull` call
+    // -- so this total is no longer a proxy for "how many cone pulls the
+    // driver ran" (that count WAS a floor: on this same fixture it read 3
+    // before fz-kdt.34.4, undercounting the true settle count by ~20x). The
+    // "without cycling" guarantee this test is named for is now checked
+    // directly: `demand_keys` is the set of DISTINCT settled RuntimeDemand
+    // product keys, so `total == distinct.len()` below is the literal
+    // absence of a re-settle -- a cycling regression would inflate the
+    // total past the distinct count instead.
+    let demand_keys: Rc<RefCell<HashSet<crate::compiler2::ProductKey>>> = Rc::new(RefCell::new(HashSet::new()));
+    let demand_keys_sink = Rc::clone(&demand_keys);
+    tel.attach_raw_event3::<
+        crate::compiler2::ProductKey,
+        crate::compiler2::pull::ProductValue,
+        crate::compiler2::pull::ProductSettlement,
+        _,
+    >(
         &["fz", "compiler2", "pull", "product", "settled"],
-        move |_, _, _, product, _| {
+        move |_, _, _, product, _, _| {
             if product.kind() == "runtime_demand" {
                 demand_sink.set(demand_sink.get() + 1);
+                demand_keys_sink.borrow_mut().insert(product.clone());
             }
         },
     );
@@ -5586,10 +5604,17 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
         "the run should settle at least one demand cone"
     );
     let demand_production_count = demand_productions.get();
+    let distinct_demand_products = demand_keys.borrow().len() as u64;
     assert!(
-        demand_production_count <= 8,
-        "RuntimeDemand settles whole cones at once: expected a handful of productions, got {}",
-        demand_production_count
+        distinct_demand_products >= 8,
+        "RuntimeDemand settles whole cones at once: expected more than a handful of distinct \
+         settled products on this fixture, got {distinct_demand_products}"
+    );
+    assert_eq!(
+        demand_production_count, distinct_demand_products,
+        "without cycling: every settled RuntimeDemand product key should settle exactly once \
+         (total settled events {demand_production_count} vs {distinct_demand_products} distinct \
+         product keys -- a gap would mean some product re-settled, i.e. cycling)"
     );
 }
 

@@ -323,14 +323,31 @@ fn public_stream_excludes_events_the_allowlist_filters_even_when_a_raw_capture_s
 }
 
 /// The buffered public writer only flushes reliably when its backend drops
-/// (`JsonlBackend::drop`) — for this two-formula compile the stream is over
-/// 64KB, so one auto-flush already fires mid-drive (`jsonl.rs`'s `buffered`
-/// threshold), leaving a non-empty but INCOMPLETE prefix sitting in the sink
-/// right up until drop. This is exactly the trap fz-kdt.34's own multi-day
-/// misdiagnosis fell into: reading "too early" looks like a legitimate,
-/// non-empty stream. `PublicTrace::compile` must encapsulate the fix — a
+/// (`JsonlBackend::drop`). This is exactly the trap fz-kdt.34's own
+/// multi-day misdiagnosis fell into: reading "too early" can look like a
+/// legitimate stream. `PublicTrace::compile` must encapsulate the fix — a
 /// caller who never sees the `Compiler2`/`ConfiguredTelemetry` gets the
 /// complete post-drop stream, not the pre-drop prefix.
+///
+/// Two sub-proofs, at two different auto-flush thresholds:
+///
+/// (1) at the PRODUCTION 64KB threshold, this two-formula compile's stream
+/// is well over 64KB, so at least one auto-flush has already fired by the
+/// time `drive()` returns — `pre_drop_len > 0` on its own is enough to show
+/// that (whether the very last bytes also happen to land exactly on a flush
+/// boundary is incidental to total byte volume, not something this proof
+/// depends on: fz-kdt.34.4 alone changed that volume by closing the product
+/// settlement undercount, precisely the kind of legitimate future volume
+/// change this sub-proof must stay robust to).
+///
+/// (2) at a threshold deliberately set past the whole stream's length
+/// (`usize::MAX`), NOTHING auto-flushes mid-drive by construction — every
+/// byte is still sitting in the backend's internal buffer when `drive()`
+/// returns, so `pre_drop_len` is deterministically `0` and `post_drop_len`
+/// (Drop's unconditional final flush) is deterministically the complete
+/// stream. This is the same "Drop must flush what's buffered" invariant as
+/// (1), proven without depending on any incidental byte-count alignment at
+/// all.
 #[test]
 fn compile_flushes_the_complete_stream_past_the_pre_drop_auto_flush() {
     let telemetry = crate::telemetry::ConfiguredTelemetry::new();
@@ -364,12 +381,46 @@ fn compile_flushes_the_complete_stream_past_the_pre_drop_auto_flush() {
         "expected the 64KB auto-flush to have already fired at least once mid-drive"
     );
     assert!(
-        post_drop_len > pre_drop_len,
-        "expected Drop to flush additional bytes past the pre-drop read (pre={pre_drop_len}, post={post_drop_len})"
+        post_drop_len >= pre_drop_len,
+        "Drop's flush must never lose bytes the mid-drive auto-flush already wrote \
+         (pre={pre_drop_len}, post={post_drop_len})"
     );
 
-    let pre_drop_events = parse_public_trace(&buf.borrow()[..pre_drop_len]);
-    let post_drop_events = parse_public_trace(&buf.borrow());
+    // Sub-proof (2): an unreachable auto-flush threshold, so Drop is
+    // observably the ONLY thing that ever moves bytes into the sink.
+    let telemetry = crate::telemetry::ConfiguredTelemetry::new();
+    let (unflushed_buf, unflushed_writer) = crate::telemetry::capture::vec_writer();
+    crate::telemetry::JsonlBackend::new_public_writer_with_threshold(unflushed_writer, usize::MAX).install(&telemetry);
+
+    let (outcome, pre_drop_len_unflushed) = {
+        let mut compiler = crate::compiler2::Compiler2::new(telemetry);
+        compiler.submit_code(crate::compiler2::CodeSubmission {
+            name: Some("public_trace_lifecycle_test.fz".to_string()),
+            text: TWO_FORMULA_SOURCE.to_string(),
+        });
+        compiler.submit_root(crate::compiler2::RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: crate::compiler2::ExecutableNeed::Value,
+        });
+        let outcome = compiler.drive();
+        (outcome, unflushed_buf.borrow().len())
+    };
+    assert!(matches!(outcome, DriveOutcome::Resolved));
+    let post_drop_len_unflushed = unflushed_buf.borrow().len();
+
+    assert_eq!(
+        pre_drop_len_unflushed, 0,
+        "an unreachable auto-flush threshold must leave the sink untouched until drop"
+    );
+    assert!(
+        post_drop_len_unflushed > 0,
+        "Drop must flush the complete buffered stream even when no auto-flush ever fired"
+    );
+
+    let pre_drop_events = parse_public_trace(&unflushed_buf.borrow()[..pre_drop_len_unflushed]);
+    let post_drop_events = parse_public_trace(&unflushed_buf.borrow());
     assert!(
         post_drop_events.len() > pre_drop_events.len(),
         "a pre-drop read must observe strictly fewer events than the complete stream"
@@ -470,4 +521,80 @@ fn backend_executable_product_settled_carries_identity_beyond_kind() {
         backend_executable.get("need").and_then(|v| v.as_str()).is_some(),
         "backend_executable product metadata missing need: {backend_executable:?}"
     );
+}
+
+/// fz-kdt.34.4: before this ticket, `pull.product.settled` fired at most
+/// once per `ProductDriver::pull` call -- an anchor-only event with no
+/// generation/changed/group at all -- so a settled GROUP's co-published
+/// members (every member besides the one the driver happened to pull, e.g.
+/// a callable-construction SCC or a demand cone) settled INVISIBLY. This
+/// proves, against the real public stream a production compile writes, that
+/// the undercount is closed: (a) is the handler-fires proof from the arity
+/// trap in the ticket -- it can only pass if the new arity-3
+/// `attach_raw_event3::<ProductKey, ProductValue, ProductSettlement, _>`
+/// handler in `jsonl.rs` actually fired and `write_opaque`'s new
+/// `ProductSettlement` arm actually rendered; (b) proves the group
+/// co-publication path specifically, by requiring more than one distinct
+/// `transport_shape` product key among the settled rows -- probed and
+/// confirmed stable: on this fixture `runtime_demand` collapses to a single
+/// executable (the two `identity` activations fully resolve into one
+/// backend executable, so its demand cone never grows a second member),
+/// while `transport_shape` -- settled through the exact same
+/// `ProductMemo::finish_group` authority a demand cone's co-publication
+/// used to bypass -- reliably produces over a dozen distinct member keys
+/// even on this small a program; (c) proves the newly-public
+/// `cache_hit`/`reentered`/`displaced` events ride the existing
+/// `["fz","compiler2","pull","product"]` prefix projection without a code
+/// change, and that adding `pull.product.settled`'s new arity did not
+/// silently disable that sibling arity-1 registration on the same prefix
+/// (the exact trap this ticket calls out).
+#[test]
+fn public_settled_events_carry_settlement_and_multiple_transport_shape_products_settle_with_a_cache_hit() {
+    let trace = PublicTrace::compile(SAME_FUNCTION_TWO_TYPES_SOURCE);
+    assert!(matches!(trace.outcome, DriveOutcome::Resolved));
+
+    let settled = trace.events_named(&["fz", "compiler2", "pull", "product", "settled"]);
+    assert!(
+        !settled.is_empty(),
+        "expected at least one settled product in the public stream"
+    );
+
+    // (a) THE PROOF the arity-3 settled handler fires and renders: every
+    // public settled row carries a `settlement` object with generation >= 1.
+    for ev in &settled {
+        let settlement = ev
+            .metadata_key("settlement")
+            .unwrap_or_else(|| panic!("settled event missing settlement metadata: {ev:?}"));
+        let generation = settlement
+            .get("generation")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_else(|| panic!("settlement missing generation: {settlement:?}"));
+        assert!(generation >= 1, "settlement generation must be >= 1, got {generation}");
+        assert!(
+            settlement.get("changed").and_then(|v| v.as_bool()).is_some(),
+            "settlement missing changed: {settlement:?}"
+        );
+        assert!(
+            settlement.get("group").is_some(),
+            "settlement missing group (should be present, null when not a group member): {settlement:?}"
+        );
+    }
+
+    // (b) the previously-silent group co-publication path: more than one
+    // distinct settled `transport_shape` product key appears.
+    let transport_shape_keys: std::collections::HashSet<String> = settled
+        .iter()
+        .filter_map(|ev| ev.metadata_key("product"))
+        .filter(|product| product.get("kind").and_then(|v| v.as_str()) == Some("transport_shape"))
+        .map(|product| product.to_string())
+        .collect();
+    assert!(
+        transport_shape_keys.len() > 1,
+        "expected more than one distinct settled transport_shape product key \
+         (a settled group's co-published members), got {transport_shape_keys:?}"
+    );
+
+    // (c) the allowlist addition is observable: cache_hit is public.
+    let cache_hits = trace.events_named(&["fz", "compiler2", "pull", "product", "cache_hit"]);
+    assert!(!cache_hits.is_empty(), "expected at least one public cache_hit event");
 }

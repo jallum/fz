@@ -344,7 +344,7 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
     let mut actual_flow_edges: HashMap<ExecutableKey, HashSet<ExecutableKey>> = HashMap::new();
     let mut retry_guard = None;
     loop {
-        let graph = match collect_demand_cone(context, executable, &actual_flow_edges) {
+        let graph = match collect_demand_cone(tel, context, executable, &actual_flow_edges) {
             Ok(graph) => graph,
             Err(waits) => return product_waits(waits),
         };
@@ -419,11 +419,13 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
                 }
             }
             displaced.extend(context.session_mut().replace_settled_return_demand_contributions(
+                tel,
                 member.clone(),
                 return_demand_contributions,
                 &members,
             ));
             displaced.extend(context.session_mut().replace_settled_input_demand_contributions(
+                tel,
                 member,
                 input_demand_contributions,
                 &members,
@@ -480,6 +482,7 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
                 continue;
             }
             context.publish_product(
+                tel,
                 ProductKey::RuntimeDemand(member.clone()),
                 ProductValue::RuntimeDemand(Box::new(member_demand.clone())),
             );
@@ -518,6 +521,7 @@ struct TargetDemandContribution {
 }
 
 fn collect_demand_cone(
+    tel: &impl Telemetry,
     context: &mut ProductReadContext<'_>,
     anchor: &ExecutableKey,
     actual_flow_edges: &HashMap<ExecutableKey, HashSet<ExecutableKey>>,
@@ -533,12 +537,12 @@ fn collect_demand_cone(
             continue;
         }
         if current != *anchor
-            && let Some(demand) = context.read_runtime_demand(&current)
+            && let Some(demand) = context.read_runtime_demand(tel, &current)
         {
             external.insert(current, demand.clone());
             continue;
         }
-        let Some(current_facts) = context.read_executable_facts(&current) else {
+        let Some(current_facts) = context.read_executable_facts(tel, &current) else {
             waits.insert(PullWait::Product(ProductKey::ExecutableFacts(current)));
             continue;
         };
@@ -840,17 +844,18 @@ fn derive_member_demand(
     (derived.demand, contributions)
 }
 
-pub(crate) fn produce_outgoing_input_edges_product(
+pub(crate) fn produce_outgoing_input_edges_product<T: Telemetry>(
     world: &mut World,
+    tel: &T,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
     let mut waits = HashSet::new();
-    let Some(facts) = context.read_executable_facts(executable) else {
+    let Some(facts) = context.read_executable_facts(tel, executable) else {
         waits.insert(PullWait::Product(ProductKey::ExecutableFacts(executable.clone())));
         return product_waits(waits);
     };
-    let Some(runtime_demand) = context.read_runtime_demand(executable) else {
+    let Some(runtime_demand) = context.read_runtime_demand(tel, executable) else {
         waits.insert(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
         return product_waits(waits);
     };
