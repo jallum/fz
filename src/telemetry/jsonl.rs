@@ -384,7 +384,7 @@ impl JsonlBackend {
             },
         );
         let stall_backend = Rc::clone(backend);
-        telemetry.attach_raw_event2::<usize, std::collections::HashSet<crate::compiler2::FactKey>, _>(
+        telemetry.attach_raw_event2::<u64, std::collections::HashSet<crate::compiler2::FactKey>, _>(
             &["fz", "compiler2", "drive", "demand_on_stall"],
             move |name, span_id, parent_span_id, producer_pokes, demanded_facts| {
                 stall_backend.handle_raw_event(
@@ -394,6 +394,16 @@ impl JsonlBackend {
                     crate::metadata! {
                         producer_pokes: *producer_pokes,
                         demanded_facts: crate::telemetry::opaque(demanded_facts),
+                        // Hard-coded, not read off the emit: `demand_on_stall`
+                        // has exactly one emit site (drive.rs's `drive_until`
+                        // stall pass), and every fact it names was demanded
+                        // through that single call to
+                        // `world.demand_fact_producer(fact,
+                        // WorkStartReason::BlockedWaiterExpansion)` — the
+                        // reason is uniform by construction, so projecting it
+                        // here is safe without threading it through the emit
+                        // itself.
+                        reason: "blocked_waiter_expansion",
                     },
                 );
             },
@@ -836,6 +846,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "demand", "cone", "settled"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
+            | ["fz", "compiler2", "drive", "demand_on_stall"]
             | ["fz", "compiler2", "job"]
             | ["fz", "compiler2", "work_graph", "applied"]
             | ["fz", "compiler2", "backend_program", "defined"]
@@ -1460,6 +1471,28 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "value");
         out.push(':');
         write_str_lit(out, &format!("{summary:?}"));
+    } else if let Some(facts) = opaque.downcast_ref::<std::collections::HashSet<crate::compiler2::FactKey>>() {
+        // The stall pass's cumulative demand set (`demand_on_stall`'s
+        // `stall_demanded`, drive.rs). It is a `HashSet`, so its iteration
+        // order is a `RandomState` artifact — presentation-sort the
+        // rendered identities, same as `write_blocked`/`render_movement`.
+        out.push(',');
+        write_str_lit(out, "count");
+        out.push(':');
+        push_u64(out, facts.len() as u64);
+        out.push(',');
+        write_str_lit(out, "facts");
+        out.push(':');
+        out.push('[');
+        let mut rendered = facts.iter().map(render_fact_identity).collect::<Vec<_>>();
+        rendered.sort();
+        for (index, entry) in rendered.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(entry);
+        }
+        out.push(']');
     }
     out.push('}');
 }

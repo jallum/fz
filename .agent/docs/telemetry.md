@@ -286,16 +286,34 @@ analysis and, for each blocked waiter's fact not already demanded since the
 last content change, pokes that fact's mapped producer through the
 fact->producer map (`demand_fact_producer`). If that expansion pokes at least
 one producer, the pass emits `[fz, compiler2, drive, demand_on_stall]`
-(raw event, no span) with `&usize` for the total pokes this round and the
-existing demanded fact set as a raw borrow. This lets a test
-or trace tell *which* facts were stalled, not just that a stall-demand
-happened. A round with `producer_pokes == 0` is a genuine stall: the drive
-breaks out and reports `DriveOutcome::Unresolved` instead of emitting the
-event. Separately, `[fz, compiler2, drive, timed_out]` fires when a deadline
-passed to `drive` elapses mid-agenda, before any stall pass runs. It carries
-only the independently semantic raw configured timeout; `pending_jobs`
-and `jobs_ran` belong to the drive span's raw `TimedOut` outcome. JSON and test
-handlers derive `timeout_ms` during the callback.
+(raw event, no span) with `&u64` for the total pokes this round and the
+existing demanded fact set (`&HashSet<FactKey>`) as a raw borrow. `demand_on_stall`
+is public (allowlisted in `is_public_compiler2_trace_event`, `jsonl.rs`):
+its projected metadata carries `"producer_pokes"`, a `"demanded_facts"`
+object with `"count"` and a `"facts"` array of presentation-sorted full fact
+identities (`kind` + ids, via `render_fact_identity` — the same
+presentation-boundary sort `blocked`/`movements` use, since the source is a
+`HashSet`), and a hard-coded `"reason":"blocked_waiter_expansion"` — safe to
+hard-code because `demand_on_stall` has exactly one emit site and every
+member of the demanded set was passed through that one call to
+`demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion)`. This
+lets a public trace name *which* facts were stalled and why, not just that a
+stall-demand happened — the aggregate `pull.session.finished` tally
+(`work_starts_blocked_waiter_expansion`) says how many; this event says
+which one, and its fact->producer expansion is readable from the same log by
+matching the next `work_graph.applied` completion the fact's producer job
+runs as. One caveat: `stall_demanded` (and so `"demanded_facts"`) is
+cumulative across stall passes within a single drive — it is cleared only
+when something changed since the last stall (`changed_since_stall`) — so
+each event carries the running demanded set at that pass, not a per-pass
+delta; a later event's `"facts"` is a superset of an earlier one's unless the
+set was cleared in between. A round with `producer_pokes == 0` is a genuine
+stall: the drive breaks out and reports `DriveOutcome::Unresolved` instead of
+emitting the event. Separately, `[fz, compiler2, drive, timed_out]` fires
+when a deadline passed to `drive` elapses mid-agenda, before any stall pass
+runs. It carries only the independently semantic raw configured timeout;
+`pending_jobs` and `jobs_ran` belong to the drive span's raw `TimedOut`
+outcome. JSON and test handlers derive `timeout_ms` during the callback.
 
 Product artifact producers lean on pull telemetry as their contract surface. The
 tests assert that the interpreter front door requests `RootBackendProduct(root)`,

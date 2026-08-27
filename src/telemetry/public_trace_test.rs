@@ -598,3 +598,79 @@ fn public_settled_events_carry_settlement_and_multiple_transport_shape_products_
     let cache_hits = trace.events_named(&["fz", "compiler2", "pull", "product", "cache_hit"]);
     assert!(!cache_hits.is_empty(), "expected at least one public cache_hit event");
 }
+
+/// fz-kdt.34.5: `demand_on_stall`'s aggregate tally (`pull.session.finished`'s
+/// `work_starts_blocked_waiter_expansion`) says how many work starts were a
+/// blocked-waiter expansion, but never which fact drove any one of them.
+/// This test pins the whole chain from the public log alone, for
+/// `TWO_FORMULA_SOURCE`'s deterministic first stall: `main/0` (function id
+/// 0, the root's own entry function) is submitted before its `FunctionDefined`
+/// fact exists, so the root's `SeedRoot` blocks on it and the very first
+/// stall pass demands its producer.
+///
+/// (a) `demand_on_stall` is public at all (today it is not in the
+/// allowlist, so this alone is the red assertion), with at least one
+/// producer poked; (b) its `demanded_facts.facts` array names the exact
+/// fact — `{"kind":"FunctionDefined","function_id":0}` — with
+/// `"reason":"blocked_waiter_expansion"`; (c) the chain closes: a later
+/// `work_graph.applied` event's `completion` is `DefineFunction(0)`, the
+/// job `World::demand_fact_producer` maps `FunctionDefined` to
+/// (drive.rs's fact->producer map).
+#[test]
+fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
+    let trace = PublicTrace::compile(TWO_FORMULA_SOURCE);
+    assert!(matches!(trace.outcome, DriveOutcome::Resolved));
+
+    let events = trace.events();
+    let (stall_index, stall_event) = events
+        .iter()
+        .enumerate()
+        .find(|(_, ev)| named(ev, &["fz", "compiler2", "drive", "demand_on_stall"]))
+        .unwrap_or_else(|| panic!("expected a public fz.compiler2.drive.demand_on_stall event"));
+
+    // (a) present, with a real producer poke.
+    let producer_pokes = stall_event
+        .metadata_key("producer_pokes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| panic!("demand_on_stall missing producer_pokes: {stall_event:?}"));
+    assert!(
+        producer_pokes >= 1,
+        "expected demand_on_stall's producer_pokes >= 1, got {producer_pokes}"
+    );
+
+    // (b) the exact demanded fact, and the uniform reason.
+    let demanded_facts = stall_event
+        .metadata_key("demanded_facts")
+        .unwrap_or_else(|| panic!("demand_on_stall missing demanded_facts: {stall_event:?}"));
+    let facts = demanded_facts
+        .get("facts")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("demanded_facts missing a facts array: {demanded_facts:?}"));
+    let pinned_fact = serde_json::json!({"kind": "FunctionDefined", "function_id": 0});
+    assert!(
+        facts.contains(&pinned_fact),
+        "expected demand_on_stall's demanded_facts.facts to contain {pinned_fact}, got {facts:?}"
+    );
+    assert_eq!(
+        stall_event.metadata_key("reason").and_then(|v| v.as_str()),
+        Some("blocked_waiter_expansion"),
+        "expected demand_on_stall's reason to be blocked_waiter_expansion, got {:?}",
+        stall_event.metadata_key("reason")
+    );
+
+    // (c) the chain closes: the fact->producer map sends `FunctionDefined(0)`
+    // to `Job::DefineFunction(0)` — a later public work_graph.applied event
+    // must run exactly that job.
+    let closes_to_producer = events[stall_index + 1..].iter().any(|ev| {
+        named(ev, &["fz", "compiler2", "work_graph", "applied"])
+            && ev.metadata_key("completion").is_some_and(|completion| {
+                completion.get("kind").and_then(|v| v.as_str()) == Some("DefineFunction")
+                    && completion.get("function_id").and_then(|v| v.as_u64()) == Some(0)
+            })
+    });
+    assert!(
+        closes_to_producer,
+        "expected a work_graph.applied event after the stall pass running DefineFunction(0), \
+         the producer FunctionDefined(0) maps to"
+    );
+}
