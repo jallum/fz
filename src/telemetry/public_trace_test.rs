@@ -154,13 +154,125 @@ fn job_span_metadata_carries_kind_on_start_and_completion_on_stop() {
     }
 }
 
+/// The identity portion of a `work_graph.applied` completion object — its
+/// `"kind"` plus id fields — with the non-identity fields (`opaque_type`,
+/// `rebased`, and the applied-step batches) stripped out. Lets a test
+/// compare "this job" (as `wakes[].job` renders it) against "this
+/// completion" (as the top-level `JobCompletion` opaque body renders it)
+/// even though the two renderers include a different set of surrounding
+/// keys.
+fn completion_job_identity(completion: &serde_json::Value) -> serde_json::Value {
+    fact_identity(
+        completion,
+        &["opaque_type", "rebased", "changed", "wakes", "movements", "blocked"],
+    )
+}
+
+/// `value` with `exclude` keys stripped, for comparing two differently
+/// shaped renderings of "the same identity" (a `FactChange`'s `"kind"` +
+/// ids vs. a `FactUse`'s `"use"` + `"kind"` + ids, or a `JobCompletion`'s
+/// `"kind"` + ids vs. a `Wake`'s `job` object).
+fn fact_identity(value: &serde_json::Value, exclude: &[&str]) -> serde_json::Value {
+    let object = value
+        .as_object()
+        .unwrap_or_else(|| panic!("expected a JSON object, got {value:?}"));
+    let mut identity = serde_json::Map::new();
+    for (key, v) in object {
+        if exclude.contains(&key.as_str()) {
+            continue;
+        }
+        identity.insert(key.clone(), v.clone());
+    }
+    serde_json::Value::Object(identity)
+}
+
+/// fz-kdt.34.3's acceptance scenario: the causal chain a `work_graph.applied`
+/// completion carries — cause fact -> attributed wake -> the woken job's own
+/// later evaluation — must be readable end to end from the *public* log
+/// alone, the same stream `fz2 --log-telemetry` writes in production.
+///
+/// This picks the first `IndexCode` completion that woke something (a
+/// stable early link: `IndexCode` is always among the first jobs to run and
+/// its `CodeIndexed` output always has a subscriber), and proves three
+/// things hold together: the wake's `cause` is genuinely one of *this*
+/// completion's own `changed` facts (not asserted in a vacuum), the
+/// disposition is the woken job's real work start, and a later
+/// `work_graph.applied` event exists for exactly that woken job — i.e. the
+/// public log lets a reader walk cause -> wake -> evaluation in order.
+#[test]
+fn work_graph_applied_carries_a_readable_cause_wake_evaluation_chain() {
+    let trace = PublicTrace::compile(TWO_FORMULA_SOURCE);
+    assert!(matches!(trace.outcome, DriveOutcome::Resolved));
+
+    let applied = trace.events_named(&["fz", "compiler2", "work_graph", "applied"]);
+    assert!(!applied.is_empty(), "expected at least one work_graph.applied event");
+
+    let (cause_index, cause_completion, wake) = applied
+        .iter()
+        .enumerate()
+        .find_map(|(index, ev)| {
+            let completion = ev.metadata_key("completion")?;
+            if completion.get("kind").and_then(|v| v.as_str()) != Some("IndexCode") {
+                return None;
+            }
+            let wake = completion.get("wakes")?.as_array()?.first()?.clone();
+            Some((index, completion, wake))
+        })
+        .unwrap_or_else(|| panic!("expected an IndexCode work_graph.applied event with at least one wake"));
+
+    // The cause is not asserted in a vacuum: it must be one of this same
+    // completion's own changed facts.
+    let cause = wake.get("cause").expect("wake missing \"cause\"");
+    let changed = cause_completion
+        .get("changed")
+        .and_then(|v| v.as_array())
+        .expect("completion missing \"changed\" array");
+    let cause_identity = fact_identity(cause, &["use"]);
+    assert!(
+        changed.iter().any(|change| fact_identity(
+            change,
+            &["old_revision", "new_revision", "old_settled", "new_settled"]
+        ) == cause_identity),
+        "the wake's cause {cause:?} must be one of this completion's own changed facts: {changed:?}"
+    );
+
+    assert_eq!(
+        wake.get("disposition").and_then(|v| v.as_str()),
+        Some("enqueued"),
+        "the first wake a fresh job receives should be its real work start: {wake:?}"
+    );
+
+    // The chain closes: the woken job must itself later report its own
+    // work_graph.applied completion, after the event that caused it.
+    let woken_job = wake.get("job").expect("wake missing \"job\"");
+    let evaluation = applied.iter().enumerate().skip(cause_index + 1).find(|(_, ev)| {
+        let completion = ev
+            .metadata_key("completion")
+            .expect("work_graph.applied event missing \"completion\"");
+        &completion_job_identity(completion) == woken_job
+    });
+    assert!(
+        evaluation.is_some(),
+        "expected a later work_graph.applied event for the woken job {woken_job:?} \
+         (the event that caused it is at index {cause_index} of {} applied events)",
+        applied.len()
+    );
+}
+
 /// Guard: proves the helper cannot see anything the production allowlist
-/// would filter out. `work_graph.applied` fires unconditionally on every job
-/// completion (`drive.rs`) but is never in `is_public_compiler2_trace_event`.
+/// would filter out. `["fz","compiler2","function","defined"]` fires
+/// unconditionally on every function definition (`World::define_function`,
+/// via `emit_world_key`) but is never in `is_public_compiler2_trace_event`.
 /// A raw `Capture` attached alongside the public writer sees it; the parsed
 /// public stream must not. Hand-assembled here (rather than through
 /// `PublicTrace::compile`) so the helper's API stays minimal — this is a
 /// one-off boundary proof, not a query surface tests need routinely.
+///
+/// `work_graph.applied` used to be this test's witness — before fz-kdt.34.3
+/// it fired unconditionally on every job completion but was excluded from
+/// the allowlist the same way. fz-kdt.34.3 makes it public, so a witness
+/// that stays excluded had to move; this test now also asserts the positive
+/// side of that change — the public stream DOES carry `work_graph.applied`.
 #[test]
 fn public_stream_excludes_events_the_allowlist_filters_even_when_a_raw_capture_sees_them() {
     let telemetry = crate::telemetry::ConfiguredTelemetry::new();
@@ -186,9 +298,9 @@ fn public_stream_excludes_events_the_allowlist_filters_even_when_a_raw_capture_s
     assert!(matches!(outcome, DriveOutcome::Resolved));
 
     assert!(
-        raw.contains(&["fz", "compiler2", "work_graph", "applied"]),
-        "the raw capture, which bypasses the allowlist, must see work_graph.applied \
-         (it fires unconditionally on every job completion)"
+        raw.contains(&["fz", "compiler2", "function", "defined"]),
+        "the raw capture, which bypasses the allowlist, must see function.defined \
+         (it fires unconditionally on every function definition)"
     );
 
     let public = parse_public_trace(&buf.borrow());
@@ -199,8 +311,14 @@ fn public_stream_excludes_events_the_allowlist_filters_even_when_a_raw_capture_s
     assert!(
         public
             .iter()
-            .all(|ev| !named(ev, &["fz", "compiler2", "work_graph", "applied"])),
-        "the public stream must never contain work_graph.applied — it is not in the production allowlist"
+            .all(|ev| !named(ev, &["fz", "compiler2", "function", "defined"])),
+        "the public stream must never contain function.defined — it is not in the production allowlist"
+    );
+    assert!(
+        public
+            .iter()
+            .any(|ev| named(ev, &["fz", "compiler2", "work_graph", "applied"])),
+        "work_graph.applied is public as of fz-kdt.34.3 — the allowlist change must be observable"
     );
 }
 

@@ -249,6 +249,37 @@ on `AppliedStep` and `JobCompletion` render each waited-on `FactKey` as its
 own identity object, sorted as rendered strings (a presentation-boundary
 sort) rather than as bare kind strings.
 
+`[fz, compiler2, work_graph, applied]` is public (fz-kdt.34.3). It fires
+unconditionally on every job completion — all five `ExecutionContext::
+complete_job` call sites (`compiler.rs`, `drive.rs`, `product_drive.rs`,
+`jobs/native.rs`, `jobs/macro_runtime.rs`) route through `emit_job_completion`
+(`drive.rs`), which always emits it — carrying the raw `JobCompletion` under
+`metadata.completion`. `write_applied_step_body` (`jsonl.rs`) renders the
+shared `AppliedStep` body once and both the standalone `AppliedStep` opaque
+arm and the `JobCompletion` arm call it, so the two can never drift apart:
+`"changed"` is every `FactChange` as a full identity object (`kind` + ids,
+`old_revision`/`new_revision`, `old_settled`/`new_settled`), in the
+completion's own emission order; `"wakes"` is every `Wake` this completion
+caused, in wake order, each `{"cause": <FactUse identity>, "job": <Job
+identity>, "disposition": "enqueued"|"coalesced", "shift": bool}` —
+`AppliedStep::wakes` replaced the old deduped `enqueued`/`coalesced` job
+lists, so a job coalesced by two distinct causes in the same `Scheduler::
+complete` call now renders as two `Wake` records, not one; `"movements"` is
+the full post-wave `FactMovement` report, each entry a full identity object.
+Both `"movements"` and the event's own `"semantic":{"reads":[...]}` (the
+completed job's current `deps.reads`, read directly off
+`World.work_graph.reads` at render time — nothing new is stored) are
+rendered as presentation-sorted strings, because their source in both cases
+is a `HashSet` with no meaningful iteration order — the same
+presentation-boundary sort the blocked-wait lists already used.
+
+The `[fz, compiler2, job]` span still covers only two of these five
+completion sites (`drive.rs`'s and `product_drive.rs`'s job-pop loops, the
+only two callers wrapped in `start_job_span`/`stop_job_span`); that stays a
+deliberate timing-only measurement, unchanged by this. `work_graph.applied`
+is the one signal that observes every completion — it is the causality
+record, the job span is the clock.
+
 When the agenda drains with unresolved waiters, `ExecutionContext::drive()`
 (`drive.rs`) runs its stall pass: it demands every submitted root's entry
 analysis and, for each blocked waiter's fact not already demanded since the

@@ -384,3 +384,20 @@ AnalyzeActivation(a) re-runs against the new body.
   the same rule: call one observer-free `World` semantic core, then emit from
   the returned decision and immutable `World` getters; the context never owns
   store mutation or invariants.
+
+`AppliedStep<J, F>` is `Scheduler::complete`'s report of one completion's
+effect on the graph: `outputs` (this job's published keys), `changed` (the
+`FactChange`s that resulted), `movements` (the full post-wave state of every
+fact this completion or its cascade touched), `wakes`, and `blocked` (the
+waits, if any, this completion left standing). `wakes: Vec<Wake<J, F>>` is
+every wake this completion caused, in wake order; each `Wake` attributes one
+`job` to the `cause: FactUse<F>` that moved it, carries `disposition`
+(`Enqueued` — the job's real work start — or `Coalesced` — the job was
+already pending) and `shift` (the same ground-shift-vs-ascent classification
+`complete` computed for `cause`). A job can carry more than one `Wake` in one
+`AppliedStep`: `enqueue_step` records one per cause, so a job coalesced by
+two distinct causes in the same `complete` call gets two `Wake`s, not one
+deduped entry — coalescing a job's *evaluation* must not coalesce away *why*
+it woke. This replaced the earlier `enqueued: Vec<J>` /
+`coalesced: Vec<J>` fields, which reported only the deduped job lists with no
+cause attribution.

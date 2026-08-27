@@ -80,18 +80,48 @@ impl WorkStartTally {
     }
 }
 
+/// Whether a wake newly started a job or found it already pending.
+///
+/// `Enqueued`: `Agenda::enqueue` transitioned the job from absent to pending
+/// — a new work start (tallied under `WorkStartReason::ChangedRevisionWake`).
+///
+/// `Coalesced`: the job was already pending in the agenda from an earlier
+/// wake this same `complete` call (agenda dedupe: `Agenda::enqueue` returned
+/// false because the job was already queued). This is the only coalescing
+/// source — there is no standing-conclusion coalescing left to conflate it
+/// with. A job can be coalesced more than once in one `complete` call, once
+/// per additional cause that finds it already pending; each is its own
+/// record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeDisposition {
+    Enqueued,
+    Coalesced,
+}
+
+/// One attributable wake: `cause` is the fact use whose change made `job`
+/// re-enter (or attempt to re-enter) the agenda, `disposition` says whether
+/// that attempt was the job's new work start or found it already pending,
+/// and `shift` carries the same ground-shift-vs-ascent classification
+/// `complete` computed for `cause`. Wake order is preserved (the order
+/// `enqueue_dependents` visited causes), and a single job can carry more
+/// than one `Wake` in the same `AppliedStep` — one per cause that touched
+/// it.
+#[derive(Debug, Clone)]
+pub struct Wake<J, F> {
+    pub cause: FactUse<F>,
+    pub job: J,
+    pub disposition: WakeDisposition,
+    pub shift: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
     pub outputs: OrderedSet<F>,
     pub changed: Vec<FactChange<F>>,
     pub movements: Vec<FactMovement<F>>,
-    pub enqueued: Vec<J>,
-    /// Jobs this wave woke that were already pending in the agenda from an
-    /// earlier wake this same `complete` call (agenda dedupe: `Agenda::enqueue`
-    /// returned false because the job was already queued). This is the only
-    /// source — there is no standing-conclusion coalescing left to conflate it
-    /// with.
-    pub coalesced: Vec<J>,
+    /// Every wake this completion caused, in wake order, each carrying its
+    /// own cause and disposition (see `Wake`).
+    pub wakes: Vec<Wake<J, F>>,
     pub blocked: Vec<FactUse<F>>,
 }
 
@@ -297,9 +327,7 @@ where
             concluded
         };
 
-        let mut enqueued = Vec::new();
-        let mut coalesced = Vec::new();
-        let mut coalesced_seen = HashSet::new();
+        let mut wakes = Vec::new();
         let mut pending_changes = replaced.changed.clone();
         pending_changes.extend(dirtied);
         let mut moved_keys = HashSet::new();
@@ -317,26 +345,20 @@ where
                     FactUse::current(change.key.clone()),
                     shift,
                     &mut pending_changes,
-                    &mut enqueued,
-                    &mut coalesced,
-                    &mut coalesced_seen,
+                    &mut wakes,
                 );
                 self.enqueue_dependents(
                     FactUse::settled(change.key.clone()),
                     shift,
                     &mut pending_changes,
-                    &mut enqueued,
-                    &mut coalesced,
-                    &mut coalesced_seen,
+                    &mut wakes,
                 );
                 if change.readiness_changed() {
                     self.enqueue_dependents(
                         FactUse::settled_presence(change.key.clone()),
                         false,
                         &mut pending_changes,
-                        &mut enqueued,
-                        &mut coalesced,
-                        &mut coalesced_seen,
+                        &mut wakes,
                     );
                 }
             } else if change.readiness_changed() {
@@ -344,17 +366,13 @@ where
                     FactUse::settled(change.key.clone()),
                     false,
                     &mut pending_changes,
-                    &mut enqueued,
-                    &mut coalesced,
-                    &mut coalesced_seen,
+                    &mut wakes,
                 );
                 self.enqueue_dependents(
                     FactUse::settled_presence(change.key.clone()),
                     false,
                     &mut pending_changes,
-                    &mut enqueued,
-                    &mut coalesced,
-                    &mut coalesced_seen,
+                    &mut wakes,
                 );
             }
             moved_keys.insert(change.key);
@@ -370,8 +388,7 @@ where
             outputs: replaced.output_keys,
             changed: replaced.changed,
             movements,
-            enqueued,
-            coalesced,
+            wakes,
             blocked,
         }
     }
@@ -379,17 +396,26 @@ where
     /// The changed-revision wake path: a subscriber's fact use changed, so it
     /// re-enters the agenda under `WorkStartReason::ChangedRevisionWake` --
     /// the one work-start reason that is never passed in by a caller, since
-    /// it names the wake mechanism itself, not an external demand.
-    fn enqueue_step(&mut self, job: J, enqueued: &mut Vec<J>, coalesced: &mut Vec<J>, coalesced_seen: &mut HashSet<J>) {
-        if self.agenda.enqueue(job.clone()) {
+    /// it names the wake mechanism itself, not an external demand. Records
+    /// one `Wake` attributing `job` to `cause`, whatever the disposition —
+    /// there is no dedupe here, since a distinct cause is a distinct
+    /// attribution even when it lands on an already-pending job.
+    fn enqueue_step(&mut self, job: J, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<J, F>>) {
+        let disposition = if self.agenda.enqueue(job.clone()) {
             *self
                 .work_starts
                 .entry(WorkStartReason::ChangedRevisionWake)
                 .or_insert(0) += 1;
-            enqueued.push(job);
-        } else if coalesced_seen.insert(job.clone()) {
-            coalesced.push(job);
-        }
+            WakeDisposition::Enqueued
+        } else {
+            WakeDisposition::Coalesced
+        };
+        wakes.push(Wake {
+            cause: cause.clone(),
+            job,
+            disposition,
+            shift,
+        });
     }
 
     fn enqueue_dependents(
@@ -397,9 +423,7 @@ where
         fact_use: FactUse<F>,
         shift: bool,
         pending_changes: &mut Vec<FactChange<F>>,
-        enqueued: &mut Vec<J>,
-        coalesced: &mut Vec<J>,
-        coalesced_seen: &mut HashSet<J>,
+        wakes: &mut Vec<Wake<J, F>>,
     ) {
         for job in self.deps.subscribers(&fact_use) {
             let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
@@ -407,7 +431,7 @@ where
             if shift {
                 self.rebased.insert(job.clone());
             }
-            self.enqueue_step(job, enqueued, coalesced, coalesced_seen);
+            self.enqueue_step(job, &fact_use, shift, wakes);
         }
 
         for job in self.deps.waiters(&fact_use) {
@@ -420,7 +444,7 @@ where
             if shift {
                 self.rebased.insert(job.clone());
             }
-            self.enqueue_step(job, enqueued, coalesced, coalesced_seen);
+            self.enqueue_step(job, &fact_use, shift, wakes);
         }
     }
 }

@@ -804,6 +804,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
             | ["fz", "compiler2", "job"]
+            | ["fz", "compiler2", "work_graph", "applied"]
             | ["fz", "compiler2", "backend_program", "defined"]
             | ["fz", "compiler2", "native_program", "defined"]
             | ["fz", "compiler2", "native_program", "reusable_cons"]
@@ -900,6 +901,34 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                 out.push(']');
             }
             out.push('}');
+        }
+        out.push_str("]}");
+        return;
+    }
+    if ev.name == ["fz", "compiler2", "work_graph", "applied"] {
+        let Some(completion) = ev
+            .metadata
+            .get("completion")
+            .and_then(Value::downcast_ref::<crate::compiler2::JobCompletion>)
+        else {
+            return;
+        };
+        // `reads` comes from `deps`' `HashSet`, so presentation-sort the
+        // rendered identities rather than trusting iteration order.
+        let mut reads = world
+            .work_graph
+            .reads(&completion.job)
+            .into_iter()
+            .flatten()
+            .map(render_fact_use_identity)
+            .collect::<Vec<_>>();
+        reads.sort();
+        out.push_str(",\"semantic\":{\"reads\":[");
+        for (index, entry) in reads.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(entry);
         }
         out.push_str("]}");
         return;
@@ -1247,15 +1276,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
     } else if let Some(step) =
         opaque.downcast_ref::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>>()
     {
-        out.push(',');
-        write_str_lit(out, "changed");
-        out.push(':');
-        push_u64(out, step.changed.len() as u64);
-        out.push(',');
-        write_str_lit(out, "enqueued");
-        out.push(':');
-        push_u64(out, step.enqueued.len() as u64);
-        write_blocked(out, &step.blocked);
+        write_applied_step_body(out, step);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
         write_activation_key(out, key);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::CallSiteKey>() {
@@ -1350,15 +1371,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "rebased");
         out.push(':');
         out.push_str(if completion.rebased { "true" } else { "false" });
-        out.push(',');
-        write_str_lit(out, "changed");
-        out.push(':');
-        push_u64(out, completion.step.changed.len() as u64);
-        out.push(',');
-        write_str_lit(out, "enqueued");
-        out.push(':');
-        push_u64(out, completion.step.enqueued.len() as u64);
-        write_blocked(out, &completion.step.blocked);
+        write_applied_step_body(out, &completion.step);
     } else if let Some(world) = opaque.downcast_ref::<crate::compiler2::World>() {
         let (codes, roots, frontier) = world.telemetry_counts();
         out.push(',');
@@ -1712,6 +1725,147 @@ fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::c
         out.push_str(entry);
     }
     out.push(']');
+}
+
+/// The use-marker for a `FactUse`, shared by every renderer that needs to
+/// distinguish which subscription a fact identity is standing in for.
+fn fact_use_marker<F>(fact_use: &crate::compiler2::FactUse<F>) -> &'static str {
+    use crate::compiler2::FactUse;
+    match fact_use {
+        FactUse::Current(_) => "current",
+        FactUse::Settled(_) => "settled",
+        FactUse::SettledPresence(_) => "settled_presence",
+    }
+}
+
+/// The identity payload for a `FactUse<FactKey>`: the use marker plus the
+/// underlying fact's own identity (`"kind"` + ids), as one self-contained
+/// object. Shared by `wakes[].cause` and `semantic.reads[]` — both project a
+/// fact subscription, not a bare fact.
+fn write_fact_use_identity(out: &mut String, fact_use: &crate::compiler2::FactUse<crate::compiler2::FactKey>) {
+    out.push_str("{\"use\":");
+    write_str_lit(out, fact_use_marker(fact_use));
+    out.push_str(",\"kind\":");
+    write_str_lit(out, fact_kind(fact_use.fact()));
+    write_fact_identity(out, fact_use.fact());
+    out.push('}');
+}
+
+/// A `FactUse<FactKey>` identity as a self-contained string, for callers
+/// that need to presentation-sort a batch of them (their source is a
+/// `HashSet`, so iteration order is a `RandomState` artifact).
+fn render_fact_use_identity(fact_use: &crate::compiler2::FactUse<crate::compiler2::FactKey>) -> String {
+    let mut rendered = String::new();
+    write_fact_use_identity(&mut rendered, fact_use);
+    rendered
+}
+
+fn write_optional_u64(out: &mut String, value: Option<u64>) {
+    match value {
+        Some(n) => push_u64(out, n),
+        None => out.push_str("null"),
+    }
+}
+
+/// One `FactChange<FactKey>` as a full identity object: the changed fact's
+/// own identity plus its before/after revision and settledness. Emission
+/// order (the order `AppliedStep::changed` already carries) is preserved —
+/// it is not a `HashSet` source, so no presentation sort is needed.
+fn write_fact_change_identity(out: &mut String, change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) {
+    out.push_str("{\"kind\":");
+    write_str_lit(out, fact_kind(&change.key));
+    write_fact_identity(out, &change.key);
+    out.push_str(",\"old_revision\":");
+    write_optional_u64(out, change.old_revision);
+    out.push_str(",\"new_revision\":");
+    write_optional_u64(out, change.new_revision);
+    out.push_str(",\"old_settled\":");
+    out.push_str(if change.old_settled { "true" } else { "false" });
+    out.push_str(",\"new_settled\":");
+    out.push_str(if change.new_settled { "true" } else { "false" });
+    out.push('}');
+}
+
+/// One `Wake<Job, FactKey>`: the cause fact use, the woken job's identity,
+/// its disposition (new work start vs. already-pending), and the
+/// ground-shift classification `complete` computed for the cause.
+fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::Job, crate::compiler2::FactKey>) {
+    use crate::compiler2::WakeDisposition;
+
+    out.push_str("{\"cause\":");
+    write_fact_use_identity(out, &wake.cause);
+    out.push_str(",\"job\":{\"kind\":");
+    write_str_lit(out, job_kind(&wake.job));
+    write_job_identity(out, &wake.job);
+    out.push('}');
+    out.push_str(",\"disposition\":");
+    write_str_lit(
+        out,
+        match wake.disposition {
+            WakeDisposition::Enqueued => "enqueued",
+            WakeDisposition::Coalesced => "coalesced",
+        },
+    );
+    out.push_str(",\"shift\":");
+    out.push_str(if wake.shift { "true" } else { "false" });
+    out.push('}');
+}
+
+/// One `FactMovement<FactKey>` as a self-contained string, for
+/// presentation-sorting a batch (`AppliedStep::movements`' source is a
+/// `HashSet`, so its iteration order is a `RandomState` artifact).
+fn render_movement(movement: &crate::compiler2::FactMovement<crate::compiler2::FactKey>) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("{\"kind\":");
+    write_str_lit(&mut rendered, fact_kind(&movement.key));
+    write_fact_identity(&mut rendered, &movement.key);
+    rendered.push_str(",\"revision\":");
+    write_optional_u64(&mut rendered, movement.state.revision);
+    rendered.push_str(",\"settled\":");
+    rendered.push_str(if movement.state.settled { "true" } else { "false" });
+    rendered.push('}');
+    rendered
+}
+
+/// The shared applied-step body: `"changed"`, `"wakes"`, `"movements"`, and
+/// `"blocked"`, appended directly onto an already-open JSON object. Used by
+/// both the standalone `AppliedStep` opaque arm and the `JobCompletion` arm
+/// (a completion's `step` carries the exact same shape) so the two never
+/// drift apart.
+fn write_applied_step_body(
+    out: &mut String,
+    step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
+) {
+    out.push_str(",\"changed\":[");
+    for (index, change) in step.changed.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_fact_change_identity(out, change);
+    }
+    out.push(']');
+
+    out.push_str(",\"wakes\":[");
+    for (index, wake) in step.wakes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_wake(out, wake);
+    }
+    out.push(']');
+
+    out.push_str(",\"movements\":[");
+    let mut movements = step.movements.iter().map(render_movement).collect::<Vec<_>>();
+    movements.sort();
+    for (index, entry) in movements.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(entry);
+    }
+    out.push(']');
+
+    write_blocked(out, &step.blocked);
 }
 
 /// The identity payload for a `ProductKey`, appended after its `"kind"`.
