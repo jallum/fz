@@ -4,6 +4,7 @@
     "fz-kdt.34"
   ],
   "blocks": [
+    "fz-kdt.13",
     "fz-kdt.4"
   ],
   "created": "2026-08-25T02:14:30Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Make settledness transitively sound without recalculating unchanged formulas",
   "type": "task",
-  "updated_at": "2026-08-26T14:45:42Z"
+  "updated_at": "2026-08-28T17:53:03Z"
 }
