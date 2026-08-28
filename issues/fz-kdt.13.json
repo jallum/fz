@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.34",
-    "fz-kdt.44"
+    "fz-kdt.44",
+    "fz-kdt.56"
   ],
   "blocks": [],
   "created": "2026-08-25T01:35:38Z",
@@ -20,5 +21,5 @@
   "status": "open",
   "title": "Split activation analysis at truthful semantic decision boundaries",
   "type": "bug",
-  "updated_at": "2026-08-28T17:53:03Z"
+  "updated_at": "2026-08-28T17:53:04Z"
 }
