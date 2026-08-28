@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-28T16:55:34Z",
+  "description": "Measured from the public causal stream (fz-kdt.34 machinery, HEAD efa05d386,\ndebug interp, --log-telemetry + replay post-proc):\n\n    00420_enum_take_drop_split: 1,382 AnalyzeActivation evals over 319 distinct\n      activations -- 1,063 re-evaluations (77%)\n    fz_f98_range_map_converges:   307 over  75 -- 232 re-evaluations (76%)\n    enum_predicate_search:        934 over 244 -- 690 re-evaluations (74%)\n\nThe worst identity: AnalyzeActivation(main/0, arrow 32) on 00420 runs 83 times\npublishing 58 ActivationAnalyzed revisions (25 runs produce NO change). Wake\ncauses are callee ReturnType facts (fns 66-78, arrows 47/84/98/555/662/671...),\neach bumping 3-5x during the ascent. Dispositions: 82 enqueued / 17 coalesced --\ncoalescing exists but the ascent serializes through the wake loop.\n\n## The two component causes\n\n1. GRANULARITY: a single callee ReturnType bump re-runs the CALLER'S WHOLE BODY\n   analysis. The moved input is one callsite; the work is every callsite plus\n   full type inference. Callsite-scoped re-analysis (or an incremental body\n   analysis that starts from the moved callsite's join point) would cut the\n   per-wake cost from O(body) to O(affected cone).\n2. ASCENT HEIGHT: refinements cascade multiplicatively up the call chain (leaf\n   refines k times -\u003e each dependent caller re-analyzes \u003e= k times -\u003e ...). 58\n   published revisions of main's analysis is the ascent made visible. Batching\n   pending input movements before re-running (generational coalescing: drain the\n   wave, run once) would collapse same-wave refinements into one re-analysis.\n\n~41% of the entire applied-event stream on 00420 is activation re-analysis.\nThis is the dominant excess-work population and the primary target for\n'steps proportional to input'.\n\nRelated: fz-463 (CallSiteTargets/CallSiteSummary split -- CallSiteSummary facts\nbump 13-14x each here, they are the transmission belt); the downstream-monolith\ndiagnosis (per-root passes) is the SEPARATE back half of the pipeline.\n\n## Checks\n- AnalyzeActivation evals / distinct activations drops materially on all three\n  fixtures (pin the measured ratios as the regression gate once improved).\n- Output equivalence: canonical BackendProgram byte-identical before/after.\n- No new dependency ledger; causality stays derivable from the public stream.",
+  "id": "fz-kdt.55",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "AnalyzeActivation runs 4.3x per activation: full-body re-analysis per callee refinement",
+  "type": "task",
+  "updated_at": "2026-08-28T16:55:34Z"
+}
