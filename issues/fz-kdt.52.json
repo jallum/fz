@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-28T14:03:47Z",
   "created": "2026-08-28T14:02:56Z",
   "description": "compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals is RED on wt/kdt-causality (green on main). Measured on 00181_enum_reduce_operator_ref (interp, debug): events 946 -\u003e 1242, bytes 294,064 -\u003e 878,599 (budget 1000 / 320KB). On 00009_no_runtime: events 145 -\u003e 189 (budget 300, still green), bytes 44,870 -\u003e 100,495 (budget 96KB, ALSO red -- masked because the event assert on 00181 fires first).\n\nEvent delta is exactly the kdt.34 arc's deliberate public-stream growth: +252 work_graph.applied (fz-kdt.34.3, one per applied job -- the completion seam), +19 pull.product.cache_hit, +11 pull.product.displaced, +14 pull.product.settled (fz-kdt.34.4 settle authority + undercount fix). Byte growth is the causality payload on those lines (reads/movements/wakes).\n\nFix: re-pin both fixtures' budgets to the measured stream with tight headroom, with a comment attributing the growth. The growth is proportional to work (per applied job), which is what the budget is meant to allow; creep without cause is what it must still catch.\n\nProcess note: this slipped through five tickets because the per-ticket gate was cargo test --lib; fz2_cli was not in the gate.",
   "id": "fz-kdt.52",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz2_cli public-trace budgets: re-pin for the kdt.34 causality stream",
   "type": "bug",
-  "updated_at": "2026-08-28T14:02:56Z"
+  "updated_at": "2026-08-28T14:03:47Z"
 }
