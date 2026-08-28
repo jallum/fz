@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-28T16:56:06Z",
+  "description": "Measured from the public causal stream (HEAD efa05d386, 00420, debug interp):\n\n    outgoing_edge_frontier(root 0):    settled 48x, displaced 47x\n    incoming_input_relations(root 0):  settled 48x, displaced 47x\n    incoming_input_slot:  304 settlements, 186 displacements (61%)\n    executable_facts:     382 settlements, 117 displacements (31%)\n    (predsearch: executable_facts 503/266 = 53% displaced; rangemap 163/88 = 54%)\n\nA displacement is a stale reproduction discarded mid-derivation: the product\nre-derived, its inputs moved underneath it, and the work was thrown away and\nredone. The two root-scoped products re-derive on nearly EVERY settlement wave\n-- 48 rebuilds of the root frontier for one compile is the downstream-monolith\nsignature quantified (project_fz_downstream_monolith): root-granular products\nsubscribe to everything in the cone, so any movement anywhere rebuilds them.\n\n## Fix direction\n\nNarrow the subscription or split the product. fz-bfh.5's cone-scoped\nsubscription precedent (per-exec ExecutableTransport facts + bounded blast\nradius) is the pattern: replace root-granular frontier/relations products with\nper-member facts joined at the root only at final packaging. For\nincoming_input_slot, check WHY 61% of derivations race their own inputs --\nlikely derived too early (demanded during the ascent instead of after the\nmember settles).\n\n## Checks\n- Displacement counts on the three target fixtures drop to near zero and are\n  pinned in the causal report.\n- Frontier settlements become proportional to actual frontier changes, not to\n  settlement waves.",
+  "id": "fz-kdt.57",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Root-scope products churn: incoming_input_slot 61% displaced, frontier re-derived 48x",
+  "type": "task",
+  "updated_at": "2026-08-28T16:56:06Z"
+}
