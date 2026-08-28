@@ -1,10 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env::temp_dir;
 use std::ffi::OsStr;
 use std::fs::{metadata, read_to_string, remove_file, write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use fz::causal::{CausalReport, parse_public_trace};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -301,15 +303,17 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 
 #[test]
 fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
-    // Budgets re-pinned for the fz-kdt.34 causality stream (fz-kdt.52): the
-    // public trace deliberately carries one `work_graph.applied` per applied
-    // job (the completion seam) plus product settlement/cache/displacement
-    // events, so events and bytes scale with work done. Measured (interp,
-    // debug): 00181 = 1,242 events / 878,599 bytes; 00009 = 189 events /
-    // 100,495 bytes. Pins keep tight headroom so creep without cause still
-    // trips them.
+    // Budgets re-pinned for the fz-kdt.34 causality stream (fz-kdt.52), then
+    // again for its self-describing definition lines (fz-kdt.34.6): the public
+    // trace deliberately carries one `work_graph.applied` per applied job (the
+    // completion seam) plus product settlement/cache/displacement events, so
+    // events and bytes scale with work done, and one `fz.compiler2.canon.*`
+    // line per DISTINCT raw id so the log is a self-contained dictionary.
+    // Measured (interp, debug): 00181 = 1,445 events (203 of them canon
+    // definitions) / 917,027 bytes; 00009 = 199 events (10 canon) / 102,196
+    // bytes. Pins keep tight headroom so creep without cause still trips them.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_300, 960 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_520, 960 * 1024),
         ("fixtures2/00009_no_runtime.fz", 300, 128 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
@@ -323,6 +327,89 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
         assert_bounded_public_trace(&telemetry_path, fixture, max_events, max_bytes);
         let _ = remove_file(telemetry_path);
     }
+}
+
+/// fz-kdt.34's cross-run acceptance: two SEPARATE PROCESSES compiling one input
+/// must have done the same WORK, measured from the public log alone.
+///
+/// Two processes is the point. `RandomState` reseeds per process, so raw arena
+/// ids genuinely drift between the two logs (fz-kdt.47 measured 16 differing
+/// slots over four runs) and no `World` survives to translate them. The logs
+/// translate themselves: each carries `fz.compiler2.canon.*` definition lines
+/// for every raw id it names, and the causal report joins through them. Raw ids
+/// may differ; canonical identity may not.
+///
+/// ONE dimension is measured NOT to hold, and this test pins its blast radius
+/// rather than dropping it: `pull.product.cache_hit` counts on
+/// `CallableConstruction` products differ between processes (six processes per
+/// fixture, 15 pairs each: every formula dimension and every session tally
+/// agree 15/15 on all three target fixtures, as does every other product kind
+/// and every other dimension of `callable_construction` itself; cache hits
+/// agree 7/15, 6/15 and 1/15). The two runs construct different intermediate
+/// types, so a genuinely different set of construction products is pulled. Any
+/// divergence OUTSIDE that one dimension fails here.
+///
+/// Work counts only — no wall-clock quantity appears in the comparand.
+#[test]
+fn causal_work_multisets_agree_across_two_processes() {
+    let fixture = "fixtures2/behavior/fz_f98_range_map_converges.fz";
+    let mut multisets = Vec::new();
+    for tag in ["first", "second"] {
+        let telemetry_path = unique_temp_path(&format!("fz2_causal_{tag}"), ".jsonl");
+        let out = run_fz2(&[
+            OsStr::new("--log-telemetry"),
+            telemetry_path.as_os_str(),
+            OsStr::new("interp"),
+            OsStr::new(fixture),
+        ]);
+        assert_successful_stdout(&out, &fixture_expected_stdout(fixture), fixture);
+
+        let log = std::fs::read(&telemetry_path).expect("read public telemetry log");
+        let report = CausalReport::derive(&parse_public_trace(&log));
+        assert!(
+            report.undefined_first_uses.is_empty(),
+            "the {tag} log must define every raw id it names; first gap: {:?}",
+            report.undefined_first_uses.first()
+        );
+        assert!(
+            report.canon.types() > 0 && report.canon.functions() > 0,
+            "the {tag} log must carry a populated canon dictionary"
+        );
+        assert!(
+            report.uncaused.is_empty(),
+            "the {tag} log must attribute every evaluation; first unattributed: {:?}",
+            report.uncaused.first()
+        );
+        multisets.push(report.canonical_multiset());
+        let _ = remove_file(&telemetry_path);
+    }
+
+    let (first, second) = (&multisets[0], &multisets[1]);
+    assert!(
+        first.len() > 1_000,
+        "expected a substantial comparand, got {} entries",
+        first.len()
+    );
+    let unexplained = first
+        .keys()
+        .chain(second.keys())
+        .filter(|key| first.get(*key) != second.get(*key))
+        .filter(|key| !is_callable_construction_cache_hit(key))
+        .collect::<BTreeSet<_>>();
+    assert!(
+        unexplained.is_empty(),
+        "two processes compiling {fixture} must agree on every canonical work count outside the \
+         known callable-construction cache-hit divergence; unexplained: {unexplained:?}"
+    );
+}
+
+/// The single measured cross-process divergence: see
+/// `causal_work_multisets_agree_across_two_processes`. A key in the canonical
+/// multiset is `<dimension>\u{1}<identity>\u{1}<count name>`.
+fn is_callable_construction_cache_hit(key: &str) -> bool {
+    key.starts_with("product\u{1}")
+        && key.ends_with("\u{1}cache_hits")
+        && key.contains("\"kind\":\"callable_construction\"")
 }
 
 /// `--dump backend` is the canonical external form, so two SEPARATE PROCESSES

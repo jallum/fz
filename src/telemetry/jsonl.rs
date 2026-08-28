@@ -57,6 +57,81 @@ fn note_codegen_projection() {
     CODEGEN_PROJECTIONS.with(|count| count.set(count.get() + 1));
 }
 
+thread_local! {
+    /// The raw ids named by the line currently being rendered (fz-kdt.34.6).
+    ///
+    /// The identity writers below are pure `String` builders reached through
+    /// the 350-line `write_opaque` match, and none of them has any use for an
+    /// out-parameter. A collector threaded through every signature on that
+    /// path would be a parameter ~30 functions carry and none reads. The
+    /// backend is single-threaded by construction (`RefCell` fields, no
+    /// `Send`/`Sync`) and renders one line at a time, so this thread-local is
+    /// exactly as precise and costs one `Cell` check per id when the sink is
+    /// not collecting.
+    static NAMED_IDS: RefCell<NamedIds> = const { RefCell::new(NamedIds::new()) };
+}
+
+/// The raw ids one rendered line names, in first-appearance order.
+struct NamedIds {
+    collecting: bool,
+    types: Vec<crate::compiler2::Ty>,
+    functions: Vec<crate::compiler2::FunctionId>,
+}
+
+impl NamedIds {
+    const fn new() -> Self {
+        Self {
+            collecting: false,
+            types: Vec::new(),
+            functions: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.types.is_empty() && self.functions.is_empty()
+    }
+}
+
+fn note_named_type(ty: crate::compiler2::Ty) {
+    NAMED_IDS.with(|named| {
+        let mut named = named.borrow_mut();
+        if named.collecting && !named.types.contains(&ty) {
+            named.types.push(ty);
+        }
+    });
+}
+
+fn note_named_function(function: crate::compiler2::FunctionId) {
+    NAMED_IDS.with(|named| {
+        let mut named = named.borrow_mut();
+        if named.collecting && !named.functions.contains(&function) {
+            named.functions.push(function);
+        }
+    });
+}
+
+/// Renders one line and reports the raw ids it named. Collection is armed only
+/// for the duration of `render`, so a non-public sink pays a single flag test
+/// per id and nothing else.
+fn render_naming_ids(render: impl FnOnce()) -> NamedIds {
+    NAMED_IDS.with(|named| {
+        let mut borrowed = named.borrow_mut();
+        borrowed.collecting = true;
+        borrowed.types.clear();
+        borrowed.functions.clear();
+    });
+    render();
+    NAMED_IDS.with(|named| {
+        let mut borrowed = named.borrow_mut();
+        borrowed.collecting = false;
+        NamedIds {
+            collecting: false,
+            types: std::mem::take(&mut borrowed.types),
+            functions: std::mem::take(&mut borrowed.functions),
+        }
+    })
+}
+
 /// The buffered writer's auto-flush threshold: a write that pushes the
 /// internal buffer to at least this many bytes flushes immediately. Every
 /// production constructor uses this; only the `#[cfg(test)]`
@@ -72,6 +147,107 @@ pub struct JsonlBackend {
     public_compiler2_trace: bool,
     buffered: bool,
     flush_threshold: usize,
+    canon: RefCell<CanonStream>,
+}
+
+/// Makes the public stream self-describing (fz-kdt.34.6).
+///
+/// A raw `Ty` or `FunctionId` is a position in one `World`; across processes
+/// the same position means something else (fz-kdt.47 measured 16 differing
+/// arena slots over four runs). Raw ids stay on the stream because they are
+/// the free within-run join key, and every one of them is *defined* the first
+/// time the sink renders it, by a `canon.type`/`canon.function` line carrying
+/// the id-free canonical form (fz-f98.21). A reader then joins raw -> canonical
+/// per log and compares two logs written by two processes.
+///
+/// Definitions need a `&World`, which only some events carry. A line naming a
+/// still-undefined id is therefore PARKED until an event arrives that can
+/// define it; once anything is parked everything parks, so the stream's own
+/// order never changes. Measured on `enum_take_drop_split`: 128 of 325 distinct
+/// types are first named by a world-less event — 99 by a `pull.product.settled`
+/// and 29 by a `job` span_start, whose `span_stop` carries the world a few
+/// lines later.
+#[derive(Default)]
+struct CanonStream {
+    defined_types: std::collections::HashSet<crate::compiler2::Ty>,
+    defined_functions: std::collections::HashSet<crate::compiler2::FunctionId>,
+    parked_types: Vec<crate::compiler2::Ty>,
+    parked_functions: Vec<crate::compiler2::FunctionId>,
+    parked_lines: Vec<u8>,
+}
+
+impl CanonStream {
+    /// True when `named` cannot be written yet: it names an undefined id, or
+    /// an earlier line is already parked and order must be preserved.
+    fn must_park(&self, named: &NamedIds) -> bool {
+        !self.parked_lines.is_empty()
+            || named.types.iter().any(|ty| !self.defined_types.contains(ty))
+            || named.functions.iter().any(|f| !self.defined_functions.contains(f))
+    }
+
+    fn park(&mut self, named: NamedIds, line: &str) {
+        self.parked_types.extend(named.types);
+        self.parked_functions.extend(named.functions);
+        self.parked_lines.extend_from_slice(line.as_bytes());
+    }
+
+    /// Appends a definition line for every not-yet-defined id in `named` and
+    /// in the parked backlog. Cost is per DISTINCT id: a defined id is a set
+    /// hit and renders nothing.
+    fn define(&mut self, world: &crate::compiler2::World, named: &NamedIds, time_ns: u64, out: &mut String) {
+        let functions = self
+            .parked_functions
+            .drain(..)
+            .chain(named.functions.iter().copied())
+            .filter(|function| !self.defined_functions.contains(function))
+            .collect::<Vec<_>>();
+        let types = self
+            .parked_types
+            .drain(..)
+            .chain(named.types.iter().copied())
+            .filter(|ty| !self.defined_types.contains(ty))
+            .collect::<Vec<_>>();
+        if functions.is_empty() && types.is_empty() {
+            return;
+        }
+        for function in functions {
+            if self.defined_functions.insert(function) {
+                let label = crate::compiler2::function_label(world, function);
+                write_canon_definition(out, time_ns, "function", "function_id", function.as_u32(), &label);
+            }
+        }
+        // Built here rather than held on the backend: `TyCanon` borrows a
+        // label resolver that borrows the `World`, which lives only for this
+        // event. It is constructed only when a type is actually undefined.
+        if !types.is_empty() {
+            let labels =
+                |fn_id| crate::compiler2::function_label(world, crate::compiler2::FunctionId::from_fn_id(fn_id));
+            let mut canon = crate::compiler2::TyCanon::new(&labels);
+            for ty in types {
+                if self.defined_types.insert(ty) {
+                    let rendered = canon.render(world.types(), ty);
+                    write_canon_definition(out, time_ns, "type", "type_id", ty.as_u32(), &rendered);
+                }
+            }
+        }
+    }
+}
+
+/// One definition line, in the same shape `write_event` produces so a reader
+/// needs no special case: a span-less `fz.compiler2.canon.*` event whose
+/// metadata is the raw id and its canonical form.
+fn write_canon_definition(out: &mut String, time_ns: u64, domain: &str, id_key: &str, id: u32, canon: &str) {
+    out.push_str("{\"name\":[\"fz\",\"compiler2\",\"canon\",");
+    write_str_lit(out, domain);
+    out.push_str("],\"time_ns\":");
+    push_u64(out, time_ns);
+    out.push_str(",\"kind\":\"event\",\"span_id\":0,\"parent_span_id\":0,\"measurements\":{},\"metadata\":{");
+    write_str_lit(out, id_key);
+    out.push(':');
+    push_u64(out, id as u64);
+    out.push_str(",\"canon\":");
+    write_str_lit(out, canon);
+    out.push_str("}}\n");
 }
 
 impl JsonlBackend {
@@ -84,6 +260,7 @@ impl JsonlBackend {
             public_compiler2_trace: false,
             buffered: false,
             flush_threshold: DEFAULT_FLUSH_THRESHOLD,
+            canon: RefCell::new(CanonStream::default()),
         })
     }
 
@@ -756,6 +933,7 @@ impl JsonlBackend {
             public_compiler2_trace: false,
             buffered: false,
             flush_threshold: DEFAULT_FLUSH_THRESHOLD,
+            canon: RefCell::new(CanonStream::default()),
         }
     }
 
@@ -787,19 +965,63 @@ impl Handler for JsonlBackend {
             return;
         }
         let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        let mut buf = String::with_capacity(128);
-        write_event(&mut buf, ev, time_ns);
-        buf.push('\n');
+        let mut line = String::with_capacity(128);
+        if !self.public_compiler2_trace {
+            write_event(&mut line, ev, time_ns);
+            line.push('\n');
+            self.append(line.as_bytes());
+            return;
+        }
+        let named = render_naming_ids(|| {
+            write_event(&mut line, ev, time_ns);
+            line.push('\n');
+        });
+        self.append_self_describing(ev, named, &line, time_ns);
+    }
+}
+
+impl JsonlBackend {
+    /// Writes one already-rendered line, preceded by definitions for the raw
+    /// ids it names, so the stream never references an id it has not defined.
+    /// See `CanonStream`.
+    fn append_self_describing(&self, ev: &Event<'_, '_, '_>, named: NamedIds, line: &str, time_ns: u64) {
+        let mut canon = self.canon.borrow_mut();
+        let world = ev
+            .metadata
+            .get("world")
+            .and_then(Value::downcast_ref::<crate::compiler2::World>);
+        let Some(world) = world else {
+            if canon.must_park(&named) {
+                canon.park(named, line);
+            } else {
+                drop(canon);
+                self.append(line.as_bytes());
+            }
+            return;
+        };
+        if named.is_empty() && canon.parked_lines.is_empty() {
+            drop(canon);
+            self.append(line.as_bytes());
+            return;
+        }
+        let mut out = String::new();
+        canon.define(world, &named, time_ns, &mut out);
+        let mut bytes = out.into_bytes();
+        bytes.append(&mut canon.parked_lines);
+        bytes.extend_from_slice(line.as_bytes());
+        drop(canon);
+        self.append(&bytes);
+    }
+
+    fn append(&self, bytes: &[u8]) {
         let mut buffer = self.buffer.borrow_mut();
-        buffer.extend_from_slice(buf.as_bytes());
+        buffer.extend_from_slice(bytes);
         if !self.buffered || buffer.len() >= self.flush_threshold {
             let mut writer = self.writer.borrow_mut();
             write_buffer(&mut **writer, &mut buffer);
         }
     }
-}
 
-impl JsonlBackend {
     #[cfg(test)]
     pub fn flush(&self) {
         let mut buffer = self.buffer.borrow_mut();
@@ -813,7 +1035,11 @@ impl JsonlBackend {
 
 impl Drop for JsonlBackend {
     fn drop(&mut self) {
+        // Tail lines parked for a `&World` that never arrived: the stream ends
+        // here, so writing them is the only way not to lose them.
+        let parked = std::mem::take(&mut self.canon.get_mut().parked_lines);
         let buffer = self.buffer.get_mut();
+        buffer.extend_from_slice(&parked);
         write_buffer(self.writer.get_mut(), buffer);
         let _ = self.writer.get_mut().flush();
     }
@@ -854,6 +1080,9 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "native_program", "reusable_cons"]
             | ["fz", "compiler2", "native_backend", ..]
             | ["fz", "compiler2", "aot", ..]
+            // Born in the sink (`CanonStream`), never emitted by the compiler.
+            // Listed so "public" has exactly one definition.
+            | ["fz", "compiler2", "canon", ..]
     )
 }
 
@@ -1524,18 +1753,9 @@ fn reusable_cons_counts(program: &crate::compiler2::BackendProgram) -> (u64, u64
 }
 
 fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey) {
-    out.push(',');
-    write_str_lit(out, "root_id");
-    out.push(':');
-    push_u64(out, key.root.as_u32() as u64);
-    out.push(',');
-    write_str_lit(out, "function_id");
-    out.push(':');
-    push_u64(out, key.function.as_u32() as u64);
-    out.push(',');
-    write_str_lit(out, "arrow");
-    out.push(':');
-    push_u64(out, key.arrow.as_u32() as u64);
+    write_root_id(out, key.root);
+    write_function_id(out, key.function);
+    write_arrow(out, key.arrow);
 }
 
 fn write_id_field(out: &mut String, key: &'static str, id: u32) {
@@ -1554,7 +1774,16 @@ fn write_module_id(out: &mut String, module: crate::compiler2::ModuleId) {
 }
 
 fn write_function_id(out: &mut String, function: crate::compiler2::FunctionId) {
+    note_named_function(function);
     write_id_field(out, "function_id", function.as_u32());
+}
+
+/// An activation's arrow, the one raw `Ty` the public stream carries. Its
+/// canonical form is what makes the stream comparable across processes, so
+/// every rendering funnels through here to be noted for definition.
+fn write_arrow(out: &mut String, arrow: crate::compiler2::Ty) {
+    note_named_type(arrow);
+    write_id_field(out, "arrow", arrow.as_u32());
 }
 
 fn write_root_id(out: &mut String, root: crate::compiler2::RootId) {
@@ -1629,14 +1858,8 @@ fn transport_position_kind(position: &crate::compiler2::transport::TransportPosi
 }
 
 fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transport::ActivationSymbol) {
-    out.push(',');
-    write_str_lit(out, "function_id");
-    out.push(':');
-    push_u64(out, symbol.function.as_u32() as u64);
-    out.push(',');
-    write_str_lit(out, "arrow");
-    out.push(':');
-    push_u64(out, symbol.arrow.as_u32() as u64);
+    write_function_id(out, symbol.function);
+    write_arrow(out, symbol.arrow);
     out.push(',');
     write_str_lit(out, "input");
     out.push(':');
@@ -1645,6 +1868,7 @@ fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transpor
         if index > 0 {
             out.push(',');
         }
+        note_named_type(*ty);
         push_u64(out, ty.as_u32() as u64);
     }
     out.push(']');

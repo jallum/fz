@@ -34,6 +34,7 @@
 pub mod bus;
 #[cfg(test)]
 pub mod capture;
+pub mod causal;
 pub mod diag_render;
 pub mod event;
 pub mod handler;

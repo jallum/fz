@@ -237,7 +237,9 @@ ids (`root_id`, `function_id`, `arrow`, `code_id`, `module_id`, `callsite`,
 `entry`, `semantic_index`, `need`, ...) alongside `kind`. `arrow` is the
 interned `Ty`'s raw handle (`Ty::as_u32`), never `Types::display` — display
 is measured non-injective and would conflate distinct activations that
-happen to render the same. This is what lets a reader of the public log
+happen to render the same. A raw handle is a within-run join key only; the
+`fz.compiler2.canon.*` definition lines below are what make it mean something
+to a reader in another process. This is what lets a reader of the public log
 distinguish, for example, the many separate `AnalyzeActivation` evaluations
 one real compile can produce, each a different `(root, function, arrow)`
 triple where the projection used to render only `"kind":"AnalyzeActivation"`
@@ -272,6 +274,55 @@ completed job's current `deps.reads`, read directly off
 rendered as presentation-sorted strings, because their source in both cases
 is a `HashSet` with no meaningful iteration order — the same
 presentation-boundary sort the blocked-wait lists already used.
+
+The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
+is a position in one `World`, so a log that carries only ids means nothing to a
+second process — fz-kdt.47 measured 16 differing arena slots over four runs, and
+the `World` that could translate them is gone by the time the log is read. So
+the first time the sink renders a given raw id it emits a DEFINITION line first,
+then the referencing event:
+
+```json
+{"name":["fz","compiler2","canon","type"],...,"metadata":{"type_id":133,"canon":"fp[F] (list(int)) -> r0"}}
+{"name":["fz","compiler2","canon","function"],...,"metadata":{"function_id":230,"canon":"Enum.reduce/3"}}
+```
+
+`canon` is fz-f98.21's faithful canonical form (`types::canon::TyCanon` for a
+type, `compiler2::canon::function_label` for a function), never
+`Types::display` — display is measured non-injective, so two different
+activations would compare equal. The `type` domain covers every raw `Ty` on the
+stream: the `arrow` field and the elements of an `ActivationSymbol`'s `input`
+array both resolve through it. The canonical form is an EQUIVALENCE, not an
+injection on ids: two mutually-subtype arena slots share one canonical form and
+are one identity to a reader, which is the point — that is the pair a
+renumbering is free to swap.
+
+This lives entirely in the sink (`CanonStream`, `jsonl.rs`). No production emit
+site changed, telemetry-off renders nothing, and the cost is per DISTINCT id
+(measured on `00181_enum_reduce_operator_ref`: 203 definition lines, 38KB, on a
+917KB log). Definitions need a `&World`, which only some events carry, so a line
+naming a still-undefined id is PARKED until an event arrives that can define it;
+once anything is parked everything parks, so the stream's own order never
+changes and a streaming reader never sees an id it has no dictionary entry for.
+On `enum_take_drop_split`, 128 of 325 distinct types are first named by an event
+that carries no world — 99 by a `pull.product.settled`, 29 by a `job`
+`span_start` whose `span_stop` carries the world a few lines later.
+
+`telemetry::causal` (`causal.rs`, `pub`, re-exported as `fz::causal`) replays a
+public log into a `CausalReport`: per canonical formula identity, evaluations
+classified `Initial`/`Content`/`Readiness`/`Uncaused` plus changed outputs,
+wakes and blocked completions; per canonical `ProductKey`, settlements,
+generations, the changed split, cache hits and displacements; and the summed
+session tallies. Causality is DERIVED, never stored: for evaluation `e` of
+formula `F` at stream position `t`, the moved inputs are `(F's reads UNION F's
+blocked-set from its previous completion)` for which a movement appears in
+`[F's previous conclusion, t)`. Both boundaries are load-bearing and both are
+measured — `reads` alone false-flags wait-satisfied jobs as uncaused, and the
+window must INCLUDE the previous conclusion because a formula that writes a fact
+it also reads wakes itself. Raw ids are the within-run join key; the canon
+tables are applied at report time, which is what makes `canonical_multiset()`
+comparable across processes. Never infer identity or causality from counts: both
+are on the stream exactly.
 
 The `[fz, compiler2, job]` span still covers only two of these five
 completion sites (`drive.rs`'s and `product_drive.rs`'s job-pop loops, the

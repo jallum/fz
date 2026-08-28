@@ -23,6 +23,10 @@ pub mod types;
 use libc::{c_int, close, write};
 
 pub use function_surface::FunctionSurface;
+/// Causal replay over a public telemetry log (fz-kdt.34.6). Re-exported at the
+/// crate root because it reads the public ARTIFACT, not the compiler: the
+/// integration tests and a future `fz2 trace-diff` consume a log file.
+pub use telemetry::causal;
 pub use telemetry::sink::NullTelemetry;
 
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";

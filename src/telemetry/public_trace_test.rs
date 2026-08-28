@@ -1,5 +1,6 @@
 use super::*;
 use crate::compiler2::DriveOutcome;
+use crate::telemetry::causal::{CausalReport, Dependencies};
 use crate::telemetry::handler::EventKind;
 
 /// The ticket's acceptance scenario: two functions, one calling the other.
@@ -672,5 +673,167 @@ fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
         closes_to_producer,
         "expected a work_graph.applied event after the stall pass running DefineFunction(0), \
          the producer FunctionDefined(0) maps to"
+    );
+}
+
+/// fz-kdt.34's three target fixtures. Chosen by the epic: a convergence-heavy
+/// reduce bridge, a predicate search that halts early, and the take/drop/split
+/// suite whose 2.6k evaluations make it the widest causal surface in the tree.
+const TARGET_FIXTURES: [&str; 3] = [
+    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures2/behavior/enum_predicate_search.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+];
+
+fn compile_fixture(path: &str) -> PublicTrace {
+    let source = std::fs::read_to_string(path).unwrap_or_else(|error| panic!("read fixture {path}: {error}"));
+    PublicTrace::compile(&source)
+}
+
+/// fz-kdt.34's acceptance, on the public log and nothing else.
+///
+/// Every evaluation of every formula must name new input evidence. The
+/// derivation is `(reads UNION the previous completion's blocked-set)` with a
+/// movement in `[previous conclusion, now)`; `causal.rs` documents why both
+/// halves are load-bearing. The sibling test below measures the reads-only
+/// variant failing, which is the red half of this pair.
+///
+/// Work counts only. Nothing here reads a duration, an `elapsed_ns`, or a
+/// `time_ns`: a compile that did the same work slower is the same report.
+#[test]
+fn every_evaluation_on_the_target_fixtures_names_a_moved_input() {
+    for fixture in TARGET_FIXTURES {
+        let trace = compile_fixture(fixture);
+        assert!(
+            matches!(trace.outcome, DriveOutcome::Resolved),
+            "{fixture} must resolve for its causal report to describe a whole compile"
+        );
+        let report = CausalReport::derive(trace.events());
+        let totals = report.formula_totals();
+
+        assert_eq!(
+            report.uncaused,
+            Vec::new(),
+            "{fixture}: every non-initial evaluation must name a moved dependency"
+        );
+        assert_eq!(
+            report.readiness_without_settled_wake,
+            Vec::new(),
+            "{fixture}: a readiness cause is only claimable where a Settled/SettledPresence wake carried it"
+        );
+        assert_eq!(
+            totals.evaluations,
+            totals.initial + totals.content_caused + totals.readiness_caused,
+            "{fixture}: every evaluation must fall in exactly one cause class; totals={totals:?}"
+        );
+        assert!(
+            totals.evaluations > 0 && totals.content_caused > 0,
+            "{fixture}: expected a compile with re-evaluated formulas; totals={totals:?}"
+        );
+    }
+}
+
+/// The red half: `reads` alone is not the dependency set.
+///
+/// `DependencyIndex` keeps `reads` and `waits` in separate maps, so a job
+/// re-run because a WAIT became satisfiable has that fact only in `waits`. A
+/// reads-only rule therefore reports real, fully-caused work as uncaused. This
+/// asserts the failure exists and that the shipped derivation removes it, so
+/// nobody simplifies the rule back.
+#[test]
+fn reads_alone_false_flags_evaluations_the_blocked_set_explains() {
+    for fixture in TARGET_FIXTURES {
+        let trace = compile_fixture(fixture);
+        let reads_only = CausalReport::derive_with(trace.events(), Dependencies::Reads);
+        let shipped = CausalReport::derive_with(trace.events(), Dependencies::ReadsAndBlocked);
+
+        assert!(
+            !reads_only.uncaused.is_empty(),
+            "{fixture}: the reads-only rule is expected to false-flag work; if it no longer does, \
+             the stream changed and this pair needs re-measuring"
+        );
+        assert!(
+            shipped.uncaused.is_empty(),
+            "{fixture}: reads UNION the previous blocked-set must attribute every evaluation; \
+             first unattributed: {:?}",
+            shipped.uncaused.first()
+        );
+    }
+}
+
+/// The self-describing contract: a raw `Ty` or `FunctionId` is a position in
+/// one `World`, so a log that only carries ids means nothing to a second
+/// process. Every id the public stream names must be defined by an EARLIER
+/// `fz.compiler2.canon.*` line, which is what makes the log a self-contained
+/// dictionary.
+#[test]
+fn every_raw_id_on_the_public_stream_is_defined_before_it_is_used() {
+    for fixture in TARGET_FIXTURES {
+        let trace = compile_fixture(fixture);
+        let report = CausalReport::derive(trace.events());
+        assert_eq!(
+            report.undefined_first_uses,
+            Vec::new(),
+            "{fixture}: the stream referenced a raw id it had not defined"
+        );
+        assert!(
+            report.canon.types() > 0 && report.canon.functions() > 0,
+            "{fixture}: expected a populated canon dictionary, got {} types / {} functions",
+            report.canon.types(),
+            report.canon.functions()
+        );
+    }
+}
+
+/// The pull sessions' own verdict on their work starts. Both zeros are
+/// absolute: an unsanctioned work start is a job the scheduler could not
+/// attribute to a sanctioned reason, and a root scan is the frontier being
+/// swept instead of driven.
+#[test]
+fn no_target_fixture_starts_unsanctioned_work_or_scans_roots() {
+    for fixture in TARGET_FIXTURES {
+        let trace = compile_fixture(fixture);
+        let sessions = CausalReport::derive(trace.events()).sessions;
+        assert!(sessions.sessions > 0, "{fixture}: expected at least one pull session");
+        assert_eq!(
+            sessions.unsanctioned_work_starts, 0,
+            "{fixture}: every work start must name a sanctioned reason; {sessions:?}"
+        );
+        assert_eq!(
+            sessions.root_scans, 0,
+            "{fixture}: the root frontier must be driven, never scanned; {sessions:?}"
+        );
+    }
+}
+
+/// Two compiles of one input must have done the same work.
+///
+/// The comparand is the CANONICAL multiset: raw arena ids are free to differ,
+/// canonical identity may not. This is the in-process half of the acceptance
+/// (`tests/fz2_cli.rs` runs the cross-PROCESS half, where `RandomState`
+/// reseeds and the ids genuinely drift).
+///
+/// In-process the WHOLE multiset holds, product cache hits included — measured
+/// stable over eight runs. The cross-process test has to carve out
+/// `callable_construction` cache hits, which is the difference this pair
+/// localizes: the divergence needs two processes to appear.
+#[test]
+fn a_double_compile_produces_one_canonical_work_multiset() {
+    let fixture = "fixtures2/behavior/fz_f98_range_map_converges.fz";
+    let first = CausalReport::derive(compile_fixture(fixture).events()).canonical_multiset();
+    let second = CausalReport::derive(compile_fixture(fixture).events()).canonical_multiset();
+
+    let divergence = first
+        .iter()
+        .find(|(key, count)| second.get(*key) != Some(count))
+        .or_else(|| second.iter().find(|(key, _)| !first.contains_key(*key)));
+    assert!(
+        first == second,
+        "two compiles of {fixture} must agree on the canonical work multiset; first divergence: {divergence:?}"
+    );
+    assert!(
+        first.len() > 100,
+        "expected a substantial multiset, got {} entries",
+        first.len()
     );
 }
