@@ -4,14 +4,15 @@
   "blocks": [
     "fz-kdt.13"
   ],
+  "closed_at": "2026-08-28T18:36:09Z",
   "created": "2026-08-28T16:56:06Z",
   "description": "Measured from the public causal stream (HEAD efa05d386, debug interp):\n\n    00420: 165 DeriveRecursive evaluations over 100 functions, 65 with\n    unchanged output (39% pure restart cost). Depth leaders: main/0 = 14\n    evaluations, fns 208/209/213 = 10 each. Same shape on both other target\n    fixtures (14/13/11/11 and 12/10 layer pyramids). Every wake is\n    disposition=enqueued -- layers arrive sequentially so coalescing never\n    applies.\n\nThe blocked sets of successive evaluations are literally the BFS frontiers of\nthe transitive call graph: main's run 1 blocks on LoweredBody(0); run 2 on 18\nfirst-layer callees; run 3 on their FunctionDefined; ... run 13 on\nLoweredBody(207); run 14 concludes. Each evaluation RE-WALKS the entire known\ngraph from scratch to discover one more layer -- O(depth x reachable-size) per\nfunction -- and EVERY function repeats its own walk over the shared graph\n(fns 208-215 each do 8-10 layers again).\n\n## Fix direction\n\nRecursion is a property of the CALL GRAPH, not of one function's private\ntraversal. Derive a per-function DIRECT-callees fact once (it falls out of the\nlowered body), and answer Recursive(f) from cycle membership over those facts.\nThat makes the work proportional to edges, shared across all functions, and\nincremental when one body changes. Mind\nfeedback_scc_inner_solver_is_tolerated_debt: prefer first-class facts over a\nside-channel solver; the direct-callee fact IS the first-class form.\n\n## Checks\n- DeriveRecursive evaluations ~= number of functions (one conclusion each, plus\n  bounded re-derivations on real body changes) on all three target fixtures.\n- Recursive/DispatchMask conclusions unchanged (canonical program equal).\n- Blocked DeriveRecursive completions drop to ~zero in the causal report.",
   "id": "fz-kdt.56",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "DeriveRecursive is a restart pyramid: one evaluation per call-graph BFS layer",
   "type": "task",
-  "updated_at": "2026-08-28T17:53:04Z"
+  "updated_at": "2026-08-28T18:36:09Z"
 }
