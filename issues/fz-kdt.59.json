@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-28T17:04:55Z",
+  "description": "Measured while landing fz-kdt.34.6: the causal replay classifies zero\nevaluations as readiness-caused on all three target fixtures (0/0/0), even\nthough 4 Settled-cause wakes exist on enum_take_drop_split -- in every such\ncase a content movement also lies in the window, and content wins the\nclassification.\n\nEither readiness-only re-runs genuinely cannot happen under the current wake\nrules (then document WHY in .agent/docs/telemetry.md and consider retiring the\nReadiness arm to keep the model honest), or they can and the three fixtures\njust never exercise them (then write the minimal fixture that does, proving the\nclassifier's readiness path against reality).\n\nThe classifier's supporting check (readiness_without_settled_wake) is untested\nby construction until one of these lands.",
+  "id": "fz-kdt.59",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Cause::Readiness never observed on the target fixtures: probe or prove impossible",
+  "type": "task",
+  "updated_at": "2026-08-28T17:04:55Z"
+}
