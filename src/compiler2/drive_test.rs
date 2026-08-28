@@ -9518,6 +9518,153 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     );
 }
 
+/// fz-kdt.56's acceptance shape: a call chain three deep plus one mutually
+/// recursive pair, so the same program carries a plain reachability answer
+/// (nothing on the chain reaches itself) and a cyclic one.
+const STATIC_CALL_GRAPH_SOURCE: &str = r#"
+fn c(x), do: x + 1
+fn b(x), do: c(x) + 1
+fn a(x), do: b(x) + 1
+fn pong(n), do: ping(n - 1)
+fn ping(n) do
+  if n <= 0 do
+    0
+  else
+    pong(n)
+  end
+end
+fn main(), do: dbg(a(1) + ping(3))
+"#;
+
+/// fz-kdt.56: the static call graph is a per-function FACT, extracted from one
+/// body once, and recursion is answered by walking those edges.
+///
+/// Before this ticket `DeriveRecursive` owned the whole traversal: every
+/// evaluation re-extracted the callees of every body it could reach, so
+/// discovering one more layer of the graph cost a full re-scan of the layers
+/// already known (165 evaluations over 100 functions on
+/// `enum_take_drop_split`, 65 of them concluding nothing). Three things have to
+/// hold together for the edge fact to be the honest replacement:
+///
+/// (a) the edges are the body's real callees -- `main` reaches `a` and `ping`,
+///     the chain steps `a -> b -> c` one hop at a time, `c` is a leaf, and the
+///     mutual pair points at each other;
+/// (b) the answer `DeriveRecursive` publishes off those edges is unchanged --
+///     `recursive` is true for exactly the cycle, false for the chain and for
+///     `main`, which calls into the cycle without being in it;
+/// (c) one body, one extraction: each function's `StaticCallees` fact is
+///     published by exactly one evaluation of its own job. A function whose
+///     edges are read by five different callers still pays for one scan.
+#[test]
+fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursion() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_static_call_graph.fz".to_string()),
+        text: STATIC_CALL_GRAPH_SOURCE.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "the static call graph fixture should settle");
+
+    let id = |name: &str, arity: u64| function_id(&functions, name, arity);
+    let (main, a, b, c, ping, pong) = (
+        id("main", 0),
+        id("a", 1),
+        id("b", 1),
+        id("c", 1),
+        id("ping", 1),
+        id("pong", 1),
+    );
+
+    // (a) the edges themselves. Named rather than id-compared, because the
+    // graph is the WHOLE static graph: an operator call is a call, so `+` and
+    // `<=` are edges into the runtime module exactly like `a` and `ping` are
+    // edges into this source.
+    let callees = |function: FunctionId| compiler.world().static_callees(function).to_vec();
+    let edge_names = |function: FunctionId| {
+        callees(function)
+            .into_iter()
+            .map(|callee| compiler.world().function_ref(callee).name.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let names = |names: [&str; 2]| names.map(str::to_string).into_iter().collect::<BTreeSet<_>>();
+    assert_eq!(
+        edge_names(main),
+        ["+", "dbg", "a", "ping"].map(str::to_string).into_iter().collect(),
+        "main's edges are every function its body calls, operators included",
+    );
+    assert_eq!(edge_names(a), names(["+", "b"]), "the chain steps one hop at a time");
+    assert_eq!(edge_names(b), names(["+", "c"]), "the chain steps one hop at a time");
+    assert_eq!(
+        edge_names(c),
+        ["+"].map(str::to_string).into_iter().collect(),
+        "c is a leaf of this source: its only edge is the operator",
+    );
+    assert_eq!(
+        edge_names(ping),
+        names(["<=", "pong"]),
+        "the mutual pair points at pong"
+    );
+    assert_eq!(edge_names(pong), names(["-", "ping"]), "the mutual pair points back");
+
+    // The published `Vec` is deterministic by construction: `static_edges`
+    // yields a body's edges in ascending function id, and the callee list keeps
+    // that order instead of re-sorting a set at publication time.
+    for function in [main, a, b, c, ping, pong] {
+        let edges = callees(function);
+        assert!(
+            edges.windows(2).all(|pair| pair[0].as_u32() < pair[1].as_u32()),
+            "{function:?} published its callees out of extraction order: {edges:?}",
+        );
+    }
+
+    // (b) the conclusion drawn from those edges is the same answer the old
+    // whole-graph re-walk produced.
+    let recursive = |function: FunctionId| {
+        compiler
+            .world()
+            .body_keying(function)
+            .unwrap_or_else(|| panic!("body keying for {function:?}"))
+            .recursive
+    };
+    assert!(recursive(ping) && recursive(pong), "the mutual pair is recursive");
+    for function in [main, a, b, c] {
+        assert!(
+            !recursive(function),
+            "{function:?} reaches the cycle but never itself, so it is not recursive",
+        );
+    }
+
+    // (c) one body, one extraction. `DeriveStaticCallees` may block while it
+    // waits for the body -- that is demand, not work -- but exactly one of its
+    // evaluations may conclude and publish the edges.
+    for function in [main, a, b, c, ping, pong] {
+        let publications = outputs
+            .stops_matching(|job| *job == Job::DeriveStaticCallees(function))
+            .into_iter()
+            .filter(|stop| {
+                stop.effects
+                    .as_ref()
+                    .is_some_and(|effects| effects.outputs.contains(&FactKey::StaticCallees(function)))
+            })
+            .count();
+        assert_eq!(
+            publications, 1,
+            "{function:?} should have its body scanned for edges exactly once, not once per reader",
+        );
+    }
+}
+
 #[test]
 fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     let tel = ConfiguredTelemetry::new();

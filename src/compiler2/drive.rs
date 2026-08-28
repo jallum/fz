@@ -60,6 +60,7 @@ pub enum Job {
     ReifyGuardDispatch(FunctionId),
     PlanEntryDispatch(FunctionId),
     BuildMacroExecutable(FunctionId),
+    DeriveStaticCallees(FunctionId),
     DeriveRecursive(FunctionId),
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
@@ -105,6 +106,7 @@ pub enum FactKey {
     GuardDispatch(FunctionId),
     EntryDispatch(FunctionId),
     MacroExecutable(FunctionId),
+    StaticCallees(FunctionId),
     Recursive(FunctionId),
     DispatchMask(FunctionId),
     RootEntry(RootId),
@@ -210,6 +212,7 @@ impl World {
                     },
                 )
             }
+            FactKey::StaticCallees(function) => Some(Job::DeriveStaticCallees(*function)),
             FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
             FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),

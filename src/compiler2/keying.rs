@@ -52,6 +52,10 @@ pub(crate) struct BodyKeying {
 pub(crate) type BodyKeyingMap = FunctionFactMap<BodyKeying>;
 pub(crate) type DispatchMaskMap = FunctionFactMap<Vec<DispatchDemand>>;
 
+/// The call graph's edge store: the static callees `FactKey::StaticCallees`
+/// publishes for each function, ascending by function id.
+pub(crate) type StaticCalleeMap = FunctionFactMap<Vec<FunctionId>>;
+
 impl<T> FunctionFactMap<T>
 where
     T: Clone + PartialEq,

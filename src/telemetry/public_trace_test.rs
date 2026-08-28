@@ -1,6 +1,6 @@
 use super::*;
 use crate::compiler2::DriveOutcome;
-use crate::telemetry::causal::{CausalReport, Dependencies};
+use crate::telemetry::causal::{CausalReport, Dependencies, FormulaWork};
 use crate::telemetry::handler::EventKind;
 
 /// The ticket's acceptance scenario: two functions, one calling the other.
@@ -836,4 +836,124 @@ fn a_double_compile_produces_one_canonical_work_multiset() {
         "expected a substantial multiset, got {} entries",
         first.len()
     );
+}
+
+/// The work one job family did, summed over its per-function formulas, plus
+/// how many distinct formulas that family had. `CausalReport` keys formulas by
+/// canonical identity (`{"function_id":"main/0","kind":"DeriveRecursive"}`), so
+/// the family is the rows whose kind matches.
+fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
+    let mut formulas = 0;
+    let mut totals = FormulaWork::default();
+    for (formula, work) in &report.formulas {
+        if !formula.contains(&format!("\"kind\":\"{kind}\"")) {
+            continue;
+        }
+        formulas += 1;
+        totals.evaluations += work.evaluations;
+        totals.changed_outputs += work.changed_outputs;
+        totals.unchanged_outputs += work.unchanged_outputs;
+        totals.blocked_completions += work.blocked_completions;
+    }
+    (formulas, totals)
+}
+
+/// fz-kdt.56's ratchet, per target fixture: `(DeriveRecursive evaluations,
+/// DeriveRecursive evaluations that concluded nothing)`.
+///
+/// Measured at 1c7201b9b, before the call graph became a fact, the same three
+/// fixtures ran 85/47, 83/22 and 165/65 -- one `DeriveRecursive` evaluation per
+/// BFS layer of each function's own reachable cone, every one of them
+/// re-extracting the callees of every body it could already see. The numbers
+/// below are what the same compiles do now that the edges are read from
+/// `StaticCallees` facts instead.
+/// Per fixture: DeriveRecursive (evaluations, concluded-nothing), then
+/// DeriveStaticCallees (evaluations, blocked) -- the family this ticket ADDED.
+/// Its cost is pinned alongside the family it shrank so the trade stays
+/// visible: on enum_take_drop_split the recursion answer now costs
+/// 134 + 251 evaluations against 165 before, cheaper per evaluation (fact
+/// reads, not cone re-scans) but more of them until fz-kdt.13's component
+/// fact absorbs the layered walk.
+const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
+    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 101, 51),
+    ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 142, 75),
+    ("fixtures2/behavior/enum_take_drop_split.fz", 134, 34, 251, 129),
+];
+
+/// fz-kdt.56: recursion is answered from the call graph's edge facts, so
+/// discovering a layer costs a fact read instead of a re-scan of every body
+/// already known.
+///
+/// Two halves, and the second is what keeps the first honest:
+///
+/// - `DeriveRecursive`'s restart pyramid shrinks to the pinned counts. The
+///   evaluations that conclude nothing -- pure restart cost, 39% of the work on
+///   `enum_take_drop_split` before this ticket -- roughly halve.
+/// - `DeriveStaticCallees`, the job that replaced the re-scan, publishes each
+///   function's edges from exactly ONE evaluation. A body is extracted once no
+///   matter how many reachability walks cross it, which is the property the old
+///   traversal could not have: it re-extracted per walk, per layer.
+///
+/// The uncaused check rides along deliberately. A count can also fall by
+/// LOSING wakes, and a formula that stopped re-running because its
+/// subscriptions no longer reach it would look like an improvement here while
+/// being a correctness regression; fz-kdt.34.6's acceptance says every
+/// evaluation names a moved input, and it still must.
+#[test]
+fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
+    for (fixture, evaluations, concluded_nothing, callee_evaluations, callee_blocked) in DERIVE_RECURSIVE_RATCHET {
+        let trace = compile_fixture(fixture);
+        assert!(
+            matches!(trace.outcome, DriveOutcome::Resolved),
+            "{fixture} must resolve for its causal report to describe a whole compile"
+        );
+        let report = CausalReport::derive(trace.events());
+
+        let (_, recursive) = family_work(&report, "DeriveRecursive");
+        assert_eq!(
+            (recursive.evaluations, recursive.unchanged_outputs),
+            (evaluations, concluded_nothing),
+            "{fixture}: DeriveRecursive work moved off its fz-kdt.56 pin; re-measure and re-pin \
+             with the reason. Full row: {recursive:?}"
+        );
+
+        let (functions, callees) = family_work(&report, "DeriveStaticCallees");
+        assert!(
+            functions > 0,
+            "{fixture}: the edge facts must exist for the one-extraction claim to say anything"
+        );
+        assert_eq!(
+            callees.changed_outputs, functions,
+            "{fixture}: {functions} functions should have published {functions} edge sets -- one \
+             body, one extraction. Full row: {callees:?}"
+        );
+        assert_eq!(
+            callees.evaluations - callees.changed_outputs,
+            callees.blocked_completions,
+            "{fixture}: every DeriveStaticCallees evaluation that published nothing must be one \
+             that blocked waiting for the body; {callees:?}"
+        );
+        assert_eq!(
+            (callees.evaluations, callees.blocked_completions),
+            (callee_evaluations, callee_blocked),
+            "{fixture}: DeriveStaticCallees work moved off its fz-kdt.56 pin; the family this \
+             ticket added must not drift silently. Full row: {callees:?}"
+        );
+
+        for (formula, work) in &report.formulas {
+            if formula.contains("DeriveStaticCallees") {
+                assert_eq!(
+                    work.changed_outputs, 1,
+                    "{fixture}: {formula} must publish its edge set from exactly one evaluation"
+                );
+            }
+        }
+
+        assert_eq!(
+            report.uncaused,
+            Vec::new(),
+            "{fixture}: the drop must come from doing less work, not from losing the wakes that \
+             cause it"
+        );
+    }
 }
