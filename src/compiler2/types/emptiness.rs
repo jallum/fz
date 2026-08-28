@@ -39,7 +39,13 @@ pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>, memo: &mut M
     phi_tuple(cx, &t, &negs, memo)
 }
 
-fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<Descr>], memo: &mut Memo) -> bool {
+/// Is the product `∏t` minus the union of the products `∏n` empty?
+///
+/// Exact, and stated over DESCRIPTORS rather than interned coordinates, so a
+/// caller can decide `∏t ⊆ ⋃∏n` for rectangles it built but never interned.
+/// Every entry of `n` must have the same arity as `t`; a mismatched arity
+/// subtracts nothing and belongs to the caller's filter.
+pub(super) fn phi_tuple(cx: TyCtx<'_>, t: &[Descr], n: &[Vec<Descr>], memo: &mut Memo) -> bool {
     // One empty coordinate empties the whole product — no negation needed.
     // Checking at entry prunes every recursive branch whose diff/intersect
     // zeroed a coordinate; without this the recursion only discovers the

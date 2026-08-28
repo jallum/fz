@@ -325,6 +325,61 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     }
 }
 
+/// `--dump backend` is the canonical external form, so two SEPARATE PROCESSES
+/// compiling one input must write byte-identical files.
+///
+/// Two processes is the point. Inside one process a `HashMap`'s iteration order
+/// is stable enough to hide the defect; across processes `RandomState` reseeds,
+/// so a rendering derived from `{:#?}` differs run to run even when the two
+/// programs are equal (fz-kdt.6). The sibling `--dump native` still renders
+/// with `{:#?}`, and on this very fixture two processes write files that differ
+/// at char 59,803 of 98,141 — which is what this test asserts can no longer
+/// happen to the backend dump. Nor is the arena a comparand: a `Ty` is a
+/// position in one `World`.
+#[test]
+fn backend_dump_is_byte_identical_across_two_processes() {
+    let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
+    let first_path = unique_temp_path("fz2_backend_canon_a", ".backend");
+    let second_path = unique_temp_path("fz2_backend_canon_b", ".backend");
+
+    for path in [&first_path, &second_path] {
+        let spec = format!("backend={}", path.display());
+        let out = run_fz2(&[
+            OsStr::new("interp"),
+            OsStr::new("--dump"),
+            OsStr::new(&spec),
+            OsStr::new(fixture),
+        ]);
+        assert_successful_stdout(&out, &fixture_expected_stdout(fixture), fixture);
+    }
+
+    let first = read_to_string(&first_path).expect("read first backend dump");
+    let second = read_to_string(&second_path).expect("read second backend dump");
+    assert!(
+        first.len() > 1_000,
+        "the backend dump should describe a whole program, got {} bytes",
+        first.len()
+    );
+    assert!(
+        !first.contains("Ty("),
+        "the canonical backend dump must not carry raw interner ids"
+    );
+    let divergence = first
+        .lines()
+        .zip(second.lines())
+        .position(|(left, right)| left != right);
+    assert!(
+        first == second,
+        "two processes must write one canonical backend dump; they first differ at line {divergence:?}:\n  \
+         first:  {:?}\n  second: {:?}",
+        divergence.and_then(|at| first.lines().nth(at)),
+        divergence.and_then(|at| second.lines().nth(at)),
+    );
+
+    let _ = remove_file(&first_path);
+    let _ = remove_file(&second_path);
+}
+
 #[test]
 fn build_accepts_repeated_dump_specs_with_extension_or_kind_override() {
     let source_path = unique_temp_path("fz2_dump_build", ".fz");

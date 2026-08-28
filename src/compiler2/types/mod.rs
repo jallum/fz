@@ -6,6 +6,7 @@
 mod addressed;
 mod arrow_match;
 mod bits;
+mod canon;
 mod closure_surface_var;
 mod conj;
 mod descr;
@@ -35,6 +36,8 @@ pub use crate::types::{
 };
 
 pub use arrow_match::ArrowMatch;
+
+pub(crate) use canon::TyCanon;
 
 use addressed::AddrStep;
 #[cfg(test)]
@@ -318,6 +321,15 @@ impl Types {
         };
         self.value_lane_reprs.insert(ty, repr);
         repr
+    }
+
+    /// Every type the arena holds, in mint order.
+    ///
+    /// Comparison-only: the canon faithfulness ratchet sweeps the whole
+    /// interned population, and needs the census rather than any particular id.
+    #[cfg(test)]
+    pub(crate) fn interned_tys(&self) -> Vec<Ty> {
+        (0..self.interner.arena.len() as u32).map(Ty).collect()
     }
 
     #[cfg(test)]

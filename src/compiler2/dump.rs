@@ -2,7 +2,8 @@ use std::fs::{OpenOptions, write};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
+use super::canon::{canon_backend_program, function_label};
+use super::identity::{ActivationKey, ExecutableKey, RootId};
 use super::world::World;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,7 +123,11 @@ impl RequestedOutputSink for FileRequestedOutput {
         }
         for spec in &self.specs {
             let text = match spec.kind {
-                DumpKind::Backend => format!("{:#?}\n", world.backend_program(root)),
+                // The backend dump is the canonical external form: a `{:#?}` of
+                // the program renders `HashMap`s in per-instance `RandomState`
+                // order, so two runs of ONE binary over ONE input differed even
+                // when the programs were equal (fz-kdt.6).
+                DumpKind::Backend => canon_backend_program(world, &world.backend_program(root)),
                 DumpKind::Native => format!("{:#?}\n", world.native_program(root)),
                 DumpKind::Fnir => format!("{:#?}\n", world.native_program(root).module),
                 _ => continue,
@@ -320,16 +325,6 @@ fn executable_label(world: &World, executable: &ExecutableKey) -> String {
         activation_label(world, &executable.activation),
         executable.need
     )
-}
-
-fn function_label(world: &World, function: FunctionId) -> String {
-    let function_ref = world.function_ref(function);
-    let module = world.module_name(function_ref.module).unwrap_or_default();
-    if module.is_empty() {
-        format!("{}/{}", function_ref.name, function_ref.arity)
-    } else {
-        format!("{}.{}/{}", module, function_ref.name, function_ref.arity)
-    }
 }
 
 fn span_label(span: crate::source::Span) -> String {

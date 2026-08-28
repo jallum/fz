@@ -2,6 +2,7 @@ mod agenda;
 mod artifact;
 mod body;
 pub(crate) mod callsite_dispatch;
+mod canon;
 mod cli;
 mod code;
 mod compiler;
@@ -112,6 +113,8 @@ pub use world::World;
 
 #[cfg(test)]
 mod artifact_test;
+#[cfg(test)]
+mod canon_test;
 #[cfg(test)]
 mod code_test;
 #[cfg(test)]
