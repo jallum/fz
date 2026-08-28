@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-28T16:56:06Z",
+  "description": "Measured from the public causal stream (HEAD efa05d386, debug interp):\n\n    00420:      5,356 transport_shape + 5,070 callable_construction of 12,645\n                total settlements (82%); ~22 + ~21 per backend executable (239)\n    predsearch: 2,397 + 2,325 of 6,770 (70%... 82% incl. slots)\n    rangemap:     749 +   716 of 2,061 (71%)\n\nEach settles ONCE with changed=true (no churn -- keys are distinct), cache-hit\nrates are tiny (3%), displacement zero. So this is honest one-time work; the\nquestion is whether the POPULATION is proportional: ~45 products per executable\nfor a ~40-function program. If two positions with the same structural need each\nrun their own product only to intern the same ShapeId, the product key is\nper-position where per-structure would do -- fold candidates per\nfeedback_fold_concordant_ideas.\n\n## Task\nAudit what the per-key work actually derives: histogram the product keys by\ntheir resulting ShapeId/CallableId; count how many distinct results the 10k\nproducts produce on 00420. If results collapse heavily, re-key the products by\nstructural need and measure the settlement-count drop. If they do not collapse,\nclose this with the numbers as the proportionality justification.\n\n## Checks\n- Either settlements drop materially with identical canonical programs, or the\n  ticket closes documenting measured 1:1 key-to-result proportionality.",
+  "id": "fz-kdt.58",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Transport-shape and callable-construction products are 82% of all settlements: proportionality audit",
+  "type": "task",
+  "updated_at": "2026-08-28T16:56:06Z"
+}
