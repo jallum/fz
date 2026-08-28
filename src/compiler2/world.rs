@@ -39,7 +39,7 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
-use super::keying::{BodyKeying, BodyKeyingMap, DispatchDemand, DispatchMaskMap};
+use super::keying::{BodyKeying, BodyKeyingMap, DispatchDemand, DispatchMaskMap, StaticCalleeMap};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
@@ -127,6 +127,7 @@ pub struct World {
     entry_dispatches: EntryDispatchMap,
     body_keying: BodyKeyingMap,
     dispatch_masks: DispatchMaskMap,
+    static_callees: StaticCalleeMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
@@ -237,6 +238,7 @@ impl World {
             entry_dispatches: EntryDispatchMap::new(),
             body_keying: BodyKeyingMap::new(),
             dispatch_masks: DispatchMaskMap::new(),
+            static_callees: StaticCalleeMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
@@ -653,8 +655,7 @@ impl World {
             // canonical form. Idempotent on already-addressed contributions.
             let normalized = self.types.address_inputs(&inputs);
             let normalized = if self
-                .body_keying
-                .get(activation.function)
+                .body_keying(activation.function)
                 .is_some_and(|keying| keying.recursive)
             {
                 let mask = self
@@ -1110,6 +1111,24 @@ impl World {
 
     pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<DispatchDemand>) -> bool {
         self.dispatch_masks.define(function, mask)
+    }
+
+    /// The call graph's out-edges for one function, behind
+    /// `FactKey::StaticCallees`. One body, one edge list: every reader of the
+    /// graph -- recursion today, component membership next -- walks these
+    /// instead of re-extracting edges from the bodies it can reach.
+    pub(crate) fn define_static_callees(&mut self, function: FunctionId, callees: Vec<FunctionId>) -> bool {
+        self.static_callees.define(function, callees)
+    }
+
+    pub(crate) fn body_keying(&self, function: FunctionId) -> Option<BodyKeying> {
+        self.body_keying.get(function).copied()
+    }
+
+    pub(crate) fn static_callees(&self, function: FunctionId) -> &[FunctionId] {
+        self.static_callees
+            .get(function)
+            .expect("static callees should only be read after their fact is defined")
     }
 
     pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan<Ty> {
@@ -1742,9 +1761,8 @@ impl World {
             .get(function)
             .expect("activation keying should wait for dispatch mask facts before activation")
             .clone();
-        let keying = *self
-            .body_keying
-            .get(function)
+        let keying = self
+            .body_keying(function)
             .expect("activation keying should wait for recursive facts before activation");
         // The arrow is the PRECISE evidence: address the whole input vector in one
         // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address

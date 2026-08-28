@@ -28,16 +28,130 @@ impl StaticEdge {
     }
 }
 
+/// Derives the static call edges leaving one function: the callees its
+/// lowered body names, ascending by function id, deduplicated.
+///
+/// This is the call graph's edge fact, one body's worth per publication.
+/// Reachability questions -- `derive_recursive` today, component membership
+/// next -- walk these facts instead of re-extracting edges from every body
+/// they can reach, so discovering one more layer of the graph costs one fact
+/// read per node rather than one body scan per node per layer (fz-kdt.56).
+pub(super) fn derive_static_callees(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    function: FunctionId,
+) -> Result<JobEffects, FatalError> {
+    if world.function_is_provider_boundary(function) {
+        // A provider boundary has an interface but no body in this program:
+        // no edges. The boundary test is not monotone -- a definition landing
+        // later dissolves it -- so the conclusion subscribes to the facts it
+        // consulted rather than freezing the filter's answer.
+        let module = world.function_module(function);
+        return Ok(publish_static_callees(
+            world,
+            function,
+            Vec::new(),
+            vec![FactKey::FunctionDefined(function), FactKey::ModuleDefined(module)],
+        ));
+    }
+    if world.function_defined_revision(function).is_none() {
+        if world.protocol_callback(function).is_some() {
+            // A protocol callback is dispatched through, never lowered: it is
+            // a leaf of the static graph, not a wait that would never resolve.
+            return Ok(publish_static_callees(
+                world,
+                function,
+                Vec::new(),
+                vec![FactKey::FunctionDefined(function)],
+            ));
+        }
+        let module = world.function_module(function);
+        if !module.is_global() && world.module_defined_revision(module).is_none() {
+            // Demand the scope that produces the `ModuleDefined` this site
+            // waits on, not the body (fz-f98.14.5): `ensure_runtime_module`
+            // mints a runtime module's code the first time the call graph
+            // reaches it, instead of leaving that submission to whenever
+            // `Job::DefineModule` happens to run. `ModuleDefined`'s sole
+            // producer arm is `Job::DefineModule`; `demand_function_scope`'s
+            // only other branch (`CodeScoped`, for `module.is_global()`) is
+            // ruled out by the guard above.
+            super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module);
+            return Ok(JobEffects::wait_on_current(FactKey::ModuleDefined(module)));
+        }
+    }
+
+    let lowered = FactKey::LoweredBody(function);
+    if !world.has_fact(&lowered) {
+        // One wait, for the one fact this derivation reads. `LoweredBody`'s
+        // sole producer arm is `Job::LowerFunction`, and the chain behind it
+        // (`DefineFunction` -> `PublishFunctionSource` -> `demand_function_scope`)
+        // is what scopes the code the body comes from. Waiting on
+        // `FunctionDefined` first, as a separate rung, would buy nothing but
+        // one more blocked evaluation per function.
+        return Ok(JobEffects::wait_on_current(lowered));
+    }
+    let mut reads = vec![FactKey::FunctionDefined(function), lowered];
+    let callees = body_static_callees(world, function, &mut reads);
+    Ok(publish_static_callees(world, function, callees, reads))
+}
+
+/// The callees one lowered body names, in the order `static_edges` yields
+/// them -- ascending by function id, so the published `Vec` is deterministic
+/// by construction and adjacent duplicates (a function both called directly
+/// and captured as a lambda) collapse without a second sort.
+fn body_static_callees(world: &World, function: FunctionId, reads: &mut Vec<FactKey>) -> Vec<FunctionId> {
+    let mut callees: Vec<FunctionId> = Vec::new();
+    for edge in static_edges(&world.lowered_body(function)) {
+        let target = edge.function();
+        if world.function_is_provider_boundary(target) {
+            // The boundary test consults the target's definedness, and it is
+            // not monotone: a module or function defined later dissolves the
+            // boundary. Record the read so that definition grows this edge
+            // set instead of leaving the filter frozen in a fact.
+            reads.push(FactKey::FunctionDefined(target));
+            continue;
+        }
+        if matches!(edge, StaticEdge::Lambda(_)) {
+            // A lambda target is an edge only once its generated function
+            // exists. The conclusion consulted that fact, so it is read
+            // whether or not it was there -- a definition that lands later
+            // must be able to grow this edge set.
+            reads.push(FactKey::FunctionDefined(target));
+            if world.function_defined_revision(target).is_none() {
+                continue;
+            }
+        }
+        if callees.last() != Some(&target) {
+            callees.push(target);
+        }
+    }
+    callees
+}
+
+fn publish_static_callees(
+    world: &mut World,
+    function: FunctionId,
+    callees: Vec<FunctionId>,
+    reads: Vec<FactKey>,
+) -> JobEffects {
+    let changed = world.define_static_callees(function, callees);
+    JobEffects {
+        reads: current_uses(reads),
+        outputs: vec![FactKey::StaticCallees(function)],
+        changed: changed
+            .then_some(FactKey::StaticCallees(function))
+            .into_iter()
+            .collect(),
+        ..JobEffects::default()
+    }
+}
+
 /// Derives whether one function can reach itself through static calls.
 ///
 /// Lambda creation is a static edge from the owner to the generated function,
 /// so recursion through generated closures is handled the same way as direct
 /// or mutual recursion.
-pub(super) fn derive_recursive(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    function: FunctionId,
-) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         let changed = world.define_body_keying(
             function,
@@ -52,15 +166,22 @@ pub(super) fn derive_recursive(
             ..JobEffects::default()
         });
     }
-    if world.function_defined_revision(function).is_none() {
-        return Ok(world.wait_for_function_definition(function));
-    }
 
     let mut reads = Vec::new();
     let mut waits = HashSet::new();
     let mut graph = HashMap::new();
     let mut seen = HashSet::new();
-    collect_static_graph(world, tel, function, &mut reads, &mut waits, &mut graph, &mut seen);
+    collect_static_graph(world, function, &mut reads, &mut waits, &mut graph, &mut seen);
+    // Identity consumption is a property of this body alone, so it rides the
+    // same conclusion rather than the graph walk -- but it needs the body,
+    // which a `StaticCallees` fact published for an undefined protocol
+    // callback does not imply.
+    let lowered = FactKey::LoweredBody(function);
+    if !world.has_fact(&lowered) {
+        waits.insert(lowered);
+    } else {
+        reads.push(lowered);
+    }
     if !waits.is_empty() {
         return Ok(JobEffects {
             reads: current_uses(reads),
@@ -157,9 +278,14 @@ fn emit_dispatch_mask_derived(
     tel.raw_event2(&["fz", "compiler2", "dispatch_mask", "derived"], function, mask);
 }
 
+/// Walks the reachable static call graph over the `StaticCallees` edge facts.
+///
+/// One fact read per reachable node, and a node already known costs the read
+/// and nothing else -- no body is re-scanned when a later layer of the graph
+/// arrives. Missing edge facts are recorded as waits, so the layers the walk
+/// discovers are demand, not repeated work (fz-kdt.56).
 fn collect_static_graph(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
     function: FunctionId,
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
@@ -169,57 +295,18 @@ fn collect_static_graph(
     if !seen.insert(function) {
         return;
     }
-
-    if world.function_defined_revision(function).is_none() {
-        if world.protocol_callback(function).is_some() {
-            return;
-        }
-        let module = world.function_module(function);
-        if !module.is_global() && world.module_defined_revision(module).is_none() {
-            // Demand the scope that produces the `ModuleDefined` this site waits
-            // on, not the body (fz-f98.14.5). The body is pulled below, once the
-            // function is defined. `ModuleDefined`'s sole producer arm
-            // (`Job::DefineModule`, in `World::demand_fact_producer`) covers this
-            // wait; `demand_function_scope`'s only other branch (`CodeScoped`,
-            // for `module.is_global()`) is unreachable here -- the guard above
-            // already rules out a global module. `ensure_runtime_module` mirrors
-            // `demand_function_scope`'s non-global branch: it mints a runtime
-            // module's code the first time this graph reaches it, instead of
-            // leaving that submission to whenever `Job::DefineModule` happens to
-            // run.
-            super::super::drive::ExecutionContext::new(world, tel).ensure_runtime_module(module);
-            waits.insert(FactKey::ModuleDefined(module));
-            return;
-        }
-        // `FunctionDefined`'s sole producer arm is `Job::DefineFunction`.
-        waits.insert(FactKey::FunctionDefined(function));
+    let callees = FactKey::StaticCallees(function);
+    if !world.has_fact(&callees) {
+        // `StaticCallees`'s sole producer arm is `Job::DeriveStaticCallees`.
+        waits.insert(callees);
         return;
     }
-
-    let lowered_fact = FactKey::LoweredBody(function);
-    if !world.has_fact(&lowered_fact) {
-        // `LoweredBody`'s sole producer arm is `Job::LowerFunction`.
-        waits.insert(lowered_fact);
-        return;
+    reads.push(callees);
+    let edges = world.static_callees(function).to_vec();
+    for target in &edges {
+        collect_static_graph(world, *target, reads, waits, graph, seen);
     }
-    reads.push(lowered_fact);
-
-    let edges = static_edges(&world.lowered_body(function));
-    let mut ready_edges = Vec::new();
-    for edge in edges {
-        let target = edge.function();
-        if world.function_is_provider_boundary(target) {
-            continue;
-        }
-        if matches!(edge, StaticEdge::Lambda(_)) && world.function_defined_revision(target).is_none() {
-            continue;
-        }
-        ready_edges.push(target);
-        collect_static_graph(world, tel, target, reads, waits, graph, seen);
-    }
-    ready_edges.sort_by_key(|function| function.as_u32());
-    ready_edges.dedup();
-    graph.insert(function, ready_edges);
+    graph.insert(function, edges);
 }
 
 fn reaches_self(function: FunctionId, graph: &HashMap<FunctionId, Vec<FunctionId>>) -> bool {

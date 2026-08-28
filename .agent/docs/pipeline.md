@@ -34,8 +34,10 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
 macro     BuildMacroExecutable
             one demanded defmacro -> hidden macro root
             -> BackendProgram -> MacroExecutable
-keying    DeriveRecursive, DeriveDispatchMask
-            stable per-function facts used to canonicalize activation keys
+keying    DeriveStaticCallees, DeriveRecursive, DeriveDispatchMask
+            one body -> StaticCallees, the call graph's out-edges for that function
+            stable per-function facts used to canonicalize activation keys:
+            DeriveRecursive walks the StaticCallees facts to answer reachability
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand

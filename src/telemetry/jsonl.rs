@@ -1957,6 +1957,7 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::ReifyGuardDispatch(function)
         | Job::PlanEntryDispatch(function)
         | Job::BuildMacroExecutable(function)
+        | Job::DeriveStaticCallees(function)
         | Job::DeriveRecursive(function)
         | Job::DeriveDispatchMask(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
@@ -1989,6 +1990,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::GuardDispatch(function)
         | FactKey::EntryDispatch(function)
         | FactKey::MacroExecutable(function)
+        | FactKey::StaticCallees(function)
         | FactKey::Recursive(function)
         | FactKey::DispatchMask(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
@@ -2220,6 +2222,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::GuardDispatch(_) => "GuardDispatch",
         FactKey::EntryDispatch(_) => "EntryDispatch",
         FactKey::MacroExecutable(_) => "MacroExecutable",
+        FactKey::StaticCallees(_) => "StaticCallees",
         FactKey::Recursive(_) => "Recursive",
         FactKey::DispatchMask(_) => "DispatchMask",
         FactKey::RootEntry(_) => "RootEntry",
@@ -2252,6 +2255,7 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::ReifyGuardDispatch(_) => "ReifyGuardDispatch",
         Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
         Job::BuildMacroExecutable(_) => "BuildMacroExecutable",
+        Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
         Job::DeriveRecursive(_) => "DeriveRecursive",
         Job::DeriveDispatchMask(_) => "DeriveDispatchMask",
         Job::SeedRoot(_) => "SeedRoot",
