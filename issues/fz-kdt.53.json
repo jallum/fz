@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-28T14:08:16Z",
+  "description": "Noted while landing fz-f98.21: sigs.rs documents MapSig::intersect_pos as\nnever returning PosMeet::Empty (measured-and-left), so same-axis positive map\nsigs never collapse or refute at meet time; the map axis relies on\nmap_clause_empty alone. canon's union-level subsumption drop covers the\ncomparison boundary, but production intersections can pile up conjunctive map\nstructure the way fz-go4.24 fixed for the other axes. If map-heavy traffic\ngrows, this is the axis with no clause-level normalization. Verify cost with a\nmap-heavy fixture before investing.",
+  "id": "fz-kdt.53",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Map axis has no clause-level normalization: MapSig::intersect_pos never reports Empty",
+  "type": "task",
+  "updated_at": "2026-08-28T14:08:16Z"
+}
