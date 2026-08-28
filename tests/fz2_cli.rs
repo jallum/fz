@@ -301,9 +301,16 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 
 #[test]
 fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
+    // Budgets re-pinned for the fz-kdt.34 causality stream (fz-kdt.52): the
+    // public trace deliberately carries one `work_graph.applied` per applied
+    // job (the completion seam) plus product settlement/cache/displacement
+    // events, so events and bytes scale with work done. Measured (interp,
+    // debug): 00181 = 1,242 events / 878,599 bytes; 00009 = 189 events /
+    // 100,495 bytes. Pins keep tight headroom so creep without cause still
+    // trips them.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_000, 320 * 1024),
-        ("fixtures2/00009_no_runtime.fz", 300, 96 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_300, 960 * 1024),
+        ("fixtures2/00009_no_runtime.fz", 300, 128 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
         let output = run_fz2(&[
