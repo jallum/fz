@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-29T04:12:06Z",
   "created": "2026-08-29T03:46:30Z",
   "description": "Found during the fz-kdt.13 build, latent at HEAD. World::demand_producer_if_needed\n(drive.rs:~251) checks the rebased flag BEFORE the blocked check. The rebase\nflag is only cleared by a CONCLUDING run, so a job that repeatedly blocks\nstays flagged forever and every stall pass re-enqueues it -- re-running it\nstraight back into the same unsatisfied waits.\n\nLatent today: with no scheduler Settled-waiters, the re-runs happen to be\nharmless (measured: fixing the order changes nothing at HEAD -- 969/1667/2864\nevaluations byte-identical on the three target fixtures). The moment settled\nwaits exist on the agenda path it produces UNCAUSED evaluations (measured\nlive during the kdt.13 experiment: 51/5/49 uncaused across the fixtures,\ne.g. Enum.reduce/3 analysis: 24 evaluations, 16 uncaused, 20 blocked).\n\nFix: check blocked first. Sound because Scheduler::enqueue_dependents never\nmarks a job rebased without enqueueing it in the same step, so shifted ground\nhas already been offered to the job. TDD: scheduler/world-level red test --\na repeatedly-blocking rebased job must not be re-enqueued by the stall pass\nwhile its waits are unsatisfied.",
   "id": "fz-kdt.62",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "demand_producer_if_needed re-enqueues blocked jobs forever: blocked must gate before rebased",
   "type": "bug",
-  "updated_at": "2026-08-29T03:46:30Z"
+  "updated_at": "2026-08-29T04:12:06Z"
 }
