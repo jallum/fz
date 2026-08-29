@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-29T13:36:23Z",
+  "description": "Found by cold design review (2026-08-29). fact-engine.md states 'a rebased\njob's next conclusion replaces its cumulative store values instead of joining\n(the only narrowing path)'. But world.rs:634 reads\n\n    let preserve_frontier = rebased || matches!(job, Job::AnalyzeActivation(_))\n\nand the else branch at world.rs:642-645 passes literal false for rebased --\nso ContributionMap::conclude's narrowing path (semantic.rs:1032-1055) is\nUNREACHABLE for activation inputs: ActivationInputs joins unconditionally,\nwhile ReturnType does narrow on rebase (semantic.rs:929-937). Over-wide input\nevidence survives a ground shift: sound but permanently imprecise, and a\nlatent trap for anything that reasons about narrowing (e.g. specialization\nwidth, fz-y6w's collapsed fanout).\n\nFix: decide which is right -- either activation inputs get a real narrowing\npath on rebase (and the matches! special case is deleted), or the doc is\ncorrected to state the exception and WHY. Measure specialization counts\nbefore/after if narrowing is enabled (lowering pins is safe-by-construction;\ncheck output correctness only).",
+  "id": "fz-kdt.64",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "ReturnType narrows on rebase but ActivationInputs cannot: code contradicts fact-engine.md",
+  "type": "bug",
+  "updated_at": "2026-08-29T13:36:23Z"
+}
