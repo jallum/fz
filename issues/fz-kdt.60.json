@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-29T03:13:39Z",
+  "description": "Found by fz-kdt.44's adversarial review: the main drive_until loop's arbiter\nintegration (drive.rs, quiescence_woke_work -\u003e changed_since_stall = true;\ncontinue) is unreachable from any fixture compile -- every fixture goes\nthrough product_drive, and the arbiter currently wakes nothing on the pure\nagenda path (0 quiesced wakes measured on all three target fixtures). The\nbranch's behavior when a scheduler Settled-waiter IS woken by arbitration is\nuntested. fz-kdt.13 will create real scheduler Settled-waiters and should\neither cover this branch with a world-level test (a Settled waiter over a\nquiesced cycle driven through drive_for) or delete it if the product path\nsubsumes it. Do not close fz-kdt.13 with this branch still uncovered.",
+  "id": "fz-kdt.60",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Drive-loop arbiter branch (quiescence_woke_work -\u003e continue) has no covering test",
+  "type": "task",
+  "updated_at": "2026-08-29T03:13:39Z"
+}
