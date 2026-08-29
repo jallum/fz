@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-08-29T04:12:06Z",
   "created": "2026-08-29T03:46:29Z",
   "description": "Salvaged deliverable 1 of the fz-kdt.13 build (its deliverable 2 was refuted\nby measurement -- see fz-kdt.13). FactKey::CallGraphComponent(f) = smallest\nFunctionId in f's strong component over the StaticCallees edge facts; equal\nids iff mutually reachable. Job::DeriveRecursive RENAMED\nJob::DeriveCallGraphComponent, publishing BOTH CallGraphComponent(f) and\nRecursive(f) from the one walk it already does (a split job would ADD ~200\nevaluations on 00420; folding costs zero). Recursive becomes\ncomponent.len()\u003e1 || self-edge; reaches_self deleted.\n\nMeasured: DeriveRecursive-family counts byte-identical to the fz-kdt.56 pins\n(62/24, 73/12, 134/34) -- the recursion answer now costs nothing beyond the\ncomponent derivation. Remaining blocked completions (24/12/34) are the pull's\nlayered StaticCallees discovery, which no formulation avoids.\n\nConsumers of mutual-reachability queries (whenever a future ticket needs\nsame-SCC classification) read CallGraphComponent facts; measured component\nstructure on 00420: 119 nodes, 116 components, largest = 3\n({reduce_cont, reduce_step, lambda}).",
   "id": "fz-kdt.61",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Call-graph component fact: recursion from strong components, kdt.56 residual retired",
   "type": "task",
-  "updated_at": "2026-08-29T03:46:29Z"
+  "updated_at": "2026-08-29T04:12:06Z"
 }
