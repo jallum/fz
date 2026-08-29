@@ -840,7 +840,7 @@ fn a_double_compile_produces_one_canonical_work_multiset() {
 
 /// The work one job family did, summed over its per-function formulas, plus
 /// how many distinct formulas that family had. `CausalReport` keys formulas by
-/// canonical identity (`{"function_id":"main/0","kind":"DeriveRecursive"}`), so
+/// canonical identity (`{"function_id":"main/0","kind":"DeriveCallGraphComponent"}`), so
 /// the family is the rows whose kind matches.
 fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
     let mut formulas = 0;
@@ -858,22 +858,34 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
     (formulas, totals)
 }
 
-/// fz-kdt.56's ratchet, per target fixture: `(DeriveRecursive evaluations,
-/// DeriveRecursive evaluations that concluded nothing)`.
+/// fz-kdt.56's ratchet, per target fixture: `(DeriveCallGraphComponent
+/// evaluations, evaluations that concluded nothing)`.
 ///
 /// Measured at 1c7201b9b, before the call graph became a fact, the same three
-/// fixtures ran 85/47, 83/22 and 165/65 -- one `DeriveRecursive` evaluation per
-/// BFS layer of each function's own reachable cone, every one of them
-/// re-extracting the callees of every body it could already see. The numbers
-/// below are what the same compiles do now that the edges are read from
-/// `StaticCallees` facts instead.
-/// Per fixture: DeriveRecursive (evaluations, concluded-nothing), then
-/// DeriveStaticCallees (evaluations, blocked) -- the family this ticket ADDED.
-/// Its cost is pinned alongside the family it shrank so the trade stays
-/// visible: on enum_take_drop_split the recursion answer now costs
+/// fixtures ran 85/47, 83/22 and 165/65 -- one evaluation per BFS layer of
+/// each function's own reachable cone, every one of them re-extracting the
+/// callees of every body it could already see. The numbers below are what the
+/// same compiles do now that the edges are read from `StaticCallees` facts
+/// instead.
+///
+/// fz-kdt.61 renamed the walking job `DeriveRecursive` ->
+/// `DeriveCallGraphComponent` and gave it a second output: the same walk now
+/// publishes the function's strong-component id alongside the body keying that
+/// component decides. The counts below are UNCHANGED by that -- which is the
+/// point of folding rather than splitting. A separate component job would have
+/// made every function pay one blocked evaluation waiting for its component
+/// fact before recursion could conclude, roughly +200 evaluations on
+/// enum_take_drop_split; one walk answering both questions costs nothing over
+/// the walk that was already there.
+/// Per fixture: DeriveCallGraphComponent (evaluations, concluded-nothing),
+/// then DeriveStaticCallees (evaluations, blocked) -- the family fz-kdt.56
+/// ADDED. Its cost is pinned alongside the family it shrank so the trade stays
+/// visible: on enum_take_drop_split the recursion-and-component answer costs
 /// 134 + 251 evaluations against 165 before, cheaper per evaluation (fact
-/// reads, not cone re-scans) but more of them until fz-kdt.13's component
-/// fact absorbs the layered walk.
+/// reads, not cone re-scans) but more of them. The residual blocked
+/// completions (24/12/34) are the pull's own layered discovery of the edge
+/// facts, which no formulation avoids: a cone cannot be known before it is
+/// walked.
 const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 101, 51),
     ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 142, 75),
@@ -886,7 +898,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
 ///
 /// Two halves, and the second is what keeps the first honest:
 ///
-/// - `DeriveRecursive`'s restart pyramid shrinks to the pinned counts. The
+/// - The walking job's restart pyramid shrinks to the pinned counts. The
 ///   evaluations that conclude nothing -- pure restart cost, 39% of the work on
 ///   `enum_take_drop_split` before this ticket -- roughly halve.
 /// - `DeriveStaticCallees`, the job that replaced the re-scan, publishes each
@@ -909,12 +921,12 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
         );
         let report = CausalReport::derive(trace.events());
 
-        let (_, recursive) = family_work(&report, "DeriveRecursive");
+        let (_, recursive) = family_work(&report, "DeriveCallGraphComponent");
         assert_eq!(
             (recursive.evaluations, recursive.unchanged_outputs),
             (evaluations, concluded_nothing),
-            "{fixture}: DeriveRecursive work moved off its fz-kdt.56 pin; re-measure and re-pin \
-             with the reason. Full row: {recursive:?}"
+            "{fixture}: DeriveCallGraphComponent work moved off its fz-kdt.56 pin; re-measure \
+             and re-pin with the reason. Full row: {recursive:?}"
         );
 
         let (functions, callees) = family_work(&report, "DeriveStaticCallees");

@@ -39,7 +39,9 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
-use super::keying::{BodyKeying, BodyKeyingMap, DispatchDemand, DispatchMaskMap, StaticCalleeMap};
+use super::keying::{
+    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, DispatchMaskMap, StaticCalleeMap,
+};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
@@ -128,6 +130,7 @@ pub struct World {
     body_keying: BodyKeyingMap,
     dispatch_masks: DispatchMaskMap,
     static_callees: StaticCalleeMap,
+    call_graph_components: CallGraphComponentMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
@@ -245,6 +248,7 @@ impl World {
             body_keying: BodyKeyingMap::new(),
             dispatch_masks: DispatchMaskMap::new(),
             static_callees: StaticCalleeMap::new(),
+            call_graph_components: CallGraphComponentMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
@@ -1122,14 +1126,34 @@ impl World {
 
     /// The call graph's out-edges for one function, behind
     /// `FactKey::StaticCallees`. One body, one edge list: every reader of the
-    /// graph -- recursion today, component membership next -- walks these
-    /// instead of re-extracting edges from the bodies it can reach.
+    /// graph -- component membership, and the recursion answer derived from
+    /// it -- walks these instead of re-extracting edges from the bodies it
+    /// can reach.
     pub(crate) fn define_static_callees(&mut self, function: FunctionId, callees: Vec<FunctionId>) -> bool {
         self.static_callees.define(function, callees)
     }
 
+    /// One function's place in the static call graph, behind
+    /// `FactKey::CallGraphComponent`: the canonical (smallest) member of its
+    /// strong component. Equal ids mean mutually reachable.
+    pub(crate) fn define_call_graph_component(&mut self, function: FunctionId, component: FunctionId) -> bool {
+        self.call_graph_components.define(function, component)
+    }
+
     pub(crate) fn body_keying(&self, function: FunctionId) -> Option<BodyKeying> {
         self.body_keying.get(function).copied()
+    }
+
+    /// `#[cfg(test)]` states the honest state of play: the component id is
+    /// published as a fact for consumers that ask mutual-reachability
+    /// questions, and no production consumer has landed yet -- the recursion
+    /// answer is derived inside the same job that computes the component, from
+    /// the walk itself. The first real consumer drops the attribute; until
+    /// then the only reader is the test that pins "equal ids iff mutually
+    /// reachable".
+    #[cfg(test)]
+    pub(crate) fn call_graph_component(&self, function: FunctionId) -> Option<FunctionId> {
+        self.call_graph_components.get(function).copied()
     }
 
     pub(crate) fn static_callees(&self, function: FunctionId) -> &[FunctionId] {

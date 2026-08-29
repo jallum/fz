@@ -1036,7 +1036,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     world.demand(Job::DefineFunction(function));
     world.demand(Job::LowerFunction(function));
     world.demand(Job::PlanEntryDispatch(function));
-    world.demand(Job::DeriveRecursive(function));
+    world.demand(Job::DeriveCallGraphComponent(function));
     world.demand(Job::DeriveDispatchMask(function));
     assert_eq!(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
@@ -1094,7 +1094,7 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
     let mut world = World::new();
     let function = world.reference_function(ModuleId::GLOBAL, "main", 0);
     world.complete_job(
-        Job::DeriveRecursive(function),
+        Job::DeriveCallGraphComponent(function),
         JobEffects {
             waits: vec![FactUse::current(FactKey::GuardDispatch(function))],
             ..JobEffects::default()
