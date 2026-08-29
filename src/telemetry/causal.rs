@@ -175,6 +175,7 @@ impl CanonTables {
 const CANON_TYPE: &[&str] = &["fz", "compiler2", "canon", "type"];
 const CANON_FUNCTION: &[&str] = &["fz", "compiler2", "canon", "function"];
 const APPLIED: &[&str] = &["fz", "compiler2", "work_graph", "applied"];
+const QUIESCED: &[&str] = &["fz", "compiler2", "work_graph", "quiesced"];
 const PRODUCT_SETTLED: &[&str] = &["fz", "compiler2", "pull", "product", "settled"];
 const PRODUCT_CACHE_HIT: &[&str] = &["fz", "compiler2", "pull", "product", "cache_hit"];
 const PRODUCT_DISPLACED: &[&str] = &["fz", "compiler2", "pull", "product", "displaced"];
@@ -444,6 +445,8 @@ impl Replay {
             self.note_definitions(position, event);
             if event.named(APPLIED) {
                 self.apply(position, event, dependencies);
+            } else if event.named(QUIESCED) {
+                self.quiesce(position, event);
             } else if event.named(PRODUCT_SETTLED) {
                 self.settle_product(event);
             } else if event.named(PRODUCT_CACHE_HIT) {
@@ -557,6 +560,19 @@ impl Replay {
         let history = self.history.entry(raw_formula).or_default();
         history.last_conclusion = Some(position);
         history.blocked = blocked;
+    }
+
+    /// The drain arbiter's step (fz-kdt.44). No formula ran, so there is
+    /// nothing to classify — but the readiness movements it published and the
+    /// settled wakes it caused are exactly the evidence a waiter woken here
+    /// will name at its next evaluation, so both go into the same indexes a
+    /// job completion feeds.
+    fn quiesce(&mut self, position: usize, event: &PublicEvent) {
+        let Some(step) = event.metadata.get("step") else {
+            return;
+        };
+        self.record_movements(position, step);
+        self.record_wakes(position, step);
     }
 
     /// The facts an evaluation may name as its cause. `reads` is the current

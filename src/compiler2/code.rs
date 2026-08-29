@@ -7,7 +7,7 @@ use super::quoted_surface::ScopeSurface;
 use super::source::{Horizon, QuotedSourceRoot};
 use crate::source::SourceMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct CodeId(u32);
 
 impl CodeId {

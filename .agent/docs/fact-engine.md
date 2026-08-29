@@ -20,11 +20,14 @@ and artifact emission.
   later fact change can queue it again. This is coalescing: duplicate *pending*
   work is suppressed, changed work never is.
 - **`FactTable`** — one `FactSlot` per `FactKey`. A slot holds the set of
-  `publishers` claiming the fact, the `dirty_publishers` queued to re-run, and
-  a `revision` counter. Slots hold no values — typed values live in `World`
-  stores; the fact gates their visibility. Derived states: **present** (any
-  publisher), **retracted** (none — the slot drops), **settled** (present and
-  no claimant dirty).
+  `publishers` claiming the fact, the `dirty_publishers` queued to re-run, the
+  `unfinal_publishers` whose own reads can still move, and a `revision`
+  counter. Slots hold no values — typed values live in `World` stores; the
+  fact gates their visibility. Derived states: **present** (any publisher),
+  **retracted** (none — the slot drops), **locally settled** (present and no
+  claimant dirty), **quiet** (no claimant dirty and none unfinal — an absent
+  fact is quiet), and **settled** (present and quiet). See *Content,
+  cleanliness and finality* below.
 - **`DependencyIndex`** — five exact-keyed maps: `reads`↔`subscribers`,
   `waits`↔`waiters`, and `outputs`. Waking a fact's interested jobs is an O(1)
   lookup, not a scan.
@@ -128,6 +131,80 @@ overwrites. The scheduler classifies every content change:
 The revision is a change token, not a content hash: stores report `changed`
 only on real content movement (equal joins are quiet), and subscribers wake on
 `old_revision != new_revision`.
+
+## Content, cleanliness and finality are three questions
+
+They are asked of the same slot and answered separately.
+
+- **Current content** — what the fact says right now, gated by `revision()`.
+  A `Current` read takes the answer that stands.
+- **Local cleanliness** — `is_locally_settled`: present, and no publisher is
+  queued to re-run or paused on a wait. This is one hop. It says nothing about
+  whether the publisher's own inputs have stopped moving.
+- **Transitive finality** — `is_settled`: locally clean, AND no publisher is
+  itself reading a fact that can still move. This is what `FactUse::Settled`
+  projects, what the public stream's `settled` bit renders, and the only
+  meaning of "settled" in the engine. `Settled(F)` means F's upstream cone is
+  quiescent.
+
+Finality is dependency STATE, maintained edge-triggered — never a pass, a
+sweep, a group inventory, an epoch object, or a root scan. Two cached counts
+carry it, and both are recomputed from their own source whenever that source
+is replaced, so no delta can go stale:
+
+    unfinal_reads[job]              how many of the job's recorded reads name
+                                    a fact that is not quiet
+    slot.unfinal_publishers         which publishers of the fact have a
+                                    non-zero unfinal_reads
+
+A fact flipping quiet adjusts its readers' counts; a job whose count flips
+0 <-> non-zero carries the flip into every fact it publishes; a fact whose
+quiet state flips propagates on. Every wave is sign-uniform — a fact that just
+went unquiet can only make readers unquiet — so each node flips at most once
+and the walk is exactly the affected cone.
+
+Reading an ABSENT fact makes no reader unfinal. Nobody is deriving it, so
+nothing about it can move on its own; a reader that concluded while it was
+empty wakes on its first-appearance content movement, which is a content
+change like any other.
+
+A readiness-only change (a fact losing or regaining finality with the same
+content) reaches `Settled` and `SettledPresence` subscribers ONLY. Routing it
+to `Current` subscribers as well would recompute formulas whose input content
+never moved; `compiler2_scheduler_readiness_only_movement_evaluates_nobody`
+holds that line.
+
+### The drain arbiter
+
+Counting cannot finalize a CYCLE. Take `A <-> B`, each fact published by a job
+that reads the other: once both publishers are clean, A's count still holds B
+and B's still holds A, and no local rule can lower either. The counts are
+correct; the fixed point they describe is wrong the moment nothing is left to
+run.
+
+So at a drain — and only at a drain — the agenda decides. With no pending job,
+the only publisher that could still move a fact is one paused on a wait, and a
+paused publisher cannot run until something wakes it, at which point its claims
+dirty and its readers unfinalize through the ordinary path. `Settled(F)` at a
+drain is therefore exactly locally settled, which is what it meant everywhere
+before finality became transitive. The transitive rule is what holds DURING the
+ascent; the drain is where it is discharged.
+
+`Scheduler::settle_quiescent(facts)` is that discharge, and it is
+demand-driven: it answers the exact settled questions something is actually
+asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`),
+a product pull's awaited fact (`product_drive::drive_product_fact_wait`), and
+the root-entry gate's direct `Recursive`/`DispatchMask` queries
+(`demand_root_entry_analyses`). Nothing else is arbitrated. One arbitrated
+fact discharges a whole quiesced cycle, because clearing it makes it quiet and
+the ordinary wave carries that through every publisher that was only waiting on
+it.
+
+Drain finality is optimistic in exactly the way settledness has always been
+optimistic: a reader that acts on it may see the cone move again later, and it
+re-wakes through the normal movement path. The flips are published as
+`fz.compiler2.work_graph.quiesced` (`.agent/docs/telemetry.md`) so the settled
+bit never changes without an event on the stream to name it.
 
 ## Wake order is not correctness, but it is reproducibility
 

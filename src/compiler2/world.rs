@@ -164,6 +164,12 @@ pub struct World {
     /// job outputs `Activation(key)` (unless already settled) and removes it
     /// once `ActivationAnalyzed(key)` settles.
     activation_frontier: HashSet<ActivationKey>,
+    /// Readiness steps the drain arbiter produced since the last flush
+    /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
+    /// context observes it — the same split `warning_diagnostics` uses, and
+    /// what lets a settled question be arbitrated from a `World` method that
+    /// holds no telemetry handle.
+    quiescence_steps: Vec<super::AppliedStep<Job, FactKey>>,
     pub(crate) work_graph: WorkGraph,
     #[cfg(test)]
     telemetry_query_count: Cell<u64>,
@@ -262,6 +268,7 @@ impl World {
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
             activation_frontier: HashSet::new(),
+            quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
             telemetry_query_count: Cell::new(0),
@@ -2384,6 +2391,18 @@ impl World {
             .collect();
         self.reported_unresolved = next;
         diagnostics
+    }
+
+    /// Records one drain-arbiter step for the execution context to emit.
+    /// A step that moved nothing is not news and is dropped here.
+    pub(crate) fn note_quiescence_step(&mut self, step: super::AppliedStep<Job, FactKey>) {
+        if !step.changed.is_empty() {
+            self.quiescence_steps.push(step);
+        }
+    }
+
+    pub(crate) fn take_quiescence_steps(&mut self) -> Vec<super::AppliedStep<Job, FactKey>> {
+        std::mem::take(&mut self.quiescence_steps)
     }
 
     fn take_reported_warnings(&mut self) -> Vec<Diagnostic> {

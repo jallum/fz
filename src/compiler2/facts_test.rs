@@ -13,7 +13,7 @@ fn compiler2_fact_table_propagates_only_when_content_changes() {
     let mut facts = TestFacts::new();
     let fact = "module-defined";
 
-    let first = facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact]);
+    let first = facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact], false);
     assert_eq!(
         first.changed[0].new_revision,
         Some(1),
@@ -23,14 +23,14 @@ fn compiler2_fact_table_propagates_only_when_content_changes() {
     assert_eq!(facts.revision(&fact), Some(1));
     assert!(facts.is_settled(&fact));
 
-    let stable = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), vec![fact], Vec::new());
+    let stable = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), vec![fact], Vec::new(), false);
     assert!(
         stable.changed.is_empty(),
         "republishing with changed=false should not propagate"
     );
     assert_eq!(facts.revision(&fact), Some(1));
 
-    let moved = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), vec![fact], vec![fact]);
+    let moved = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), vec![fact], vec![fact], false);
     assert_eq!(moved.changed[0].old_revision, Some(1));
     assert_eq!(
         moved.changed[0].new_revision,
@@ -46,7 +46,7 @@ fn compiler2_fact_table_can_dirty_and_resettle_without_moving_the_revision() {
     let fact = "return";
     let outputs = OrderedSet::from_iter([fact]);
 
-    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact]);
+    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact], false);
     let dirtied = facts.mark_dirty(&1_u32, &outputs);
     assert_eq!(dirtied.len(), 1);
     assert_eq!(dirtied[0].old_revision, Some(1));
@@ -55,7 +55,7 @@ fn compiler2_fact_table_can_dirty_and_resettle_without_moving_the_revision() {
     assert!(!dirtied[0].new_settled);
     assert!(!facts.is_settled(&fact));
 
-    let resettled = facts.replace_outputs(&1_u32, &outputs, vec![fact], Vec::new());
+    let resettled = facts.replace_outputs(&1_u32, &outputs, vec![fact], Vec::new(), false);
     assert_eq!(
         resettled.changed.len(),
         1,
@@ -74,10 +74,10 @@ fn compiler2_fact_table_retracts_facts_when_their_last_publisher_stops() {
     let mut facts = TestFacts::new();
     let fact = "function-defined";
 
-    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact]);
+    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact], false);
     assert_eq!(facts.revision(&fact), Some(1));
 
-    let retracted = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), Vec::new(), Vec::new());
+    let retracted = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), Vec::new(), Vec::new(), false);
     assert_eq!(retracted.changed[0].old_revision, Some(1));
     assert_eq!(
         retracted.changed[0].new_revision, None,
@@ -85,7 +85,7 @@ fn compiler2_fact_table_retracts_facts_when_their_last_publisher_stops() {
     );
     assert_eq!(facts.revision(&fact), None);
 
-    let reasserted = facts.replace_outputs(&2_u32, &OrderedSet::default(), vec![fact], Vec::new());
+    let reasserted = facts.replace_outputs(&2_u32, &OrderedSet::default(), vec![fact], Vec::new(), false);
     assert_eq!(
         reasserted.changed[0].new_revision,
         Some(1),
@@ -102,28 +102,28 @@ fn compiler2_fact_table_keeps_demand_facts_alive_until_the_last_demander_leaves(
     let mut facts = TestFacts::new();
     let fact = "activation";
 
-    let first = facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], Vec::new());
+    let first = facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], Vec::new(), false);
     assert_eq!(
         first.changed[0].new_revision,
         Some(1),
         "first demander's appearance should propagate at revision 1"
     );
 
-    let second = facts.replace_outputs(&2_u32, &OrderedSet::default(), vec![fact], Vec::new());
+    let second = facts.replace_outputs(&2_u32, &OrderedSet::default(), vec![fact], Vec::new(), false);
     assert!(
         second.changed.is_empty(),
         "a second demander with changed=false should not propagate"
     );
     assert_eq!(facts.revision(&fact), Some(1));
 
-    let first_leaves = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), Vec::new(), Vec::new());
+    let first_leaves = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), Vec::new(), Vec::new(), false);
     assert!(
         first_leaves.changed.is_empty(),
         "one demander leaving should not disturb the fact while another remains"
     );
     assert_eq!(facts.revision(&fact), Some(1));
 
-    let last_leaves = facts.replace_outputs(&2_u32, &OrderedSet::from_iter([fact]), Vec::new(), Vec::new());
+    let last_leaves = facts.replace_outputs(&2_u32, &OrderedSet::from_iter([fact]), Vec::new(), Vec::new(), false);
     assert_eq!(
         last_leaves.changed[0].new_revision, None,
         "the last demander leaving should retract the fact"
@@ -136,10 +136,10 @@ fn compiler2_fact_table_allows_retraction_to_bump_a_still_present_joined_fact() 
     let mut facts = TestFacts::new();
     let fact = "activation-inputs";
 
-    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact]);
-    facts.replace_outputs(&2_u32, &OrderedSet::default(), vec![fact], Vec::new());
+    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact], vec![fact], false);
+    facts.replace_outputs(&2_u32, &OrderedSet::default(), vec![fact], Vec::new(), false);
 
-    let changed = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), Vec::new(), vec![fact]);
+    let changed = facts.replace_outputs(&1_u32, &OrderedSet::from_iter([fact]), Vec::new(), vec![fact], false);
     assert_eq!(
         changed.changed.len(),
         1,
@@ -159,12 +159,12 @@ fn compiler2_fact_table_allows_retraction_to_bump_a_still_present_joined_fact() 
 fn compiler2_fact_table_rejects_duplicate_outputs_in_one_publication() {
     let mut facts = TestFacts::new();
     let fact = "activation";
-    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact, fact], Vec::new());
+    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec![fact, fact], Vec::new(), false);
 }
 
 #[test]
 #[should_panic(expected = "job marked a fact changed that it neither publishes nor previously owned")]
 fn compiler2_fact_table_rejects_changed_facts_without_ownership() {
     let mut facts = TestFacts::new();
-    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec!["activation"], vec!["other"]);
+    facts.replace_outputs(&1_u32, &OrderedSet::default(), vec!["activation"], vec!["other"], false);
 }

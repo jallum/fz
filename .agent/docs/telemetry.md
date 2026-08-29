@@ -275,6 +275,35 @@ rendered as presentation-sorted strings, because their source in both cases
 is a `HashSet` with no meaningful iteration order — the same
 presentation-boundary sort the blocked-wait lists already used.
 
+`old_settled`/`new_settled` and `movements[].settled` render TRANSITIVE
+finality (fz-kdt.44): `true` means the fact's whole upstream cone is
+quiescent, not merely that its own publishers are clean
+(`.agent/docs/fact-engine.md`, *Content, cleanliness and finality are three
+questions*). Two consequences for anyone reading the stream. First, `changed`
+arrays got SMALLER — a fact that is transitively unfinal stops flipping its
+settled bit on each local dirty/clean cycle, worth -5% of the log on 00181 and
+-30% on `enum_take_drop_split`. Second, the settled bit can now move with no
+job completion behind it, so it gets its own event.
+
+`[fz, compiler2, work_graph, quiesced]` is public. It carries a bare
+`AppliedStep` under `metadata.step`, rendered by the same
+`write_applied_step_body`, and fires when the drain arbiter
+(`Scheduler::settle_quiescent`) discharges the settled questions standing at an
+empty agenda. `outputs` and `blocked` are always empty and every `changed`
+entry is readiness-only: `old_revision == new_revision`, `old_settled !=
+new_settled`. Without this event a fact's `settled` bit would change between
+two `movements` renderings with nothing on the log to explain it, and any
+evaluation woken by such a flip would classify as `Cause::Uncaused`.
+
+Measured today the arbiter wakes NOTHING: the settled waits it answers belong
+to the product pull (`jobs::artifact`, `jobs::backend`, `jobs::transport`,
+`jobs::runtime_demand`, `jobs::root`), and the pull driver polls the fact
+rather than registering a scheduler waiter. So `Cause::Readiness` remains
+unobserved (fz-kdt.59) — but now for a stated reason, with the movement
+already on the log the day a scheduler waiter does stand on one of these
+facts. `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
+(`tests/fz2_cli.rs`) asserts the zero rather than assuming it.
+
 The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
 is a position in one `World`, so a log that carries only ids means nothing to a
 second process — fz-kdt.47 measured 16 differing arena slots over four runs, and

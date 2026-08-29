@@ -146,6 +146,12 @@ pub struct Scheduler<J, F> {
     /// cumulative store values instead of joining, and its content changes
     /// propagate as shifts in turn. Cleared on conclusion; kept while waiting.
     rebased: HashSet<J>,
+    /// How many of each job's recorded reads currently name a fact that is
+    /// NOT quiet. Non-zero means the job cannot vouch for anything it
+    /// publishes: something it read can still move. This is the reader half of
+    /// transitive finality; the fact half is `FactSlot::unfinal_publishers`.
+    /// An absent entry means zero.
+    unfinal_reads: HashMap<J, usize>,
     /// Work-start attribution tally: how many jobs actually entered the
     /// agenda (deduped coalescing does not count) under each
     /// `WorkStartReason`. Observation-only — see `WorkStartReason`.
@@ -179,6 +185,7 @@ where
             facts: FactTable::new(),
             deps: DependencyIndex::new(),
             rebased: HashSet::new(),
+            unfinal_reads: HashMap::new(),
             work_starts: HashMap::new(),
             root_scans: 0,
         }
@@ -259,6 +266,10 @@ where
         self.deps.blocked(job)
     }
 
+    pub fn waited_settled_facts(&self) -> Vec<F> {
+        self.deps.waited_settled_facts()
+    }
+
     pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
         self.deps.unresolved()
     }
@@ -312,32 +323,71 @@ where
         }
         self.deps.replace_waits(job.clone(), waits);
 
+        // The job's own finality follows its NEW read set, and its standing
+        // claims inherit it. Doing this before the outputs land is what lets
+        // the publication below record the right finality for every key it
+        // touches in one pass, with no repair afterwards.
+        let mut pending_changes = Vec::new();
+        self.refresh_job_finality(job, &mut pending_changes);
+        let job_unfinal = self.job_is_unfinal(job);
+
         let previous_output_keys = self.deps.output_keys(job);
+        let touched = outputs
+            .iter()
+            .cloned()
+            .chain(previous_output_keys.iter().cloned())
+            .collect::<OrderedSet<F>>();
+        let quiet_before = self.quiet_snapshot(&touched);
         let mut dirtied = Vec::new();
         let replaced = if waiting {
-            let extended = self.facts.extend_outputs(job, outputs, changed);
+            let extended = self.facts.extend_outputs(job, outputs, changed, job_unfinal);
             let mut claims = previous_output_keys;
             claims.extend(extended.output_keys.iter().cloned());
             dirtied = self.facts.mark_dirty(job, &claims);
             self.deps.replace_outputs(job.clone(), claims);
             extended
         } else {
-            let concluded = self.facts.replace_outputs(job, &previous_output_keys, outputs, changed);
+            let concluded = self
+                .facts
+                .replace_outputs(job, &previous_output_keys, outputs, changed, job_unfinal);
             self.deps.replace_outputs(job.clone(), concluded.output_keys.clone());
             concluded
         };
 
-        let mut wakes = Vec::new();
-        let mut pending_changes = replaced.changed.clone();
+        pending_changes.extend(replaced.changed.iter().cloned());
         pending_changes.extend(dirtied);
+        self.propagate_quiet_flips(&touched, quiet_before, &mut pending_changes);
+
+        let (wakes, movements) = self.dispatch_changes(pending_changes, was_rebased);
+        AppliedStep {
+            outputs: replaced.output_keys,
+            changed: replaced.changed,
+            movements,
+            wakes,
+            blocked,
+        }
+    }
+
+    /// Drains a wave of fact changes into wakes. An ascent re-runs readers,
+    /// who join. A ground shift additionally rebases them: a retraction, a
+    /// replacing fact's content change, or any change concluded by a rebased
+    /// publisher can invalidate what readers derived. First appearance is
+    /// news, not a shift — nothing read it.
+    ///
+    /// A readiness-only change (the finality flips this ticket added, and the
+    /// dirty/clean flips that were always here) reaches `Settled` and
+    /// `SettledPresence` subscribers ONLY. Sending it to `Current` subscribers
+    /// would recompute a formula whose input content never moved, which is the
+    /// one-line "fix" fz-kdt.44 measured and rejected.
+    fn dispatch_changes(
+        &mut self,
+        mut pending_changes: Vec<FactChange<F>>,
+        was_rebased: bool,
+    ) -> (Vec<Wake<J, F>>, Vec<FactMovement<F>>) {
+        let mut wakes = Vec::new();
         let mut moved_keys = HashSet::new();
         while let Some(change) = pending_changes.pop() {
             if change.content_changed() {
-                // Classify the wave. An ascent re-runs readers, who join. A
-                // ground shift additionally rebases them: a retraction, a
-                // replacing fact's content change, or any change concluded by
-                // a rebased publisher can invalidate what readers derived.
-                // First appearance is news, not a shift — nothing read it.
                 let retraction = change.new_revision.is_none();
                 let revision_bump = change.old_revision.is_some() && change.new_revision.is_some();
                 let shift = retraction || (revision_bump && (was_rebased || !change.key.is_cumulative()));
@@ -384,12 +434,172 @@ where
                 key,
             })
             .collect();
+        (wakes, movements)
+    }
+
+    /// The drain arbiter.
+    ///
+    /// Counting alone can never finalize a CYCLE. Take `A <-> B`, each fact
+    /// published by a job that reads the other: once both publishers are
+    /// clean, A's count still holds B and B's count still holds A, and no
+    /// local rule can lower either. The counts are correct — the fixed point
+    /// they describe is simply wrong once nothing is left to run.
+    ///
+    /// So at a drain, and only at a drain, the agenda itself decides. With no
+    /// pending job, the only publisher that could still move a fact is one
+    /// paused on a wait, and a paused publisher cannot run until something
+    /// wakes it — at which point its claims dirty and its readers unfinalize
+    /// through the ordinary path. So `Settled(F)` at a drain is exactly
+    /// `locally settled`, which is what it meant everywhere before this
+    /// ticket. The transitive rule is what holds DURING the ascent; the drain
+    /// is where it is discharged.
+    ///
+    /// That makes drain finality optimistic in precisely the way settledness
+    /// has always been optimistic: a waiter woken here may publish something
+    /// that re-moves the cone, and its readers re-wake through the normal
+    /// movement path and re-run. Everything downstream follows from the one
+    /// seed — one arbitrated fact discharges a whole quiesced cycle — so
+    /// nothing is arbitrated that nobody asked about.
+    pub fn settle_quiescent(&mut self, facts: &[F]) -> AppliedStep<J, F> {
+        let mut changes = Vec::new();
+        if self.agenda.is_empty() {
+            for fact in facts {
+                self.settle_quiescent_fact(fact, &mut changes);
+            }
+        }
+        let (wakes, movements) = self.dispatch_changes(changes.clone(), false);
         AppliedStep {
-            outputs: replaced.output_keys,
-            changed: replaced.changed,
+            outputs: OrderedSet::default(),
+            changed: changes,
             movements,
             wakes,
-            blocked,
+            blocked: Vec::new(),
+        }
+    }
+
+    fn settle_quiescent_fact(&mut self, fact: &F, changes: &mut Vec<FactChange<F>>) {
+        if self.facts.is_quiet(fact) || !self.facts.is_locally_settled(fact) {
+            return;
+        }
+        if let Some(change) = self.facts.clear_unfinal_publishers(fact) {
+            changes.push(change);
+        }
+        if self.facts.is_quiet(fact) {
+            self.propagate_quiet_wave(vec![fact.clone()], true, changes);
+        }
+    }
+
+    /// Whether something `job` read can still move.
+    fn job_is_unfinal(&self, job: &J) -> bool {
+        self.unfinal_reads.contains_key(job)
+    }
+
+    fn count_unfinal_reads(&self, job: &J) -> usize {
+        self.deps.reads(job).map_or(0, |reads| {
+            reads.iter().filter(|read| !self.facts.is_quiet(read.fact())).count()
+        })
+    }
+
+    fn set_unfinal_reads(&mut self, job: &J, count: usize) {
+        if count == 0 {
+            self.unfinal_reads.remove(job);
+        } else {
+            self.unfinal_reads.insert(job.clone(), count);
+        }
+    }
+
+    /// Every job subscribed to `fact`, once per fact use it holds. The
+    /// multiplicity is deliberate: `count_unfinal_reads` counts fact USES, so
+    /// a job reading both `Current(f)` and `Settled(f)` must be adjusted twice
+    /// when `f` flips, or the count and the recount disagree.
+    fn readers_of(&self, fact: &F) -> Vec<J> {
+        let mut readers = self.deps.subscribers(&FactUse::current(fact.clone()));
+        readers.extend(self.deps.subscribers(&FactUse::settled(fact.clone())));
+        readers.extend(self.deps.subscribers(&FactUse::settled_presence(fact.clone())));
+        readers
+    }
+
+    fn quiet_snapshot(&self, keys: &OrderedSet<F>) -> Vec<bool> {
+        keys.iter().map(|key| self.facts.is_quiet(key)).collect()
+    }
+
+    /// Recomputes `job`'s unfinal-read count from its current read set and
+    /// carries a flip into every fact it publishes. The wholesale recount is
+    /// what makes read replacement safe: the count is a function of the read
+    /// set, so a replaced, unioned, or emptied read set cannot leave it stale.
+    fn refresh_job_finality(&mut self, job: &J, changes: &mut Vec<FactChange<F>>) {
+        let count = self.count_unfinal_reads(job);
+        let was_unfinal = self.job_is_unfinal(job);
+        self.set_unfinal_reads(job, count);
+        if (count > 0) == was_unfinal {
+            return;
+        }
+        let keys = self.deps.output_keys(job);
+        let quiet_before = self.quiet_snapshot(&keys);
+        for key in &keys {
+            if let Some(change) = self.facts.set_publisher_unfinal(key, job, count > 0) {
+                changes.push(change);
+            }
+        }
+        self.propagate_quiet_flips(&keys, quiet_before, changes);
+    }
+
+    /// Turns a before/after quiet snapshot of `keys` into the two sign-uniform
+    /// waves it implies.
+    fn propagate_quiet_flips(
+        &mut self,
+        keys: &OrderedSet<F>,
+        quiet_before: Vec<bool>,
+        changes: &mut Vec<FactChange<F>>,
+    ) {
+        let mut became_quiet = Vec::new();
+        let mut became_unquiet = Vec::new();
+        for (key, was_quiet) in keys.iter().zip(quiet_before) {
+            match (was_quiet, self.facts.is_quiet(key)) {
+                (false, true) => became_quiet.push(key.clone()),
+                (true, false) => became_unquiet.push(key.clone()),
+                _ => {}
+            }
+        }
+        self.propagate_quiet_wave(became_unquiet, false, changes);
+        self.propagate_quiet_wave(became_quiet, true, changes);
+    }
+
+    /// Edge-triggered transitive finality. `seeds` have just flipped quiet
+    /// state; every job reading one of them gains or loses an unfinal read,
+    /// and a job that flips takes the facts it publishes with it.
+    ///
+    /// The wave is sign-uniform — a fact that just went unquiet can only make
+    /// readers unquiet — so every count moves one way, every node flips at
+    /// most once, and the walk is exactly the affected cone. There is no
+    /// sweep, no inventory and no epoch: the only nodes visited are the ones
+    /// whose answer changed.
+    fn propagate_quiet_wave(&mut self, seeds: Vec<F>, became_quiet: bool, changes: &mut Vec<FactChange<F>>) {
+        let mut frontier = seeds;
+        while let Some(fact) = frontier.pop() {
+            for reader in self.readers_of(&fact) {
+                let was_unfinal = self.job_is_unfinal(&reader);
+                let previous = self.unfinal_reads.get(&reader).copied().unwrap_or(0);
+                let count = if became_quiet {
+                    previous.saturating_sub(1)
+                } else {
+                    previous + 1
+                };
+                self.set_unfinal_reads(&reader, count);
+                if (count > 0) == was_unfinal {
+                    continue;
+                }
+                let keys = self.deps.output_keys(&reader);
+                for key in &keys {
+                    let was_quiet = self.facts.is_quiet(key);
+                    if let Some(change) = self.facts.set_publisher_unfinal(key, &reader, count > 0) {
+                        changes.push(change);
+                    }
+                    if self.facts.is_quiet(key) != was_quiet {
+                        frontier.push(key.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -426,8 +636,7 @@ where
         wakes: &mut Vec<Wake<J, F>>,
     ) {
         for job in self.deps.subscribers(&fact_use) {
-            let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
-            pending_changes.extend(dirtied);
+            self.dirty_claims(&job, pending_changes);
             if shift {
                 self.rebased.insert(job.clone());
             }
@@ -439,12 +648,22 @@ where
             if !waits.iter().all(|wait| self.facts.satisfies(wait)) {
                 continue;
             }
-            let dirtied = self.facts.mark_dirty(&job, &self.deps.output_keys(&job));
-            pending_changes.extend(dirtied);
+            self.dirty_claims(&job, pending_changes);
             if shift {
                 self.rebased.insert(job.clone());
             }
             self.enqueue_step(job, &fact_use, shift, wakes);
         }
+    }
+
+    /// Marks every fact `job` claims dirty and carries the resulting
+    /// unquiet flips down the cone. A woken publisher's claims stop being
+    /// final for everyone downstream of them, not just for their own readers.
+    fn dirty_claims(&mut self, job: &J, pending_changes: &mut Vec<FactChange<F>>) {
+        let keys = self.deps.output_keys(job);
+        let quiet_before = self.quiet_snapshot(&keys);
+        let dirtied = self.facts.mark_dirty(job, &keys);
+        pending_changes.extend(dirtied);
+        self.propagate_quiet_flips(&keys, quiet_before, pending_changes);
     }
 }

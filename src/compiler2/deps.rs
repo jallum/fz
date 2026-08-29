@@ -140,6 +140,18 @@ where
         !self.waiters.is_empty()
     }
 
+    /// The facts blocked waiters currently wait on with `Settled` readiness,
+    /// facts only — no job lists cloned, no dedup needed (each `FactUse` keys
+    /// one waiter set). Iteration order is the `waiters` map's own, so the
+    /// caller orders by data before acting.
+    pub fn waited_settled_facts(&self) -> Vec<F> {
+        self.waiters
+            .keys()
+            .filter(|fact| fact.readiness() == crate::compiler2::facts::FactReadiness::Settled)
+            .map(|fact| fact.fact().clone())
+            .collect()
+    }
+
     pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
         self.waiters
             .iter()
