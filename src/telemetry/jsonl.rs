@@ -1969,7 +1969,7 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::PlanEntryDispatch(function)
         | Job::BuildMacroExecutable(function)
         | Job::DeriveStaticCallees(function)
-        | Job::DeriveRecursive(function)
+        | Job::DeriveCallGraphComponent(function)
         | Job::DeriveDispatchMask(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
         Job::SeedRoot(root) | Job::BuildBackendProduct(root) | Job::LowerNativeProgram(root) => {
@@ -2002,6 +2002,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::EntryDispatch(function)
         | FactKey::MacroExecutable(function)
         | FactKey::StaticCallees(function)
+        | FactKey::CallGraphComponent(function)
         | FactKey::Recursive(function)
         | FactKey::DispatchMask(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
@@ -2245,6 +2246,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::EntryDispatch(_) => "EntryDispatch",
         FactKey::MacroExecutable(_) => "MacroExecutable",
         FactKey::StaticCallees(_) => "StaticCallees",
+        FactKey::CallGraphComponent(_) => "CallGraphComponent",
         FactKey::Recursive(_) => "Recursive",
         FactKey::DispatchMask(_) => "DispatchMask",
         FactKey::RootEntry(_) => "RootEntry",
@@ -2278,7 +2280,7 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
         Job::BuildMacroExecutable(_) => "BuildMacroExecutable",
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
-        Job::DeriveRecursive(_) => "DeriveRecursive",
+        Job::DeriveCallGraphComponent(_) => "DeriveCallGraphComponent",
         Job::DeriveDispatchMask(_) => "DeriveDispatchMask",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",

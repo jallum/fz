@@ -9549,7 +9549,7 @@ fn main(), do: dbg(a(1) + ping(3))
 /// (a) the edges are the body's real callees -- `main` reaches `a` and `ping`,
 ///     the chain steps `a -> b -> c` one hop at a time, `c` is a leaf, and the
 ///     mutual pair points at each other;
-/// (b) the answer `DeriveRecursive` publishes off those edges is unchanged --
+/// (b) the answer the walking job publishes off those edges is unchanged --
 ///     `recursive` is true for exactly the cycle, false for the chain and for
 ///     `main`, which calls into the cycle without being in it;
 /// (c) one body, one extraction: each function's `StaticCallees` fact is
@@ -9665,6 +9665,143 @@ fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursio
     }
 }
 
+/// fz-kdt.61: the call graph's strong components are a per-function FACT, and
+/// recursion is a projection of it.
+///
+/// `CallGraphComponent(f)` stores the SMALLEST `FunctionId` mutually reachable
+/// with `f`. A strong component is a set and its minimum is a function of that
+/// set alone, so two functions are mutually reachable exactly when their
+/// stored ids are EQUAL -- membership becomes a comparison of two fact reads
+/// instead of a traversal at every asking site.
+///
+/// Three things hold together on the same chain-plus-cycle fixture the edge
+/// facts use:
+///
+/// (a) the cycle shares one canonical id and the chain does not, and the id is
+///     genuinely the smallest member rather than whichever node was walked
+///     first;
+/// (b) recursion agrees with component membership everywhere -- `recursive` is
+///     true for exactly the functions whose component has more than one member
+///     or whose own edge set names them. This is the same answer the deleted
+///     `reaches_self` walk produced, now read off the component;
+/// (c) both facts come from ONE evaluation. The walk is not paid for twice:
+///     the evaluation that publishes `CallGraphComponent(f)` is the same one
+///     that publishes `Recursive(f)`.
+#[test]
+fn compiler2_call_graph_components_are_canonical_and_answer_recursion() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_call_graph_components.fz".to_string()),
+        text: STATIC_CALL_GRAPH_SOURCE.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "the call graph fixture should settle");
+
+    let id = |name: &str, arity: u64| function_id(&functions, name, arity);
+    let (main, a, b, c, ping, pong) = (
+        id("main", 0),
+        id("a", 1),
+        id("b", 1),
+        id("c", 1),
+        id("ping", 1),
+        id("pong", 1),
+    );
+    let component = |function: FunctionId| {
+        compiler
+            .world()
+            .call_graph_component(function)
+            .unwrap_or_else(|| panic!("call graph component for {function:?}"))
+    };
+
+    // (a) the mutual pair is one component; the chain is four separate ones.
+    assert_eq!(
+        component(ping),
+        component(pong),
+        "ping and pong reach each other, so they share one component",
+    );
+    assert_eq!(
+        component(ping),
+        ping.min(pong),
+        "the canonical member is the SMALLEST id in the component, not whichever \
+         node the walk happened to start from",
+    );
+    for function in [main, a, b, c] {
+        assert_eq!(
+            component(function),
+            function,
+            "{function:?} reaches nothing that reaches it back, so it is its own component",
+        );
+    }
+    let chain = [main, a, b, c, ping];
+    for (index, left) in chain.iter().enumerate() {
+        for right in &chain[index + 1..] {
+            assert_ne!(
+                component(*left),
+                component(*right),
+                "{left:?} and {right:?} are not mutually reachable and must not share an id",
+            );
+        }
+    }
+
+    // (b) recursion is that same answer, read off the component.
+    let recursive = |function: FunctionId| {
+        compiler
+            .world()
+            .body_keying(function)
+            .unwrap_or_else(|| panic!("body keying for {function:?}"))
+            .recursive
+    };
+    for function in [main, a, b, c, ping, pong] {
+        let members = [main, a, b, c, ping, pong]
+            .into_iter()
+            .filter(|other| component(*other) == component(function))
+            .count();
+        let self_edge = compiler.world().static_callees(function).contains(&function);
+        assert_eq!(
+            recursive(function),
+            members > 1 || self_edge,
+            "{function:?}: recursion must agree with its component membership",
+        );
+    }
+    assert!(recursive(ping) && recursive(pong), "the mutual pair is recursive");
+    for function in [main, a, b, c] {
+        assert!(
+            !recursive(function),
+            "{function:?} reaches the cycle but never itself, so it is not recursive",
+        );
+    }
+
+    // (c) one walk, two facts. A split job would pay for the traversal twice.
+    for function in [main, a, b, c, ping, pong] {
+        let publications = outputs
+            .stops_matching(|job| *job == Job::DeriveCallGraphComponent(function))
+            .into_iter()
+            .filter(|stop| {
+                stop.effects.as_ref().is_some_and(|effects| {
+                    effects.outputs.contains(&FactKey::CallGraphComponent(function))
+                        && effects.outputs.contains(&FactKey::Recursive(function))
+                })
+            })
+            .count();
+        assert_eq!(
+            publications, 1,
+            "{function:?}: the component and the keying it decides must publish from exactly \
+             one evaluation of one walk",
+        );
+    }
+}
+
 #[test]
 fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     let tel = ConfiguredTelemetry::new();
@@ -9703,8 +9840,8 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     );
     assert!(
         outputs
-            .take(Job::DeriveRecursive(build_id))
-            .expect("DeriveRecursive job effects for build/2")
+            .take(Job::DeriveCallGraphComponent(build_id))
+            .expect("DeriveCallGraphComponent job effects for build/2")
             .contains(&presence(FactKey::Recursive(build_id), true)),
         "the recursive fact should be published for closure-mediated recursion",
     );

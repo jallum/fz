@@ -34,10 +34,13 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
 macro     BuildMacroExecutable
             one demanded defmacro -> hidden macro root
             -> BackendProgram -> MacroExecutable
-keying    DeriveStaticCallees, DeriveRecursive, DeriveDispatchMask
+keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveDispatchMask
             one body -> StaticCallees, the call graph's out-edges for that function
             stable per-function facts used to canonicalize activation keys:
-            DeriveRecursive walks the StaticCallees facts to answer reachability
+            DeriveCallGraphComponent walks the StaticCallees facts ONCE and
+            publishes two: CallGraphComponent(f), the smallest FunctionId
+            mutually reachable with f, and Recursive(f), which that component
+            decides (more than one member, or f's own edges name f)
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand
@@ -122,7 +125,8 @@ submit_root(main/0)
 ```
 
 Each fact wait names the exact prerequisite: `LowerFunction` /
-`PlanEntryDispatch` / `DeriveRecursive` / `DeriveDispatchMask` run because a
+`PlanEntryDispatch` / `DeriveCallGraphComponent` / `DeriveDispatchMask` run
+because a
 product asked for a fact that requires them. New artifact producers must not
 self-schedule or smuggle broad follow-up work into that path.
 

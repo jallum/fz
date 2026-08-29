@@ -146,25 +146,37 @@ fn publish_static_callees(
     }
 }
 
-/// Derives whether one function can reach itself through static calls.
+/// Derives where one function sits in the static call graph: the canonical
+/// member of its strong component, and the recursion answer that component
+/// decides.
+///
+/// One walk, two facts. `CallGraphComponent(f)` is the smallest `FunctionId`
+/// mutually reachable with `f`, so "are these two functions mutually
+/// reachable" becomes an equality between two fact reads instead of a
+/// traversal at every asking site (fz-kdt.13). Recursion is a projection of
+/// the same answer -- `f` reaches itself exactly when its component has more
+/// than one member or its own edge set names it -- so the pyramid that used
+/// to walk the graph for recursion alone no longer exists as separate work.
+/// Identity consumption is a body-local property with no call-graph content,
+/// but it has always ridden `FactKey::Recursive`'s one value and still does.
 ///
 /// Lambda creation is a static edge from the owner to the generated function,
 /// so recursion through generated closures is handled the same way as direct
 /// or mutual recursion.
-pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_call_graph_component(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
-        let changed = world.define_body_keying(
+        // No body in this program: no edges, so the component is the function
+        // alone and nothing it does can reach back to it.
+        return Ok(publish_call_graph_node(
+            world,
+            function,
             function,
             BodyKeying {
                 recursive: false,
                 consumes_callable_identity: false,
             },
-        );
-        return Ok(JobEffects {
-            outputs: vec![FactKey::Recursive(function)],
-            changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
-            ..JobEffects::default()
-        });
+            Vec::new(),
+        ));
     }
 
     let mut reads = Vec::new();
@@ -190,23 +202,47 @@ pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Resul
         });
     }
 
+    let component = strong_component(function, &graph);
+    let keying = BodyKeying {
+        recursive: component.len() > 1 || graph.get(&function).is_some_and(|edges| edges.contains(&function)),
+        consumes_callable_identity: body_consumes_callable_identity(world, function),
+    };
+    let canonical = component
+        .into_iter()
+        .min()
+        .expect("a function is always a member of its own strong component");
+    Ok(publish_call_graph_node(world, function, canonical, keying, reads))
+}
+
+/// Publishes both answers one walk produced. Two facts, not one value: a
+/// component id and a body's keying move for different reasons and wake
+/// different readers, so fusing them would wake activation keying every time
+/// the graph merged two components.
+fn publish_call_graph_node(
+    world: &mut World,
+    function: FunctionId,
+    component: FunctionId,
+    keying: BodyKeying,
+    reads: Vec<FactKey>,
+) -> JobEffects {
+    let component_fact = FactKey::CallGraphComponent(function);
+    let keying_fact = FactKey::Recursive(function);
+    let component_changed = world.define_call_graph_component(function, component);
     // One fact, one value: a body edit can flip identity-consumption without
     // touching recursion, and keying dependents re-derive off this fact --
     // publishing both answers as one struct makes a half-defined or
     // half-signalled state unrepresentable.
-    let changed = world.define_body_keying(
-        function,
-        BodyKeying {
-            recursive: reaches_self(function, &graph),
-            consumes_callable_identity: body_consumes_callable_identity(world, function),
-        },
-    );
-    Ok(JobEffects {
+    let keying_changed = world.define_body_keying(function, keying);
+    JobEffects {
         reads: current_uses(reads),
-        outputs: vec![FactKey::Recursive(function)],
-        changed: changed.then_some(FactKey::Recursive(function)).into_iter().collect(),
+        outputs: vec![component_fact.clone(), keying_fact.clone()],
+        changed: component_changed
+            .then_some(component_fact)
+            .into_iter()
+            .chain(keying_changed.then_some(keying_fact))
+            .collect(),
         ..JobEffects::default()
-    })
+    }
 }
 
 /// Does this function's body CONSUME callable identity -- call through a
@@ -309,20 +345,30 @@ fn collect_static_graph(
     graph.insert(function, edges);
 }
 
-fn reaches_self(function: FunctionId, graph: &HashMap<FunctionId, Vec<FunctionId>>) -> bool {
-    let mut stack = graph.get(&function).cloned().unwrap_or_default();
-    let mut seen = HashSet::new();
-    while let Some(next) = stack.pop() {
-        if next == function {
-            return true;
-        }
-        if seen.insert(next)
-            && let Some(edges) = graph.get(&next)
-        {
-            stack.extend(edges.iter().copied());
+/// The functions mutually reachable with `function`, `function` included.
+///
+/// `graph` is the cone reachable FROM `function`, which is all the walk needs:
+/// a function mutually reachable with `function` is reachable from it by
+/// definition, and so is every node on its path back. So membership reduces to
+/// "which nodes of the cone reach `function`" -- a walk of the cone's reversed
+/// edges from `function`.
+fn strong_component(function: FunctionId, graph: &HashMap<FunctionId, Vec<FunctionId>>) -> HashSet<FunctionId> {
+    let mut reversed: HashMap<FunctionId, Vec<FunctionId>> = HashMap::new();
+    for (caller, callees) in graph {
+        for callee in callees {
+            reversed.entry(*callee).or_default().push(*caller);
         }
     }
-    false
+    let mut members = HashSet::from([function]);
+    let mut frontier = vec![function];
+    while let Some(next) = frontier.pop() {
+        for caller in reversed.get(&next).into_iter().flatten() {
+            if graph.contains_key(caller) && members.insert(*caller) {
+                frontier.push(*caller);
+            }
+        }
+    }
+    members
 }
 
 fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {

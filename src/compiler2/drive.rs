@@ -61,7 +61,7 @@ pub enum Job {
     PlanEntryDispatch(FunctionId),
     BuildMacroExecutable(FunctionId),
     DeriveStaticCallees(FunctionId),
-    DeriveRecursive(FunctionId),
+    DeriveCallGraphComponent(FunctionId),
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
@@ -107,6 +107,7 @@ pub enum FactKey {
     EntryDispatch(FunctionId),
     MacroExecutable(FunctionId),
     StaticCallees(FunctionId),
+    CallGraphComponent(FunctionId),
     Recursive(FunctionId),
     DispatchMask(FunctionId),
     RootEntry(RootId),
@@ -213,7 +214,12 @@ impl World {
                 )
             }
             FactKey::StaticCallees(function) => Some(Job::DeriveStaticCallees(*function)),
-            FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
+            // One walk over the edge facts answers both: `Job::
+            // DeriveCallGraphComponent` publishes the component id and the
+            // body keying that component decides.
+            FactKey::CallGraphComponent(function) | FactKey::Recursive(function) => {
+                Some(Job::DeriveCallGraphComponent(*function))
+            }
             FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             FactKey::MacroExecutable(function) => Some(Job::BuildMacroExecutable(*function)),

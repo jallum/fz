@@ -109,6 +109,16 @@ A completion's meaning bifurcates on its waits (`Scheduler::complete`):
 
 ## Claims declare their shape; ascents wake, ground shifts rebase
 
+One job may own more than one fact when the two are the same derivation's
+answers. `Job::DeriveCallGraphComponent` walks the `StaticCallees` edge facts
+once and publishes both `CallGraphComponent(f)` -- the smallest `FunctionId`
+mutually reachable with `f`, so "are these two functions mutually reachable"
+is an equality of two fact reads rather than a traversal at the asking site --
+and `Recursive(f)`, which that component decides. They stay two facts, not one
+value: a component merging and a body's keying moving wake different readers.
+`World::demand_fact_producer` maps both keys to the one job, exactly as
+`Activation`/`ActivationInputs` both map to `SeedActivation`.
+
 `FactKey::is_cumulative` declares each fact's content algebra: `ReturnType`
 and `ActivationInputs` hold monotone joins maintained by their `World` stores
 (content only grows between ground shifts); every other fact's content
