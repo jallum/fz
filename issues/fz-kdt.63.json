@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-29T13:36:23Z",
+  "description": "Found by cold design review of the kdt.13 v2 proposal (2026-08-29), measured\non enum_take_drop_split at arc HEAD 631da1a6d from the work_graph.applied\nstream:\n\n    Activation:      390 first-appearances / 319 distinct facts, 71 RETRACTIONS\n    CallSiteSummary: 597 first / 502 distinct, 95 retractions\n    CallSiteTargets: 597 first / 502 distinct, 95 retractions\n    shift-wakes: 106 (ALL AnalyzeActivation); rebased completions: 183\n\nA transiently-unanalyzable callsite (deliver_tail_value returns Ok(None) on\nmissing evidence, semantic.rs:889-893) simply does not emit its claims that\nrun, and plain output replacement treats the omission as WITHDRAWAL. The\nretraction is a ground shift (scheduler.rs:391-393) that rebases every reader\n-- a self-inflicted cascade, 166 revisions + 106 shift-wakes of pure churn.\n\nThe cure already exists in the tree for ActivationInputs:\nconclude_preserving_frontier (world.rs:634-641) treats absence as\nbottom-not-retraction, with the reasoning written out at semantic.rs:1024-1031.\nFOLD the same rule onto Activation, CallSiteSummary, CallSiteTargets:\nwithdrawal becomes available ONLY on a rebased conclusion.\n\nRed test first: a rebased conclusion DOES withdraw; a non-rebased conclusion\ndoes not.\n\n## Checks (causal stream, three target fixtures)\n- Activation retractions 71 -\u003e 0, first-appearances 390 -\u003e 319;\n  CallSiteSummary/Targets retractions 95 -\u003e 0, firsts 597 -\u003e 502.\n- Shift-wakes 106 -\u003e genuine rebases only; rebased completions \u003c 183.\n- AnalyzeActivation evaluations ratchet below 1,383 (correct denominator: 319\n  distinct activations).\n- fixture_matrix + fz2_cli byte-correct; kdt.34.6 zero-uncaused unweakened.\n\nIndependent of the derivation-identity work in fz-kdt.13; land first.",
+  "id": "fz-kdt.63",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Analysis withdraws claims it should keep: absence is not retraction for Activation/CallSiteSummary/CallSiteTargets",
+  "type": "task",
+  "updated_at": "2026-08-29T13:36:23Z"
+}
