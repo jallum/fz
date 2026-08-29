@@ -662,3 +662,9 @@ redefine main to drop the qsort call
 The blast radius is exactly the dependency chain, propagated by fact ownership.
 A function that was defined but never reached is untouched: redefining it changes
 its definition fact and wakes no semantic work for that root.
+
+The pruning rides the REBASE. `LoweredBody(main)` is a replacing fact, so its
+change is a ground shift: `AnalyzeActivation(main)` re-runs rebased and its
+omission of `Activation(qsort,...)` is a withdrawal. A rerun that is not rebased
+keeps the claims it could not re-derive — see *Absence is bottom; rebasing is
+the narrowing path* in [`fact-engine`](fact-engine.md).

@@ -1,6 +1,6 @@
 use super::*;
 use crate::compiler2::DriveOutcome;
-use crate::telemetry::causal::{CausalReport, Dependencies, FormulaWork};
+use crate::telemetry::causal::{CausalReport, Dependencies, FactLifecycle, FormulaWork, ShiftWork};
 use crate::telemetry::handler::EventKind;
 
 /// The ticket's acceptance scenario: two functions, one calling the other.
@@ -960,6 +960,157 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
                 );
             }
         }
+
+        assert_eq!(
+            report.uncaused,
+            Vec::new(),
+            "{fixture}: the drop must come from doing less work, not from losing the wakes that \
+             cause it"
+        );
+    }
+}
+
+/// fz-kdt.63's ratchet, per target fixture: what the analysis's own claims
+/// did over a whole compile, and what that cost the schedule.
+///
+/// `lifecycle` columns are `(distinct facts, first appearances, retractions)`
+/// as the stream reports them. `first_appearances > distinct` is the
+/// retract-and-remint signature — a claim withdrawn and later re-derived
+/// appears out of nothing twice — so the gap between those two columns is
+/// exactly the churn, and it equals the retraction count.
+struct AnalysisClaimRatchet {
+    fixture: &'static str,
+    activations: FactLifecycle,
+    /// Pinned once; `CallSiteSummary` and `CallSiteTargets` are two answers of
+    /// one derivation and must stay in lockstep.
+    callsites: FactLifecycle,
+    shifts: ShiftWork,
+    analyze_evaluations: u64,
+    total_evaluations: u64,
+}
+
+const fn lifecycle(distinct: u64, first_appearances: u64, retractions: u64) -> FactLifecycle {
+    FactLifecycle {
+        distinct,
+        first_appearances,
+        retractions,
+    }
+}
+
+const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
+    ShiftWork {
+        shift_wakes,
+        rebased_completions,
+    }
+}
+
+/// Measured at 631da1a6d, before analysis claims survived their own silence,
+/// the same three compiles ran:
+///
+/// ```text
+///                                 Activation      CallSite*       shifts   Analyze  total
+///   fz_f98_range_map_converges    71/77/6         73/75/2         18/28      302     969
+///   enum_predicate_search        207/236/29      244/277/33       29/58      849    1667
+///   enum_take_drop_split         297/364/67      456/526/70      107/174    1353    2864
+/// ```
+///
+/// The residual retractions on `fz_f98_range_map_converges` are the ones this
+/// ticket must NOT remove: they ride rebased conclusions, where the analysis
+/// re-derived every claim from ground that genuinely narrowed. That fixture
+/// keeping 24 rebased completions while the other two fall to 2 and 10 is what
+/// says the narrowing path is still open.
+const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
+    AnalysisClaimRatchet {
+        fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        activations: lifecycle(71, 76, 5),
+        callsites: lifecycle(73, 75, 2),
+        shifts: shifts(17, 24),
+        analyze_evaluations: 300,
+        total_evaluations: 966,
+    },
+    AnalysisClaimRatchet {
+        fixture: "fixtures2/behavior/enum_predicate_search.fz",
+        activations: lifecycle(198, 198, 0),
+        callsites: lifecycle(239, 239, 0),
+        shifts: shifts(1, 2),
+        analyze_evaluations: 766,
+        total_evaluations: 1555,
+    },
+    AnalysisClaimRatchet {
+        fixture: "fixtures2/behavior/enum_take_drop_split.fz",
+        activations: lifecycle(256, 256, 0),
+        callsites: lifecycle(415, 415, 0),
+        shifts: shifts(6, 10),
+        analyze_evaluations: 1058,
+        total_evaluations: 2502,
+    },
+];
+
+/// fz-kdt.63: an analysis that could not resolve a callsite this run withdraws
+/// nothing.
+///
+/// The churn this pins away was entirely self-inflicted. A callsite whose
+/// target evidence was still climbing resolved to nothing, so the run emitted
+/// no `CallSiteSummary`/`CallSiteTargets`/`Activation` for it; plain output
+/// replacement read that silence as a WITHDRAWAL, which is a ground shift,
+/// which rebases every reader — who then re-derive, re-mint the same claims,
+/// and shift their own readers in turn. Absence is bottom, not retraction;
+/// only a rebased conclusion, which re-derived from moved ground, may narrow.
+///
+/// The uncaused check rides along because a count can also fall by LOSING
+/// wakes: a formula that stopped re-running because its subscriptions no
+/// longer reach it would read as an improvement here while being a
+/// correctness regression.
+#[test]
+fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
+    for row in ANALYSIS_CLAIM_RATCHET {
+        let AnalysisClaimRatchet {
+            fixture,
+            activations,
+            callsites,
+            shifts,
+            analyze_evaluations,
+            total_evaluations,
+        } = row;
+        let trace = compile_fixture(fixture);
+        assert!(
+            matches!(trace.outcome, DriveOutcome::Resolved),
+            "{fixture} must resolve for its causal report to describe a whole compile"
+        );
+        let report = CausalReport::derive(trace.events());
+        let lifecycle_of = |kind: &str| report.lifecycles.get(kind).cloned().unwrap_or_default();
+
+        assert_eq!(
+            lifecycle_of("Activation"),
+            activations,
+            "{fixture}: Activation claims moved off their fz-kdt.63 pin"
+        );
+        assert_eq!(
+            lifecycle_of("CallSiteSummary"),
+            callsites,
+            "{fixture}: CallSiteSummary claims moved off their fz-kdt.63 pin"
+        );
+        assert_eq!(
+            lifecycle_of("CallSiteTargets"),
+            callsites,
+            "{fixture}: CallSiteTargets must move in lockstep with CallSiteSummary -- they are two \
+             answers of one derivation"
+        );
+        assert_eq!(
+            report.shifts, shifts,
+            "{fixture}: ground-shift traffic moved off its fz-kdt.63 pin"
+        );
+
+        let (_, analyze) = family_work(&report, "AnalyzeActivation");
+        assert_eq!(
+            analyze.evaluations, analyze_evaluations,
+            "{fixture}: AnalyzeActivation work moved off its fz-kdt.63 pin. Full row: {analyze:?}"
+        );
+        assert_eq!(
+            report.formula_totals().evaluations,
+            total_evaluations,
+            "{fixture}: total formula evaluations moved off their fz-kdt.63 pin"
+        );
 
         assert_eq!(
             report.uncaused,

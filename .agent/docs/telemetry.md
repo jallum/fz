@@ -341,8 +341,11 @@ that carries no world — 99 by a `pull.product.settled`, 29 by a `job`
 public log into a `CausalReport`: per canonical formula identity, evaluations
 classified `Initial`/`Content`/`Readiness`/`Uncaused` plus changed outputs,
 wakes and blocked completions; per canonical `ProductKey`, settlements,
-generations, the changed split, cache hits and displacements; and the summed
-session tallies. Causality is DERIVED, never stored: for evaluation `e` of
+generations, the changed split, cache hits and displacements; the summed
+session tallies; per FACT KIND a `FactLifecycle` (distinct facts, first
+appearances, retractions — `first_appearances > distinct` is the
+retract-and-remint signature); and a `ShiftWork` count of shift-classified
+wakes and rebased completions. Causality is DERIVED, never stored: for evaluation `e` of
 formula `F` at stream position `t`, the moved inputs are `(F's reads UNION F's
 blocked-set from its previous completion)` for which a movement appears in
 `[F's previous conclusion, t)`. Both boundaries are load-bearing and both are

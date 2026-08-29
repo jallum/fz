@@ -460,6 +460,9 @@ impl World {
         };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        if waits.is_empty() && !rebased {
+            outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
+        }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
@@ -2152,6 +2155,39 @@ impl World {
 fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalError {
     emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+/// The claims a NON-rebased `AnalyzeActivation` conclusion keeps standing
+/// even though it did not re-emit them (fz-kdt.63).
+///
+/// `analyze_activation` publishes a callsite's `CallSiteSummary` and
+/// `CallSiteTargets`, and its callees' `Activation`, only from evidence that
+/// has arrived: a callsite whose target evidence is still climbing resolves to
+/// nothing and emits nothing. That absence is bottom, not a proof the call is
+/// gone — the same reading `conclude_activation_input_contributions` already
+/// gives `ActivationInputs`. Re-listing the standing claims keeps them
+/// published at their own revisions, so nothing moves and nobody rebases.
+///
+/// Withdrawal is not lost, it is scoped: a REBASED conclusion re-derives every
+/// claim from the shifted ground, so what it omits is genuinely refuted and
+/// the ordinary replacement retracts it. `Activation` is claimed by every
+/// caller reaching it, and each caller's claim is withdrawn only by that
+/// caller's own rebase — preserving one publisher's standing claim never
+/// re-publishes another's.
+fn preserved_analysis_claims(job: &Job, previous_output_keys: &OrderedSet<FactKey>) -> Vec<FactKey> {
+    if !matches!(job, Job::AnalyzeActivation(_)) {
+        return Vec::new();
+    }
+    previous_output_keys
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact,
+                FactKey::Activation(_) | FactKey::CallSiteSummary(_) | FactKey::CallSiteTargets(_)
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 /// Drop repeats, keep the order the job emitted them in.
