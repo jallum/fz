@@ -542,6 +542,16 @@ impl JsonlBackend {
 
     fn install_remaining_raw_boundaries(telemetry: &ConfiguredTelemetry, backend: &Rc<Self>) {
         Self::install_raw_value::<crate::diag::Diagnostic>(telemetry, backend, &["fz", "diag"], "diagnostic");
+        // The drain arbiter's readiness step (fz-kdt.44). It is the one graph
+        // movement with no job completion behind it, so it carries a bare
+        // `AppliedStep` rather than a `JobCompletion` — same body, no formula
+        // identity, because no formula ran.
+        Self::install_raw_value::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>>(
+            telemetry,
+            backend,
+            &["fz", "compiler2", "work_graph", "quiesced"],
+            "step",
+        );
         Self::install_raw_value::<std::time::Duration>(
             telemetry,
             backend,
@@ -1075,6 +1085,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "drive", "demand_on_stall"]
             | ["fz", "compiler2", "job"]
             | ["fz", "compiler2", "work_graph", "applied"]
+            | ["fz", "compiler2", "work_graph", "quiesced"]
             | ["fz", "compiler2", "backend_program", "defined"]
             | ["fz", "compiler2", "native_program", "defined"]
             | ["fz", "compiler2", "native_program", "reusable_cons"]
@@ -2079,6 +2090,12 @@ fn write_optional_u64(out: &mut String, value: Option<u64>) {
 /// own identity plus its before/after revision and settledness. Emission
 /// order (the order `AppliedStep::changed` already carries) is preserved —
 /// it is not a `HashSet` source, so no presentation sort is needed.
+fn render_fact_change_identity(change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) -> String {
+    let mut rendered = String::new();
+    write_fact_change_identity(&mut rendered, change);
+    rendered
+}
+
 fn write_fact_change_identity(out: &mut String, change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) {
     out.push_str("{\"kind\":");
     write_str_lit(out, fact_kind(&change.key));
@@ -2144,12 +2161,17 @@ fn write_applied_step_body(
     out: &mut String,
     step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
 ) {
+    // `changed` batches arrive in publish order, which for the arbiter's
+    // steps reflects the waiter index's iteration; sorted here like
+    // `movements` below, so the array is a presentation-stable set.
     out.push_str(",\"changed\":[");
-    for (index, change) in step.changed.iter().enumerate() {
+    let mut changed = step.changed.iter().map(render_fact_change_identity).collect::<Vec<_>>();
+    changed.sort();
+    for (index, entry) in changed.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        write_fact_change_identity(out, change);
+        out.push_str(entry);
     }
     out.push(']');
 

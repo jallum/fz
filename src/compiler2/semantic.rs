@@ -11,7 +11,7 @@ use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, Types};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallSiteKey {
     pub activation: ActivationKey,
     pub callsite: CallSiteId,

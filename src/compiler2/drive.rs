@@ -86,7 +86,7 @@ impl StableSortKey<Types> for Job {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FactKey {
     CodeIndexed(CodeId),
     CodeScoped(CodeId),
@@ -280,6 +280,34 @@ impl World {
         false
     }
 
+    /// Answers, at a drain, the exact settled questions something is actually
+    /// asking: `facts`.
+    ///
+    /// Transitive finality is maintained by counting, and counting can never
+    /// finalize a cycle — `Scheduler::settle_quiescent` carries the proof. At
+    /// a drain the agenda decides instead: a locally clean cone holding no
+    /// dirty fact cannot move, so it is final. This is demand-driven, not a
+    /// sweep — nothing is arbitrated that nobody asked about — and the step it
+    /// produces is stashed for the execution context to emit, so the wake it
+    /// causes always has a movement on the public stream to name.
+    pub(crate) fn settle_quiescent(&mut self, facts: &[FactKey]) {
+        let step = self.work_graph.settle_quiescent(facts);
+        self.note_quiescence_step(step);
+    }
+
+    /// The blocked waiters' own settled questions. The waiter index is a
+    /// `HashMap`, so its iteration order is a per-process `RandomState`
+    /// artifact; the drain is already a barrier holding the full candidate
+    /// list, and ordering it by the keys' own `Ord` (pure data, no rendering)
+    /// pins the arbitration order deterministically. The scan-shaped drain
+    /// pass itself is fz-kdt.46's remaining target: the edge-triggered form
+    /// arbitrates the exact wait a completion left standing instead.
+    pub(crate) fn settle_quiescent_waits(&mut self) {
+        let mut facts = self.work_graph.waited_settled_facts();
+        facts.sort();
+        self.settle_quiescent(&facts);
+    }
+
     /// Expands every blocked waiter's missing fact to its producer through
     /// the fact->producer map. This is the drain-time pull: a blocked wait is
     /// a standing demand for the fact, and the fact names its single
@@ -324,9 +352,12 @@ impl World {
         let mut demanded = 0_u64;
         for root_id in roots {
             let root = self.root_entry(root_id);
-            if !self.fact_is_settled(&FactKey::Recursive(root.function))
-                || !self.fact_is_settled(&FactKey::DispatchMask(root.function))
-            {
+            let gates = [FactKey::Recursive(root.function), FactKey::DispatchMask(root.function)];
+            // A direct settled query is a settled question too: arbitrate it
+            // before answering, or a quiesced cone would gate the root's own
+            // entry analysis forever.
+            self.settle_quiescent(&gates);
+            if !gates.iter().all(|gate| self.fact_is_settled(gate)) {
                 continue;
             }
             let entry = self.activation_key(root_id, root.function, &root.input);
@@ -389,6 +420,10 @@ impl World {
     /// ignition is owned by the scheduler boundary, not by any job's
     /// follow-up.
     pub(crate) fn next_ready_job(&mut self) -> Option<Job> {
+        if let Some(job) = self.work_graph.pop() {
+            return Some(job);
+        }
+        self.settle_quiescent_waits();
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
@@ -483,6 +518,11 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 if std::mem::take(&mut changed_since_stall) {
                     stall_demanded.clear();
                 }
+                // The agenda is empty, so every settled question standing over
+                // a quiesced cone can be answered now (fz-kdt.44). Doing it
+                // before the demand expansions is what lets a root's own
+                // recursion gate — a direct settled query — pass.
+                world.settle_quiescent_waits();
                 let mut producer_pokes =
                     world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
                 let mut unresolved = world.work_graph.unresolved();
@@ -493,15 +533,25 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                             world.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                     }
                 }
+                if producer_pokes > 0 {
+                    tel.raw_event2(
+                        &["fz", "compiler2", "drive", "demand_on_stall"],
+                        &producer_pokes,
+                        &stall_demanded,
+                    );
+                }
+                let quiesced = flush_quiescence(world, tel);
+                if quiescence_woke_work(&quiesced) {
+                    // The arbiter satisfied a standing settled wait: real work
+                    // is queued, so this drain is not a stall however few
+                    // producers it managed to demand.
+                    changed_since_stall = true;
+                    continue 'drive;
+                }
                 if producer_pokes == 0 {
                     // Nothing left to demand: either resolved, or a genuine stall.
                     break 'drive;
                 }
-                tel.raw_event2(
-                    &["fz", "compiler2", "drive", "demand_on_stall"],
-                    &producer_pokes,
-                    &stall_demanded,
-                );
             }
             if !world.work_graph.has_unresolved() {
                 world.clear_unresolved_diagnostics();
@@ -517,6 +567,27 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         span.stop1(&outcome);
         outcome
     }
+}
+
+/// Emits every drain-arbiter step `World` stashed, and hands them back.
+///
+/// A readiness movement that satisfies a waiter is the one wake with no job
+/// completion behind it, so it gets its own public event — without it a woken
+/// waiter's next evaluation would name no moved input (fz-kdt.34.6).
+pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
+    world: &mut World,
+    tel: &T,
+) -> Vec<super::AppliedStep<Job, FactKey>> {
+    let steps = world.take_quiescence_steps();
+    for step in &steps {
+        tel.raw_event1(&["fz", "compiler2", "work_graph", "quiesced"], step);
+    }
+    steps
+}
+
+/// Whether any of `steps` started work.
+pub(super) fn quiescence_woke_work(steps: &[super::AppliedStep<Job, FactKey>]) -> bool {
+    steps.iter().any(|step| !step.wakes.is_empty())
 }
 
 fn emit_drive_timed_out(tel: &impl crate::telemetry::Telemetry, timeout: &Option<Duration>) {

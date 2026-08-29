@@ -13,7 +13,7 @@ impl Id {
 }
 
 /// A half-open byte range `[start, end)` within a single source file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct Span {
     pub code_id: Id,
     pub start: u32,

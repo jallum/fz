@@ -29,7 +29,7 @@ impl ValueId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct CallSiteId {
     raw: u32,
     span: Span,

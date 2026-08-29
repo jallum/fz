@@ -169,8 +169,18 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: 
     let mut producer_pokes = 0_u64;
     while !product_fact_wait_is_satisfied(world, &fact) {
         let job = match world.next_ready_job() {
-            Some(job) => job,
+            Some(job) => {
+                apply_quiescence(world, tel, driver);
+                job
+            }
             None => {
+                // The agenda drained. This wait names one exact settled
+                // question; ask the drain arbiter before concluding that no
+                // producer can ever answer it (fz-kdt.44).
+                world.settle_quiescent(std::slice::from_ref(fact.fact()));
+                if apply_quiescence(world, tel, driver) {
+                    continue;
+                }
                 producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                 let Some(job) = world.work_graph.pop() else {
                     return Err(E::no_ready_producer(world, tel, root, &fact));
@@ -196,6 +206,22 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: 
         }
     }
     Ok(producer_pokes)
+}
+
+/// Emits the drain arbiter's readiness steps and feeds their movements to the
+/// product memo, exactly as a job completion's movements are fed. Returns
+/// whether the arbiter moved anything — a moved fact is a reason to re-ask the
+/// wait, whether or not the movement also woke a job.
+fn apply_quiescence<T: crate::telemetry::RawSpanTelemetry>(
+    world: &mut World,
+    tel: &T,
+    driver: &mut ProductDriver<'_, T>,
+) -> bool {
+    let steps = super::drive::flush_quiescence(world, tel);
+    for step in &steps {
+        driver.apply_fact_movements(&step.movements);
+    }
+    !steps.is_empty()
 }
 
 fn product_fact_wait_is_satisfied(world: &World, fact: &FactUse<FactKey>) -> bool {

@@ -12,7 +12,7 @@ use super::source::{Horizon, QuotedSourceRoot};
 use super::type_expr::TypeDefBody;
 use super::types::Ty;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId(u32);
 
 impl ModuleId {
@@ -306,7 +306,7 @@ pub struct FunctionRef {
 /// Keying on the owning `ModuleId` (not a dotted string) means `t` resolved
 /// inside `SomeModule` and `SomeModule.t` resolved from outside land on one
 /// identity, and a module alias never changes it. `t/0` and `t/1` are distinct.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeName {
     pub module: ModuleId,
     pub name: String,

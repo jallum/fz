@@ -120,10 +120,26 @@ pub struct FactReplace<F> {
 /// 1 on first appearance and increments each time any publisher signals
 /// `changed = true`. Retraction (no publishers remain) is represented as
 /// `revision() = None`.
+///
+/// Three separate questions (fz-kdt.44):
+///
+/// - **present** — any publisher claims it;
+/// - **locally settled** — present and no publisher is queued to re-run;
+/// - **settled** — locally settled AND no publisher is itself reading a fact
+///   that can still move. `unfinal_publishers` is the second half: the
+///   scheduler marks a publisher unfinal while any fact that publisher read is
+///   not quiet, so finality is a property of the whole upstream cone rather
+///   than of one hop.
+///
+/// A fact is **quiet** when nothing can move it: no dirty publisher and no
+/// unfinal one. An absent fact is quiet — nobody is deriving it, so reading it
+/// makes no reader unfinal (readers of a fact that later appears wake on its
+/// first-appearance content movement instead).
 #[derive(Debug, Clone)]
 struct FactSlot<J> {
     publishers: HashSet<J>,
     dirty_publishers: HashSet<J>,
+    unfinal_publishers: HashSet<J>,
     revision: u64,
 }
 
@@ -132,6 +148,7 @@ impl<J> Default for FactSlot<J> {
         Self {
             publishers: HashSet::new(),
             dirty_publishers: HashSet::new(),
+            unfinal_publishers: HashSet::new(),
             revision: 0,
         }
     }
@@ -146,8 +163,16 @@ impl<J> FactSlot<J> {
         }
     }
 
-    fn is_settled(&self) -> bool {
+    fn is_locally_settled(&self) -> bool {
         !self.publishers.is_empty() && self.dirty_publishers.is_empty()
+    }
+
+    fn is_quiet(&self) -> bool {
+        self.dirty_publishers.is_empty() && self.unfinal_publishers.is_empty()
+    }
+
+    fn is_settled(&self) -> bool {
+        self.is_locally_settled() && self.unfinal_publishers.is_empty()
     }
 }
 
@@ -175,8 +200,26 @@ where
         self.slots.get(key).and_then(FactSlot::revision)
     }
 
+    /// Transitive finality: present, no publisher queued to re-run, and no
+    /// publisher reading a fact that can still move. This is the ONE meaning
+    /// of settled — `FactUse::Settled` projects it, telemetry renders it, and
+    /// every product/job read of a settled fact asks this question.
     pub fn is_settled(&self, key: &F) -> bool {
         self.slots.get(key).is_some_and(FactSlot::is_settled)
+    }
+
+    /// Present with no publisher queued to re-run — the one-hop question.
+    /// Separate from `is_settled` on purpose: local cleanliness is what the
+    /// drain arbiter tests a cone's members for, and what tests assert to show
+    /// the two are different questions.
+    pub fn is_locally_settled(&self, key: &F) -> bool {
+        self.slots.get(key).is_some_and(FactSlot::is_locally_settled)
+    }
+
+    /// Whether nothing can move this fact. Absent facts are quiet: no
+    /// publisher is deriving them.
+    pub fn is_quiet(&self, key: &F) -> bool {
+        self.slots.get(key).is_none_or(FactSlot::is_quiet)
     }
 
     pub fn state(&self, key: &F) -> FactState {
@@ -216,6 +259,7 @@ where
         previous_output_keys: &OrderedSet<F>,
         outputs: Vec<F>,
         changed_keys: Vec<F>,
+        publisher_unfinal: bool,
     ) -> FactReplace<F> {
         let mut output_keys = OrderedSet::default();
         for key in outputs {
@@ -254,6 +298,7 @@ where
                 let was_absent = slot.publishers.is_empty();
                 slot.publishers.insert(job.clone());
                 slot.dirty_publishers.remove(job);
+                set_membership(&mut slot.unfinal_publishers, job, publisher_unfinal);
                 if was_absent {
                     slot.revision = 1;
                 } else if changed_keys_set.remove(&key) {
@@ -262,6 +307,7 @@ where
             } else {
                 slot.publishers.remove(job);
                 slot.dirty_publishers.remove(job);
+                slot.unfinal_publishers.remove(job);
                 if changed_keys_set.remove(&key) && !slot.publishers.is_empty() {
                     slot.revision += 1;
                 }
@@ -293,7 +339,13 @@ where
     /// claimed are left standing untouched. Dirtiness is NOT cleared for the
     /// listed keys — a blocked publisher is not vouching yet; the caller marks
     /// the job's full claim set dirty after extending.
-    pub fn extend_outputs(&mut self, job: &J, outputs: Vec<F>, changed_keys: Vec<F>) -> FactReplace<F> {
+    pub fn extend_outputs(
+        &mut self,
+        job: &J,
+        outputs: Vec<F>,
+        changed_keys: Vec<F>,
+        publisher_unfinal: bool,
+    ) -> FactReplace<F> {
         let mut output_keys = OrderedSet::default();
         for key in outputs {
             assert!(output_keys.insert(key), "job emitted duplicate fact output for one key");
@@ -314,6 +366,7 @@ where
 
             let was_absent = slot.publishers.is_empty();
             slot.publishers.insert(job.clone());
+            set_membership(&mut slot.unfinal_publishers, job, publisher_unfinal);
             if was_absent {
                 slot.revision = 1;
             } else if changed_keys_set.remove(key) {
@@ -336,6 +389,47 @@ where
         }
 
         FactReplace { changed, output_keys }
+    }
+
+    /// Records whether `job` — a publisher of `key` — is itself reading a fact
+    /// that can still move. Returns the settled-bit change if the projection
+    /// moved. Edge-triggered: the scheduler calls this exactly when a job's own
+    /// finality flips, never on every movement.
+    pub fn set_publisher_unfinal(&mut self, key: &F, job: &J, unfinal: bool) -> Option<FactChange<F>> {
+        let slot = self.slots.get_mut(key)?;
+        if !slot.publishers.contains(job) {
+            return None;
+        }
+        let old_settled = slot.is_settled();
+        set_membership(&mut slot.unfinal_publishers, job, unfinal);
+        let new_settled = slot.is_settled();
+        let revision = slot.revision();
+        (old_settled != new_settled).then(|| FactChange {
+            key: key.clone(),
+            old_revision: revision,
+            new_revision: revision,
+            old_settled,
+            new_settled,
+        })
+    }
+
+    /// Declares every publisher of `key` final. The drain arbiter's write:
+    /// with nothing left to run, a locally clean cone that holds no dirty fact
+    /// cannot move, so the counts that a cycle can never lower are discharged
+    /// wholesale. Returns the settled-bit change if the projection moved.
+    pub fn clear_unfinal_publishers(&mut self, key: &F) -> Option<FactChange<F>> {
+        let slot = self.slots.get_mut(key)?;
+        let old_settled = slot.is_settled();
+        slot.unfinal_publishers.clear();
+        let new_settled = slot.is_settled();
+        let revision = slot.revision();
+        (old_settled != new_settled).then(|| FactChange {
+            key: key.clone(),
+            old_revision: revision,
+            new_revision: revision,
+            old_settled,
+            new_settled,
+        })
     }
 
     pub fn mark_dirty(&mut self, job: &J, output_keys: &OrderedSet<F>) -> Vec<FactChange<F>> {
@@ -365,5 +459,13 @@ where
             }
         }
         changed
+    }
+}
+
+fn set_membership<J: Clone + Eq + Hash>(set: &mut HashSet<J>, job: &J, member: bool) {
+    if member {
+        set.insert(job.clone());
+    } else {
+        set.remove(job);
     }
 }

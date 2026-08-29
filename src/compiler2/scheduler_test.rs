@@ -1151,3 +1151,478 @@ fn compiler2_scheduler_wake_attributes_each_coalesced_cause_to_a_single_evaluati
         "f2 should be attributed as a cause: {subscriber_wakes:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// fz-kdt.44: transitive finality.
+//
+// `Settled(F)` must mean F's whole upstream cone is quiescent, not merely that
+// F's own publishers are clean. These tests are the spec's own TDD sequence.
+// The chain built by `chain_a_b_c` is the shape every one of them starts from:
+//
+//     upstream --publishes--> "a" --read by--> job_b --publishes--> "b"
+//                                   --read by--> job_c --publishes--> "c"
+// ---------------------------------------------------------------------------
+
+const UPSTREAM: u32 = 1;
+const JOB_A: u32 = 2;
+const JOB_B: u32 = 3;
+const JOB_C: u32 = 4;
+
+/// Builds `u -> a -> b -> c`, every link a `Current` read, and leaves every
+/// fact settled with an empty agenda.
+fn chain_a_b_c() -> TestScheduler {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("u")]),
+        HashSet::new(),
+        vec!["a"],
+        vec!["a"],
+    );
+    complete(
+        &mut scheduler,
+        JOB_B,
+        HashSet::from([current("a")]),
+        HashSet::new(),
+        vec!["b"],
+        vec!["b"],
+    );
+    complete(
+        &mut scheduler,
+        JOB_C,
+        HashSet::from([current("b")]),
+        HashSet::new(),
+        vec!["c"],
+        vec!["c"],
+    );
+    while scheduler.pop().is_some() {}
+    scheduler
+}
+
+/// Spec test 1. Dirtying the head of a chain without moving any content must
+/// make `Settled` unavailable all the way down — and must cost nothing: no
+/// downstream formula re-evaluates, because no content moved.
+#[test]
+fn compiler2_scheduler_dirtying_a_chain_head_unsettles_the_whole_chain_without_evaluating_it() {
+    let mut scheduler = chain_a_b_c();
+    assert!(scheduler.facts().is_settled(&"c"));
+
+    let step = complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+
+    assert_eq!(
+        enqueued_jobs(&step),
+        vec![JOB_A],
+        "only the direct content reader may evaluate; readiness travels without re-running anyone",
+    );
+    assert!(!scheduler.facts().is_settled(&"a"), "a's publisher is dirty");
+    assert!(
+        !scheduler.facts().is_settled(&"b"),
+        "b's publisher reads a fact that can still move, so b is not final",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"c"),
+        "finality is transitive: c is downstream of a dirty fact",
+    );
+    assert!(
+        scheduler.facts().is_locally_settled(&"c"),
+        "c's own publisher is clean — local cleanliness and finality are different questions",
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"c"),
+        Some(1),
+        "unfinality must not invent a content revision",
+    );
+
+    let _ = scheduler.pop();
+    let concluded = complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("u")]),
+        HashSet::new(),
+        vec!["a"],
+        Vec::new(),
+    );
+
+    assert_eq!(
+        enqueued_jobs(&concluded),
+        Vec::<u32>::new(),
+        "an unchanged conclusion re-finalizes the chain without evaluating anyone",
+    );
+    assert!(scheduler.facts().is_settled(&"a"));
+    assert!(scheduler.facts().is_settled(&"b"));
+    assert!(
+        scheduler.facts().is_settled(&"c"),
+        "the chain becomes final again when its head concludes unchanged",
+    );
+}
+
+/// The tempting one-liner, rejected. Sending readiness-only movement through
+/// `enqueue_dependents(Current(..))` would also satisfy "Settled(C) becomes
+/// unavailable" — by re-running B and C on input that did not move. The model
+/// promises minimal work, so correctness alone is not enough: a readiness-only
+/// movement must produce ZERO evaluations.
+#[test]
+fn compiler2_scheduler_readiness_only_movement_evaluates_nobody() {
+    let mut scheduler = chain_a_b_c();
+
+    let step = complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    let _ = scheduler.pop();
+    let concluded = complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("u")]),
+        HashSet::new(),
+        vec!["a"],
+        Vec::new(),
+    );
+
+    let readiness_only_wakes: Vec<u32> = step
+        .wakes
+        .iter()
+        .chain(concluded.wakes.iter())
+        .filter(|wake| matches!(wake.cause, FactUse::Current(fact) if fact == "a" || fact == "b"))
+        .map(|wake| wake.job)
+        .collect();
+    assert_eq!(
+        readiness_only_wakes,
+        Vec::<u32>::new(),
+        "a fact that lost or regained finality without moving its content must wake no Current reader",
+    );
+    assert_eq!(scheduler.pending_jobs(), 0, "nothing may be left to evaluate");
+}
+
+/// Spec test 2. When the head's content really does move, only the transitive
+/// CONTENT readers evaluate — one hop per completion, exactly as before this
+/// ticket. Transitive finality adds no evaluations.
+#[test]
+fn compiler2_scheduler_content_movement_still_evaluates_only_content_readers() {
+    let mut scheduler = chain_a_b_c();
+
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    let _ = scheduler.pop();
+    let moved = complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("u")]),
+        HashSet::new(),
+        vec!["a"],
+        vec!["a"],
+    );
+    assert_eq!(
+        enqueued_jobs(&moved),
+        vec![JOB_B],
+        "a's content moved, so exactly its reader evaluates",
+    );
+
+    let _ = scheduler.pop();
+    let moved = complete(
+        &mut scheduler,
+        JOB_B,
+        HashSet::from([current("a")]),
+        HashSet::new(),
+        vec!["b"],
+        vec!["b"],
+    );
+    assert_eq!(enqueued_jobs(&moved), vec![JOB_C]);
+
+    let _ = scheduler.pop();
+    complete(
+        &mut scheduler,
+        JOB_C,
+        HashSet::from([current("b")]),
+        HashSet::new(),
+        vec!["c"],
+        vec!["c"],
+    );
+    assert!(scheduler.facts().is_settled(&"c"));
+}
+
+/// Spec test 3, and the proof that counting alone is insufficient.
+///
+/// `job_a` reads `cum_b` and publishes `cum_a`; `job_b` reads `cum_a` and
+/// publishes `cum_b`. Once both have concluded, each fact's only publisher
+/// reads the other fact, so each counts the other as unfinal — forever. No
+/// local rule can break that: the counts are correct and the fixed point they
+/// describe is "both unfinal", which is wrong the moment the agenda drains.
+///
+/// The drain arbiter is what decides it: with nothing left to run, a locally
+/// clean cone containing no dirty fact cannot move, so it is final.
+#[test]
+fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final() {
+    let mut scheduler = TestScheduler::new();
+    let waiter = 9_u32;
+
+    complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("cum_b")]),
+        HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+    complete(
+        &mut scheduler,
+        JOB_B,
+        HashSet::from([current("cum_a")]),
+        HashSet::new(),
+        vec!["cum_b"],
+        vec!["cum_b"],
+    );
+    // The peers converge by re-reading each other's current content.
+    let _ = scheduler.pop();
+    complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("cum_b")]),
+        HashSet::new(),
+        vec!["cum_a"],
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        waiter,
+        HashSet::new(),
+        HashSet::from([settled("cum_a")]),
+        Vec::new(),
+        Vec::new(),
+    );
+    while scheduler.pop().is_some() {}
+
+    assert!(
+        scheduler.facts().is_locally_settled(&"cum_a") && scheduler.facts().is_locally_settled(&"cum_b"),
+        "the cycle has quiesced: every publisher is clean",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"cum_a"),
+        "counting alone can never finalize a cycle — each clean member counts the other as unfinal",
+    );
+
+    let drained = scheduler.settle_quiescent(&["cum_a"]);
+
+    assert!(
+        scheduler.facts().is_settled(&"cum_a") && scheduler.facts().is_settled(&"cum_b"),
+        "at a drain a locally clean cone with no dirty member is quiescent, so it is final",
+    );
+    assert_eq!(
+        enqueued_jobs(&drained),
+        vec![waiter],
+        "the settled waiter wakes from the arbiter's readiness movement",
+    );
+    assert!(
+        drained
+            .movements
+            .iter()
+            .any(|movement| movement.key == "cum_a" && movement.state.settled),
+        "the flip must appear as a real movement so the wake is attributable",
+    );
+    assert!(
+        drained
+            .changed
+            .iter()
+            .all(|change| !change.content_changed() && change.readiness_changed()),
+        "the arbiter moves readiness only; no cell value changes",
+    );
+}
+
+/// The arbiter is not a licence to call anything final. A fact whose own
+/// publisher is dirty has not been re-derived from the ground it stands on,
+/// and no amount of drain quiet changes that.
+#[test]
+fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_whose_own_publisher_is_dirty() {
+    let mut scheduler = chain_a_b_c();
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    // `job_a` is pending, so "a" is dirty. Drain the agenda WITHOUT running
+    // it, which is the shape a blocked publisher leaves behind.
+    while scheduler.pop().is_some() {}
+
+    let step = scheduler.settle_quiescent(&["a", "c"]);
+
+    assert!(!scheduler.facts().is_settled(&"a"), "a's own publisher never re-ran");
+    assert!(
+        step.changed.iter().all(|change| change.key != "a"),
+        "the arbiter may not vouch for a fact whose publisher is dirty",
+    );
+    assert!(
+        scheduler.facts().is_settled(&"c"),
+        "c's own publishers are clean, and at a drain nothing can move without waking them first",
+    );
+}
+
+/// The arbiter is a DRAIN rule and nothing else. While work is queued, the
+/// transitive answer stands: a fact whose cone is still moving is not final,
+/// however loudly someone asks.
+#[test]
+fn compiler2_scheduler_the_drain_arbiter_does_nothing_while_work_is_queued() {
+    let mut scheduler = chain_a_b_c();
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    assert_eq!(scheduler.pending_jobs(), 1, "job_a is queued to re-run");
+
+    let step = scheduler.settle_quiescent(&["c"]);
+
+    assert!(
+        step.changed.is_empty(),
+        "the arbiter is inert while the agenda holds work"
+    );
+    assert!(!scheduler.facts().is_settled(&"c"));
+}
+
+/// Spec test 4. A read added mid-ascent joins the finality graph immediately:
+/// the standing values stay, and the new reader's own claims stop being final
+/// because of the fact it just started reading.
+#[test]
+fn compiler2_scheduler_adding_a_read_updates_finality_incrementally() {
+    let mut scheduler = chain_a_b_c();
+    let late = 7_u32;
+
+    complete(
+        &mut scheduler,
+        late,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["late"],
+        vec!["late"],
+    );
+    while scheduler.pop().is_some() {}
+    assert!(scheduler.facts().is_settled(&"late"));
+
+    // Dirty the chain head; "late" reads nothing, so it stays final.
+    complete(
+        &mut scheduler,
+        UPSTREAM,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["u"],
+        vec!["u"],
+    );
+    assert!(scheduler.facts().is_settled(&"late"));
+
+    // Now `late` re-concludes having read "b" — an edge added while the chain
+    // above it is still moving.
+    let step = complete(
+        &mut scheduler,
+        late,
+        HashSet::from([current("b")]),
+        HashSet::new(),
+        vec!["late"],
+        Vec::new(),
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"late"),
+        Some(1),
+        "adding a read must not disturb the standing value",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"late"),
+        "the new read reaches a fact that can still move, so the claim is no longer final",
+    );
+    assert_eq!(
+        enqueued_jobs(&step),
+        Vec::<u32>::new(),
+        "adding a read evaluates nobody",
+    );
+
+    // Replacing the read with one that reaches nothing unfinal restores it.
+    let _ = scheduler.pop();
+    complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("u")]),
+        HashSet::new(),
+        vec!["a"],
+        Vec::new(),
+    );
+    assert!(scheduler.facts().is_settled(&"late"));
+}
+
+/// Spec test 5. Retraction and rebase reach the fixed point without leaving a
+/// stale settled read behind: a retracted fact is nobody's ground, so its
+/// former readers stop counting it, while the reader that rebased on the
+/// retraction is dirty until it re-concludes.
+#[test]
+fn compiler2_scheduler_retraction_reaches_the_fixed_point_without_stale_settled_reads() {
+    let mut scheduler = chain_a_b_c();
+
+    // `job_a` retracts "a" by omission.
+    let retracted = complete(
+        &mut scheduler,
+        JOB_A,
+        HashSet::from([current("u")]),
+        HashSet::new(),
+        Vec::new(),
+        vec!["a"],
+    );
+    assert_eq!(scheduler.facts().revision(&"a"), None);
+    assert!(
+        enqueued_jobs(&retracted).contains(&JOB_B),
+        "a retraction is a ground shift for its readers",
+    );
+    assert!(scheduler.rebased(&JOB_B), "the reader of a retracted fact rebases",);
+    assert!(
+        !scheduler.facts().is_settled(&"b") && !scheduler.facts().is_settled(&"c"),
+        "b is dirty and c is downstream of it",
+    );
+
+    let _ = scheduler.pop();
+    complete(
+        &mut scheduler,
+        JOB_B,
+        HashSet::from([current("a")]),
+        HashSet::new(),
+        vec!["b"],
+        Vec::new(),
+    );
+    while scheduler.pop().is_some() {}
+
+    assert!(
+        scheduler.facts().is_settled(&"b"),
+        "reading an absent fact is not reading an unfinal one — nobody is deriving it",
+    );
+    assert!(
+        scheduler.facts().is_settled(&"c"),
+        "the fixed point is reached with no publisher left dirty and no cone left moving",
+    );
+}
