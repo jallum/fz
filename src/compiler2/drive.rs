@@ -249,25 +249,34 @@ impl World {
             self.work_graph.enqueue(job, reason);
             return true;
         }
+        if self.work_graph.blocked(&job) {
+            // The producer already ran and paused on waits: those standing
+            // waits make it wake-reachable the moment its missing facts land,
+            // and every missing fact is itself a blocked wait whose producer
+            // the drain expansion demands. Re-demanding the paused job would
+            // only re-run it into the same unsatisfied waits.
+            //
+            // This gates ahead of the rebase test on purpose (fz-kdt.62). The
+            // rebase flag is cleared only by a CONCLUDING run, so a job that
+            // pauses on the same wait every time it runs stays flagged for the
+            // rest of the drive, and a rebase-first order re-enqueues it at
+            // every single drain. Nothing is lost by skipping it:
+            // `Scheduler::enqueue_dependents` never marks a job rebased
+            // without enqueueing it in the same step, so the shifted ground
+            // has already been offered to this job once — and what it did with
+            // the offer was block.
+            return false;
+        }
         if self.work_graph.rebased(&job) {
             // Ground shifted since its last conclusion: its claims are
-            // unsettled whether or not it names `target_fact` or is
-            // currently paused on waits, so it must re-run to re-derive them.
+            // unsettled whether or not it names `target_fact`, so it must
+            // re-run to re-derive them.
             self.work_graph.enqueue(job, reason);
             return true;
         }
         if self.work_graph.output_keys(&job).contains(target_fact) {
             // The producer claims the fact and its ground stands: a
             // re-run would republish byte-identically.
-            return false;
-        }
-        if self.work_graph.blocked(&job) {
-            // The producer already ran on standing ground and paused on
-            // waits: those standing waits make it wake-reachable the
-            // moment its missing facts land, and every missing fact is
-            // itself a blocked wait whose producer the drain expansion
-            // demands. Re-demanding the paused job would only re-run it
-            // byte-identically.
             return false;
         }
         // A producer that ran, concluded, and did not claim `target_fact`

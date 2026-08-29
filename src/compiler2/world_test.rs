@@ -1275,3 +1275,112 @@ fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() 
         "the woken job must publish the function's source once its home is indexed and scoped"
     );
 }
+
+/// fz-kdt.62: a producer that is BLOCKED is wake-reachable through its own
+/// standing waits, and the drain's fact->producer expansion must leave it
+/// alone -- even when it is also REBASED.
+///
+/// The rebase flag is cleared only by a CONCLUDING run
+/// (`Scheduler::complete`), so a job that pauses on the same unsatisfied wait
+/// every time it runs stays flagged for the rest of the drive. With the
+/// rebased test ordered ahead of the blocked test, every drain that reaches
+/// this producer re-enqueues it, and it re-runs straight back into the wait it
+/// could not satisfy a moment ago -- work with no moved input behind it.
+///
+/// Re-demanding buys nothing that the graph does not already provide:
+/// `Scheduler::enqueue_dependents` never marks a job rebased without
+/// enqueueing it in the same step, so the shifted ground has already been
+/// offered to this job once, and what it did with the offer was block.
+///
+/// The scenario is assembled from synthetic completions rather than a real
+/// compile because the defect is about the DEMAND POLICY, not about any
+/// particular job: `LowerFunction`/`LoweredBody` is used only because it is an
+/// ordinary sole-producer arm of `World::demand_fact_producer`.
+#[test]
+fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
+    let mut world = World::new();
+    let function = world.reference_function(ModuleId::GLOBAL, "paused", 1);
+    let lowered = FactKey::LoweredBody(function);
+    let producer = Job::LowerFunction(function);
+
+    // The producer runs, reads a replacing fact, and pauses on a wait nothing
+    // will satisfy. It claims no output yet, so the fact it is mapped to
+    // produce is genuinely still missing.
+    let pause = || JobEffects {
+        reads: vec![FactUse::current(FactKey::FunctionDefined(function))],
+        waits: vec![FactUse::current(FactKey::FunctionContract(function))],
+        ..JobEffects::default()
+    };
+    world.complete_job(
+        Job::DefineFunction(function),
+        publish(FactKey::FunctionDefined(function)),
+    );
+    world.complete_job(producer.clone(), pause());
+
+    // Ground shifts under it: `FunctionDefined` is a replacing fact, so a
+    // second publication is a shift, which rebases the producer and enqueues
+    // it in the same step.
+    world.complete_job(
+        Job::DefineFunction(function),
+        publish(FactKey::FunctionDefined(function)),
+    );
+    assert_eq!(
+        world.work_graph.pop(),
+        Some(producer.clone()),
+        "the shift must have offered the producer its own re-run",
+    );
+    // It takes the offer and pauses on the same wait again.
+    world.complete_job(producer.clone(), pause());
+    assert!(
+        world.work_graph.rebased(&producer) && world.work_graph.blocked(&producer),
+        "the scenario needs a producer that is blocked AND still flagged rebased",
+    );
+    assert_eq!(
+        world.work_graph.pending_jobs(),
+        0,
+        "nothing may be ready before the drain"
+    );
+
+    // A standing demand for the fact this producer is mapped to: exactly what
+    // a blocked waiter presents to the drain.
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            waits: vec![FactUse::current(lowered)],
+            ..JobEffects::default()
+        },
+    );
+    while world.work_graph.pop().is_some() {}
+
+    let pokes = world.demand_blocked_wait_producers();
+
+    let mut started = Vec::new();
+    while let Some(job) = world.work_graph.pop() {
+        started.push(job);
+    }
+    assert!(
+        !started.contains(&producer),
+        "a blocked producer's standing waits ARE its wake source; the drain re-enqueued it \
+         anyway, so every drain re-runs it into the wait it just failed. Started: {started:?}",
+    );
+    assert!(
+        started.contains(&Job::DeriveFunctionContract(function)),
+        "the expansion must still poke the producer of the fact the paused job is waiting ON; \
+         that is the chain that can actually make progress. Started: {started:?}",
+    );
+    assert_eq!(
+        pokes,
+        started.len() as u64,
+        "every poke the expansion counted must be a job it actually started",
+    );
+}
+
+/// One job's conclusion publishing `fact` with real content movement.
+fn publish(fact: FactKey) -> JobEffects {
+    JobEffects {
+        outputs: vec![fact.clone()],
+        changed: vec![fact],
+        ..JobEffects::default()
+    }
+}
