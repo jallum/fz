@@ -251,6 +251,29 @@ pub struct ProductWork {
     pub generations: BTreeSet<u64>,
 }
 
+/// One fact KIND's lifecycle over a whole compile, read from the `changed`
+/// entries every applied step carries: the distinct facts of that kind the
+/// stream named, how many times one appeared out of nothing, and how many
+/// times one lost its last publisher.
+///
+/// `first_appearances > distinct` is the retract-and-remint signature — a fact
+/// withdrawn and later re-derived appears from nothing twice.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FactLifecycle {
+    pub distinct: u64,
+    pub first_appearances: u64,
+    pub retractions: u64,
+}
+
+/// The ground-shift traffic in the stream: wakes the scheduler classified as
+/// shifts (each one unsettles and rebases the job it wakes) and the
+/// completions that ran under a discharged rebase.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ShiftWork {
+    pub shift_wakes: u64,
+    pub rebased_completions: u64,
+}
+
 /// The pull sessions' own work-start accounting, summed over every session in
 /// the stream.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -288,6 +311,10 @@ pub struct CausalReport {
     pub formulas: BTreeMap<String, FormulaWork>,
     pub products: BTreeMap<String, ProductWork>,
     pub sessions: SessionWork,
+    /// Per fact-kind appearance/retraction accounting (fz-kdt.63).
+    pub lifecycles: BTreeMap<String, FactLifecycle>,
+    /// Ground-shift traffic (fz-kdt.63).
+    pub shifts: ShiftWork,
     pub canon: CanonTables,
     /// Evaluations with no moved input. The acceptance contract is that this
     /// is empty under `Dependencies::ReadsAndBlocked`.
@@ -314,6 +341,12 @@ impl CausalReport {
     /// The comparand. Every counted dimension flattened onto canonical
     /// identity strings, so two runs — two PROCESSES — compare by what work
     /// they did rather than by where their arenas happened to put it.
+    ///
+    /// `lifecycles` and `shifts` stay OUT: they are aggregate tallies with no
+    /// canonical identity to key on, so a divergence in them would name no
+    /// formula and no fact. The per-fixture ratchet
+    /// (`analysis_claims_survive_a_run_that_could_not_re_derive_them`) pins
+    /// them by exact value instead.
     pub fn canonical_multiset(&self) -> BTreeMap<String, u64> {
         let mut multiset = BTreeMap::new();
         for (formula, work) in &self.formulas {
@@ -409,6 +442,7 @@ struct Replay {
     canon: CanonTables,
     movements: HashMap<String, Vec<Movement>>,
     settled_wakes: HashMap<String, Vec<usize>>,
+    named_facts: HashMap<String, HashSet<String>>,
     history: HashMap<String, FormulaHistory>,
     defined_types: HashSet<u64>,
     defined_functions: HashSet<u64>,
@@ -421,6 +455,7 @@ impl Replay {
             canon: CanonTables::from_stream(events),
             movements: HashMap::new(),
             settled_wakes: HashMap::new(),
+            named_facts: HashMap::new(),
             history: HashMap::new(),
             defined_types: HashSet::new(),
             defined_functions: HashSet::new(),
@@ -428,6 +463,8 @@ impl Replay {
                 formulas: BTreeMap::new(),
                 products: BTreeMap::new(),
                 sessions: SessionWork::default(),
+                lifecycles: BTreeMap::new(),
+                shifts: ShiftWork::default(),
                 canon: CanonTables::default(),
                 uncaused: Vec::new(),
                 readiness_without_settled_wake: Vec::new(),
@@ -557,6 +594,7 @@ impl Replay {
 
         self.record_movements(position, completion);
         self.record_wakes(position, completion);
+        self.record_ground_shifts(completion);
         let history = self.history.entry(raw_formula).or_default();
         history.last_conclusion = Some(position);
         history.blocked = blocked;
@@ -573,6 +611,46 @@ impl Replay {
         };
         self.record_movements(position, step);
         self.record_wakes(position, step);
+        self.record_ground_shifts(step);
+    }
+
+    /// The step's own ground-shift accounting: what each `changed` entry did
+    /// to its fact's existence, how many of the wakes it caused were
+    /// classified as shifts, and whether the step itself discharged a rebase
+    /// (a job completion carries `rebased`; the drain arbiter's step has no
+    /// such field and counts none). All read straight off the emitted step —
+    /// nothing here reconstructs scheduler state.
+    fn record_ground_shifts(&mut self, step: &Json) {
+        if step.get("rebased").and_then(Json::as_bool).unwrap_or(false) {
+            self.report.shifts.rebased_completions += 1;
+        }
+        for change in array(step.get("changed")) {
+            let Some(kind) = change.get("kind").and_then(Json::as_str) else {
+                continue;
+            };
+            let appeared = change.get("old_revision").is_none_or(Json::is_null);
+            let retracted = change.get("new_revision").is_none_or(Json::is_null);
+            let lifecycle = self.report.lifecycles.entry(kind.to_string()).or_default();
+            if appeared && !retracted {
+                lifecycle.first_appearances += 1;
+            }
+            if retracted && !appeared {
+                lifecycle.retractions += 1;
+            }
+            if self
+                .named_facts
+                .entry(kind.to_string())
+                .or_default()
+                .insert(identity(change, None))
+            {
+                lifecycle.distinct += 1;
+            }
+        }
+        for wake in array(step.get("wakes")) {
+            if wake.get("shift").and_then(Json::as_bool).unwrap_or(false) {
+                self.report.shifts.shift_wakes += 1;
+            }
+        }
     }
 
     /// The facts an evaluation may name as its cause. `reads` is the current

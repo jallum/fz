@@ -248,3 +248,47 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
         first.bytes().zip(second.bytes()).position(|(a, b)| a != b)
     );
 }
+
+/// fz-kdt.63's specialization-width watch. Removing the analysis's
+/// retract-and-remint churn moved the emitted inventory on 6 of 574 fixtures,
+/// in BOTH directions: `enum_take_drop_split` improved (237 -> 214
+/// executables; 32 widened activations replaced by 7 precise ones) while
+/// `enum_predicate_search` WIDENED (207 -> 221; fourteen extra activations
+/// keyed on `int | :false | :ok | :true`). The mechanism: rebasing is the one
+/// reset of the return-widening ladder (`define_return`'s `ascents`,
+/// semantic.rs), and the churn was exercising it by accident -- fz-kdt.65
+/// owns giving the ladder an explicit reset. Until then these pins hold both
+/// directions still: a drop is an improvement worth re-pinning with its
+/// cause; a rise is the ladder running away.
+#[test]
+fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
+    for (name, text, executables) in [
+        (
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+            include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
+            59,
+        ),
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+            221,
+        ),
+        (
+            "fixtures2/behavior/enum_take_drop_split.fz",
+            include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+            214,
+        ),
+    ] {
+        let (mut compiler, root) = submit(name, text);
+        compiler
+            .drive_root_to_dump_stage(root, DumpStage::Backend)
+            .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
+        let world = compiler.world();
+        assert_eq!(
+            world.backend_program(root).executables.len(),
+            executables,
+            "{name}: the emitted executable inventory moved off its fz-kdt.63 pin; \
+             re-measure, name the cause, and re-pin"
+        );
+    }
+}

@@ -99,13 +99,41 @@ A completion's meaning bifurcates on its waits (`Scheduler::complete`):
 
 - **Concluding** (waits empty) replaces: reads swap subscriptions, the output
   list replaces the job's claims, and retraction-by-omission is available and
-  final. Facts shrink as their owners stop deriving them — redefinition needs
-  no special path.
+  final for every publisher whose silence is knowledge (see below). Facts
+  shrink as their owners stop deriving them — redefinition needs no special
+  path.
 - **Waiting** (waits non-empty) extends: reads union into the standing
   subscriptions, listed outputs union into the standing claims, prior
   activation-input contributions stand, and every claim the job holds is
   marked dirty — a blocked publisher's facts are never settled. Pausing is
   not recanting; a transient wait cannot destroy still-valid published work.
+
+### Absence is bottom; rebasing is the narrowing path
+
+Retraction-by-omission is sound only where a publisher's silence about a key is
+KNOWLEDGE. For `analyze_activation` it usually is not: a callsite whose target
+evidence is still climbing resolves to nothing and so emits nothing, and reading
+that silence as a withdrawal retracts a fact that is still true. A NON-rebased
+`AnalyzeActivation` conclusion therefore keeps every `Activation`,
+`CallSiteSummary` and `CallSiteTargets` claim it did not re-emit
+(`World::preserved_analysis_claims`), exactly as its `ActivationInputs`
+contributions ride `ContributionMap::conclude_preserving_frontier`. A preserved
+claim is RE-LISTED, never re-published: its revision does not move, its stored
+value is untouched, and no `Current` reader wakes (a readiness flip on a
+re-listed key is representable and reaches `Settled`/`SettledPresence`
+subscribers only). One side effect is real: re-listed `Activation` keys pass
+back through the completion's frontier harvest, so an unsettled callee is
+re-noted on every preserving conclusion — bounded, and retired by the drain
+pass's has-run guard.
+
+Withdrawal is scoped, not lost. A REBASED conclusion re-derived every claim from
+ground that actually shifted, so what it omits is genuinely refuted and ordinary
+replacement retracts it — that is how redefining a body prunes the callees it no
+longer reaches (`pipeline.md`, *Redefinition retracts by ownership*).
+`Activation` is claimed by EVERY caller that reaches it, and each caller's claim
+is withdrawn only by that caller's own rebase, so preserving one publisher's
+standing claim never resurrects another's: the fact retracts exactly when the
+last publisher with an unrefuted claim lets go.
 
 ## Claims declare their shape; ascents wake, ground shifts rebase
 

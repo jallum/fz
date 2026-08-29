@@ -1384,3 +1384,111 @@ fn publish(fact: FactKey) -> JobEffects {
         ..JobEffects::default()
     }
 }
+
+/// fz-kdt.63: an analysis that could not resolve a callsite this run has
+/// MISSING EVIDENCE, not proof the call is gone. Its `Activation`,
+/// `CallSiteSummary` and `CallSiteTargets` claims therefore survive a
+/// conclusion that omits them — the same "absence is bottom, not retraction"
+/// rule `ActivationInputs` already rides. Withdrawal stays available on a
+/// REBASED conclusion, where the ground genuinely narrowed and the analysis
+/// re-derived every claim from it.
+#[test]
+fn analysis_withdraws_its_callsite_claims_only_when_its_ground_shifted() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 0);
+    let callee = world.reference_function(ModuleId::GLOBAL, "callee", 0);
+    let caller_key = super::identity::ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+    let callee_key = super::identity::ActivationKey::from_inputs(root, callee, &[], world.types_mut());
+    let callsite = super::semantic::CallSiteKey {
+        activation: caller_key.clone(),
+        callsite: super::body::CallSiteId::from_u32(0),
+    };
+    let analyze = Job::AnalyzeActivation(caller_key);
+    let ground = FactKey::LoweredBody(caller);
+    let claims = [
+        FactKey::Activation(callee_key),
+        FactKey::CallSiteSummary(callsite.clone()),
+        FactKey::CallSiteTargets(callsite),
+    ];
+
+    let lower = |world: &mut World| {
+        world.complete_job(
+            Job::LowerFunction(caller),
+            JobEffects {
+                outputs: vec![FactKey::LoweredBody(caller)],
+                changed: vec![FactKey::LoweredBody(caller)],
+                ..JobEffects::default()
+            },
+        );
+    };
+    let analyze_publishing = |world: &mut World, outputs: Vec<FactKey>| {
+        let changed = outputs.clone();
+        world.complete_job(
+            analyze.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(ground.clone())],
+                outputs,
+                changed,
+                ..JobEffects::default()
+            },
+        )
+    };
+
+    lower(&mut world);
+    analyze_publishing(&mut world, claims.to_vec());
+    let published = claims.iter().map(|fact| world.fact_revision(fact)).collect::<Vec<_>>();
+    assert!(
+        published.iter().all(Option::is_some),
+        "the analysis's first conclusion should publish every claim; got {published:?}",
+    );
+
+    // A rerun that resolved nothing. Nothing about the ground moved, so the
+    // omission carries no news.
+    let paused = analyze_publishing(&mut world, Vec::new());
+    assert_eq!(
+        claims.iter().map(|fact| world.fact_revision(fact)).collect::<Vec<_>>(),
+        published,
+        "a non-rebased conclusion that omits its callsite claims must leave every one of them \
+         standing at its own revision",
+    );
+    assert!(
+        !paused.step.changed.iter().any(|change| claims.contains(&change.key)),
+        "preserving a claim must move nothing: {:?}",
+        paused.step.changed,
+    );
+    assert!(
+        !paused.step.wakes.iter().any(|wake| wake.shift),
+        "a preserved claim must rebase nobody: {:?}",
+        paused.step.wakes,
+    );
+
+    // Now the ground actually shifts: the body is re-lowered, which is a
+    // replacing fact's content change and so a ground shift for its readers.
+    lower(&mut world);
+    assert!(
+        world.work_graph.rebased(&analyze),
+        "re-lowering the analyzed body must rebase the analysis",
+    );
+
+    let withdrawn = analyze_publishing(&mut world, Vec::new());
+    for fact in &claims {
+        assert!(
+            !world.has_fact(fact),
+            "a rebased conclusion re-derives from the shifted ground, so omitting {fact:?} \
+             withdraws it",
+        );
+    }
+    assert_eq!(
+        withdrawn
+            .step
+            .changed
+            .iter()
+            .filter(|change| claims.contains(&change.key) && change.new_revision.is_none())
+            .count(),
+        claims.len(),
+        "every withdrawn claim must be reported as a retraction: {:?}",
+        withdrawn.step.changed,
+    );
+}

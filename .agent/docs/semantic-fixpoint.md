@@ -136,9 +136,17 @@ the only thing that ignites a callee's first analysis pass.
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
-changes can withdraw stale contributions. This keeps fixpoint evidence from
-descending just because an intermediate clause-reachability approximation
-changed. The row set is compared by per-column type equivalence, not raw `Ty`
+changes can withdraw stale contributions. The callsite CLAIMS ride a
+stricter rule than the inputs do: a non-rebased conclusion keeps every
+`Activation`, `CallSiteSummary` and `CallSiteTargets` it did not re-emit, and
+only a rebased one — whose ground actually shifted — withdraws. The
+`ActivationInputs` contributions themselves never withdraw, rebase or not
+(`preserve_frontier` is unconditional for `AnalyzeActivation`, so after a
+rebased withdrawal of a claim the input evidence that fed it stays published
+and joined — see fz-kdt.64 for the recorded asymmetry) (`World::preserved_analysis_claims`;
+[`fact-engine`](fact-engine.md), *Absence is bottom; rebasing is the narrowing
+path*). This keeps fixpoint evidence from descending just because an
+intermediate clause-reachability approximation changed. The row set is compared by per-column type equivalence, not raw `Ty`
 handle equality, so representative-only changes do not dirty the scheduler.
 `ReturnType(a)` is a CUMULATIVE claim: the store
 (`ActivationMap::define_return`) joins each round's evidence by union (which
@@ -273,8 +281,9 @@ the basis for the remaining type-system tickets.
   `Executable` demand facts.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
   `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
-  publishes. It schedules no follow-up job of its own: publishing
-  `Activation(callee_key)` is what feeds `World`'s activation frontier.
+  publishes; it withdraws the callsite ones only on a rebased conclusion. It
+  schedules no follow-up job of its own: publishing `Activation(callee_key)` is
+  what feeds `World`'s activation frontier.
 - `World` owns the `activation_frontier` standing-demand set alongside the
   scheduler it wraps. `World::complete_job` is its sole maintenance site
   (insert on an `Activation(key)` publish, retire once `ActivationAnalyzed(key)`
