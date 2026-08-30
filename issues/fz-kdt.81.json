@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T20:02:56Z",
-  "description": "Found by fz-kdt.69.3's build: CallTargetSummary.activation_inputs is merged\nCOLUMN-WISE (merge_callsite_input_vec via same_call_target) while\nActivationInputRow must stay correlated (fz-9i4.7.10.2 -- a row's columns\narrived together and only ever bind a clause together). So even with\nfz-kdt.80 fixed, the edge fact cannot replace the contribution channel's row\nmodel as-is. Any demand-from-edges redesign needs a correlated carrier on\nthe edge value, or keeps a (deduplicated -- fz-kdt.72) contribution channel.\nPREREQUISITE-ADJACENT for fz-kdt.69.3.",
+  "description": "CallTargetSummary.activation_inputs is merged COLUMN-WISE\n(merge_callsite_input_vec via same_call_target) while ActivationInputRow\nmust stay correlated (fz-9i4.7.10.2). Any edge-carried row model needs a\ncorrelated row SET on the edge value.\n\n## Status + sequencing (2026-08-31, post cold review of fz-kdt.74)\nShared substrate under BOTH live routes (a resumed fz-kdt.69.3 and any\nfuture cell model) -- not speculative. Sequenced AFTER fz-kdt.83's census\n(if the census says height/churn dominates, this can wait). Same-commit\nrip-out: delete the column-wise merge when the correlated carrier lands.\nAcceptance: edge value carries rows; artifact byte-identical; pins hold.\nSTOP: if carrying rows changes the demanded key set, that is the\nartifact-vs-precision tension surfacing (fz-kdt.74 item 5) -- stop and\ndecide the artifact question explicitly.",
   "id": "fz-kdt.81",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Edge facts cannot carry the correlated input-row model",
   "type": "task",
-  "updated_at": "2026-08-30T20:02:56Z"
+  "updated_at": "2026-08-30T23:38:52Z"
 }
