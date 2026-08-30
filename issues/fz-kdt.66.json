@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T14:40:11Z",
+  "description": "Found (and confirmed PRE-EXISTING at 2acbc8d04) during fz-kdt.13.1's builds:\nenum_predicate_search emits one work_graph.quiesced event at one of two stream\npositions across processes; the raw stream also varies in canon-dictionary\nemission order. The job+work_graph causal projection is stable, so no gate\ncatches it, but it is a live crack in the order-is-preserved-never-restored\ninvariant. Visible cause: settle_quiescent_waits orders candidates by FactKey\nOrd over a HashMap-keyed waiter index -- the ordering is fine, but WHEN the\narbiter runs relative to product-wait polls differs cross-process. Ties into\nfz-kdt.46 (edge-triggered arbitration) and fz-kdt.47 (cross-process\nderivation-order dependence); fold there if the fix coincides.",
+  "id": "fz-kdt.66",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Drain-arbiter emission position is cross-process unstable on enum_predicate_search",
+  "type": "bug",
+  "updated_at": "2026-08-30T14:40:11Z"
+}
