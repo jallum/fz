@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.13.1",
-    "fz-kdt.68"
+    "fz-kdt.68",
+    "fz-kdt.69"
   ],
   "blocks": [],
   "created": "2026-08-30T13:40:05Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "analyze_activation reports derivations by read watermark",
   "type": "task",
-  "updated_at": "2026-08-30T16:08:54Z"
+  "updated_at": "2026-08-30T16:08:55Z"
 }
