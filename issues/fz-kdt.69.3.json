@@ -6,14 +6,15 @@
     "fz-kdt.80"
   ],
   "blocks": [],
+  "closed_at": "2026-08-30T23:45:21Z",
   "created": "2026-08-30T18:20:47Z",
   "description": "CLOSED AS REFUTED (2026-08-31), not as fixed. The design this ticket\nspecified -- demand derived from live edges over value-keyed identities --\nwas built in full and falsified by measurement (the edge is a strict subset\nof stated demand; decommission non-terminating; cascade depth 5 not 0). The\nrefutation record lives in fz-kdt.69; the graveyard entry and re-entry\nconditions in fz-kdt.74; the full implementation at wt/kdt693-index\n(9d65ab25e, probes included). If a demand-derivation route ever revives, it\ngets a NEW ticket written against the then-current tree (dated tickets are\nspiritual guidance) -- gated at minimum on fz-kdt.80 and fz-kdt.76, and on\nfz-kdt.83's census verdict.",
   "id": "fz-kdt.69.3",
   "labels": [],
   "parent": "fz-kdt.69",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Demand is derived from live edges; preservation machinery deleted",
   "type": "task",
-  "updated_at": "2026-08-30T23:45:20Z"
+  "updated_at": "2026-08-30T23:45:21Z"
 }
