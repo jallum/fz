@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T16:33:49Z",
+  "description": "Verified 2026-08-30: the telemetry emit/dispatch layer is raw-and-free as\ndesigned (refs only; no-handler dispatch = empty-vec loop), but the scheduler\nbuilds the CAUSALITY RECORDS unconditionally: AppliedStep.wakes (one Wake per\nwake, cause cloned, dedup removed by fz-kdt.34.3) and AppliedStep.blocked.\nTheir only production consumer is wakes.is_empty() (drive-loop quiescence\ncheck); changed/movements have real production consumers (fact table, memo\nreconcile) and are not this ticket.\n\nMeasured cost (release, 00420, A/B with records capped at 1/step, stdout\nidentical): 550.7 -\u003e 543.3 ms median, ranges overlapping -- \u003c=1.3%, likely\nunder 1%.\n\nFix directions, if ever worth the point:\n(a) a tel.wants(prefix) query letting the scheduler skip record ASSEMBLY when\n    no handler subscribes to work_graph -- still zero rendering at emit,\n    behavior identical, contract restored fully; or\n(b) production keeps a woke bool; handlers reconstruct wakes from\n    deps.subscribers x changed -- REJECTED on inspection: disposition\n    (enqueued/coalesced) is transient scheduler state at wake time and not\n    reconstructible later.\nDo not spend more than the ~1% is worth; this ticket exists so the measured\nexception to the raw-boundary contract is on record, not to force the fix.",
+  "id": "fz-kdt.71",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "AppliedStep wake/blocked records are built with telemetry off: ~1% of compile",
+  "type": "task",
+  "updated_at": "2026-08-30T16:33:49Z"
+}
