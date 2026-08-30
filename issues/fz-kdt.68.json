@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.13.2"
+  ],
   "created": "2026-08-30T15:23:21Z",
   "description": "MEASURED at fz-kdt.13.2 (release, `fz2 interp`, first-settlement timing off the public stream, three target fixtures).\n\nSplitting analyze_activation into per-callsite / per-callee answers made mid-drive one-hop CLEANLINESS strictly finer (pinned by `compiler2_a_callee_ascent_leaves_the_callers_other_callsite_answers_clean`), and moved TRANSITIVE settledness by exactly zero:\n\n  fixture               kind              settled-at-end before -\u003e after\n  enum_take_drop_split  ActivationInputs  222 -\u003e 222\n  enum_take_drop_split  Activation        131 -\u003e 131\n  range_map             CallSiteTargets    35 -\u003e  35\n\n(that is with the read-preservation rule off; with it on the counts fall, which is the removal of settledness that was resting on dropped subscriptions -- see fz-kdt.13.2's commit.)\n\nPre-drain first settlements are unchanged too: ActivationInputs 4-of-283 on enum_take_drop_split before AND after.\n\nWHY: caller and callee read each other. `AnalyzeActivation(caller)` reads `ReturnType(callee)`; `AnalyzeActivation(callee)` reads `ActivationInputs(callee)`, which the caller publishes. Both publishers are clean long before either fact is transitively final, and no local counting rule can lower an `unfinal_reads` count inside a cycle -- only the drain arbiter can (`fact-engine.md`, *The drain arbiter*). Publisher identity is the wrong lever for that number; it was never the thing holding these facts unfinal.\n\nCONSEQUENCE for fz-kdt.13 Story 4 (finality-first pop): its gate is 'the pop-time ready-alternative rate moved off 2%/0%/0%'. If the ready-alternative question is asked of TRANSITIVE finality it will still read ~0, for the reason above. Re-measure it against one-hop cleanliness (`unfinal_reads == 0` is the transitive question; `is_locally_settled` is the one the split actually improved) before building on it.\n\nSECOND CAP, same measurement: a satisfied WAIT dirties EVERY answer a job holds, because a wait carries no derivation attribution (`Scheduler::enqueue_dependents`). Blocked completions are the main traffic (196 of 1,065 AnalyzeActivation evaluations on enum_take_drop_split), so a large share of re-dirtying is still job-wide by construction. Giving waits derivation attribution -- or splitting the job so a block scopes -- is the next real lever, and it is a separate design.",
   "id": "fz-kdt.68",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Analysis settledness is cycle-bound, so publisher granularity cannot move it",
   "type": "task",
-  "updated_at": "2026-08-30T15:23:21Z"
+  "updated_at": "2026-08-30T16:08:54Z"
 }
