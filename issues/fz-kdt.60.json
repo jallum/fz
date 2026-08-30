@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-29T03:13:39Z",
-  "description": "Found by fz-kdt.44's adversarial review: the main drive_until loop's arbiter\nintegration (drive.rs, quiescence_woke_work -\u003e changed_since_stall = true;\ncontinue) is unreachable from any fixture compile -- every fixture goes\nthrough product_drive, and the arbiter currently wakes nothing on the pure\nagenda path (0 quiesced wakes measured on all three target fixtures). The\nbranch's behavior when a scheduler Settled-waiter IS woken by arbitration is\nuntested. fz-kdt.13 will create real scheduler Settled-waiters and should\neither cover this branch with a world-level test (a Settled waiter over a\nquiesced cycle driven through drive_for) or delete it if the product path\nsubsumes it. Do not close fz-kdt.13 with this branch still uncovered.",
+  "description": "drive.rs's quiescence_woke_work -\u003e changed_since_stall = true; continue\nbranch in the main drive loop is UNREACHABLE production code: every fixture\ncompile goes through product_drive, and no scheduler Settled-waiter exists on\nthe agenda path (the arbiter wakes nothing -- measured across the kdt.44/\n13.x arcs; the one experiment that created such waiters, fz-kdt.13.2, is\nparked unmerged). Dead branches read as live policy (rip-out law).\n\nDELETE the branch (and quiescence_woke_work if it has no other caller), with\na comment at the drain site naming this ticket and the resurrection\ncondition: the first landing that registers scheduler Settled-waiters on the\nagenda path (e.g. an unparked fz-kdt.13.2) must reintroduce the branch WITH\nthe world-level covering test this ticket originally demanded (a Settled\nwaiter over a quiesced cone driven through drive_for). Acceptance: gates\ngreen, grep-clean, zero behavior change (the branch never fires today --\nverify with the probe before deleting).",
   "id": "fz-kdt.60",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
   "status": "open",
-  "title": "Drive-loop arbiter branch (quiescence_woke_work -\u003e continue) has no covering test",
+  "title": "Delete the unreachable drive-loop arbiter branch; resurrect only with a consumer",
   "type": "task",
-  "updated_at": "2026-08-29T03:13:39Z"
+  "updated_at": "2026-08-30T23:45:21Z"
 }
