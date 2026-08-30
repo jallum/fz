@@ -279,11 +279,25 @@ the basis for the remaining type-system tickets.
 
 - `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
   `Executable` demand facts.
+- `SeedActivation(a)` owns `Activation(a)`/`ActivationInputs(a)` for the
+  activations nothing else describes: a root's own entry, or one the
+  runtime-demand frontier minted from a callable surface which no analysis
+  walked and no caller claimed. (A root entry thus has two possible minters
+  today, `SeedRoot` and `SeedActivation`, whose reconstructions agree -- the
+  measured 4 lib-suite cases -- see the fz-kdt ticket on collapsing that to
+  one producer.) It reconstructs the
+  input row from the key's own arrow, so `World::demand_fact_producer` routes
+  a demand to it only while `ActivationInputs(a)` has no publisher
+  (`World::seed_activation_producer`). A key a caller discovered is the
+  caller's to publish and to withdraw.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
   `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
   publishes; it withdraws the callsite ones only on a rebased conclusion. It
   schedules no follow-up job of its own: publishing `Activation(callee_key)` is
-  what feeds `World`'s activation frontier.
+  what feeds `World`'s activation frontier. When its OWN `Activation(a)` is
+  absent -- nothing claims `a` -- it concludes on the recorded read and
+  re-lists its standing claims, rather than waiting on a producer that no
+  longer exists for it.
 - `World` owns the `activation_frontier` standing-demand set alongside the
   scheduler it wraps. `World::complete_job` is its sole maintenance site
   (insert on an `Activation(key)` publish, retire once `ActivationAnalyzed(key)`

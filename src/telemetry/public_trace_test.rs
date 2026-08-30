@@ -977,7 +977,10 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
 /// as the stream reports them. `first_appearances > distinct` is the
 /// retract-and-remint signature — a claim withdrawn and later re-derived
 /// appears out of nothing twice — so the gap between those two columns is
-/// exactly the churn, and it equals the retraction count.
+/// the churn that got re-minted. Since fz-kdt.69.1 a withdrawal can STICK
+/// (SeedActivation no longer resurrects caller-discovered keys), so the gap
+/// can be smaller than the retraction count: retractions that stuck appear
+/// only once.
 struct AnalysisClaimRatchet {
     fixture: &'static str,
     activations: FactLifecycle,
@@ -1019,14 +1022,35 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// re-derived every claim from ground that genuinely narrowed. That fixture
 /// keeping 24 rebased completions while the other two fall to 2 and 10 is what
 /// says the narrowing path is still open.
+///
+/// `fz_f98_range_map_converges` is the one row fz-kdt.69.1 moved, and every
+/// number on it fell:
+///
+/// ```text
+///   Activation lifecycle   71/76/5 -> 71/74/5
+///   shifts                   17/24 -> 17/19
+///   AnalyzeActivation          300 -> 298
+///   total evaluations          966 -> 959
+/// ```
+///
+/// Retracting a caller-discovered `Activation(k)` used to route k's own
+/// blocked analysis back to `Job::SeedActivation`, which re-minted the key
+/// from its own arrow: all five retractions came straight back, and the
+/// re-minted claim rebased the analysis again. Two of the five now stick, and
+/// the self-gate concludes instead of blocking, so five rebased completions
+/// and the work they carried are gone. Nothing was lost with them --
+/// `distinct` (71), `retractions` (5), `shift_wakes` (17) and both callsite
+/// lifecycles are unchanged, and the other two fixtures' rows do not move at
+/// all. That is what rules out the "a count can also fall by LOSING wakes"
+/// hazard below: no subscription stopped reaching anyone.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        activations: lifecycle(71, 76, 5),
+        activations: lifecycle(71, 74, 5),
         callsites: lifecycle(73, 75, 2),
-        shifts: shifts(17, 24),
-        analyze_evaluations: 300,
-        total_evaluations: 966,
+        shifts: shifts(17, 19),
+        analyze_evaluations: 298,
+        total_evaluations: 959,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",

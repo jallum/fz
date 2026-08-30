@@ -1086,6 +1086,103 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     );
 }
 
+/// The other half of the arm above (fz-kdt.69.1): a callee's `Activation` is
+/// its CALLER's claim, and `Job::SeedActivation` is not its producer.
+///
+/// When the caller's ground shifts and its re-derivation no longer reaches the
+/// callee, that withdrawal is knowledge. Answering the now-orphaned key with a
+/// seed — rows reconstructed from the key's own arrow — would resurrect exactly
+/// what the caller just let go, and no retraction could ever stick.
+#[test]
+fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    // The root's own seed is taken out of the agenda: this test isolates the
+    // producer map, so nothing but the manipulation below drives the world.
+    assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
+    world.submit_code(
+        Some("callee.fz".to_string()),
+        "fn echoval(a), do: a\n\nfn ask(a), do: echoval(a)\n".to_string(),
+    );
+    let echoval = world.reference_function(ModuleId::GLOBAL, "echoval", 1);
+    let ask = world.reference_function(ModuleId::GLOBAL, "ask", 1);
+    for function in [echoval, ask] {
+        world.demand(Job::DefineFunction(function));
+        world.demand(Job::LowerFunction(function));
+        world.demand(Job::PlanEntryDispatch(function));
+        world.demand(Job::DeriveCallGraphComponent(function));
+        world.demand(Job::DeriveDispatchMask(function));
+    }
+    assert_eq!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved,
+        "both bodies' own facts should settle before the producer-map setup",
+    );
+    let input = world.types_mut().atom_lit("a");
+    let caller = world.activation_key(root, ask, &[input]);
+    let callee = world.activation_key(root, echoval, &[input]);
+
+    // The caller's analysis stands on a ground fact and claims the callee it
+    // reached — `Activation`, `ActivationInputs`, and the input evidence.
+    let ground = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "Ground".to_string(),
+        arity: 0,
+    };
+    world.complete_job(
+        Job::DeriveTypeDef(ground.clone()),
+        JobEffects {
+            outputs: vec![FactKey::TypeDefined(ground.clone())],
+            ..JobEffects::default()
+        },
+    );
+    world.complete_job(
+        Job::AnalyzeActivation(caller.clone()),
+        JobEffects {
+            reads: vec![FactUse::current(FactKey::TypeDefined(ground.clone()))],
+            outputs: vec![
+                FactKey::Activation(callee.clone()),
+                FactKey::ActivationInputs(callee.clone()),
+            ],
+            activation_input_contributions: vec![(callee.clone(), vec![input])],
+            ..JobEffects::default()
+        },
+    );
+    assert!(
+        world.has_fact(&FactKey::Activation(callee.clone())),
+        "the caller's analysis is the callee activation's publisher",
+    );
+
+    // The ground shifts. The caller rebases, re-derives, and no longer reaches
+    // the callee, so its claim on the key is withdrawn.
+    world.complete_job(Job::DeriveTypeDef(ground), JobEffects::default());
+    assert_eq!(
+        world.work_graph.pop(),
+        Some(Job::AnalyzeActivation(caller.clone())),
+        "retracting the read fact rebases the caller and re-enqueues it",
+    );
+    world.complete_job(Job::AnalyzeActivation(caller), JobEffects::default());
+    assert!(
+        !world.has_fact(&FactKey::Activation(callee.clone())),
+        "a rebased conclusion that omits the callee withdraws the caller's claim",
+    );
+
+    assert_eq!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved,
+        "the orphaned key must not stall the drive",
+    );
+    assert!(
+        !world.work_graph.has_run(&Job::SeedActivation(callee.clone())),
+        "SeedActivation is not a caller-discovered activation's producer",
+    );
+    assert!(
+        !world.has_fact(&FactKey::Activation(callee)),
+        "the withdrawn activation stays absent",
+    );
+}
+
 /// A blocked fact with no fact->producer arm is the genuine stall: the drive
 /// must report it unresolved, never spin the demand-on-stall pass on it.
 #[test]

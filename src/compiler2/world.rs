@@ -512,6 +512,25 @@ impl World {
         }
     }
 
+    /// The claims a job already holds, and the reads standing behind them.
+    ///
+    /// A conclusion REPLACES a publisher's outputs and reads, so a run with no
+    /// ground to stand on must re-list BOTH or corrupt one of two invariants:
+    /// omitting the claims silently retracts them; omitting the reads leaves
+    /// the claims subscribed to nothing, and a publisher whose only read is an
+    /// absent fact is quiet -- the claims would settle, manufacturing finality
+    /// from amnesia (measured, fz-kdt.69.1's review). Re-listing both keeps
+    /// every claim published at its own revision under the subscriptions that
+    /// derived it: nothing moves, nobody rebases, nothing settles early.
+    pub(crate) fn standing_claims_and_reads(
+        &self,
+        job: &Job,
+    ) -> (Vec<FactKey>, HashSet<super::facts::FactUse<FactKey>>) {
+        let claims = self.work_graph.output_keys(job).iter().cloned().collect();
+        let reads = self.work_graph.reads(job);
+        (claims, reads)
+    }
+
     /// The SOLE insertion point into `activation_frontier`: a discovered
     /// `Activation(key)` publish becomes a standing analysis demand unless
     /// its `ActivationAnalyzed` fact has already settled.
