@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T19:26:23Z",
+  "description": "fz2 build fixtures2/00424_protocol_no_impl.fz panics at\njobs/artifact.rs:153 ('product materialization should have complete call\nedges after waits'). PRE-EXISTING (verified byte-identical at b42e4b3ca and\nba8e4079f). Since fz-kdt.69.2 the value model carries the information to\nraise a real diagnostic (a settled Unresolved edge names the exact callsite\nand its unmet resolution); the panic should become a user-facing error.\nUnnoticed because the fixture matrix walks only fixtures2/behavior/.",
+  "id": "fz-kdt.77",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "protocol call with no impl panics product materialization instead of diagnosing",
+  "type": "bug",
+  "updated_at": "2026-08-30T19:26:23Z"
+}
