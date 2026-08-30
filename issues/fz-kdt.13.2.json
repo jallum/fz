@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.13.1"
+  ],
   "blocks": [],
   "created": "2026-08-30T13:40:05Z",
   "description": "Story 3 of fz-kdt.13 Strategy v3 (cold-reviewed). Blocked by fz-kdt.13.1.\n\nOne derivation per CallSiteKey owning that callsite's CallSiteSummary/\nCallSiteTargets/Activation/ActivationInputs; one whole-body derivation owning\nReturnType/ActivationAnalyzed and reading everything (absorbs define_return's\nhidden ascents state). A callsite derivation's read set = the prefix of the\nexisting dataflow-ordered reads vector (semantic.rs:106, threaded through the\nwalk) captured at emission time, PLUS all post-coalescing reads\n(rebuild_coalesced_call_emission and contract reads fold into the affected\nsets), PLUS completion-time reads (normalize_contributions reads body_keying/\ndispatch_masks -- attribute to every derivation or whole-body). Shift causes\ndirty all derivations. Blocked runs mark only unreached derivations dirty.\n\nSoundness property test: recomputing a callsite derivation with its recorded\nread set held fixed reproduces its outputs (catches a too-early watermark).\n\n## Checks\n- Facts settle mid-drive: ActivationInputs/Activation/callsite facts reach\n  settled before the drain rather than at it (count from work_graph.quiesced\n  by kind).\n- AnalyzeActivation evals ratchet on the three fixtures (post-kdt.63 bases:\n  1,081 CLI-lens on take_drop_split); backend inventory pins (59/221/214)\n  hold or drop.\n- Zero-uncaused unweakened; determinism suite green; matrix green.\n- Re-measure the pop-time ready-alternative rate afterward (Story 4's gate).",
