@@ -1213,9 +1213,15 @@ fn materialize_direct_call_edge(
         activation: executable.activation.clone(),
         callsite,
     };
-    if !world.has_fact(&FactKey::CallSiteSummary(key.clone())) {
-        return Ok(None);
-    }
+    // One door: a callsite that named no targets -- never reached, proven
+    // dead, or reached and still unresolved -- materializes no edge. (The
+    // `has_fact` pre-test that used to stand here asked a DIFFERENT question:
+    // the ledger's, where the store below is lowering's authority and is
+    // never pruned. The two diverge only in the ledger-withdrawn/store-stale
+    // state, measured to occur zero times across the 574-fixture corpus, lib,
+    // and matrix -- so the store answers alone: fz-kdt.69.2. fz-kdt.69.3
+    // makes the ledger authoritative over exactly this divergence; revisit
+    // then.)
     let Some(summary) = world.callsite_summary(&key).cloned() else {
         return Ok(None);
     };
@@ -1317,14 +1323,17 @@ fn materialize_closure_call_edge(
         callsite,
     };
     let Some(summary) = world.callsite_summary(&key).cloned() else {
-        // Behind the settled materialization gate, an absent callsite summary is
-        // the Kleene bottom — exactly as `CallTargetSummary::settled_return`
-        // reads an absent return. No callable evidence ever arrived, so this
-        // call never happens. Lower it as the dead call it is: every
-        // `ClosureCall` tail needs a return flow, and `NoReturn` is the name for
-        // one that never returns. Emitting no edge at all instead leaves native
-        // lowering with a `Deliver` destination and nothing to deliver
-        // (fz-f98.18).
+        // Behind the settled materialization gate, a callsite that named no
+        // targets is the Kleene bottom — exactly as
+        // `CallTargetSummary::settled_return` reads an absent return. No
+        // callable evidence ever arrived, so this call never happens. Lower it
+        // as the dead call it is: every `ClosureCall` tail needs a return
+        // flow, and `NoReturn` is the name for one that never returns.
+        // Emitting no edge at all instead leaves native lowering with a
+        // `Deliver` destination and nothing to deliver (fz-f98.18). An
+        // `Unresolved` edge (fz-kdt.69.2) reaches this same answer: at
+        // settlement the analysis never named a target, so there is nothing to
+        // call.
         let never = world.types_mut().none();
         return Ok(Some(MaterializedCallEdge {
             target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
@@ -2371,7 +2380,9 @@ fn incomplete_semantic_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee};
+    use crate::compiler2::semantic::{
+        CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
+    };
     use crate::compiler2::{ActivationKey, FunctionId};
     use crate::telemetry::ConfiguredTelemetry;
 
@@ -2483,7 +2494,7 @@ mod tests {
         };
         world.define_callsite_summary(
             key,
-            CallSiteSummary {
+            CallSiteResolution::Resolved(CallSiteSummary {
                 targets: [302, 303]
                     .into_iter()
                     .map(|function| CallTargetSummary {
@@ -2495,7 +2506,7 @@ mod tests {
                     })
                     .collect(),
                 return_ty: returns.then_some(int),
-            },
+            }),
         );
         let result_value = ValueId::from_u32(2);
         let analysis = ActivationAnalysis {

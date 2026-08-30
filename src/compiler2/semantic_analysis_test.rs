@@ -641,3 +641,63 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
         callsites.all(),
     );
 }
+
+/// fz-kdt.69.2, on the production path: `P.each(42)` finds no `P` impl for an
+/// integer receiver, so the walk REACHES the callsite and never names a
+/// target. The edge is published all the same. Its value is the unresolved
+/// answer -- distinct from a provider boundary (a resolved edge naming no
+/// compiler2 activation) and distinct from a callsite the walk never reached,
+/// which has no fact at all.
+#[test]
+fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("protocol_no_impl.fz".to_string()),
+        include_str!("../../fixtures2/00424_protocol_no_impl.fz").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    world.demand(Job::SeedRoot(root));
+    let _ = super::drive::ExecutionContext::new(&mut world, &tel).drive();
+
+    let entry_function = world.root_function(root);
+    let entry = super::identity::ActivationKey::from_inputs(root, entry_function, &[], world.types_mut());
+    // `CallSiteId` carries its span, so the identity comes from the body, not
+    // from a raw index.
+    let super::body::LoweredBody::Clauses { entries, .. } = world.lowered_body(entry_function) else {
+        panic!("main should lower to clauses");
+    };
+    let callsite = entries
+        .iter()
+        .find_map(|lowered| match &lowered.tail {
+            super::body::LoweredTail::DirectCall { callsite, .. } => Some(*callsite),
+            _ => None,
+        })
+        .expect("main's body should carry the `P.each(42)` callsite");
+    let key = super::semantic::CallSiteKey {
+        activation: entry,
+        callsite,
+    };
+
+    assert!(
+        world.has_fact(&FactKey::CallSiteSummary(key.clone())),
+        "a reached callsite publishes its edge even when it resolves nothing"
+    );
+    assert!(
+        world
+            .callsite_resolution(&key)
+            .is_some_and(super::semantic::CallSiteResolution::is_unresolved),
+        "and the published value says so: {:?}",
+        world.callsite_resolution(&key)
+    );
+    assert!(
+        world.callsite_summary(&key).is_none(),
+        "an unresolved edge names no targets, so nothing downstream can read one"
+    );
+    assert!(
+        world
+            .callsite_target_resolution(&key)
+            .is_some_and(super::semantic::CallSiteResolution::is_unresolved),
+        "the membership fact carries the same answer -- they are two answers of one derivation"
+    );
+}

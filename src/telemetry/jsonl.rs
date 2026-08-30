@@ -1150,10 +1150,10 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
             .metadata
             .get("callsite")
             .and_then(|value| value.downcast_ref::<crate::compiler2::CallSiteKey>())
-            && let Some(summary) = world.callsite_summary(callsite)
+            && let Some(resolution) = world.callsite_resolution(callsite)
         {
             out.push_str(",\"semantic\":");
-            write_callsite_summary(out, world, summary);
+            write_callsite_resolution(out, world, resolution);
         }
         return;
     }
@@ -1265,6 +1265,19 @@ fn write_optional_type(out: &mut String, world: &crate::compiler2::World, ty: Op
     match ty {
         Some(ty) => write_str_lit(out, &world.types().display(&ty)),
         None => out.push_str("null"),
+    }
+}
+
+/// A reached callsite's published answer. The unresolved state renders as
+/// itself -- it is a value, not a gap in the stream (fz-kdt.69.2).
+fn write_callsite_resolution(
+    out: &mut String,
+    world: &crate::compiler2::World,
+    resolution: &crate::compiler2::CallSiteResolution<crate::compiler2::CallSiteSummary>,
+) {
+    match resolution.resolved() {
+        None => out.push_str("{\"unresolved\":true}"),
+        Some(summary) => write_callsite_summary(out, world, summary),
     }
 }
 

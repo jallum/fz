@@ -393,3 +393,58 @@ fn file_backend_flushes_when_telemetry_owner_drops() {
     assert!(output.contains("\"name\":[\"fz\",\"diag\",\"error\"]"), "{output}");
     assert!(output.contains("\"code\":\"spec/violation\""), "{output}");
 }
+
+/// fz-kdt.69.2: the unresolved edge renders as itself. A reached callsite that
+/// names no target is a published VALUE, so the stream must show it — before,
+/// the fact simply was not there and the projection wrote nothing at all.
+#[test]
+fn an_unresolved_callsite_edge_renders_as_itself() {
+    use crate::compiler2::{CallSiteResolution, CallSiteSummary, CallTargetSummary, SelectedCallee, World};
+
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, crate::compiler2::ExecutableNeed::Value);
+    let caller = world.root_function(root);
+    let activation = crate::compiler2::ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+    let unresolved = crate::compiler2::CallSiteKey {
+        activation: activation.clone(),
+        callsite: crate::compiler2::CallSiteId::from_u32(0),
+    };
+    let resolved = crate::compiler2::CallSiteKey {
+        activation,
+        callsite: crate::compiler2::CallSiteId::from_u32(1),
+    };
+    world.define_callsite_summary(unresolved.clone(), CallSiteResolution::Unresolved);
+    world.define_callsite_summary(
+        resolved.clone(),
+        CallSiteResolution::Resolved(CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: SelectedCallee::ProviderBoundary(caller),
+                surface_inputs: Vec::new(),
+                activation: None,
+                activation_inputs: None,
+                return_ty: None,
+            }],
+            return_ty: None,
+        }),
+    );
+
+    let mut out = String::new();
+    write_callsite_resolution(
+        &mut out,
+        &world,
+        world.callsite_resolution(&unresolved).expect("a reached callsite"),
+    );
+    assert_eq!(out, "{\"unresolved\":true}");
+
+    let mut out = String::new();
+    write_callsite_resolution(
+        &mut out,
+        &world,
+        world.callsite_resolution(&resolved).expect("a resolved callsite"),
+    );
+    assert!(
+        out.starts_with("{\"return\":null,\"targets\":[{\"callee\":"),
+        "a resolved edge keeps the shape it always had: {out}"
+    );
+}

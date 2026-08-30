@@ -93,11 +93,13 @@ types to its `Activation` fact, subscribes the caller to the callee's
 `ReturnType`, and returns the callee's *current* return estimate. When the callee
 later widens its return, the caller re-runs and re-unions. Every moving part is
 monotone: return evidence joins upward, equivalent type representatives are
-quiet, and an `AnalyzeActivation` publisher preserves its prior claims —
-activation-input evidence, and the `Activation`/`CallSiteSummary`/
-`CallSiteTargets` facts themselves — within an epoch instead of retracting a
-temporarily absent callsite. The cross-activation loop therefore settles without
-downstream phases reconstructing semantic decisions.
+quiet, an `AnalyzeActivation` publisher preserves its prior activation-input
+evidence and `Activation` claims within an epoch instead of retracting a
+callsite whose targets are temporarily unnamed, and a callsite edge that
+resolves nothing this round republishes as `Unresolved` — the lattice bottom,
+which never overwrites a resolved answer
+([`semantic-fixpoint`](semantic-fixpoint.md)). The cross-activation loop
+therefore settles without downstream phases reconstructing semantic decisions.
 
 ## Specialization stays finite
 

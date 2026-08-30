@@ -981,6 +981,12 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
 /// (SeedActivation no longer resurrects caller-discovered keys), so the gap
 /// can be smaller than the retraction count: retractions that stuck appear
 /// only once.
+///
+/// The two families read differently since fz-kdt.69.2. `Activation` still
+/// rides preservation, so its row is the ratchet fz-kdt.63 set. The callsite
+/// row no longer can: every callsite the walk REACHES publishes its edge, so
+/// preservation of those kinds is gone and the row now measures the WALK —
+/// how often the analysis stopped reaching a callsite it had reached before.
 struct AnalysisClaimRatchet {
     fixture: &'static str,
     activations: FactLifecycle,
@@ -1043,6 +1049,37 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// lifecycles are unchanged, and the other two fixtures' rows do not move at
 /// all. That is what rules out the "a count can also fall by LOSING wakes"
 /// hazard below: no subscription stopped reaching anyone.
+///
+/// fz-kdt.69.2 moved the CALLSITE rows and only those, exactly as its ticket
+/// pre-authorized:
+///
+/// ```text
+///                                 CallSite* before   after
+///   fz_f98_range_map_converges    73/75/2            73/75/2
+///   enum_predicate_search        239/239/0          239/272/33
+///   enum_take_drop_split         415/415/0          415/427/12
+/// ```
+///
+/// `distinct` does not move on any of the three: every callsite the walk ever
+/// reaches was already resolving at some point in the drive, so total emission
+/// adds no new key -- it publishes the ones it has earlier, and as
+/// `Unresolved`. What appears is retract-and-remint, because the reached-
+/// callsite set is NOT monotone: `analyze_tail` stops walking a tail chain at
+/// a call with no return evidence yet (an activation key migrating to one
+/// whose `ReturnType` has not arrived), so the callsites behind it go
+/// unreached for a round and their edges withdraw. Preservation used to hide
+/// that. The churn is free -- `Activation`, `shifts`, `AnalyzeActivation` and
+/// total evaluations are byte-for-byte what they were, because nothing holds a
+/// `Current` subscription on those edges while they move.
+///
+/// A walk fix (availability per READ -- the rule `entry_scope`'s captures
+/// already state, which `analyze_tail` alone does not obey) was measured
+/// during fz-kdt.69.2 to remove this churn entirely AND move the executable
+/// inventory -- which is that ticket's STOP condition, so it was reverted,
+/// not landed. CAUTION: two faithful reconstructions during the adversarial
+/// review did NOT reproduce its numbers; the follow-up ticket (fz-kdt on the
+/// tail-chain truncation) requires the actual patch as its starting point,
+/// not this prose.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
@@ -1055,7 +1092,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
         activations: lifecycle(198, 198, 0),
-        callsites: lifecycle(239, 239, 0),
+        callsites: lifecycle(239, 272, 33),
         shifts: shifts(1, 2),
         analyze_evaluations: 766,
         total_evaluations: 1555,
@@ -1063,23 +1100,25 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
         activations: lifecycle(256, 256, 0),
-        callsites: lifecycle(415, 415, 0),
+        callsites: lifecycle(415, 427, 12),
         shifts: shifts(6, 10),
         analyze_evaluations: 1058,
         total_evaluations: 2502,
     },
 ];
 
-/// fz-kdt.63: an analysis that could not resolve a callsite this run withdraws
+/// fz-kdt.63: an analysis that could not name a callee this run withdraws
 /// nothing.
 ///
 /// The churn this pins away was entirely self-inflicted. A callsite whose
 /// target evidence was still climbing resolved to nothing, so the run emitted
-/// no `CallSiteSummary`/`CallSiteTargets`/`Activation` for it; plain output
-/// replacement read that silence as a WITHDRAWAL, which is a ground shift,
-/// which rebases every reader — who then re-derive, re-mint the same claims,
-/// and shift their own readers in turn. Absence is bottom, not retraction;
-/// only a rebased conclusion, which re-derived from moved ground, may narrow.
+/// no `Activation` for it; plain output replacement read that silence as a
+/// WITHDRAWAL, which is a ground shift, which rebases every reader — who then
+/// re-derive, re-mint the same claims, and shift their own readers in turn.
+/// Absence is bottom, not retraction; only a rebased conclusion, which
+/// re-derived from moved ground, may narrow. Since fz-kdt.69.2 that reading
+/// applies to `Activation` alone: the callsite edges publish unconditionally,
+/// so their row is a measurement of the walk, not of preservation.
 ///
 /// The uncaused check rides along because a count can also fall by LOSING
 /// wakes: a formula that stopped re-running because its subscriptions no
