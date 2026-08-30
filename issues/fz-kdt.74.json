@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.69"
+  ],
   "blocks": [],
   "created": "2026-08-30T17:00:14Z",
   "description": "The owner's direction (2026-08-30), BEAM-inspired: analysis identity should\ncoalesce at name/arity (per root) -- specializations ROOTED there as content,\nwith value-keyed identities minted only AT SETTLEMENT where the backend needs\nthem (quicksort(int) != quicksort(float) as executables, not as free-floating\ndemanded analysis identities). BEAM's M:F/A is the only identity; clause\nselection is behavior, not naming.\n\n## The measured case\n- ~20% of AnalyzeActivation evaluations land on identities that never reach\n  the artifact (231/1081, 60/306, 120/886 across the three target fixtures;\n  67/14/32 abandoned intermediate keys) -- warm-up work on names that stop\n  existing, plus the indirect cost of their ReturnType bumps waking callers.\n- 98% of preservation traffic is key migration (fz-kdt.69's measurement):\n  value-named identities churn by construction under a monotone ascent.\n- The widening budget, convergence_class, fz-y6w's collapse, fz-kdt.65's\n  ladder are all compensation for minting identities from ascending values.\n\n## The shape\n- Stable analysis cell per (root, function) -- or per (root, function,\n  dispatch-class): the body determines a FINITE set of clause-dispatch\n  outcomes and DispatchMask already projects to dispatch-relevant positions.\n  Evidence ascends WITHIN a class as cell content; classes don't churn.\n- Identity at settlement: settled evidence crystallizes into value-keyed\n  ExecutableKeys (the backend already derives these from settled activations).\n- Prior art in-tree: the SpecKey/BodyKey split (fz-xqw) already separates\n  demanded-identity from body-identity.\n\n## THE central design question (decides feasibility)\nWithin-class evidence joins during the ascent. Today's per-arrow keys give\nper-type return evidence; a class-rooted cell could widen conclusions\n(int|float joining where they ascend separately today). Either per-evidence\nrows live as the cell's settled CONTENT without being demanded identities, or\nthe artifact loses precision. The inventory-width pins (59/221/214) and the\ncanonical backend form are the instruments: any artifact movement is the\nanswer.\n\n## Process\nFull treatment: investigate (measure per-function arrow-family sizes and\nwithin-class join effects), propose to a cold agent, integrate, decompose.\nSequenced AFTER fz-kdt.69 (whose edge/index groundwork any model needs, and\nwhose Story 1 producer-map fix is required under every model).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Coalesce analysis identity at name/arity: dispatch-class roots, value identity at settlement",
   "type": "task",
-  "updated_at": "2026-08-30T17:00:14Z"
+  "updated_at": "2026-08-30T17:00:21Z"
 }
