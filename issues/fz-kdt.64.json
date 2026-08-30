@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-29T13:36:23Z",
-  "description": "world.rs:~634: preserve_frontier = rebased || matches!(job,\nJob::AnalyzeActivation(_)) -- so ContributionMap's narrowing path is\nUNREACHABLE for activation inputs (they join unconditionally), while\nReturnType DOES narrow on rebase (semantic.rs:~930). fact-engine.md's 'a\nrebased job's next conclusion replaces its cumulative store values (the only\nnarrowing path)' does not hold for this fact kind. Over-wide input evidence\nsurvives a ground shift: sound but permanently imprecise.\n\nDECISION REQUIRED, gated on fz-kdt.82: a withdrawn contribution currently\npropagates as an ascent (shift=false) when other publishers remain -- a\nnarrowing wearing an ascent's clothes -- so ENABLING withdrawal here without\nresolving 82 opens a soundness hole. Options: (a) real narrowing path on\nrebase for activation inputs (delete the matches! special case; fix 82\nfirst; measure specialization width -- lowering pins is safe, raises need\nscrutiny); (b) document the exception and why, permanently.\n\n(An earlier plan dissolved this via demand-derived-from-edges; that route\nwas refuted -- see fz-kdt.69. fz-kdt.74's cell model dissolves it\ndifferently: rows as content on stable facts, narrowing = tag withdrawal\nwith explicit semantics.)",
+  "description": "Parent: fz-kdt\n\nworld.rs:~634: preserve_frontier = rebased || matches!(job,\nJob::AnalyzeActivation(_)) -- so ContributionMap's narrowing path is\nUNREACHABLE for activation inputs (they join unconditionally), while\nReturnType DOES narrow on rebase (semantic.rs:~930). fact-engine.md's 'a\nrebased job's next conclusion replaces its cumulative store values (the only\nnarrowing path)' does not hold for this fact kind. Over-wide input evidence\nsurvives a ground shift: sound but permanently imprecise.\n\nDECISION REQUIRED, gated on fz-kdt.82: a withdrawn contribution currently\npropagates as an ascent (shift=false) when other publishers remain -- a\nnarrowing wearing an ascent's clothes -- so ENABLING withdrawal here without\nresolving 82 opens a soundness hole. Options: (a) real narrowing path on\nrebase for activation inputs (delete the matches! special case; fix 82\nfirst; measure specialization width -- lowering pins is safe, raises need\nscrutiny); (b) document the exception and why, permanently.\n\n(Two earlier plans dissolved this structurally -- demand-from-edges and\nthe cell model -- and both were refuted; see fz-kdt.69 and fz-kdt.74. The\nasymmetry must be decided on its own terms.)\n",
   "id": "fz-kdt.64",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "ActivationInputs cannot narrow on rebase while ReturnType can: decide the asymmetry",
   "type": "bug",
-  "updated_at": "2026-08-30T23:33:14Z"
+  "updated_at": "2026-08-30T23:46:03Z"
 }
