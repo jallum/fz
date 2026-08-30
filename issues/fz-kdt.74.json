@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.69"
+    "fz-kdt.69",
+    "fz-kdt.83"
   ],
   "blocks": [],
   "created": "2026-08-30T17:00:14Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Cell model refuted as proposed: work multiplier 2.4-2.6x; re-entry conditions recorded",
   "type": "task",
-  "updated_at": "2026-08-30T23:38:18Z"
+  "updated_at": "2026-08-30T23:38:35Z"
 }

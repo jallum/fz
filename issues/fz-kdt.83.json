@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.74"
+  ],
   "created": "2026-08-30T23:38:34Z",
   "description": "The unexamined majority. ~79% of AnalyzeActivation evaluations are re-runs\nof SURVIVING keys (only ~21% land on abandoned ones), and the campaign has\nnever classified them. Prior evidence much of it is churn, not ascent: 870\nzero-content-change completions on 00420 (recipe: causal stream, fz-kdt.13's\nrecord); 25 of main/0's 83 runs changing nothing; single hot keys needing\n\u003e=25 rounds (fn228 take_drop, fn203 predicate); main/0 on predicate: 77\nevals for its one key.\n\n## The instrument\nPer-key round sequences on the three target fixtures (probe-scale: ~30 lines\nof eprintln + stream post-processing -- the fz-kdt.74 cold review produced\ncomparable tables in an afternoon). Classify every NON-INITIAL evaluation:\n(i) GENUINE LATTICE ASCENT -- an output fact's content moved to a strictly\n    higher value;\n(ii) ZERO-CHANGE RE-RUN -- evaluation concluded with empty changed set;\n(iii) REBASE/OSCILLATION churn -- rebased re-runs, and content that moved\n    non-monotonically (A-\u003eB-\u003eA; canon-compare consecutive values where\n    cheap).\nAttribute each class-(ii)/(iii) eval to its wake cause (the causal replay\nalready carries this).\n\n## PRE-REGISTERED DECISION RULE (bind ourselves before seeing the numbers)\n- If (ii)+(iii) \u003e= 50% of non-initial evaluations: the bottleneck is\n  SCHEDULING/CLASSIFICATION (wakes firing on movements that cannot change\n  the reader's conclusion) -- the next campaign targets wake precision /\n  change classification, and fz-kdt.74's premise (identity churn dominates)\n  is answered NEGATIVE.\n- If (i) dominates: ascent height is real; the next lever is the WIDENING\n  LADDER (fewer, larger monotone steps -- fz-kdt.65's territory), still not\n  identity.\nEither way the cell model stays refuted (fz-kdt.74's re-entry condition 4\nconsumes this ticket's answer).\n\n## Acceptance\nA per-fixture classification table with recipes, written INTO this ticket\n(rewrite, never layer) plus the decision-rule verdict; no production code\nchanges; probes reverted; tree clean.",
   "id": "fz-kdt.83",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Ascent census: classify the 79% -- genuine ascent vs zero-change churn vs rebase oscillation",
   "type": "task",
-  "updated_at": "2026-08-30T23:38:34Z"
+  "updated_at": "2026-08-30T23:38:35Z"
 }
