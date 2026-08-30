@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T17:00:13Z",
-  "description": "Parent: fz-kdt\n\nFound by fz-kdt.69's cold review. merge_call_emission (jobs/semantic.rs:1065)\nextends .activations with no dedup; emitted_activations (:255) guards only the\nActivation FactKey push while activation_input_contributions.push (:259) runs\nper duplicate -- normalize_contributions (world.rs:672) then re-addresses and\npush_rows an IDENTICAL row up to 35x in one conclusion (measured: 35x\ntake_drop, 26x predicate, 4x range_map). Wasted work and needless\nACTIVATION_INPUT_ROW_BUDGET pressure. Fix: dedup at merge or at the\ncontribution push. NOTE: fz-kdt.69 Story 3 deletes this channel entirely --\nfold there if 69 lands first; fix standalone only if it doesn't.\n\n## Post-fz-kdt.69.2 numbers + de-folded from 69.3 (2026-08-30)\n\nMeasured at 84ae179b4: max identical (key,inputs) rows in one conclusion\n26/3/12 (was 35/4/26 pre-69.2); conclusions emitting \u003e=2 duplicates\n200/13/141. The channel is NOT deleted (69.3 refuted), so this is a\nstandalone fix again: dedup at merge_call_emission or at the contribution\npush. Cheap and safe.",
+  "description": "merge_call_emission (jobs/semantic.rs:1065-ish) extends .activations with no\ndedup; emitted_activations guards only the Activation FactKey push while\nactivation_input_contributions.push runs per duplicate -- so\nnormalize_contributions re-addresses and push_rows an IDENTICAL row many\ntimes in one conclusion. Measured at 84ae179b4 (fz2 interp debug): max\nidentical (key,inputs) rows per conclusion 26/3/12\n(take_drop/range_map/predicate); conclusions emitting \u003e=2 duplicates\n200/13/141. Wasted work + needless ACTIVATION_INPUT_ROW_BUDGET pressure.\n\nStandalone fix: dedup at merge_call_emission or at the contribution push.\nCheap and safe. (An earlier plan folded this into a channel deletion that\nwas refuted -- see fz-kdt.69; the channel lives, so this is standalone\nagain. fz-kdt.74's class formation would also subsume it.)",
   "id": "fz-kdt.72",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "One callsite emits the same callee contribution up to 35x per conclusion",
   "type": "bug",
-  "updated_at": "2026-08-30T20:03:11Z"
+  "updated_at": "2026-08-30T23:33:14Z"
 }
