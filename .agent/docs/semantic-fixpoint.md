@@ -105,12 +105,39 @@ and the callsite ends up holding two disagreeing facts — a precisely-resolved
 `CallSiteSummary` and an `any` value type. The fz-f98.14.11 artifact guard is
 the detector that makes that disagreement fatal instead of silent.
 
-A dead callsite publishes no summary at all, and materialization reads that
-absence with the same Kleene rule `CallTargetSummary::settled_return` uses:
-behind the settled gate `materialize_closure_call_edge` lowers a summary-less
-closure call as `CallReturnFlow::NoReturn` over the empty type, because every
-`ClosureCall` tail needs a return flow and a call that never happens never
-returns. Published outputs:
+Every callsite the walk REACHES publishes its edge, resolved or not
+(`CallSiteResolution`, semantic.rs). Three answers, three representations:
+
+- **no fact** — the call never happens. The walk never reached the callsite,
+  or it proved the call dead (an uninhabited callee, a proven-empty argument).
+- **`Unresolved`** — the walk reached a live call and can name no target yet.
+  This is NOT a provider boundary and NOT an empty target list; it is the
+  lattice bottom, so `CallSiteMap`/`CallSiteTargetsMap` never let it overwrite
+  a resolved answer and re-emitting it moves no revision. On the measured
+  corpus a still-`Unresolved` edge at the end of a drive occurs only on
+  programs that fail to compile — an observation, not an invariant: the
+  earned-`any` opaque-callable tail (`resolve_closure_call`) can publish a
+  permanently-`Unresolved` edge on a compiling program and measures zero
+  today.
+- **`Resolved`** — the targets. A provider-boundary target is a resolved edge
+  whose `CallTargetEdge::activation` is `None`, because a boundary names no
+  compiler2 activation.
+
+Because the walk publishes unconditionally, the analysis's SILENCE about a
+callsite is knowledge — the walk no longer reaches it — and its edge
+withdraws. `World::preserved_analysis_claims` therefore carries no callsite
+kind; only `Activation` still rides preservation (fz-kdt.69.2).
+
+`World::callsite_summary`/`callsite_targets` answer the one question lowering
+and demand ask — did this callsite NAME targets? — so they read `None` for an
+absent edge and for an unresolved one alike; `World::callsite_resolution`/
+`callsite_target_resolution` hand back the published answer itself.
+Materialization reads the named-no-targets case with the same Kleene rule
+`CallTargetSummary::settled_return` uses: behind the settled gate
+`materialize_closure_call_edge` lowers such a closure call as
+`CallReturnFlow::NoReturn` over the empty type, because every `ClosureCall`
+tail needs a return flow and a call that never happens never returns.
+Published outputs:
 
 ```text
 ActivationAnalyzed(a)
@@ -136,10 +163,10 @@ the only thing that ignites a callee's first analysis pass.
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
-changes can withdraw stale contributions. The callsite CLAIMS ride a
+changes can withdraw stale contributions. The `Activation` CLAIM rides a
 stricter rule than the inputs do: a non-rebased conclusion keeps every
-`Activation`, `CallSiteSummary` and `CallSiteTargets` it did not re-emit, and
-only a rebased one — whose ground actually shifted — withdraws. The
+`Activation` it did not re-emit, and only a rebased one — whose ground actually
+shifted — withdraws. The
 `ActivationInputs` contributions themselves never withdraw, rebase or not
 (`preserve_frontier` is unconditional for `AnalyzeActivation`, so after a
 rebased withdrawal of a claim the input evidence that fed it stays published
@@ -292,7 +319,9 @@ the basis for the remaining type-system tickets.
   caller's to publish and to withdraw.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
   `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
-  publishes; it withdraws the callsite ones only on a rebased conclusion. It
+  publishes; it publishes an edge for every callsite it reaches, so an omitted
+  edge is withdrawn by any conclusion, while an omitted `Activation` is
+  withdrawn only by a rebased one. It
   schedules no follow-up job of its own: publishing `Activation(callee_key)` is
   what feeds `World`'s activation frontier. When its OWN `Activation(a)` is
   absent -- nothing claims `a` -- it concludes on the recorded read and

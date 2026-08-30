@@ -1482,15 +1482,20 @@ fn publish(fact: FactKey) -> JobEffects {
     }
 }
 
-/// fz-kdt.63: an analysis that could not resolve a callsite this run has
-/// MISSING EVIDENCE, not proof the call is gone. Its `Activation`,
-/// `CallSiteSummary` and `CallSiteTargets` claims therefore survive a
-/// conclusion that omits them — the same "absence is bottom, not retraction"
-/// rule `ActivationInputs` already rides. Withdrawal stays available on a
-/// REBASED conclusion, where the ground genuinely narrowed and the analysis
-/// re-derived every claim from it.
+/// fz-kdt.63 / fz-kdt.69.2: what an `AnalyzeActivation` conclusion's SILENCE
+/// means now depends on the fact, because the two facts know different things.
+///
+/// A callee's `Activation` is claimed only from evidence that arrived, so
+/// silence about it is MISSING EVIDENCE, not proof the call is gone: it
+/// survives a conclusion that omits it, and only a REBASED conclusion —
+/// re-derived from ground that genuinely narrowed — may withdraw it.
+///
+/// A callsite's `CallSiteSummary`/`CallSiteTargets` is published for every
+/// callsite the walk REACHES, unresolved and all, so silence about one IS
+/// knowledge: the walk no longer reaches it, and any conclusion withdraws it.
+/// Nothing about those two kinds is preservable any more.
 #[test]
-fn analysis_withdraws_its_callsite_claims_only_when_its_ground_shifted() {
+fn an_omitted_callsite_edge_is_withdrawn_while_an_omitted_activation_stands() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
@@ -1504,8 +1509,8 @@ fn analysis_withdraws_its_callsite_claims_only_when_its_ground_shifted() {
     };
     let analyze = Job::AnalyzeActivation(caller_key);
     let ground = FactKey::LoweredBody(caller);
-    let claims = [
-        FactKey::Activation(callee_key),
+    let activation_claim = FactKey::Activation(callee_key);
+    let edge_claims = [
         FactKey::CallSiteSummary(callsite.clone()),
         FactKey::CallSiteTargets(callsite),
     ];
@@ -1520,8 +1525,7 @@ fn analysis_withdraws_its_callsite_claims_only_when_its_ground_shifted() {
             },
         );
     };
-    let analyze_publishing = |world: &mut World, outputs: Vec<FactKey>| {
-        let changed = outputs.clone();
+    let analyze_publishing = |world: &mut World, outputs: Vec<FactKey>, changed: Vec<FactKey>| {
         world.complete_job(
             analyze.clone(),
             JobEffects {
@@ -1534,24 +1538,26 @@ fn analysis_withdraws_its_callsite_claims_only_when_its_ground_shifted() {
     };
 
     lower(&mut world);
-    analyze_publishing(&mut world, claims.to_vec());
-    let published = claims.iter().map(|fact| world.fact_revision(fact)).collect::<Vec<_>>();
+    let mut first = vec![activation_claim.clone()];
+    first.extend(edge_claims.iter().cloned());
+    analyze_publishing(&mut world, first.clone(), first);
+    let published = world.fact_revision(&activation_claim);
     assert!(
-        published.iter().all(Option::is_some),
-        "the analysis's first conclusion should publish every claim; got {published:?}",
+        published.is_some() && edge_claims.iter().all(|fact| world.has_fact(fact)),
+        "the first conclusion should publish every claim",
     );
 
-    // A rerun that resolved nothing. Nothing about the ground moved, so the
-    // omission carries no news.
-    let paused = analyze_publishing(&mut world, Vec::new());
+    // A rerun that still reaches the callee but no longer reaches the
+    // callsite. Nothing about the ground moved.
+    let paused = analyze_publishing(&mut world, vec![activation_claim.clone()], Vec::new());
     assert_eq!(
-        claims.iter().map(|fact| world.fact_revision(fact)).collect::<Vec<_>>(),
+        world.fact_revision(&activation_claim),
         published,
-        "a non-rebased conclusion that omits its callsite claims must leave every one of them \
-         standing at its own revision",
+        "a non-rebased conclusion that omits its Activation claim must leave it standing at its \
+         own revision",
     );
     assert!(
-        !paused.step.changed.iter().any(|change| claims.contains(&change.key)),
+        !paused.step.changed.iter().any(|change| change.key == activation_claim),
         "preserving a claim must move nothing: {:?}",
         paused.step.changed,
     );
@@ -1560,6 +1566,13 @@ fn analysis_withdraws_its_callsite_claims_only_when_its_ground_shifted() {
         "a preserved claim must rebase nobody: {:?}",
         paused.step.wakes,
     );
+    for fact in &edge_claims {
+        assert!(
+            !world.has_fact(fact),
+            "every reached callsite publishes an edge, so omitting {fact:?} is knowledge and \
+             withdraws it",
+        );
+    }
 
     // Now the ground actually shifts: the body is re-lowered, which is a
     // replacing fact's content change and so a ground shift for its readers.
@@ -1569,23 +1582,93 @@ fn analysis_withdraws_its_callsite_claims_only_when_its_ground_shifted() {
         "re-lowering the analyzed body must rebase the analysis",
     );
 
-    let withdrawn = analyze_publishing(&mut world, Vec::new());
-    for fact in &claims {
-        assert!(
-            !world.has_fact(fact),
-            "a rebased conclusion re-derives from the shifted ground, so omitting {fact:?} \
-             withdraws it",
-        );
-    }
+    let withdrawn = analyze_publishing(&mut world, Vec::new(), Vec::new());
+    assert!(
+        !world.has_fact(&activation_claim),
+        "a rebased conclusion re-derives from the shifted ground, so omitting the Activation \
+         claim withdraws it",
+    );
     assert_eq!(
         withdrawn
             .step
             .changed
             .iter()
-            .filter(|change| claims.contains(&change.key) && change.new_revision.is_none())
+            .filter(|change| change.key == activation_claim && change.new_revision.is_none())
             .count(),
-        claims.len(),
-        "every withdrawn claim must be reported as a retraction: {:?}",
+        1,
+        "the withdrawn claim must be reported as a retraction: {:?}",
         withdrawn.step.changed,
+    );
+}
+
+/// fz-kdt.69.2: the third state moves the way a fact must. Re-emitting
+/// `Unresolved` is quiet — no revision, no wake, so the extra publication a
+/// total-emission walk makes costs the schedule nothing — while
+/// unresolved -> resolved is a real content change that reaches every reader
+/// subscribed to the edge.
+#[test]
+fn resolving_a_published_unresolved_edge_wakes_its_readers() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 0);
+    let callee = world.reference_function(ModuleId::GLOBAL, "callee", 0);
+    let caller_key = super::identity::ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+    let reader_key = super::identity::ActivationKey::from_inputs(root, callee, &[], world.types_mut());
+    let callsite = super::semantic::CallSiteKey {
+        activation: caller_key.clone(),
+        callsite: super::body::CallSiteId::from_u32(0),
+    };
+    let edge = FactKey::CallSiteSummary(callsite.clone());
+    let analyze = Job::AnalyzeActivation(caller_key);
+    let reader = Job::AnalyzeActivation(reader_key);
+
+    let publish = |world: &mut World, resolution: super::semantic::CallSiteResolution<super::CallSiteSummary>| {
+        let changed = world.define_callsite_summary(callsite.clone(), resolution);
+        let completion = world.complete_job(
+            analyze.clone(),
+            JobEffects {
+                outputs: vec![edge.clone()],
+                changed: changed.then(|| edge.clone()).into_iter().collect(),
+                ..JobEffects::default()
+            },
+        );
+        (changed, completion)
+    };
+
+    let (first, _) = publish(&mut world, super::semantic::CallSiteResolution::Unresolved);
+    assert!(first, "a reached callsite's first edge is a content change");
+    world.complete_job(
+        reader.clone(),
+        JobEffects {
+            reads: vec![FactUse::current(edge.clone())],
+            ..JobEffects::default()
+        },
+    );
+
+    let (repeat, quiet) = publish(&mut world, super::semantic::CallSiteResolution::Unresolved);
+    assert!(!repeat, "re-emitting the same unresolved edge must move no revision");
+    assert!(
+        !quiet.step.wakes.iter().any(|wake| wake.job == reader),
+        "and must wake nobody: {:?}",
+        quiet.step.wakes,
+    );
+
+    let resolved = super::semantic::CallSiteResolution::Resolved(super::CallSiteSummary {
+        targets: vec![super::CallTargetSummary {
+            callee: super::SelectedCallee::ProviderBoundary(callee),
+            surface_inputs: Vec::new(),
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        }],
+        return_ty: None,
+    });
+    let (grew, wake) = publish(&mut world, resolved);
+    assert!(grew, "unresolved -> resolved is a content change");
+    assert!(
+        wake.step.wakes.iter().any(|wake| wake.job == reader),
+        "and it must reach the readers subscribed to the edge: {:?}",
+        wake.step.wakes,
     );
 }

@@ -58,7 +58,7 @@ use super::scheduler::{DerivationEffects, FatalError, WorkStartReason, WorkStart
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, ContributionReplace,
+    CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, ContributionReplace,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -727,17 +727,35 @@ impl World {
         next
     }
 
+    /// The targets this callsite NAMED. A callsite the walk never reached and
+    /// one it reached without resolving both answer this question the same
+    /// way -- no targets -- which is why lowering and demand read one
+    /// accessor. Ask [`World::callsite_resolution`] when the difference is the
+    /// question.
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
+        #[cfg(test)]
+        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
+        self.callsites.resolved(key)
+    }
+
+    /// The callsite's published answer itself, unresolved state included.
+    pub fn callsite_resolution(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteSummary>> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.callsites.get(key)
     }
 
-    pub fn define_callsite_targets(&mut self, key: CallSiteKey, targets: CallSiteTargets) -> bool {
+    pub fn define_callsite_targets(&mut self, key: CallSiteKey, targets: CallSiteResolution<CallSiteTargets>) -> bool {
         self.callsite_targets.define(key, targets)
     }
 
+    /// See [`World::callsite_summary`].
     pub fn callsite_targets(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+        self.callsite_targets.resolved(key)
+    }
+
+    /// See [`World::callsite_resolution`].
+    pub fn callsite_target_resolution(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteTargets>> {
         self.callsite_targets.get(key)
     }
 
@@ -2191,11 +2209,10 @@ fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalErr
 /// The claims a NON-rebased `AnalyzeActivation` conclusion keeps standing
 /// even though it did not re-emit them (fz-kdt.63).
 ///
-/// `analyze_activation` publishes a callsite's `CallSiteSummary` and
-/// `CallSiteTargets`, and its callees' `Activation`, only from evidence that
+/// `analyze_activation` claims a callee's `Activation` only from evidence that
 /// has arrived: a callsite whose target evidence is still climbing resolves to
-/// nothing and emits nothing. That absence is bottom, not a proof the call is
-/// gone — the same reading `conclude_activation_input_contributions` already
+/// nothing and names no callee. That absence is bottom, not a proof the call
+/// is gone — the same reading `conclude_activation_input_contributions` already
 /// gives `ActivationInputs`. Re-listing the standing claims keeps them
 /// published at their own revisions, so nothing moves and nobody rebases.
 ///
@@ -2205,18 +2222,19 @@ fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalErr
 /// caller reaching it, and each caller's claim is withdrawn only by that
 /// caller's own rebase — preserving one publisher's standing claim never
 /// re-publishes another's.
+///
+/// `CallSiteSummary`/`CallSiteTargets` are NOT here: every callsite the walk
+/// reaches publishes its edge, unresolved and all
+/// ([`CallSiteResolution`](super::semantic::CallSiteResolution)), so silence
+/// about one is knowledge — the walk no longer reaches it — and nothing about
+/// them is preservable (fz-kdt.69.2).
 fn preserved_analysis_claims(job: &Job, previous_output_keys: &OrderedSet<FactKey>) -> Vec<FactKey> {
     if !matches!(job, Job::AnalyzeActivation(_)) {
         return Vec::new();
     }
     previous_output_keys
         .iter()
-        .filter(|fact| {
-            matches!(
-                fact,
-                FactKey::Activation(_) | FactKey::CallSiteSummary(_) | FactKey::CallSiteTargets(_)
-            )
-        })
+        .filter(|fact| matches!(fact, FactKey::Activation(_)))
         .cloned()
         .collect()
 }
@@ -2529,11 +2547,17 @@ impl World {
         self.activations.define_return(&mut self.types, key, evidence, rebased)
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
-        for target in &mut summary.targets {
-            target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
+    pub fn define_callsite_summary(
+        &mut self,
+        key: CallSiteKey,
+        mut resolution: CallSiteResolution<CallSiteSummary>,
+    ) -> bool {
+        if let CallSiteResolution::Resolved(summary) = &mut resolution {
+            for target in &mut summary.targets {
+                target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
+            }
         }
-        self.callsites.define(&mut self.types, key, summary)
+        self.callsites.define(&mut self.types, key, resolution)
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
@@ -2978,8 +3002,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         outcome.changed
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
-        let changed = self.world.define_callsite_summary(key.clone(), summary);
+    pub fn define_callsite_summary(
+        &mut self,
+        key: CallSiteKey,
+        resolution: CallSiteResolution<CallSiteSummary>,
+    ) -> bool {
+        let changed = self.world.define_callsite_summary(key.clone(), resolution);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "callsite", "defined"], &key);
         }

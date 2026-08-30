@@ -25,7 +25,8 @@ use super::super::identity::{
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallSiteTargets, CallTargetSummary, SelectedCallee,
+    ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
+    SelectedCallee,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
@@ -33,14 +34,20 @@ use super::super::world::World;
 type SemanticValues = HashMap<ValueId, Ty>;
 type ValueTypes = HashMap<ValueId, Ty>;
 type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
-/// One resolved call: its summary (when a single emission applies), the
-/// activation demand it contributes, and its return evidence.
-type ResolvedCall = (Option<CallSiteSummary>, Vec<ActivationContribution>, Option<Ty>);
+/// One reached call: what it resolved to, the activation demand it
+/// contributes, and its return evidence.
+type ResolvedCall = (
+    CallSiteResolution<CallSiteSummary>,
+    Vec<ActivationContribution>,
+    Option<Ty>,
+);
 
+/// A call the walk REACHED. It exists for every live call on a reached path;
+/// a call proven dead never happens and so has no emission at all.
 #[derive(Debug, Clone)]
 struct CallEmission {
     key: CallSiteKey,
-    summary: Option<CallSiteSummary>,
+    resolution: CallSiteResolution<CallSiteSummary>,
     activations: Vec<ActivationContribution>,
     latent_executables: Vec<super::super::identity::ExecutableKey>,
 }
@@ -233,21 +240,22 @@ pub(super) fn analyze_activation(
     let mut emitted_executables = HashSet::new();
     let mut activation_input_contributions = Vec::new();
     for call in &analysis_calls {
-        if let Some(summary) = &call.summary {
-            let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
-            let callsite_changed = super::super::drive::ExecutionContext::new(world, tel)
-                .define_callsite_summary(call.key.clone(), summary.clone());
-            outputs.push(callsite_fact.clone());
-            if callsite_changed {
-                changed.push(callsite_fact);
-            }
-            let targets_fact = FactKey::CallSiteTargets(call.key.clone());
-            let targets_changed =
-                world.define_callsite_targets(call.key.clone(), CallSiteTargets::from_summary(summary));
-            outputs.push(targets_fact.clone());
-            if targets_changed {
-                changed.push(targets_fact);
-            }
+        // EVERY reached callsite publishes its edge, resolved or not: the
+        // unresolved answer is a value, so the analysis's silence about a
+        // callsite means the walk no longer reaches it and nothing here needs
+        // preserving (fz-kdt.69.2).
+        let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
+        let callsite_changed = super::super::drive::ExecutionContext::new(world, tel)
+            .define_callsite_summary(call.key.clone(), call.resolution.clone());
+        outputs.push(callsite_fact.clone());
+        if callsite_changed {
+            changed.push(callsite_fact);
+        }
+        let targets_fact = FactKey::CallSiteTargets(call.key.clone());
+        let targets_changed = world.define_callsite_targets(call.key.clone(), CallSiteTargets::of(&call.resolution));
+        outputs.push(targets_fact.clone());
+        if targets_changed {
+            changed.push(targets_fact);
         }
         for callee_activation in &call.activations {
             if emitted_activations.insert(callee_activation.key.clone()) {
@@ -287,9 +295,13 @@ pub(super) fn analyze_activation(
                 entries.sort_by_key(|entry| entry.as_u32());
                 entries
             },
+            // The callsites this analysis RESOLVED. An unresolved edge names
+            // no targets, so the products keyed off this list -- materialized
+            // call edges, runtime demand, the canonical call-edge snapshot --
+            // see exactly what they always saw.
             callsites: analysis_calls
                 .iter()
-                .filter_map(|call| call.summary.as_ref().map(|_| call.key.callsite))
+                .filter_map(|call| call.resolution.resolved().map(|_| call.key.callsite))
                 .collect(),
             latent_executables: analysis_calls
                 .iter()
@@ -676,6 +688,7 @@ fn analyze_tail(
                 .map(|arg| value_ty(values, arg.value))
                 .collect::<Option<Vec<_>>>()
             else {
+                calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
             let (emission, return_ty) =
@@ -717,6 +730,7 @@ fn analyze_tail(
                     .map(|arg| value_ty(values, arg.value))
                     .collect::<Option<Vec<_>>>(),
             ) else {
+                calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
             let (emission, return_ty) =
@@ -965,6 +979,21 @@ fn entry_scope(
     scope
 }
 
+/// The walk reached this callsite and could not even build its call: an
+/// operand on the path has no evidence yet. The edge still publishes — that
+/// is the law that lets an omitted edge mean "no longer reached".
+fn reached_but_unresolved(activation: &ActivationKey, callsite: CallSiteId) -> CallEmission {
+    CallEmission {
+        key: CallSiteKey {
+            activation: activation.clone(),
+            callsite,
+        },
+        resolution: CallSiteResolution::Unresolved,
+        activations: Vec::new(),
+        latent_executables: Vec::new(),
+    }
+}
+
 fn resolve_direct_call(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -977,20 +1006,22 @@ fn resolve_direct_call(
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
     // A proven-empty argument type is a real fact: no value can reach this
     // call, the path is dead. (Absence cannot arrive here — an unresolved
-    // upstream call already short-circuited the path.)
+    // upstream call already short-circuited the path.) A call that never
+    // happens is no edge, so it publishes nothing: that is the one thing the
+    // fact's absence still says (fz-kdt.69.2).
     if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
         return Ok((None, Some(none_ty(world))));
     }
 
-    let (summary, activations, return_ty) =
+    let (resolution, activations, return_ty) =
         resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), reads, waits)?;
     Ok((
-        summary.map(|summary| CallEmission {
+        Some(CallEmission {
             key: CallSiteKey {
                 activation: caller.clone(),
                 callsite,
             },
-            summary: Some(summary),
+            resolution,
             latent_executables: Vec::new(),
             activations,
         }),
@@ -1064,18 +1095,23 @@ fn coalesce_call_emissions(
     Ok(coalesced)
 }
 
+/// One callsite reached down several rows or arms is ONE edge. The
+/// resolutions join on the same lattice the store uses: `Unresolved` is
+/// bottom, so an arm that resolved nothing never erases an arm that did.
 fn merge_call_emission(
     world: &mut World,
     current: &mut CallEmission,
     observed: CallEmission,
 ) -> Result<(), FatalError> {
-    match (&mut current.summary, observed.summary) {
-        (Some(current_summary), Some(observed_summary)) => {
+    match (&mut current.resolution, observed.resolution) {
+        (CallSiteResolution::Resolved(current_summary), CallSiteResolution::Resolved(observed_summary)) => {
             merge_call_targets(world, &mut current_summary.targets, observed_summary.targets)?;
             current_summary.return_ty = join_evidence(world, current_summary.return_ty, observed_summary.return_ty);
         }
-        (None, None) => {}
-        (Some(_), None) | (None, Some(_)) => return Err(FatalError),
+        (CallSiteResolution::Unresolved, observed @ CallSiteResolution::Resolved(_)) => {
+            current.resolution = observed;
+        }
+        (_, CallSiteResolution::Unresolved) => {}
     }
     current.activations.extend(observed.activations);
     current.latent_executables.extend(observed.latent_executables);
@@ -1090,7 +1126,7 @@ fn rebuild_coalesced_call_emission(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<CallEmission, FatalError> {
-    let Some(summary) = &call.summary else {
+    let CallSiteResolution::Resolved(summary) = &call.resolution else {
         return Ok(call);
     };
     let mut rebuilt_targets = Vec::new();
@@ -1136,7 +1172,7 @@ fn rebuild_coalesced_call_emission(
                 else {
                     return Ok(call);
                 };
-                let Some(rebuilt_summary) = rebuilt.summary else {
+                let CallSiteResolution::Resolved(rebuilt_summary) = rebuilt.resolution else {
                     return Ok(call);
                 };
                 for mut rebuilt_target in rebuilt_summary.targets {
@@ -1160,7 +1196,7 @@ fn rebuild_coalesced_call_emission(
     rebuilt_latent.extend(call.latent_executables);
     Ok(CallEmission {
         key: call.key,
-        summary: Some(CallSiteSummary {
+        resolution: CallSiteResolution::Resolved(CallSiteSummary {
             targets: rebuilt_targets,
             return_ty: rebuilt_return,
         }),
@@ -1189,7 +1225,7 @@ fn call_emission_for_function(
         let return_ty = Some(contract_return_ty.unwrap_or_else(|| any_ty(world)));
         return Ok(Some(CallEmission {
             key,
-            summary: Some(CallSiteSummary {
+            resolution: CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![CallTargetSummary {
                     callee: SelectedCallee::ProviderBoundary(function),
                     surface_inputs: input_types,
@@ -1214,7 +1250,7 @@ fn call_emission_for_function(
     }];
     Ok(Some(CallEmission {
         key,
-        summary: Some(CallSiteSummary {
+        resolution: CallSiteResolution::Resolved(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
                 surface_inputs: input_types.clone(),
@@ -1253,19 +1289,19 @@ fn resolve_function_call(
         );
     }
     if wait_for_unresolved_function_module(world, function, waits) {
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
     let Some((input_types, contract_return_ty)) =
         refine_function_call_surface(world, tel, function, input_types, call_span, reads, waits)?
     else {
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
     if world.function_is_provider_boundary(function) {
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
         let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
         return Ok((
-            Some(CallSiteSummary {
+            CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![call_target_summary(
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
@@ -1282,11 +1318,11 @@ fn resolve_function_call(
     let Some((activation, return_evidence)) =
         prepare_function_call(world, caller, function, &input_types, reads, waits)
     else {
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     Ok((
-        Some(CallSiteSummary {
+        CallSiteResolution::Resolved(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
                 surface_inputs: input_types.clone(),
@@ -1323,7 +1359,7 @@ fn resolve_protocol_call(
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
         wait_for_protocol_module(world, tel, protocol, waits);
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
     reads.push(protocol_fact);
     let dispatch_fact = FactKey::ProtocolDispatch(protocol);
@@ -1339,7 +1375,7 @@ fn resolve_protocol_call(
         // (unreachable in practice) rather than provably dead by construction,
         // so it stays a bare wait instead of an assert/panic.
         waits.insert(dispatch_fact);
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
     reads.push(dispatch_fact);
 
@@ -1384,7 +1420,7 @@ fn resolve_protocol_call(
                 waits.insert(FactKey::ModuleDefined(provider));
             }
         }
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
 
     let matches = merge_protocol_matches_by_function(world, matches);
@@ -1399,19 +1435,19 @@ fn resolve_protocol_call(
         // call does not require. Gate per FUNCTION, exactly as the
         // direct-call path does.
         if wait_for_unresolved_function_module(world, selected.function, waits) {
-            return Ok((None, Vec::new(), None));
+            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
         }
 
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let Some((refined_inputs, contract_return_ty)) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span, reads, waits)?
         else {
-            return Ok((None, Vec::new(), None));
+            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
         };
         let Some((activation, observed_return)) =
             prepare_function_call(world, caller, selected.function, &refined_inputs, reads, waits)
         else {
-            return Ok((None, Vec::new(), None));
+            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
         };
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
         return_ty = join_evidence(world, return_ty, target_return);
@@ -1427,7 +1463,11 @@ fn resolve_protocol_call(
             inputs: refined_inputs.clone(),
         });
     }
-    Ok((Some(CallSiteSummary { targets, return_ty }), activations, return_ty))
+    Ok((
+        CallSiteResolution::Resolved(CallSiteSummary { targets, return_ty }),
+        activations,
+        return_ty,
+    ))
 }
 
 fn protocol_receiver_target_overlaps(world: &mut World, receiver_ty: Ty, target_ty: Ty) -> bool {
@@ -1501,17 +1541,34 @@ fn resolve_closure_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
+    let key = CallSiteKey {
+        activation: caller.clone(),
+        callsite,
+    };
     if callee_has_no_inhabitants(world.types(), callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
         // Uninhabitable callee or proven-empty argument: the call site is dead.
         // This is evidence (the empty type), not absence — absence
-        // short-circuits upstream before any argument reaches a call.
+        // short-circuits upstream before any argument reaches a call. A call
+        // that never happens is no edge, so it publishes nothing: that is the
+        // one thing the fact's absence still says (fz-kdt.69.2).
         return Ok((None, Some(none_ty(world))));
     }
+    let unresolved = |return_ty| {
+        Ok((
+            Some(CallEmission {
+                key: key.clone(),
+                resolution: CallSiteResolution::Unresolved,
+                latent_executables: Vec::new(),
+                activations: Vec::new(),
+            }),
+            return_ty,
+        ))
+    };
     let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
         if !callee_is_a_dynamic_edge(world, callee_ty) {
-            return Ok((None, None));
+            return unresolved(None);
         }
-        return Ok((None, Some(any_ty(world))));
+        return unresolved(Some(any_ty(world)));
     };
     let mut selected_targets = Vec::new();
     let mut activations = Vec::new();
@@ -1537,10 +1594,10 @@ fn resolve_closure_call(
         let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
         let mut inputs = closure.captures;
         inputs.extend(refined_args.clone());
-        let (summary, clause_activations, observed_return) =
+        let (resolution, clause_activations, observed_return) =
             resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
 
-        if let Some(summary) = summary {
+        if let CallSiteResolution::Resolved(summary) = resolution {
             for target in summary.targets {
                 let target_return = refine_call_return(world, target.return_ty, Some(clause.ret));
                 return_ty = join_evidence(world, return_ty, target_return);
@@ -1570,17 +1627,14 @@ fn resolve_closure_call(
         // registered above re-wake this call; only a genuine dynamic edge
         // earns `any`.
         if named_concrete_target || !callee_is_a_dynamic_edge(world, callee_ty) {
-            return Ok((None, return_ty));
+            return unresolved(return_ty);
         }
-        return Ok((None, Some(any_ty(world))));
+        return unresolved(Some(any_ty(world)));
     };
     Ok((
         Some(CallEmission {
-            key: CallSiteKey {
-                activation: caller.clone(),
-                callsite,
-            },
-            summary: Some(CallSiteSummary {
+            key,
+            resolution: CallSiteResolution::Resolved(CallSiteSummary {
                 targets: selected_targets,
                 return_ty,
             }),

@@ -125,14 +125,18 @@ A completion's meaning bifurcates per derivation, on whether the run reached it
 ### Absence is bottom; rebasing is the narrowing path
 
 Retraction-by-omission is sound only where a publisher's silence about a key is
-KNOWLEDGE. For `analyze_activation` it usually is not: a callsite whose target
-evidence is still climbing resolves to nothing and so emits nothing, and reading
+KNOWLEDGE. For `analyze_activation`'s callee `Activation` claims it is not: a
+callsite whose target evidence is still climbing names no callee, and reading
 that silence as a withdrawal retracts a fact that is still true. A NON-rebased
-`AnalyzeActivation` conclusion therefore keeps every `Activation`,
-`CallSiteSummary` and `CallSiteTargets` claim it did not re-emit
-(`World::preserved_analysis_claims`), exactly as its `ActivationInputs`
-contributions ride `ContributionMap::conclude_preserving_frontier`. A preserved
-claim is RE-LISTED, never re-published: its revision does not move, its stored
+`AnalyzeActivation` conclusion therefore keeps every `Activation` claim it did
+not re-emit (`World::preserved_analysis_claims`), exactly as its
+`ActivationInputs` contributions ride
+`ContributionMap::conclude_preserving_frontier`. Its `CallSiteSummary` and
+`CallSiteTargets` claims are on the other side of the line: the walk publishes
+an edge for EVERY callsite it reaches, unresolved and all
+(`CallSiteResolution`, [`semantic-fixpoint`](semantic-fixpoint.md)), so silence
+about one really is knowledge and nothing about those kinds is preserved. A
+preserved claim is RE-LISTED, never re-published: its revision does not move, its stored
 value is untouched, and no `Current` reader wakes (a readiness flip on a
 re-listed key is representable and reaches `Settled`/`SettledPresence`
 subscribers only). One side effect is real: re-listed `Activation` keys pass
@@ -467,7 +471,8 @@ group's external product and fact dependencies when every duplicate dependency
 state agrees; a mixed-generation or mixed-fact-state snapshot publishes nothing
 and retries from fresh reads. Internal back-edges disappear only after that
 concordance check. Product or fact movement discards pending reader snapshots
-and unregisters their edges before retry. Equal reproduction preserves its generation. Settled demand retracts
+and unregisters their edges before retry. Equal reproduction preserves its
+generation. Settled demand retracts
 when re-materialization resolves a call edge outside the settlement's callee
 inventory, or when a settlement's own publication grows the join of an
 external input it consumed — then the producer re-collects with the displaced

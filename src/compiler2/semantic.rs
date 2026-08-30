@@ -17,6 +17,41 @@ pub struct CallSiteKey {
     pub callsite: CallSiteId,
 }
 
+/// What one callsite the semantic walk REACHED knows about its targets.
+///
+/// Three answers, three representations. The fact's ABSENCE says the call
+/// never happens: the walk never reached the callsite, or it proved the call
+/// dead (an uninhabited callee, a proven-empty argument). Presence says the
+/// walk reached a live call, and the two variants separate the pair that
+/// absence used to carry together -- `Unresolved` is "no target is nameable
+/// yet", which is NOT a provider boundary (a RESOLVED edge whose
+/// [`CallTargetEdge::activation`] is `None`) and NOT an empty target list.
+///
+/// `Unresolved` is the lattice BOTTOM. [`CallSiteMap`] and
+/// [`CallSiteTargetsMap`] never let it overwrite a resolved answer, so
+/// re-emitting it moves no revision and an analysis round that stopped
+/// resolving narrows nothing. That is exactly what
+/// `World::preserved_analysis_claims` used to do for these two kinds, stated
+/// in the value instead of in the ledger (fz-kdt.69.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallSiteResolution<T> {
+    Unresolved,
+    Resolved(T),
+}
+
+impl<T> CallSiteResolution<T> {
+    pub fn resolved(&self) -> Option<&T> {
+        match self {
+            Self::Unresolved => None,
+            Self::Resolved(value) => Some(value),
+        }
+    }
+
+    pub fn is_unresolved(&self) -> bool {
+        matches!(self, Self::Unresolved)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SelectedCallee {
     Function(FunctionId),
@@ -140,6 +175,16 @@ impl CallSiteSummary {
 }
 
 impl CallSiteTargets {
+    /// The membership projection, resolution and all: an unresolved callsite
+    /// names no members either, and saying so is what keeps the two facts two
+    /// answers of one derivation.
+    pub fn of(summary: &CallSiteResolution<CallSiteSummary>) -> CallSiteResolution<Self> {
+        match summary {
+            CallSiteResolution::Unresolved => CallSiteResolution::Unresolved,
+            CallSiteResolution::Resolved(summary) => CallSiteResolution::Resolved(Self::from_summary(summary)),
+        }
+    }
+
     pub fn from_summary(summary: &CallSiteSummary) -> Self {
         let mut targets = Vec::new();
         for target in &summary.targets {
@@ -875,12 +920,12 @@ enum SlotEntry<V> {
 
 #[derive(Debug, Default)]
 pub struct CallSiteMap {
-    slots: HashMap<CallSiteKey, CallSiteSummary>,
+    slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteSummary>>,
 }
 
 #[derive(Debug, Default)]
 pub struct CallSiteTargetsMap {
-    slots: HashMap<CallSiteKey, CallSiteTargets>,
+    slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteTargets>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1173,25 +1218,42 @@ impl CallSiteMap {
         Self::default()
     }
 
-    pub fn define(&mut self, types: &mut Types, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
-        summary.coalesce_targets(types);
-        let Some(current) = self.slots.get_mut(&key) else {
-            self.slots.insert(key, summary);
-            return true;
+    /// `Unresolved` is bottom: it publishes only where nothing stands yet, so
+    /// a round that stopped resolving a callsite reports `changed = false` and
+    /// leaves the resolved answer at its own revision.
+    pub fn define(
+        &mut self,
+        types: &mut Types,
+        key: CallSiteKey,
+        observed: CallSiteResolution<CallSiteSummary>,
+    ) -> bool {
+        let CallSiteResolution::Resolved(mut summary) = observed else {
+            return self.define_unresolved(key);
         };
-        let before = current.clone();
-        current.replace_targets_join_returns(types, summary);
-        before != *current
+        summary.coalesce_targets(types);
+        if let Some(CallSiteResolution::Resolved(current)) = self.slots.get_mut(&key) {
+            let before = current.clone();
+            current.replace_targets_join_returns(types, summary);
+            return before != *current;
+        }
+        self.slots.insert(key, CallSiteResolution::Resolved(summary));
+        true
     }
 
-    pub fn define_replace(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
-        let changed = self.slots.get(&key) != Some(&summary);
-        self.slots.insert(key, summary);
-        changed
+    fn define_unresolved(&mut self, key: CallSiteKey) -> bool {
+        if self.slots.contains_key(&key) {
+            return false;
+        }
+        self.slots.insert(key, CallSiteResolution::Unresolved);
+        true
     }
 
-    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
+    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteSummary>> {
         self.slots.get(key)
+    }
+
+    pub fn resolved(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
+        self.get(key).and_then(CallSiteResolution::resolved)
     }
 }
 
@@ -1200,14 +1262,27 @@ impl CallSiteTargetsMap {
         Self::default()
     }
 
-    pub fn define(&mut self, key: CallSiteKey, targets: CallSiteTargets) -> bool {
-        let changed = self.slots.get(&key) != Some(&targets);
-        self.slots.insert(key, targets);
+    /// See [`CallSiteMap::define`]: same lattice, and a resolved membership set
+    /// replaces rather than joins, exactly as it always did.
+    pub fn define(&mut self, key: CallSiteKey, observed: CallSiteResolution<CallSiteTargets>) -> bool {
+        if observed.is_unresolved() {
+            if self.slots.contains_key(&key) {
+                return false;
+            }
+            self.slots.insert(key, observed);
+            return true;
+        }
+        let changed = self.slots.get(&key) != Some(&observed);
+        self.slots.insert(key, observed);
         changed
     }
 
-    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteTargets>> {
         self.slots.get(key)
+    }
+
+    pub fn resolved(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+        self.get(key).and_then(CallSiteResolution::resolved)
     }
 }
 
@@ -1407,7 +1482,6 @@ mod tests {
         let callee = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
         let callee = world.root_function(callee);
         let int = world.types_mut().int();
-        let none = world.types_mut().none();
         let caller_activation = ActivationKey::from_inputs(root, caller, &[], world.types_mut());
         let callee_activation = ActivationKey::from_inputs(root, callee, &[int], world.types_mut());
         let key = CallSiteKey {
@@ -1436,26 +1510,22 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), ready));
+        assert!(map.define(world.types_mut(), key.clone(), CallSiteResolution::Resolved(ready)));
         assert!(
-            !map.define(world.types_mut(), key.clone(), pending),
+            !map.define(world.types_mut(), key.clone(), CallSiteResolution::Resolved(pending)),
             "a pending later snapshot must not erase concrete return evidence"
         );
-        let stored = map.get(&key).expect("joined callsite summary");
+        let stored = map.resolved(&key).expect("joined callsite summary");
         assert_eq!(stored.return_ty, Some(int));
         assert_eq!(stored.targets[0].return_ty, Some(int));
 
-        assert!(map.define_replace(
-            key.clone(),
-            CallSiteSummary {
-                targets: Vec::new(),
-                return_ty: Some(none),
-            },
-        ));
+        assert!(
+            !map.define(world.types_mut(), key.clone(), CallSiteResolution::Unresolved),
+            "an unresolved re-emission is the lattice bottom: it moves nothing"
+        );
         assert_eq!(
-            map.get(&key).expect("rebased replacement").return_ty,
-            Some(none),
-            "rebases still replace stale callsite evidence"
+            map.resolved(&key).expect("the resolved answer stands").return_ty,
+            Some(int),
         );
     }
 
@@ -1488,14 +1558,18 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), summary_for(int_activation.clone(), int)));
         assert!(map.define(
             world.types_mut(),
             key.clone(),
-            summary_for(float_activation.clone(), float)
+            CallSiteResolution::Resolved(summary_for(int_activation.clone(), int))
+        ));
+        assert!(map.define(
+            world.types_mut(),
+            key.clone(),
+            CallSiteResolution::Resolved(summary_for(float_activation.clone(), float))
         ));
 
-        let stored = map.get(&key).expect("joined callsite summary");
+        let stored = map.resolved(&key).expect("joined callsite summary");
         assert_eq!(stored.targets.len(), 1);
         assert!(
             !stored
@@ -1550,9 +1624,9 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), summary));
+        assert!(map.define(world.types_mut(), key.clone(), CallSiteResolution::Resolved(summary)));
 
-        let stored = map.get(&key).expect("stored callsite summary");
+        let stored = map.resolved(&key).expect("stored callsite summary");
         assert_eq!(stored.targets.len(), 2);
         assert!(
             stored
@@ -1603,9 +1677,13 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), summary(joined)));
+        assert!(map.define(
+            world.types_mut(),
+            key.clone(),
+            CallSiteResolution::Resolved(summary(joined))
+        ));
         assert!(
-            !map.define(world.types_mut(), key, summary(rejoined)),
+            !map.define(world.types_mut(), key, CallSiteResolution::Resolved(summary(rejoined))),
             "equivalent joined callsite evidence should not churn the semantic fact"
         );
     }
@@ -1983,5 +2061,92 @@ mod tests {
             }
         }
         panic!("the widening operator must terminate a strictly-deepening ascent");
+    }
+}
+
+#[cfg(test)]
+mod callsite_resolution_tests {
+    use super::*;
+    use crate::compiler2::identity::{FunctionId, RootId};
+
+    fn key(callsite: u32, types: &mut Types) -> CallSiteKey {
+        CallSiteKey {
+            activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(1), &[], types),
+            callsite: crate::compiler2::body::CallSiteId::from_u32(callsite),
+        }
+    }
+
+    fn boundary_edge() -> CallSiteTargets {
+        CallSiteTargets {
+            targets: vec![CallTargetEdge {
+                callee: SelectedCallee::ProviderBoundary(FunctionId::for_test(7)),
+                activation: None,
+            }],
+        }
+    }
+
+    /// fz-kdt.69.2: a reached callsite can give three answers, and they are
+    /// three distinct values. A provider boundary is a RESOLVED edge that
+    /// names no compiler2 activation; an unresolved callsite names no target
+    /// at all; a callsite the walk never reached has no slot. Absence used to
+    /// carry the last two together, so this state had no representation.
+    #[test]
+    fn an_unresolved_edge_is_neither_a_provider_boundary_nor_an_absent_one() {
+        let mut types = Types::new();
+        let boundary = CallSiteResolution::Resolved(boundary_edge());
+        let unresolved: CallSiteResolution<CallSiteTargets> = CallSiteResolution::Unresolved;
+
+        assert_ne!(boundary, unresolved);
+        assert!(unresolved.is_unresolved());
+        assert!(unresolved.resolved().is_none());
+        assert!(
+            boundary
+                .resolved()
+                .is_some_and(|targets| targets.targets[0].activation.is_none()),
+            "a provider boundary is a named edge whose activation is None"
+        );
+
+        let mut map = CallSiteTargetsMap::new();
+        let reached = key(0, &mut types);
+        assert!(map.define(reached.clone(), CallSiteResolution::Unresolved));
+        assert_eq!(map.get(&reached), Some(&CallSiteResolution::Unresolved));
+        assert_eq!(
+            map.get(&key(1, &mut types)),
+            None,
+            "a callsite the walk never reached has no slot at all"
+        );
+        assert_eq!(map.resolved(&reached), None, "an unresolved edge names no targets");
+    }
+
+    /// `Unresolved` is the lattice BOTTOM: re-emitting it moves nothing, and
+    /// it never erases the resolved answer a previous round reached. That is
+    /// what lets `preserved_analysis_claims` stop carrying these two kinds.
+    #[test]
+    fn an_unresolved_re_emission_is_quiet_and_resolving_one_is_a_content_change() {
+        let mut types = Types::new();
+        let mut map = CallSiteTargetsMap::new();
+        let key = key(0, &mut types);
+
+        assert!(
+            map.define(key.clone(), CallSiteResolution::Unresolved),
+            "the first appearance of a reached callsite is a content change"
+        );
+        assert!(
+            !map.define(key.clone(), CallSiteResolution::Unresolved),
+            "re-emitting the same unresolved answer must not bump the revision"
+        );
+        assert!(
+            map.define(key.clone(), CallSiteResolution::Resolved(boundary_edge())),
+            "unresolved -> resolved IS a content change, and must wake the readers"
+        );
+        assert!(
+            !map.define(key.clone(), CallSiteResolution::Unresolved),
+            "a later round that resolved nothing must not descend"
+        );
+        assert_eq!(
+            map.resolved(&key),
+            Some(&boundary_edge()),
+            "the resolved answer stands at its own revision"
+        );
     }
 }
