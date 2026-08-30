@@ -4,14 +4,15 @@
   "blocks": [
     "fz-kdt.13.2"
   ],
+  "closed_at": "2026-08-30T14:40:10Z",
   "created": "2026-08-30T13:40:04Z",
   "description": "Story 2 of fz-kdt.13 Strategy v3 (cold-reviewed; read the parent's Strategy\nsection first -- it is binding). ENGINE ONLY: no semantic.rs changes (that is\nfz-kdt.13.2).\n\nRefine the ledger's publisher identity from J to (J, DerivationId) across:\n- DependencyIndex reads/subscribers/outputs (deps.rs)\n- FactTable publishers/dirty_publishers/unfinal_publishers (facts.rs)\n- Scheduler unfinal_reads (scheduler.rs)\n\nAgenda and the rebased set stay per-Job. A shift-classified cause dirties\nEVERY derivation of the woken job (rebase selects join-vs-replace downstream\nand must veto all scoping). complete() accepts per-derivation\n(reads, outputs, changed); the default -- one derivation per job -- must be\nbyte-for-byte today's behavior (all existing counts, streams, and pins\nunchanged). Blocked (waiting) completions: derivations the run concluded\nbefore blocking are clean; unreached ones stay dirty.\n\nis_locally_settled, clear_unfinal_publishers, and the drain arbiter's\nsoundness argument hold VERBATIM at derivation granularity (they provably\nbreak under naive per-output dirty bits -- see the cold review's A8 in the\nparent ticket history). Restate their comments in derivation terms.\n\n## Red-first engine tests (before any semantic use exists)\n- A publisher with two derivations: moving derivation 1's input leaves\n  derivation 2's fact settled and evaluates nobody.\n- Same chain with a Settled waiter on derivation 2's fact: must NOT fire\n  early, must fire when derivation 2's own input moves.\n- Premature-settled canaries: the two wrong-compile sites (frontier\n  retirement; None-behind-the-settled-gate as empty type) get engine-level\n  guards where representable.\n- Existing scheduler tests (readiness_only_movement_evaluates_nobody, the\n  kdt.44 suite) green unchanged.\n\n## Checks\n- Default single-derivation path: all three target fixtures produce\n  byte-identical causal streams vs base (same evals, same movements).\n- Zero-uncaused, cross-process multisets, byte-identical BackendProgram,\n  job-order determinism: green unweakened.\n- The telemetry stream may need derivation identity on applied events --\n  ONLY if required for the causal replay to keep attributing; prefer no\n  stream change in this story (single-derivation default emits identically).",
   "id": "fz-kdt.13.1",
   "labels": [],
   "parent": "fz-kdt.13",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Publisher identity becomes (Job, DerivationId) in the one ledger",
   "type": "task",
-  "updated_at": "2026-08-30T13:40:05Z"
+  "updated_at": "2026-08-30T14:40:10Z"
 }
