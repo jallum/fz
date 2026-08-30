@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T17:00:13Z",
+  "description": "Found by fz-kdt.69's cold review. merge_call_emission (jobs/semantic.rs:1065)\nextends .activations with no dedup; emitted_activations (:255) guards only the\nActivation FactKey push while activation_input_contributions.push (:259) runs\nper duplicate -- normalize_contributions (world.rs:672) then re-addresses and\npush_rows an IDENTICAL row up to 35x in one conclusion (measured: 35x\ntake_drop, 26x predicate, 4x range_map). Wasted work and needless\nACTIVATION_INPUT_ROW_BUDGET pressure. Fix: dedup at merge or at the\ncontribution push. NOTE: fz-kdt.69 Story 3 deletes this channel entirely --\nfold there if 69 lands first; fix standalone only if it doesn't.",
+  "id": "fz-kdt.72",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "One callsite emits the same callee contribution up to 35x per conclusion",
+  "type": "bug",
+  "updated_at": "2026-08-30T17:00:13Z"
+}
