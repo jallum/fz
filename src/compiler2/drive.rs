@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::telemetry::{RawSpanGuard, RawSpanStop1 as _, RawSpanStop2, RawSpanTelemetry, TelemetryExt};
 
 use super::code::CodeId;
-use super::facts::{ClaimShape, FactUse};
+use super::facts::{ClaimShape, DerivationId, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
 use super::semantic::{CallSiteKey, StableSortKey};
@@ -134,6 +134,26 @@ impl ClaimShape for FactKey {
 
 pub type WorkGraph = Scheduler<Job, FactKey>;
 
+/// One independently-keyed answer a job reached, beside the whole-body one.
+/// `reads`/`outputs`/`changed` are that answer's alone, and `concluded` says
+/// whether the run reached it before any block (see
+/// `scheduler::DerivationEffects`). A job that reports none of these publishes
+/// its whole body as one answer, which is what every job does today.
+#[derive(Debug, Clone)]
+pub(crate) struct JobDerivation {
+    pub(crate) derivation: DerivationId,
+    pub(crate) reads: Vec<FactUse<FactKey>>,
+    pub(crate) outputs: Vec<FactKey>,
+    pub(crate) changed: Vec<FactKey>,
+    pub(crate) concluded: bool,
+}
+
+/// What one job run reports. The flat `reads`/`outputs`/`changed` fields are
+/// the job's WHOLE-BODY answer — `DerivationId::SOLE` — and `waits` are the
+/// job's, since a job blocks whole. `derivations` names further answers the
+/// same run reached independently; leaving it empty (every job today) means
+/// the whole body is one answer and the ledger behaves exactly as it did
+/// before publisher identity was refined.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
     pub(crate) reads: Vec<FactUse<FactKey>>,
@@ -141,6 +161,7 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    pub(crate) derivations: Vec<JobDerivation>,
 }
 
 impl JobEffects {

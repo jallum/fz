@@ -12571,7 +12571,7 @@ impl OutputCapture {
                     .map(|change| change.key.clone())
                     .collect();
                 let effects = JobEffects {
-                    reads: world.job_reads(&job).into_iter().flatten().cloned().collect(),
+                    reads: world.job_reads(&job).into_iter().collect(),
                     waits: completion.blocked.clone(),
                     outputs: completion.outputs.iter().cloned().collect(),
                     changed,

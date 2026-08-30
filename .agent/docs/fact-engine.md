@@ -22,15 +22,17 @@ and artifact emission.
 - **`FactTable`** — one `FactSlot` per `FactKey`. A slot holds the set of
   `publishers` claiming the fact, the `dirty_publishers` queued to re-run, the
   `unfinal_publishers` whose own reads can still move, and a `revision`
-  counter. Slots hold no values — typed values live in `World` stores; the
+  counter. A publisher is a `Publisher<J>` — one job's one derivation — not a
+  job. Slots hold no values — typed values live in `World` stores; the
   fact gates their visibility. Derived states: **present** (any publisher),
   **retracted** (none — the slot drops), **locally settled** (present and no
   claimant dirty), **quiet** (no claimant dirty and none unfinal — an absent
   fact is quiet), and **settled** (present and quiet). See *Content,
   cleanliness and finality* below.
-- **`DependencyIndex`** — five exact-keyed maps: `reads`↔`subscribers`,
-  `waits`↔`waiters`, and `outputs`. Waking a fact's interested jobs is an O(1)
-  lookup, not a scan.
+- **`DependencyIndex`** — six exact-keyed maps: `reads`↔`subscribers` and
+  `outputs` keyed by publisher, `waits`↔`waiters` keyed by job, and each job's
+  `derivations` roster. Waking a fact's interested jobs is an O(1) lookup, not
+  a scan.
 - **`Scheduler`** — owns the agenda, facts, and deps, and exposes `complete`.
 - **`ExecutionContext::drive`** — split-borrows semantic state and telemetry,
   then pops a job, runs it, applies its effects, and repeats.
@@ -40,11 +42,18 @@ and artifact emission.
 Every job returns `JobEffects`:
 
 ```text
-reads     facts it used        -> "wake me when these change"   (subscriber)
-waits     facts it needed but  -> "wake me when these appear"   (waiter; also
-          could not read yet       counts as unresolved work)
-outputs   (FactKey, FactValue) -> facts this job OWNS this run
+reads       facts it used        -> "wake me when these change"   (subscriber)
+waits       facts it needed but  -> "wake me when these appear"   (waiter; also
+            could not read yet       counts as unresolved work)
+outputs     (FactKey, FactValue) -> facts this job OWNS this run
+derivations further answers the same run reached independently, each with
+            its own reads/outputs/changed
 ```
+
+The flat `reads`/`outputs` are the job's WHOLE-BODY answer (`DerivationId::SOLE`);
+`waits` are the job's, because a job blocks whole. `derivations` is empty for
+every job today, which means one answer per job. See *The publisher is a
+derivation* below.
 
 A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
@@ -95,18 +104,19 @@ fact appears.
 
 ## Waiting extends, concluding replaces
 
-A completion's meaning bifurcates on its waits (`Scheduler::complete`):
+A completion's meaning bifurcates per derivation, on whether the run reached it
+(`Scheduler::complete`). A job with no waits reached every answer it reports:
 
-- **Concluding** (waits empty) replaces: reads swap subscriptions, the output
-  list replaces the job's claims, and retraction-by-omission is available and
+- **Concluded** replaces: that derivation's reads swap subscriptions, its
+  output list replaces its claims, and retraction-by-omission is available and
   final for every publisher whose silence is knowledge (see below). Facts
   shrink as their owners stop deriving them — redefinition needs no special
-  path.
-- **Waiting** (waits non-empty) extends: reads union into the standing
-  subscriptions, listed outputs union into the standing claims, prior
-  activation-input contributions stand, and every claim the job holds is
-  marked dirty — a blocked publisher's facts are never settled. Pausing is
-  not recanting; a transient wait cannot destroy still-valid published work.
+  path. A concluding job's UNREPORTED derivations are withdrawn the same way.
+- **Unreached** extends: reads union into the standing subscriptions, listed
+  outputs union into the standing claims, prior activation-input contributions
+  stand, and every claim that derivation holds is marked dirty — an unreached
+  answer's facts are never settled. Pausing is not recanting; a transient wait
+  cannot destroy still-valid published work.
 
 ### Absence is bottom; rebasing is the narrowing path
 
@@ -134,6 +144,57 @@ longer reaches (`pipeline.md`, *Redefinition retracts by ownership*).
 is withdrawn only by that caller's own rebase, so preserving one publisher's
 standing claim never resurrects another's: the fact retracts exactly when the
 last publisher with an unrefuted claim lets go.
+
+## The publisher is a derivation
+
+A job runs whole, but it does not necessarily reach ONE answer. The ledger's
+publisher identity is therefore `(Job, DerivationId)`, not `Job`: `reads`,
+`subscribers`, `outputs`, `dirty_publishers`, `unfinal_publishers` and
+`unfinal_reads` are all keyed by it. A job that does not name derivations
+publishes everything under `DerivationId::SOLE`, which is exactly the old
+behavior.
+
+Why the granularity was the lie: dirtiness and finality are statements about
+what a claim was DERIVED FROM. With the job as publisher, one woken read
+dirties every claim the body holds and unfinalises everything downstream of any
+of them — so a fact whose own inputs are quiet reads as provisional because a
+sibling answer's inputs moved. Measured on `00420_enum_take_drop_split`
+(debug, this tree): `ActivationInputs` facts move 1.47x each (near
+write-once) and almost never settle before the drain -- 30 of their 34
+settlements arrive only after the first quiesce.
+
+The two identities stay apart on purpose:
+
+- the AGENDA, the `rebased` set and `waits`/`waiters` are keyed by the JOB,
+  because a job blocks and runs whole, and a wait carries no derivation
+  attribution to give it;
+- a wake's cause names a derivation, so an ASCENT dirties only the derivation
+  that read the moved fact. A GROUND SHIFT dirties every derivation of the
+  woken job: rebasing selects replace-over-join for the job's next conclusion,
+  and that flag is job-wide, so rebase vetoes all scoping;
+- one cause wakes a job once, however many of its derivations read the fact.
+  The `Wake` record's identity is still the job, because the job is what
+  evaluates.
+
+Completion bifurcates per derivation on whether the run REACHED it, which is
+"waiting extends, concluding replaces" lifted one level down. A concluded
+derivation replaces (its reads swap subscriptions, its unlisted keys retract,
+its claims are clean); an unreached one extends (reads union, nothing retracts,
+claims stay dirty). A job that returns no waits concluded every derivation it
+reports, and the derivations it does NOT report are withdrawn whole — its
+silence about an answer it used to give is knowledge, exactly as its silence
+about a key is. A BLOCKED job may have reached some answers before the block:
+those are clean, and the ones it never reached stay dirty. That is the main
+traffic — most completions block.
+
+`is_locally_settled`, `clear_unfinal_publishers` and the drain arbiter's
+soundness argument hold VERBATIM at this granularity, because none of them was
+ever about jobs: each is a statement about the CLAIMANTS of one key, and the
+claimants of a key are the derivations whose answer it is. A dirty sibling
+publishes other keys and is correctly not consulted. This is also why the
+cheaper-looking alternative fails: per-output dirty bits sitting beside
+per-JOB unfinality do not compose, because the two halves of `is_settled`
+would then be scoped to different things.
 
 ## Claims declare their shape; ascents wake, ground shifts rebase
 
@@ -190,14 +251,19 @@ sweep, a group inventory, an epoch object, or a root scan. Two cached counts
 carry it, and both are recomputed from their own source whenever that source
 is replaced, so no delta can go stale:
 
-    unfinal_reads[job]              how many of the job's recorded reads name
-                                    a fact that is not quiet
+    unfinal_reads[publisher]        how many of that derivation's recorded
+                                    reads name a fact that is not quiet
     slot.unfinal_publishers         which publishers of the fact have a
                                     non-zero unfinal_reads
 
-A fact flipping quiet adjusts its readers' counts; a job whose count flips
-0 <-> non-zero carries the flip into every fact it publishes; a fact whose
-quiet state flips propagates on. Every wave is sign-uniform — a fact that just
+Both are keyed by the same publisher identity, which is what makes them
+composable (see *The publisher is a derivation*). A fact flipping quiet adjusts
+its readers' counts; a derivation whose count flips 0 <-> non-zero carries the
+flip into every fact IT publishes — its siblings, which read other ground, are
+untouched; a fact whose quiet state flips propagates on.
+`Scheduler::unfinal_reads(job)` folds a job's derivations into the job-level
+question a readiness-ordered pop would ask; the ledger itself always acts per
+derivation. Every wave is sign-uniform — a fact that just
 went unquiet can only make readers unquiet — so each node flips at most once
 and the walk is exactly the affected cone.
 
@@ -292,10 +358,12 @@ iterate differently from the first's.
 while let Some(job) = agenda.pop():
     effects = run(job)              # may return Err -> fatal
     step    = complete(job, effects)
-        waiting?  extend reads/claims, dirty the job's claims
-        else      replace reads/waits/claims (retraction final)
+        per derivation:
+          unreached?  extend reads/claims, dirty that derivation's claims
+          else        replace its reads/claims (retraction final)
+        replace the job's waits; withdraw unreported derivations on conclusion
         classify each change: ascent -> wake; shift -> rebase + wake
-        enqueue dependents
+        enqueue dependents (ascent scopes the dirt; shift dirties the job)
 ```
 
 When the agenda drains, standing demands expand before the drive ends: every

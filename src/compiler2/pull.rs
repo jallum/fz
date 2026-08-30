@@ -2091,6 +2091,7 @@ mod tests {
 
     use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
+    use super::super::scheduler::DerivationEffects;
     use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
     use super::*;
 
@@ -2634,16 +2635,22 @@ mod tests {
         scheduler.complete(
             &1,
             HashSet::new(),
-            HashSet::new(),
-            vec![fact.clone()],
-            vec![fact.clone()],
+            vec![DerivationEffects::sole(
+                HashSet::new(),
+                vec![fact.clone()],
+                vec![fact.clone()],
+                true,
+            )],
         );
         let blocked = scheduler.complete(
             &1,
-            HashSet::new(),
             HashSet::from([FactUse::current(missing)]),
-            vec![fact.clone()],
-            vec![fact],
+            vec![DerivationEffects::sole(
+                HashSet::new(),
+                vec![fact.clone()],
+                vec![fact],
+                false,
+            )],
         );
         driver.apply_fact_movements(&blocked.movements);
 

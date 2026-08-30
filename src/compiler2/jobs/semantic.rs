@@ -295,6 +295,7 @@ pub(super) fn analyze_activation(
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
+        ..JobEffects::default()
     })
 }
 
