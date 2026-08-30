@@ -7,7 +7,7 @@
   ],
   "blocks": [],
   "created": "2026-08-30T18:20:47Z",
-  "description": "Story 3 of fz-kdt.69's v2 design -- read the PARENT'S Story 3 section AND its\n'Story 3 addenda' (tripwire, frontier-minted no-edge activations, the\nnever-fired ActivationInputs gate) in full; all binding. Blocked by\nfz-kdt.69.2.\n\nSummary of scope (details in parent): refcounted insertion-ordered World\nindex over edge values folded in complete_job's harvest; absorbs\nactivation_frontier + retires the drain sort at drive.rs:439; Activation(k)\npresence + ActivationInputs(k) rows derived from live edges (row budget at\nthe fold); DELETE activation_input_contributions, conclude/extend_activation_\ninput_contributions, the AnalyzeActivation half of ContributionMap,\npreserved_analysis_claims entirely, and the dead ActivationInputs gate;\nDISSOLVES fz-kdt.64 (close it as dissolved with the proof); index is a\npresence arbiter, never a publisher; decommission conclusion clears\nActivationSlot (return_ty/analysis/ascents) -- the ascents-reset red test\nfails today by construction; refcount dec-then-inc within one completion;\nedge identity stays CallSiteKey; frontier-minted activations (origin A) and\nroot seeds remain the non-edge demand sources.\n\nRED x3 from the parent + the tripwire + cascade-depth\u003e=2 pinned 0 via\ntelemetry. Acceptance: Activation true-preservation 256/21/171 -\u003e 0;\ndecommissions \u003c= 30/4/12; all pins/gates; evals ratchet at-or-below\npost-kdt.63 base with decommission conclusions the sole counted addition.\nAlso fold fz-kdt.72 (35x duplicate contribution emission) -- its channel is\ndeleted here; close it with this story.",
+  "description": "CLOSED AS REFUTED (2026-08-31), not as fixed. The design this ticket\nspecified -- demand derived from live edges over value-keyed identities --\nwas built in full and falsified by measurement (the edge is a strict subset\nof stated demand; decommission non-terminating; cascade depth 5 not 0). The\nrefutation record lives in fz-kdt.69; the graveyard entry and re-entry\nconditions in fz-kdt.74; the full implementation at wt/kdt693-index\n(9d65ab25e, probes included). If a demand-derivation route ever revives, it\ngets a NEW ticket written against the then-current tree (dated tickets are\nspiritual guidance) -- gated at minimum on fz-kdt.80 and fz-kdt.76, and on\nfz-kdt.83's census verdict.",
   "id": "fz-kdt.69.3",
   "labels": [],
   "parent": "fz-kdt.69",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Demand is derived from live edges; preservation machinery deleted",
   "type": "task",
-  "updated_at": "2026-08-30T20:03:30Z"
+  "updated_at": "2026-08-30T23:45:20Z"
 }
