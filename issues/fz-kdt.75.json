@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T18:05:48Z",
+  "description": "Found by fz-kdt.69.1 (builder finding 2, reviewer-verified). A root entry's\nActivation/ActivationInputs can be minted by SeedRoot (the authoritative\nproducer) OR by SeedActivation reconstructing from the key's arrow (measured:\n4 lib-suite cases; reconstructions agree today -- inputs=[] matches\nroot.input). Two producers for one owned fact is the correct-by-construction\nviolation; the fix is a FactKey::Activation(k)-if-root-entry -\u003e Job::SeedRoot\nproducer arm. It perturbs job order (one-time deterministic re-baseline).\nDoc note already placed in semantic-fixpoint.md pointing here.",
+  "id": "fz-kdt.75",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "A root entry's Activation has two producers: SeedActivation reconstructs what SeedRoot owns",
+  "type": "task",
+  "updated_at": "2026-08-30T18:05:48Z"
+}
