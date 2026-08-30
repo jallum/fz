@@ -31,9 +31,8 @@ use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::deps::UnresolvedWait;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
-use super::drive::{ExecutionContext, FactKey, Job, JobEffects, WorkGraph};
-#[cfg(test)]
-use super::facts::FactUse;
+use super::drive::{AnalysisAnswer, ExecutionContext, FactKey, Job, JobDerivation, JobEffects, WorkGraph};
+use super::facts::{DerivationId, FactUse};
 use super::identity::{
     ActivationKey, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId, FunctionMap, FunctionRef,
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
@@ -458,43 +457,99 @@ impl World {
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
-        let mut outputs = effects.outputs;
-        outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
-        if waits.is_empty() && !rebased {
-            outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
+        // Which answer owns a key is `AnalysisAnswer::of` and nothing else —
+        // for the keys the BODY claimed (`jobs::semantic::split_answers`) and
+        // equally for the keys this completion adds on its own account:
+        // contributed `ActivationInputs`, and the claims a preserving
+        // conclusion keeps standing. One authority, so the engine's
+        // key-disjointness contract holds however a key got here. A job that
+        // does not split its answers keeps every key on its whole-body one.
+        let splits_answers = matches!(job, Job::AnalyzeActivation(_));
+        let mut answers = effects.derivations;
+        let mut whole_body_outputs = effects.outputs;
+        let mut whole_body_changed = effects.changed;
+        let mut completion_outputs: Vec<FactKey> = activation_input_outputs
+            .into_iter()
+            .map(FactKey::ActivationInputs)
+            .collect();
+        // Absence is bottom (fz-kdt.63): a callsite whose target evidence is
+        // still climbing emits nothing, and that silence is not a withdrawal.
+        // Only a REBASED conclusion re-derived every claim from ground that
+        // actually shifted, so only there is omission a refutation. A blocked
+        // run recants nothing at all, rebased or not — which is exactly what
+        // the contribution store does one layer down (`extend`).
+        if !(waits.is_empty() && rebased) {
+            completion_outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
         }
-        let outputs = dedupe_job_facts(outputs);
-        let mut changed = effects.changed;
-        changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
-        let changed = dedupe_job_facts(changed);
-        // Captured before `outputs` moves into `complete`: the two record
-        // sites keep `activation_frontier` in lockstep with the fact table.
-        let activation_published: Vec<ActivationKey> = outputs
+        let completion_changed: Vec<FactKey> = activation_input_changed
             .iter()
-            .filter_map(|fact| match fact {
-                FactKey::Activation(key) => Some(key.clone()),
-                _ => None,
-            })
+            .cloned()
+            .map(FactKey::ActivationInputs)
             .collect();
-        let analyzed_published: Vec<ActivationKey> = outputs
-            .iter()
-            .filter_map(|fact| match fact {
-                FactKey::ActivationAnalyzed(key) => Some(key.clone()),
-                _ => None,
-            })
-            .collect();
+        // A concluding job WITHDRAWS every derivation it does not re-report,
+        // so an answer this run could not re-derive is handed back whole: the
+        // claims it still holds, and the reads standing behind them. Both are
+        // idempotent — `replace_reads` re-subscribes the identical set and no
+        // claim's content moves — which is what makes "not re-derived" survive
+        // a conclusion instead of retracting.
+        let standing = if splits_answers {
+            self.work_graph.standing_derivations(&job)
+        } else {
+            Vec::new()
+        };
+        route_completion_claims(
+            waits.is_empty(),
+            splits_answers,
+            &reads,
+            &standing,
+            &mut answers,
+            &mut whole_body_outputs,
+            &mut whole_body_changed,
+            completion_outputs,
+            completion_changed,
+        );
+        let whole_body_outputs = dedupe_job_facts(whole_body_outputs);
+        let whole_body_changed = dedupe_job_facts(whole_body_changed);
         // The flat fields are the job's whole-body answer; `derivations` names
-        // any further answers the same run reached independently. Every job
-        // today reports none, so this is exactly one `DerivationId::SOLE`
-        // completion — the ledger sees what it always saw.
-        let mut derivations = vec![DerivationEffects::sole(reads, outputs, changed, waits.is_empty())];
-        derivations.extend(effects.derivations.into_iter().map(|derivation| DerivationEffects {
-            derivation: derivation.derivation,
-            reads: derivation.reads.into_iter().collect(),
-            outputs: dedupe_job_facts(derivation.outputs),
-            changed: dedupe_job_facts(derivation.changed),
-            concluded: derivation.concluded,
-        }));
+        // the further answers the same run reached independently. A job that
+        // reports none completes as exactly one `DerivationId::SOLE` — the
+        // ledger sees what it always saw. The whole-body answer is applied
+        // LAST because that is where its claims sat in one flat output list,
+        // and completion order is wake order is intern order (fz-f98.19).
+        let mut derivations = answers
+            .into_iter()
+            .map(|derivation| DerivationEffects {
+                derivation: derivation.derivation,
+                reads: derivation.reads.into_iter().collect(),
+                outputs: dedupe_job_facts(derivation.outputs),
+                changed: dedupe_job_facts(derivation.changed),
+                concluded: derivation.concluded,
+            })
+            .collect::<Vec<_>>();
+        // Captured before the claims move into `complete`: the two record
+        // sites keep `activation_frontier` in lockstep with the fact table.
+        let published = |select: fn(&FactKey) -> Option<ActivationKey>| -> Vec<ActivationKey> {
+            derivations
+                .iter()
+                .flat_map(|derivation| derivation.outputs.iter())
+                .chain(whole_body_outputs.iter())
+                .filter_map(select)
+                .collect()
+        };
+        let activation_published = published(|fact| match fact {
+            FactKey::Activation(key) => Some(key.clone()),
+            _ => None,
+        });
+        let analyzed_published = published(|fact| match fact {
+            FactKey::ActivationAnalyzed(key) => Some(key.clone()),
+            _ => None,
+        });
+        derivations.push(DerivationEffects::sole(
+            reads,
+            whole_body_outputs,
+            whole_body_changed,
+            waits.is_empty(),
+        ));
         let step = self.work_graph.complete(&job, waits, derivations);
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
@@ -1546,6 +1601,33 @@ impl World {
         self.work_graph.facts().is_settled(key)
     }
 
+    /// Whether every claimant of `key` is clean — one hop, and no statement
+    /// about whether their own inputs have stopped moving
+    /// (`.agent/docs/fact-engine.md`, *Content, cleanliness and finality are
+    /// three questions*). This is the question a derivation split answers
+    /// directly: a claim whose own answer was not re-derived stays clean while
+    /// a sibling answer of the same job is queued to re-run. Observation only.
+    #[cfg(test)]
+    pub(crate) fn fact_is_locally_settled(&self, key: &FactKey) -> bool {
+        self.work_graph.facts().is_locally_settled(key)
+    }
+
+    /// The answers `job` currently stands behind — each one's id, the claims it
+    /// holds, and the reads standing behind them. Observation only; the
+    /// production caller of the same accessor is `complete_job`'s carry-forward
+    /// of an answer the run could not re-derive.
+    #[cfg(test)]
+    pub(crate) fn standing_derivations(
+        &self,
+        job: &Job,
+    ) -> Vec<(
+        DerivationId,
+        super::ordered_set::OrderedSet<FactKey>,
+        HashSet<FactUse<FactKey>>,
+    )> {
+        self.work_graph.standing_derivations(job)
+    }
+
     pub(crate) fn root_entry_executable(&mut self, root: RootId) -> ExecutableKey {
         let entry = self.root_entry(root);
         ExecutableKey {
@@ -2169,16 +2251,119 @@ fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalErr
     FatalError
 }
 
+/// The answers a job currently stands behind: each one's id, the claims it
+/// holds, and the reads standing behind them.
+type StandingAnswers = [(DerivationId, OrderedSet<FactKey>, HashSet<FactUse<FactKey>>)];
+
+/// Routes the keys a COMPLETION adds on its own account — contributed
+/// `ActivationInputs`, and the claims a preserving conclusion keeps standing —
+/// to the answers that own them.
+///
+/// Ownership is `AnalysisAnswer::of` and nothing else, the same total function
+/// the job body used, so no two answers can co-publish a key however it got
+/// here. A job that does not split its answers keeps every key on its
+/// whole-body one.
+///
+/// A key arriving here that the body did not derive this run is a PRESERVED
+/// claim, and if its answer went unreported that answer is handed back WHOLE —
+/// its standing claims and the reads behind them — because a concluding job
+/// withdraws every derivation it does not re-report.
+///
+/// A REPORTED answer's reads are replaced by the ones this run recorded, which
+/// is what the job-granular publisher always did: a conclusion's read set is
+/// the evidence THAT run consulted, and a claim it preserved was justified by
+/// an earlier one. See fz-kdt.69 for the measured shape of that seam and why
+/// closing it here would have cost more precision than it bought.
+fn route_completion_claims(
+    concluding: bool,
+    splits_answers: bool,
+    job_reads: &HashSet<FactUse<FactKey>>,
+    standing: &StandingAnswers,
+    answers: &mut Vec<JobDerivation>,
+    whole_body_outputs: &mut Vec<FactKey>,
+    whole_body_changed: &mut Vec<FactKey>,
+    outputs: Vec<FactKey>,
+    changed: Vec<FactKey>,
+) {
+    for (fact, is_changed) in outputs
+        .into_iter()
+        .map(|fact| (fact, false))
+        .chain(changed.into_iter().map(|fact| (fact, true)))
+    {
+        let answer = if splits_answers {
+            AnalysisAnswer::of(&fact).id()
+        } else {
+            DerivationId::SOLE
+        };
+        if answer == DerivationId::SOLE {
+            if is_changed {
+                whole_body_changed.push(fact);
+            } else {
+                whole_body_outputs.push(fact);
+            }
+            continue;
+        }
+        let reported = match answers.iter().position(|effects| effects.derivation == answer) {
+            Some(index) => &mut answers[index],
+            None => {
+                answers.push(JobDerivation {
+                    derivation: answer,
+                    reads: standing_reads(standing, answer, job_reads),
+                    outputs: Vec::new(),
+                    changed: Vec::new(),
+                    // A blocked completion has not vouched for anything it
+                    // routes here; only a concluding one has ("pausing is
+                    // not recanting").
+                    concluded: concluding,
+                });
+                answers.last_mut().expect("the answer just pushed")
+            }
+        };
+        if is_changed {
+            reported.changed.push(fact);
+        } else {
+            reported.outputs.push(fact);
+        }
+    }
+}
+
+/// The reads a completion-routed claim's answer subscribes with. Its own
+/// standing reads when the answer is standing; otherwise the JOB's whole read
+/// set -- a routed claim with no standing answer (a first-ever contribution
+/// this run itself produced) must not become a zero-read, immediately-final
+/// derivation nothing could ever wake. Over-subscription is the sound
+/// direction; the precise per-claim attribution is fz-kdt.69's seam.
+fn standing_reads(
+    standing: &StandingAnswers,
+    answer: DerivationId,
+    job_reads: &HashSet<FactUse<FactKey>>,
+) -> Vec<FactUse<FactKey>> {
+    standing
+        .iter()
+        .find(|(id, _, _)| *id == answer)
+        .map(|(_, _, reads)| reads.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_else(|| job_reads.iter().cloned().collect())
+}
+
 /// The claims a NON-rebased `AnalyzeActivation` conclusion keeps standing
 /// even though it did not re-emit them (fz-kdt.63).
 ///
 /// `analyze_activation` publishes a callsite's `CallSiteSummary` and
-/// `CallSiteTargets`, and its callees' `Activation`, only from evidence that
-/// has arrived: a callsite whose target evidence is still climbing resolves to
-/// nothing and emits nothing. That absence is bottom, not a proof the call is
-/// gone — the same reading `conclude_activation_input_contributions` already
-/// gives `ActivationInputs`. Re-listing the standing claims keeps them
-/// published at their own revisions, so nothing moves and nobody rebases.
+/// `CallSiteTargets`, and its callees' `Activation` and `ActivationInputs`,
+/// only from evidence that has arrived: a callsite whose target evidence is
+/// still climbing resolves to nothing and emits nothing. That absence is
+/// bottom, not a proof the call is gone — the same reading
+/// `conclude_activation_input_contributions` already gives the contributed
+/// values. Re-listing the standing claims keeps them published at their own
+/// revisions, so nothing moves and nobody rebases.
+///
+/// `ActivationInputs` is on this list because the CLAIM and the contributed
+/// VALUE are two ledgers. `conclude_preserving_frontier` never withdraws a
+/// contribution, but the fact key it publishes under belongs to a callee
+/// answer that concludes on its own (`AnalysisAnswer`), and a concluding
+/// answer retracts what it does not list. Listing it here is what keeps the
+/// two in lockstep — most visibly on a BLOCKED run, where the store extends
+/// and so must the claim.
 ///
 /// Withdrawal is not lost, it is scoped: a REBASED conclusion re-derives every
 /// claim from the shifted ground, so what it omits is genuinely refuted and
@@ -2195,7 +2380,10 @@ fn preserved_analysis_claims(job: &Job, previous_output_keys: &OrderedSet<FactKe
         .filter(|fact| {
             matches!(
                 fact,
-                FactKey::Activation(_) | FactKey::CallSiteSummary(_) | FactKey::CallSiteTargets(_)
+                FactKey::Activation(_)
+                    | FactKey::ActivationInputs(_)
+                    | FactKey::CallSiteSummary(_)
+                    | FactKey::CallSiteTargets(_)
             )
         })
         .cloned()

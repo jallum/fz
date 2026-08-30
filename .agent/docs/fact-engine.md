@@ -52,8 +52,9 @@ derivations further answers the same run reached independently, each with
 
 The flat `reads`/`outputs` are the job's WHOLE-BODY answer (`DerivationId::SOLE`);
 `waits` are the job's, because a job blocks whole. `derivations` is empty for
-every job today, which means one answer per job. See *The publisher is a
-derivation* below.
+every job but `AnalyzeActivation`, which means one answer per job. See *The
+publisher is a derivation* below, and *Splitting analysis into answers* for the
+one job that splits.
 
 A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
@@ -152,7 +153,9 @@ publisher identity is therefore `(Job, DerivationId)`, not `Job`: `reads`,
 `subscribers`, `outputs`, `dirty_publishers`, `unfinal_publishers` and
 `unfinal_reads` are all keyed by it. A job that does not name derivations
 publishes everything under `DerivationId::SOLE`, which is exactly the old
-behavior.
+behavior. The id is opaque to the engine and minted by the job: it is 64 bits
+so a job can name its answers injectively out of two separate id spaces
+without assuming either fits in a range it shares with the other.
 
 Why the granularity was the lie: dirtiness and finality are statements about
 what a claim was DERIVED FROM. With the job as publisher, one woken read
@@ -195,6 +198,67 @@ publishes other keys and is correctly not consulted. This is also why the
 cheaper-looking alternative fails: per-output dirty bits sitting beside
 per-JOB unfinality do not compose, because the two halves of `is_settled`
 would then be scoped to different things.
+
+## Splitting analysis into answers
+
+`AnalyzeActivation` is the one job that names derivations. One run of it
+reaches many independent answers, and `drive::AnalysisAnswer` says which:
+
+    CallSiteSummary(k), CallSiteTargets(k)      -> CallSite(k.callsite)
+    Activation(c), ActivationInputs(c)          -> Callee(c.function)
+    ReturnType(a), ActivationAnalyzed(a), rest  -> WholeBody (SOLE)
+
+Ownership is a TOTAL FUNCTION OF THE KEY. That is what makes the engine's
+key-disjointness contract hold by construction here — the engine does not
+enforce it, and two answers of one run cannot co-publish anything if the key
+itself names its owner. It also decides the seam where the same job's
+COMPLETION adds keys the body did not claim (contributed `ActivationInputs`,
+preserved claims): `World::route_completion_claims` sends each through the same
+function, so there is one authority and no second rule to keep in step.
+
+The unit is the callsite for a callsite's own summary and the callee FUNCTION
+for a callee's activation demand. The callee's activation KEY is not the unit:
+a key's arrow moves as the caller's evidence ascends, so naming an answer after
+it would make the answer's identity move under it. Two callsites calling the
+same function genuinely contribute to one fact — measured on
+`00420_enum_take_drop_split`, 274 of 2,489 callee-key demands and 350 of 1,748
+callee-function demands come from more than one callsite of the same caller —
+and the union of their reads is that fact's true input set.
+
+A callsite answer's READS are a WATERMARK: the prefix of the run's single
+dataflow-ordered `reads` vector as it stood when that callsite's emission was
+built, plus the range a post-walk coalescing rebuild read for it. The walk
+appends a read at the moment it consults the fact, so everything a callsite
+could have consulted is already behind its watermark; nothing appended later
+can have reached it. Watermarks are prefixes of one append-only vector, so
+folding several into one answer is `max` — order-independent, and no sort. The
+whole-body answer reads EVERYTHING, which is where the run's irreproducible
+residue lives (the return ladder's ascent budget in `define_return`), so the
+split answers can be exactly what they claim to be.
+
+One rule binds at the completion, and it is a footgun if forgotten: a
+concluding job WITHDRAWS every derivation it does not re-report. An analysis
+whose silence about a callsite is not knowledge must therefore hand back the
+answers it could not re-derive, and `World::complete_job` does: each standing
+answer is re-reported with its claims and the reads behind them, which is
+idempotent (`replace_reads` re-subscribes the identical set, no content moves).
+Only a REBASED conclusion lets an answer go.
+
+A REPORTED answer's reads are replaced by the ones the run recorded, so a claim
+it preserved keeps standing while the subscriptions that justified it are
+dropped. That is what the job-granular publisher always did — a conclusion's
+read set is the evidence THAT run consulted — and the split makes it finer
+rather than newly unsound. fz-kdt.69 holds the measurement and the design.
+
+What the split does and does not buy, measured (release, `fz2 interp`, the
+three target fixtures): mid-drive one-hop CLEANLINESS is genuinely finer — a
+callee's return ascent no longer dirties the caller's answers about its other
+callsites. Transitive SETTLEDNESS does not move at all, because caller and
+callee read each other and a cycle is only ever discharged by the drain
+arbiter; publisher granularity is the wrong lever for that number. Evaluations
+do not move either: a wake fires per subscribing derivation but enqueues the
+whole JOB, and a satisfied WAIT still dirties every answer the job holds
+because a wait carries no derivation attribution. fz-kdt.68 records both caps.
 
 ## Claims declare their shape; ascents wake, ground shifts rebase
 

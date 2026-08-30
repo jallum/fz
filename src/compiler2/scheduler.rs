@@ -279,6 +279,28 @@ where
         self.deps.job_reads(job)
     }
 
+    /// The answers `job` currently stands behind, in roster order, each with
+    /// the claims and the reads standing behind it.
+    ///
+    /// A concluding job WITHDRAWS every derivation it does not re-report, so a
+    /// job whose silence about an answer is not knowledge (`analyze_activation`
+    /// — a callsite whose evidence has not arrived resolves to nothing) has to
+    /// hand back the answers it could not re-derive. Handing one back with its
+    /// standing claims and these same reads is idempotent: `replace_reads`
+    /// re-subscribes the identical set, the claim list is unchanged, and no
+    /// content moves.
+    pub fn standing_derivations(&self, job: &J) -> Vec<(DerivationId, OrderedSet<F>, HashSet<FactUse<F>>)> {
+        self.deps
+            .publishers(job)
+            .into_iter()
+            .map(|publisher| {
+                let outputs = self.deps.output_keys(&publisher);
+                let reads = self.deps.reads(&publisher).cloned().unwrap_or_default();
+                (publisher.derivation, outputs, reads)
+            })
+            .collect()
+    }
+
     /// How many of the job's recorded reads name a fact that can still move,
     /// summed over its derivations. Zero means every answer the job holds
     /// stands on quiet ground — the job-level question a readiness-ordered pop
@@ -411,7 +433,8 @@ where
             changed.extend(replaced.changed);
         }
         if !waiting {
-            self.withdraw_unreported_derivations(job, &reported, &mut pending_changes);
+            let withdrawn = self.withdraw_unreported_derivations(job, &reported, &mut pending_changes);
+            changed.extend(withdrawn);
         }
 
         let (wakes, movements) = self.dispatch_changes(pending_changes, was_rebased);
@@ -497,7 +520,8 @@ where
         job: &J,
         reported: &[DerivationId],
         pending_changes: &mut Vec<FactChange<F>>,
-    ) {
+    ) -> Vec<FactChange<F>> {
+        let mut withdrawn = Vec::new();
         for publisher in self.deps.retain_derivations(job, reported) {
             let previous_output_keys = self.deps.output_keys(&publisher);
             let quiet_before = self.quiet_snapshot(&previous_output_keys);
@@ -507,9 +531,16 @@ where
             self.deps.replace_outputs(publisher.clone(), OrderedSet::default());
             self.deps.forget_reads(&publisher);
             self.unfinal_reads.remove(&publisher);
+            // A withdrawal is a change the completion caused, so it is
+            // REPORTED as well as dispatched: `AppliedStep::changed` is what
+            // the public stream renders, and a retraction that only reached
+            // the wake wave would leave a fact vanishing with nothing on the
+            // log to name it.
+            withdrawn.extend(retracted.changed.iter().cloned());
             pending_changes.extend(retracted.changed);
             self.propagate_quiet_flips(&previous_output_keys, quiet_before, pending_changes);
         }
+        withdrawn
     }
 
     /// Drains a wave of fact changes into wakes. An ascent re-runs readers,

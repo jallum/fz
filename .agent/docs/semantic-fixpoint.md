@@ -121,6 +121,17 @@ Activation(callee_key)
 Executable(callee_key, need)
 ```
 
+Those outputs are not one claim. `analyze_activation` reports them as several
+independent ANSWERS, one per callsite, one per callee function, and one for the
+activation as a whole (`drive::AnalysisAnswer`;
+[`fact-engine`](fact-engine.md), *Splitting analysis into answers*). The
+ledger's publisher is the answer, so a callee's return ascent invalidates the
+caller's answer about THAT callsite and leaves its answers about the others
+clean. Each callsite answer's reads are the prefix of the walk's own
+dataflow-ordered read vector as it stood when that callsite resolved; the
+whole-body answer reads everything and so absorbs the return ladder's ascent
+state, which no read set names.
+
 That publication is how executable demand grows. No separate sweep discovers
 reachable callees. Publishing `Activation(callee_key)` is also the record site
 for `World`'s activation frontier: `World::complete_job` folds the key into
@@ -137,9 +148,14 @@ publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
 changes can withdraw stale contributions. The callsite CLAIMS ride a
-stricter rule than the inputs do: a non-rebased conclusion keeps every
-`Activation`, `CallSiteSummary` and `CallSiteTargets` it did not re-emit, and
-only a rebased one — whose ground actually shifted — withdraws. The
+stricter rule than the inputs do: a conclusion keeps every `Activation`,
+`ActivationInputs`, `CallSiteSummary` and `CallSiteTargets` it did not re-emit,
+and only a REBASED one — whose ground actually shifted — withdraws. One thing
+follows from the answer split: a standing answer the run could not re-derive at
+all is re-reported whole, because a concluding job withdraws every derivation it
+does not report. A REPORTED answer still replaces its reads with the ones the
+run recorded, so a claim it preserved outlives the subscriptions that justified
+it — the job-granular publisher's behaviour, at answer granularity (fz-kdt.69). The
 `ActivationInputs` contributions themselves never withdraw, rebase or not
 (`preserve_frontier` is unconditional for `AnalyzeActivation`, so after a
 rebased withdrawal of a claim the input evidence that fed it stays published

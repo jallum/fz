@@ -18,7 +18,8 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{AnalysisAnswer, FactKey, JobDerivation, JobEffects, current_uses};
+use super::super::facts::DerivationId;
 use super::super::identity::{
     ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
 };
@@ -37,12 +38,61 @@ type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
 /// activation demand it contributes, and its return evidence.
 type ResolvedCall = (Option<CallSiteSummary>, Vec<ActivationContribution>, Option<Ty>);
 
+/// Which of the walk's reads one callsite's answer stands on.
+///
+/// The walk appends to a single dataflow-ordered `reads` vector in the order
+/// the body consumes evidence, so everything a callsite's resolution could
+/// have consulted is already BEHIND it when its emission is built. The
+/// watermark is `reads.len()` at that moment and the read set is the prefix up
+/// to it: an over-approximation within the body's own order (a sibling branch
+/// analyzed earlier is included), and exact about what matters — nothing
+/// appended after the emission can have reached it.
+///
+/// `rebuilt` is the one thing the prefix cannot cover. Coalescing merges the
+/// observations of a callsite reached on several paths and then RE-RESOLVES the
+/// merged surface after the walk has finished, so those reads land past every
+/// watermark. Each such range belongs to the callsite that was rebuilt, and to
+/// no other.
+#[derive(Debug, Clone, Default)]
+struct EmissionReads {
+    watermark: usize,
+    rebuilt: Vec<std::ops::Range<usize>>,
+}
+
+impl EmissionReads {
+    fn at(watermark: usize) -> Self {
+        Self {
+            watermark,
+            rebuilt: Vec::new(),
+        }
+    }
+
+    /// Fold another answer's read set in. Watermarks are prefixes of one
+    /// append-only vector, so their union IS the longer of the two — which is
+    /// why folding is order-independent and needs no sort.
+    fn absorb(&mut self, other: &EmissionReads) {
+        self.watermark = self.watermark.max(other.watermark);
+        self.rebuilt.extend(other.rebuilt.iter().cloned());
+    }
+
+    /// The reads themselves, in the order the walk performed them.
+    fn resolve(&self, reads: &[FactKey]) -> Vec<FactKey> {
+        let mut resolved = reads[..self.watermark].to_vec();
+        for range in &self.rebuilt {
+            resolved.extend(reads[range.clone()].iter().cloned());
+        }
+        resolved
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CallEmission {
     key: CallSiteKey,
     summary: Option<CallSiteSummary>,
     activations: Vec<ActivationContribution>,
     latent_executables: Vec<super::super::identity::ExecutableKey>,
+    /// The prefix of the caller's `reads` this callsite's answer stands on.
+    reads: EmissionReads,
 }
 
 #[derive(Debug, Clone)]
@@ -217,8 +267,16 @@ pub(super) fn analyze_activation(
     let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
     let mut activation_input_contributions = Vec::new();
+    // The read set each answer stands on. Which KEY belongs to which answer is
+    // decided by `AnalysisAnswer::of` alone; this is the other half of the
+    // same split.
+    let mut answer_reads: HashMap<DerivationId, EmissionReads> = HashMap::new();
     for call in &analysis_calls {
         if let Some(summary) = &call.summary {
+            answer_reads
+                .entry(AnalysisAnswer::CallSite(call.key.callsite).id())
+                .or_default()
+                .absorb(&call.reads);
             let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
             let callsite_changed = super::super::drive::ExecutionContext::new(world, tel)
                 .define_callsite_summary(call.key.clone(), summary.clone());
@@ -235,6 +293,10 @@ pub(super) fn analyze_activation(
             }
         }
         for callee_activation in &call.activations {
+            answer_reads
+                .entry(AnalysisAnswer::Callee(callee_activation.key.function).id())
+                .or_default()
+                .absorb(&call.reads);
             if emitted_activations.insert(callee_activation.key.clone()) {
                 outputs.push(FactKey::Activation(callee_activation.key.clone()));
             }
@@ -289,14 +351,96 @@ pub(super) fn analyze_activation(
         changed.push(analyzed_fact);
     }
 
+    let (whole_body_outputs, whole_body_changed, derivations) = split_answers(
+        waits.is_empty(),
+        dedupe_facts(outputs),
+        dedupe_facts(changed),
+        &answer_reads,
+        &reads,
+    );
+
     Ok(JobEffects {
         reads: current_uses(reads),
         waits: current_uses(waits),
-        outputs: dedupe_facts(outputs),
-        changed: dedupe_facts(changed),
+        outputs: whole_body_outputs,
+        changed: whole_body_changed,
         activation_input_contributions,
-        ..JobEffects::default()
+        derivations,
     })
+}
+
+/// Split one run's flat claim list into the answers that own it.
+///
+/// Ownership is `AnalysisAnswer::of` and nothing else, so the split is total
+/// and key-disjoint by construction: no key can reach two answers. Emission
+/// order survives inside each answer, and the answers are reported in the
+/// order the body first claimed something for them — the whole body's own
+/// answer stays the job's flat fields and is applied LAST (`World::complete_job`),
+/// because that is where its `ReturnType`/`ActivationAnalyzed` claims already
+/// sat in one flat list, and completion order is wake order is intern order
+/// (`.agent/docs/fact-engine.md`, *Wake order is not correctness*).
+fn split_answers(
+    concluding: bool,
+    outputs: Vec<FactKey>,
+    changed: Vec<FactKey>,
+    answer_reads: &HashMap<DerivationId, EmissionReads>,
+    reads: &[FactKey],
+) -> (Vec<FactKey>, Vec<FactKey>, Vec<JobDerivation>) {
+    let mut whole_body_outputs = Vec::new();
+    let mut whole_body_changed = Vec::new();
+    let mut order: Vec<DerivationId> = Vec::new();
+    let mut claims: HashMap<DerivationId, (Vec<FactKey>, Vec<FactKey>)> = HashMap::new();
+    for fact in outputs {
+        let answer = AnalysisAnswer::of(&fact).id();
+        if answer == DerivationId::SOLE {
+            whole_body_outputs.push(fact);
+            continue;
+        }
+        if !claims.contains_key(&answer) {
+            order.push(answer);
+        }
+        claims.entry(answer).or_default().0.push(fact);
+    }
+    for fact in changed {
+        let answer = AnalysisAnswer::of(&fact).id();
+        if answer == DerivationId::SOLE {
+            whole_body_changed.push(fact);
+        } else {
+            // Registered in `order` here too: a changed key whose answer has
+            // no output key this run must still reach a derivation, or the
+            // change would be reported nowhere and no subscriber would wake.
+            if !claims.contains_key(&answer) {
+                order.push(answer);
+            }
+            claims.entry(answer).or_default().1.push(fact);
+        }
+    }
+    let derivations = order
+        .into_iter()
+        .map(|answer| {
+            let (outputs, changed) = claims
+                .remove(&answer)
+                .expect("an ordered answer holds the claims it ordered");
+            JobDerivation {
+                derivation: answer,
+                reads: current_uses(
+                    answer_reads
+                        .get(&answer)
+                        .map(|watermark| watermark.resolve(reads))
+                        .unwrap_or_default(),
+                ),
+                outputs,
+                changed,
+                // Reported means re-derived from the reads it names -- but
+                // only a NON-waiting run has vouched for its answers. A
+                // blocked run's claims must stay dirty ("pausing is not
+                // recanting"), so `concluded` follows the job's own
+                // waiting/concluding bifurcation.
+                concluded: concluding,
+            }
+        })
+        .collect();
+    (whole_body_outputs, whole_body_changed, derivations)
 }
 
 fn analyze_entry(
@@ -969,6 +1113,7 @@ fn resolve_direct_call(
 
     let (summary, activations, return_ty) =
         resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), reads, waits)?;
+    let emission_reads = EmissionReads::at(reads.len());
     Ok((
         summary.map(|summary| CallEmission {
             key: CallSiteKey {
@@ -978,6 +1123,7 @@ fn resolve_direct_call(
             summary: Some(summary),
             latent_executables: Vec::new(),
             activations,
+            reads: emission_reads,
         }),
         return_ty,
     ))
@@ -1037,14 +1183,16 @@ fn coalesce_call_emissions(
             coalesced.push(grouped.call);
             continue;
         }
-        coalesced.push(rebuild_coalesced_call_emission(
-            world,
-            tel,
-            caller,
-            grouped.call,
-            reads,
-            waits,
-        )?);
+        // The rebuild re-resolves the merged surface AFTER the walk, so the
+        // reads it performs land past every watermark. They belong to this
+        // callsite's answer and to no other, so they ride as their own range
+        // instead of widening anybody's prefix.
+        let rebuilt_from = reads.len();
+        let mut rebuilt = rebuild_coalesced_call_emission(world, tel, caller, grouped.call, reads, waits)?;
+        if rebuilt_from < reads.len() {
+            rebuilt.reads.rebuilt.push(rebuilt_from..reads.len());
+        }
+        coalesced.push(rebuilt);
     }
     Ok(coalesced)
 }
@@ -1064,6 +1212,7 @@ fn merge_call_emission(
     }
     current.activations.extend(observed.activations);
     current.latent_executables.extend(observed.latent_executables);
+    current.reads.absorb(&observed.reads);
     Ok(())
 }
 
@@ -1151,6 +1300,9 @@ fn rebuild_coalesced_call_emission(
         }),
         activations: rebuilt_activations,
         latent_executables: rebuilt_latent,
+        // The merged observations' watermark; `coalesce_call_emissions` adds
+        // the range this rebuild itself read.
+        reads: call.reads,
     })
 }
 
@@ -1186,6 +1338,7 @@ fn call_emission_for_function(
             }),
             activations: Vec::new(),
             latent_executables: Vec::new(),
+            reads: EmissionReads::at(reads.len()),
         }));
     }
     let Some((activation, return_ty)) = prepare_function_call(world, caller, function, &input_types, reads, waits)
@@ -1211,6 +1364,7 @@ fn call_emission_for_function(
         }),
         activations,
         latent_executables: Vec::new(),
+        reads: EmissionReads::at(reads.len()),
     }))
 }
 
@@ -1559,6 +1713,7 @@ fn resolve_closure_call(
         }
         return Ok((None, Some(any_ty(world))));
     };
+    let emission_reads = EmissionReads::at(reads.len());
     Ok((
         Some(CallEmission {
             key: CallSiteKey {
@@ -1571,6 +1726,7 @@ fn resolve_closure_call(
             }),
             latent_executables,
             activations,
+            reads: emission_reads,
         }),
         return_ty,
     ))

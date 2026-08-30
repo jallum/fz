@@ -1385,6 +1385,120 @@ fn publish(fact: FactKey) -> JobEffects {
     }
 }
 
+/// The `JobEffects::derivations` bridge (fz-kdt.13.1 landed it unexercised —
+/// nothing in the tree constructed a `JobDerivation`). It is what carries a
+/// second answer from a job body into the ledger, so it is pinned BEFORE
+/// anything leans on it: reads become subscriptions of their own publisher,
+/// outputs and `changed` go through `dedupe_job_facts` exactly as the flat
+/// fields do, and the whole-body answer is applied last.
+///
+/// The property that matters is the one the split exists for: moving the
+/// ground under the whole-body answer must leave the second answer settled.
+#[test]
+fn a_second_derivation_reaches_the_ledger_as_its_own_publisher() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let a = world.reference_function(ModuleId::GLOBAL, "ground_a", 0);
+    let b = world.reference_function(ModuleId::GLOBAL, "ground_b", 0);
+    let owner = world.reference_function(ModuleId::GLOBAL, "owner", 0);
+    // The grounds are CUMULATIVE facts, so re-publishing one is an ascent
+    // rather than a ground shift: a shift rebases the whole job and dirties
+    // every answer it holds by design, which is the one case the split does
+    // not scope (`.agent/docs/fact-engine.md`, *The publisher is a derivation*).
+    let key_a = super::identity::ActivationKey::from_inputs(root, a, &[], world.types_mut());
+    let key_b = super::identity::ActivationKey::from_inputs(root, b, &[], world.types_mut());
+    let ground_a = FactKey::ReturnType(key_a.clone());
+    let ground_b = FactKey::ReturnType(key_b.clone());
+    let whole_body = FactKey::LoweredBody(owner);
+    let second_answer = FactKey::EntryDispatch(owner);
+    let second = crate::compiler2::facts::DerivationId(7);
+
+    world.complete_job(Job::AnalyzeActivation(key_a.clone()), publish(ground_a.clone()));
+    world.complete_job(Job::AnalyzeActivation(key_b), publish(ground_b.clone()));
+
+    let reported = world.complete_job(
+        Job::LowerFunction(owner),
+        JobEffects {
+            reads: vec![FactUse::current(ground_a.clone())],
+            // The same key twice on both channels: the bridge must dedupe what
+            // the flat path dedupes, or one job would claim one key twice.
+            outputs: vec![whole_body.clone(), whole_body.clone()],
+            changed: vec![whole_body.clone()],
+            derivations: vec![crate::compiler2::drive::JobDerivation {
+                derivation: second,
+                reads: vec![FactUse::current(ground_b.clone())],
+                outputs: vec![second_answer.clone(), second_answer.clone()],
+                changed: vec![second_answer.clone(), second_answer.clone()],
+                concluded: true,
+            }],
+            ..JobEffects::default()
+        },
+    );
+
+    assert_eq!(
+        reported
+            .step
+            .changed
+            .iter()
+            .filter(|change| change.key == second_answer)
+            .count(),
+        1,
+        "a derivation's outputs and changes go through the same dedupe the flat fields do: {:?}",
+        reported.step.changed,
+    );
+    assert!(
+        world.fact_is_settled(&whole_body) && world.fact_is_settled(&second_answer),
+        "both answers stand on quiet ground, so both are settled",
+    );
+    assert_eq!(
+        world
+            .standing_derivations(&Job::LowerFunction(owner))
+            .into_iter()
+            .map(|(id, outputs, _)| (id, outputs.iter().cloned().collect::<Vec<_>>()))
+            .collect::<Vec<_>>(),
+        vec![
+            (second, vec![second_answer.clone()]),
+            (crate::compiler2::facts::DerivationId::SOLE, vec![whole_body.clone()]),
+        ],
+        "the whole-body answer is applied last, so the reported answers lead the roster",
+    );
+
+    // The point of the split. Only the whole-body answer read `ground_a`.
+    world.complete_job(Job::AnalyzeActivation(key_a), publish(ground_a));
+    assert!(
+        !world.fact_is_settled(&whole_body),
+        "the whole-body answer read what moved, so its claim is provisional",
+    );
+    assert!(
+        world.fact_is_settled(&second_answer),
+        "the second answer's own ground never moved, so its claim stays settled",
+    );
+
+    // `concluded` passes through: a blocked run that did not reach the second
+    // answer leaves that answer's claims dirty (the coercion to concluded only
+    // applies to a completion with no waits).
+    world.complete_job(
+        Job::LowerFunction(owner),
+        JobEffects {
+            reads: vec![FactUse::current(ground_b.clone())],
+            waits: vec![FactUse::current(FactKey::FunctionDefined(owner))],
+            derivations: vec![crate::compiler2::drive::JobDerivation {
+                derivation: second,
+                reads: vec![FactUse::current(ground_b)],
+                outputs: vec![second_answer.clone()],
+                changed: Vec::new(),
+                concluded: false,
+            }],
+            ..JobEffects::default()
+        },
+    );
+    assert!(
+        !world.fact_is_locally_settled(&second_answer),
+        "an unreached answer's claims are dirty: `concluded` reached the ledger",
+    );
+}
+
 /// fz-kdt.63: an analysis that could not resolve a callsite this run has
 /// MISSING EVIDENCE, not proof the call is gone. Its `Activation`,
 /// `CallSiteSummary` and `CallSiteTargets` claims therefore survive a

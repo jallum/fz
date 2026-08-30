@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::telemetry::{RawSpanGuard, RawSpanStop1 as _, RawSpanStop2, RawSpanTelemetry, TelemetryExt};
 
+use super::body::CallSiteId;
 use super::code::CodeId;
 use super::facts::{ClaimShape, DerivationId, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
@@ -162,6 +163,64 @@ pub(crate) struct JobEffects {
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) derivations: Vec<JobDerivation>,
+}
+
+/// Which of `analyze_activation`'s independently-keyed answers owns a fact.
+///
+/// One run of that job reaches many answers: a summary per callsite, an
+/// activation demand per callee, and one statement about the activation as a
+/// whole. The ledger's publisher identity is `(Job, DerivationId)`
+/// (`.agent/docs/fact-engine.md`, *The publisher is a derivation*), and the
+/// engine does not enforce that two derivations of one job stay off each
+/// other's keys — the author does. Here the author's guarantee is structural:
+/// ownership is a TOTAL FUNCTION OF THE KEY, so two answers of one run cannot
+/// co-publish anything, whatever order the body reached them in.
+///
+/// The unit is the CALLSITE for that callsite's own summary, and the callee
+/// FUNCTION for the callee's activation demand. The callee's activation KEY is
+/// deliberately not the unit: a key's arrow moves as the caller's evidence
+/// ascends, so naming an answer after it would make the answer's identity move
+/// under it, while the function the caller decided to call is fixed. Two
+/// callsites that call the same function genuinely contribute to one
+/// `Activation`/`ActivationInputs` fact, and the union of their reads is that
+/// fact's true input set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnalysisAnswer {
+    /// The activation as a whole — its return type and its analysis record.
+    /// Every path in the body contributes to both, so this answer reads
+    /// everything the run read, including `define_return`'s ascent state and
+    /// all path-sensitive residue.
+    WholeBody,
+    CallSite(CallSiteId),
+    Callee(FunctionId),
+}
+
+impl AnalysisAnswer {
+    /// The answer a fact belongs to. Total by construction: every key
+    /// `analyze_activation` can publish lands on exactly one answer, and
+    /// anything else is the whole body's.
+    pub(crate) fn of(fact: &FactKey) -> Self {
+        match fact {
+            FactKey::CallSiteSummary(key) | FactKey::CallSiteTargets(key) => Self::CallSite(key.callsite),
+            FactKey::Activation(key) | FactKey::ActivationInputs(key) => Self::Callee(key.function),
+            _ => Self::WholeBody,
+        }
+    }
+
+    /// The ledger id. `WholeBody` is `SOLE`, so the whole-body answer stays the
+    /// job's flat `reads`/`outputs`/`changed` and every other job in the tree
+    /// is untouched. The other two carry their id in the low half under a
+    /// distinct tag, which is injective without assuming a callsite id and a
+    /// function id share a range.
+    pub(crate) fn id(self) -> DerivationId {
+        const CALLSITE_TAG: u64 = 1 << 32;
+        const CALLEE_TAG: u64 = 2 << 32;
+        match self {
+            Self::WholeBody => DerivationId::SOLE,
+            Self::CallSite(callsite) => DerivationId(CALLSITE_TAG | u64::from(callsite.as_u32())),
+            Self::Callee(function) => DerivationId(CALLEE_TAG | u64::from(function.as_u32())),
+        }
+    }
 }
 
 impl JobEffects {

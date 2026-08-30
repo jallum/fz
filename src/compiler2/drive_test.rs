@@ -9665,6 +9665,328 @@ fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursio
     }
 }
 
+/// Two independent callsites in one body, one of them calling something whose
+/// return climbs. `plain(1)` is resolved before `deep(3)` in the body's own
+/// dataflow order, so `deep`'s ascent is behind `plain`'s watermark and cannot
+/// be an input to the answer main gave about `plain`.
+const INDEPENDENT_CALLSITE_SOURCE: &str = r#"
+fn plain(x), do: x + 1
+fn deep(n) do
+  if n <= 0 do
+    0
+  else
+    deep(n - 1) + 1
+  end
+end
+fn main(), do: dbg(plain(1) + deep(3))
+"#;
+
+/// fz-kdt.13.2: one body, many answers — and a callee's ascent invalidates only
+/// the answers that read it.
+///
+/// `analyze_activation` publishes one summary per callsite, one activation
+/// demand per callee, and one statement about the activation as a whole. With
+/// the JOB as publisher those were one claim set, so a callee `ReturnType`
+/// climbing one step dirtied every one of them: main's answer about `plain`
+/// went provisional because main's answer about `deep` had moved. Nothing about
+/// `plain` had changed, and no amount of re-running could say so.
+///
+/// The observable is one-hop CLEANLINESS, not transitive settledness: caller
+/// and callee read each other, and a cycle is only ever discharged by the drain
+/// arbiter (`.agent/docs/fact-engine.md`, *The drain arbiter*). Whether a claim
+/// is QUEUED TO BE RE-DERIVED is exactly the question the split answers, and it
+/// is answerable mid-drive.
+#[test]
+fn compiler2_a_callee_ascent_leaves_the_callers_other_callsite_answers_clean() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    // What each completion left behind: the returns whose content moved, and
+    // whether every activation-input claim seen so far is still clean.
+    type Cleanliness = Vec<(ActivationKey, bool)>;
+    type Completions = Rc<RefCell<Vec<(Vec<ActivationKey>, Cleanliness)>>>;
+    let observed: Completions = Rc::new(RefCell::new(Vec::new()));
+    let seen: Rc<RefCell<Vec<ActivationKey>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&observed);
+    let known = Rc::clone(&seen);
+    tel.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            let mut known = known.borrow_mut();
+            for movement in &completion.step.movements {
+                if let FactKey::ActivationInputs(key) = &movement.key
+                    && !known.contains(key)
+                {
+                    known.push(key.clone());
+                }
+            }
+            let returns_moved = completion
+                .step
+                .changed
+                .iter()
+                .filter(|change| change.content_changed())
+                .filter_map(|change| match &change.key {
+                    FactKey::ReturnType(key) => Some(key.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let cleanliness = known
+                .iter()
+                .filter(|key| world.has_fact(&FactKey::ActivationInputs((*key).clone())))
+                .map(|key| {
+                    (
+                        key.clone(),
+                        world.fact_is_locally_settled(&FactKey::ActivationInputs(key.clone())),
+                    )
+                })
+                .collect::<Vec<_>>();
+            sink.borrow_mut().push((returns_moved, cleanliness));
+        },
+    );
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_independent_callsites.fz".to_string()),
+        text: INDEPENDENT_CALLSITE_SOURCE.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "the independent-callsite fixture should settle");
+
+    let plain = function_id(&functions, "plain", 1);
+    let deep = function_id(&functions, "deep", 1);
+
+    // Every completion that moved a `deep` return, paired with what main's
+    // answer about `plain` and its answer about `deep` looked like right after.
+    let ascents = observed
+        .borrow()
+        .iter()
+        .filter(|(returns, _)| returns.iter().any(|key| key.function == deep))
+        .map(|(_, cleanliness)| {
+            let state = |function: FunctionId| {
+                cleanliness
+                    .iter()
+                    .filter(|(key, _)| key.function == function)
+                    .map(|(_, clean)| *clean)
+                    .collect::<Vec<_>>()
+            };
+            (state(plain), state(deep))
+        })
+        .filter(|(plain_state, _)| !plain_state.is_empty())
+        .collect::<Vec<_>>();
+
+    assert!(
+        !ascents.is_empty(),
+        "the fixture must actually climb: no completion moved a `deep` return while \
+         main's answer about `plain` was published",
+    );
+    assert!(
+        ascents
+            .iter()
+            .all(|(plain_state, _)| plain_state.iter().all(|clean| *clean)),
+        "a `deep` ascent must leave main's answer about `plain` clean — nothing it \
+         read moved: {ascents:?}",
+    );
+    assert!(
+        ascents
+            .iter()
+            .any(|(_, deep_state)| deep_state.iter().any(|clean| !*clean)),
+        "the same ascent must dirty the answer that DID read it, or the fixture is \
+         proving nothing: {ascents:?}",
+    );
+}
+
+/// fz-kdt.13.2's soundness obligation: an answer is reproducible from the reads
+/// it recorded.
+///
+/// A watermark taken too early is not a slow compile, it is a WRONG one: the
+/// answer keeps a claim that its own recorded inputs can no longer justify,
+/// the claim reads clean, and a settled-gated consumer acts on it. The
+/// property that catches it is the contrapositive, and it is checkable on
+/// every completion of a real compile: if an answer's claims moved, then
+/// something IT RECORDED AS A READ moved since that same answer last
+/// concluded. An answer that re-derives new content out of ground it says
+/// never moved is exactly a missing read.
+///
+/// This is checked per ANSWER, not per job — the job-level version of the same
+/// property has always held and says nothing about where the boundaries are.
+/// A job's WAITS count as recorded inputs alongside the answer's own reads: a
+/// wait carries no derivation attribution, so satisfying one dirties every
+/// answer the job holds (`Scheduler::enqueue_dependents`). That is the channel
+/// through which a callsite whose callee had no `Recursive`/`DispatchMask`
+/// fact yet — no read to record, only a block — legitimately comes back with a
+/// different answer.
+///
+/// Two failure modes have to be told apart, and the job's OWN read set is what
+/// tells them apart:
+///
+/// - a TOO-EARLY WATERMARK is an answer that moved while its own reads stood
+///   still and the WHOLE-BODY answer's did not. The whole-body answer records
+///   everything the run read, so it is the exact discriminator: the missing
+///   input was consulted by this very run and left off this answer's list.
+///   That is the bug this ticket could introduce, and it is held at zero.
+/// - RESIDUE is an answer that moved while nothing the run recorded reading
+///   moved at all. No read set can cover that and none of it is new: a
+///   conclusion records only the evidence THAT run consulted, so a path that
+///   could not resolve last time contributes a longer prefix this time
+///   (`World::complete_job` keeps the claim, and now keeps its subscriptions
+///   too), and `analyze_activation` carries state its facts never name — the
+///   return ladder's ascent budget in `define_return`. It is counted, pinned,
+///   and can only shrink.
+#[test]
+fn compiler2_an_analysis_answer_only_moves_when_something_it_recorded_reading_moved() {
+    let mut observed_residue = 0usize;
+    for (name, text, hidden_state_residue) in [
+        (
+            "fixtures/compiler2_independent_callsites.fz",
+            INDEPENDENT_CALLSITE_SOURCE,
+            0,
+        ),
+        (
+            "fixtures/compiler2_call_graph_components.fz",
+            STATIC_CALL_GRAPH_SOURCE,
+            0,
+        ),
+        (
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+            include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
+            1,
+        ),
+    ] {
+        let tel = ConfiguredTelemetry::new();
+        // (answer, the read revisions it stood on when it last concluded)
+        type Revisions = HashMap<FactKey, Option<u64>>;
+        /// Per job: what each answer's reads stood at when it last concluded,
+        /// and what the job's own waits stood at.
+        type ReadSnapshot = HashMap<Job, (HashMap<crate::compiler2::facts::DerivationId, Revisions>, Revisions)>;
+        let snapshots: Rc<RefCell<ReadSnapshot>> = Rc::new(RefCell::new(HashMap::new()));
+        /// (did anything the RUN recorded reading move?, what happened)
+        type Violation = (bool, String);
+        let violations: Rc<RefCell<Vec<Violation>>> = Rc::new(RefCell::new(Vec::new()));
+        let taken = Rc::clone(&snapshots);
+        let found = Rc::clone(&violations);
+        tel.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, world, completion| {
+                if !matches!(completion.job, Job::AnalyzeActivation(_)) {
+                    return;
+                }
+                let moved = completion
+                    .step
+                    .changed
+                    .iter()
+                    .filter(|change| change.content_changed())
+                    .map(|change| change.key.clone())
+                    .collect::<HashSet<_>>();
+                let mut taken = taken.borrow_mut();
+                let (job_snapshots, blocked_on) = taken.entry(completion.job.clone()).or_default();
+                let wait_moved = blocked_on
+                    .iter()
+                    .any(|(fact, revision)| world.fact_revision(fact) != *revision);
+                for (answer, claims, reads) in world.standing_derivations(&completion.job) {
+                    let own_movement = claims.iter().any(|claim| moved.contains(claim));
+                    if own_movement && let Some(stood_on) = job_snapshots.get(&answer) {
+                        let read_moved = stood_on
+                            .iter()
+                            .any(|(fact, revision)| world.fact_revision(fact) != *revision);
+                        if !read_moved && !wait_moved {
+                            // The whole-body answer records everything the RUN
+                            // read, so it is the exact discriminator: if it
+                            // moved and this answer did not, the split dropped
+                            // an input the same run consulted.
+                            let run_moved = job_snapshots
+                                .get(&crate::compiler2::facts::DerivationId::SOLE)
+                                .into_iter()
+                                .flatten()
+                                .any(|(fact, revision)| world.fact_revision(fact) != *revision);
+                            found.borrow_mut().push((
+                                run_moved,
+                                format!(
+                                    "{:?} answer {} re-derived {:?} with all {} of its recorded reads standing still",
+                                    completion.job,
+                                    answer.0,
+                                    claims.iter().filter(|claim| moved.contains(claim)).collect::<Vec<_>>(),
+                                    stood_on.len(),
+                                ),
+                            ));
+                        }
+                    }
+                    job_snapshots.insert(
+                        answer,
+                        reads
+                            .iter()
+                            .map(|read| {
+                                let fact = read.fact().clone();
+                                let revision = world.fact_revision(&fact);
+                                (fact, revision)
+                            })
+                            .collect(),
+                    );
+                }
+                *blocked_on = completion
+                    .step
+                    .blocked
+                    .iter()
+                    .map(|wait| {
+                        let fact = wait.fact().clone();
+                        let revision = world.fact_revision(&fact);
+                        (fact, revision)
+                    })
+                    .collect();
+            },
+        );
+
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(name.to_string()),
+            text: text.to_string(),
+        });
+        compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert_resolved(compiler.drive(), "the soundness fixture should settle");
+
+        assert!(
+            !snapshots.borrow().is_empty(),
+            "{name}: no analysis ran, so the property proved nothing",
+        );
+        let violations = violations.borrow();
+        let watermark_gaps = violations
+            .iter()
+            .filter(|(run_moved, _)| *run_moved)
+            .map(|(_, report)| report.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            watermark_gaps.is_empty(),
+            "{name}: {} answers moved on evidence the JOB read and the ANSWER did not — \
+             a watermark is taken too early:\n{}",
+            watermark_gaps.len(),
+            watermark_gaps.join("\n"),
+        );
+        let residue = violations.len() - watermark_gaps.len();
+        assert!(
+            residue <= hidden_state_residue,
+            "{name}: {residue} answers moved with nothing the job recorded moving at all, \
+             over the pin of {hidden_state_residue}. This is `analyze_activation`'s state \
+             that its facts do not name; a rise means more of it, not less",
+        );
+        observed_residue += residue;
+    }
+    assert!(
+        observed_residue > 0,
+        "the residue pins are the hidden-state watch: if the analysis has become a \
+         function of its facts, drop them and say so",
+    );
+}
+
 /// fz-kdt.61: the call graph's strong components are a per-function FACT, and
 /// recursion is a projection of it.
 ///

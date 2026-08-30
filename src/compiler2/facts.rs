@@ -15,8 +15,12 @@ pub enum FactReadiness {
 ///
 /// The id is opaque to the engine and minted by the job: the engine never
 /// interprets it, it only keeps claims that came from different reads apart.
+/// It is 64 bits wide so a job can NAME its answers injectively out of two
+/// separate id spaces (`drive::AnalysisAnswer` tags a callsite id and a
+/// function id into disjoint halves) instead of assuming either fits in a
+/// range it shares with the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DerivationId(pub u32);
+pub struct DerivationId(pub u64);
 
 impl DerivationId {
     /// The derivation of a job whose whole body is one answer. Every job that
