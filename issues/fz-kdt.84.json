@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T23:54:47Z",
+  "description": "THE CAMPAIGN fz-kdt.83's census indicated (~half of analysis work re-derives\nunchanged conclusions), now with the mechanism narrowed by two verified\nfacts (2026-08-31, recipes: census logs at 84ae179b4 + code reads):\n\n1. STALE WAKES REFUTED: 0 of 192/85/171 zero-change evals were woken by a\n   fact they no longer read -- every waking movement is genuinely consumed.\n2. THE CONSUMPTION ALGEBRA: a callee's raw ReturnType enters the caller via\n   refine_call_return = MEET with the contract (jobs/semantic.rs:1246), then\n   flows into published outputs through cross-row/cross-path JOINS\n   (merge_value_types column-wise, coalesce, replace_targets_join_returns,\n   reachable-set unions). So a movement changes nothing when it is\n   (a) MASKED: old MEET c == new MEET c (the contract already clipped it), or\n   (b) ABSORBED: the join over sibling rows/paths already covers it.\n   Wake causes of the zero-change class: ReturnType 121/42/134,\n   FunctionContract 65/30/33 -- both sides of the same meet.\n\n## The design question (full treatment: dig -\u003e cold proposal -\u003e integrate)\nA wake-time CUTOFF: when fact F moves old-\u003enew, a subscriber whose every\nconsumption of F is masked/absorbed need not run. Soundness demands\nenumerating EVERY consumption path (the census hazard note: whole-eval\nsubsumption gating is unsound in general -- downstream callsite KEYS are\nminted from raw refined values, so an unmasked raw movement propagates\nnon-monotonically). First dig step: VERIFY the masking hypothesis\nempirically -- for each zero-change eval's ReturnType cause, test\nold MEET contract == new MEET contract (probe at the wake or define site);\nclassify the FunctionContract causes symmetrically. If masking+absorption\ndoes not account for the bulk, the mechanism hunt continues before any\ndesign.\n\n## Constraints\nEngine stays domain-free (a cutoff hook is a domain callback in the\nClaimShape mold, or the movement classification extends is_cumulative's\nalgebra -- the fz-kdt.74 review already flagged that a third movement class\nis a NEW ENGINE CONCEPT: cost it explicitly). Zero-uncaused must hold (a\ncut-off wake must be provably conclusion-preserving, not heuristic).\nPer-output granularity rides the 13.1 derivation substrate if needed.\nWork counts, canon byte-compare, inventory pins as always.",
+  "id": "fz-kdt.84",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Wake cutoff: movements masked by meet-with-contract or absorbed by cross-row joins",
+  "type": "task",
+  "updated_at": "2026-08-30T23:54:47Z"
+}
