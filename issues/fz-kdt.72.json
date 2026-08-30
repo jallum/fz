@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T17:00:13Z",
-  "description": "merge_call_emission (jobs/semantic.rs:1065-ish) extends .activations with no\ndedup; emitted_activations guards only the Activation FactKey push while\nactivation_input_contributions.push runs per duplicate -- so\nnormalize_contributions re-addresses and push_rows an IDENTICAL row many\ntimes in one conclusion. Measured at 84ae179b4 (fz2 interp debug): max\nidentical (key,inputs) rows per conclusion 26/3/12\n(take_drop/range_map/predicate); conclusions emitting \u003e=2 duplicates\n200/13/141. Wasted work + needless ACTIVATION_INPUT_ROW_BUDGET pressure.\n\nStandalone fix: dedup at merge_call_emission or at the contribution push.\nCheap and safe. (An earlier plan folded this into a channel deletion that\nwas refuted -- see fz-kdt.69; the channel lives, so this is standalone\nagain. fz-kdt.74's class formation would also subsume it.)",
+  "description": "Parent: fz-kdt\n\nmerge_call_emission (jobs/semantic.rs:1065-ish) extends .activations with no\ndedup; emitted_activations guards only the Activation FactKey push while\nactivation_input_contributions.push runs per duplicate -- so\nnormalize_contributions re-addresses and push_rows an IDENTICAL row many\ntimes in one conclusion. Measured at 84ae179b4 (fz2 interp debug): max\nidentical (key,inputs) rows per conclusion 26/3/12\n(take_drop/range_map/predicate); conclusions emitting \u003e=2 duplicates\n200/13/141. Wasted work + needless ACTIVATION_INPUT_ROW_BUDGET pressure.\n\nStandalone fix: dedup at merge_call_emission or at the contribution push.\nCheap and safe. (Two earlier plans subsumed this -- the refuted channel deletion and the\nrefuted cell model; the channel lives, so this is standalone. Just fix it.)\n",
   "id": "fz-kdt.72",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "One callsite emits the same callee contribution up to 35x per conclusion",
   "type": "bug",
-  "updated_at": "2026-08-30T23:33:14Z"
+  "updated_at": "2026-08-30T23:46:04Z"
 }
