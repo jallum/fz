@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.69.3"
+  ],
   "created": "2026-08-30T20:02:55Z",
   "description": "Found by fz-kdt.69.3's build (measured, reproduced): rebuild_coalesced_call_\nemission (jobs/semantic.rs:1119-1206) re-mints a target from merged inputs\nand publishes ONLY the rebuilt key, while rebuilt_activations.extend(\ncall.activations) keeps the pre-coalesce keys flowing through the parallel\ncontribution channel. The walk's own return evidence and value_types come\nfrom the PRE-coalesce callees' ReturnType -- so the published edge and the\nanalysis's actual dependencies disagree. Measured: 13/0/4 coalesce events\nper drive lose an activation key (take_drop/range_map/predicate); deriving\ndemand from edges alone starves the ROOT's own analysis into a transport\npanic on both fixtures that lose keys.\n\nFix: either the rebuilt edge carries every walked activation, or the walk\nuses the rebuilt key -- today's split is a latent correctness smell\nindependent of fz-kdt.69 (the published boundary lies about the evidence).\nPREREQUISITE for fz-kdt.69.3 (demand from live edges); see the WIP reference\nbranch wt/kdt693-index (9d65ab25e).",
   "id": "fz-kdt.80",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Coalesced call edges do not name every activation the walk used",
   "type": "bug",
-  "updated_at": "2026-08-30T20:02:55Z"
+  "updated_at": "2026-08-30T20:03:30Z"
 }

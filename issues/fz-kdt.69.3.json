@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.69.2"
+    "fz-kdt.69.2",
+    "fz-kdt.80"
   ],
   "blocks": [],
   "created": "2026-08-30T18:20:47Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Demand is derived from live edges; preservation machinery deleted",
   "type": "task",
-  "updated_at": "2026-08-30T18:20:47Z"
+  "updated_at": "2026-08-30T20:03:30Z"
 }
