@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.69.3"
+  ],
   "created": "2026-08-30T18:20:46Z",
   "description": "Story 2 of fz-kdt.69's v2 design (parent is binding; fz-kdt.69.1 landed).\n\n## The change\nA reached-but-unresolved callsite today emits NOTHING -- and 'unresolved' is\nconflated with 'provider boundary' as absence (CallTargetEdge.activation ==\nNone means boundary; no summary at all means unresolved). unknown-is-not-none,\nliterally: give the edge a third state, distinct in the VALUE MODEL, and emit\nCallSiteSummary/CallSiteTargets for EVERY callsite the walk reaches, resolved\nor not. Omission stops carrying meaning for these two kinds.\n\n## Rip-out (same commit, owner law)\n- The CallSiteSummary/CallSiteTargets arms of preserved_analysis_claims\n  (world.rs) -- with total emission there is nothing to preserve.\n- Any consumer branch that inferred 'unresolved' from absence.\n- Doc text describing summary-omission semantics.\n\n## Hazards\n- Sweep ALL consumers of CallSiteSummary/CallSiteTargets (runtime_demand.rs\n  ~917-921, artifact/native materializers, dispatch, diagnostics): the\n  unresolved value must never read as boundary or as empty-type. Settledness\n  guarantees resolution before consumers act on settled facts -- an\n  UNRESOLVED summary that reaches a settled gate is a new representable\n  state; decide and document what each consumer does (likely: unresolved at\n  settlement = the callsite is dead code or an error -- find the truth, don't\n  guess).\n- Re-emitting unresolved each run must not bump revisions (define equality);\n  unresolved -\u003e resolved IS a content change and must wake readers.\n- kdt.63 ratchet lifecycle rows for these two kinds WILL move (more distinct\n  facts: previously-silent callsites now publish; retractions 24/0/77 -\u003e 0).\n  Re-pin with attribution -- pre-authorized for THESE two kinds only.\n  Activation-kind rows must NOT move (Story 3's). Inventory pins 59/221/214\n  and byte-identical backend MUST hold (move = STOP: the value model leaked\n  into typing).\n\n## Acceptance\n- RED first: a reached-unresolved callsite publishes a summary whose value is\n  distinct from a provider-boundary edge (test the value model directly);\n  preservation of these kinds measured 0 after.\n- True-preservation events for these kinds: 24/0/77 -\u003e 0 (probe method in\n  parent).\n- Zero-uncaused unweakened; determinism suite; matrix; full fresh gates.",
   "id": "fz-kdt.69.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Every reached callsite publishes an edge, resolved or not",
   "type": "task",
-  "updated_at": "2026-08-30T18:20:46Z"
+  "updated_at": "2026-08-30T18:20:47Z"
 }
