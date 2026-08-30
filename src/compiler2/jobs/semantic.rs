@@ -34,13 +34,10 @@ use super::super::world::World;
 type SemanticValues = HashMap<ValueId, Ty>;
 type ValueTypes = HashMap<ValueId, Ty>;
 type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
-/// One reached call: what it resolved to, the activation demand it
-/// contributes, and its return evidence.
-type ResolvedCall = (
-    CallSiteResolution<CallSiteSummary>,
-    Vec<ActivationContribution>,
-    Option<Ty>,
-);
+/// One reached call: what it resolved to, and its return evidence. The
+/// activation demand is not a third element -- it IS the resolution
+/// (`CallSiteSummary::demanded_activations`).
+type ResolvedCall = (CallSiteResolution<CallSiteSummary>, Option<Ty>);
 
 /// A call the walk REACHED. It exists for every live call on a reached path;
 /// a call proven dead never happens and so has no emission at all.
@@ -48,14 +45,7 @@ type ResolvedCall = (
 struct CallEmission {
     key: CallSiteKey,
     resolution: CallSiteResolution<CallSiteSummary>,
-    activations: Vec<ActivationContribution>,
     latent_executables: Vec<super::super::identity::ExecutableKey>,
-}
-
-#[derive(Debug, Clone)]
-struct ActivationContribution {
-    key: ActivationKey,
-    inputs: Vec<Ty>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,11 +89,17 @@ pub(super) fn analyze_activation(
             ..JobEffects::default()
         });
     }
-    let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
-    let Some(alternatives) = world.activation_input_alternatives(activation) else {
-        return Ok(JobEffects::wait_on_current(activation_inputs_fact));
-    };
-    let alternatives = alternatives.clone();
+    // One gate, not two. Demand is DERIVED, so every publisher of
+    // `Activation(k)` publishes `ActivationInputs(k)` from the same derivation
+    // in the same completion -- the fold emits both from one demand set, and
+    // the two seed jobs list both. The separate `ActivationInputs` wait that
+    // used to stand here could therefore never fire, and never did: measured
+    // zero across the target fixtures, the 574-fixture corpus and
+    // `cargo test --lib` (fz-kdt.69.1's sweep) before it was collapsed.
+    let alternatives = world
+        .activation_input_alternatives(activation)
+        .expect("Activation and ActivationInputs are one derivation's two claims")
+        .clone();
 
     let function = activation.function;
     let function_fact = FactKey::FunctionDefined(function);
@@ -236,9 +232,7 @@ pub(super) fn analyze_activation(
     // the waits simply ride the final effects.
     analysis_calls = coalesce_call_emissions(world, tel, activation, analysis_calls, &mut reads, &mut waits)?;
 
-    let mut emitted_activations = HashSet::new();
     let mut emitted_executables = HashSet::new();
-    let mut activation_input_contributions = Vec::new();
     for call in &analysis_calls {
         // EVERY reached callsite publishes its edge, resolved or not: the
         // unresolved answer is a value, so the analysis's silence about a
@@ -257,20 +251,15 @@ pub(super) fn analyze_activation(
         if targets_changed {
             changed.push(targets_fact);
         }
-        for callee_activation in &call.activations {
-            if emitted_activations.insert(callee_activation.key.clone()) {
-                outputs.push(FactKey::Activation(callee_activation.key.clone()));
-            }
-            outputs.push(FactKey::ActivationInputs(callee_activation.key.clone()));
-            activation_input_contributions.push((callee_activation.key.clone(), callee_activation.inputs.clone()));
-            // No wait+push pair here: `prepare_function_call` only `reads`
-            // the callee's `ReturnType` (so mutual recursion cannot
-            // deadlock), so nothing ever blocks on the callee's analysis
-            // itself. Publishing `Activation(callee_activation.key)` above is
-            // the frontier's own record site — `World::complete_job` folds it
-            // into `activation_frontier`, and `demand_activation_frontier_analyses`
-            // ignites the callee's first analysis when the agenda drains.
-        }
+        // No `Activation`/`ActivationInputs` push here, and no wait+push
+        // pair either. The callee demand this analysis states IS the edge
+        // just published: `World::complete_job` folds every live edge's
+        // `CallSiteSummary::demanded_activations` into this job's
+        // `Activation`/`ActivationInputs` claims and its input rows, and into
+        // the demand index that ignites the callee's own first analysis when
+        // the agenda drains. `prepare_function_call` only `reads` the
+        // callee's `ReturnType` (so mutual recursion cannot deadlock), so
+        // nothing ever blocks on the callee's analysis itself.
         for executable in &call.latent_executables {
             if emitted_executables.insert(executable.clone()) {
                 outputs.push(FactKey::Executable(executable.clone()));
@@ -321,7 +310,6 @@ pub(super) fn analyze_activation(
         waits: current_uses(waits),
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
-        activation_input_contributions,
         ..JobEffects::default()
     })
 }
@@ -918,6 +906,15 @@ fn deliver_tail_value(
 ) -> Result<Option<Ty>, FatalError> {
     // No evidence for the delivered value means no evidence for the path.
     let Some(delivered) = value_ty(values, value) else {
+        if std::env::var_os("FZ_WALK_FIX").is_some()
+            && let ControlDestination::Deliver(entry_id) = dest
+        {
+            let scope = entry_scope(entries, *entry_id, values, None, &[]);
+            analyze_entry(
+                world, tel, entries, *entry_id, &scope, reachable_entries, value_types, calls, activation, reads,
+                waits,
+            )?;
+        }
         return Ok(None);
     };
     // A proven-empty value is evidence: nothing flows past this point, the
@@ -989,7 +986,6 @@ fn reached_but_unresolved(activation: &ActivationKey, callsite: CallSiteId) -> C
             callsite,
         },
         resolution: CallSiteResolution::Unresolved,
-        activations: Vec::new(),
         latent_executables: Vec::new(),
     }
 }
@@ -1013,7 +1009,7 @@ fn resolve_direct_call(
         return Ok((None, Some(none_ty(world))));
     }
 
-    let (resolution, activations, return_ty) =
+    let (resolution, return_ty) =
         resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), reads, waits)?;
     Ok((
         Some(CallEmission {
@@ -1023,7 +1019,6 @@ fn resolve_direct_call(
             },
             resolution,
             latent_executables: Vec::new(),
-            activations,
         }),
         return_ty,
     ))
@@ -1074,6 +1069,16 @@ fn coalesce_call_emissions(
         }
     }
 
+    let mut pre_coalesce: HashMap<CallSiteKey, HashSet<(ActivationKey, Vec<Ty>)>> = HashMap::new();
+    if std::env::var_os("FZ_PROBE").is_some() {
+        for (key, grouped) in &grouped {
+            if let Some(summary) = grouped.call.resolution.resolved() {
+                for (a, i) in summary.demanded_activations() {
+                    pre_coalesce.entry(key.clone()).or_default().insert((a.clone(), i.to_vec()));
+                }
+            }
+        }
+    }
     let mut coalesced = Vec::with_capacity(order.len());
     for key in order {
         let grouped = grouped
@@ -1091,6 +1096,28 @@ fn coalesce_call_emissions(
             reads,
             waits,
         )?);
+    }
+    if std::env::var_os("FZ_PROBE").is_some() {
+        for call in &coalesced {
+            let after: HashSet<(ActivationKey, Vec<Ty>)> = call
+                .resolution
+                .resolved()
+                .map(|s| s.demanded_activations().map(|(a, i)| (a.clone(), i.to_vec())).collect())
+                .unwrap_or_default();
+            let before = pre_coalesce.remove(&call.key).unwrap_or_default();
+            let lost_keys: HashSet<_> = before
+                .iter()
+                .map(|(a, _)| a.clone())
+                .filter(|a| !after.iter().any(|(b, _)| b == a))
+                .collect();
+            let lost_rows = before.difference(&after).count();
+            if !lost_keys.is_empty() {
+                eprintln!("FZPROBE coalesce-lost-keys n={}", lost_keys.len());
+            }
+            if lost_rows > 0 {
+                eprintln!("FZPROBE coalesce-lost-rows n={lost_rows}");
+            }
+        }
     }
     Ok(coalesced)
 }
@@ -1113,7 +1140,6 @@ fn merge_call_emission(
         }
         (_, CallSiteResolution::Unresolved) => {}
     }
-    current.activations.extend(observed.activations);
     current.latent_executables.extend(observed.latent_executables);
     Ok(())
 }
@@ -1131,7 +1157,6 @@ fn rebuild_coalesced_call_emission(
     };
     let mut rebuilt_targets = Vec::new();
     let mut rebuilt_return = None;
-    let mut rebuilt_activations = Vec::new();
     let mut rebuilt_latent = Vec::new();
 
     for target in &summary.targets {
@@ -1182,7 +1207,6 @@ fn rebuild_coalesced_call_emission(
                     rebuilt_return = join_evidence(world, rebuilt_return, rebuilt_target.return_ty);
                     merge_call_targets(world, &mut rebuilt_targets, vec![rebuilt_target])?;
                 }
-                rebuilt_activations.extend(rebuilt.activations);
                 rebuilt_latent.extend(rebuilt.latent_executables);
             }
             SelectedCallee::ProviderBoundary(_) => {
@@ -1192,7 +1216,6 @@ fn rebuild_coalesced_call_emission(
         }
     }
 
-    rebuilt_activations.extend(call.activations);
     rebuilt_latent.extend(call.latent_executables);
     Ok(CallEmission {
         key: call.key,
@@ -1200,7 +1223,6 @@ fn rebuild_coalesced_call_emission(
             targets: rebuilt_targets,
             return_ty: rebuilt_return,
         }),
-        activations: rebuilt_activations,
         latent_executables: rebuilt_latent,
     })
 }
@@ -1235,7 +1257,6 @@ fn call_emission_for_function(
                 }],
                 return_ty,
             }),
-            activations: Vec::new(),
             latent_executables: Vec::new(),
         }));
     }
@@ -1244,10 +1265,6 @@ fn call_emission_for_function(
         return Ok(None);
     };
     let return_ty = refine_call_return(world, return_ty, contract_return_ty);
-    let activations = vec![ActivationContribution {
-        key: activation.clone(),
-        inputs: input_types.clone(),
-    }];
     Ok(Some(CallEmission {
         key,
         resolution: CallSiteResolution::Resolved(CallSiteSummary {
@@ -1260,7 +1277,6 @@ fn call_emission_for_function(
             }],
             return_ty,
         }),
-        activations,
         latent_executables: Vec::new(),
     }))
 }
@@ -1289,12 +1305,12 @@ fn resolve_function_call(
         );
     }
     if wait_for_unresolved_function_module(world, function, waits) {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, None));
     }
     let Some((input_types, contract_return_ty)) =
         refine_function_call_surface(world, tel, function, input_types, call_span, reads, waits)?
     else {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, None));
     };
     if world.function_is_provider_boundary(function) {
         // The provider boundary is the public dynamic edge: `any` is earned
@@ -1311,14 +1327,13 @@ fn resolve_function_call(
                 )],
                 return_ty: Some(return_ty),
             }),
-            Vec::new(),
             Some(return_ty),
         ));
     }
     let Some((activation, return_evidence)) =
         prepare_function_call(world, caller, function, &input_types, reads, waits)
     else {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, None));
     };
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     Ok((
@@ -1326,16 +1341,12 @@ fn resolve_function_call(
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
                 surface_inputs: input_types.clone(),
-                activation: Some(activation.clone()),
-                activation_inputs: Some(input_types.clone()),
+                activation: Some(activation),
+                activation_inputs: Some(input_types),
                 return_ty,
             }],
             return_ty,
         }),
-        vec![ActivationContribution {
-            key: activation,
-            inputs: input_types.clone(),
-        }],
         return_ty,
     ))
 }
@@ -1359,7 +1370,7 @@ fn resolve_protocol_call(
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
         wait_for_protocol_module(world, tel, protocol, waits);
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, None));
     }
     reads.push(protocol_fact);
     let dispatch_fact = FactKey::ProtocolDispatch(protocol);
@@ -1375,7 +1386,7 @@ fn resolve_protocol_call(
         // (unreachable in practice) rather than provably dead by construction,
         // so it stays a bare wait instead of an assert/panic.
         waits.insert(dispatch_fact);
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, None));
     }
     reads.push(dispatch_fact);
 
@@ -1420,12 +1431,11 @@ fn resolve_protocol_call(
                 waits.insert(FactKey::ModuleDefined(provider));
             }
         }
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, None));
     }
 
     let matches = merge_protocol_matches_by_function(world, matches);
     let mut targets = Vec::new();
-    let mut activations = Vec::new();
     let mut return_ty = None;
     for (selected, overlap) in matches {
         // VERDICT (fz-rh2.17.5.9): the old ModuleDefined(owner_module) wait
@@ -1435,37 +1445,32 @@ fn resolve_protocol_call(
         // call does not require. Gate per FUNCTION, exactly as the
         // direct-call path does.
         if wait_for_unresolved_function_module(world, selected.function, waits) {
-            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+            return Ok((CallSiteResolution::Unresolved, None));
         }
 
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
         let Some((refined_inputs, contract_return_ty)) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span, reads, waits)?
         else {
-            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+            return Ok((CallSiteResolution::Unresolved, None));
         };
         let Some((activation, observed_return)) =
             prepare_function_call(world, caller, selected.function, &refined_inputs, reads, waits)
         else {
-            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+            return Ok((CallSiteResolution::Unresolved, None));
         };
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
         return_ty = join_evidence(world, return_ty, target_return);
         targets.push(call_target_summary(
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
-            Some(activation.clone()),
-            Some(refined_inputs.clone()),
+            Some(activation),
+            Some(refined_inputs),
             target_return,
         ));
-        activations.push(ActivationContribution {
-            key: activation,
-            inputs: refined_inputs.clone(),
-        });
     }
     Ok((
         CallSiteResolution::Resolved(CallSiteSummary { targets, return_ty }),
-        activations,
         return_ty,
     ))
 }
@@ -1559,7 +1564,6 @@ fn resolve_closure_call(
                 key: key.clone(),
                 resolution: CallSiteResolution::Unresolved,
                 latent_executables: Vec::new(),
-                activations: Vec::new(),
             }),
             return_ty,
         ))
@@ -1571,7 +1575,6 @@ fn resolve_closure_call(
         return unresolved(Some(any_ty(world)));
     };
     let mut selected_targets = Vec::new();
-    let mut activations = Vec::new();
     let latent_executables = Vec::new();
     let mut return_ty = None;
 
@@ -1594,7 +1597,7 @@ fn resolve_closure_call(
         let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
         let mut inputs = closure.captures;
         inputs.extend(refined_args.clone());
-        let (resolution, clause_activations, observed_return) =
+        let (resolution, observed_return) =
             resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
 
         if let CallSiteResolution::Resolved(summary) = resolution {
@@ -1612,7 +1615,6 @@ fn resolve_closure_call(
                     selected_targets.push(rebuilt_target);
                 }
             }
-            activations.extend(clause_activations);
         } else {
             let clause_return = refine_call_return(world, observed_return, Some(clause.ret));
             return_ty = join_evidence(world, return_ty, clause_return);
@@ -1639,7 +1641,6 @@ fn resolve_closure_call(
                 return_ty,
             }),
             latent_executables,
-            activations,
         }),
         return_ty,
     ))

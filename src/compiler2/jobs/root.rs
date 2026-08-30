@@ -90,7 +90,7 @@ pub(super) fn seed_root(
     Ok(JobEffects {
         reads: settled_uses(reads),
         outputs,
-        activation_input_contributions: vec![(entry_activation, root.input.clone())],
+        direct_activation_demand: vec![(entry_activation, root.input.clone())],
         ..JobEffects::default()
     })
 }
@@ -130,7 +130,7 @@ pub(super) fn seed_activation(
             FactKey::Activation(activation.clone()),
             FactKey::ActivationInputs(activation.clone()),
         ],
-        activation_input_contributions: vec![(activation.clone(), activation.inputs(world.types()))],
+        direct_activation_demand: vec![(activation.clone(), activation.inputs(world.types()))],
         ..JobEffects::default()
     })
 }

@@ -60,6 +60,10 @@ impl<T: Clone + Eq + Hash> OrderedSet<T> {
         self.members.contains(value)
     }
 
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.order.is_empty()
     }

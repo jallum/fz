@@ -160,13 +160,21 @@ pub struct World {
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
-    /// Discovered callee activations whose `ActivationAnalyzed` fact is not
-    /// yet settled: the standing demand `drive::demand_activation_frontier_analyses`
-    /// expands, the non-root analogue of the roots' own standing demand.
-    /// `complete_job` is the sole maintenance site — it inserts a key when a
-    /// job outputs `Activation(key)` (unless already settled) and removes it
-    /// once `ActivationAnalyzed(key)` settles.
-    activation_frontier: HashSet<ActivationKey>,
+    /// The live activation demand index (see [`ActivationDemandIndex`]).
+    activation_demand: ActivationDemandIndex,
+    /// Completion records the decommission cascade produced since the last
+    /// flush. `World` owns the mutation; the execution context observes it --
+    /// the same split `quiescence_steps` uses.
+    decommission_completions: Vec<JobCompletion>,
+    /// What the last discharge retired, for the observer to emit.
+    decommission_records: Vec<ActivationDecommission>,
+    /// How many times `seed_activation_producer` refused to name a producer
+    /// for an activation whose `Activation` fact is ABSENT while its
+    /// `ActivationInputs` still has a publisher. The state has no producer
+    /// (refusing is correct) and measured zero before demand became derived;
+    /// decommission makes it reachable, so it is counted rather than
+    /// remembered (fz-kdt.69's Story 3 addendum).
+    activation_inputs_without_claim: u64,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
@@ -183,6 +191,24 @@ pub(crate) struct JobCompletion {
     pub(crate) step: super::AppliedStep<Job, FactKey>,
     pub(crate) activation_input_changed: HashSet<ActivationKey>,
     pub(crate) rebased: bool,
+    /// The activations this completion DECOMMISSIONED: keys its conclusion
+    /// stopped demanding and that no other live demand names any more. Each
+    /// carries the depth at which the cascade reached it -- 0 for a key this
+    /// completion abandoned directly, n+1 for one abandoned by a
+    /// decommission at depth n.
+    pub(crate) decommissioned: Vec<ActivationDecommission>,
+}
+
+/// One activation retired because nothing demands it any more.
+#[derive(Debug, Clone)]
+pub(crate) struct ActivationDecommission {
+    pub(crate) activation: ActivationKey,
+    pub(crate) depth: u32,
+    /// How many of its own claims the decommission conclusion retracted.
+    pub(crate) retracted: usize,
+    /// Whether it had an `ActivationSlot` to clear (return evidence, ascent
+    /// budget, analysis). A key demanded but never analyzed has none.
+    pub(crate) slot_cleared: bool,
 }
 
 impl std::ops::Deref for JobCompletion {
@@ -271,7 +297,10 @@ impl World {
             reported_unresolved: HashSet::new(),
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
-            activation_frontier: HashSet::new(),
+            activation_demand: ActivationDemandIndex::default(),
+            decommission_completions: Vec::new(),
+            decommission_records: Vec::new(),
+            activation_inputs_without_claim: 0,
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -297,7 +326,7 @@ impl World {
         (
             self.code.len(),
             self.roots.ids().count(),
-            self.activation_frontier.len(),
+            self.activation_demand.ignition_len(),
         )
     }
 
@@ -424,70 +453,73 @@ impl World {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> JobCompletion {
         let reads = effects.reads.into_iter().collect();
         let waits: HashSet<_> = effects.waits.into_iter().collect();
-        // Waiting completions extend: a blocked job's prior contributions
-        // stand untouched (the scheduler likewise keeps its claims standing).
-        // A wait-free conclusion normally replaces the contribution key set.
-        // Activation-input evidence from semantic analysis is cumulative caller
-        // evidence: a rerun can add/widen, but a temporarily unreachable callsite
-        // cannot lower and re-raise the same body input edge. Non-semantic
-        // publishers still use normal replacement so source/root changes can
-        // withdraw genuinely stale external contributions.
+        let concluding = waits.is_empty();
         let rebased = self.work_graph.rebased(&job);
         // The work graph is the single source of truth for each publisher's
         // prior output frontier (it tracks every job's facts under the identical
-        // accumulate-on-extend / replace-on-conclude rule). Both contribution
-        // stores read their retraction frontier from it, filtered to their fact.
+        // accumulate-on-extend / replace-on-conclude rule). The contribution
+        // store reads its retraction frontier from it, filtered to its fact.
         let previous_output_keys = self.work_graph.output_keys(&job);
-        let previous_activation_input_outputs = previous_output_keys
-            .iter()
-            .filter_map(|fact| match fact {
-                FactKey::ActivationInputs(key) => Some(key.clone()),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
+        let previous_activation_input_outputs = activation_keys_of(&previous_output_keys, |fact| match fact {
+            FactKey::ActivationInputs(key) => Some(key),
+            _ => None,
+        })
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let previous_activations = activation_keys_of(&previous_output_keys, |fact| match fact {
+            FactKey::Activation(key) => Some(key),
+            _ => None,
+        });
+
+        // DEMAND IS DERIVED. An analysis demands exactly the activations its
+        // live call edges name; the two seed jobs name theirs directly. The
+        // fold is the only statement of either, so an analysis that stopped
+        // reaching a callsite stops demanding what that edge named -- no
+        // preservation arm, no separate contribution channel.
+        let demand = self.derive_activation_demand(&effects.outputs, effects.direct_activation_demand);
+        let next = self.normalize_contributions(demand.rows);
+        // Waiting completions extend: a blocked job's prior contributions
+        // stand untouched (the scheduler likewise keeps its claims standing).
+        // A wait-free conclusion replaces the contribution key set -- which is
+        // sound precisely because the set is derived rather than observed
+        // (fz-kdt.64: with no preserve-the-frontier exception left, a rebased
+        // conclusion narrows the values too).
         let ContributionReplace {
-            output_keys: activation_input_outputs,
+            output_keys: _,
             changed_keys: activation_input_changed,
-        } = if waits.is_empty() {
-            self.conclude_activation_input_contributions(
-                &job,
+        } = if concluding {
+            self.activation_inputs.conclude(
+                &mut self.types,
+                job.clone(),
                 previous_activation_input_outputs,
-                effects.activation_input_contributions,
+                next,
                 rebased,
             )
         } else {
-            self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
+            self.activation_inputs.extend(&mut self.types, job.clone(), next)
         };
+
         let mut outputs = effects.outputs;
-        outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
-        if waits.is_empty() && !rebased {
-            outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
+        // Emission order is the wake order (fz-f98.19), so the derived claims
+        // are appended in the index's own insertion order, never in a
+        // `HashMap`'s.
+        for key in demand.order.iter() {
+            outputs.push(FactKey::Activation(key.clone()));
+            outputs.push(FactKey::ActivationInputs(key.clone()));
         }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
         let changed = dedupe_job_facts(changed);
-        // Captured before `outputs` moves into `complete`: the two record
-        // sites keep `activation_frontier` in lockstep with the fact table.
-        let activation_published: Vec<ActivationKey> = outputs
-            .iter()
-            .filter_map(|fact| match fact {
-                FactKey::Activation(key) => Some(key.clone()),
-                _ => None,
-            })
-            .collect();
-        let analyzed_published: Vec<ActivationKey> = outputs
-            .iter()
-            .filter_map(|fact| match fact {
-                FactKey::ActivationAnalyzed(key) => Some(key.clone()),
-                _ => None,
-            })
-            .collect();
+        let analyzed_published: Vec<ActivationKey> = activation_keys_of(&outputs, |fact| match fact {
+            FactKey::ActivationAnalyzed(key) => Some(key),
+            _ => None,
+        });
         // The flat fields are the job's whole-body answer; `derivations` names
         // any further answers the same run reached independently. Every job
         // today reports none, so this is exactly one `DerivationId::SOLE`
         // completion — the ledger sees what it always saw.
-        let mut derivations = vec![DerivationEffects::sole(reads, outputs, changed, waits.is_empty())];
+        let mut derivations = vec![DerivationEffects::sole(reads, outputs, changed, concluding)];
         derivations.extend(effects.derivations.into_iter().map(|derivation| DerivationEffects {
             derivation: derivation.derivation,
             reads: derivation.reads.into_iter().collect(),
@@ -496,20 +528,239 @@ impl World {
             concluded: derivation.concluded,
         }));
         let step = self.work_graph.complete(&job, waits, derivations);
-        for key in analyzed_published {
-            if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
-                self.activation_frontier.remove(&key);
+        if std::env::var_os("FZ_TRACE").is_some() {
+            for wake in &step.wakes {
+                if wake.shift && matches!(&wake.job, Job::AnalyzeActivation(a) if a.function.as_u32() == 0) {
+                    eprintln!("FZTRACE root-shift by={:?} cause={:?}", job, wake.cause);
+                }
             }
         }
-        for key in activation_published {
-            self.note_activation_frontier(key);
+        for key in analyzed_published {
+            if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
+                self.activation_demand.retire(&key);
+            }
+        }
+        for key in demand.order.iter() {
+            if !self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
+                self.activation_demand.note(key.clone());
+            }
+        }
+        // Post-completion zero, never mid-completion: a conclusion that moves
+        // a callsite from one activation key to another decrements and
+        // increments inside ONE `replace_outputs`, so migrating away and back
+        // in the same conclusion is a non-event and nominates nothing.
+        if concluding {
+            for key in previous_activations {
+                if demand.order.contains(&key) || self.has_fact(&FactKey::Activation(key.clone())) {
+                    continue;
+                }
+                self.activation_demand.abandon(key);
+            }
         }
         JobCompletion {
             job,
             step,
             activation_input_changed,
             rebased,
+            decommissioned: Vec::new(),
         }
+    }
+
+    /// Retires every activation nothing demands any more. Called at a DRAIN,
+    /// and only at a drain -- the same discharge the finality arbiter uses,
+    /// for the same reason.
+    ///
+    /// Zero demand at the instant of a completion is not knowledge. A rebased
+    /// analysis re-derives its edges from shifted ground and `analyze_tail`
+    /// stops walking a tail chain whose callee has no return evidence YET, so
+    /// a mid-ascent conclusion transiently names fewer callees than it will
+    /// two rounds later (fz-kdt.69.2 measured that non-monotonicity as
+    /// retract-and-remint: 12/0/33 callsite edges). Retiring on that instant
+    /// tears down a callee the caller is about to re-derive, and the teardown
+    /// shifts the caller's own ground -- measured as a NON-TERMINATING
+    /// 5-conclusion cycle on `enum_take_drop_split` (4110 decommissions of the
+    /// same three keys), and the ticket's own STOP rule.
+    ///
+    /// At a drain there is no pending job, so the only publisher that could
+    /// still name the key is one paused on a wait, and a paused publisher
+    /// cannot run until something wakes it -- at which point it re-demands the
+    /// key through the ordinary path. "Nothing demands it" is a settled
+    /// question, and the drain is where settled questions are answered.
+    /// Returns how many activations were retired.
+    pub(crate) fn decommission_abandoned_activations(&mut self) -> u64 {
+        let mut retired = Vec::new();
+        for key in self.activation_demand.take_abandoned() {
+            if self.has_fact(&FactKey::Activation(key.clone())) {
+                continue;
+            }
+            self.decommission_activation(key, 0, &mut retired);
+        }
+        if std::env::var_os("FZ_PROBE").is_some() && !retired.is_empty() {
+            for r in &retired {
+                eprintln!("FZPROBE decom depth={} retracted={} key={}/{:?}", r.depth, r.retracted, r.activation.function.as_u32(), r.activation.arrow);
+            }
+        }
+        let count = retired.len() as u64;
+        self.decommission_records.extend(retired);
+        count
+    }
+
+    /// Drains the decommission records the last discharge produced.
+    pub(crate) fn take_decommission_records(&mut self) -> Vec<ActivationDecommission> {
+        std::mem::take(&mut self.decommission_records)
+    }
+
+    /// The activation demand one run states, derived from the facts it just
+    /// published and nothing else.
+    ///
+    /// A resolved edge's targets ARE the demand
+    /// ([`CallSiteSummary::demanded_activations`]); the store is read rather
+    /// than the emission, because the store holds the published answer -- an
+    /// `Unresolved` re-emission never overwrites a resolved edge, so a round
+    /// that stopped resolving keeps the demand it earned
+    /// ([`CallSiteResolution`], fz-kdt.69.2). Non-edge demand -- a root's own
+    /// entry and the runtime-demand frontier's mints, which no edge names --
+    /// arrives as `direct`.
+    ///
+    /// Rows are deduped on exact `(activation, inputs)`: one callsite reached
+    /// down several rows or arms coalesces into one edge, and re-stating an
+    /// identical row does nothing but re-address types and push budget
+    /// (fz-kdt.72 measured 26/3/12 identical rows in a single conclusion).
+    fn derive_activation_demand(
+        &self,
+        outputs: &[FactKey],
+        direct: Vec<(ActivationKey, Vec<Ty>)>,
+    ) -> DerivedActivationDemand {
+        let mut derived = DerivedActivationDemand::default();
+        for fact in outputs {
+            let FactKey::CallSiteSummary(edge) = fact else {
+                continue;
+            };
+            let Some(summary) = self.callsites.resolved(edge) else {
+                continue;
+            };
+            for (activation, inputs) in summary.demanded_activations() {
+                derived.push(activation.clone(), inputs.to_vec());
+            }
+        }
+        for (activation, inputs) in direct {
+            derived.push(activation, inputs);
+        }
+        derived
+    }
+
+    /// Retires an activation nothing demands any more, and everything that
+    /// stood on it.
+    ///
+    /// The conclusion is the analysis's own: it retracts every claim
+    /// `AnalyzeActivation(key)` holds and clears the `ActivationSlot` behind
+    /// them, because a key that comes back must come back FRESH -- a
+    /// resurrection inheriting an exhausted `RETURN_WIDENING_BUDGET` publishes
+    /// an unearned `any` on its first ascent (the fz-f98.14.11 class). Its
+    /// READS are re-listed: they are what wakes the job if a later caller
+    /// re-demands the key (`Activation(key)` is among them), and a publisher
+    /// with no claims settles nothing from them.
+    ///
+    /// A decommissioned activation's own callee claims go with it, so the
+    /// cascade is the same mechanism applied one level down. It terminates on
+    /// the finite key inventory: `out` records every key already retired in
+    /// this pass and no key is visited twice.
+    fn decommission_activation(&mut self, key: ActivationKey, depth: u32, out: &mut Vec<ActivationDecommission>) {
+        if out.iter().any(|decommission| decommission.activation == key) {
+            return;
+        }
+        self.activation_demand.retire(&key);
+        let slot_cleared = self.activations.decommission(&key);
+        let job = Job::AnalyzeActivation(key.clone());
+        if !self.work_graph.has_run(&job) {
+            // A key demanded but never analyzed holds no claims and has no
+            // reads to re-list. Recording a conclusion for it would make
+            // `has_run` true and silence the frontier ignition it still needs
+            // if it is ever demanded again.
+            out.push(ActivationDecommission {
+                activation: key,
+                depth,
+                retracted: 0,
+                slot_cleared,
+            });
+            return;
+        }
+        let claims = self.work_graph.output_keys(&job);
+        let retracted = claims.len();
+        let own_inputs = activation_keys_of(&claims, |fact| match fact {
+            FactKey::ActivationInputs(key) => Some(key),
+            _ => None,
+        })
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let callees = activation_keys_of(&claims, |fact| match fact {
+            FactKey::Activation(key) => Some(key),
+            _ => None,
+        });
+        let withdrawn = self.activation_inputs.conclude(
+            &mut self.types,
+            job.clone(),
+            own_inputs,
+            HashMap::new(),
+            // A decommission is the narrowing conclusion: the evidence this
+            // publisher contributed is refuted, not merely unobserved.
+            true,
+        );
+        let changed = withdrawn
+            .changed_keys
+            .iter()
+            .cloned()
+            .map(FactKey::ActivationInputs)
+            .collect::<Vec<_>>();
+        let rebased = self.work_graph.rebased(&job);
+        let reads = self.work_graph.reads(&job);
+        let step = self.work_graph.complete(
+            &job,
+            HashSet::new(),
+            vec![DerivationEffects::sole(reads, Vec::new(), changed, true)],
+        );
+        if std::env::var_os("FZ_PROBE").is_some() {
+            for wake in &step.wakes {
+                eprintln!(
+                    "FZPROBE wake shift={} job={:?} cause={:?}",
+                    wake.shift, wake.job, wake.cause
+                );
+            }
+        }
+        out.push(ActivationDecommission {
+            activation: key,
+            depth,
+            retracted,
+            slot_cleared,
+        });
+        // The retraction wave this conclusion caused is a real movement with
+        // no job run behind it, so it rides its own completion record
+        // (`ExecutionContext::complete_job` emits the stash right after the
+        // completion that caused it) -- without that, every job it woke would
+        // read as an evaluation naming no moved input.
+        self.decommission_completions.push(JobCompletion {
+            job,
+            step,
+            activation_input_changed: withdrawn.changed_keys,
+            rebased,
+            decommissioned: Vec::new(),
+        });
+        for callee in callees {
+            if self.has_fact(&FactKey::Activation(callee.clone())) {
+                continue;
+            }
+            // A decommissioned activation's own callee claims went with it, so
+            // the cascade is this same mechanism one level down. It terminates
+            // on the finite key inventory: `out` records every key retired in
+            // this discharge and no key is visited twice.
+            self.activation_demand.reclaim(&callee);
+            self.decommission_activation(callee, depth + 1, out);
+        }
+    }
+
+    /// Drains the completion records the decommission cascade produced.
+    pub(crate) fn take_decommission_completions(&mut self) -> Vec<JobCompletion> {
+        std::mem::take(&mut self.decommission_completions)
     }
 
     /// The claims a job already holds, and the reads standing behind them.
@@ -531,27 +782,27 @@ impl World {
         (claims, reads)
     }
 
-    /// The SOLE insertion point into `activation_frontier`: a discovered
-    /// `Activation(key)` publish becomes a standing analysis demand unless
-    /// its `ActivationAnalyzed` fact has already settled.
-    fn note_activation_frontier(&mut self, key: ActivationKey) {
-        if !self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
-            self.activation_frontier.insert(key);
-        }
-    }
-
     /// The activations `drive::demand_activation_frontier_analyses` still
-    /// owes a first-run demand. Order carries no meaning — demanding
-    /// producers is commutative — so no sort applies.
-    pub(crate) fn activation_frontier_keys(&self) -> Vec<ActivationKey> {
-        self.activation_frontier.iter().cloned().collect()
+    /// owes a first-run demand, in the order demand first reached them.
+    pub(crate) fn activation_ignition_keys(&self) -> Vec<ActivationKey> {
+        self.activation_demand.ignition_keys()
     }
 
     /// Drops a key `demand_activation_frontier_analyses` has determined no
     /// longer needs first-run ignition (already analyzed at least once, or
     /// settled).
-    pub(crate) fn retire_activation_frontier(&mut self, key: &ActivationKey) {
-        self.activation_frontier.remove(key);
+    pub(crate) fn retire_activation_ignition(&mut self, key: &ActivationKey) {
+        self.activation_demand.retire(key);
+    }
+
+    /// How often the fact->producer map has met an activation with input
+    /// evidence but no live claim. See `activation_inputs_without_claim`.
+    pub(crate) fn activation_inputs_without_claim(&self) -> u64 {
+        self.activation_inputs_without_claim
+    }
+
+    pub(crate) fn note_activation_inputs_without_claim(&mut self) {
+        self.activation_inputs_without_claim += 1;
     }
 
     /// The manual, unattributed demand entry point: nothing here names a
@@ -655,37 +906,6 @@ impl World {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.activations.get(key).and_then(|slot| slot.return_ty().copied())
-    }
-
-    fn conclude_activation_input_contributions(
-        &mut self,
-        job: &Job,
-        previous_output_keys: HashSet<ActivationKey>,
-        contributions: Vec<(ActivationKey, Vec<Ty>)>,
-        rebased: bool,
-    ) -> ContributionReplace<ActivationKey> {
-        let next = self.normalize_contributions(contributions);
-        let preserve_frontier = rebased || matches!(job, Job::AnalyzeActivation(_));
-        if preserve_frontier {
-            self.activation_inputs.conclude_preserving_frontier(
-                &mut self.types,
-                job.clone(),
-                previous_output_keys,
-                next,
-            )
-        } else {
-            self.activation_inputs
-                .conclude(&mut self.types, job.clone(), previous_output_keys, next, false)
-        }
-    }
-
-    fn extend_activation_input_contributions(
-        &mut self,
-        job: &Job,
-        contributions: Vec<(ActivationKey, Vec<Ty>)>,
-    ) -> ContributionReplace<ActivationKey> {
-        let next = self.normalize_contributions(contributions);
-        self.activation_inputs.extend(&mut self.types, job.clone(), next)
     }
 
     fn normalize_contributions(
@@ -2206,37 +2426,91 @@ fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalErr
     FatalError
 }
 
-/// The claims a NON-rebased `AnalyzeActivation` conclusion keeps standing
-/// even though it did not re-emit them (fz-kdt.63).
-///
-/// `analyze_activation` claims a callee's `Activation` only from evidence that
-/// has arrived: a callsite whose target evidence is still climbing resolves to
-/// nothing and names no callee. That absence is bottom, not a proof the call
-/// is gone — the same reading `conclude_activation_input_contributions` already
-/// gives `ActivationInputs`. Re-listing the standing claims keeps them
-/// published at their own revisions, so nothing moves and nobody rebases.
-///
-/// Withdrawal is not lost, it is scoped: a REBASED conclusion re-derives every
-/// claim from the shifted ground, so what it omits is genuinely refuted and
-/// the ordinary replacement retracts it. `Activation` is claimed by every
-/// caller reaching it, and each caller's claim is withdrawn only by that
-/// caller's own rebase — preserving one publisher's standing claim never
-/// re-publishes another's.
-///
-/// `CallSiteSummary`/`CallSiteTargets` are NOT here: every callsite the walk
-/// reaches publishes its edge, unresolved and all
-/// ([`CallSiteResolution`](super::semantic::CallSiteResolution)), so silence
-/// about one is knowledge — the walk no longer reaches it — and nothing about
-/// them is preservable (fz-kdt.69.2).
-fn preserved_analysis_claims(job: &Job, previous_output_keys: &OrderedSet<FactKey>) -> Vec<FactKey> {
-    if !matches!(job, Job::AnalyzeActivation(_)) {
-        return Vec::new();
+/// The activation keys a fact list names under one projection, in list order.
+fn activation_keys_of<'a>(
+    facts: impl IntoIterator<Item = &'a FactKey>,
+    project: impl Fn(&'a FactKey) -> Option<&'a ActivationKey>,
+) -> Vec<ActivationKey> {
+    facts.into_iter().filter_map(project).cloned().collect()
+}
+
+/// One run's derived activation demand: which activations it names, and the
+/// correlated input rows it contributes for them.
+#[derive(Debug, Default)]
+struct DerivedActivationDemand {
+    /// Insertion-ordered membership. This becomes the emission order of the
+    /// derived `Activation`/`ActivationInputs` claims, which is the wake
+    /// order, which is the intern order (fz-f98.19).
+    order: OrderedSet<ActivationKey>,
+    rows: Vec<(ActivationKey, Vec<Ty>)>,
+    /// Exact `(activation, inputs)` pairs already recorded this run.
+    seen: HashSet<(ActivationKey, Vec<Ty>)>,
+}
+
+impl DerivedActivationDemand {
+    fn push(&mut self, activation: ActivationKey, inputs: Vec<Ty>) {
+        self.order.insert(activation.clone());
+        if self.seen.insert((activation.clone(), inputs.clone())) {
+            self.rows.push((activation, inputs));
+        }
     }
-    previous_output_keys
-        .iter()
-        .filter(|fact| matches!(fact, FactKey::Activation(_)))
-        .cloned()
-        .collect()
+}
+
+/// The live activation demand index.
+///
+/// Demand is DERIVED: `Activation(k)` is present exactly while some publisher
+/// still names k -- an analysis whose live call edge resolves to k, a root
+/// seeding its own entry, or the runtime-demand frontier's mint. The fact
+/// table's publisher set IS that refcount, so this index holds no second
+/// count of it; what it owns is the part the ledger cannot answer -- WHICH
+/// demanded activations are still owed a first analysis run, and in what
+/// order. It absorbs the former `activation_frontier`, and being
+/// insertion-ordered rather than a `HashSet` is what retired the
+/// display-name sort the drain expansion used to need to be deterministic.
+///
+/// `World::complete_job` is the sole insertion site.
+#[derive(Debug, Default)]
+struct ActivationDemandIndex {
+    ignition: OrderedSet<ActivationKey>,
+    /// Keys a conclusion stopped naming and whose `Activation` fact went
+    /// absent with it: the zero-demand bucket, discharged at the next drain
+    /// (`World::decommission_abandoned_activations`). A key re-demanded
+    /// before the drain leaves the bucket without ever being retired.
+    abandoned: OrderedSet<ActivationKey>,
+}
+
+impl ActivationDemandIndex {
+    fn note(&mut self, key: ActivationKey) {
+        self.abandoned.remove(&key);
+        self.ignition.insert(key);
+    }
+
+    fn abandon(&mut self, key: ActivationKey) {
+        self.abandoned.insert(key);
+    }
+
+    fn reclaim(&mut self, key: &ActivationKey) {
+        self.abandoned.remove(key);
+    }
+
+    fn take_abandoned(&mut self) -> Vec<ActivationKey> {
+        let keys = self.abandoned.iter().cloned().collect();
+        self.abandoned = OrderedSet::default();
+        keys
+    }
+
+    fn retire(&mut self, key: &ActivationKey) {
+        self.ignition.remove(key);
+        self.abandoned.remove(key);
+    }
+
+    fn ignition_keys(&self) -> Vec<ActivationKey> {
+        self.ignition.iter().cloned().collect()
+    }
+
+    fn ignition_len(&self) -> usize {
+        self.ignition.len()
+    }
 }
 
 /// Drop repeats, keep the order the job emitted them in.

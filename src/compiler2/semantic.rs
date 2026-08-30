@@ -154,6 +154,31 @@ impl CallSiteSummary {
         *self = observed;
     }
 
+    /// The activation demand this edge NAMES, in target order.
+    ///
+    /// A resolved edge's targets ARE the demand: a target naming a compiler2
+    /// activation demands that activation's existence and contributes the
+    /// input row that keyed it. This is the one statement of callee demand --
+    /// the analysis used to push a parallel list of the same pairs beside the
+    /// edge, which re-stated it up to 26 times per conclusion (fz-kdt.72) and
+    /// could name a key the coalesced edge no longer resolved to.
+    pub fn demanded_activations(&self) -> impl Iterator<Item = (&ActivationKey, &[Ty])> {
+        self.targets.iter().filter_map(|target| {
+            match (target.activation.as_ref(), target.activation_inputs.as_deref()) {
+                (Some(activation), Some(inputs)) => Some((activation, inputs)),
+                (Some(_), None) => {
+                    // Every target that names an activation was built from the
+                    // evidence vector that keyed it, and the coalescing merges
+                    // carry both fields together. A target holding one without
+                    // the other would silently drop a callee's demand.
+                    debug_assert!(false, "an activation-naming target carries the evidence row that keyed it");
+                    None
+                }
+                _ => None,
+            }
+        })
+    }
+
     fn coalesce_targets(&mut self, types: &mut Types) {
         let mut coalesced = Vec::<CallTargetSummary>::new();
         for mut target in self.targets.drain(..) {
@@ -1030,6 +1055,18 @@ impl ActivationMap {
         }
     }
 
+    /// Retires an activation's whole slot: its return evidence, the widening
+    /// ascent budget that evidence climbed, and its analysis.
+    ///
+    /// A key no live demand names any more is GONE, not paused. If a later
+    /// caller re-demands it, it must behave exactly like a freshly minted key
+    /// -- keeping the slot would hand the resurrection an already-exhausted
+    /// `RETURN_WIDENING_BUDGET` and let it publish an unearned `any` on its
+    /// first ascent (the fz-f98.14.11 class). Reports whether a slot existed.
+    pub fn decommission(&mut self, key: &ActivationKey) -> bool {
+        self.slots.remove(key).is_some()
+    }
+
     pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
         let changed = slot.analysis.as_ref() != Some(&analysis);
@@ -1064,13 +1101,13 @@ where
     /// path by which contributed values may narrow. `previous_output_keys` is
     /// the publisher's prior frontier, owned by the work graph.
     ///
-    /// Withdrawal-on-conclude is correct only where a publisher's absence of a
-    /// key genuinely retracts a contribution it alone made (e.g. a `SeedRoot`
-    /// that stops seeding a body's input edge). For a fact whose contributions
-    /// only ever grow within an epoch as upstream evidence ascends — a callee
-    /// or demand transiently unreachable, not impossible — a non-rebased absence
-    /// is NOT a retraction; those callers conclude through
-    /// `conclude_preserving_frontier` so the frontier survives the round.
+    /// Withdrawal-on-conclude is correct because a publisher's contribution
+    /// key set is DERIVED, never guessed: an analysis contributes exactly the
+    /// activations its live call edges name, and every callsite the walk
+    /// reaches publishes its edge (`CallSiteResolution`), so a key absent from
+    /// the derivation is a key no live edge names. There is no
+    /// preserve-the-frontier arm any more; the exception that used to make
+    /// narrowing unreachable for activation inputs died with it (fz-kdt.64).
     pub fn conclude(
         &mut self,
         ctx: &mut V::Ctx,
@@ -1079,6 +1116,17 @@ where
         next: HashMap<K, V>,
         rebased: bool,
     ) -> ContributionReplace<K> {
+        if std::env::var_os("FZ_PRESERVE").is_some() {
+            let mut output_keys = previous_output_keys;
+            output_keys.extend(next.keys().cloned());
+            let mut changed_keys = HashSet::new();
+            for (key, value) in next {
+                if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
+                    changed_keys.insert(key);
+                }
+            }
+            return ContributionReplace { output_keys, changed_keys };
+        }
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
         let touched = previous_output_keys
             .iter()
@@ -1097,31 +1145,6 @@ where
         }
         ContributionReplace {
             output_keys: next_output_keys,
-            changed_keys,
-        }
-    }
-
-    /// A cumulative concluding-completion arm for evidence whose absence in a
-    /// rerun is not a proof of impossibility. New entries join with the
-    /// publisher's prior entries; previous output keys stay in the publisher's
-    /// frontier and are not withdrawn.
-    pub fn conclude_preserving_frontier(
-        &mut self,
-        ctx: &mut V::Ctx,
-        publisher: P,
-        previous_output_keys: HashSet<K>,
-        next: HashMap<K, V>,
-    ) -> ContributionReplace<K> {
-        let mut output_keys = previous_output_keys;
-        output_keys.extend(next.keys().cloned());
-        let mut changed_keys = HashSet::new();
-        for (key, value) in next {
-            if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
-                changed_keys.insert(key);
-            }
-        }
-        ContributionReplace {
-            output_keys,
             changed_keys,
         }
     }
@@ -1704,44 +1727,6 @@ mod tests {
             vec![union],
             "activation-input evidence is cumulative; a later narrower observation must not lower the joined slot",
         );
-    }
-
-    #[test]
-    fn rebased_activation_input_conclusion_preserves_prior_publisher_frontier() {
-        let tel = ConfiguredTelemetry::new();
-        let mut world = World::new();
-        let key = test_key(&mut world, &tel);
-        let input = world.types_mut().atom_lit("seen");
-        let publisher = Job::AnalyzeActivation(key.clone());
-        let mut map = ActivationInputMap::new();
-
-        let first = map.conclude(
-            world.types_mut(),
-            publisher.clone(),
-            HashSet::new(),
-            HashMap::from([(key.clone(), ActivationInputAlternatives::from_row(vec![input]))]),
-            false,
-        );
-        assert_eq!(first.output_keys, HashSet::from([key.clone()]));
-        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
-
-        let rebased = map.conclude_preserving_frontier(
-            world.types_mut(),
-            publisher,
-            HashSet::from([key.clone()]),
-            HashMap::new(),
-        );
-
-        assert_eq!(
-            rebased.output_keys,
-            HashSet::from([key.clone()]),
-            "rebased activation-input evidence may pause but must not retract the publisher's prior edge"
-        );
-        assert!(
-            rebased.changed_keys.is_empty(),
-            "preserving an unchanged frontier should not mark the activation input dirty"
-        );
-        assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
     }
 
     #[test]

@@ -29,10 +29,17 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
         let completion = self.world.complete_job(job, effects);
         self.emit_job_completion(&completion);
+        // Emitted AFTER the completion that caused them: a decommission's
+        // retraction wave is caused by this completion's own withdrawal of
+        // `Activation(k)`, and the causal stream reads events in emission
+        // order (`telemetry::causal`).
+        for decommission in self.world.take_decommission_completions() {
+            self.emit_job_completion(&decommission);
+        }
         completion
     }
 
-    fn emit_job_completion(&self, completion: &super::world::JobCompletion) {
+    pub(super) fn emit_job_completion(&self, completion: &super::world::JobCompletion) {
         if !completion.activation_input_changed.is_empty() {
             self.telemetry.raw_event2(
                 &["fz", "compiler2", "activation_inputs", "defined"],
@@ -160,7 +167,16 @@ pub(crate) struct JobEffects {
     pub(crate) waits: Vec<FactUse<FactKey>>,
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
-    pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    /// Activations this run demands DIRECTLY, with the input row it observed.
+    /// A direct demand is one no call edge names: a root's own entry
+    /// (`SeedRoot`) and an activation the runtime-demand frontier minted from
+    /// a callable surface (`SeedActivation`). Analysis demand is DERIVED from
+    /// the call edges the run published (`World::derive_activation_demand`)
+    /// and never appears here -- restating it beside the edge is what
+    /// re-published one callee's row up to 26 times per conclusion
+    /// (fz-kdt.72) and could name a key the coalesced edge no longer resolved
+    /// to.
+    pub(crate) direct_activation_demand: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) derivations: Vec<JobDerivation>,
 }
 
@@ -277,9 +293,20 @@ impl World {
     /// publisher's evidence -- a caller's call edge -- and re-minting them from
     /// the arrow would both fabricate the caller's contribution and undo the
     /// caller's own withdrawal of the key, so no retraction could ever stick.
-    fn seed_activation_producer(&self, activation: &ActivationKey) -> Option<Job> {
-        (!self.has_fact(&FactKey::ActivationInputs(activation.clone())))
-            .then(|| Job::SeedActivation(activation.clone()))
+    fn seed_activation_producer(&mut self, activation: &ActivationKey) -> Option<Job> {
+        if self.has_fact(&FactKey::ActivationInputs(activation.clone())) {
+            // TRIPWIRE (fz-kdt.69's Story 3 addendum). Input evidence with no
+            // live claim has no producer at all: seeding would fabricate the
+            // discovering caller's evidence, and no other job owns the key.
+            // Refusing is right, and the state measured ZERO before demand
+            // became derived -- decommission makes it reachable, so it is
+            // COUNTED here rather than assumed away.
+            if !self.has_fact(&FactKey::Activation(activation.clone())) {
+                self.note_activation_inputs_without_claim();
+            }
+            return None;
+        }
+        Some(Job::SeedActivation(activation.clone()))
     }
 
     fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey, reason: WorkStartReason) -> bool {
@@ -439,20 +466,16 @@ impl World {
     /// set stays bounded. Returns how many analyses were demanded.
     pub(crate) fn demand_activation_frontier_analyses(&mut self) -> u64 {
         let mut demanded = 0_u64;
-        let mut keys = self.activation_frontier_keys();
-        // `activation_frontier` is a `HashSet<ActivationKey>` (`world.rs`):
-        // its iteration order is `RandomState`-dependent. `AnalyzeActivation`
-        // mints fresh `Ty` combinations (interned call-site arrows) as a side
-        // effect of running, so demanding two ready callee activations in a
-        // different relative order between runs mints their arrows in a
-        // different relative order too. Sort by `StableSortKey`
-        // (`Types::display`, not raw `Ty`/`{:?}`) so the demand order is a
-        // function of the activations' own structure, not of which run's
-        // hasher happened to bucket them first.
-        keys.sort_by_cached_key(|key| key.stable_sort_key(self.types()));
-        for key in keys {
+        // No sort. The demand index is insertion-ordered (`OrderedSet`), so
+        // the ignition order is the order demand first reached each key --
+        // a function of the analyses' own emission order, which is already
+        // the deterministic spine everything downstream rides (fz-f98.19).
+        // The former `HashSet` frontier had `RandomState` iteration order and
+        // had to be re-sorted by `StableSortKey` at every drain to be
+        // reproducible at all; deriving demand retired that sort.
+        for key in self.activation_ignition_keys() {
             if self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
-                self.retire_activation_frontier(&key);
+                self.retire_activation_ignition(&key);
                 continue;
             }
             demanded +=
@@ -472,6 +495,7 @@ impl World {
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
+        self.decommission_abandoned_activations();
         self.settle_quiescent_waits();
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
@@ -570,7 +594,10 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 // The agenda is empty, so every settled question standing over
                 // a quiesced cone can be answered now (fz-kdt.44). Doing it
                 // before the demand expansions is what lets a root's own
-                // recursion gate — a direct settled query — pass.
+                // recursion gate — a direct settled query — pass. "Nothing
+                // demands this activation any more" is a settled question of
+                // the same shape, answered here for the same reason.
+                world.decommission_abandoned_activations();
                 world.settle_quiescent_waits();
                 let mut producer_pokes =
                     world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
@@ -627,9 +654,21 @@ pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
     world: &mut World,
     tel: &T,
 ) -> Vec<super::AppliedStep<Job, FactKey>> {
-    let steps = world.take_quiescence_steps();
+    let mut steps = world.take_quiescence_steps();
     for step in &steps {
         tel.raw_event1(&["fz", "compiler2", "work_graph", "quiesced"], step);
+    }
+    // A decommission is a job CONCLUSION -- `AnalyzeActivation(k)` re-listing
+    // its reads and claiming nothing -- so it rides the ordinary completion
+    // event. Without it every job its retraction wave woke would evaluate
+    // naming no moved input (fz-kdt.34.6's zero-uncaused gate).
+    for completion in world.take_decommission_completions() {
+        ExecutionContext::new(world, tel).emit_job_completion(&completion);
+        steps.push(completion.step);
+    }
+    let records = world.take_decommission_records();
+    if !records.is_empty() {
+        tel.raw_event2(&["fz", "compiler2", "activation", "decommissioned"], &*world, &records);
     }
     steps
 }
