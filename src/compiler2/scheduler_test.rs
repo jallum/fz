@@ -2,6 +2,8 @@ use std::collections::HashSet;
 
 use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
 use crate::compiler2::facts::ClaimShape;
+use crate::compiler2::facts::DerivationId;
+use crate::compiler2::scheduler::DerivationEffects;
 
 type TestScheduler = Scheduler<u32, &'static str>;
 type TestStep = AppliedStep<u32, &'static str>;
@@ -56,6 +58,10 @@ fn settled_presence(fact: &'static str) -> FactUse<&'static str> {
     FactUse::settled_presence(fact)
 }
 
+/// One job, one answer: the whole-body derivation every job that does not
+/// split its ownership publishes under. An unblocked run concludes it; a
+/// blocked run did not reach it, which is exactly today's "a blocked
+/// publisher's claims are all dirty".
 fn complete(
     scheduler: &mut TestScheduler,
     job: u32,
@@ -64,7 +70,42 @@ fn complete(
     outputs: Vec<&'static str>,
     changed: Vec<&'static str>,
 ) -> AppliedStep<u32, &'static str> {
-    scheduler.complete(&job, reads, waits, outputs, changed)
+    let concluded = waits.is_empty();
+    scheduler.complete(
+        &job,
+        waits,
+        vec![DerivationEffects::sole(reads, outputs, changed, concluded)],
+    )
+}
+
+/// A job that reports several independent answers in one run. Each tuple is
+/// `(derivation, reads, outputs, changed, concluded)` — `concluded` says the
+/// run reached that answer, which only a blocked run can answer `false` to.
+type Reported = (
+    DerivationId,
+    HashSet<FactUse<&'static str>>,
+    Vec<&'static str>,
+    Vec<&'static str>,
+    bool,
+);
+
+fn complete_derivations(
+    scheduler: &mut TestScheduler,
+    job: u32,
+    waits: HashSet<FactUse<&'static str>>,
+    derivations: Vec<Reported>,
+) -> AppliedStep<u32, &'static str> {
+    let effects = derivations
+        .into_iter()
+        .map(|(derivation, reads, outputs, changed, concluded)| DerivationEffects {
+            derivation,
+            reads,
+            outputs,
+            changed,
+            concluded,
+        })
+        .collect();
+    scheduler.complete(&job, waits, effects)
 }
 
 #[test]
@@ -1624,5 +1665,428 @@ fn compiler2_scheduler_retraction_reaches_the_fixed_point_without_stale_settled_
     assert!(
         scheduler.facts().is_settled(&"c"),
         "the fixed point is reached with no publisher left dirty and no cone left moving",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// fz-kdt.13.1 — the publisher is a DERIVATION, not a job.
+//
+// The shape every case below uses is one job with two independent answers:
+//
+//     "cum_a" --read by--> D1 of PUBLISHER --publishes--> "x"
+//     "cum_b" --read by--> D2 of PUBLISHER --publishes--> "y"
+//
+// Moving "cum_a" is news about "x" and nothing else. Job-granular publisher
+// identity cannot say that: one publisher owns both claims, so one woken read
+// dirties both and unfinalises everything downstream of either. Deriving "y"
+// from ground that did not move is what makes it settled, and that is a
+// statement about the ANSWER, not about the body that computed it.
+// ---------------------------------------------------------------------------
+
+const PUBLISHER: u32 = 20;
+const GROUND_A: u32 = 21;
+const GROUND_B: u32 = 22;
+const Y_WAITER: u32 = 23;
+
+const D1: DerivationId = DerivationId(1);
+const D2: DerivationId = DerivationId(2);
+
+/// `cum_a -> x` and `cum_b -> y`, published by ONE job under two derivations,
+/// with a settled waiter parked on "y". Everything is quiet and the agenda is
+/// empty on return.
+fn two_answer_publisher() -> TestScheduler {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        GROUND_A,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+    complete(
+        &mut scheduler,
+        GROUND_B,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_b"],
+        vec!["cum_b"],
+    );
+    complete_derivations(
+        &mut scheduler,
+        PUBLISHER,
+        HashSet::new(),
+        vec![
+            (D1, HashSet::from([current("cum_a")]), vec!["x"], vec!["x"], true),
+            (D2, HashSet::from([current("cum_b")]), vec!["y"], vec!["y"], true),
+        ],
+    );
+    complete(
+        &mut scheduler,
+        Y_WAITER,
+        HashSet::new(),
+        HashSet::from([settled("y")]),
+        Vec::new(),
+        Vec::new(),
+    );
+    while scheduler.pop().is_some() {}
+    scheduler
+}
+
+/// The before-behavior, kept as a characterization: with the whole body as ONE
+/// publisher, movement under "x" takes "y" down with it. Nothing about "y"'s
+/// own ground changed — the pessimism is entirely in the identity.
+#[test]
+fn compiler2_scheduler_job_granular_identity_unsettles_an_untouched_sibling_answer() {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        GROUND_A,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+    complete(
+        &mut scheduler,
+        GROUND_B,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_b"],
+        vec!["cum_b"],
+    );
+    complete(
+        &mut scheduler,
+        PUBLISHER,
+        HashSet::from([current("cum_a"), current("cum_b")]),
+        HashSet::new(),
+        vec!["x", "y"],
+        vec!["x", "y"],
+    );
+    while scheduler.pop().is_some() {}
+    assert!(scheduler.facts().is_settled(&"y"));
+
+    complete(
+        &mut scheduler,
+        GROUND_A,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+
+    assert!(
+        !scheduler.facts().is_settled(&"y"),
+        "one publisher for the whole body means one woken read unsettles every claim it holds",
+    );
+}
+
+/// The refinement. Same two answers, two derivations: moving the input of one
+/// leaves the other settled, and evaluates the job exactly once.
+#[test]
+fn compiler2_scheduler_moving_one_derivations_input_leaves_its_sibling_settled() {
+    let mut scheduler = two_answer_publisher();
+    assert!(scheduler.facts().is_settled(&"y"), "the graph starts quiet");
+
+    let moved = complete(
+        &mut scheduler,
+        GROUND_A,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+
+    assert!(
+        scheduler.facts().is_settled(&"y"),
+        "\"y\" is derived from \"cum_b\" alone; moving \"cum_a\" cannot unsettle it",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"x"),
+        "\"x\" IS derived from what moved, so its own answer is provisional",
+    );
+    assert_eq!(
+        enqueued_jobs(&moved),
+        vec![PUBLISHER],
+        "the job runs whole, so the agenda entry is still the job",
+    );
+    assert!(
+        scheduler.facts().is_quiet(&"cum_b"),
+        "the sibling's ground is never disturbed",
+    );
+
+    let _ = scheduler.pop();
+    complete_derivations(
+        &mut scheduler,
+        PUBLISHER,
+        HashSet::new(),
+        vec![
+            (D1, HashSet::from([current("cum_a")]), vec!["x"], vec!["x"], true),
+            (D2, HashSet::from([current("cum_b")]), vec!["y"], Vec::new(), true),
+        ],
+    );
+    assert!(
+        scheduler.facts().is_settled(&"x") && scheduler.facts().is_settled(&"y"),
+        "re-concluding both answers re-finalises the one that moved",
+    );
+}
+
+/// A `Settled` waiter is the sharp end of the same question: it must not fire
+/// on movement under a sibling answer, and it must still fire when its own
+/// answer's ground moves.
+#[test]
+fn compiler2_scheduler_a_settled_waiter_fires_only_when_its_own_answers_ground_moves() {
+    let mut scheduler = two_answer_publisher();
+
+    let sibling_moved = complete(
+        &mut scheduler,
+        GROUND_A,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+    assert!(
+        !enqueued_jobs(&sibling_moved).contains(&Y_WAITER),
+        "a waiter on \"y\" must not be disturbed by movement under \"x\"",
+    );
+    while scheduler.pop().is_some() {}
+
+    let own_moved = complete(
+        &mut scheduler,
+        GROUND_B,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_b"],
+        vec!["cum_b"],
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"y"),
+        "\"y\"'s own ground moved, so \"y\" is provisional until it is re-derived",
+    );
+    assert!(
+        !enqueued_jobs(&own_moved).contains(&Y_WAITER),
+        "a settled wait is not satisfied by an unsettled fact",
+    );
+
+    let _ = scheduler.pop();
+    let republished = complete_derivations(
+        &mut scheduler,
+        PUBLISHER,
+        HashSet::new(),
+        vec![
+            (D1, HashSet::from([current("cum_a")]), vec!["x"], Vec::new(), true),
+            (D2, HashSet::from([current("cum_b")]), vec!["y"], vec!["y"], true),
+        ],
+    );
+
+    assert!(
+        enqueued_jobs(&republished).contains(&Y_WAITER),
+        "the waiter fires when the answer it waits on re-settles",
+    );
+}
+
+/// Rebase vetoes all scoping. A ground shift means the woken job's next
+/// conclusion may NARROW its cumulative stores, and the rebase flag that
+/// selects narrowing is the job's — so every answer the job holds goes
+/// provisional, sibling or not.
+#[test]
+fn compiler2_scheduler_a_ground_shift_dirties_every_derivation_of_the_woken_job() {
+    let mut scheduler = two_answer_publisher();
+
+    let retracted = complete(
+        &mut scheduler,
+        GROUND_A,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        vec!["cum_a"],
+    );
+
+    assert!(scheduler.rebased(&PUBLISHER), "a retraction shifts its reader's ground");
+    assert!(
+        !scheduler.facts().is_settled(&"x") && !scheduler.facts().is_settled(&"y"),
+        "a rebased job may narrow any answer it holds, so scoping the dirt would be unsound",
+    );
+    assert!(
+        !scheduler.facts().is_locally_settled(&"y"),
+        "the shift reaches the sibling answer's own claim, not just its finality",
+    );
+    assert_eq!(
+        enqueued_jobs(&retracted),
+        vec![PUBLISHER],
+        "dirtying every answer still evaluates the job exactly once",
+    );
+}
+
+/// A blocked run reports what it reached. The answers it concluded before the
+/// block are vouched for; the ones it never got to stay dirty. This is the
+/// traffic the epidemic rode: most completions block.
+#[test]
+fn compiler2_scheduler_a_blocked_run_keeps_the_answers_it_reached_clean() {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        GROUND_A,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_a"],
+        vec!["cum_a"],
+    );
+
+    complete_derivations(
+        &mut scheduler,
+        PUBLISHER,
+        HashSet::from([current("missing")]),
+        vec![
+            (D1, HashSet::from([current("cum_a")]), vec!["x"], vec!["x"], true),
+            (D2, HashSet::new(), vec!["y"], vec!["y"], false),
+        ],
+    );
+
+    assert!(
+        scheduler.facts().is_settled(&"x"),
+        "the answer the run reached stands on quiet ground and is final",
+    );
+    assert!(
+        !scheduler.facts().is_locally_settled(&"y"),
+        "the answer the run never reached is dirty, exactly as a whole blocked job used to be",
+    );
+}
+
+/// The drain arbiter, restated at derivation granularity. Its licence has
+/// always been "the publishers of THIS key are clean and nothing is left to
+/// run" — and the publishers of a key are the derivations whose answer it is.
+/// A dirty sibling publishes other keys and is correctly not consulted.
+#[test]
+fn compiler2_scheduler_the_drain_arbiter_settles_a_clean_answer_beside_a_dirty_sibling() {
+    let mut scheduler = TestScheduler::new();
+    complete(
+        &mut scheduler,
+        GROUND_B,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_b"],
+        vec!["cum_b"],
+    );
+    // `ground_b` pauses, so "cum_b" is dirty and every reader of it is unfinal.
+    complete(
+        &mut scheduler,
+        GROUND_B,
+        HashSet::new(),
+        HashSet::from([current("missing_b")]),
+        vec!["cum_b"],
+        Vec::new(),
+    );
+    complete_derivations(
+        &mut scheduler,
+        PUBLISHER,
+        HashSet::from([current("missing")]),
+        vec![
+            (D1, HashSet::from([current("cum_b")]), vec!["x"], vec!["x"], true),
+            (D2, HashSet::new(), vec!["y"], vec!["y"], false),
+        ],
+    );
+    while scheduler.pop().is_some() {}
+
+    assert!(
+        scheduler.facts().is_locally_settled(&"x") && !scheduler.facts().is_settled(&"x"),
+        "x's own answer is clean but reads a fact that can still move",
+    );
+
+    let drained = scheduler.settle_quiescent(&["x", "y"]);
+
+    assert!(
+        scheduler.facts().is_settled(&"x"),
+        "at a drain the claimants of x are clean and nothing can run, so x is final",
+    );
+    assert!(
+        !scheduler.facts().is_settled(&"y"),
+        "the arbiter still refuses a key whose OWN claimant never re-ran",
+    );
+    assert!(
+        drained
+            .changed
+            .iter()
+            .all(|change| !change.content_changed() && change.readiness_changed()),
+        "the arbiter moves readiness only; no cell value changes",
+    );
+}
+
+/// Retraction-by-omission, lifted. A concluding job that stops giving an
+/// answer withdraws it whole — its claims retract and its subscriptions go —
+/// which is how a vanished decision boundary prunes what it used to own.
+#[test]
+fn compiler2_scheduler_a_conclusion_withdraws_the_answers_it_no_longer_gives() {
+    let mut scheduler = two_answer_publisher();
+
+    let withdrawn = complete_derivations(
+        &mut scheduler,
+        PUBLISHER,
+        HashSet::new(),
+        vec![(D1, HashSet::from([current("cum_a")]), vec!["x"], Vec::new(), true)],
+    );
+
+    assert_eq!(
+        scheduler.facts().revision(&"y"),
+        None,
+        "an answer the job no longer gives is retracted, not left standing",
+    );
+    assert!(
+        withdrawn.movements.iter().any(|movement| movement.key == "y"),
+        "the withdrawal is a real movement, so readers hear it",
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"x"),
+        Some(1),
+        "the answer it still gives is untouched",
+    );
+
+    // The withdrawn answer's subscription is gone with it.
+    complete(
+        &mut scheduler,
+        GROUND_B,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_b"],
+        vec!["cum_b"],
+    );
+    assert_eq!(
+        scheduler.pending_jobs(),
+        0,
+        "a retracted answer's reads no longer wake the job that gave it",
+    );
+}
+
+/// The job-level fold of per-derivation finality: what a readiness-ordered pop
+/// would ask. It is a projection of the ledger, never a second copy of it.
+#[test]
+fn compiler2_scheduler_job_level_unfinal_reads_fold_every_derivation() {
+    let mut scheduler = two_answer_publisher();
+    assert_eq!(
+        scheduler.unfinal_reads(&PUBLISHER),
+        0,
+        "every answer stands on quiet ground",
+    );
+
+    // `ground_b` pauses, so "cum_b" can still move and the answer that reads it
+    // — and only that answer — becomes provisional.
+    complete(
+        &mut scheduler,
+        GROUND_B,
+        HashSet::new(),
+        HashSet::from([current("missing_b")]),
+        vec!["cum_b"],
+        Vec::new(),
+    );
+
+    assert_eq!(
+        scheduler.unfinal_reads(&PUBLISHER),
+        1,
+        "exactly one answer's ground is moving, and the fold says so",
+    );
+    assert!(
+        scheduler.facts().is_settled(&"x") && !scheduler.facts().is_settled(&"y"),
+        "the unfinality lands on the answer that read the moving ground, not on the body",
     );
 }

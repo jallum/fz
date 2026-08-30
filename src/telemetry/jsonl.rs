@@ -1199,13 +1199,8 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         };
         // `reads` comes from `deps`' `HashSet`, so presentation-sort the
         // rendered identities rather than trusting iteration order.
-        let mut reads = world
-            .work_graph
-            .reads(&completion.job)
-            .into_iter()
-            .flatten()
-            .map(render_fact_use_identity)
-            .collect::<Vec<_>>();
+        let job_reads = world.work_graph.reads(&completion.job);
+        let mut reads = job_reads.iter().map(render_fact_use_identity).collect::<Vec<_>>();
         reads.sort();
         out.push_str(",\"semantic\":{\"reads\":[");
         for (index, entry) in reads.iter().enumerate() {

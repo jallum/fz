@@ -54,7 +54,7 @@ use super::protocol::{
 };
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
-use super::scheduler::{FatalError, WorkStartReason, WorkStartTally};
+use super::scheduler::{DerivationEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
@@ -483,7 +483,19 @@ impl World {
                 _ => None,
             })
             .collect();
-        let step = self.work_graph.complete(&job, reads, waits, outputs, changed);
+        // The flat fields are the job's whole-body answer; `derivations` names
+        // any further answers the same run reached independently. Every job
+        // today reports none, so this is exactly one `DerivationId::SOLE`
+        // completion — the ledger sees what it always saw.
+        let mut derivations = vec![DerivationEffects::sole(reads, outputs, changed, waits.is_empty())];
+        derivations.extend(effects.derivations.into_iter().map(|derivation| DerivationEffects {
+            derivation: derivation.derivation,
+            reads: derivation.reads.into_iter().collect(),
+            outputs: dedupe_job_facts(derivation.outputs),
+            changed: dedupe_job_facts(derivation.changed),
+            concluded: derivation.concluded,
+        }));
+        let step = self.work_graph.complete(&job, waits, derivations);
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);
@@ -1522,7 +1534,7 @@ impl World {
     }
 
     #[cfg(test)]
-    pub(crate) fn job_reads(&self, job: &Job) -> Option<&HashSet<FactUse<FactKey>>> {
+    pub(crate) fn job_reads(&self, job: &Job) -> HashSet<FactUse<FactKey>> {
         self.work_graph.reads(job)
     }
 
