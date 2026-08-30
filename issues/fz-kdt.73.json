@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T17:00:13Z",
+  "description": "Found by fz-kdt.69's cold review. merge_callsite_activation\n(semantic.rs:186-194) and merge_target_activation\n(jobs/semantic.rs:1876-1890) each carry a 'same root+function, different\narrow -\u003e keep current' arm that is UNREACHABLE: every caller matches targets\nwith same_call_target, which compares the full activation key including the\narrow. They read as arrow-coalescing sites and are not; if either went live\nit would silently pin the first arrow observed at a callsite. Delete the arms\nor make the impossibility explicit (match on the full key).",
+  "id": "fz-kdt.73",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Two dead arrow-coalescing branches read as live and would pin first-observed arrows",
+  "type": "task",
+  "updated_at": "2026-08-30T17:00:13Z"
+}
