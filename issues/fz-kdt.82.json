@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T20:02:56Z",
+  "description": "Found by fz-kdt.69.3's build: when one publisher's ActivationInputs\ncontribution withdraws while other publishers remain, the resulting movement\nis classified shift=false -- a NARROWING wearing an ascent's clothes\n(observed at AnalyzeActivation(..Ty(324)) during the decommission\nexperiments). Harmless today only because withdrawal is impossible under\npreservation (conclude_preserving_frontier never withdraws for\nAnalyzeActivation -- the fz-kdt.64 asymmetry). The moment any route enables\nwithdrawal (fz-kdt.64's own resolution, or a future decommission), readers\njoin evidence that should have replaced. Gate fz-kdt.64 on deciding this.",
+  "id": "fz-kdt.82",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A withdrawn ActivationInputs contribution propagates as an ascent",
+  "type": "bug",
+  "updated_at": "2026-08-30T20:02:56Z"
+}
