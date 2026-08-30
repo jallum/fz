@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T19:26:23Z",
+  "description": "Found by fz-kdt.69.2: with total edge emission, the residual CallSite\nretract-and-remint (33/12 first-appearance excess on predicate/take_drop) has\nONE cause -- analyze_tail/deliver_tail_value truncate a tail chain at a call\nwhose ReturnType has not arrived, so callsites behind it go unreached for a\nround (the reached set is non-monotone). This violates the availability-per-\nREAD rule entry_scope's captures already state.\n\nThe 69.2 builder measured a fix (continue the walk past an absent delivered\nvalue) removing the churn entirely AND improving inventory (214-\u003e200) and\nevals (-20/-9/-101) -- but the adversarial review could NOT reproduce those\nnumbers under two faithful reconstructions. START FROM A PATCH, not prose:\nre-derive the fix, publish the diff in this ticket, and re-measure before\nbelieving any number. Inventory pins will re-pin downward if the improvement\nis real (lowering is safe-by-construction; verify output correctness via\ncanon byte-compare and the full matrix).",
+  "id": "fz-kdt.76",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "analyze_tail truncates chains at absent return evidence: the last callsite-churn source",
+  "type": "task",
+  "updated_at": "2026-08-30T19:26:23Z"
+}
