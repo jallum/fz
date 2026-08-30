@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T19:26:24Z",
-  "description": "Found by fz-kdt.69.2: the stores are lowering's authority and are never\npruned when their ledger fact retracts; the ledger-withdrawn/store-stale\nstate is read nowhere today (measured 0 across corpus/lib/matrix/cli) but\nthree artifact.rs unit tests construct exactly that state, so the invariant\nis accidental, not structural. fz-kdt.69.3 makes the ledger authoritative\nover live demand -- align the stores there (prune on retraction, or document\nthe store-outlives-ledger contract explicitly and gate reads).",
+  "description": "CallSiteMap/CallSiteTargetsMap slots are never pruned when their ledger fact\nretracts. The ledger-withdrawn/store-stale state is read nowhere today\n(measured 0 across corpus/lib/matrix/cli at fz-kdt.69.2) but three\nartifact.rs unit tests construct exactly that state, so the invariant is\naccidental, not structural. The one production divergence site is\nmaterialize_direct_call_edge's store read (the 69.2 comment there names the\nledger-vs-store question).\n\nSTANDALONE DECISION (no longer tied to any demand-derivation route -- that\ndied with fz-kdt.69.3): either (a) prune the stores on fact retraction so\nledger and store cannot diverge, or (b) document the store-outlives-ledger\ncontract explicitly and gate the divergent read. (a) is\ncorrect-by-construction; measure that nothing depended on stale reads\n(expected: nothing does).",
   "id": "fz-kdt.79",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "CallSiteMap/CallSiteTargetsMap slots never pruned on fact retraction",
   "type": "task",
-  "updated_at": "2026-08-30T19:26:24Z"
+  "updated_at": "2026-08-30T23:45:38Z"
 }
