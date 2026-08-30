@@ -18,7 +18,7 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
 };
@@ -69,13 +69,28 @@ pub(super) fn analyze_activation(
 ) -> Result<JobEffects, FatalError> {
     let activation_fact = FactKey::Activation(activation.clone());
     if !world.has_fact(&activation_fact) {
-        // Mirrors the `ActivationInputs` gate just below: absence of the seed
-        // fact is a genuine block on `Job::SeedActivation`, not a conclusion.
-        // Returning an empty `JobEffects` here would be a silent
-        // conclude-by-omission with no subscription to re-wake it; a bare
-        // wait lets the ordinary blocked-waiter expansion
-        // (`demand_blocked_wait_producers`) carry it instead.
-        return Ok(JobEffects::wait_on_current(activation_fact));
+        // Nothing claims this activation -- no caller has reached it yet, or
+        // every caller has withdrawn it. That is an answer, not a block: a
+        // wait here would have no producer (`World::seed_activation_producer`
+        // refuses a key whose inputs anything else supplies), and a wedged
+        // waiter stalls retraction-heavy drives. The conclusion re-lists the
+        // job's standing claims AND the reads standing behind them: claims
+        // keep the subscriptions that derived them, so the parked cone stays
+        // exactly as final as its ground -- never settled from amnesia (the
+        // one-absent-read conclusion was measured to do exactly that). The
+        // `Activation` read wakes this job on a first or later claim; the
+        // full cone retires in fz-kdt.69's decommission conclusion, with its
+        // `ActivationSlot` reset.
+        let (outputs, standing_reads) = world.standing_claims_and_reads(&Job::AnalyzeActivation(activation.clone()));
+        // Order is immaterial: JobEffects.reads lands in the ledger's read
+        // SET; nothing observes this Vec's sequence.
+        let mut reads: Vec<_> = standing_reads.into_iter().collect();
+        reads.extend(current_uses([activation_fact]));
+        return Ok(JobEffects {
+            reads,
+            outputs,
+            ..JobEffects::default()
+        });
     }
     let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
     let Some(alternatives) = world.activation_input_alternatives(activation) else {

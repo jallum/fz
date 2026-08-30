@@ -66,7 +66,11 @@ producer (for example `ModuleInterface`, produced by either `DefineModule` or
 `DefineModuleInterface` depending on whether the module has source state) maps
 through the same runtime condition a demanding caller would otherwise inspect
 itself, so the map still names exactly one producer for the fact's current
-ground. A fact whose producer publishes it only as a co-output of a broader
+ground. That condition may also name NO producer: `Activation`/
+`ActivationInputs` map to `Job::SeedActivation` only while nothing else
+supplies the activation's inputs (`World::seed_activation_producer`), because
+a key a caller discovered is that caller's to publish and to withdraw. A fact
+whose producer publishes it only as a co-output of a broader
 job's conclusion (`ModuleIndexed`, `ProtocolDispatch`,
 `ProtocolImplProviders`, `Executable`, `BackendProgram`, `NativeProgram`) has
 no arm: its demand rides the mapped fact that gates the job that co-produces
@@ -206,7 +210,36 @@ is an equality of two fact reads rather than a traversal at the asking site --
 and `Recursive(f)`, which that component decides. They stay two facts, not one
 value: a component merging and a body's keying moving wake different readers.
 `World::demand_fact_producer` maps both keys to the one job, exactly as
-`Activation`/`ActivationInputs` both map to `SeedActivation`.
+`Activation`/`ActivationInputs` both map to `SeedActivation` when that job is
+their producer at all (see *One activation, one existence producer*).
+
+## One activation, one existence producer
+
+An activation's existence facts have exactly one producer, and which job that
+is depends on how the key was reached. A root entry is `SeedRoot`'s: it
+publishes `Activation`/`ActivationInputs` for its entry from the root's own
+input. A callee reached over a call edge is its CALLER's: `analyze_activation`
+publishes `Activation(callee)` and contributes the callee's input row, and
+withdraws both only on a rebased conclusion. `Job::SeedActivation` owns the
+third case and only the third case -- an activation the runtime-demand
+frontier minted from a callable surface (`jobs::runtime_demand`), which no
+analysis ever walked and no caller ever claimed. It reconstructs the inputs
+from the key's own arrow, which is the truth only there.
+
+`World::seed_activation_producer` (`drive.rs`) is where the map states this:
+`SeedActivation` answers a demand for `Activation(k)`/`ActivationInputs(k)`
+only while `ActivationInputs(k)` has no publisher. Once something else
+supplies them, seeding could only overwrite another publisher's evidence with
+a reconstruction -- and, because the reconstruction is unconditional, undo
+that publisher's own withdrawal of the key, so no retraction of a
+caller-discovered activation could ever stick.
+
+The other half is `analyze_activation`'s own gate: an analysis whose
+`Activation` fact is absent CONCLUDES rather than waits. Nothing claims the
+key, so there is no producer for a wait to name; the run records the read
+(the unconditional-read rule above), so a first or later claim wakes it, and
+it re-lists its standing claims (`World::standing_claims`) so a conclusion
+reached with no ground under it retracts nothing it never refuted.
 
 `FactKey::is_cumulative` declares each fact's content algebra: `ReturnType`
 and `ActivationInputs` hold monotone joins maintained by their `World` stores

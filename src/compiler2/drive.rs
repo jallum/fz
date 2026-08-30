@@ -247,7 +247,7 @@ impl World {
             FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-                Some(Job::SeedActivation(activation.clone()))
+                self.seed_activation_producer(activation)
             }
             FactKey::ActivationAnalyzed(activation)
             | FactKey::ReturnType(activation)
@@ -255,11 +255,8 @@ impl World {
             | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
                 let activation = activation.clone();
                 let mut pokes = 0;
-                if !self.has_fact(&FactKey::Activation(activation.clone()))
-                    || !self.has_fact(&FactKey::ActivationInputs(activation.clone()))
-                {
-                    pokes +=
-                        self.demand_producer_if_needed(Job::SeedActivation(activation.clone()), fact, reason) as u64;
+                if let Some(seed) = self.seed_activation_producer(&activation) {
+                    pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
                 }
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
             }
@@ -267,6 +264,22 @@ impl World {
         };
         job.map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)
             .unwrap_or(0)
+    }
+
+    /// `Job::SeedActivation` as this activation's existence producer, or `None`
+    /// when the activation is not its to mint (fz-kdt.69.1).
+    ///
+    /// Seeding reconstructs an activation's inputs from the key's own arrow
+    /// (`jobs::root::seed_activation`). That is the truth only where nothing
+    /// else describes them: a root entry, or a key the runtime-demand frontier
+    /// minted from a callable surface no analysis ever walked. Once
+    /// `ActivationInputs(activation)` has a publisher, those inputs are that
+    /// publisher's evidence -- a caller's call edge -- and re-minting them from
+    /// the arrow would both fabricate the caller's contribution and undo the
+    /// caller's own withdrawal of the key, so no retraction could ever stick.
+    fn seed_activation_producer(&self, activation: &ActivationKey) -> Option<Job> {
+        (!self.has_fact(&FactKey::ActivationInputs(activation.clone())))
+            .then(|| Job::SeedActivation(activation.clone()))
     }
 
     fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey, reason: WorkStartReason) -> bool {

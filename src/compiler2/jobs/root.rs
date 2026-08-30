@@ -100,6 +100,13 @@ pub(super) fn seed_root(
 /// a reducer captured by a returned suspend continuation), never through a
 /// direct call edge that an `analyze_activation` would publish.
 ///
+/// The input row is RECONSTRUCTED from the key's own arrow, which is the truth
+/// only for such a key: nothing else ever described it. That is why
+/// `World::seed_activation_producer` routes a demand here only while
+/// `ActivationInputs` has no publisher — for an activation some caller
+/// discovered, this reconstruction would fabricate that caller's evidence and
+/// undo the caller's own withdrawal of the key (fz-kdt.69.1).
+///
 /// This concludes (no waits), so `Activation` and `ActivationInputs` settle and
 /// any consumer walking the runtime-demand frontier reaches the executable as an
 /// ordinary settled callee. Seeding belongs in a concluding job: a *blocked*
