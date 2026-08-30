@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T19:26:24Z",
+  "description": "Found by fz-kdt.69.2: the stores are lowering's authority and are never\npruned when their ledger fact retracts; the ledger-withdrawn/store-stale\nstate is read nowhere today (measured 0 across corpus/lib/matrix/cli) but\nthree artifact.rs unit tests construct exactly that state, so the invariant\nis accidental, not structural. fz-kdt.69.3 makes the ledger authoritative\nover live demand -- align the stores there (prune on retraction, or document\nthe store-outlives-ledger contract explicitly and gate reads).",
+  "id": "fz-kdt.79",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "CallSiteMap/CallSiteTargetsMap slots never pruned on fact retraction",
+  "type": "task",
+  "updated_at": "2026-08-30T19:26:24Z"
+}
