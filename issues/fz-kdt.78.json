@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-30T19:26:24Z",
+  "description": "tests/fixture_matrix.rs:551 discovers only fixtures2/behavior/ -- 140 of 574\n.fz files (24%). The other 434 root-level fixtures are never driven\nend-to-end by any gate, which is how fz-kdt.77's panic went unnoticed.\nExtend discovery to the full tree (expected-output files exist for many;\nclassify the rest: known-red list like the matrix's existing 9-ignored\nmechanism, or explicit exclusion with reasons). Budget: matrix wall time will\ngrow; measure and keep --test-threads=1 per the established gate discipline.",
+  "id": "fz-kdt.78",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "fixture_matrix exercises 24% of fixtures: 434 root-level .fz files never run end-to-end",
+  "type": "task",
+  "updated_at": "2026-08-30T19:26:24Z"
+}
