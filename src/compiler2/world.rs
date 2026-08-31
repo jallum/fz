@@ -1196,14 +1196,12 @@ impl World {
         self.body_keying.get(function).copied()
     }
 
-    /// `#[cfg(test)]` states the honest state of play: the component id is
-    /// published as a fact for consumers that ask mutual-reachability
-    /// questions, and no production consumer has landed yet -- the recursion
-    /// answer is derived inside the same job that computes the component, from
-    /// the walk itself. The first real consumer drops the attribute; until
-    /// then the only reader is the test that pins "equal ids iff mutually
-    /// reachable".
-    #[cfg(test)]
+    /// The canonical (smallest) member of this function's strong component in
+    /// the static call graph, behind `FactKey::CallGraphComponent`. Equal ids
+    /// mean mutually reachable, so membership is a comparison rather than a
+    /// traversal. Transport reads it to cut recursion out of a shape recipe
+    /// (`cut_recursive_edges`); the `Recursive(f)` answer is derived inside the
+    /// same job, from the same walk.
     pub(crate) fn call_graph_component(&self, function: FunctionId) -> Option<FunctionId> {
         self.call_graph_components.get(function).copied()
     }

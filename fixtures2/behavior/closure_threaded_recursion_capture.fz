@@ -1,0 +1,29 @@
+#---
+# purpose: "a threaded closure that also captures a local keeps its exact capture surface on all three paths"
+#---
+# The sibling of `closure_threaded_recursion.fz`, with two differences that
+# matter to transport (fz-kdt.93).
+#
+# The lambda captures `off`, so its callable value carries a real capture
+# surface: `step`'s parameter `k` must keep the exact
+# `callable(main/0#lambda...)` shape rather than falling back to a generic
+# boxed callable, or native lowering has to materialize a direct-only callable
+# as a runtime value and fails. Only the position that stands AMONG its own
+# captures may lose that surface.
+#
+# The recursive call is no longer in tail position, so the cycle runs through a
+# delivered continuation as well as a return.
+
+fn step(k, n) do
+  if n == 0 do
+    0
+  else
+    k.(k, n - 1) + 1
+  end
+end
+
+fn main() do
+  off = 1
+  f = fn(kk, m) -> step(kk, m) + off end
+  dbg(step(f, 5))
+end

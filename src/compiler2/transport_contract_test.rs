@@ -3904,6 +3904,88 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
     assert!(checked > 0, "the fixture should package a callable capture");
 }
 
+/// A published whole-value lane is a CONTRACT, so it may only ever be wider
+/// than the value it carries: every runtime value of the position's analyzed
+/// type has to fit through it. A position that ships one lane whose type is
+/// strictly below its own analyzed type is therefore an anomaly, not a
+/// narrowing -- some of its values simply have no lane to travel in.
+///
+/// Decomposed positions (one lane per field) and elided ones (no lanes at all,
+/// the zero a discarded result's boundary derives) are legitimately not
+/// whole-value contracts and are out of scope here: the invariant binds
+/// exactly where a position ships ONE lane for a whole value.
+///
+/// Executable returns and local values are both covered. Call arguments,
+/// return payloads and resume payloads are not reachable from a published
+/// `BackendExecutable`, so this gate does not see them -- reaching them needs
+/// the `MaterializedTransportPlan`, which the backend product does not retain
+/// on the executables themselves.
+#[test]
+fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
+    let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("return_lane_contract.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (program, driver) =
+        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
+            .expect("panic-based ProductDriveError never returns Err");
+    driver.finish_session();
+
+    let mut whole_value_lanes = 0;
+    let mut sunk = Vec::new();
+    for executable in &program.executables {
+        let name = &world.function_ref(executable.key.activation.function).name;
+        let mut check = |what: String, layout: &super::artifact::BackendValueLayout, ty: Ty, world: &World| {
+            let ShapeDescr::Lane(_) = shape_descr(world, layout.structural) else {
+                return 0;
+            };
+            let [lane_ty] = layout.tys.as_ref() else {
+                return 0;
+            };
+            if !world.types().is_subtype(&ty, lane_ty) {
+                sunk.push(format!(
+                    "{what} lane {} under analyzed {}",
+                    world.types().display(lane_ty),
+                    world.types().display(&ty),
+                ));
+            }
+            1
+        };
+        whole_value_lanes += check(
+            format!("{name}/{} return", executable.key.activation.function.as_u32()),
+            &executable.return_layout.layout,
+            executable.return_ty,
+            &world,
+        );
+        for (value, layout) in &executable.value_layouts {
+            let Some(value_ty) = executable.value_types.get(value).copied() else {
+                continue;
+            };
+            whole_value_lanes += check(
+                format!(
+                    "{name}/{} v{}",
+                    executable.key.activation.function.as_u32(),
+                    value.as_u32()
+                ),
+                layout,
+                value_ty,
+                &world,
+            );
+        }
+    }
+    assert!(
+        whole_value_lanes > 0,
+        "the fixture should publish whole-value lanes for this invariant to bind",
+    );
+    sunk.sort();
+    assert_eq!(
+        sunk,
+        Vec::<String>::new(),
+        "every whole-value return lane must carry its position's whole analyzed type",
+    );
+}
+
 #[test]
 fn compiler2_unused_capture_layout_reaches_backend_wrapper() {
     let source = r#"

@@ -6,7 +6,7 @@ use super::super::body::{
 };
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
     InputSlot, ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
     TransportShapeFact,
@@ -717,6 +717,10 @@ enum TransportRecipe {
         grounded: Option<Box<TransportRecipe>>,
     },
     Alias(TransportPosition),
+    /// A recursion edge cut at construction: a child whose transport layout can
+    /// never be read here, because reading it would close a cycle in the
+    /// position graph. It is the one recipe node with no product behind it.
+    CutEdge,
     Alternatives(Vec<Self>),
     Tuple(Vec<Self>),
     TupleField {
@@ -727,7 +731,12 @@ enum TransportRecipe {
 
 enum RecipeLayout {
     Exact(TransportLayout),
-    Recursive(Vec<TransportLayout>),
+    /// A subtree holding a cut edge has no form of its own: nothing here
+    /// observed the cut child, so nothing here may claim its shape. What it
+    /// carries instead is the evidence gathered beside the cut -- the layouts
+    /// of the alternatives that WERE readable -- for the owning position to
+    /// settle on in `cut_transport_layout`.
+    Cut(Vec<TransportLayout>),
     Waiting(ProductKey),
 }
 
@@ -735,14 +744,13 @@ fn evaluate_transport_recipe(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
-    current: &ProductKey,
     recipe: &TransportRecipe,
     ty: Ty,
     demand: &RuntimeDemand,
     position: &TransportPosition,
 ) -> RecipeLayout {
     match recipe {
-        TransportRecipe::Terminal => exact_direct_callable_layout(world, tel, context, current, ty, demand, position)
+        TransportRecipe::Terminal => exact_direct_callable_layout(world, tel, context, ty, demand, position)
             .unwrap_or_else(|| RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))),
         TransportRecipe::PublicCallableReturn => {
             let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
@@ -763,13 +771,12 @@ fn evaluate_transport_recipe(
             };
             match grounded {
                 Some(grounded) if !matches!(callee_layout.carrier, TransportCarrier::ValueRef) => {
-                    evaluate_transport_recipe(world, tel, context, current, grounded, ty, demand, position)
+                    evaluate_transport_recipe(world, tel, context, grounded, ty, demand, position)
                 }
                 _ => evaluate_transport_recipe(
                     world,
                     tel,
                     context,
-                    current,
                     &TransportRecipe::PublicCallableReturn,
                     ty,
                     demand,
@@ -777,12 +784,9 @@ fn evaluate_transport_recipe(
                 ),
             }
         }
+        TransportRecipe::CutEdge => RecipeLayout::Cut(Vec::new()),
         TransportRecipe::Alias(child) => {
             let key = ProductKey::TransportShape(child.clone());
-            if key == *current || context.pending_dependency_reaches(&key, current) {
-                let _ = context.read_product(tel, key);
-                return RecipeLayout::Recursive(Vec::new());
-            }
             match context.read_product(tel, key.clone()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => RecipeLayout::Exact(*layout),
                 Some(value) => panic!("transport shape produced unexpected value {value:?}"),
@@ -791,19 +795,19 @@ fn evaluate_transport_recipe(
         }
         TransportRecipe::Alternatives(recipes) => {
             let mut layouts = Vec::new();
-            let mut recursive = false;
+            let mut cut = false;
             for recipe in recipes {
-                match evaluate_transport_recipe(world, tel, context, current, recipe, ty, demand, position) {
+                match evaluate_transport_recipe(world, tel, context, recipe, ty, demand, position) {
                     RecipeLayout::Exact(layout) => layouts.push(layout),
-                    RecipeLayout::Recursive(anchors) => {
-                        recursive = true;
-                        layouts.extend(anchors);
+                    RecipeLayout::Cut(evidence) => {
+                        cut = true;
+                        layouts.extend(evidence);
                     }
                     waiting @ RecipeLayout::Waiting(_) => return waiting,
                 }
             }
-            if recursive {
-                RecipeLayout::Recursive(layouts)
+            if cut {
+                RecipeLayout::Cut(layouts)
             } else {
                 RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &layouts))
             }
@@ -811,9 +815,9 @@ fn evaluate_transport_recipe(
         TransportRecipe::Tuple(fields) => {
             let mut layouts = Vec::with_capacity(fields.len());
             for field in fields {
-                match evaluate_transport_recipe(world, tel, context, current, field, ty, demand, position) {
+                match evaluate_transport_recipe(world, tel, context, field, ty, demand, position) {
                     RecipeLayout::Exact(layout) => layouts.push(layout),
-                    RecipeLayout::Recursive(anchors) => return RecipeLayout::Recursive(anchors),
+                    cut @ RecipeLayout::Cut(_) => return cut,
                     waiting @ RecipeLayout::Waiting(_) => return waiting,
                 }
             }
@@ -837,7 +841,7 @@ fn evaluate_transport_recipe(
             })
         }
         TransportRecipe::TupleField { tuple, index } => {
-            match evaluate_transport_recipe(world, tel, context, current, tuple, ty, demand, position) {
+            match evaluate_transport_recipe(world, tel, context, tuple, ty, demand, position) {
                 RecipeLayout::Exact(layout) => match world.shape(layout.structural) {
                     ShapeDescr::Tuple(fields) => fields.get(*index).copied().map_or_else(
                         || RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[])),
@@ -862,7 +866,6 @@ fn exact_direct_callable_layout(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
-    current: &ProductKey,
     ty: Ty,
     demand: &RuntimeDemand,
     position: &TransportPosition,
@@ -882,27 +885,29 @@ fn exact_direct_callable_layout(
     };
     let executable = executable_symbol(&executable, world.types());
     let mut capture_layouts = Vec::with_capacity(capture_count);
-    let mut recursive = false;
     for semantic_index in 0..capture_count {
-        let key = ProductKey::TransportShape(TransportPosition::ExecutableInput {
+        let capture = TransportPosition::ExecutableInput {
             executable: executable.clone(),
             semantic_index,
-        });
-        if key == *current || context.pending_dependency_reaches(&key, current) {
-            let _ = context.read_product(tel, key);
-            recursive = true;
-            continue;
+        };
+        if &capture == position {
+            // This position IS one of the captures it would have to read: a
+            // closure standing among its own capture surface. Nothing can be
+            // known about the surface from inside it, so the value travels as
+            // a generic boxed callable, the one shape both ends can name
+            // without it. A longer capture chain cannot close a cycle -- a
+            // closure's captures exist before the closure does, so none of
+            // them can reach back to it.
+            let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
+            layout.carrier = TransportCarrier::ValueRef;
+            return Some(RecipeLayout::Cut(vec![layout]));
         }
+        let key = ProductKey::TransportShape(capture);
         match context.read_product(tel, key.clone()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
             None => return Some(RecipeLayout::Waiting(key)),
         }
-    }
-    if recursive {
-        let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
-        layout.carrier = TransportCarrier::ValueRef;
-        return Some(RecipeLayout::Recursive(vec![layout]));
     }
     let capture_tys = &target.activation_inputs[..capture_count];
     let capture_shapes = capture_layouts
@@ -1563,23 +1568,225 @@ fn produce_named_transport_position(
         }
     };
 
-    let current = ProductKey::TransportShape(position.clone());
-    match evaluate_transport_recipe(world, tel, context, &current, &recipe, ty, &demand, position) {
-        RecipeLayout::Exact(layout) => Some(PullOutcome::Produced(ProductValue::TransportShape(
-            TransportShapeFact::Layout(layout),
-        ))),
-        RecipeLayout::Waiting(key) => Some(PullOutcome::wait_on_product(key)),
-        RecipeLayout::Recursive(mut anchors) => {
-            let members = context.pending_recursive_group(&current);
-            anchors.extend(context.recursive_group_transport_layouts(&members));
-            let layout = joined_transport_layout(world, ty, &demand, position, &anchors);
-            let value = ProductValue::TransportShape(TransportShapeFact::Layout(layout));
-            if !context.finish_transport_shape_group(tel, &current, &members, value.clone()) {
-                return Some(PullOutcome::wait_on_product(current));
-            }
-            Some(PullOutcome::Produced(value))
+    if let Err(fact) = cut_recursive_edges(world, context, executable, &mut recipe) {
+        return Some(PullOutcome::wait_on_fact(fact));
+    }
+
+    let layout = match evaluate_transport_recipe(world, tel, context, &recipe, ty, &demand, position) {
+        RecipeLayout::Exact(layout) => layout,
+        RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, position, &evidence),
+        RecipeLayout::Waiting(key) => return Some(PullOutcome::wait_on_product(key)),
+    };
+    Some(PullOutcome::Produced(ProductValue::TransportShape(
+        TransportShapeFact::Layout(layout),
+    )))
+}
+
+/// The form a position settles on when a cut left its evidence incomplete.
+///
+/// The arms that WERE readable still decide, exactly as they do without a cut
+/// -- but only while their agreed form still carries the whole value. The
+/// unread arm delivers values of the position's own type too, and a form that
+/// only fits the arms it saw can be narrower than that type, leaving those
+/// values no room to travel. The type-and-demand form is the fallback: the one
+/// contract both ends of the cut derive from facts alone.
+fn cut_transport_layout(
+    world: &mut World,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    position: &TransportPosition,
+    evidence: &[TransportLayout],
+) -> TransportLayout {
+    if !evidence.is_empty() {
+        let layout = joined_transport_layout(world, ty, demand, position, evidence);
+        if shape_carries(world, layout.structural, ty) {
+            return layout;
         }
     }
+    let contract = tuple_refined_demand(world, ty, demand);
+    joined_transport_layout(world, ty, &contract, position, &[])
+}
+
+/// A whole-value demand on an exact tuple type, read as the per-field demand it
+/// stands for -- the same reading `boundary_runtime_demand` gives a boundary's
+/// contract, for the same reason.
+///
+/// Only the cut fallback asks. Elsewhere a position's form comes from sources
+/// it actually read, or from a demand a consumer actually stated; at a cut it
+/// must be INVENTED, and both ends have to invent the same one from the same
+/// fact. A value of an exact tuple type is built decomposed, so the form its
+/// type describes is the form it already travels in.
+fn tuple_refined_demand(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> RuntimeDemand {
+    let ShapeDemand::Whole = demand.shape else {
+        return demand.clone();
+    };
+    if demand.is_callable() {
+        return demand.clone();
+    }
+    let Some(fields) = exact_tuple_field_tys(world, ty) else {
+        return demand.clone();
+    };
+    let mut refined = demand.clone();
+    refined.shape = ShapeDemand::TupleFields(
+        fields
+            .into_iter()
+            .map(|field_ty| tuple_refined_demand(world, field_ty, &RuntimeDemand::whole()))
+            .collect(),
+    );
+    refined
+}
+
+/// Whether every value of `ty` has somewhere to travel in `shape`. A callable
+/// shape answers for its whole type by construction -- its identity is the
+/// clause set, not a lane -- so it always carries.
+fn shape_carries(world: &mut World, shape: ShapeId, ty: Ty) -> bool {
+    match world.shape(shape).clone() {
+        ShapeDescr::Nothing => world.types().is_empty(&ty),
+        ShapeDescr::Lane(lane) => {
+            let lane_ty = world.lane(lane).ty;
+            world.types().is_subtype(&ty, &lane_ty)
+        }
+        ShapeDescr::Tuple(fields) => {
+            has_exact_tuple_arity(world, ty, fields.len())
+                && tuple_field_tys(world, ty, fields.len())
+                    .into_iter()
+                    .zip(fields.iter().copied())
+                    .all(|(field_ty, field)| shape_carries(world, field, field_ty))
+        }
+        ShapeDescr::Callable(_) => true,
+    }
+}
+
+/// Cuts the recursion out of a recipe before it is evaluated, so evaluation is
+/// a function of settled facts and of products that can settle without it.
+///
+/// Every cycle in the position graph runs through some executable return: a
+/// body's own positions follow its acyclic def-use, so leaving a body means
+/// naming a callee's return. There are two kinds of such edge and each is cut
+/// on its own terms.
+///
+/// A DIRECT call's edge is an edge of the static call graph. Both its ends lie
+/// on the cycle, so they are mutually reachable and share a component -- and
+/// the edges of one cycle cannot all climb, so at least one names a callee
+/// whose function id does not rise. Cutting exactly those leaves the surviving
+/// same-component edges strictly climbing, and cross-component ones can close
+/// nothing because the condensation is a DAG.
+///
+/// A GROUNDED CLOSURE call's edge is not in that graph at all: it reaches its
+/// callee through a value. A closure built outside a recursion and threaded
+/// back through it leaves caller and lambda in different components, so the
+/// argument above has nothing to stand on and would leave the cycle whole.
+/// `cut_in_component_returns` asks the one-way question instead, which keeps
+/// the condensation a DAG and the whole argument true.
+///
+/// Both choices read call-graph facts alone, so the same edges are cut in
+/// every run. The edges left standing still carry their callee's real layout,
+/// which is what keeps one recursive chain on one form.
+fn cut_recursive_edges(
+    world: &World,
+    context: &mut ProductReadContext<'_>,
+    executable: &ExecutableKey,
+    recipe: &mut TransportRecipe,
+) -> Result<(), FactUse<FactKey>> {
+    let owner = executable.activation.function;
+    let component = settled_component(world, context, owner)?;
+    cut_in_component_returns(world, context, component, owner, recipe)
+}
+
+fn cut_in_component_returns(
+    world: &World,
+    context: &mut ProductReadContext<'_>,
+    component: FunctionId,
+    owner: FunctionId,
+    recipe: &mut TransportRecipe,
+) -> Result<(), FactUse<FactKey>> {
+    match recipe {
+        TransportRecipe::Alias(child @ TransportPosition::ExecutableReturn { .. }) => {
+            let callee = child.executable().activation.function;
+            if settled_component(world, context, callee)? == component && callee.as_u32() <= owner.as_u32() {
+                *recipe = TransportRecipe::CutEdge;
+            }
+        }
+        TransportRecipe::Alternatives(children) | TransportRecipe::Tuple(children) => {
+            for child in children {
+                cut_in_component_returns(world, context, component, owner, child)?;
+            }
+        }
+        TransportRecipe::TupleField { tuple, .. } => {
+            cut_in_component_returns(world, context, component, owner, tuple)?;
+        }
+        TransportRecipe::ClosureCallReturn { grounded, .. } => {
+            // A closure call reaches its callee through a VALUE, so the static
+            // graph carries no edge for it: a closure built outside a
+            // recursion and threaded back through it leaves caller and lambda
+            // in DIFFERENT components, and the licence above -- keep a
+            // cross-component edge, because no static path returns -- is void.
+            // Ask the returning question directly instead. If the target
+            // cannot reach this function statically then adding this edge
+            // leaves the condensation a DAG and the grounding is safe to keep,
+            // which is what preserves one authority for an exact-carrier
+            // closure call (fz-9i4.4.5).
+            if let Some(target) = grounded.as_deref_mut()
+                && let TransportRecipe::Alias(child) = target
+                && statically_reaches(world, context, child.executable().activation.function, owner)?
+            {
+                *target = TransportRecipe::CutEdge;
+            }
+        }
+        TransportRecipe::Terminal
+        | TransportRecipe::PublicCallableReturn
+        | TransportRecipe::CutEdge
+        | TransportRecipe::Alias(_) => {}
+    }
+    Ok(())
+}
+
+/// Whether `from` reaches `owner` through the static call graph, walking the
+/// `StaticCallees` edge facts the same way `derive_call_graph_component` does.
+///
+/// `CallGraphComponent` answers MUTUAL reachability, which is an equality; a
+/// closure call needs the one-way question, and only for the rare grounded
+/// edge, so it is asked here rather than turned into a fact of its own. The
+/// walk looks for `owner` itself and never consults a component: reaching any
+/// member of `owner`'s component means reaching `owner`, because the members
+/// of a component all reach each other, so the transitive walk finds `owner`
+/// too.
+fn statically_reaches(
+    world: &World,
+    context: &mut ProductReadContext<'_>,
+    from: FunctionId,
+    owner: FunctionId,
+) -> Result<bool, FactUse<FactKey>> {
+    let mut seen = BTreeSet::new();
+    let mut frontier = vec![from];
+    while let Some(function) = frontier.pop() {
+        if function == owner {
+            return Ok(true);
+        }
+        if !seen.insert(function) {
+            continue;
+        }
+        let fact = FactUse::settled(FactKey::StaticCallees(function));
+        if !context.read_fact(world, fact.clone()) {
+            return Err(fact);
+        }
+        frontier.extend(world.static_callees(function).iter().copied());
+    }
+    Ok(false)
+}
+
+fn settled_component(
+    world: &World,
+    context: &mut ProductReadContext<'_>,
+    function: FunctionId,
+) -> Result<FunctionId, FactUse<FactKey>> {
+    let fact = FactUse::settled(FactKey::CallGraphComponent(function));
+    if !context.read_fact(world, fact.clone()) {
+        return Err(fact);
+    }
+    Ok(world
+        .call_graph_component(function)
+        .unwrap_or_else(|| panic!("settled CallGraphComponent({function:?}) must name a component")))
 }
 
 fn bottom_transport_shape(world: &mut World) -> PullOutcome {

@@ -328,9 +328,26 @@ position owner's `ExecutableFacts`, settled `RuntimeDemand`, and only the
 upstream position products named by the normalized origin. `ExecutableFacts`
 distinguishes direct call returns from public callable returns before transport:
 direct returns refine from the selected target position, while public returns
-project every nonempty result to `ValueRef`. Recursive position dependencies are
-settled as one atomic product group from external anchors, so no member observes
-a partial result. `CallableConstruction(position)` uses the same position-owned
+project every nonempty result to `ValueRef`. Recursion is cut out of the recipe
+before it is evaluated, from call-graph facts alone: an edge naming the return
+of a callee in the position owner's own strong component whose function id does
+not rise is replaced by a cut, so what remains strictly climbs and is acyclic.
+A GROUNDED CLOSURE-CALL edge reaches its callee through a value, so the static
+graph carries no edge for it and component membership answers nothing about it
+-- a closure built outside a recursion and threaded back through it leaves
+caller and lambda in different components while their products still cycle.
+That edge is cut exactly when its target reaches the owner in the static call
+graph, walked over `StaticCallees` the way `DeriveCallGraphComponent` walks it;
+when it does not, the edge adds no reachability the condensation did not
+already have, and keeping it is what preserves one authority for an
+exact-carrier closure call. A cut contributes no evidence about the position's form, and a
+form the readable arms agree on is believed only while it still carries the
+position's whole analyzed type; otherwise the position falls back to the form
+its type and demand describe, reading a whole-value demand on an exact tuple
+type as the per-field demand it stands for so both ends of a cut invent the same
+contract. Evaluation therefore reads no scheduler state and no product group,
+and the published layouts do not move under a re-ordered pull.
+`CallableConstruction(position)` uses the same position-owned
 layout and carries direct callable and boundary facts independently of wrapper
 authority. A direct-only local producer owns `construction: None`; a first-class
 producer owns `Some` with at least one exact executable member. There is no root

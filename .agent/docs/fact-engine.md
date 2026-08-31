@@ -510,9 +510,15 @@ A producer may say "I need `AbiExecutable(E)`" or "I need settled
 `ReturnType(A)`"; it may not schedule unrelated work under another name.
 Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
 and `RuntimeDemand(E)` discover executable dependency groups from settled
-call-edge facts; recursive `TransportShape(position)` and
-`CallableConstruction(position)` products settle their position groups from
-external anchors. A producer discovers its group by asking whether the
+call-edge facts; recursive `CallableConstruction(position)` products settle
+their position groups from external anchors. `TransportShape(position)` has no
+group: it cuts its own recursion from `CallGraphComponent` and `StaticCallees`
+facts at recipe construction, so its evaluation is a function of settled facts
+and of products that can settle without it. Component membership answers
+mutual reachability, which is an equality; a grounded closure-call edge has no
+static edge of its own and needs the ONE-WAY question, so that rare edge walks
+`StaticCallees` at the asking site instead of turning a second reachability
+answer into a fact. A producer discovers its group by asking whether the
 dependency it is about to wait on reaches back to it; that walk, and the strong
 component it gates, follow the dependencies of unsettled products only. A
 settled product answers a read with the value it already holds, so it waits on
@@ -552,7 +558,7 @@ their embedded layouts and callable owners into one root product answer. The
 answer retains that `MaterializedTransportPlan` beside the closed
 `BackendProgram`; runtime consumers project only the program.
 There is no parallel session map of transport positions, shapes, layouts,
-callable boundaries, or recursive groups, and final packaging does not scan the
+callable boundaries, or transport-shape groups, and final packaging does not scan the
 fact table or memo to rediscover them.
 Outgoing publication is an order-free requested-publisher set plus immutable
 per-publisher slot-source maps. `IncomingInputRelations(root)` derives the

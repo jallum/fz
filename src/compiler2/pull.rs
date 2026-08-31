@@ -1586,36 +1586,6 @@ impl<'s> ProductReadContext<'s> {
         self.session.memo.pending_strong_component(current, &self.dependencies)
     }
 
-    pub(crate) fn recursive_group_transport_layouts(&self, members: &[ProductKey]) -> Vec<TransportLayout> {
-        let member_set = members.iter().collect::<HashSet<_>>();
-        members
-            .iter()
-            .flat_map(|member| {
-                self.session
-                    .memo
-                    .pending_dependencies
-                    .get(member)
-                    .into_iter()
-                    .flat_map(|dependencies| dependencies.products.keys())
-            })
-            .filter(|dependency| !member_set.contains(dependency))
-            .filter_map(|dependency| match self.session.memo.get(dependency) {
-                Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub(crate) fn finish_transport_shape_group(
-        &mut self,
-        tel: &impl Telemetry,
-        current: &ProductKey,
-        members: &[ProductKey],
-        value: ProductValue,
-    ) -> bool {
-        self.finish_product_group(tel, current, members, vec![value; members.len()])
-    }
-
     pub(crate) fn recursive_group_callable_owners(&self, members: &[ProductKey]) -> Vec<CallableConstructionOwner> {
         let member_set = members.iter().collect::<HashSet<_>>();
         members
