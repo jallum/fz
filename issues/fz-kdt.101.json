@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.104"
+    "fz-kdt.104",
+    "fz-kdt.105"
   ],
   "blocks": [
     "fz-kdt.95"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Inventory/wrapper ordering by raw Ty ids renumbers canon under schedule flips (display half; miscompile half split to fz-kdt.104)",
   "type": "bug",
-  "updated_at": "2026-08-31T21:58:00Z"
+  "updated_at": "2026-08-31T22:26:19Z"
 }

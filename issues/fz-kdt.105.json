@@ -4,6 +4,7 @@
     "fz-kdt.104"
   ],
   "blocks": [
+    "fz-kdt.101",
     "fz-kdt.106"
   ],
   "created": "2026-08-31T22:26:17Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Canonical clause order at Types::intern: same-denotation unions intern to one Ty (key confluence, P2)",
   "type": "task",
-  "updated_at": "2026-08-31T22:26:18Z"
+  "updated_at": "2026-08-31T22:26:19Z"
 }
