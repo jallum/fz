@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T15:03:45Z",
+  "description": "Found by fz-kdt.93 (2026-08-31, measured at 743319fb4 vs d5d45a074).\n\nWHAT MOVED: on 00420_enum_take_drop_split, 13 recursive `direct_call ... -\u003e return`\nedges changed `return_flow=tail` into `return_flow=continue(shape{...})`, and\n`fz.codegen.define_function` rose 1087 -\u003e 1100. enum_predicate_search moves the\nother way (5 continue -\u003e tail, 2 tail -\u003e continue; 658 -\u003e 655 functions);\nrange_map does not move. No pinned budget moved (matrix 416/0, and none of the\nthree lens fixtures carries a budget assertion).\n\nMECHANISM: at a cut position the layout comes from `cut_transport_layout`\n(jobs/transport.rs). An ExecutableReturn with several origins usually still has\nREADABLE evidence beside the cut arm, and that evidence carries its type, so it\nkeeps the evidence form -- e.g. `lane({list(int), :false | :true})`. The\nmatching ReturnPayload for the same call has only the ONE cut origin, so it has\nno evidence and falls back to the type contract, which decomposes an exact tuple\ntype -- `shape{lane(list), lane(:false | :true)}`. The artifact's\n`CallReturnFlow` (jobs/artifact.rs, `ControlDestination::Return` arm) demands\nsource == caller_return == payload for a `Tail` and emits `Continue` otherwise,\nso the caller re-materializes: it builds the pair unboxed at the callee and\nboxes it again on the way out. Correct, but it is a per-call conversion on a hot\nrecursive edge.\n\nBase did not have this because the knot group stamped ONE layout on every\nmember, which made the two agree by force -- the very lottery fz-kdt.93 removed.\n\nDIRECTION: the two positions are two views of one calling convention and should\nderive one contract. Either the payload should prefer its callee's published\nreturn layout when that layout carries its type (a fact edge that is already in\nthe cone), or an ExecutableReturn inside a cut cycle should take the same type\ncontract its payload takes. Measure both against the three lens fixtures with\ntools/canon-gate.sh: the target is 0 net tail -\u003e continue with the 44 gained\ndecomposed forms kept.",
+  "id": "fz-kdt.97",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A cut position's return and its caller's payload invent different contracts, so a recursive tail becomes a continue",
+  "type": "task",
+  "updated_at": "2026-08-31T15:03:45Z"
+}
