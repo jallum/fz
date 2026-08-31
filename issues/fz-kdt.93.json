@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T13:54:21Z",
+  "description": "Found by the fz-kdt.91 builder STOP (2026-08-31, at d5d45a074; full evidence in the fz-kdt.91 ticket). TransportRecipe::Alias returns RecipeLayout::Recursive(Vec::new()) when pending_dependency_reaches says the child is already in flight (jobs/transport.rs:780-790), so whichever Alternatives child is visited FIRST claims the recursion anchor and the others contribute no layout. Consequences, measured: (a) reversing collect_return_origins walk order (jobs/runtime_demand.rs:3258, pending.reverse()) at base -- zero clause-order change -- flips 12/214 take_drop and 22/221 predicate executables' return layouts, decomposed-\u003eboxed (shape{lane(:done),lane(list)} reprs=[RawAtom,ValueRef] -\u003e lane({:done,list(int)}) reprs=[ValueRef]; same for {:found|:not_found,int}); (b) NON-MONOTONE: one layout also moves WIDER (int|:none -\u003e int|:first|:nil|:none) -- the fz-f98 convergence-runaway class; (c) today's precise 2-lane layouts are the LUCK of arrival order, not something the compiler proves. joined_transport_layout (jobs/transport.rs:1682-1708) is order-insensitive -- the coupling is exactly the recursion cut. FIX DIRECTION: the anchor must be derived from a property of the alternatives (deterministic, schedule-free), not visit order; ShapeId-is-pure-layout law applies (no identity smuggled into layout). BLOCKS fz-kdt.91 (whose correct patch is parked at scratchpad/fz-kdt.91.patch and applies with a pure permutation diff once this lands). Reproduction recipe: apply pending.reverse() at base, fz2 run --dump backend, diff.",
+  "id": "fz-kdt.93",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Return-transport recursion anchor is decided by alternative VISIT ORDER: first-visited wins, decomposed layouts collapse to boxed on schedule",
+  "type": "task",
+  "updated_at": "2026-08-31T13:54:21Z"
+}
