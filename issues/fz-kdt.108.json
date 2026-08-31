@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T23:08:38Z",
+  "description": "fz-kdt.104 dropped runtime-unroutable alternatives at callsite_dispatch::call_destinations. Its sibling constructor, dispatch_from_callable_flow_edges (same file), builds the CallableConstructionFact.selection plan the same way -- one row per first-class callable-flow edge, questions projected through runtime_type_test_envelope -- and carries the same defect: two edges whose surfaces project to ONE RuntimeTypePredicate are not two alternatives, and their order is the scheduler's.\n\nMEASURED AT FIFO, 577-fixture corpus (instrumented run at the base of fz-kdt.104): 25 distinct flow-plan shapes across 14 fixtures have at least one edge that is runtime-indistinguishable from a strictly-wider sibling (the exact class fz-kdt.104 drops on the callsite side); 23 drops by count, plus 2 shapes with no-cover twins (the fz-kdt.107 class) and 21 with equal-denotation twins. Worst shapes: 00277_enum_tier0_fixture arms=11 drop=6, behavior/enum_map_family arms=9 drop=3, behavior/enum_predicate_search arms=4 drop=3.\n\nWHY IT WAS NOT DONE IN fz-kdt.104 (deliberate, recorded): dispatch_from_callable_flow_edges returns only the plan, and its body_ids index CallableConstructionFact.members, built in parallel from the same flow.first_class_edges (jobs/transport.rs, the  field beside ). Dropping an edge from the plan alone leaves the member -- and therefore its boundary and its executable demand -- standing, so the fix is not the same one-line filter: either the rows keep their ORIGINAL body_id while the dropped rows are omitted (plan-only shrink, member kept, resolution still demanded), or members and selection shrink together and every consumer of CallableConstructionMember has to agree. Neither was in scope for a P1 miscompile fix and neither is measured.\n\nFIRST STEP: establish whether this is live. fz-kdt.104's LIFO recipe (Agenda::pop -\u003e pop_back, agenda.rs) plus the 14 fixtures above; 00183 is already correct under LIFO after fz-kdt.104, so the callsite half was the whole P1 miscompile on that fixture. Find a fixture where the FLOW plan order alone changes behavior, or prove none exists and re-price this as artifact hygiene.",
+  "id": "fz-kdt.108",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Callable-flow selection plans carry the same arm-order-is-semantics trap fz-kdt.104 fixed for callsites",
+  "type": "bug",
+  "updated_at": "2026-08-31T23:08:38Z"
+}
