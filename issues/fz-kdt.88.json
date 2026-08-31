@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T02:28:17Z",
+  "description": "Found during the fz-kdt.86 cold review (2026-08-31). derive_function_contract returns JobEffects::default() for a non-declaring function (jobs/contract.rs:28-30): no outputs, no reads -- a concluded job with NO wake source. demand_producer_if_needed's final branch (drive.rs:~318) justifies never re-demanding such a job with 'it re-runs through the graph's own wake', a rationale that does not apply to a job subscribed to nothing. Unreachable via today's demand (measured: every demanded contract function declared one, 60/60 / 28/28 / 29/29 on the three lens fixtures) -- but any future prefetch/eager caller would manufacture zombie jobs. Make the state unrepresentable: never demand DeriveFunctionContract for a non-declaring function (gate at the demand site on function_declares_contract), or have the job read the declaring surface so it has a wake source. Prefer the former (demand purity).",
+  "id": "fz-kdt.88",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "derive_function_contract on a non-declaring function concludes with zero reads and zero outputs -- a wake-less job; make it unrepresentable",
+  "type": "task",
+  "updated_at": "2026-08-31T02:28:17Z"
+}
