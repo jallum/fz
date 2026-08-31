@@ -4,13 +4,14 @@
     "fz-kdt.80"
   ],
   "blocks": [],
+  "closed_at": "2026-08-31T17:05:05Z",
   "created": "2026-08-31T02:33:28Z",
   "description": "CLOSED VERIFIED (2026-08-31): fz-kdt.80 (efbf21c78) drove the analysed-orphan population 10/0/10 -\u003e 0/0/0 and landed the permanent production-path gate: the edge-invariant test (every standing ReturnType read appears on a claimed CallSiteTargets edge) is in the tree and green -- any future orphan re-appearance turns it red. The re-mint debug_assert (rebuilt.activation == walked.activation, jobs/semantic.rs:~1194) is a second tripwire at the minting site. Nothing further to build.",
   "id": "fz-kdt.89",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Analysed orphans: activations demanded, analysed, ReturnType'd, but reachable from no edge -- unmeasured class, pure fixpoint work with no artifact",
   "type": "task",
   "updated_at": "2026-08-31T17:05:05Z"
