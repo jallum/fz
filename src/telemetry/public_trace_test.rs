@@ -995,6 +995,11 @@ struct AnalysisClaimRatchet {
     callsites: FactLifecycle,
     shifts: ShiftWork,
     analyze_evaluations: u64,
+    /// Of those, how many concluded with nothing changed -- a whole
+    /// re-derivation of one activation that reproduced the answer it already
+    /// had. fz-kdt.84 is where this column stopped being mostly self-inflicted;
+    /// what is left is fz-kdt.85/.86's to explain.
+    analyze_zero_change: u64,
     total_evaluations: u64,
 }
 
@@ -1080,30 +1085,66 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// review did NOT reproduce its numbers; the follow-up ticket (fz-kdt on the
 /// tail-chain truncation) requires the actual patch as its starting point,
 /// not this prose.
+///
+/// fz-kdt.84 moved the two EVALUATION columns down and nothing else. Deleting
+/// the revision mint for a cumulative fact's first claim at bottom stopped
+/// `ReturnType`'s empty first claim from waking every `Current` reader of the
+/// empty join:
+///
+/// ```text
+///                              AnalyzeActivation   of those, zero-change    total
+///   fz_f98_range_map_converges  298 ->  256          85 ->  43        959 ->  917
+///   enum_predicate_search       766 ->  655         148 ->  35       1555 -> 1444
+///   enum_take_drop_split       1058 ->  946         193 ->  75       2502 -> 2390
+/// ```
+///
+/// The `AnalyzeActivation` delta and the TOTAL delta are the same number on
+/// every row (-42, -111, -112): every evaluation that stopped happening was an
+/// analysis re-run, and no other family ran less. It comes out of the
+/// zero-change column, which is the whole point -- a formula woken by an empty
+/// first claim had nothing new to read, so it re-derived the answer it already
+/// had. The zero-change column falls slightly FURTHER than the evaluation
+/// column on two rows (-113 against -111, -118 against -112) because a few
+/// evaluations that used to run before their evidence now run after it and
+/// publish: the same content reaching the store in fewer, fuller runs.
+///
+/// Nothing else moved. Both lifecycles, both shift columns and the emitted
+/// executable inventory (`backend_inventory_width_stays_pinned_on_the_target_fixtures`)
+/// are what they were, and the three fixtures' canonical
+/// backend/types/activations dumps are byte-identical across the change. The
+/// claims themselves are untouched -- measured on the same three sources
+/// through `fz2 interp --log-telemetry` (a longer drive than this harness's,
+/// so its counts are its own), joining each step's
+/// `changed[old_revision=null, new_revision=0]` against its `wakes[].cause`:
+/// the 46/152/135 empty first claims all still happen, and the 43/137/139
+/// `Current` wakes they used to cause are 0.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         activations: lifecycle(71, 74, 5),
         callsites: lifecycle(73, 75, 2),
         shifts: shifts(17, 19),
-        analyze_evaluations: 298,
-        total_evaluations: 959,
+        analyze_evaluations: 256,
+        analyze_zero_change: 43,
+        total_evaluations: 917,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
         activations: lifecycle(198, 198, 0),
         callsites: lifecycle(239, 272, 33),
         shifts: shifts(1, 2),
-        analyze_evaluations: 766,
-        total_evaluations: 1555,
+        analyze_evaluations: 655,
+        analyze_zero_change: 35,
+        total_evaluations: 1444,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
         activations: lifecycle(256, 256, 0),
         callsites: lifecycle(415, 427, 12),
         shifts: shifts(6, 10),
-        analyze_evaluations: 1058,
-        total_evaluations: 2502,
+        analyze_evaluations: 946,
+        analyze_zero_change: 75,
+        total_evaluations: 2390,
     },
 ];
 
@@ -1133,6 +1174,7 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             callsites,
             shifts,
             analyze_evaluations,
+            analyze_zero_change,
             total_evaluations,
         } = row;
         let trace = compile_fixture(fixture);
@@ -1166,8 +1208,9 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
 
         let (_, analyze) = family_work(&report, "AnalyzeActivation");
         assert_eq!(
-            analyze.evaluations, analyze_evaluations,
-            "{fixture}: AnalyzeActivation work moved off its fz-kdt.63 pin. Full row: {analyze:?}"
+            (analyze.evaluations, analyze.unchanged_outputs),
+            (analyze_evaluations, analyze_zero_change),
+            "{fixture}: AnalyzeActivation work moved off its fz-kdt.63/.84 pin. Full row: {analyze:?}"
         );
         assert_eq!(
             report.formula_totals().evaluations,

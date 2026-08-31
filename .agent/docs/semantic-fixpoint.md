@@ -276,6 +276,34 @@ This is the important line in the current design: type values are not used to
 encode readiness. `any` and `none` are semantic values. Fact readiness lives in
 the scheduler.
 
+The `ReturnType(a)` fact separates three statements, and each one is read by
+somebody:
+
+```text
+the CLAIM      someone is deriving a's return -- the question is live
+the REVISION   the derived answer moved; 0 means it is still at bottom
+Settled + no
+stored return  the Kleene answer IS bottom: a never returns
+```
+
+`analyze_activation` claims the key unconditionally, so the claim appears as
+soon as the activation is analysed at all, before any evidence exists. That
+first claim is presence, not content, so it is minted at revision 0 and wakes no
+`Current` reader ([fact-engine](fact-engine.md), *Absence is bottom*): a
+`Current` reader of the empty join sees exactly what a reader of the absent key
+sees.
+
+The third line is a real answer with four consumers, and it is why the empty
+claim cannot simply be withheld until evidence arrives: `Settled(ReturnType(a))`
+with no stored return is how a non-returning function is reported.
+`produce_materialized_executable_product` (`jobs/artifact.rs`) waits on the
+settled fact and unwraps the missing return to `none`; the transport pull reads
+the same settled fact at three positions and, finding no return, takes the
+bottom layout (`jobs/transport.rs`: `ExecutableReturn`/`ReturnPayload` in the
+callable-owner path treat it as unreachable, the two `bottom_transport_shape`
+arms take it as the shape). An absent fact could never carry that: nothing
+claims it, so it can never settle.
+
 ## How recursive convergence works right now
 
 `canonical_activation_key(function, raw_inputs)` still decides activation

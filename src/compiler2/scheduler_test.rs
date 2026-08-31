@@ -907,8 +907,186 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
     );
 }
 
+/// fz-kdt.84: a cumulative fact's first claim carrying NO content is presence,
+/// not a movement.
+///
+/// A cumulative fact's store maintains a join, and a join has a bottom. A
+/// `Current` reader of the empty join gets exactly what a reader of the absent
+/// key gets, so nothing a reader could act on happened -- the claim announces
+/// only that someone is now deriving the key. Waking every `Current` reader of
+/// nothing is work with no evidence behind it.
+///
+/// The other two questions the slot answers still move, and must: the fact is
+/// PRESENT (a `Settled` waiter can now be satisfied by it, and only a present
+/// fact ever settles) and it is SETTLED, so both the settled and the
+/// settled-presence waiters wake on the readiness edge alone.
 #[test]
-fn compiler2_scheduler_retraction_always_shifts() {
+fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+    let settled_waiter = 3_u32;
+    let presence_waiter = 4_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("cum_ret")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        settled_waiter,
+        HashSet::new(),
+        HashSet::from([settled("cum_ret")]),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        presence_waiter,
+        HashSet::new(),
+        HashSet::from([settled_presence("cum_ret")]),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    // The claim lists the key as an output but marks nothing changed: the
+    // publisher is deriving it and has reached bottom.
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        Vec::new(),
+    );
+
+    assert!(
+        wakes_for(&step, reader).is_empty(),
+        "a Current reader of the empty join must not wake: it would re-derive from the same \
+         nothing it already read. Wakes: {:?}",
+        step.wakes.iter().map(|wake| wake.job).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"cum_ret"),
+        Some(0),
+        "a cumulative claim with no content is PRESENT at bottom -- revision 0, the reading a \
+         Current reader cannot tell from absence",
+    );
+    assert!(
+        scheduler.facts().is_settled(&"cum_ret"),
+        "the claim is clean and its publisher read nothing, so the fact settles",
+    );
+    assert_eq!(
+        enqueued_jobs(&step),
+        vec![settled_waiter, presence_waiter],
+        "presence and settledness DID move, so the settled and settled-presence waiters wake",
+    );
+}
+
+/// fz-kdt.84's other half: suppressing the bottom appearance loses no
+/// evidence. The first claim that actually carries content wakes the `Current`
+/// reader, and wakes it exactly once -- the bottom claim before it contributed
+/// no second wake.
+#[test]
+fn compiler2_scheduler_first_cumulative_content_after_bottom_wakes_the_reader_once() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("cum_ret")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let at_bottom = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        Vec::new(),
+    );
+    let ascent = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        vec!["cum_ret"],
+    );
+
+    assert_eq!(
+        at_bottom.wakes.len() + wakes_for(&ascent, reader).len(),
+        1,
+        "the reader must be woken once across the pair: never by the bottom claim, always by \
+         the content. Bottom wakes: {:?}",
+        at_bottom.wakes.iter().map(|wake| wake.job).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        scheduler.facts().revision(&"cum_ret"),
+        Some(1),
+        "the first real evidence moves the fact off bottom",
+    );
+    assert!(
+        !scheduler.rebased(&reader),
+        "climbing off bottom is an ascent, not a ground shift",
+    );
+}
+
+/// fz-kdt.84's sibling guard. The rule is about the fact's CONTENT ALGEBRA,
+/// not about whether the publisher marked the key changed.
+///
+/// A replacing fact has no bottom to be at: whatever it says on arrival is
+/// content a reader can see and act on -- `CallSiteSummary`'s `Unresolved`
+/// is a reader-visible answer, not the absence of one. So its first
+/// appearance stays a movement even when the publisher lists nothing changed,
+/// and the demand facts (`Activation`, `Executable`) that gate whole cones on
+/// presence keep waking their readers the way they always have.
+#[test]
+fn compiler2_scheduler_replacing_appearance_wakes_current_readers_unmarked() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("def")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["def"],
+        Vec::new(),
+    );
+
+    assert_eq!(
+        scheduler.facts().revision(&"def"),
+        Some(1),
+        "a replacing fact appears with content, so it appears at revision 1",
+    );
+    assert_eq!(
+        enqueued_jobs(&step),
+        vec![reader],
+        "a replacing fact's first appearance is news for its Current readers whether or not the \
+         publisher marked it changed",
+    );
+}
+
+#[test]
+fn compiler2_scheduler_contentful_retraction_shifts() {
     let mut scheduler = TestScheduler::new();
     let writer = 1_u32;
     let reader = 2_u32;
@@ -2089,4 +2267,98 @@ fn compiler2_scheduler_job_level_unfinal_reads_fold_every_derivation() {
         scheduler.facts().is_settled(&"x") && !scheduler.facts().is_settled(&"y"),
         "the unfinality lands on the answer that read the moving ground, not on the body",
     );
+}
+
+/// The waiter half of fz-kdt.84's law: `satisfies` and the wake path must
+/// never disagree. A `Current` wait is satisfied by PRESENCE, so a cumulative
+/// fact appearing at bottom -- no content movement -- must still wake a
+/// waiter whose last unsatisfied wait it was, or that waiter is
+/// satisfied-and-asleep forever.
+#[test]
+fn compiler2_scheduler_current_waiter_on_a_cumulative_bottom_claim_is_woken() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let waiter = 2_u32;
+
+    complete(
+        &mut scheduler,
+        waiter,
+        HashSet::new(),
+        HashSet::from([current("cum_ret")]),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        Vec::new(),
+    );
+
+    assert!(
+        scheduler.facts().satisfies(&current("cum_ret")),
+        "a bottom claim is present, so the Current wait is satisfied",
+    );
+    assert_eq!(
+        enqueued_jobs(&step),
+        vec![waiter],
+        "the satisfied waiter must be woken -- satisfies and the wake path may never disagree",
+    );
+    assert!(
+        step.wakes.iter().all(|wake| !wake.shift),
+        "presence is not a ground shift: nothing the waiter could have read moved",
+    );
+}
+
+/// The retraction half: taking away a BOTTOM claim removes nothing anyone
+/// could have read, so it is not a ground shift and wakes no `Current`
+/// reader; the readiness flip still reaches settled waiters. (The sibling
+/// `contentful_retraction_shifts` pins the shift for claims that carried
+/// content.)
+#[test]
+fn compiler2_scheduler_bottom_claim_retraction_is_not_a_shift() {
+    let mut scheduler = TestScheduler::new();
+    let writer = 1_u32;
+    let reader = 2_u32;
+
+    complete(
+        &mut scheduler,
+        reader,
+        HashSet::from([current("cum_ret")]),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["cum_ret"],
+        Vec::new(),
+    );
+
+    // The writer concludes again WITHOUT the claim: a bottom claim retracts.
+    let step = complete(
+        &mut scheduler,
+        writer,
+        HashSet::new(),
+        HashSet::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    assert!(
+        wakes_for(&step, reader).is_empty(),
+        "retracting a bottom claim takes away nothing the reader could have read; wakes: {:?}",
+        step.wakes.iter().map(|wake| wake.job).collect::<Vec<_>>(),
+    );
+    assert!(
+        !scheduler.rebased(&reader),
+        "no ground shifted: the reader read nothing then, and reads nothing now",
+    );
+    assert_eq!(scheduler.facts().revision(&"cum_ret"), None, "the claim is gone",);
 }

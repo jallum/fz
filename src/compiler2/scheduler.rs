@@ -515,8 +515,7 @@ where
     /// Drains a wave of fact changes into wakes. An ascent re-runs readers,
     /// who join. A ground shift additionally rebases them: a retraction, a
     /// replacing fact's content change, or any change concluded by a rebased
-    /// publisher can invalidate what readers derived. First appearance is
-    /// news, not a shift — nothing read it.
+    /// publisher can invalidate what readers derived.
     ///
     /// A readiness-only change (the finality flips this ticket added, and the
     /// dirty/clean flips that were always here) reaches `Settled` and
@@ -532,6 +531,12 @@ where
         let mut moved_keys = HashSet::new();
         while let Some(change) = pending_changes.pop() {
             if change.content_changed() {
+                // An APPEARANCE is an ascent, never a shift: there was no
+                // earlier answer for the new one to have refuted. A cumulative
+                // fact's climb off bottom (0 -> 1) is an ordinary bump, so a
+                // REBASED publisher's first real evidence propagates as a shift
+                // -- the conservative direction, and measured to add no shift
+                // and no rebased completion on any target fixture (fz-kdt.84).
                 let retraction = change.new_revision.is_none();
                 let revision_bump = change.old_revision.is_some() && change.new_revision.is_some();
                 let shift = retraction || (revision_bump && (was_rebased || !change.key.is_cumulative()));
@@ -555,19 +560,33 @@ where
                         &mut wakes,
                     );
                 }
-            } else if change.readiness_changed() {
-                self.enqueue_dependents(
-                    FactUse::settled(change.key.clone()),
-                    false,
-                    &mut pending_changes,
-                    &mut wakes,
-                );
-                self.enqueue_dependents(
-                    FactUse::settled_presence(change.key.clone()),
-                    false,
-                    &mut pending_changes,
-                    &mut wakes,
-                );
+            } else {
+                // A cumulative fact's appearance at bottom moves no content,
+                // but it SATISFIES a `Current` wait (presence is the wait's
+                // whole question). Waiters only: subscribers read the value,
+                // and the value they would re-read is the same nothing.
+                if change.old_revision.is_none() && change.new_revision.is_some() {
+                    self.wake_satisfied_waiters(
+                        FactUse::current(change.key.clone()),
+                        false,
+                        &mut pending_changes,
+                        &mut wakes,
+                    );
+                }
+                if change.readiness_changed() {
+                    self.enqueue_dependents(
+                        FactUse::settled(change.key.clone()),
+                        false,
+                        &mut pending_changes,
+                        &mut wakes,
+                    );
+                    self.enqueue_dependents(
+                        FactUse::settled_presence(change.key.clone()),
+                        false,
+                        &mut pending_changes,
+                        &mut wakes,
+                    );
+                }
             }
             moved_keys.insert(change.key);
         }
@@ -806,6 +825,22 @@ where
             }
         }
 
+        self.wake_satisfied_waiters(fact_use, shift, pending_changes, wakes);
+    }
+
+    /// The waiter half of a movement's dispatch, on its own so a PRESENCE
+    /// appearance can reach it without the subscriber half: `satisfies` and
+    /// the wake path must never disagree. A `Current` wait is satisfied by
+    /// presence (`revision.is_some()`), so a cumulative fact appearing at
+    /// bottom satisfies it while moving no content -- the waiter must still
+    /// run, or it is satisfied-and-asleep forever (fz-kdt.84 review).
+    fn wake_satisfied_waiters(
+        &mut self,
+        fact_use: FactUse<F>,
+        shift: bool,
+        pending_changes: &mut Vec<FactChange<F>>,
+        wakes: &mut Vec<Wake<J, F>>,
+    ) {
         for job in self.deps.waiters(&fact_use) {
             let waits = self.deps.waits_for(&job);
             if !waits.iter().all(|wait| self.facts.satisfies(wait)) {

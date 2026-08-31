@@ -211,6 +211,13 @@ tests that care about "did this semantic thing actually change?" should key on
 the reported revision or the published fact/output, not on the mere existence
 of a repeated event. This matters most for joined facts like
 `FactValue::Inputs(Vec<Ty>)`, callsite summaries, and product artifacts.
+Revision **0** is a real, renderable value: it means a cumulative fact
+(`ReturnType`, `ActivationInputs`) is present at the bottom of its join, which a
+`Current` reader cannot tell from absence, so `null -> 0` on the stream is a
+publisher appearing and not a change (`.agent/docs/fact-engine.md`, *Absence is
+bottom*). Reading a stream for content movement means comparing
+`old_revision.unwrap_or(0)` against `new_revision.unwrap_or(0)`, not comparing
+the two optionals.
 
 **Local type ids are world-owned facts.** Compiler2 `Ty` values are interned
 `u32` handles owned by `World.types`. They are valid only inside that one

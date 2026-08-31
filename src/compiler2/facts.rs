@@ -102,8 +102,16 @@ pub struct FactChange<F> {
 }
 
 impl<F> FactChange<F> {
+    /// Whether what a `Current` reader can see moved.
+    ///
+    /// Absent and present-at-bottom read the same, so `None` <-> `Some(0)` is
+    /// not a content movement in either direction: appearing at bottom
+    /// announces a publisher, and a bottom claim's retraction takes away
+    /// nothing anyone could have read. Only a cumulative fact is ever minted
+    /// at 0 (`appearance_revision`), so every replacing fact's appearance and
+    /// retraction still moves — `Some(n > 0)` <-> `None` included.
     pub fn content_changed(&self) -> bool {
-        self.old_revision != self.new_revision
+        self.old_revision.unwrap_or(0) != self.new_revision.unwrap_or(0)
     }
 
     pub fn readiness_changed(&self) -> bool {
@@ -154,9 +162,11 @@ pub struct FactReplace<F> {
 /// answer, and a claim carries the reads of the answer it came from. State
 /// facts (ModuleDefined, FunctionDefined, …) have one authority publisher;
 /// demand facts (Activation, Executable) are held by every demander and stay
-/// present until the last one drops. The counter starts at 1 on first
-/// appearance and increments each time any publisher signals `changed = true`.
-/// Retraction (no publishers remain) is represented as `revision() = None`.
+/// present until the last one drops. The counter is set by
+/// `appearance_revision` when the fact gains its first publisher — 1 for a
+/// replacing fact, 0 for a cumulative one claimed with no content — and
+/// increments each time any publisher signals `changed = true`. Retraction (no
+/// publishers remain) is represented as `revision() = None`.
 ///
 /// Three separate questions (fz-kdt.44):
 ///
@@ -178,8 +188,11 @@ pub struct FactReplace<F> {
 ///
 /// A fact is **quiet** when nothing can move it: no dirty publisher and no
 /// unfinal one. An absent fact is quiet — nobody is deriving it, so reading it
-/// makes no reader unfinal (readers of a fact that later appears wake on its
-/// first-appearance content movement instead).
+/// makes no reader unfinal. A reader of the absent key wakes on the fact's
+/// first CONTENT movement, which for a replacing fact is its appearance and
+/// for a cumulative one is its first claim carrying evidence; if the publisher
+/// that claimed the key at bottom is still deriving, the key is unquiet and
+/// that reader unfinalises through the ordinary wave.
 #[derive(Debug, Clone)]
 struct FactSlot<P> {
     publishers: HashSet<P>,
@@ -235,7 +248,7 @@ impl<P, F> Default for FactTable<P, F> {
 impl<P, F> FactTable<P, F>
 where
     P: Clone + Eq + Hash,
-    F: Clone + Eq + Hash,
+    F: Clone + Eq + Hash + ClaimShape,
 {
     pub fn new() -> Self {
         Self::default()
@@ -299,7 +312,9 @@ where
     /// previously published but no longer does lose its entry; a fact with no
     /// publishers left is retracted. The `changed` flag on each output means
     /// the publisher's content moved; the table increments the fact's revision
-    /// only when that flag is set (or when the fact is newly appearing). A
+    /// only when that flag is set. A newly appearing fact is minted by
+    /// `appearance_revision`, which reads the flag too: an unflagged cumulative
+    /// claim appears at bottom and moves nothing. A
     /// publisher may also mark one of its previous outputs as changed while
     /// retracting it if removing that contribution changes a still-present
     /// multi-publisher fact.
@@ -346,12 +361,13 @@ where
 
             if output_keys.contains(&key) {
                 let was_absent = slot.publishers.is_empty();
+                let changed_listed = changed_keys_set.remove(&key);
                 slot.publishers.insert(publisher.clone());
                 slot.dirty_publishers.remove(publisher);
                 set_membership(&mut slot.unfinal_publishers, publisher, publisher_unfinal);
                 if was_absent {
-                    slot.revision = 1;
-                } else if changed_keys_set.remove(&key) {
+                    slot.revision = appearance_revision(&key, changed_listed);
+                } else if changed_listed {
                     slot.revision += 1;
                 }
             } else {
@@ -416,11 +432,12 @@ where
             let old_settled = slot.is_settled();
 
             let was_absent = slot.publishers.is_empty();
+            let changed_listed = changed_keys_set.remove(key);
             slot.publishers.insert(publisher.clone());
             set_membership(&mut slot.unfinal_publishers, publisher, publisher_unfinal);
             if was_absent {
-                slot.revision = 1;
-            } else if changed_keys_set.remove(key) {
+                slot.revision = appearance_revision(key, changed_listed);
+            } else if changed_listed {
                 slot.revision += 1;
             }
 
@@ -517,6 +534,24 @@ where
         }
         changed
     }
+}
+
+/// The revision a fact is minted at when it first gains a publisher.
+///
+/// For a CUMULATIVE fact, absence and bottom are the same reading: its store
+/// maintains a join, a join has a bottom, and a `Current` reader of the empty
+/// join gets exactly what a reader of the absent key gets. So a first claim
+/// that lists no content is PRESENCE, not content, and it is minted at
+/// revision 0 -- present, at bottom, no movement to wake anyone with.
+///
+/// For a REPLACING fact there is no bottom to be at: whatever it says on
+/// arrival is content its readers can see, so first appearance is revision 1
+/// and moves.
+/// PRECONDITION (asserted at the publisher): a cumulative fact's store must
+/// be empty whenever its fact is absent -- revision 0 means "present at
+/// bottom", and a store remnant surviving a retraction would make that a lie.
+fn appearance_revision<F: ClaimShape>(key: &F, changed_listed: bool) -> u64 {
+    u64::from(changed_listed || !key.is_cumulative())
 }
 
 fn set_membership<P: Clone + Eq + Hash>(set: &mut HashSet<P>, publisher: &P, member: bool) {

@@ -711,7 +711,7 @@ impl Replay {
     fn record_movements(&mut self, position: usize, completion: &Json) {
         let mut classified = HashMap::new();
         for change in array(completion.get("changed")) {
-            let content = change.get("old_revision") != change.get("new_revision");
+            let content = revision(change, "old_revision") != revision(change, "new_revision");
             let readiness = change.get("old_settled") != change.get("new_settled");
             classified.insert(identity(change, None), (content, readiness));
         }
@@ -839,6 +839,17 @@ impl References {
             _ => {}
         }
     }
+}
+
+/// One side of a `changed` entry's revision pair, as the ENGINE compares it.
+/// A cumulative fact present at bottom renders `0` and an absent one renders
+/// `null`, and no reader can tell those apart, so both read as 0 here --
+/// `FactChange::content_changed` says the same thing
+/// (`.agent/docs/fact-engine.md`, *Absence is bottom*). Only a cumulative fact
+/// is ever minted at 0, so a replacing fact's appearance and retraction still
+/// count as movements.
+fn revision(change: &Json, field: &str) -> u64 {
+    change.get(field).and_then(Json::as_u64).unwrap_or(0)
 }
 
 fn array(value: Option<&Json>) -> &[Json] {

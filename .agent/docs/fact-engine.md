@@ -22,7 +22,8 @@ and artifact emission.
 - **`FactTable`** — one `FactSlot` per `FactKey`. A slot holds the set of
   `publishers` claiming the fact, the `dirty_publishers` queued to re-run, the
   `unfinal_publishers` whose own reads can still move, and a `revision`
-  counter. A publisher is a `Publisher<J>` — one job's one derivation — not a
+  counter (1 on a replacing fact's appearance, 0 on a cumulative fact claimed
+  at bottom). A publisher is a `Publisher<J>` — one job's one derivation — not a
   job. Slots hold no values — typed values live in `World` stores; the
   fact gates their visibility. Derived states: **present** (any publisher),
   **retracted** (none — the slot drops), **locally settled** (present and no
@@ -123,6 +124,35 @@ A completion's meaning bifurcates per derivation, on whether the run reached it
   cannot destroy still-valid published work.
 
 ### Absence is bottom; rebasing is the narrowing path
+
+The same reading applies one layer up, to the CLAIM. For a cumulative fact,
+absence and bottom are the same answer: the store maintains a join, a join has a
+bottom, and `World::activation_return` gates on revision presence and returns
+`None` for both. So a first claim that carries no content — `analyze_activation`
+claims `ReturnType` on every run, evidence or not — announces a publisher and
+moves nothing. It is minted at revision **0**: present, at bottom, no content
+movement (`facts::appearance_revision`), and `None` <-> `Some(0)` is not a
+content change in either direction (`FactChange::content_changed`). `Current`
+readers stay asleep; presence and settledness did move, so `Settled` and
+`SettledPresence` subscribers wake on the readiness edge. The first claim that
+carries real evidence is an ordinary ascent, 0 -> 1.
+
+A REPLACING fact has no bottom to be at, so this never applies to one: whatever
+it says on arrival is content a reader can see and act on — `CallSiteSummary`
+and `CallSiteTargets`' `Unresolved` IS a reader-visible answer, not the absence
+of one — and it appears at revision 1 and wakes. The existence facts
+(`Activation`, `Executable`) are the same: a whole cone is gated on their
+presence.
+
+Measured over `fz2 interp --log-telemetry` on `fz_f98_range_map_converges`,
+`enum_predicate_search` and `00420_enum_take_drop_split`, joining each step's
+`changed[old_revision=null]` against its `wakes[].cause` — of `ReturnType`'s
+75/255/283 first claims, 46/152/135 carried no content, and those caused
+43/137/139 `Current` wakes to re-read nothing. Removing them left the claims
+exactly where they were and took 42/132/114 evaluations out of the compile,
+almost all of them `AnalyzeActivation` runs that concluded unchanged (85 -> 43,
+171 -> 37, 192 -> 72). No lifecycle, no shift count and no emitted byte moved
+(fz-kdt.84).
 
 Retraction-by-omission is sound only where a publisher's silence about a key is
 KNOWLEDGE. For `analyze_activation`'s callee `Activation` claims it is not: a
@@ -250,8 +280,10 @@ and `ActivationInputs` hold monotone joins maintained by their `World` stores
 (content only grows between ground shifts); every other fact's content
 overwrites. The scheduler classifies every content change:
 
-- **Ascent** — first appearance, or growth of a cumulative fact from an
-  unshifted publisher. Readers re-run and join. This is the within-epoch
+- **Ascent** — a first appearance carrying content, or growth of a cumulative
+  fact from an unshifted publisher. Readers re-run and join. A cumulative
+  fact's first claim at BOTTOM is not here at all: it is presence, not content
+  (see *Absence is bottom*). This is the within-epoch
   chaotic iteration: monotone transfers over finite chains converge to the
   unique least fixpoint on any fair schedule, so wake order is performance,
   never correctness.
@@ -306,8 +338,10 @@ and the walk is exactly the affected cone.
 
 Reading an ABSENT fact makes no reader unfinal. Nobody is deriving it, so
 nothing about it can move on its own; a reader that concluded while it was
-empty wakes on its first-appearance content movement, which is a content
-change like any other.
+empty wakes on the fact's first CONTENT movement, which is a content change
+like any other. Once someone claims the key, the ordinary rules take over: a
+claim from a publisher that is still deriving makes the fact unquiet, and that
+reader unfinalises through the same wave as any other reader.
 
 A readiness-only change (a fact losing or regaining finality with the same
 content) reaches `Settled` and `SettledPresence` subscribers ONLY. Routing it

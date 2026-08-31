@@ -278,6 +278,16 @@ pub(super) fn analyze_activation(
         }
     }
 
+    // Revision-0 precondition (fz-kdt.84): a cumulative fact's STORE must be
+    // empty whenever its fact is absent, or a re-claim after retraction would
+    // mint revision 0 while carrying real reader-visible content -- a silent
+    // missed movement. Holds today (nothing retracts ReturnType); the
+    // fz-kdt.69 decommission must clear the ActivationSlot to keep it.
+    debug_assert!(
+        world.has_fact(&FactKey::ReturnType(activation.clone()))
+            || world.activation_return_evidence(activation).is_none(),
+        "a ReturnType claim is absent while its store holds content -- revision-0 minting would lie"
+    );
     let return_changed =
         super::super::drive::ExecutionContext::new(world, tel).define_activation_return(activation, return_evidence);
     let return_fact = FactKey::ReturnType(activation.clone());
