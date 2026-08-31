@@ -6,14 +6,15 @@
   "blocks": [
     "fz-kdt.80"
   ],
+  "closed_at": "2026-08-31T16:31:24Z",
   "created": "2026-08-31T02:56:15Z",
   "description": "LANDED 296820f6e (merged to wt/kdt13-boundaries 2026-08-31; built and\nverified in the round that discovered fz-kdt.93, re-applied and re-proven\nafter fz-kdt.93 landed).\n\nTHE FIX: EntryReachability::new sorts+dedups its clause list by body_id\n(planner-enforced source order, dispatch_matrix/pattern.rs\nNonMonotonicBodyId), replacing analyze_activation's first-occurrence\nrow-arrival dedupe (deleted same motion). Canonicalization, NOT a\ncorrectness fix: clause try-order lives in PatternDispatchPlan\n(first-match-wins encoded at plan construction); clause_ids is a\nbody_id-\u003eposition lookup kept in lockstep with the pruned clause vector by\nconstruction. Behavior byte-identical 12/12 (interp + AOT, three lens\nfixtures, verified at build time).\n\nLANDING EVIDENCE (at 2f3605e28 base): canon movement take_drop 106 lines /\npredicate 344 / range_map 0 -- PROVEN PURE PERMUTATION: normalized\nmultisets of removed/added lines identical after erasing value ids, entry\nids, clause_ids arrays, and clause indices; zero layout/carrier/flow\ncontent lines; tail/continue flows 0/0. (At the PRE-kdt.93 base the same\npatch moved return LAYOUTS -- that was fz-kdt.93's lottery, now fixed;\nthe pure-permutation result here is also fz-kdt.93's regression proof.)\nTwo red tests landed: entry_reachability_names_clauses_in_source_order_\nnot_arrival_order and artifact_clause_ids_follow_source_order_on_the_\ntarget_fixtures. One ratchet re-pin with cause: predicate zero-change\n4 -\u003e 5 (a spuriously \"changed\" EntryReachability -- same clause set, new\narrival order -- is now published unchanged; evaluations flat, one fewer\ndownstream wake). Fresh gate: lib 1513/0, cli 23/0, matrix 425/0, clippy\n-D warnings, fmt clean; inventory pins 59/221/214 hold.",
   "id": "fz-kdt.91",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "DONE: clause order comes from the source, not the schedule (296820f6e; canon movement proven a pure permutation)",
   "type": "task",
-  "updated_at": "2026-08-31T16:31:23Z"
+  "updated_at": "2026-08-31T16:31:24Z"
 }
