@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T14:05:03Z",
+  "description": "Owner direction 2026-08-31: canon dumps need not be stored in the repo -- they are constructed from the code on the base branch on demand. The fz-f98.21 canonical form exists precisely so two DIFFERENT builds compare (id-free, faithful, byte-stable). Today that comparison happens only ad hoc (every kdt.80/.91/.93 measurement did it by hand in throwaway worktrees); the in-tree tests are blind to cross-version artifact movement by construction (determinism pair + cross-process compare diff a tree against itself; inventory pins watch counts, not content) -- which is why the kdt.93 layout lottery was invisible until a permutation tripped it. BUILD: a script (tools/ or xtask) that (1) resolves merge-base with the PR base branch, (2) builds fz2 at merge-base in a temp worktree and at HEAD, (3) dumps backend canon for the lens fixtures (00420_enum_take_drop_split, fz_f98_range_map_converges, enum_predicate_search) from each, (4) cmp -- exit 0 on byte-neutral, else emit a per-executable diff report for the PR description. Optionally wire into CI as a reporting (non-blocking at first) check. Acceptance: running it at a known-neutral commit reports clean; running it across a known-moving commit (e.g. the kdt.93 fix when it lands) reports exactly the expected executables. Keep it a REPORT, not a golden file: the base branch is the source of truth, reconstructed each run.",
+  "id": "fz-kdt.94",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Cross-version canon gate: script the base-vs-HEAD backend-dump compare (the base branch IS the golden)",
+  "type": "task",
+  "updated_at": "2026-08-31T14:05:03Z"
+}
