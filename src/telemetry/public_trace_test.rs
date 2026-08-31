@@ -1149,6 +1149,37 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// (`backend_inventory_width_stays_pinned_on_the_target_fixtures`). Every
 /// other column here -- both other lifecycles, both shift columns -- is
 /// untouched.
+/// fz-kdt.80 moved two of the three rows down again, and this time the
+/// CLAIMS moved, not just the evaluations. Intern-time `A ∨ A = A` on the
+/// non-tuple DNF axes makes the activation key a join homomorphism, so a
+/// callsite reached down several rows stops re-minting a WIDER key than any
+/// row walked:
+///
+/// ```text
+///                              Activation   CallSite*    Analyze   total
+///   fz_f98_range_map_converges  71 ->  71   73 ->  73   226 -> 226  flat
+///   enum_predicate_search      198 -> 174  239 -> 215   623 -> 553  1434 -> 1364
+///   enum_take_drop_split       255 -> 219  415 -> 379   875 -> 787  2370 -> 2282
+/// ```
+///
+/// The 24 and 36 `Activation` claims that stopped being published were the
+/// re-mint's own inventions: measured on `enum_predicate_search`, the compile
+/// published 198 distinct `Activation` facts but ran only 174 distinct
+/// `AnalyzeActivation` formulas -- 24 keys nobody ever analysed. At HEAD the
+/// two numbers are the same 174. `CallSiteSummary`/`CallSiteTargets` fall by
+/// exactly the same 24/36 (retractions unchanged at 33/12): one invented key
+/// is one invented edge.
+///
+/// `analyze_zero_change` on `enum_predicate_search` goes 5 -> 6. That column
+/// rising while its own denominator falls 623 -> 553 is a shorter ascent, not
+/// more churn: the single new row is `List.reduce_while/3` at
+/// `(non_empty_list(int), :none, (int, :none) -> {:cont, :none} | {:halt, _})`,
+/// whose evaluations halve 18 -> 9 and whose ninth run reproduces the answer
+/// its eighth reached. No formula gained evaluations.
+///
+/// `fz_f98_range_map_converges` is untouched on every column -- it has no
+/// callsite reached down two brand-distinct rows, which is why it was the one
+/// fixture with zero lost edge keys before the fix.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
@@ -1161,26 +1192,29 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
-        activations: lifecycle(198, 198, 0),
-        callsites: lifecycle(239, 272, 33),
+        activations: lifecycle(174, 174, 0),
+        callsites: lifecycle(215, 248, 33),
         shifts: shifts(1, 2),
-        analyze_evaluations: 623,
+        analyze_evaluations: 553,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
         // publishes it unchanged -- evaluations flat, one fewer
         // downstream wake. 4 -> 5.
-        analyze_zero_change: 5,
-        total_evaluations: 1434,
+        // fz-kdt.80: 5 -> 6, against a denominator that fell 623 -> 553.
+        // See the header: one formula's ascent shortened 18 -> 9 runs and
+        // its last run reproduces the answer.
+        analyze_zero_change: 6,
+        total_evaluations: 1364,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
-        activations: lifecycle(255, 255, 0),
-        callsites: lifecycle(415, 427, 12),
+        activations: lifecycle(219, 219, 0),
+        callsites: lifecycle(379, 391, 12),
         shifts: shifts(6, 10),
-        analyze_evaluations: 875,
+        analyze_evaluations: 787,
         analyze_zero_change: 8,
-        total_evaluations: 2370,
+        total_evaluations: 2282,
     },
 ];
 

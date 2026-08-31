@@ -61,12 +61,21 @@ both positively and negatively (`P ∧ ¬P = ∅`), and clauses a `MergeSig` mer
 proves empty (`PosMeet::Empty`: tuple arity mismatch, an empty tuple
 coordinate or resource payload, a non-empty list sig with no element left).
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
-The persistence boundary (`Types::intern`) canonicalizes the tuples axis of
-every descriptor entering the interner: provably-empty clauses are dropped
+
+The persistence boundary (`Types::intern`) canonicalizes every descriptor
+entering the interner. On the tuples axis: provably-empty clauses are dropped
 (`A ∨ ∅ = A`) and subsumed clauses absorbed (`A ⊆ B ⇒ A ∨ B = B`, via
-`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache), and a
-debug-build assert in `TypeInterner::intern` sweeps every intern for the
-invariant. The tuple-emptiness recursion
+`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache). On the
+lists, resources, funcs and maps axes: exact-duplicate clauses are dropped
+(`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence kept so clause order
+survives). Union-time hygiene is not enough, because clauses are also made
+equal AFTER a union — `erase_closure_identity` strips closure brands in place,
+turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
+otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
+what the activation key is built from, so idempotence at the boundary is what
+makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
+`TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) sweeps every intern
+for both invariants. The tuple-emptiness recursion
 (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.

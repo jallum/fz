@@ -141,7 +141,7 @@ impl TypeInterner {
             return *ty;
         }
         #[cfg(debug_assertions)]
-        self.debug_assert_tuple_axis_hygienic(&d);
+        self.debug_assert_dnf_axes_hygienic(&d);
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
@@ -161,13 +161,14 @@ impl TypeInterner {
         self.ctx().descr(t)
     }
 
-    /// The interned-tuple-DNF invariant: a descriptor entering the
-    /// arena never carries a duplicate, provably-empty, or subsumed tuple
-    /// clause. `Types::intern` establishes it by canonicalizing the axis; this
-    /// sweep verifies it for every intern in debug builds, so any construction
-    /// route leaking garbage clauses fails loudly instead of accumulating.
+    /// The interned-DNF invariant: a descriptor entering the arena never
+    /// carries a duplicate clause on any axis, nor a provably-empty or
+    /// subsumed tuple clause. `Types::intern` establishes it by canonicalizing
+    /// the axes; this sweep verifies it for every intern in debug builds, so
+    /// any construction route leaking garbage clauses fails loudly instead of
+    /// accumulating.
     #[cfg(debug_assertions)]
-    fn debug_assert_tuple_axis_hygienic(&self, d: &Descr) {
+    fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
         for (i, c) in d.tuples.iter().enumerate() {
             let mut memo = emptiness::Memo::default();
@@ -182,6 +183,50 @@ impl TypeInterner {
                 );
             }
         }
+        debug_assert_no_exact_duplicates(&d.lists, "lists");
+        debug_assert_no_exact_duplicates(&d.resources, "resources");
+        debug_assert_no_exact_duplicates(&d.funcs, "funcs");
+        debug_assert_no_exact_duplicates(&d.maps, "maps");
+    }
+}
+
+/// `A ∨ A = A` on the four axes that carry no absorption pass of their own.
+///
+/// The tuples axis gets the stronger emptiness+subsumption treatment; the rest
+/// get idempotence, which is the rule the ACTIVATION KEY depends on. A key is
+/// built by erasing what the key language cannot address — closure brands
+/// above all — and erasure runs IN PLACE, so a union that legitimately kept one
+/// clause per brand becomes `A ∨ A` the moment the brands go. Without this
+/// collapse `funcs = [A, A]` interns as a different `Ty` than `funcs = [A]`,
+/// the key stops being a join homomorphism, and a callsite reached down two
+/// rows publishes an edge naming neither activation its walk actually read
+/// (fz-kdt.80).
+///
+/// First occurrence wins, so clause order is preserved: nothing downstream may
+/// depend on it, but a canonicalization that also permuted would make every
+/// artifact diff unreadable.
+fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
+    if clauses.len() < 2 {
+        return;
+    }
+    let mut kept = 0;
+    for i in 0..clauses.len() {
+        if clauses[..kept].contains(&clauses[i]) {
+            continue;
+        }
+        clauses.swap(kept, i);
+        kept += 1;
+    }
+    clauses.truncate(kept);
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_no_exact_duplicates<T: PartialEq>(clauses: &[Conj<T>], axis: &str) {
+    for (i, c) in clauses.iter().enumerate() {
+        debug_assert!(
+            !clauses[..i].contains(c),
+            "interned descr carries a duplicate clause on the {axis} axis"
+        );
     }
 }
 
@@ -225,6 +270,10 @@ impl Types {
 
     fn intern(&mut self, mut d: Descr) -> Ty {
         self.canonicalize_tuple_axis(&mut d);
+        dedupe_exact_clauses(&mut d.lists);
+        dedupe_exact_clauses(&mut d.resources);
+        dedupe_exact_clauses(&mut d.funcs);
+        dedupe_exact_clauses(&mut d.maps);
         self.interner.intern(d)
     }
 

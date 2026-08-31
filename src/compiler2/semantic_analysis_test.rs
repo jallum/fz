@@ -701,3 +701,107 @@ fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
         "the membership fact carries the same answer -- they are two answers of one derivation"
     );
 }
+
+/// The three fixtures every fz-kdt boundary measurement uses. Coalescing only
+/// has something to hide where one callsite is reached down several rows, and
+/// these are the corpus's dense cases.
+const EDGE_COMPLETENESS_FIXTURES: [(&str, &str); 3] = [
+    (
+        "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
+    ),
+    (
+        "fixtures2/behavior/enum_predicate_search.fz",
+        include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+    ),
+    (
+        "fixtures2/behavior/enum_take_drop_split.fz",
+        include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
+    ),
+];
+
+/// fz-kdt.80: a published call edge names every activation its own walk took
+/// return evidence from.
+///
+/// `AnalyzeActivation(a)` reads `ReturnType(k)` at exactly ONE site --
+/// `prepare_function_call` -- so the `ReturnType` reads standing in `a`'s
+/// ledger ARE the callee activations its walk read. Each of them fed the
+/// walk's return join and its value types, so each is a dependency of the
+/// boundary `a` publishes. An edge that names none of them is a boundary that
+/// disagrees with the analysis behind it: demand derived from the edge cannot
+/// reach the evidence the edge's own return type was built from.
+///
+/// This is a SUBSET claim, not an equality: an edge may legitimately name a
+/// target whose `ReturnType` the walk never got to read (a callee discovered
+/// this round). Only the other direction is a lie.
+///
+/// It is also fz-kdt.89's gate: an activation demanded, analysed and
+/// `ReturnType`'d while reachable from no published edge is exactly a read
+/// this sweep cannot match to a named target.
+#[test]
+fn a_published_call_edge_names_every_activation_the_walk_took_evidence_from() {
+    let mut losses = Vec::new();
+    for (name, text) in EDGE_COMPLETENESS_FIXTURES {
+        let mut compiler = super::Compiler2::new(ConfiguredTelemetry::new());
+        compiler.submit_code(super::CodeSubmission {
+            name: Some(name.to_string()),
+            text: text.to_string(),
+        });
+        let root = compiler.submit_root(super::RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: super::ExecutableNeed::Value,
+        });
+        compiler
+            .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
+            .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
+        let world = compiler.world();
+
+        let analyzed = world
+            .work_graph
+            .facts()
+            .keys()
+            .filter_map(|key| match key {
+                FactKey::ActivationAnalyzed(activation) => Some(activation.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut loss_events = 0_usize;
+        let mut lost_keys = HashSet::new();
+        let mut first = None;
+        for activation in &analyzed {
+            let job = Job::AnalyzeActivation(activation.clone());
+            let (claims, reads) = world.standing_claims_and_reads(&job);
+            let named = claims
+                .iter()
+                .filter_map(|claim| match claim {
+                    FactKey::CallSiteTargets(callsite) => Some(callsite),
+                    _ => None,
+                })
+                .filter_map(|callsite| world.callsite_targets(callsite))
+                .flat_map(|targets| targets.targets.iter().filter_map(|edge| edge.activation.clone()))
+                .collect::<HashSet<_>>();
+            for read in &reads {
+                let FactKey::ReturnType(callee) = read.fact() else {
+                    continue;
+                };
+                if named.contains(callee) {
+                    continue;
+                }
+                loss_events += 1;
+                lost_keys.insert(callee.clone());
+                first.get_or_insert_with(|| (activation.clone(), callee.clone()));
+            }
+        }
+        losses.push((name, loss_events, lost_keys.len(), first));
+    }
+
+    let clean = losses.iter().all(|(_, events, _, _)| *events == 0);
+    assert!(
+        clean,
+        "a callsite edge must name every activation its walk read a ReturnType from; \
+         per fixture (loss events, distinct lost keys, first loss): {losses:#?}"
+    );
+}

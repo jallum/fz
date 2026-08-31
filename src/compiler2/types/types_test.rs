@@ -1987,3 +1987,75 @@ mod smoke {
 
     impl_smoke_suite!(types, Types::new());
 }
+
+/// fz-kdt.80 — the interned DNF carries no exact-duplicate clause on any axis.
+///
+/// The activation key is supposed to be a join homomorphism: keying the union
+/// of two evidence rows must give the same key as keying either row, whenever
+/// the key language cannot tell them apart. `erase_closure_identity` is the
+/// step that makes two branded closures indistinguishable — and the union it
+/// erases carries one funcs clause per brand. Erasing the brands in place
+/// leaves `A ∨ A`, which interns as a DIFFERENT `Ty` than `A` unless the
+/// persistence boundary collapses it.
+mod erased_closure_dnf_hygiene {
+    use super::*;
+    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
+
+    /// Two closures over one declared surface, differing only in brand.
+    fn branded_pair(t: &mut Types) -> (Ty, Ty) {
+        let int = t.int();
+        let nil = t.nil();
+        let surface = t.arrow(&[int], nil);
+        let left = t.closure_lit(ClosureTarget(3), vec![], 1);
+        let right = t.closure_lit(ClosureTarget(4), vec![], 1);
+        let left = t.intersect(left, surface);
+        let right = t.intersect(right, surface);
+        (left, right)
+    }
+
+    #[test]
+    fn erasing_two_brands_of_one_surface_leaves_one_funcs_clause() {
+        let mut t = Types::new();
+        let (left, right) = branded_pair(&mut t);
+        let joined = t.union(left, right);
+        assert_eq!(
+            t.descr(&joined).funcs.len(),
+            2,
+            "the brands are distinguishable before erasure, so the union keeps both clauses"
+        );
+
+        let erased = t.erase_closure_identity(&joined);
+        assert_eq!(
+            t.descr(&erased).funcs.len(),
+            1,
+            "A ∨ A = A: erasing the only distinguishing field must not leave two copies, got {}",
+            t.display(&erased)
+        );
+        assert_eq!(
+            erased,
+            t.erase_closure_identity(&left),
+            "and the collapsed union must be the very same interned id as either erased arm"
+        );
+    }
+
+    #[test]
+    fn the_activation_key_of_an_erased_union_is_the_key_of_each_arm() {
+        let mut t = Types::new();
+        let (left, right) = branded_pair(&mut t);
+        let joined = t.union(left, right);
+
+        let key_of = |t: &mut Types, ty: Ty| {
+            let erased = t.erase_closure_identity(&ty);
+            ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[erased], t)
+        };
+        let left_key = key_of(&mut t, left);
+        let right_key = key_of(&mut t, right);
+        let joined_key = key_of(&mut t, joined);
+
+        assert_eq!(left_key, right_key, "same surface, erased brand: one key");
+        assert_eq!(
+            joined_key, left_key,
+            "the key must be a join homomorphism where the key language cannot see the difference"
+        );
+    }
+}

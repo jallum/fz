@@ -1183,6 +1183,18 @@ fn rebuild_coalesced_call_emission(
                     return Ok(call);
                 };
                 for mut rebuilt_target in rebuilt_summary.targets {
+                    // The re-mint may only re-derive the SAME callee identity.
+                    // The walked targets that coalesced into this one all keyed
+                    // the same activation, so re-keying their joined inputs must
+                    // land on it again -- that is the activation key being a
+                    // join homomorphism over its own equivalence class, which
+                    // intern-time `A ∨ A = A` restores (fz-kdt.80). If this
+                    // fires, the published edge is about to name a callee no
+                    // walk ever read a `ReturnType` from.
+                    debug_assert_eq!(
+                        rebuilt_target.activation, target.activation,
+                        "the coalesced re-mint must re-derive the walked activation key"
+                    );
                     if captures_len > 0 {
                         rebuilt_target.surface_inputs.drain(..captures_len);
                     }
