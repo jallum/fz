@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T03:13:40Z",
+  "description": "Found by the fz-kdt.86 adversarial review (2026-08-31, cosmetic): when a callee's contract is PRESENT, keying facts absent, and contract application would raise FatalError (contract violation), base errored immediately; post-d5d45a074 the bundled ask registers keying waits first (jobs/semantic.rs require_callee_prerequisites), spawns Recursive/DispatchMask producer demand, and errors only after the wake -- one wake of delay plus wasted producer work on a drive that dies anyway. Fix shape: apply the already-present contract (or at least its arity/violation check) before registering the keying half when the contract is present. Low priority; diagnosis-latency only, no soundness issue.",
+  "id": "fz-kdt.92",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Doomed callsites diagnose one wake late: keying waits registered before a contract violation raises",
+  "type": "task",
+  "updated_at": "2026-08-31T03:13:40Z"
+}
