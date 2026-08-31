@@ -260,6 +260,26 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// owns giving the ladder an explicit reset. Until then these pins hold both
 /// directions still: a drop is an improvement worth re-pinning with its
 /// cause; a rise is the ladder running away.
+///
+/// WHICH LENS: these numbers come from `drive_root_to_dump_stage` on a freshly
+/// submitted root, which is what this test drives. On the tree that set them
+/// the three production front doors agree -- `fz2 interp`, `fz2 run` and
+/// `fz2 build`, each with `--dump backend=`, all report 59/217/211 and repeat
+/// bit-stably -- but agreement between the doors is not a property anything
+/// proves, and a report of them diverging is being tracked under fz-kdt.106.
+/// So: re-measure through THIS door before re-pinning, and say which door any
+/// new number came from.
+///
+/// Re-pinned DOWNWARD by fz-kdt.104, which stopped offering dispatch
+/// alternatives no runtime test could ever route to. Each disappearance is a
+/// dropped arm: `enum_predicate_search` 221 -> 217 (four narrow
+/// `List.reduce_while_step/3` halt-payload specializations, whose two
+/// three-armed dispatches each collapse to the arm that stands in for them);
+/// `enum_take_drop_split` 214 -> 211 (one `List.reduce_while_cont/3`, one
+/// `List.reduce_while_step/3` and one `Range.reduce_while_step/6`, each the
+/// narrow half of a `{:cont, _}` / `{:cont | :halt, _}` pair the runtime reads
+/// as the same 2-tuple). `fz_f98_range_map_converges` has no such pair and
+/// holds at 59.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -271,12 +291,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            221,
+            217,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
             include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
-            214,
+            211,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);

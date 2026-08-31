@@ -37,16 +37,40 @@ domains, distinguishing closed coverage from open residuals.
 
 Protocol call dispatch is callsite-owned in compiler2. `jobs/semantic.rs`
 settles each callsite as a `CallSiteSummary` with one `CallTargetSummary` per
-viable impl target. Single-target summaries stay direct. Multi-target summaries
-are consumed later by `compiler2::callsite_dispatch::dispatch_from_callsite_summary`,
-which builds a `PatternDispatchPlan<Ty>` from the receiver-narrowed
-`CallTargetSummary.surface_inputs` and assigns opaque body ids to the viable
-targets. The artifact rung then materializes a `CallEdge::Dispatch`: the plan is
-the runtime type-test graph, while each `DispatchCallArm` carries the existing
-impl `CallTarget`, return flow, and extern marshal facts outside
-`DispatchMatrix`. Dispatch misses are unreachable for closed receiver unions and
-lower to an explicit halt/trap path; there is no residual protocol-stub outcome
-in the matrix.
+viable impl target. `compiler2::callsite_dispatch::call_destinations` is the one
+door from that summary to what the call actually is: it answers
+`CallDestinations::None`, `::Direct(target)`, or `::Dispatch(plan + targets)`,
+and materialization follows the answer. The plan is a `PatternDispatchPlan<Ty>`
+built from the receiver-narrowed `CallTargetSummary.surface_inputs`, with opaque
+body ids assigned to the destinations in order.
+
+A settled target is not automatically a destination. An arm asks its question
+through `RuntimeTypePredicate`, which is coarser than the type it is projected
+from: `{:cont, pair}` and `{:cont | :halt, pair}` both project to "a 2-tuple".
+Two targets that project to ONE question are not two alternatives — nothing but
+their order would decide which body runs, and that order is the scheduler's. A
+target is therefore dropped when a sibling both (a) is runtime-indistinguishable
+from it and (b) *stands in for* it: names the SAME callee and accepts a strictly
+wider domain (subtype at every input position). A callsite left with one
+destination is a `Direct` call rather than a one-armed dispatch.
+
+Both halves of (b) are load-bearing. Domain containment alone is not behavioral
+completeness — a multi-target summary normally names one target per selected
+callee, which is exactly what protocol dispatch is, and a wider domain sitting
+on a different function's body is no stand-in at all. And one-way containment is
+not (a): when the questions differ, the narrower test matches only values its own
+domain names and everything else falls through, so whichever order the pair is
+tested in a value lands in an arm whose domain contains it — order costs
+precision, not meaning. A `:timeout` arm beside an `any` arm is that case, and
+both survive. Twins with no stand-in between them (neither domain contains the
+other, or two different functions) also survive and stay order-decided.
+
+The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
+answer: the plan is the runtime type-test graph, while each `DispatchCallArm`
+carries the existing impl `CallTarget`, return flow, and extern marshal facts
+outside `DispatchMatrix`. Dispatch misses are unreachable for closed receiver
+unions and lower to an explicit halt/trap path; there is no residual
+protocol-stub outcome in the matrix.
 
 A fired trap is reported at the process-exit boundary as a fault, not unified
 with normal completion. Compiler2's `Term::Halt` codegen (the only producer is

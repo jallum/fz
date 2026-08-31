@@ -23,6 +23,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
     LoweredStep, LoweredTail, ValueId,
 };
+use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
@@ -1225,39 +1226,42 @@ fn materialize_direct_call_edge(
     let Some(summary) = world.callsite_summary(&key).cloned() else {
         return Ok(None);
     };
-    if let Some(target) = summary.single_target().cloned() {
-        let (direct, return_ty) = lower_materialized_call_target(
-            world,
-            tel,
-            root_id,
-            transport_plan,
-            executable,
-            analysis,
-            need,
-            callsite,
-            dest,
-            original_entry_ids,
-            callsite_args,
-            target,
-        )?;
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Direct(direct),
-            return_ty,
-        }));
-    }
-    let dispatch = super::super::callsite_dispatch::dispatch_from_callsite_summary(world.types_mut(), &summary);
-    let Some(dispatch) = dispatch.map_err(|error| {
-        incomplete_semantic_plan(
-            tel,
-            root_id,
-            format!(
-                "materialization could not build dispatch for multi-target direct callsite {}: {error:?}",
-                callsite.as_u32()
-            ),
-        )
-    })?
-    else {
-        return Ok(None);
+    // The callsite's DESTINATIONS, not its settled targets: a target the
+    // runtime could never route to is no destination at all (fz-kdt.104), and
+    // a callsite left with one of them is a direct call.
+    let dispatch = match call_destinations(world.types_mut(), &summary) {
+        Ok(CallDestinations::None) => return Ok(None),
+        Ok(CallDestinations::Direct(target)) => {
+            let (direct, return_ty) = lower_materialized_call_target(
+                world,
+                tel,
+                root_id,
+                transport_plan,
+                executable,
+                analysis,
+                need,
+                callsite,
+                dest,
+                original_entry_ids,
+                callsite_args,
+                target,
+            )?;
+            return Ok(Some(MaterializedCallEdge {
+                target: CallEdge::Direct(direct),
+                return_ty,
+            }));
+        }
+        Ok(CallDestinations::Dispatch(dispatch)) => dispatch,
+        Err(error) => {
+            return Err(incomplete_semantic_plan(
+                tel,
+                root_id,
+                format!(
+                    "materialization could not build dispatch for multi-target direct callsite {}: {error:?}",
+                    callsite.as_u32()
+                ),
+            ));
+        }
     };
     let mut arms = Vec::new();
     for (body_id, target) in dispatch.arm_body_ids.into_iter().zip(dispatch.targets) {
@@ -1281,16 +1285,6 @@ fn materialize_direct_call_edge(
             return_flow: direct.return_flow,
             extern_marshals: direct.extern_marshals,
         });
-    }
-    if arms.is_empty() {
-        return Err(incomplete_semantic_plan(
-            tel,
-            root_id,
-            format!(
-                "multi-target direct callsite {} has no dispatch arms",
-                callsite.as_u32()
-            ),
-        ));
     }
     let return_ty = summary.settled_return(world.types_mut());
     Ok(Some(MaterializedCallEdge {

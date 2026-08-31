@@ -8874,6 +8874,126 @@ end
     );
 }
 
+/// fz-kdt.104: arm order must not be the program's meaning.
+///
+/// A dispatch arm asks its question through `RuntimeTypePredicate`, which is
+/// coarser than the semantic type it is projected from -- `{:cont, pair}` and
+/// `{:cont | :halt, pair}` are both just "a 2-tuple". Two arms that project to
+/// ONE question are not two alternatives: nothing but their order decides
+/// which body runs, and that order is the scheduler's. At FIFO the wide arm of
+/// `Enum.take`'s `reduce_while_step` dispatch happens to come first and the
+/// narrow one is dead; at LIFO the narrow arm comes first, swallows
+/// `{:halt, _}`, and `Enum.take(xs, 3)` returns the whole list.
+///
+/// `call_destinations` therefore drops the narrower of two indistinguishable
+/// alternatives when the wider one is the SAME function on a domain that
+/// contains it, and this gate reads the landed artifact back to prove none
+/// survived. It is red at FIFO on today's tree -- no schedule knob needed.
+///
+/// The LIFO half is verified by hand, per the fz-kdt.93 precedent: change
+/// `Agenda::pop` (src/compiler2/agenda.rs) to `self.queue.pop_back()` and run
+/// `fz2 run fixtures2/00183_enum_take_list_range.fz`; its first line must be
+/// `[1, 2, 3]`.
+///
+/// Indistinguishable arms with no stand-in between them -- neither domain
+/// contains the other, or they are different functions -- are a different,
+/// wider defect: no arm can supply the others' bodies, so the cure is a
+/// runtime predicate that can tell them apart, not a smaller plan
+/// (fz-kdt.107). These two fixtures carry none.
+#[test]
+fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
+    for fixture in [
+        "fixtures2/00183_enum_take_list_range.fz",
+        "fixtures2/00420_enum_take_drop_split.fz",
+    ] {
+        let twins = indistinguishable_dispatch_arms(fixture);
+        assert!(
+            twins.is_empty(),
+            "{fixture}: a dispatch must not offer two arms that ask one runtime question, \
+             or arm order decides the program's meaning: {twins:#?}",
+        );
+    }
+}
+
+/// Drives one fixture to its backend product and names every dispatch call
+/// edge arm pair that asks one and the same runtime question.
+fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "{fixture} should explicitly demand the backend product",
+    );
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "{fixture} should drive to a settled backend product",
+    );
+    let program = backend.last(root_id).program;
+    let types = compiler.world().types();
+    let mut findings = Vec::new();
+    for executable in &program.executables {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let BackendTail::DirectCall {
+                callsite,
+                target: CallEdge::Dispatch(dispatch),
+                ..
+            } = &entry.tail
+            else {
+                continue;
+            };
+            for twin in indistinguishable_arms(&dispatch.plan, types) {
+                findings.push(format!("callsite {} {twin}", callsite.as_u32()));
+            }
+        }
+    }
+    findings
+}
+
+/// The arm pairs whose runtime questions are the same question.
+///
+/// A question the plan does not answer through `RuntimeTypePredicate` (a
+/// guard, say) makes the plan unprovable and is skipped rather than guessed
+/// at. One arm's questions merely CONTAINING another's is not this relation:
+/// nested regions are how dispatch is supposed to work, and either order
+/// routes each value to the arm that named it.
+fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<String> {
+    let mut asked = Vec::new();
+    for arm in &plan.matrix.arms {
+        let mut questions = std::collections::BTreeMap::new();
+        for question in &arm.questions {
+            let Region::Type(ty) = &question.predicate.region else {
+                return Vec::new();
+            };
+            questions.insert(question.predicate.subject, types.runtime_type_predicate(ty));
+        }
+        asked.push((arm.id, questions));
+    }
+    let mut twins = Vec::new();
+    for (left, (left_id, left_questions)) in asked.iter().enumerate() {
+        for (right_id, right_questions) in asked.iter().skip(left + 1) {
+            if left_questions == right_questions {
+                twins.push(format!("arm a{} asks arm a{}'s question", left_id.0, right_id.0));
+            }
+        }
+    }
+    twins
+}
+
 #[test]
 fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let tel = ConfiguredTelemetry::new();
