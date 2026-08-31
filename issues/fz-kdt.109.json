@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T23:20:05Z",
+  "description": "Bycatch from the fz-kdt.104 build (2026-08-31, measured at 50a33e49c): fixture 00421's error output differs run-to-run AT BASE -- the UnresolvedWait diagnostic renders a SET in iteration order, and the base binary alone produced three different output md5s across three runs. Pre-existing, unrelated to fz-kdt.104 (verified). Violates canonical-comparand discipline for user-facing diagnostics: error messages must render collections in a stable order (sort at the presentation boundary -- legal packaging sort). Find the render site, order it, and add 00421 (or a cheaper case) as a stable-output pin.",
+  "id": "fz-kdt.109",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "UnresolvedWait set iteration order leaks into an error message: base binary prints 3 different md5s on 3 runs of 00421",
+  "type": "task",
+  "updated_at": "2026-08-31T23:20:05Z"
+}
