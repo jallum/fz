@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T00:19:58Z",
+  "description": "fz-kdt.84's cold review verified the contract side has NO empty-claim\nidiom (ContractMap first define is always contentful; 60/28/29 publishes,\nzero re-claims). The 65/30/33 zero-change evals attributed to\nFunctionContract causes are REAL content movements releasing the\nwaits.insert(FunctionContract) at semantic.rs:1666, after which the woken\nanalysis re-runs WHOLE and every other answer comes out identical.\nRe-measure after fz-kdt.84 lands; whatever remains is either legitimate\n(contract arrival must be folded once) or a per-derivation scoping question\n(the parked fz-kdt.13.2 substrate). Measure before designing.",
+  "id": "fz-kdt.86",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "FunctionContract-caused zero-change re-runs: real movements, whole-job re-derivation",
+  "type": "task",
+  "updated_at": "2026-08-31T00:19:58Z"
+}
