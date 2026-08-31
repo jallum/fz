@@ -63,27 +63,6 @@ impl TransportFactsBuilder {
         }
     }
 
-    fn record_layout_publication(&mut self, world: &World, shape: ShapeId, publication: &TransportPosition) {
-        match world.shape(shape) {
-            ShapeDescr::Callable(callable) => {
-                let boundaries = self
-                    .callables
-                    .get(callable)
-                    .map(|facts| facts.boundary_ids.clone())
-                    .unwrap_or_default();
-                for boundary in boundaries {
-                    self.record_boundary(boundary, publication.clone());
-                }
-            }
-            ShapeDescr::Tuple(fields) => {
-                for field in fields.clone() {
-                    self.record_layout_publication(world, field, publication);
-                }
-            }
-            ShapeDescr::Nothing | ShapeDescr::Lane(_) => {}
-        }
-    }
-
     fn record_callable(
         &mut self,
         callable: CallableId,
@@ -261,99 +240,13 @@ fn produce_generic_callable_owner(
             },
         )));
     }
-    let (ty, demand) = match position {
-        TransportPosition::ExecutableInput { semantic_index, .. } => {
-            let fact = FactUse::settled(FactKey::ActivationInputs(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return PullOutcome::wait_on_fact(fact);
-            }
-            (
-                world
-                    .activation_inputs_joined(&executable.activation)
-                    .unwrap_or_else(|| executable.activation.inputs(world.types()))
-                    .get(*semantic_index)
-                    .copied()
-                    .unwrap_or_else(|| world.types_mut().any()),
-                runtime.input_demands.get(*semantic_index).cloned().unwrap_or_default(),
-            )
+    if let Some(fact) = generic_owner_ty_fact(executable, position) {
+        let fact = FactUse::settled(fact);
+        if !context.read_fact(world, fact.clone()) {
+            return PullOutcome::wait_on_fact(fact);
         }
-        TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
-            let fact = FactUse::settled(FactKey::ReturnType(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return PullOutcome::wait_on_fact(fact);
-            }
-            let Some(ty) = world.activation_return(&executable.activation) else {
-                unreachable!("bottom transport layouts return before callable-owner derivation")
-            };
-            (ty, runtime.return_demand.clone())
-        }
-        TransportPosition::Value { value, .. } => (
-            facts
-                .analysis()
-                .value_types
-                .get(value)
-                .copied()
-                .unwrap_or_else(|| world.types_mut().any()),
-            runtime.value_demands.get(value).cloned().unwrap_or_default(),
-        ),
-        TransportPosition::CallArg {
-            callsite,
-            semantic_index,
-            ..
-        } => {
-            let arg_value = callsite_call_args(facts.body())
-                .get(callsite)
-                .and_then(|args| args.get(*semantic_index))
-                .map(|arg| arg.value);
-            (
-                arg_value
-                    .and_then(|value| facts.analysis().value_types.get(&value).copied())
-                    .unwrap_or_else(|| world.types_mut().any()),
-                runtime
-                    .call_arg_demands
-                    .get(callsite)
-                    .and_then(|demands| demands.get(*semantic_index))
-                    .cloned()
-                    .unwrap_or_default(),
-            )
-        }
-        TransportPosition::EntryCapture {
-            entry, capture_index, ..
-        } => {
-            let capture = entry_capture_value(facts, *entry, *capture_index)
-                .expect("an entry-capture position must name a capture value");
-            (
-                entry_capture_ty(executable, facts, capture),
-                runtime
-                    .entry_capture_demands
-                    .get(entry)
-                    .and_then(|demands| demands.get(*capture_index))
-                    .cloned()
-                    .unwrap_or_default(),
-            )
-        }
-        TransportPosition::ResumePayload { entry, .. } => {
-            let value = match facts.body() {
-                LoweredBody::Clauses { entries, .. } => {
-                    entries
-                        .get(entry.as_u32() as usize)
-                        .and_then(|entry| match entry.origin {
-                            super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
-                            _ => None,
-                        })
-                }
-                LoweredBody::Extern { .. } => None,
-            };
-            (
-                value
-                    .and_then(|value| facts.analysis().value_types.get(&value).copied())
-                    .unwrap_or_else(|| world.types_mut().any()),
-                value
-                    .and_then(|value| runtime.value_demands.get(&value).cloned())
-                    .unwrap_or_else(RuntimeDemand::whole),
-            )
-        }
-    };
+    }
+    let (ty, demand) = generic_owner_ty_and_demand(world, executable, facts, runtime, position);
     let mut source_positions = Vec::new();
     if demand_contains_callable(&demand) {
         match position {
@@ -483,35 +376,14 @@ fn produce_generic_callable_owner(
         if context.pending_dependency_reaches(&key, &current) {
             let _ = context.read_product(tel, key);
             let members = context.pending_recursive_group(&current);
-            let mut settled = TransportFactsBuilder::default();
-            settled.merge(&builder);
+            let mut evidence = TransportFactsBuilder::default();
+            evidence.merge(&builder);
             for owner in context.recursive_group_callable_owners(&members) {
-                settled.merge_owner(&owner);
+                evidence.merge_owner(&owner);
             }
-            let mut settled = project_generic_owner_facts(world, &settled, layout.structural, ty, &demand, position);
-            for member in &members {
-                let ProductKey::CallableConstruction(member) = member else {
-                    unreachable!()
-                };
-                let member_layout = context
-                    .callable_group_layout(&ProductKey::CallableConstruction(member.clone()))
-                    .expect("callable owner group member must have a settled transport shape");
-                settled.record_layout_publication(world, member_layout.structural, member);
-            }
-            let (callable_facts, boundary_facts) = settled.finish();
             let values = members
                 .iter()
-                .map(|member| {
-                    let layout = context
-                        .callable_group_layout(member)
-                        .expect("callable owner group member must have a settled transport shape");
-                    ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
-                        layout,
-                        construction: None,
-                        callable_facts: callable_facts.clone(),
-                        boundary_facts: boundary_facts.clone(),
-                    }))
-                })
+                .map(|member| project_group_member_owner(world, context, &evidence, member))
                 .collect();
             if !context.finish_callable_construction_group(tel, &current, &members, values) {
                 return PullOutcome::wait_on_product(current);
@@ -530,16 +402,172 @@ fn produce_generic_callable_owner(
             None => return PullOutcome::wait_on_product(key),
         }
     }
-    let builder = project_generic_owner_facts(world, &builder, layout.structural, ty, &demand, position);
-    let (callable_facts, boundary_facts) = builder.finish();
-    PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(
-        CallableConstructionOwner {
-            layout,
-            construction: None,
-            callable_facts,
-            boundary_facts,
-        },
+    PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(project_owner_answer(
+        world, &builder, layout, ty, &demand, position,
+    ))))
+}
+
+/// One recursive-group member's own answer: the evidence the cycle forces the
+/// members to share, projected through THIS member's layout, analyzed type and
+/// demand. Sharing the evidence is what the knot is for; sharing the projection
+/// is not -- each member publishes only the facts its own position can carry,
+/// so which member's job resolves the group cannot change what any of them say.
+fn project_group_member_owner(
+    world: &mut World,
+    context: &ProductReadContext<'_>,
+    evidence: &TransportFactsBuilder,
+    member: &ProductKey,
+) -> ProductValue {
+    let ProductKey::CallableConstruction(position) = member else {
+        unreachable!("a callable-construction group holds only callable-construction members")
+    };
+    let layout = context
+        .callable_group_layout(member)
+        .expect("callable owner group member must have a settled transport shape");
+    let executable = executable_key_for_transport_position(context.session().root(), position);
+    let facts = context
+        .settled_executable_facts(&executable)
+        .expect("callable owner group member must have settled executable facts");
+    let runtime = context
+        .settled_runtime_demand(&executable)
+        .expect("callable owner group member must have a settled runtime demand");
+    let (ty, demand) = generic_owner_ty_and_demand(world, &executable, &facts, runtime, position);
+    ProductValue::CallableConstruction(Box::new(project_owner_answer(
+        world, evidence, layout, ty, &demand, position,
     )))
+}
+
+/// The answer one position publishes: its evidence projected through the
+/// position's OWN layout, analyzed type and demand. Cycle or no cycle, the same
+/// derivation -- an owner says only what its own position can carry.
+fn project_owner_answer(
+    world: &mut World,
+    evidence: &TransportFactsBuilder,
+    layout: TransportLayout,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    position: &TransportPosition,
+) -> CallableConstructionOwner {
+    let projected = project_generic_owner_facts(world, evidence, layout.structural, ty, demand, position);
+    let (callable_facts, boundary_facts) = projected.finish();
+    CallableConstructionOwner {
+        layout,
+        construction: None,
+        callable_facts,
+        boundary_facts,
+    }
+}
+
+/// The settled fact a generic callable-owner position reads its analyzed type
+/// out of, if any. The owner's own job settles it here; a group member's job
+/// already settled its own, so the group resolution reads members' types
+/// without re-subscribing.
+fn generic_owner_ty_fact(executable: &ExecutableKey, position: &TransportPosition) -> Option<FactKey> {
+    match position {
+        TransportPosition::ExecutableInput { .. } => Some(FactKey::ActivationInputs(executable.activation.clone())),
+        TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
+            Some(FactKey::ReturnType(executable.activation.clone()))
+        }
+        TransportPosition::Value { .. }
+        | TransportPosition::CallArg { .. }
+        | TransportPosition::EntryCapture { .. }
+        | TransportPosition::ResumePayload { .. } => None,
+    }
+}
+
+/// The analyzed type and runtime demand a generic callable-owner position
+/// carries. This pair is the filter every facts projection runs through, so it
+/// is derived per position -- never inherited from a group-mate.
+fn generic_owner_ty_and_demand(
+    world: &mut World,
+    executable: &ExecutableKey,
+    facts: &ExecutableFacts,
+    runtime: &ExecutableRuntimeDemand,
+    position: &TransportPosition,
+) -> (Ty, RuntimeDemand) {
+    match position {
+        TransportPosition::ExecutableInput { semantic_index, .. } => (
+            world
+                .activation_inputs_joined(&executable.activation)
+                .unwrap_or_else(|| executable.activation.inputs(world.types()))
+                .get(*semantic_index)
+                .copied()
+                .unwrap_or_else(|| world.types_mut().any()),
+            runtime.input_demands.get(*semantic_index).cloned().unwrap_or_default(),
+        ),
+        TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
+            let Some(ty) = world.activation_return(&executable.activation) else {
+                unreachable!("bottom transport layouts return before callable-owner derivation")
+            };
+            (ty, runtime.return_demand.clone())
+        }
+        TransportPosition::Value { value, .. } => (
+            facts
+                .analysis()
+                .value_types
+                .get(value)
+                .copied()
+                .unwrap_or_else(|| world.types_mut().any()),
+            runtime.value_demands.get(value).cloned().unwrap_or_default(),
+        ),
+        TransportPosition::CallArg {
+            callsite,
+            semantic_index,
+            ..
+        } => {
+            let arg_value = callsite_call_args(facts.body())
+                .get(callsite)
+                .and_then(|args| args.get(*semantic_index))
+                .map(|arg| arg.value);
+            (
+                arg_value
+                    .and_then(|value| facts.analysis().value_types.get(&value).copied())
+                    .unwrap_or_else(|| world.types_mut().any()),
+                runtime
+                    .call_arg_demands
+                    .get(callsite)
+                    .and_then(|demands| demands.get(*semantic_index))
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        }
+        TransportPosition::EntryCapture {
+            entry, capture_index, ..
+        } => {
+            let capture = entry_capture_value(facts, *entry, *capture_index)
+                .expect("an entry-capture position must name a capture value");
+            (
+                entry_capture_ty(executable, facts, capture),
+                runtime
+                    .entry_capture_demands
+                    .get(entry)
+                    .and_then(|demands| demands.get(*capture_index))
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        }
+        TransportPosition::ResumePayload { entry, .. } => {
+            let value = match facts.body() {
+                LoweredBody::Clauses { entries, .. } => {
+                    entries
+                        .get(entry.as_u32() as usize)
+                        .and_then(|entry| match entry.origin {
+                            super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
+                            _ => None,
+                        })
+                }
+                LoweredBody::Extern { .. } => None,
+            };
+            (
+                value
+                    .and_then(|value| facts.analysis().value_types.get(&value).copied())
+                    .unwrap_or_else(|| world.types_mut().any()),
+                value
+                    .and_then(|value| runtime.value_demands.get(&value).cloned())
+                    .unwrap_or_else(RuntimeDemand::whole),
+            )
+        }
+    }
 }
 
 fn demand_contains_callable(demand: &RuntimeDemand) -> bool {

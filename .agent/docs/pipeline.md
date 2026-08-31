@@ -362,6 +362,17 @@ authority. A direct-only local producer owns `construction: None`; a first-class
 producer owns `Some` with at least one exact executable member. There is no root
 solve, component inventory, or absence-provenance side channel.
 
+Unlike transport shapes, callable construction still settles a recursive product
+GROUP: a callable threaded through a mutual recursion reaches its own owner, and
+the group is how the cycle closes. What the group shares is EVIDENCE -- the
+members' own facts plus the facts of every product they read from outside the
+group. It does not share an answer. Each member projects that evidence through
+its OWN layout, analyzed type and runtime demand, derived from its own position
+by `generic_owner_ty_and_demand`, so the group's facts stay per-position: a
+boundary publication names the one position that publishes it, and no member
+speaks for a group-mate. Which member's job happens to close the cycle therefore
+cannot change what any member says.
+
 Closure-call materialization reads the callee's positioned transport carrier.
 `ValueRef` calls through the public wrapper even when semantic resolution has
 one target; target cardinality cannot turn a transported value back into a

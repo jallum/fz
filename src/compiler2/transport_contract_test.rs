@@ -3986,6 +3986,106 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
     );
 }
 
+/// A transport position named the way a reader can act on it: which function
+/// specialization, and which position within it.
+fn owner_position_label(world: &World, position: &TransportPosition) -> String {
+    let activation = &position.executable().activation;
+    let name = &world.function_ref(activation.function).name;
+    let what = match position {
+        TransportPosition::ExecutableInput { semantic_index, .. } => format!("input#{semantic_index}"),
+        TransportPosition::ExecutableReturn { .. } => "return".to_string(),
+        TransportPosition::ResumePayload { entry, .. } => format!("resume#{}", entry.as_u32()),
+        TransportPosition::ReturnPayload { callsite, .. } => format!("payload#{}", callsite.as_u32()),
+        TransportPosition::CallArg {
+            callsite,
+            semantic_index,
+            ..
+        } => format!("arg#{semantic_index}@{}", callsite.as_u32()),
+        TransportPosition::EntryCapture {
+            entry, capture_index, ..
+        } => format!("capture#{capture_index}@{}", entry.as_u32()),
+        TransportPosition::Value { value, .. } => format!("v{}", value.as_u32()),
+    };
+    format!(
+        "{name}/{}[{}] {what}",
+        activation.function.as_u32(),
+        world.types().display(&activation.arrow)
+    )
+}
+
+/// A boundary publication names the transport position a first-class callable
+/// is published AT: this value, here, is where that boundary enters the
+/// artifact. It is a fact about ONE position, so an owner may only ever
+/// publish its own.
+///
+/// The recursion knot used to contradict that. A cycle of callable-construction
+/// products settles as one group, and the group resolution projected a single
+/// fact set -- built from whichever member's job happened to close the cycle --
+/// and cloned it onto every member, publications included. Every member then
+/// claimed to publish at every group-mate's position, and WHICH positions those
+/// were came from `pending_strong_component`: transient scheduler state, so the
+/// answer was a lottery the schedule drew (fz-kdt.96). The root artifact unions
+/// every owner's boundary facts, which is why the surplus never showed up in a
+/// canonical dump -- it showed up here, in what each owner claims about itself.
+///
+/// Per-member projection makes the invariant exact, and the whole surface is
+/// covered by construction: every producer of a callable owner records its
+/// publications against the position it is producing, and nothing merges one
+/// owner's finished facts into another's.
+///
+/// Order-invariance itself is not a production path -- perturbing the schedule
+/// is a source edit -- so the manual recipe stays here as the sibling gate
+/// (precedent: fz-kdt.93). Flip `Agenda::pop` in `src/compiler2/agenda.rs` from
+/// `pop_front` to `pop_back` for a full-LIFO drive, or reverse `pending` in
+/// `collect_return_origins` (`src/compiler2/jobs/runtime_demand.rs`), rebuild,
+/// and diff `fz2 interp --dump backend=...` against the unperturbed dump.
+/// Known gap: this gate asserts publications exist globally and that no
+/// owner publishes at a foreign position; it does not assert that every
+/// owner with first-class boundaries publishes its OWN position, so a
+/// member-level self-publication drop would pass here and be caught only
+/// by seam/canon consequences downstream.
+#[test]
+fn compiler2_callable_owners_publish_only_their_own_position() {
+    let source = include_str!("../../fixtures2/00420_enum_take_drop_split.fz");
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("owner_publications.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    let mut published = 0;
+    let mut foreign = Vec::new();
+    for positioned in root_backend_answer_for_test(driver.session())
+        .transport
+        .callable_owners
+        .iter()
+    {
+        for facts in positioned.owner.boundary_facts.values() {
+            for publication in facts.publications.iter() {
+                published += 1;
+                if publication != &positioned.position {
+                    foreign.push(format!(
+                        "{} publishes at {}",
+                        owner_position_label(&world, &positioned.position),
+                        owner_position_label(&world, publication),
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        published > 0,
+        "the fixture should publish first-class callable boundaries for this invariant to bind",
+    );
+    foreign.sort();
+    foreign.dedup();
+    assert_eq!(
+        foreign,
+        Vec::<String>::new(),
+        "a callable owner may only publish the boundary at its own position",
+    );
+}
+
 /// One recursion component publishes ONE return contract.
 ///
 /// Two functions that call each other in return position are two views of one

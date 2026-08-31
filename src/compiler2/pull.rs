@@ -1615,6 +1615,26 @@ impl<'s> ProductReadContext<'s> {
         }
     }
 
+    /// A group member's own `ExecutableFacts`, read without recording a
+    /// dependency -- like `callable_group_layout`, and for the same reason:
+    /// every SCC member recorded these reads before it could acquire the dep
+    /// edge that makes it a member, and `finish_group` writes EVERY member
+    /// under the UNION of all members' dependencies (products and facts),
+    /// so an ascent of any peeked key displaces the whole group and
+    /// re-derives every projection. No stale-projection window exists.
+    pub(crate) fn settled_executable_facts(&self, executable: &ExecutableKey) -> Option<Rc<ExecutableFacts>> {
+        match self.session.memo.get(&ProductKey::ExecutableFacts(executable.clone())) {
+            Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
+            _ => None,
+        }
+    }
+
+    /// A group member's own runtime demand, read on the same terms as
+    /// `settled_executable_facts`.
+    pub(crate) fn settled_runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
+        self.session.memo.runtime_demand(executable)
+    }
+
     pub(crate) fn finish_callable_construction_group(
         &mut self,
         tel: &impl Telemetry,
