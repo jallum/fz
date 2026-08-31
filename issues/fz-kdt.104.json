@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-kdt.101"
+    "fz-kdt.101",
+    "fz-kdt.105"
   ],
   "created": "2026-08-31T21:57:40Z",
   "description": "THE P1, relocated by the cold review's prototype (2026-08-31, at\n50a33e49c): the schedule-dependent miscompile does NOT live in key\nnon-confluence -- a prototype that fully unified the twin keys STILL\nmiscompiled 00183 under LIFO. It lives in DISPATCH ARM ORDER over arms a\nruntime type test cannot distinguish:\n\nMECHANISM (file:line, review-verified): 00183's deciding dispatch has two\narms -- x45 = reduce_while_step[..., {:cont, pair}] (narrow) and x46 =\n[..., {:cont|:halt, pair}] (wide). The narrow arm's runtime question is\ntype({:cont, {list(int), int}}), but runtime_type_predicate_tuple_arities\n(src/compiler2/types/mod.rs:2162) records TUPLE ARITY ONLY, and both the\ninterp (src/ir_interp/backend.rs:607) and native\n(native_codegen/receive.rs:747+, prim.rs:1245) evaluate dispatch tests\nthrough it -- so {:halt, pair} PASSES the {:cont, pair} test. Arm order\nis therefore semantics: FIFO happens to test the wide arm first (narrow\narm dead, correct); LIFO tests the narrow arm first, :halt is swallowed,\nEnum.take never halts -\u003e [1,2,3,4,5]. The trap is PRESENT AT FIFO TODAY,\ndead but armed.\n\nTHE FIX: dispatch arms must be sound under runtime-indistinguishability.\nAt plan construction, an arm whose discriminating refinement is invisible\nto RuntimeTypePredicate (its `overlaps` at src/runtime_type_predicate.rs:89\nis the tool) must not precede an arm it runtime-shadows; concretely, a\nnarrow arm runtime-indistinguishable from a wider sibling is unsound as a\ndispatch alternative and is DROPPED (it is dead at FIFO today, so\ndeletion is behavior-neutral there and correct under any schedule -- the\none real deletion this finding earns).\n\nRED-FIRST: a plan-construction assert/gate that fires on 00183's x45/x46\npair at FIFO TODAY (no schedule knob needed). Acceptance: the gate green;\n00183 prints [1,2,3] under the LIFO recipe (Agenda::pop -\u003e pop_back,\nagenda.rs:36, manual recipe documented per fz-kdt.93 precedent);\ndrive_test:8117's Enum.take case correct under LIFO; behavior stdout\nbyte-identical at FIFO on the lenses; canon movement = dead narrow arms\ndisappearing only (classify each); inventory pins re-pinned downward only\nwith cause; full gate green.\n\nSIBLINGS from the same review: fz-kdt.105 (intern-time canonical clause\norder -- the P2 confluence half, with its own findings: sort BEFORE the\nsubsumption pass, canon-label comparator not descr_fingerprint, 5\nunexplained executable disappearances to chase, x39/x40 are content-FORM\ntwins out of scope), fz-kdt.106 (14 FIFO-only over-wide predicate specs).",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Dispatch arm order is semantics when a narrow arm is runtime-indistinguishable from its wide sibling: drop runtime-shadowed arms (P1 miscompile)",
   "type": "bug",
-  "updated_at": "2026-08-31T22:26:17Z"
+  "updated_at": "2026-08-31T22:26:18Z"
 }
