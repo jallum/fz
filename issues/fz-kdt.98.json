@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T16:02:59Z",
+  "description": "Stated plainly by the fz-kdt.93 builder (2026-08-31, 2f3605e28) and deliberately not closed there: the structural cut covers (a) static edges via CallGraphComponent + non-rising function id and (b) grounded ClosureCallReturn edges whose target STATICALLY REACHES the owner. A product cycle in which EVERY grounded edge fails that reachability test (mutual CPS through two or more externally-created closures, each calling the other's function only through parameters, with no static path from either lambda body to its edge's owner) would be uncut -\u003e permanent transport non-settlement, and the deleted knot protocol is no longer a second net. STATUS: no reproduction constructed despite deliberate attempts (builder round 2; the fz-kdt.93 verification refuter was also tasked with constructing one -- check its report before starting). CLOSING MECHANISM (named, not built): an augmented-reachability FACT (static graph + resolved singleton closure-call targets) with proper derivation/subscription discipline -- a new FactKey/job, deliberately out of scope for the kdt.93 amend. If a repro is ever found this becomes a P1 wedge bug; until then it is a known-hole record. Also note the builder's statically_reaches is a traversal at the asking site -- promoting it to a fact is the right move if a second consumer appears (recorded in its doc comment).",
+  "id": "fz-kdt.98",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Residual transport-cut hole: a cycle whose every grounded closure-call edge's target cannot statically reach its owner is uncut",
+  "type": "task",
+  "updated_at": "2026-08-31T16:02:59Z"
+}
