@@ -7,7 +7,7 @@
   ],
   "blocks": [],
   "created": "2026-08-31T14:05:49Z",
-  "description": "Removal ticket for fz-kdt.94's scaffolding (the price of adding it, per house rule). The base-vs-HEAD canon-dump compare script exists only to police artifact movement during the crackdown chain (fz-kdt.93/91/80/97/96 -- ALL LANDED 2026-08-31, crackdown build work complete). STATUS AT ARC CLOSE: three open residual tickets still name canon movement as their instrument -- fz-kdt.101 (Ty-id renumbering under schedule flips; its fix moves canon), fz-kdt.102 (group-machinery decommission, canon-neutrality gated), fz-kdt.103 (dead field, trivially neutral) -- so the script retains marginal use until those land or are deprioritized. OWNER DECIDES when to pull the trigger: when it fires, DELETE tools/canon-gate.sh and any doc references in the same motion. If a permanent lightweight equivalent seems warranted then, that is a NEW decision with its own ticket -- do not silently promote the scaffold.",
+  "description": "OWNER DECISION (2026-08-31): HOLD -- the script stays until we are done with it. Wired as blocked by fz-kdt.101 and fz-kdt.102, the two open tickets that still name canon movement as their instrument; it surfaces for removal when they close. Removal ticket for fz-kdt.94's scaffolding (the price of adding it, per house rule): when this unblocks and fires, DELETE tools/canon-gate.sh and any doc references in the same motion. If a permanent lightweight equivalent seems warranted then, that is a NEW decision with its own ticket -- do not silently promote the scaffold.",
   "id": "fz-kdt.95",
   "labels": [],
   "parent": "fz-kdt",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Retire the cross-version canon gate script when the artifact-neutrality crackdown ends",
   "type": "task",
-  "updated_at": "2026-08-31T20:49:34Z"
+  "updated_at": "2026-08-31T20:49:35Z"
 }
