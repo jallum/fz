@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.95"
+  ],
   "created": "2026-08-31T18:41:14Z",
   "description": "Found while measuring fz-kdt.96's blast radius (2026-08-31).\n\nTHE RESIDUAL, measured at d1ccfdea2 and unchanged by fz-kdt.96: under a\nfull-LIFO agenda flip (`Agenda::pop` -\u003e `pop_back`, src/compiler2/agenda.rs)\nthe canonical backend dump moves on 5 of 12 measured fixtures --\nenum_predicate_search 3169 lines, 00277_enum_tier0_fixture 1813,\nenum_map_family 1174, 00183_enum_take_list_range 345,\n00420_enum_take_drop_split 12 -- and base+LIFO is BYTE-IDENTICAL to\nHEAD+LIFO, so every line of it predates fz-kdt.96.\n\nMECHANISM, proven for the `construction=wN` half (4-6 lines per fixture):\n`compare_executable_keys` (jobs/backend.rs:1026) orders the executable\ninventory by `activation.inputs(types)` and\n`transport_executable_sort_key` (jobs/artifact.rs:1088) orders transport\npositions by `activation.arrow` + `input.to_vec()` -- both are RAW Ty\ninterner ids, assigned in interning order, which the schedule decides. In\n00420 the two `Enum.reduce/3[fp[L] list(int), fp[L] empty_list(), fp[F]\nclosure[Enum.reverse/1#lambda@1563-1599/2]()] need=Value` specializations\nprint IDENTICAL keys and differ only by Ty id; LIFO swaps their indices\n(x39 \u003c-\u003e x40) and the only visible consequence is that their correct,\nunchanged construction-wrapper references appear to swap. Instrumented\nproof: for FunctionId(74) the wrapper sort keys are Ty(453,530,556,916)\nunder FIFO and Ty(450,537,554,940) under LIFO -- same types, different\nids, permutable order.\n\nThe rest of the movement (renumbered `entry x`/`callee=x` lines, extra\n`key ...` specializations, wider/narrower closure unions on value rows)\nis a second, larger question: the SPECIALIZATION SET itself differs under\nLIFO on 00183/00277/enum_predicate_search. That may be the same id-order\ncause reaching type-keyed decisions, or an independent join-order defect.\nNot diagnosed here.\n\nBYCATCH, same cause class: four `cargo test --lib` tests fail under the\nLIFO flip AT BASE (d1ccfdea2, without fz-kdt.96) --\ncanon_test::backend_inventory_width_stays_pinned_on_the_target_fixtures,\ndrive_test::compiler2_unused_construction_call_binding_keeps_the_root_runnable,\npublic_trace_test::analysis_claims_survive_a_run_that_could_not_re_derive_them,\npublic_trace_test::deriving_recursion_from_call_graph_facts_extracts_each_body_once.\nThe remaining 1514 pass under LIFO.\n\nFIX DIRECTION (named, not built): these orderings want a CANONICAL\ncomparand, not an id -- the same lesson as the canon dump itself. Order\nexecutables and transport positions by a faithful id-free form of the\nactivation (the printed/canonical type structure) so two specializations\nthat are indistinguishable to a reader are also stably ordered, and a\nre-ordered pull cannot permute the inventory. Measure against the LIFO\nrecipe above: the `construction=` half should go to zero first.",
   "id": "fz-kdt.101",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Executable and construction-wrapper ordering is decided by raw Ty interner ids, so display-identical specializations renumber under a re-ordered pull",
   "type": "bug",
-  "updated_at": "2026-08-31T18:41:14Z"
+  "updated_at": "2026-08-31T20:49:34Z"
 }

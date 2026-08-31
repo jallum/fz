@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.101",
     "fz-kdt.94"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Retire the cross-version canon gate script when the artifact-neutrality crackdown ends",
   "type": "task",
-  "updated_at": "2026-08-31T19:07:03Z"
+  "updated_at": "2026-08-31T20:49:34Z"
 }
