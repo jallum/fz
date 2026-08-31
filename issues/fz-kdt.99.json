@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T16:18:06Z",
+  "description": "Found as bycatch by the fz-kdt.93 verification refuter (2026-08-31): pingpong_cap.fz (repro in the session scratchpad -- a 3-cycle fnA -\u003e grounded L1 -\u003e grounded L2 -\u003e direct fnA with both lambdas capturing) crashes the INTERP lane with compiler2_unreachable_control (executable 16, function 66, entry 1) while the JIT lane prints the correct answer (10). VERIFIED IDENTICAL AT BASE 325af3832 -- pre-existing, NOT introduced by fz-kdt.93 (whose three closure_threaded_recursion* fixtures all pass three paths). Three-path parity is house law: the interpreter mishandles some control entry on this shape. First step: minimize the repro, identify which entry is judged unreachable and why the interp's control walk diverges from native's.",
+  "id": "fz-kdt.99",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Interp lane crashes compiler2_unreachable_control on threaded-closure recursion with captures; JIT runs fine -- pre-existing three-path-parity defect",
+  "type": "task",
+  "updated_at": "2026-08-31T16:18:06Z"
+}
