@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T14:16:48Z",
+  "description": "Found by the fz-kdt.93 cold review (2026-08-31): in the CallableConstruction group resolution (jobs/transport.rs:485-516), LAYOUTS are per-member (each read from the member's own TransportShape) but callable_facts/boundary_facts are projected from the KNOT MEMBER's builder + (layout, ty, demand) (project_generic_owner_facts at :491) and cloned to every group member -- first-to-close wins the facts projection, same lottery class as fz-kdt.93's transport shapes. Separate consumer, separate blast radius; the pull.rs group machinery survives fz-kdt.93 precisely for this path. Fix direction: per-member facts projection (each member's own builder/ty/demand), or a facts-level cut like fz-kdt.93's if construction can be made DAG. Measure the blast radius first (does any fixture exercise multi-member callable groups with differing builders?).",
+  "id": "fz-kdt.96",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "CallableConstruction group facts are projected from the knot winner and cloned group-wide -- the other half of the transport lottery",
+  "type": "task",
+  "updated_at": "2026-08-31T14:16:48Z"
+}
