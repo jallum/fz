@@ -141,7 +141,8 @@ pub(super) fn analyze_activation(
     // Each correlated row is dispatched and analyzed on its own
     // (fz-9i4.7.10.2): a row's columns arrived together and only ever bind a
     // clause together. Only post-analysis results merge — reachable clauses
-    // by set union, failure by OR, return evidence by join, call emissions by
+    // by set union (`EntryReachability::new` performs the union and orders it
+    // by source), failure by OR, return evidence by join, call emissions by
     // coalescing. No column of one row ever meets a column of another.
     let mut reachable_clauses = Vec::new();
     let mut fail_reachable = false;
@@ -155,11 +156,7 @@ pub(super) fn analyze_activation(
             .cloned()
             .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
             .collect::<Vec<_>>();
-        for (clause, _) in &clause_inputs {
-            if !reachable_clauses.contains(clause) {
-                reachable_clauses.push(*clause);
-            }
-        }
+        reachable_clauses.extend(clause_inputs.iter().map(|(clause, _)| *clause));
         row_clause_inputs.push(clause_inputs);
     }
     let entry_reachability = super::super::semantic::EntryReachability::new(reachable_clauses, fail_reachable);

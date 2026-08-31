@@ -292,3 +292,51 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         );
     }
 }
+
+/// The artifact side of the same claim (fz-kdt.91). An executable's
+/// `clause_ids` is the reachable-clause SET carried into the artifact; its
+/// order is content only because something has to write it down. Ordering it
+/// by `body_id` — minted in source order by `entry_source_patterns` and
+/// required to ascend with source priority by the dispatch planner — is what
+/// keeps the canonical form still when a precision fix repopulates the keys.
+/// Try-order is not at stake: both backends select through
+/// `ExecutableDispatch::plan()` and use `clause_ids` only as the
+/// `body_id`-to-position lookup `clause_index` performs.
+#[test]
+fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
+    for (name, text) in [
+        TARGETS[0],
+        TARGETS[1],
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        ),
+    ] {
+        let (mut compiler, root) = submit(name, text);
+        compiler
+            .drive_root_to_dump_stage(root, DumpStage::Backend)
+            .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
+        let world = compiler.world();
+        let program = world.backend_program(root);
+        let unordered = program
+            .executables
+            .iter()
+            .filter_map(|executable| {
+                let clause_ids = executable.entry_dispatch.as_ref()?.clause_ids();
+                let ascends = clause_ids.windows(2).all(|pair| pair[0] < pair[1]);
+                (!ascends).then(|| {
+                    format!(
+                        "{} {clause_ids:?}",
+                        function_label(world, executable.key.activation.function)
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            unordered.is_empty(),
+            "{name}: {} executable(s) carry clause ids in row-arrival order rather than source \
+             order, so any key-population change permutes the artifact: {unordered:?}",
+            unordered.len(),
+        );
+    }
+}

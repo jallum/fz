@@ -14193,6 +14193,34 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
     );
 }
 
+/// Reachability is a SET — clauses union across the correlated input rows an
+/// activation collects — so which row arrived first is schedule, not meaning.
+/// Here the schedule is upside down on purpose: the outer call supplies a
+/// non-empty list, so the cons clause is reached first, and the base clause
+/// only once the recursion has widened its way down to `[]`. The published
+/// fact must still name the clauses by their own identity, source order, or
+/// every artifact built from it moves whenever the key population changes.
+#[test]
+fn compiler2_entry_reachability_names_clauses_in_source_order_not_arrival_order() {
+    let reachable = reachable_clauses_for_source(
+        "arrival_order_reachability.fz",
+        r#"
+fn count([], acc), do: acc
+fn count([_head | tail], acc), do: count(tail, acc + 1)
+
+fn main(), do: count([1, 2, 3], 0)
+"#,
+        "count",
+        2,
+    );
+    assert_eq!(
+        reachable,
+        vec![0, 1],
+        "both clauses are reachable; the base clause is written first and must be named first, \
+         however late its row arrived",
+    );
+}
+
 #[test]
 fn compiler2_dispatch_reachability_preserves_correlated_tuple_inputs() {
     let (direct, direct_return) = semantic_reachability_for_source(

@@ -1165,7 +1165,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         callsites: lifecycle(239, 272, 33),
         shifts: shifts(1, 2),
         analyze_evaluations: 623,
-        analyze_zero_change: 4,
+        // fz-kdt.91: with clause lists canonical (source order), one
+        // completion that used to publish a spuriously "changed"
+        // EntryReachability (same clause set, new arrival order) now
+        // publishes it unchanged -- evaluations flat, one fewer
+        // downstream wake. 4 -> 5.
+        analyze_zero_change: 5,
         total_evaluations: 1434,
     },
     AnalysisClaimRatchet {

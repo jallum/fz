@@ -611,7 +611,16 @@ pub struct EntryReachability {
 }
 
 impl EntryReachability {
-    pub fn new(clauses: Vec<u32>, fail_reachable: bool) -> Self {
+    /// Reachability is a SET: clauses union across the correlated input rows
+    /// an activation collects, so which row arrived first is schedule, not
+    /// meaning. The stored order is therefore the clauses' own identity —
+    /// `body_id`, minted in source order by `jobs::dispatch::entry_source_patterns`
+    /// and required to ascend with source priority by the dispatch planner —
+    /// which leaves the fact, and every artifact materialized from it,
+    /// schedule-independent (fz-kdt.91).
+    pub fn new(mut clauses: Vec<u32>, fail_reachable: bool) -> Self {
+        clauses.sort_unstable();
+        clauses.dedup();
         Self {
             clauses,
             fail_reachable,
