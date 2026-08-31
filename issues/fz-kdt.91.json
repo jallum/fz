@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.80"
+  ],
   "created": "2026-08-31T02:56:15Z",
   "description": "Found by the fz-kdt.80 cold review (2026-08-31): body clause order in the artifact is first-occurrence ROW-ARRIVAL order -- reachable_clauses is built from alternatives.rows() in jobs/semantic.rs:145-163, stored in EntryReachability, materialized verbatim at jobs/artifact.rs:1650-1655. Any change to the key population (e.g. fz-kdt.80's dedupe: clause_ids [0,1]-\u003e[1,0] on executable x176) permutes clauses and moves canon, entangling every future precision fix with an incidental permutation. Fix: derive body clause order from body_id/source order at EntryReachability::new (jobs/semantic.rs:164) -- final-packaging ordering, which is the one legal place for a sort (sorting-is-a-barrier law). Red-first: a test that clause order is invariant under row-arrival order (drive two schedules or assert source-order directly). NOTE: landing this itself permutes clause order in existing canon -- a one-time authorized canon re-baseline; coordinate with fz-kdt.80's (i)/(ii) decision. Acceptance: canon stable under key-population perturbation; behavior/inventory unchanged.",
   "id": "fz-kdt.91",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Artifact clause order is row-arrival order: a schedule coupling that trips canon on any key-population change",
   "type": "task",
-  "updated_at": "2026-08-31T02:56:15Z"
+  "updated_at": "2026-08-31T13:37:53Z"
 }

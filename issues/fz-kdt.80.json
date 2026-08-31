@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.91"
+  ],
   "blocks": [
     "fz-kdt.69.3",
     "fz-kdt.89"
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Intern-time A-or-A dedupe makes the activation key join-stable (authorized plan: land after fz-kdt.91, re-measure, residual canon movement = the narrowing)",
   "type": "bug",
-  "updated_at": "2026-08-31T13:37:52Z"
+  "updated_at": "2026-08-31T13:37:53Z"
 }
