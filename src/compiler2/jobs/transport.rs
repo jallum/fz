@@ -1568,14 +1568,35 @@ fn produce_named_transport_position(
         }
     };
 
-    if let Err(fact) = cut_recursive_edges(world, context, executable, &mut recipe) {
-        return Some(PullOutcome::wait_on_fact(fact));
-    }
+    let names_in_component_direct_return = match cut_recursive_edges(world, context, executable, &mut recipe) {
+        Ok(names_direct) => names_direct,
+        Err(fact) => return Some(PullOutcome::wait_on_fact(fact)),
+    };
+    // A CALLABLE return is exempt: a callable's form is not a lane contract but
+    // the row its own demand names, which `exact_direct_callable_layout`
+    // derives from facts alone and every view of the convention reaches the
+    // same way (fz-9i4.4.5). `tuple_refined_demand` stands aside for the same
+    // reason -- there is no type contract to state for a clause set.
+    let cycle_return = names_in_component_direct_return
+        && matches!(position, TransportPosition::ExecutableReturn { .. })
+        && !demand.is_callable();
 
     let layout = match evaluate_transport_recipe(world, tel, context, &recipe, ty, &demand, position) {
+        RecipeLayout::Waiting(key) => return Some(PullOutcome::wait_on_product(key)),
+        // A return whose recipe names an in-component DIRECT return publishes
+        // the CONTRACT, however much
+        // its own arms saw. The cut falls on one side of the cycle only, so the
+        // members do not all read each other: a form drawn from what one member
+        // happened to see cannot bind the rest, and the caller that returns
+        // this value derives its payload from the contract too. Deriving the
+        // same way is what leaves one recursive chain on one form -- and a call
+        // whose three ends name one form is a TAIL call (fz-kdt.97).
+        //
+        // The arms are still read: they are this position's dependencies
+        // whether or not they decide it.
+        _ if cycle_return => contract_transport_layout(world, ty, &demand, position),
         RecipeLayout::Exact(layout) => layout,
         RecipeLayout::Cut(evidence) => cut_transport_layout(world, ty, &demand, position, &evidence),
-        RecipeLayout::Waiting(key) => return Some(PullOutcome::wait_on_product(key)),
     };
     Some(PullOutcome::Produced(ProductValue::TransportShape(
         TransportShapeFact::Layout(layout),
@@ -1603,6 +1624,23 @@ fn cut_transport_layout(
             return layout;
         }
     }
+    contract_transport_layout(world, ty, demand, position)
+}
+
+/// The form a position's own type and demand describe -- the ONE contract
+/// derived from facts alone, with nothing read.
+///
+/// It is what both ends of an unreadable edge can name without reading each
+/// other, so it is what a cut settles on, and it is what every return on a
+/// recursion cycle publishes. Two positions that share a type and a demand
+/// reach the same form here by construction, which is the whole point: a
+/// calling convention has more than one view of it, and they must agree.
+fn contract_transport_layout(
+    world: &mut World,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    position: &TransportPosition,
+) -> TransportLayout {
     let contract = tuple_refined_demand(world, ty, demand);
     joined_transport_layout(world, ty, &contract, position, &[])
 }
@@ -1611,11 +1649,12 @@ fn cut_transport_layout(
 /// stands for -- the same reading `boundary_runtime_demand` gives a boundary's
 /// contract, for the same reason.
 ///
-/// Only the cut fallback asks. Elsewhere a position's form comes from sources
-/// it actually read, or from a demand a consumer actually stated; at a cut it
-/// must be INVENTED, and both ends have to invent the same one from the same
-/// fact. A value of an exact tuple type is built decomposed, so the form its
-/// type describes is the form it already travels in.
+/// Only the contract asks. Elsewhere a position's form comes from sources it
+/// actually read, or from a demand a consumer actually stated; where the
+/// contract is reached the form must be INVENTED, and every end has to invent
+/// the same one from the same fact. A value of an exact tuple type is built
+/// decomposed, so the form its type describes is the form it already travels
+/// in.
 fn tuple_refined_demand(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> RuntimeDemand {
     let ShapeDemand::Whole = demand.shape else {
         return demand.clone();
@@ -1680,40 +1719,48 @@ fn shape_carries(world: &mut World, shape: ShapeId, ty: Ty) -> bool {
 /// the condensation a DAG and the whole argument true.
 ///
 /// Both choices read call-graph facts alone, so the same edges are cut in
-/// every run. The edges left standing still carry their callee's real layout,
-/// which is what keeps one recursive chain on one form.
+/// every run. What keeps one recursive chain on one form is not the surviving
+/// edges -- they run one way round the cycle only -- but the contract every
+/// return on the cycle publishes: the answer this returns says which returns
+/// those are.
 fn cut_recursive_edges(
     world: &World,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     recipe: &mut TransportRecipe,
-) -> Result<(), FactUse<FactKey>> {
+) -> Result<bool, FactUse<FactKey>> {
     let owner = executable.activation.function;
     let component = settled_component(world, context, owner)?;
     cut_in_component_returns(world, context, component, owner, recipe)
 }
 
+/// Cuts the in-component return edges that do not rise, and answers whether the
+/// recipe named an in-component return AT ALL -- cut or kept. Both ends of such
+/// an edge lie on one recursion cycle, and the position that owns this recipe
+/// is one of them.
 fn cut_in_component_returns(
     world: &World,
     context: &mut ProductReadContext<'_>,
     component: FunctionId,
     owner: FunctionId,
     recipe: &mut TransportRecipe,
-) -> Result<(), FactUse<FactKey>> {
+) -> Result<bool, FactUse<FactKey>> {
+    let mut on_cycle = false;
     match recipe {
         TransportRecipe::Alias(child @ TransportPosition::ExecutableReturn { .. }) => {
             let callee = child.executable().activation.function;
-            if settled_component(world, context, callee)? == component && callee.as_u32() <= owner.as_u32() {
+            on_cycle = settled_component(world, context, callee)? == component;
+            if on_cycle && callee.as_u32() <= owner.as_u32() {
                 *recipe = TransportRecipe::CutEdge;
             }
         }
         TransportRecipe::Alternatives(children) | TransportRecipe::Tuple(children) => {
             for child in children {
-                cut_in_component_returns(world, context, component, owner, child)?;
+                on_cycle |= cut_in_component_returns(world, context, component, owner, child)?;
             }
         }
         TransportRecipe::TupleField { tuple, .. } => {
-            cut_in_component_returns(world, context, component, owner, tuple)?;
+            on_cycle = cut_in_component_returns(world, context, component, owner, tuple)?;
         }
         TransportRecipe::ClosureCallReturn { grounded, .. } => {
             // A closure call reaches its callee through a VALUE, so the static
@@ -1726,6 +1773,11 @@ fn cut_in_component_returns(
             // leaves the condensation a DAG and the grounding is safe to keep,
             // which is what preserves one authority for an exact-carrier
             // closure call (fz-9i4.4.5).
+            // This arm deliberately does NOT set `on_cycle`: a data-returning
+            // cycle carried only by closure edges keeps its evidence form
+            // instead of the contract. The edge is indirect through the boxed
+            // apply seam, so no direct-call tail is at stake (fz-kdt.100
+            // records the residual).
             if let Some(target) = grounded.as_deref_mut()
                 && let TransportRecipe::Alias(child) = target
                 && statically_reaches(world, context, child.executable().activation.function, owner)?
@@ -1738,7 +1790,7 @@ fn cut_in_component_returns(
         | TransportRecipe::CutEdge
         | TransportRecipe::Alias(_) => {}
     }
-    Ok(())
+    Ok(on_cycle)
 }
 
 /// Whether `from` reaches `owner` through the static call graph, walking the

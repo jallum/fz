@@ -342,11 +342,20 @@ when it does not, the edge adds no reachability the condensation did not
 already have, and keeping it is what preserves one authority for an
 exact-carrier closure call. A cut contributes no evidence about the position's form, and a
 form the readable arms agree on is believed only while it still carries the
-position's whole analyzed type; otherwise the position falls back to the form
-its type and demand describe, reading a whole-value demand on an exact tuple
-type as the per-field demand it stands for so both ends of a cut invent the same
-contract. Evaluation therefore reads no scheduler state and no product group,
-and the published layouts do not move under a re-ordered pull.
+position's whole analyzed type; otherwise the position falls back to the
+CONTRACT -- the form its type and demand describe, reading a whole-value demand
+on an exact tuple type as the per-field demand it stands for, so both ends of a
+cut invent the same one. An executable return whose recipe named an in-component
+return at all -- cut or kept -- publishes that contract outright, whatever its
+own arms saw: the cut runs one way round a recursion cycle, so its members do
+not all read each other, and only a form each derives from its own type and
+demand is the same on every view of one calling convention. That is what makes a
+recursive call a TAIL call, since `CallReturnFlow` asks the callee return, the
+caller return and the caller's `ReturnPayload` to name one layout; deriving them
+apart cost about a quarter of the runtime of a 30,000-element
+`Enum.split_while` (fz-kdt.97). Evaluation therefore reads no scheduler state
+and no product group, and the published layouts do not move under a re-ordered
+pull.
 `CallableConstruction(position)` uses the same position-owned
 layout and carries direct callable and boundary facts independently of wrapper
 authority. A direct-only local producer owns `construction: None`; a first-class

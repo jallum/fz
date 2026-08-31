@@ -3986,6 +3986,152 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
     );
 }
 
+/// One recursion component publishes ONE return contract.
+///
+/// Two functions that call each other in return position are two views of one
+/// calling convention: each returns the other's result, so their published
+/// returns and the payloads read for those calls all describe the same value.
+/// When they agree the artifact makes the call a TAIL call; when they disagree
+/// the caller re-materializes the result on every step of the recursion, which
+/// on a 30,000-element split cost about a quarter of the runtime (fz-kdt.97).
+///
+/// They can only disagree by deriving their forms independently, and the
+/// recursion cut is what invites it: the cut member sees only the arms beside
+/// the cut, while the member whose edge survived joins that form with its own
+/// other arms and, finding no agreement, invents a whole-value one. Neither is
+/// wrong on its own; the two together are.
+///
+/// The invariant binds exactly where it is decidable from the artifact: a call
+/// in return position whose callee can call back to the caller, and whose
+/// callee publishes the caller's own return type. Same type, same convention,
+/// one contract.
+///
+/// Assumed and so far unconstructible: equal return DEMAND across the bound
+/// pair. Two component members with equal type but different demand (possible
+/// only when every caller of one member is strictly partial, since
+/// `ShapeDemand::join` collapses Whole with anything to Whole) would derive
+/// two legitimately different contracts; if such a fixture ever exists, this
+/// assertion needs a demand-equality filter, not a weakening.
+#[test]
+fn compiler2_one_recursion_component_publishes_one_return_contract() {
+    let source = include_str!("../../fixtures2/00420_enum_take_drop_split.fz");
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("one_return_contract.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (program, driver) =
+        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
+            .expect("panic-based ProductDriveError never returns Err");
+    driver.finish_session();
+
+    let reaches = direct_call_reachability(&program);
+    let mut checked = 0;
+    let mut demoted = Vec::new();
+    for (caller, executable) in program.executables.iter().enumerate() {
+        let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let super::artifact::BackendTail::DirectCall {
+                target, dest, callsite, ..
+            } = &entry.tail
+            else {
+                continue;
+            };
+            let super::body::ControlDestination::Return = dest else {
+                continue;
+            };
+            for (callee, return_flow) in return_flow_arms(target) {
+                if !reaches[callee].contains(&caller) {
+                    continue;
+                }
+                if program.executables[callee].return_ty != executable.return_ty {
+                    continue;
+                }
+                checked += 1;
+                let super::artifact::BackendReturnFlow::Continue { .. } = return_flow else {
+                    continue;
+                };
+                demoted.push(format!(
+                    "{}#{} {:?} -> {}#{}",
+                    world.function_ref(executable.key.activation.function).name,
+                    caller,
+                    callsite,
+                    world
+                        .function_ref(program.executables[callee].key.activation.function)
+                        .name,
+                    callee,
+                ));
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "the fixture should return through mutually recursive direct calls for this invariant to bind",
+    );
+    demoted.sort();
+    assert_eq!(
+        demoted,
+        Vec::<String>::new(),
+        "a call returning into its own recursion component must be a tail call: \
+         every member of the component derives the same return contract",
+    );
+}
+
+/// Which executables each executable can reach through packaged call edges --
+/// the artifact's own call graph, read back off the program it published.
+fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BTreeSet<usize>> {
+    let mut edges = vec![BTreeSet::new(); program.executables.len()];
+    for (caller, executable) in program.executables.iter().enumerate() {
+        let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let target = match &entry.tail {
+                super::artifact::BackendTail::DirectCall { target, .. } => target,
+                _ => continue,
+            };
+            edges[caller].extend(target.local_callees().into_iter().copied());
+        }
+    }
+    let mut reaches = edges.clone();
+    let mut growing = true;
+    while growing {
+        growing = false;
+        for caller in 0..reaches.len() {
+            let reached = reaches[caller]
+                .iter()
+                .flat_map(|callee| reaches[*callee].iter().copied())
+                .collect::<Vec<_>>();
+            for callee in reached {
+                growing |= reaches[caller].insert(callee);
+            }
+        }
+    }
+    reaches
+}
+
+/// The callee and return flow of every arm one packaged call edge can take.
+fn return_flow_arms(
+    target: &super::artifact::CallEdge<usize, super::artifact::BackendReturnFlow>,
+) -> Vec<(usize, &super::artifact::BackendReturnFlow)> {
+    match target {
+        super::artifact::CallEdge::Direct(direct) => direct
+            .callee
+            .copied_local()
+            .map(|callee| (callee, &direct.return_flow))
+            .into_iter()
+            .collect(),
+        super::artifact::CallEdge::Dispatch(dispatch) => dispatch
+            .arms
+            .iter()
+            .filter_map(|arm| Some((arm.callee.copied_local()?, &arm.return_flow)))
+            .collect(),
+        super::artifact::CallEdge::Indirect(_) => Vec::new(),
+    }
+}
+
 #[test]
 fn compiler2_unused_capture_layout_reaches_backend_wrapper() {
     let source = r#"
