@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T14:05:49Z",
+  "description": "Removal ticket for fz-kdt.94's scaffolding (the price of adding it, per house rule). The base-vs-HEAD canon-dump compare script exists only to police artifact movement during the kdt.80/.91/.93 chain and adjacent landings. When the crackdown ends (the chain landed, layout schedule-couplings fixed, no open ticket gated on canon byte-neutrality), DELETE the script and any doc references in the same motion. If by then a permanent lightweight equivalent seems warranted, that is a NEW decision with its own ticket -- do not silently promote the scaffold.",
+  "id": "fz-kdt.95",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Retire the cross-version canon gate script when the artifact-neutrality crackdown ends",
+  "type": "task",
+  "updated_at": "2026-08-31T14:05:49Z"
+}
