@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T02:33:28Z",
+  "description": "Found by the fz-kdt.80 STOP dig (2026-08-31, a0a92a8cb): 10 activations per key-losing fixture (take_drop/predicate; 0 on range_map) are claimed via rebuilt_activations.extend(call.activations) (jobs/semantic.rs:~1200), fully analysed, and publish ReturnType, while appearing on NO CallSiteTargets edge -- so they are never materialised into the artifact. No gate observes this class today. fz-kdt.80's join-stable key should drive it to 0 BY CONSTRUCTION; this ticket adds the measurement/gate (a ratchet or invariant derived from fz-kdt.80's red test, which counts exactly this class) so regressions surface. If fz-kdt.80 lands with orphans=0, this collapses to pinning the count at zero. Probe recipe in fz-kdt.80.",
+  "id": "fz-kdt.89",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Analysed orphans: activations demanded, analysed, ReturnType'd, but reachable from no edge -- unmeasured class, pure fixpoint work with no artifact",
+  "type": "task",
+  "updated_at": "2026-08-31T02:33:28Z"
+}
