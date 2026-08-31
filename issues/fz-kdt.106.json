@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T22:26:18Z",
+  "description": "Found by the fz-kdt.104 cold review's prototype (2026-08-31): with canonical clause order in place, FIFO+sort vs LIFO+sort on enum_predicate_search still differ 221 vs 207 executables -- 14 FIFO-only specializations on over-wide inputs (int | :false | :ok | :true). Stdout identical; the class is schedule-dependent DEMAND of transient wide joins (a spec minted for an intermediate join that a different schedule never materializes). Covered by neither fz-kdt.101 (display) nor fz-kdt.104/105 (dispatch/keys). Diagnose after 104+105 land: is this the fz-kdt.63-noted return-widening ladder shape, or demand issued from mid-ascent evidence that later narrows? Instrument: spec-set diff under the LIFO recipe at the post-105 base.",
+  "id": "fz-kdt.106",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "14 FIFO-only over-wide specializations on enum_predicate_search: schedule-dependent demand of transient wide joins",
+  "type": "task",
+  "updated_at": "2026-08-31T22:26:18Z"
+}
