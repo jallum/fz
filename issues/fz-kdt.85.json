@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T00:19:58Z",
+  "description": "Found by fz-kdt.84's dig (recipe: define_return + publish-block probes,\n00420, debug @84ae179b4): 299 quiet re-claims where the analysis ran and\nSTILL had no return evidence (store None, no revision movement -- so NOT the\nwake bug fz-kdt.84 fixes). 299 of 1,081 evals on 00420 re-derive a body\nthat cannot yet conclude a return. Hunt the mechanism after fz-kdt.84\nlands: what wakes these runs (their other facts change -- callsite\nsummaries? inputs?) and whether the no-evidence walk can conclude cheaper\nor later. Measure before designing.",
+  "id": "fz-kdt.85",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "299 still-empty ReturnType re-claims: an analysis re-runs without ever deriving evidence",
+  "type": "task",
+  "updated_at": "2026-08-31T00:19:58Z"
+}
