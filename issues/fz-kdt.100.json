@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T17:40:44Z",
+  "description": "Residual carve-out from fz-kdt.97 (2026-08-31, 86afa1db7), recorded by the builder and deliberately not closed there: an ExecutableReturn in a recursion component that returns a CALLABLE stands aside from contract_transport_layout -- a clause set has no lane contract, and the row its demand names is fact-derived by exact_direct_callable_layout (the fz-9i4.4.5 one-authority carrier; forcing the contract broke compiler2_transport_plan_preserves_recursive_callable_return_identity, the make(n) -\u003e make(n-1) closure-returning recursion). Consequence: a recursion cycle returning a callable can still publish disagreeing return forms and lose tail form (Continue) on those edges. No fixture currently measures a hot callable-returning recursion, so the cost is unquantified. Commented at the carve-out site. Fix direction, if it ever matters: a callable-aware contract (the boxed apply seam is the natural agreed form -- both sides already box at the boundary), measured against the identity-preservation test. Sequenced with fz-kdt.96 (both are callable-side transport residuals).",
+  "id": "fz-kdt.100",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Callable cycle returns stand outside the one-return-contract rule: disagreeing forms can still demote to Continue",
+  "type": "task",
+  "updated_at": "2026-08-31T17:40:44Z"
+}
