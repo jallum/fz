@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T02:28:17Z",
+  "description": "Found during the fz-kdt.86 cold review (2026-08-31). function_declares_contract (world.rs:1131) returns false for FunctionState::Placeholder | Noted -- an undefined function is reported as DECLARING NO CONTRACT rather than UNKNOWN (violates unknown-is-not-none). call_emission_for_function (semantic.rs:1228) has no wait_for_unresolved_function_module guard (the other two resolve sites have it at :1301/:1448), so a not-yet-defined callee silently resolves contract-free there. Masked today only because require_activation_key_facts blocks two statements later. Make it correct by construction: either the predicate returns a three-state answer (declares / declares-nothing / undefined =\u003e wait), or the definedness guard is folded into fz-kdt.86's require_callee_prerequisites so all three sites share one gate. Verify with a fixture where a callee's module resolves late.",
+  "id": "fz-kdt.87",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "function_declares_contract answers 'declares nothing' for UNDEFINED functions -- safe by accident, not construction",
+  "type": "task",
+  "updated_at": "2026-08-31T02:28:17Z"
+}
