@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T02:33:28Z",
+  "description": "Found by the fz-kdt.80 STOP dig (2026-08-31): same_call_target (semantic.rs:203) matches on callee AND activation, so by the time merge_callsite_activation (semantic.rs:231) runs, the activations are already equal and its non-trivial arms cannot fire. Verify (coverage probe or reasoning over all call sites), then delete the dead arms (rip-out law) or document the reachable residue. Cheap; batches with any semantic.rs touch.",
+  "id": "fz-kdt.90",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "merge_callsite_activation looks unreachable: same_call_target requires equal activations before it is called",
+  "type": "task",
+  "updated_at": "2026-08-31T02:33:28Z"
+}
