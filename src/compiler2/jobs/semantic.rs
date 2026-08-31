@@ -1225,12 +1225,12 @@ fn call_emission_for_function(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<CallEmission>, FatalError> {
-    let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, tel, function, input_types, key.callsite.span(), reads, waits)?
-    else {
+    let Some(shape) = require_direct_call_prerequisites(world, function, reads, waits) else {
         return Ok(None);
     };
-    if world.function_is_provider_boundary(function) {
+    let (input_types, contract_return_ty) =
+        refine_function_call_surface(world, tel, function, input_types, key.callsite.span())?;
+    if shape == CalleeShape::Boundary {
         // The earned dynamic edge: a boundary with no contract is `any`.
         let return_ty = Some(contract_return_ty.unwrap_or_else(|| any_ty(world)));
         return Ok(Some(CallEmission {
@@ -1249,10 +1249,7 @@ fn call_emission_for_function(
             latent_executables: Vec::new(),
         }));
     }
-    let Some((activation, return_ty)) = prepare_function_call(world, caller, function, &input_types, reads, waits)
-    else {
-        return Ok(None);
-    };
+    let (activation, return_ty) = prepare_function_call(world, caller, function, &input_types, reads);
     let return_ty = refine_call_return(world, return_ty, contract_return_ty);
     let activations = vec![ActivationContribution {
         key: activation.clone(),
@@ -1301,12 +1298,11 @@ fn resolve_function_call(
     if wait_for_unresolved_function_module(world, function, waits) {
         return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
-    let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, tel, function, input_types, call_span, reads, waits)?
-    else {
+    let Some(shape) = require_direct_call_prerequisites(world, function, reads, waits) else {
         return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
-    if world.function_is_provider_boundary(function) {
+    let (input_types, contract_return_ty) = refine_function_call_surface(world, tel, function, input_types, call_span)?;
+    if shape == CalleeShape::Boundary {
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
         let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
@@ -1325,11 +1321,7 @@ fn resolve_function_call(
             Some(return_ty),
         ));
     }
-    let Some((activation, return_evidence)) =
-        prepare_function_call(world, caller, function, &input_types, reads, waits)
-    else {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
-    };
+    let (activation, return_evidence) = prepare_function_call(world, caller, function, &input_types, reads);
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     Ok((
         CallSiteResolution::Resolved(CallSiteSummary {
@@ -1448,17 +1440,14 @@ fn resolve_protocol_call(
             return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
         }
 
+        if !require_callee_prerequisites(world, selected.function, reads, waits) {
+            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
-        let Some((refined_inputs, contract_return_ty)) =
-            refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span, reads, waits)?
-        else {
-            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
-        };
-        let Some((activation, observed_return)) =
-            prepare_function_call(world, caller, selected.function, &refined_inputs, reads, waits)
-        else {
-            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
-        };
+        let (refined_inputs, contract_return_ty) =
+            refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span)?;
+        let (activation, observed_return) =
+            prepare_function_call(world, caller, selected.function, &refined_inputs, reads);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
         return_ty = join_evidence(world, return_ty, target_return);
         targets.push(call_target_summary(
@@ -1655,36 +1644,86 @@ fn resolve_closure_call(
     ))
 }
 
+/// The contract half of a callee's prerequisites: a function that declares
+/// one cannot have its call surface refined until `FunctionContract` is
+/// present. A function that declares none asks for nothing — no wait, no
+/// read, and nothing ever demands its contract.
+fn require_function_contract(
+    world: &mut World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> bool {
+    if !world.function_declares_contract(function) {
+        return true;
+    }
+    let contract_fact = FactKey::FunctionContract(function);
+    if world.function_contract_revision(function).is_none() {
+        waits.insert(contract_fact);
+        return false;
+    }
+    reads.push(contract_fact);
+    true
+}
+
+/// Everything a callee must already have before this caller can resolve the
+/// call: its contract, and the facts that key its activation. Both halves
+/// register in ONE pass — waits are AND-satisfied, so a caller missing all
+/// three sleeps once instead of learning the next rung only after the first
+/// one lands.
+fn require_callee_prerequisites(
+    world: &mut World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> bool {
+    let contract_ready = require_function_contract(world, function, reads, waits);
+    let keying_ready = world.require_activation_key_facts(function, reads, waits);
+    contract_ready && keying_ready
+}
+
+/// Which call a named callee becomes once its prerequisites are in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CalleeShape {
+    /// The public dynamic edge: a boundary names no compiler2 activation.
+    Boundary,
+    /// An ordinary function, whose activation this caller keys.
+    Activation,
+}
+
+/// Registers what a direct call consumes and names the shape it will take, or
+/// `None` while a prerequisite is still missing. The boundary test is
+/// contract-independent, so it precedes the ask: a boundary asks for the
+/// contract alone, because the keying facts are readiness it never consumes.
+fn require_direct_call_prerequisites(
+    world: &mut World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> Option<CalleeShape> {
+    if world.function_is_provider_boundary(function) {
+        return require_function_contract(world, function, reads, waits).then_some(CalleeShape::Boundary);
+    }
+    require_callee_prerequisites(world, function, reads, waits).then_some(CalleeShape::Activation)
+}
+
+/// Pure contract APPLICATION. Readiness was asked for and proven by
+/// `require_function_contract`, so nothing here waits or reads.
 fn refine_function_call_surface(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     input_types: Vec<Ty>,
     violation_span: Span,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<Option<RefinedCallSurface>, FatalError> {
+) -> Result<RefinedCallSurface, FatalError> {
     if !world.function_declares_contract(function) {
-        return Ok(Some((input_types, None)));
+        return Ok((input_types, None));
     }
-    let contract_fact = FactKey::FunctionContract(function);
-    let Some(_) = world.function_contract_revision(function) else {
-        waits.insert(contract_fact);
-        return Ok(None);
-    };
-    reads.push(contract_fact);
     let contract = world
         .function_contract(function)
         .cloned()
-        .expect("function contract fact should resolve to a stored contract");
-    Ok(Some(apply_function_contract(
-        world,
-        tel,
-        function,
-        &contract,
-        input_types,
-        violation_span,
-    )?))
+        .expect("a declared contract must be proven present before the call surface is refined");
+    apply_function_contract(world, tel, function, &contract, input_types, violation_span)
 }
 
 fn apply_function_contract(
@@ -1743,11 +1782,11 @@ fn activation_contract_return(
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<Ty>, FatalError> {
     let violation_span = world.function_surface(function).span;
-    let Some((_, contract_return_ty)) =
-        refine_function_call_surface(world, tel, function, input_types.to_vec(), violation_span, reads, waits)?
-    else {
+    if !require_function_contract(world, function, reads, waits) {
         return Ok(None);
-    };
+    }
+    let (_, contract_return_ty) =
+        refine_function_call_surface(world, tel, function, input_types.to_vec(), violation_span)?;
     Ok(contract_return_ty)
 }
 
@@ -1845,18 +1884,16 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
     }
 }
 
+/// Keys the callee's activation and reads its return evidence. The facts the
+/// key is built from were asked for and proven by
+/// `require_callee_prerequisites`, so this cannot block.
 fn prepare_function_call(
     world: &mut World,
     caller: &ActivationKey,
     function: FunctionId,
     arg_types: &[Ty],
     reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Option<(ActivationKey, Option<Ty>)> {
-    if !world.require_activation_key_facts(function, reads, waits) {
-        return None;
-    }
-
+) -> (ActivationKey, Option<Ty>) {
     let activation = world.activation_key(caller.root, function, arg_types);
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,
@@ -1864,7 +1901,7 @@ fn prepare_function_call(
     // is the ascent's bottom, never the type `none`.
     reads.push(FactKey::ReturnType(activation.clone()));
     let return_evidence = world.activation_return(&activation);
-    Some((activation, return_evidence))
+    (activation, return_evidence)
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. A runtime module's defimpls

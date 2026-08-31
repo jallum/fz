@@ -1118,33 +1118,64 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// `changed[old_revision=null, new_revision=0]` against its `wakes[].cause`:
 /// the 46/152/135 empty first claims all still happen, and the 43/137/139
 /// `Current` wakes they used to cause are 0.
+/// fz-kdt.86 moved the two EVALUATION columns down again, and one `Activation`
+/// lifecycle with them. Folding the callee's contract ask together with the
+/// facts that key its activation (`require_callee_prerequisites`) collapsed a
+/// two-rung wait ladder inside `analyze_activation`'s own body:
+///
+/// ```text
+///                              AnalyzeActivation   of those, zero-change    total
+///   fz_f98_range_map_converges  256 ->  226          43 ->  13        917 ->  907
+///   enum_predicate_search       655 ->  623          35 ->   4       1444 -> 1434
+///   enum_take_drop_split        946 ->  875          75 ->   8       2390 -> 2370
+/// ```
+///
+/// Measured the same way on the longer `fz2 interp --log-telemetry` drive:
+/// zero-change analyses 72/43/37 -> 6/13/4 (take_drop/range_map/predicate),
+/// of which the FunctionContract-woken 65/30/33 -> 0; no analysis blocked on
+/// a callee's contract AND its keying facts together before this change
+/// (0/0/0), and 69/31/33 do now. The three facts' surviving wakes are
+/// 116/38/66 against the ticket's measured oracle ceiling of 120/38/66 --
+/// first-encounter arrivals, not rungs.
+///
+/// `enum_take_drop_split`'s `Activation` row falls 256 -> 255: with the ladder
+/// gone, the caller reaches the callsite with grounded evidence and never
+/// mints `Range.reduce_while_step/6` at
+/// `(int, int, int, int, {:halt, {list(a4_1_0_e), int}}, a5)` -- a transient
+/// specialization keyed on uninstantiated slots. One fewer speculative key is
+/// this ticket's direction, and it is invisible downstream: all three
+/// fixtures' canonical backend dumps are byte-identical across the change and
+/// the emitted inventory holds at 59/221/214
+/// (`backend_inventory_width_stays_pinned_on_the_target_fixtures`). Every
+/// other column here -- both other lifecycles, both shift columns -- is
+/// untouched.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
         activations: lifecycle(71, 74, 5),
         callsites: lifecycle(73, 75, 2),
         shifts: shifts(17, 19),
-        analyze_evaluations: 256,
-        analyze_zero_change: 43,
-        total_evaluations: 917,
+        analyze_evaluations: 226,
+        analyze_zero_change: 13,
+        total_evaluations: 907,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
         activations: lifecycle(198, 198, 0),
         callsites: lifecycle(239, 272, 33),
         shifts: shifts(1, 2),
-        analyze_evaluations: 655,
-        analyze_zero_change: 35,
-        total_evaluations: 1444,
+        analyze_evaluations: 623,
+        analyze_zero_change: 4,
+        total_evaluations: 1434,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
-        activations: lifecycle(256, 256, 0),
+        activations: lifecycle(255, 255, 0),
         callsites: lifecycle(415, 427, 12),
         shifts: shifts(6, 10),
-        analyze_evaluations: 946,
-        analyze_zero_change: 75,
-        total_evaluations: 2390,
+        analyze_evaluations: 875,
+        analyze_zero_change: 8,
+        total_evaluations: 2370,
     },
 ];
 
@@ -1225,4 +1256,93 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
              cause it"
         );
     }
+}
+
+/// A callee whose `@spec` makes it a contract-declaring function. Analyzing
+/// `main` reaches the call while `M.helper/1` has neither its contract nor
+/// the facts that key its activation.
+const CONTRACT_CALLEE_SOURCE: &str =
+    "defmodule M do\n  @spec helper(integer) :: integer\n  fn helper(x), do: x + 1\nend\nfn main(), do: M.helper(41)\n";
+
+/// The function-keyed facts a completion reports itself blocked on, as
+/// `"Kind(function_id)"` — kind plus `function_id` is the whole identity the
+/// public stream renders for `FunctionContract`/`Recursive`/`DispatchMask`.
+fn blocked_function_facts(completion: &serde_json::Value) -> std::collections::HashSet<String> {
+    let Some(blocked) = completion.get("blocked").and_then(|v| v.as_array()) else {
+        return std::collections::HashSet::new();
+    };
+    blocked
+        .iter()
+        .filter_map(|fact| {
+            let kind = fact.get("kind")?.as_str()?;
+            let function = fact.get("function_id")?.as_u64()?;
+            Some(format!("{kind}({function})"))
+        })
+        .collect()
+}
+
+/// The raw id the public stream gave the function `label` names. The
+/// `canon.function` definition lines are the stream's own id dictionary.
+fn function_id_named(trace: &PublicTrace, label: &str) -> u64 {
+    trace
+        .events_named(&["fz", "compiler2", "canon", "function"])
+        .iter()
+        .find(|ev| ev.metadata_key("canon").and_then(|v| v.as_str()) == Some(label))
+        .and_then(|ev| ev.metadata_key("function_id")?.as_u64())
+        .unwrap_or_else(|| panic!("expected the public stream to define a canon.function line for {label}"))
+}
+
+/// fz-kdt.86: a callee's prerequisites are ONE ask, never a ladder.
+///
+/// Before a call to `M.helper/1` can resolve, the callee's contract must be
+/// applied to the surface AND the facts that key its activation
+/// (`Recursive`, `DispatchMask`) must exist. When the analysis first reaches
+/// the callsite none of the three is there yet. Waits are AND-satisfied, so
+/// naming all three in one completion costs exactly one block and one wake;
+/// asking for the contract alone and reaching the keying facts only on the
+/// next run is a two-rung ladder that re-runs the whole analysis to learn
+/// what it could have asked for in the first place.
+///
+/// The intent is the SHAPE of the ask, not a count of jobs: the analysis may
+/// block on other things and re-run for other reasons, but it must never
+/// spend two blocks on one callee's prerequisites.
+#[test]
+fn an_analysis_asks_for_a_callees_contract_and_keying_facts_in_one_block() {
+    let trace = PublicTrace::compile(CONTRACT_CALLEE_SOURCE);
+    assert!(
+        matches!(trace.outcome, DriveOutcome::Resolved),
+        "the contract-callee source must compile for its blocks to describe a whole drive"
+    );
+
+    let helper = function_id_named(&trace, "M.helper/1");
+    let prerequisites = ["FunctionContract", "Recursive", "DispatchMask"]
+        .into_iter()
+        .map(|kind| format!("{kind}({helper})"))
+        .collect::<std::collections::HashSet<_>>();
+
+    let blocks = trace
+        .events_named(&["fz", "compiler2", "work_graph", "applied"])
+        .into_iter()
+        .filter_map(|ev| {
+            let completion = ev.metadata_key("completion")?;
+            if completion.get("kind").and_then(|v| v.as_str()) != Some("AnalyzeActivation") {
+                return None;
+            }
+            let blocked = blocked_function_facts(completion);
+            (!blocked.is_disjoint(&prerequisites)).then_some(blocked)
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        blocks.len(),
+        1,
+        "an analysis must spend exactly ONE block on M.helper/1's prerequisites; \
+         each extra block is a rung of a ladder. Blocks seen: {blocks:?}"
+    );
+    assert!(
+        blocks[0].is_superset(&prerequisites),
+        "the single block must name the contract AND both keying facts together, \
+         so one wake satisfies them all. Named: {:?}, required: {prerequisites:?}",
+        blocks[0]
+    );
 }

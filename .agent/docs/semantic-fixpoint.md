@@ -105,6 +105,19 @@ and the callsite ends up holding two disagreeing facts — a precisely-resolved
 `CallSiteSummary` and an `any` value type. The fz-f98.14.11 artifact guard is
 the detector that makes that disagreement fatal instead of silent.
 
+A call to a named function needs two things about the CALLEE before it can
+resolve: the `FunctionContract` that refines the surface (only for a function
+that declares one — `World::function_declares_contract`) and the facts its
+activation key is built from (`Recursive`, `DispatchMask`, via
+`World::require_activation_key_facts`). `require_callee_prerequisites`
+registers both in one pass at each of the three resolve sites, before either
+is consumed, so a caller that holds neither blocks once rather than a rung at
+a time ([`fact-engine`](fact-engine.md), *One block per prerequisite set*).
+`refine_function_call_surface` is then pure contract APPLICATION and
+`prepare_function_call` pure keying: neither can block. A provider boundary
+names no compiler2 activation, so it asks for the contract alone; the
+boundary test is contract-independent and runs before the ask.
+
 Every callsite the walk REACHES publishes its edge, resolved or not
 (`CallSiteResolution`, semantic.rs). Three answers, three representations:
 

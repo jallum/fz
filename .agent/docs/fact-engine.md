@@ -123,6 +123,25 @@ A completion's meaning bifurcates per derivation, on whether the run reached it
   answer's facts are never settled. Pausing is not recanting; a transient wait
   cannot destroy still-valid published work.
 
+### One block per prerequisite set
+
+A waiter re-runs only when EVERY fact it waits on is satisfied
+(`Scheduler::wake_satisfied_waiters`), so waits registered together cost one
+block and one wake however many they are. What a run asks for is therefore
+free; WHEN it asks is not. A run that names one prerequisite, sleeps, and
+reaches the next ask only once the first has landed pays a full re-evaluation
+per rung and publishes nothing on the way — a ladder built inside one job
+body, invisible to the scheduler, which sees only a job that blocked twice.
+Every ask a run can already name belongs in the same pass.
+
+`require_callee_prerequisites` (`jobs/semantic.rs`) is that shape: before a
+call surface is refined, the callee's `FunctionContract` (when it declares
+one) and the facts its activation key is built from (`Recursive`,
+`DispatchMask`) register in one pass, so a caller holding none of them blocks
+once. Registering them a rung apart cost 65/30/33 of the 72/43/37 zero-change
+`AnalyzeActivation` evaluations on the three measured fixtures; folding the
+ask left 6/13/4 and moved no emitted byte (fz-kdt.86).
+
 ### Absence is bottom; rebasing is the narrowing path
 
 The same reading applies one layer up, to the CLAIM. For a cumulative fact,
@@ -152,7 +171,8 @@ Measured over `fz2 interp --log-telemetry` on `fz_f98_range_map_converges`,
 exactly where they were and took 42/132/114 evaluations out of the compile,
 almost all of them `AnalyzeActivation` runs that concluded unchanged (85 -> 43,
 171 -> 37, 192 -> 72). No lifecycle, no shift count and no emitted byte moved
-(fz-kdt.84).
+(fz-kdt.84). What that left standing was the callee-prerequisite ladder above:
+those same three counts are 43/37/72 -> 13/4/6 since fz-kdt.86.
 
 Retraction-by-omission is sound only where a publisher's silence about a key is
 KNOWLEDGE. For `analyze_activation`'s callee `Activation` claims it is not: a
