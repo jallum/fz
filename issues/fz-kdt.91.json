@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.93"
+  ],
   "blocks": [
     "fz-kdt.80"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Artifact clause order is row-arrival order: a schedule coupling that trips canon on any key-population change",
   "type": "task",
-  "updated_at": "2026-08-31T13:37:53Z"
+  "updated_at": "2026-08-31T13:54:21Z"
 }
