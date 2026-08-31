@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T21:57:40Z",
+  "description": "Diagnosed 2026-08-31 at 50a33e49c (fz-kdt.101's undiagnosed half, upgraded: it reaches PROGRAM OUTPUT). Under the full-LIFO agenda flip (Agenda::pop -\u003e pop_back), 00183_enum_take_list_range prints [1,2,3,4,5] for Enum.take(xs,3) instead of [1,2,3] -- the fz-kdt.80-A1 miscompile signature, now arising from schedule alone at an UNMODIFIED tree. MECHANISM (probed, dumps in session scratchpad 183.{fifo,lifo}.canon): LIFO mints TWO List.reduce_while_step/3 specializations whose keys differ ONLY in variant address assignment -- x46 {:cont,list(a1_u0..)}|{:halt,list(a1_u1..)} vs x47 {:cont,list(a1_u1..)}|{:halt,list(a1_u0..)} (FIFO has one). Cause chain: dnf_union concatenates clauses in ARRIVAL order; convergence_collapse_tuple_fields / address_remap_children assign AddrStep::Variant(k) by clause POSITION (types/mod.rs, the tuple_alternative counter); so one denotation built in two orders addresses to two arrows and mints two keys. The resulting 3-arm dispatch (arm body=0/1/2, o2 Unique -- vs FIFO's 2-arm with a {:cont|:halt} type question) cannot semantically distinguish the twins and routes :halt into a cont-shaped body: the take never halts. THE CLASS: fz-kdt.80 made the key invariant under clause DUPLICATION (A-or-A dedupe at intern); clause ORDER remains schedule-dependent, so the specialization fixpoint is NON-CONFLUENT. Production FIFO order masks it deterministically; any scheduler change is a latent miscompile. Also explains the extra key ... specializations + wider/narrower closure unions fz-kdt.96's measurement saw on 00277/predicate, and likely some of the 4 LIFO-red lib tests at base (inventory-width RED = spec-set moved). FIX DIRECTION (for cold review before building): canonical clause ORDER at the intern persistence boundary (same home as canonicalize_tuple_axis + the fz-kdt.80 dedupe), ordered by an ID-FREE faithful comparator -- Ty ids are themselves schedule-dependent, so ordering by raw ids does NOT fix confluence; candidates: recursive structural compare with memo, or a canonical per-Ty fingerprint computed at intern (children already interned =\u003e recursive + cheap; canon.rs descr_fingerprint is prior art -- check collision behavior, need tie-break). Alternative (narrower): canonical variant numbering at the ADDRESSING step only. Measure against: LIFO stdout == FIFO stdout on 00183/00277/predicate; spec-set identical under both schedules; the 4 LIFO-red lib tests; canon-gate neutral at FIFO.",
+  "id": "fz-kdt.104",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Union clause order is arrival order and variant addressing numbers by position: same-denotation unions mint distinct keys -- schedule-dependent MISCOMPILE",
+  "type": "bug",
+  "updated_at": "2026-08-31T21:57:40Z"
+}
