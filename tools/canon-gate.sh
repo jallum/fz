@@ -40,7 +40,7 @@ for fx in "${FIXTURES[@]}"; do
   else
     status=1
     diff -u "$OUT/$name.base.canon" "$OUT/$name.head.canon" > "$OUT/$name.diff" || true
-    lines="$(grep -c '^[+-]' "$OUT/$name.diff" || true)"
+    lines="$(grep -c '^[+-][^+-]' "$OUT/$name.diff" || true)"
     echo "  $name: MOVED ($lines changed lines) -- report: $OUT/$name.diff"
   fi
 done
