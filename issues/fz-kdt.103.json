@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-08-31T19:03:00Z",
+  "description": "Found by the fz-kdt.96 adversarial review (2026-08-31): MaterializedTransportPlan.publication_boundaries (artifact.rs:70) is built and sorted at backend.rs:1273-1277,1319 (+ pull.rs:3947 test harness) and has ZERO production readers -- dead at base and at HEAD. Pre-existing debt that fz-kdt.96's record_layout_publication deletion proof silently leaned on (safe partly BECAUSE the field is dead). Also the only artifact surface that moved under fz-kdt.96 (298 -\u003e 290 rows on take_drop -- the clone's fabricated Value-position publications vanishing). DELETE the field and its builders (rip-out law); if some future consumer wants per-boundary publication rows, that is a new decision. Cheap; batches with any backend.rs touch.",
+  "id": "fz-kdt.103",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "MaterializedTransportPlan.publication_boundaries is dead: built, sorted, stored, never read",
+  "type": "task",
+  "updated_at": "2026-08-31T19:03:00Z"
+}
