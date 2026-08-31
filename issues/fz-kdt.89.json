@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-08-31T02:33:28Z",
-  "description": "Found by the fz-kdt.80 STOP dig (2026-08-31, a0a92a8cb): 10 activations per key-losing fixture (take_drop/predicate; 0 on range_map) are claimed via rebuilt_activations.extend(call.activations) (jobs/semantic.rs:~1200), fully analysed, and publish ReturnType, while appearing on NO CallSiteTargets edge -- never materialised into the artifact. RESOLUTION PATH (cold review, 2026-08-31): fz-kdt.80's Stage-1 dedupe drives the population to 0 measured on all three fixtures, and the production-path invariant test that lands with it (every standing ReturnType read appears on a claimed edge, kdt80-evidence/kdt80.red-test.patch) IS the permanent orphans=0 gate. This ticket collapses to verifying that test is in the tree and green once fz-kdt.80 lands; close it then. If fz-kdt.80's authorization is refused, this reverts to building the measurement/gate standalone.",
+  "description": "CLOSED VERIFIED (2026-08-31): fz-kdt.80 (efbf21c78) drove the analysed-orphan population 10/0/10 -\u003e 0/0/0 and landed the permanent production-path gate: the edge-invariant test (every standing ReturnType read appears on a claimed CallSiteTargets edge) is in the tree and green -- any future orphan re-appearance turns it red. The re-mint debug_assert (rebuilt.activation == walked.activation, jobs/semantic.rs:~1194) is a second tripwire at the minting site. Nothing further to build.",
   "id": "fz-kdt.89",
   "labels": [],
   "parent": "fz-kdt",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Analysed orphans: activations demanded, analysed, ReturnType'd, but reachable from no edge -- unmeasured class, pure fixpoint work with no artifact",
   "type": "task",
-  "updated_at": "2026-08-31T02:56:33Z"
+  "updated_at": "2026-08-31T17:05:05Z"
 }
