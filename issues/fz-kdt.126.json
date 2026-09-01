@@ -6,7 +6,7 @@
   "blocks": [],
   "closed_at": "2026-09-01T22:50:37Z",
   "created": "2026-09-01T20:59:31Z",
-  "description": "Found by the fz-kdt.125 cold review (2026-09-01, probe q2join.fz in\nsession scratchpad rev125/). Second live P1 wrong answer at base, both\npaths (interp AND native):\n\n  P.run(f, x, t) forwards to twice(f, x, _t); called with\n  (inc,10,:a) (tri,10,:b) (inc,10,:b) (tri,10,:a)\n  means 12 90 12 90 -- base prints 12 90 90 12.\n\nThe :a/:b tag splits run/3 into two KEYS; within each key the two\nclosure literals remain unseparable, so each key's arm 0 takes\neverything. This CORRECTS fz-kdt.125's boundary table: 'an extra\ndiscriminable argument -\u003e CORRECT' holds only while each tag maps to\nexactly one literal. General statement (stronger than 125's): the\ndispatch plan tests the OBSERVABLE columns and then asserts the whole\nCORRELATED row; wherever the unobservable column is not functionally\ndetermined by the observable ones, the routing is a lie.\n\nSAME FIX as fz-kdt.125 (the closure-identity predicate axis separates\nthe literals directly); this ticket exists for its own three-path gate\n(q2join lands as a fixture in the 125 build) and its own verification\nat close. Blocked by fz-kdt.125.",
+  "description": "CLOSED with fz-kdt.125 (41906b046): the closure-identity axis separates\nthe literals directly, so the tag-split routing is correct\n(12 90 12 90 on all three paths; base printed 12 90 90 12). The\nq2join witness landed as fixtures2/behavior/closure_identity_tag_split\nwith a byte-matching Elixir oracle; red-verified (reverting the\nenvelope's fn-id retention turns it wrong on all doors). The general\nlaw this ticket recorded -- the plan tests observable columns then\nasserts the whole correlated row -- is discharged for callable columns\nby making identity observable; fz-kdt.127 owns the residue where even\nidentity cannot separate (same fn id, different captures).",
   "id": "fz-kdt.126",
   "labels": [],
   "parent": "fz-kdt",
@@ -20,5 +20,5 @@
   "status": "closed",
   "title": "P1: tag-split keys still misroute -- the plan tests observable columns then asserts the whole correlated row",
   "type": "task",
-  "updated_at": "2026-09-01T22:50:37Z"
+  "updated_at": "2026-09-01T22:51:00Z"
 }
