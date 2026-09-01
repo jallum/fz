@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-01T01:38:24Z",
-  "description": "Observation from the fz-kdt.101 build (2026-08-31): jobs/transport.rs:141 (direct_surfaces) and :2094 (rendered) sort by ShapeId::as_u32 -- shape-interner mint order, the same hazard class fz-kdt.101 fixed for Ty ids but on a different interner. NO MEASURED LEAK: 00420/00183/range_map are byte-identical FIFO vs LIFO with these untouched, so either the sorted sets are singletons in practice or shapes intern in schedule-stable order on these drives. Fixing it needs a canonical ShapeId comparator (recursive over ShapeDescr, the order.rs cmp_ty pattern on the shape arena) which does not exist. Sequence: only worth building if a leak is ever demonstrated (LIFO-style perturbation moving canon through these two sorts) or if a shape-heavy fixture lands; until then this is a recorded hazard, not work.",
+  "description": "\nObservation from the fz-kdt.101 build (2026-08-31): jobs/transport.rs:141 (direct_surfaces) and :2094 (rendered) sort by ShapeId::as_u32 -- shape-interner mint order, the same hazard class fz-kdt.101 fixed for Ty ids but on a different interner. NO MEASURED LEAK: 00420/00183/range_map are byte-identical FIFO vs LIFO with these untouched, so either the sorted sets are singletons in practice or shapes intern in schedule-stable order on these drives. Fixing it needs a canonical ShapeId comparator (recursive over ShapeDescr, the order.rs cmp_ty pattern on the shape arena) which does not exist. Sequence: only worth building if a leak is ever demonstrated (LIFO-style perturbation moving canon through these two sorts) or if a shape-heavy fixture lands; until then this is a recorded hazard, not work.\n\nWIDENED (fz-kdt.101 refuter, 2026-08-31) -- three more corners of the\nsame recorded-hazard class, all unproven leaks, all in packaging:\n1. Wrapper tie fallback crosses functions on MINT ORDER: the wrapper\n   canon key (callable|arity|return_form|boundaries) excludes the OWNER,\n   so two byte-identical wrappers owned by DIFFERENT functions would tie\n   and fall to FunctionId mint order (agenda-ordered reference/definition\n   jobs, world.rs:870-884/2802-2814 -- not strictly parse order). All\n   measured twins are same-function siblings; the executables half is\n   structurally safe (canon keys embed function labels).\n2. jobs/backend.rs:1319 callable_boundaries sorted by CallableId::as_u32.\n3. jobs/backend.rs:1324 boundary_ids sorted by BoundaryId::as_u32.\nFix shape if a leak is ever demonstrated: canonical comparators for the\nrespective interners (the order.rs pattern), or include the owner label\nin the wrapper canon key.",
   "id": "fz-kdt.112",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "ShapeId mint-order sorts in transport packaging: same hazard shape as fz-kdt.101, unproven leak, no canonical comparator exists",
   "type": "task",
-  "updated_at": "2026-09-01T01:38:24Z"
+  "updated_at": "2026-09-01T01:52:56Z"
 }
