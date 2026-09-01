@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T22:51:01Z",
+  "description": "Found by the fz-kdt.125 refutation (2026-09-01), PRE-EXISTING --\nbyte-identical at bd03d922e and 41906b046 (not the identity axis).\nTwo witnesses, probes in session scratchpad (refuter probes/):\n\n(N1) send two closures to self, receive both, P.run(f,10) each:\ninterp 12 90 (correct); JIT 11 30; AOT 11 30. Same class via\nspawn+send to a child. The mailbox-delivered closure is invoked ONCE\nwhere the source says twice (f.(f.(x)) collapses to f.(x)? -- the\n11/30 pattern = one application of each reducer).\n\n(N2) send one closure, receive, dbg(f.(10)): interp 11; JIT prints\nNOTHING exit 0; AOT prints NOTHING exit 0. Control send(1,7) works on\nboth doors -- it is the closure crossing the mailbox, not the mailbox.\n\nThree-path parity law violated twice in the closures-x-mailbox\nintersection. Triage together; suspect the message-transport path for\ncallable values (boxing seam at the send/receive boundary vs the\nreceive type widening past finite callable sets -- see the fz-kdt.125\nrefutation's receive.rs notes). Related family: fz-kdt.117 (closure\ncarriers), fz-kdt.99 (threaded-closure interp crash).",
+  "id": "fz-kdt.130",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "P1: closures through the mailbox break on JIT/AOT -- invoked once where source says twice; direct invoke prints nothing",
+  "type": "task",
+  "updated_at": "2026-09-01T22:51:01Z"
+}
