@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.125"
+  ],
   "blocks": [],
   "created": "2026-09-01T19:20:49Z",
   "description": "From the fz-kdt.107 census, RE-TARGETED by the fz-kdt.125 cold review\n(2026-09-01): 13 (re-measured; was 12) of the corpus's runtime-\nindistinguishable groups are the closure-identity shape --\ndiscriminating_inputs finds nothing, the plan emits ZERO tests, source\norder routes everything to arm 0, and arms 1..n are provably\nunreachable yet fully specialized, lowered, and shipped.\n\nRESOLUTION (settled by the 125 review): NOT 'never mint the arms' (the\ngeneralization cure was prototyped and refuted -- 7 fixture breaks, 16\nlib gates) but 'MAKE THE ARMS LIVE': fz-kdt.125's closure-identity\npredicate axis gives each of the 13 groups a real runtime question\n(13/13 separable by fn id alone, census-measured), so the arms become\nreachable and the specializations stop being dead. The earlier\ninventory-drop expectation is WITHDRAWN. The 'callable correlation is\nruntime-unobservable' policy statement in this ticket's earlier body\nand in callsite_dispatch.rs:146 is refuted by the runtime\nrepresentation (identity at closure_ptr+8 on all three paths) and its\ndeletion rides with the 125 build. AFTER 125 lands: re-run the census\nhelper; this ticket closes when the no-question population is zero (or\neach survivor is fz-kdt.127's same-fn-id shape, which the diagnostic\nbackstop owns). Blocked by fz-kdt.125.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "12 no-question dispatch groups: the resolution is arms that BECOME LIVE, not arms never minted",
   "type": "task",
-  "updated_at": "2026-09-01T20:59:52Z"
+  "updated_at": "2026-09-01T20:59:53Z"
 }

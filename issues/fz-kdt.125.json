@@ -3,6 +3,7 @@
   "blocked_by": [],
   "blocks": [
     "fz-kdt.107",
+    "fz-kdt.123",
     "fz-kdt.126",
     "fz-kdt.127"
   ],
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "P1: the runtime can see which lambda it is -- give the predicate a closure-identity axis (generalization-at-minting REFUTED by prototype)",
   "type": "bug",
-  "updated_at": "2026-09-01T20:59:52Z"
+  "updated_at": "2026-09-01T20:59:53Z"
 }
