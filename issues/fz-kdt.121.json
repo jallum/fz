@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T19:20:33Z",
+  "description": "Found by the fz-kdt.107 cold review's Q4 dig (2026-09-01), on 00277's\n180-vs-181 demand delta -- which is fz-kdt.106's transient class WITH A\nBLOCKER, not a third class:\n\n(1) LIFO mints Kernel.dbg/1[empty_list()] standing beside\nKernel.dbg/1[list(int)] -- ONE position, empty_list() \u003c= list(int),\nlooks squarely absorbable by the landed dominance rule and is NOT\nabsorbed. Probe whether the rule is guarded away (free-var-set\ninequality? lit-shape mismatch? the rows live in different FACTS --\ndominance runs per-activation-fact inside insert_row, and dbg[empty] vs\ndbg[list(int)] are different ACTIVATION KEYS, not rows of one key --\nwhich would mean this hole is BY DESIGN of the row-level rule and the\ncure lives at demand/key level instead). Diagnose before proposing.\n\n(2) FIFO's Range.reduce/5[...{:cont,empty_list()}...] pair: two rows\ndiffering only in the CAPTURED INNER CLOSURE (Enum.reverse/1#lambda vs\n/2#lambda); the standing {:cont, list(:tail)} row would dominate the\npayload but the closure position blocks dominance (lit_arrow_shapes\ncontainment fails across distinct fn_ids) -- the same\nshielding-by-callable-identity as fz-kdt.118's drop-rule blocker. If\n118's observable-surface judgement is proven sound, the analogous\nquestion arises here: should dominance compare closure positions\nthrough their runtime-observable erasure? Same soundness obligation,\nsame review.",
+  "id": "fz-kdt.121",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Two named holes in the kdt.106 absorption rule: a single-position dominated row survives, and closure positions shield domination",
+  "type": "task",
+  "updated_at": "2026-09-01T19:20:33Z"
+}
