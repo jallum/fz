@@ -13,9 +13,15 @@
   "id": "fz-kdt.125",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "BUILT (2026-09-01, one commit off bd03d922e). Spec items 1-5, 7 and 8 landed;\nitem 6 (the unrepresentable-plan BACKSTOP) did NOT, and the reason is a refuted\npremise rather than a deferral -- see the fz-kdt.127 comment: the corpus fallout\nof the diagnostic is six inseparable groups across five fixtures, not zero, so\nemitting it would refuse to compile 00231, 00277, 00281, opaque_fn_value_join\nand repr_seam_enum_count_after_reduce2. The census helper's \"13/13 separable by\nfn id\" counted closure names appearing in CAPTURES as identity; the true split\nis 7 separable, 6 not.\n\nCLASSIFICATION, whole corpus base vs head (`fz2 interp --dump backend`, 580\nfixtures, spans normalized): 8 dumps move. Six move by PLAN ONLY, +11/-2 lines\neach -- one dispatch gaining a callable-identity test. Two (enum_predicate_search,\nenum_reduce_halt_arm_order) gain ONE executable each and every key/demand/lane\nline they add is that executable's own; nothing pre-existing changed text. Both\nare arms fz-kdt.118 dropped as runtime-indistinguishable that are not\nindistinguishable any more. `backend_inventory_width_stays_pinned_on_the_target_\nfixtures` re-pinned 203 -\u003e 204 with that cause recorded.\n\nCorpus stdout and exit codes: 0 movers, base vs head, and 0 movers FIFO vs LIFO\nat head. FIFO-vs-LIFO backend dumps: 3 differing fixtures at base, 4 at head --\nfz-kdt.129 owns the fourth.",
+      "timestamp": "2026-09-01T21:46:11Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: the runtime can see which lambda it is -- give the predicate a closure-identity axis (generalization-at-minting REFUTED by prototype)",
   "type": "bug",
-  "updated_at": "2026-09-01T20:59:53Z"
+  "updated_at": "2026-09-01T21:46:11Z"
 }
