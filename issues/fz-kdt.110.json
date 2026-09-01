@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-01T16:56:25Z",
   "created": "2026-09-01T00:33:09Z",
   "description": "CLOSED with numbers (2026-09-01, post-fz-kdt.106 a010532e8).\n\nfz-kdt.105 moved the take_drop AnalyzeActivation ratchet UP 787 -\u003e 805\n(zero-change 8 -\u003e 13): with one interned id per carving, the narrower\ndrop_while accumulator took more rungs of define_return's ladder.\nQuestion: necessary ascent, or re-derivation?\n\nANSWER: re-derivation over ascent HISTORY. fz-kdt.106's dominance\nabsorption removed the superseded rows those evaluations re-walked:\ntake_drop AnalyzeActivation 805 -\u003e 742, BELOW the pre-105 787;\nzero-change 13 -\u003e 9; claims 219 -\u003e 211; totals 2300 -\u003e 2237 (all\nre-pinned in-story with per-column causes, exact-equality ratchet).\n\nCARRIED RESIDUE: zero-change 9 vs pre-105's 8 -- one evaluation above\nthe pre-105 floor, unisolated, recorded openly per the fz-kdt.84\nprecedent (its 00420 +1 was carried the same way). The rise this ticket\nwatched is repaid; a +1 residue does not re-open it.",
   "id": "fz-kdt.110",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "AnalyzeActivation rise on take_drop (787-\u003e805 at kdt.105) REPAID by kdt.106 (742): verify the residual question is closed",
   "type": "task",
-  "updated_at": "2026-09-01T16:56:24Z"
+  "updated_at": "2026-09-01T16:56:25Z"
 }
