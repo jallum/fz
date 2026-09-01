@@ -1105,3 +1105,36 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
     let _ = remove_file(&telemetry_path);
 }
+
+/// A stalled compile's error message is the same text on every run (fz-kdt.109).
+///
+/// A program that cannot settle reports its standing waits, and that list used
+/// to come out of a `HashMap` in iteration order — a per-process `RandomState`
+/// artifact, so one binary printed a different message run to run (five runs of
+/// this fixture produced four distinct stderr renderings, and 90 of the 577
+/// fixtures stall). That makes the message unreadable as a comparand: a sweep
+/// cannot tell a real diagnostic movement from reshuffled text. Separate
+/// processes are the honest probe — each gets its own hash seed.
+#[test]
+fn fz2_stall_diagnostic_is_byte_identical_across_runs() {
+    let fixture = OsStr::new("fixtures2/00050_empty.fz");
+    let args = [OsStr::new("interp"), fixture];
+    let renderings = (0..3)
+        .map(|_| {
+            let output = run_fz2_without_color(&args);
+            String::from_utf8(output.stderr).expect("fz2 stderr is utf-8")
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        renderings[0].contains("no ready producer; unresolved="),
+        "the fixture must still reach the stall diagnostic for this pin to mean anything, got: {}",
+        renderings[0]
+    );
+    for (run, rendering) in renderings.iter().enumerate().skip(1) {
+        assert_eq!(
+            rendering, &renderings[0],
+            "run {run} rendered the same stall differently than run 0"
+        );
+    }
+}

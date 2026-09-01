@@ -2362,3 +2362,50 @@ fn compiler2_scheduler_bottom_claim_retraction_is_not_a_shift() {
     );
     assert_eq!(scheduler.facts().revision(&"cum_ret"), None, "the claim is gone",);
 }
+
+/// Two schedulers that arrive at the same set of standing waits by opposite
+/// histories must describe that set identically (fz-kdt.109).
+///
+/// `unresolved()` is what a stalled compile's error message renders, so its
+/// order is user-facing text. It used to be `HashMap` order, which is a
+/// per-process `RandomState` artifact: one binary printed a different message
+/// run to run for any program that could not settle. Two schedulers in one
+/// process stand in for two runs — their waiter maps carry different seeds and
+/// different insertion orders, and the wait SET they hold is the same, so any
+/// difference in the rendering is order leaking out.
+#[test]
+fn compiler2_unresolved_renders_the_same_whatever_order_the_waits_arrived_in() {
+    const FACTS: [&str; 12] = [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima",
+    ];
+
+    let mut ascending = TestScheduler::new();
+    for (job, fact) in FACTS.iter().enumerate() {
+        complete(
+            &mut ascending,
+            job as u32,
+            HashSet::new(),
+            HashSet::from([current(fact), settled(fact)]),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+
+    let mut descending = TestScheduler::new();
+    for (job, fact) in FACTS.iter().enumerate().rev() {
+        complete(
+            &mut descending,
+            job as u32,
+            HashSet::new(),
+            HashSet::from([current(fact), settled(fact)]),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+
+    assert_eq!(
+        format!("{:?}", ascending.unresolved()),
+        format!("{:?}", descending.unresolved()),
+        "the same standing waits should render the same however they were recorded"
+    );
+}

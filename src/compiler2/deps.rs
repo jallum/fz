@@ -249,13 +249,51 @@ where
             .collect()
     }
 
-    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
-        self.waiters
+    /// Every standing wait, ordered by data (fz-kdt.109).
+    ///
+    /// The `waiters` map is the one unordered thing here: each fact's job list
+    /// is an `OrderedSet`, and the facts themselves are minted deterministically,
+    /// so the only run-to-run variation in this list was `HashMap` iteration
+    /// order — a per-process `RandomState` artifact. That order reached a
+    /// user-facing error message (`no_ready_producer` renders this vec), so one
+    /// binary printed different text run to run.
+    ///
+    /// Ordering once here is the whole cure: every caller either presents this
+    /// list or pokes the producers it names, and the two pokers were each
+    /// pinning the order themselves with this same key, which they no longer
+    /// need to. The key is the fact's `Debug` rendering, readiness variant as
+    /// tie-break so two uses of one fact cannot fall back on map order. `Debug`
+    /// over a derived `Ord` bound is a deliberate choice, for two reasons: it
+    /// is byte-for-byte the key both folded callers already used, which is what
+    /// makes the fold provably order-identical, and a derived `Ord` would gain
+    /// no canonicality — `FactKey` variants embedding `ActivationKey.arrow`
+    /// order by the raw interned `Ty` id either way (the fz-k22.21 class;
+    /// within-run use is why that is legal here, see fact-engine.md). The
+    /// dedup a poking caller runs downstream relies on this rendering being
+    /// injective over live facts: `FactKey` is derived `Debug` to primitive
+    /// fields throughout, and if that ever broke, `Vec::dedup` compares by
+    /// `PartialEq` so the worst case is a duplicated poke, never a merged or
+    /// dropped fact.
+    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>>
+    where
+        F: std::fmt::Debug,
+    {
+        let mut waits = self
+            .waiters
             .iter()
             .map(|(fact, jobs)| UnresolvedWait {
                 fact: fact.clone(),
                 jobs: jobs.iter().cloned().collect(),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        waits.sort_by_cached_key(|wait| {
+            let readiness = match wait.fact {
+                FactUse::Current(_) => 0_u8,
+                FactUse::Settled(_) => 1,
+                FactUse::SettledPresence(_) => 2,
+            };
+            (format!("{:?}", wait.fact.fact()), readiness)
+        });
+        waits
     }
 }

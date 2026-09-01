@@ -475,6 +475,22 @@ ends only when nothing can be demanded: `Resolved` (no waiters),
 `Unresolved { waits }` (blocked facts with no mapped producer), or
 `Fatal { job }`.
 
+The standing waits themselves come out of a `HashMap`, so
+`DependencyIndex::unresolved` orders them before handing them over: by the
+fact's `Debug` rendering, with the readiness variant as tie-break. That is the
+one place the wait list is ordered, and both things that read it inherit it —
+the stall expansion pokes producers in that order, and the `Unresolved` message
+a stalled compile prints renders in it, so one binary prints one text for one
+program (fz-kdt.109). This key is the pattern fz-k22.21 removed from the fold
+paths above, and the difference is SCOPE, not taste: seven `FactKey` variants
+embed `ActivationKey.arrow`, a raw interned `Ty` id, so this rendering is
+mint-order-dependent — legal here only because its use is within-run (one
+binary, one program, ids already minted; the ticket's complaint was one binary
+printing many texts), and inherited unchanged from the two per-caller sorts it
+replaced, which used the identical key on the identical facts. Anything
+CROSS-run still goes through `StableSortKey`, per fz-k22.21; ordering the poke
+path by a structural key instead is open as fz-kdt.114.
+
 **Errors are not facts.** A job returning `FatalError` aborts the whole drive;
 the diagnostic goes out through telemetry. Closure never masks an error, and
 there is no diagnostics fact family to reconcile.

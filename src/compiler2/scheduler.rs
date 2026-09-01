@@ -328,7 +328,11 @@ where
         self.deps.waited_settled_facts()
     }
 
-    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
+    /// Every standing wait, ordered by data — see `DependencyIndex::unresolved`.
+    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>>
+    where
+        F: Debug,
+    {
         self.deps.unresolved()
     }
 
