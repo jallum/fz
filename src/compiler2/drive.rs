@@ -29,7 +29,30 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
         let completion = self.world.complete_job(job, effects);
         self.emit_job_completion(&completion);
+        self.emit_activation_input_budget_collapses();
         completion
+    }
+
+    /// Report the correlated-input row sets this completion widened to their
+    /// column-wise join because they crossed `ACTIVATION_INPUT_ROW_BUDGET`
+    /// (fz-0xp).
+    ///
+    /// A collapse throws away the correlation its publishers took the trouble
+    /// to keep, so one wide activation key stands where several narrow ones
+    /// would have; it is the compiler's own admission that it is specializing
+    /// on accumulated history rather than on the program. Since fz-kdt.106
+    /// absorbed the ascent ladders the corpus produces none of these, which is
+    /// what makes a single event worth reading.
+    fn emit_activation_input_budget_collapses(&mut self) {
+        let collapses = self.world.take_activation_input_collapses();
+        if collapses == 0 {
+            return;
+        }
+        self.telemetry.dispatch(
+            &["fz", "compiler2", "activation_inputs", "budget_collapsed"],
+            &crate::measurements! { collapses: collapses },
+            &crate::telemetry::Metadata::new(),
+        );
     }
 
     fn emit_job_completion(&self, completion: &super::world::JobCompletion) {

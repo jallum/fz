@@ -35,10 +35,35 @@ ActivationInputs(key) # correlated caller evidence (cumulative; per-publisher
 
 Each publication is one `ActivationInputRow`: columns that arrived together
 from one call analysis and may only be read together. Rows join by set
-insertion with whole-row equivalence dedup — never by column-wise union, which
-would invent Cartesian input combinations (fz-9i4.7.10.2). Past
-`ACTIVATION_INPUT_ROW_BUDGET` rows the set widens to its single column-wise
-joined row, so termination stays a theorem.
+insertion — never by column-wise union, which would invent Cartesian input
+combinations (fz-9i4.7.10.2). Two compressions run at the insertion point
+(`ActivationInputAlternatives::insert_row`), and they are different
+judgements:
+
+- whole-row EQUIVALENCE (pointwise `Types::is_equivalent`): the incoming row
+  says exactly what a standing row says;
+- whole-row DOMINANCE (`Types::row_dominates`, fz-kdt.106): a dominated
+  incoming row is not inserted, and standing rows dominated by the incoming
+  one leave with its landing.
+
+Dominance exists because a caller's ascent is a CHAIN, not a set of
+alternatives: `conclude_preserving_frontier` joins every superseded conclusion
+in and nothing takes it out, so a widening column deposits one row per rung.
+`Types::row_column_dominates` is deliberately narrower than `is_subtype` — it
+also requires equal free-var sets and containment of the closure-literal arrow
+SHAPES, because `types::emptiness::func_clause_empty` decides a closure-literal
+arrow from `fn_id` and captures alone and would otherwise let a template row
+absorb its own ground instances. The relation's own doc records that its
+termination argument is empirical, not proven.
+
+Past `ACTIVATION_INPUT_ROW_BUDGET` rows the set still widens to its single
+column-wise joined row, so termination stays a theorem. A fire now means
+genuine correlation width, and `ExecutionContext::complete_job` reports each
+one as `fz.compiler2.activation_inputs.budget_collapsed` carrying the count.
+`correlated_input_rows_never_reach_the_widening_budget_on_the_lenses` GATES
+four fixtures at zero collapses; a sweep of all 577 `fixtures2` fixtures at
+fz-kdt.106 also found zero, but that number is a point-in-time measurement, not
+something the suite holds.
 
 `world.activation_input_alternatives(key)` reads the rows once the fact is
 live; `world.activation_inputs_joined(key)` reads the column-wise joined

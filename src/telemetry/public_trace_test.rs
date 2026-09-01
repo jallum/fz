@@ -1180,6 +1180,41 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 /// `fz_f98_range_map_converges` is untouched on every column -- it has no
 /// callsite reached down two brand-distinct rows, which is why it was the one
 /// fixture with zero lost edge keys before the fix.
+/// fz-kdt.106 moved every column of the two moving rows DOWN, and left
+/// `fz_f98_range_map_converges` untouched on all of them. A correlated-input
+/// row set now absorbs the rows it dominates, so one caller's ascent ladder
+/// deposits ONE row instead of one per superseded conclusion:
+///
+/// ```text
+///                              Activation   CallSite*      Analyze   total
+///   fz_f98_range_map_converges  71 ->  71   73 ->  73    226 -> 226   flat
+///   enum_predicate_search      174 -> 173  215 -> 212    552 -> 539  1363 -> 1350
+///   enum_take_drop_split       219 -> 211  378 -> 369    805 -> 742  2300 -> 2237
+/// ```
+///
+/// The `Activation` claims that stopped being published are keys minted from
+/// a row set that had crossed `ACTIVATION_INPUT_ROW_BUDGET` and widened to its
+/// column-wise join -- one wide key standing where the callers' correlation
+/// named narrow ones. `enum_predicate_search` loses exactly one, and its
+/// callsite lifecycles fall by the matching three (245 - 248 first appearances
+/// against 33 unchanged retractions): a widened key is reached from more than
+/// one callsite. `enum_take_drop_split` loses eight, and one retraction with
+/// them (12 -> 11) -- a callsite whose target evidence used to withdraw for a
+/// round while the wide key was in flight.
+///
+/// `analyze_zero_change` falls on both moving rows (6 -> 1, 13 -> 9) against
+/// denominators that fall too, which is a shorter ascent and not less
+/// coverage: an analysis re-run that used to re-derive the answer it already
+/// had was reading a row set that had just re-collapsed. Both shift columns
+/// are untouched on all three fixtures, and `report.uncaused` stays empty --
+/// the drop comes from doing less work, not from losing the wakes that cause
+/// it.
+///
+/// The emitted inventory moves the other way on `enum_take_drop_split`
+/// (207 -> 215 executables): fewer analysed keys, more emitted ones, because
+/// the keys that survive carry the callers' correlation instead of a widened
+/// join. `backend_inventory_width_stays_pinned_on_the_target_fixtures` owns
+/// that number and its classification.
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
@@ -1192,8 +1227,14 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
-        activations: lifecycle(174, 174, 0),
-        callsites: lifecycle(215, 248, 33),
+        // fz-kdt.106: 174 -> 173. One key minted from a budget-collapsed row
+        // set -- the wide `int | :false | :ok | :true` join -- is never minted,
+        // because the row set no longer collapses.
+        activations: lifecycle(173, 173, 0),
+        // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
+        // retractions unchanged): the one vanished activation was named from
+        // three callsites.
+        callsites: lifecycle(212, 245, 33),
         shifts: shifts(1, 2),
         // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
         // makes one more re-derived union reproduce its previous id instead
@@ -1201,7 +1242,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // to see a "changed" input no longer runs at all. The fixture's
         // canonical backend dump is byte-identical either way -- this is
         // work removed, not an answer moved.
-        analyze_evaluations: 552,
+        // fz-kdt.106: 552 -> 539. Thirteen analysis runs were re-derivations
+        // driven by a row set that kept moving as its ladder accumulated.
+        analyze_evaluations: 539,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -1210,19 +1253,26 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.80: 5 -> 6, against a denominator that fell 623 -> 553.
         // See the header: one formula's ascent shortened 18 -> 9 runs and
         // its last run reproduces the answer.
-        analyze_zero_change: 6,
+        // fz-kdt.106: 6 -> 1, against a denominator that fell 552 -> 539.
+        analyze_zero_change: 1,
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
-        // denominator.
-        total_evaluations: 1363,
+        // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
+        total_evaluations: 1350,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
-        activations: lifecycle(219, 219, 0),
+        // fz-kdt.106: 219 -> 211. Eight keys minted from a budget-collapsed
+        // row set are never minted, because the row sets no longer collapse.
+        activations: lifecycle(211, 211, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
         // is no longer a destination anywhere.
-        callsites: lifecycle(378, 390, 12),
+        // fz-kdt.106: 378 -> 369 distinct, 390 -> 380 first appearances, and
+        // one retraction with them (12 -> 11): the eight vanished activations
+        // take their edges, and the callsite whose evidence withdrew for a
+        // round while a widened key was in flight no longer does.
+        callsites: lifecycle(369, 380, 11),
         shifts: shifts(6, 10),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
@@ -1233,9 +1283,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fall 211 -> 207 in the same motion. Not the ladder running away: the
         // run still settles, the artifact is behaviourally identical, and the
         // rise is bounded (+18 on 219 activations). Traced further in fz-kdt.110.
-        analyze_evaluations: 805,
-        analyze_zero_change: 13,
-        total_evaluations: 2300,
+        // fz-kdt.106: 805 -> 742, zero-change 13 -> 9, total 2300 -> 2237. The
+        // rise fz-kdt.105 booked is repaid: an accumulating row set re-ran its
+        // activation once per rung, and the rungs are gone.
+        analyze_evaluations: 742,
+        analyze_zero_change: 9,
+        total_evaluations: 2237,
     },
 ];
 

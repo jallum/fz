@@ -320,6 +320,32 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// narrow half of a `{:cont, _}` / `{:cont | :halt, _}` pair the runtime reads
 /// as the same 2-tuple). `fz_f98_range_map_converges` has no such pair and
 /// holds at 59.
+///
+/// Re-pinned in BOTH directions by fz-kdt.106, which made a correlated-input
+/// row set absorb the rows it dominates instead of accumulating one per
+/// superseded conclusion. Same door as every number above: this test's own
+/// `drive_root_to_dump_stage(root, DumpStage::Backend)`.
+///
+/// `enum_predicate_search` 217 -> 203: the ladder is gone, so its row set no
+/// longer crosses `ACTIVATION_INPUT_ROW_BUDGET`, no longer widens to one
+/// column-wise joined row, and the fourteen specializations keyed on the
+/// resulting `int | :false | :ok | :true` are never minted. Those fourteen are
+/// exactly the FIFO-only surplus fz-kdt.105 isolated, so this number is now
+/// what the LIFO schedule already reached: the count no longer depends on the
+/// agenda.
+///
+/// `enum_take_drop_split` 207 -> 215, a RISE, and it is the same cause read
+/// from the other side. Thirty budget collapses on this fixture were widening
+/// row sets into shared wide keys; without them the callers' correlation
+/// survives and the specializations it names stay distinct, so precision
+/// REPLACES collapse-driven sharing and the inventory grows. The
+/// classification gate (fz-zih) admits a rise exactly when it is paired with a
+/// reduction in budget collapses on that fixture; here that pairing is 30 -> 0,
+/// asserted by
+/// `correlated_input_rows_never_reach_the_widening_budget_on_the_lenses`, and
+/// the fixture's stdout is byte-identical through interp, JIT and AOT.
+/// `fz_f98_range_map_converges` collapses at neither base nor head and holds
+/// at 59.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -331,12 +357,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            217,
+            203,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
             include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
-            207,
+            215,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);
@@ -462,6 +488,98 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             "{name}: {} sibling pair(s) sit in interning order rather than canonical order, so \
              `entry x<N>` numbering follows the schedule: {descents:?}",
             descents.len(),
+        );
+    }
+}
+
+/// The four lenses the fz-kdt.106 review measured schedule confluence on.
+const LENSES: [(&str, &str); 4] = [
+    (
+        "fixtures2/behavior/enum_predicate_search.fz",
+        include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+    ),
+    (
+        "fixtures2/00420_enum_take_drop_split.fz",
+        include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
+    ),
+    (
+        "fixtures2/00183_enum_take_list_range.fz",
+        include_str!("../../fixtures2/00183_enum_take_list_range.fz"),
+    ),
+    (
+        "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
+    ),
+];
+
+/// fz-kdt.106: the schedule may not decide what gets specialized.
+///
+/// `ACTIVATION_INPUT_ROW_BUDGET` is the ONE place where a correlated-input row
+/// set stops being a function of what the callers published: past the budget
+/// the antichain widens to its column-wise join, and which side of the cliff a
+/// row set lands on is a function of how many rungs of ascent history happened
+/// to have arrived — which is the agenda's business, not the program's. On
+/// `enum_predicate_search` at base that is exactly what happened: FIFO
+/// accumulated ten rows (seven of them one caller's ladder) and collapsed to a
+/// single wide row, minting fourteen specializations keyed on
+/// `int | :false | :ok | :true` that LIFO's lucky eight-row set never mints.
+///
+/// With the ladders absorbed the budget stops firing on real programs, and a
+/// row set that never collapses is a function of its publishers alone. Zero
+/// collapses is therefore the schedule-confluence claim, asserted on the
+/// production path through the event the compile emits.
+///
+/// Each lens is driven to its NATIVE program, the door the rest of this gate
+/// drives. The earlier BACKEND door reports identically — measured at base,
+/// `enum_predicate_search` 28 and `00420_enum_take_drop_split` 30 either way —
+/// because the collapses all happen in the analysis both doors share; the
+/// choice is a matter of matching the gate, not of coverage. RED at base on
+/// two of the four at those counts. The byte-for-byte half is verified by
+/// hand, per the fz-kdt.93/.104 precedent: change `Agenda::pop` (src/compiler2/agenda.rs) to
+/// `self.queue.pop_back()`, rebuild, and `fz2 interp <fixture> --dump
+/// backend=<path>` must produce the same bytes as the FIFO build on all four.
+///
+/// The budget itself STAYS — it is what makes termination a theorem rather
+/// than a property of lucky inputs. A collapse after this change would be
+/// genuine correlation width, and worth the ticket it would earn.
+#[test]
+fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
+    for (name, text) in LENSES {
+        let telemetry = ConfiguredTelemetry::new();
+        let capture = crate::telemetry::Capture::new();
+        capture.install(&telemetry, &["fz", "compiler2", "activation_inputs"]);
+        let mut compiler = Compiler2::new(telemetry);
+        compiler.submit_code(CodeSubmission {
+            name: Some(name.to_string()),
+            text: text.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert!(
+            compiler.demand(super::Job::LowerNativeProgram(root)),
+            "{name} should explicitly demand the native program",
+        );
+        assert!(
+            matches!(compiler.drive(), super::DriveOutcome::Resolved),
+            "{name} should drive to a settled native program",
+        );
+
+        let collapses = capture
+            .find(&["fz", "compiler2", "activation_inputs", "budget_collapsed"])
+            .iter()
+            .map(|event| match event.measurements.get("collapses") {
+                Some(crate::telemetry::Value::U64(collapses)) => *collapses,
+                other => panic!("{name}: a budget-collapse event must carry a count: {other:?}"),
+            })
+            .sum::<u64>();
+        assert_eq!(
+            collapses, 0,
+            "{name}: a correlated-input row set widened past its budget, so what the compile \
+             specializes is a function of the agenda and not of the program",
         );
     }
 }

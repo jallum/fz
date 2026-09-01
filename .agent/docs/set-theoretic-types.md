@@ -17,6 +17,26 @@ A, B disjoint <=>  ⟦A⟧ ∩ ⟦B⟧ = ∅
 Everything reduces to deciding emptiness: `is_subtype(a, b)` asks whether
 `(a and not b)` is empty; `is_disjoint(a, b)` asks whether `(a and b)` is empty.
 
+`is_subtype` is NOT a safe "covers everything the other says" test for a
+closure-literal column. `emptiness.rs::func_clause_empty` decides `P \ N` for a
+negative arrow carrying a `ClosureLit` from `fn_id` and `captures` alone — it
+never reads `args` or `ret` — so two arrows over ONE lambda are mutually
+subtypes however far apart their signatures are. That is also why a template
+arrow and its ground instance come out equivalent: it is `func_clause_empty`'s
+capture-subset test on the shared literal that erases the difference, not a
+general absorbing property of free vars. (Vars are nominal on their own axis:
+`is_subtype(int, α)` and `is_subtype(α, int)` are both false.) The blind spot
+is structural — a lambda inside a tuple, a list, a resource payload, a map
+field or another arrow's signature is reached the same way.
+
+Callers that need containment rather than the lattice order ask
+`Types::row_column_dominates`, which adds equal `free_var_ids` and containment
+of `lit_arrow_shapes` — the `(fn_id, captures, args, ret)` evidence subtyping
+discards, collected by the same structural walk `free_var_ids` uses — on top of
+`is_subtype`. It is memoized under its own NON-symmetric
+`ComparisonKey::RowColumnDominates`; the symmetric-key helper is for relations
+whose two positions are interchangeable, and this one's are not.
+
 A type is a union across independent **axes**, one per runtime kind, held in
 disjunctive normal form (DNF). A `Descr` is that union:
 

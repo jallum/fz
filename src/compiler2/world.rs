@@ -2524,6 +2524,19 @@ impl World {
         std::mem::take(&mut self.quiescence_steps)
     }
 
+    /// Take the correlated-input row sets widened past
+    /// `ACTIVATION_INPUT_ROW_BUDGET` since the last drain (fz-0xp).
+    ///
+    /// `World` owns the mutation and the execution context observes it — the
+    /// same producer/drain split `take_reported_warnings` and
+    /// `take_quiescence_steps` use, and what lets a fact produced deep inside a
+    /// monotone join be reported from a `World` that holds no telemetry handle.
+    /// The count itself is kept on `Types` because that is the only handle the
+    /// join has; see `Types::activation_input_collapses`.
+    pub(crate) fn take_activation_input_collapses(&mut self) -> u64 {
+        self.types.take_activation_input_collapses()
+    }
+
     fn take_reported_warnings(&mut self) -> Vec<Diagnostic> {
         self.warning_diagnostics.sort_by(|left, right| {
             let left_span = left.primary.span;

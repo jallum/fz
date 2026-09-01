@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;
+use crate::fz_ir::FnId;
 use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
 
 use super::keying::DispatchDemand;
@@ -84,6 +85,24 @@ pub struct Types {
     /// `FnId` is a mint-order index, so it cannot decide canonical clause order
     /// (`order`); the owner names each callable as it mints the id.
     callable_labels: order::CallableLabels,
+    /// Correlated-input row sets widened to their column-wise join since the
+    /// last drain, because they crossed `ACTIVATION_INPUT_ROW_BUDGET`
+    /// (fz-0xp). `World::take_activation_input_collapses` is the drain and
+    /// `ExecutionContext::complete_job` the reporter.
+    ///
+    /// The tally lives on the type store because that is the only handle the
+    /// collapse site has: it fires inside
+    /// `ActivationInputAlternatives`' monotone join, whose
+    /// `JoinContribution::Ctx` is `Types` — an associated TYPE that no
+    /// borrowed sink can ride without a GAT on every implementor — and
+    /// measurement says the join is where every collapse in the corpus
+    /// actually happens (`push_row`, the one path that could return a count to
+    /// its caller, produced none of the 28/30 the lenses recorded before
+    /// fz-kdt.106). Owning it here makes the ledger per-`World` by
+    /// construction, so an undrained collapse dies with the `World` that
+    /// produced it instead of leaking into the next reader. Threading a
+    /// first-class sink through the join stays fz-0xp's.
+    activation_input_collapses: u64,
 }
 
 #[derive(Default)]
@@ -105,6 +124,9 @@ enum ComparisonKey {
     Subtype(Ty, Ty),
     Disjoint(Ty, Ty),
     Equivalent(Ty, Ty),
+    /// `Types::row_column_dominates`. NOT symmetric: the two positions mean
+    /// different things, so this key is never built through `symmetric_key`.
+    RowColumnDominates(Ty, Ty),
 }
 
 #[cfg(test)]
@@ -242,6 +264,19 @@ fn debug_assert_no_exact_duplicates<T: PartialEq>(clauses: &[Conj<T>], axis: &st
 impl Types {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record one correlated-input row set widened past
+    /// `ACTIVATION_INPUT_ROW_BUDGET`. See `activation_input_collapses`.
+    pub(crate) fn note_activation_input_collapse(&mut self) {
+        self.activation_input_collapses += 1;
+    }
+
+    /// Take the collapses recorded since the last drain. Ask
+    /// [`World::take_activation_input_collapses`] — the drain is the `World`'s
+    /// to offer, and this is where the count is kept.
+    pub(crate) fn take_activation_input_collapses(&mut self) -> u64 {
+        std::mem::take(&mut self.activation_input_collapses)
     }
 
     pub fn repeat(&mut self, ty: Ty, n: usize) -> Vec<Ty> {
@@ -1352,6 +1387,130 @@ impl Types {
         has_vars(self.ctx(), self.descr(a))
     }
 
+    /// Every free type-var id reachable from `a`, structural children
+    /// included. The identity of the vars, not merely their presence: two
+    /// types that mention DIFFERENT vars describe different families however
+    /// their denotations compare.
+    pub fn free_var_ids(&self, a: &Ty) -> BTreeSet<TypeVarId> {
+        let mut ids = BTreeSet::new();
+        collect_free_vars(self.ctx(), self.descr(a), &mut ids);
+        ids
+    }
+
+    /// Every closure-literal arrow reachable from `a`, as
+    /// `(fn_id, captures, args, ret)`, sorted and deduped.
+    ///
+    /// `args` and `ret` are in here because subtyping leaves them out:
+    /// `emptiness::func_clause_empty` decides a negative closure-literal
+    /// arrow's `P \ N` from `fn_id` and `captures` alone. This is the
+    /// signature evidence that judgement discards.
+    ///
+    /// The walk is STRUCTURAL, mirroring [`free_var_ids`](Self::free_var_ids):
+    /// the same blind spot reaches a lambda wrapped in a tuple, a list, a
+    /// resource payload, a map field or another arrow's signature exactly as it
+    /// reaches a bare one, so the evidence has to be collected from the same
+    /// places. A top-level-only walk would let `{:tag, fn}` rows that differ
+    /// only in the nested arrow's signature absorb each other.
+    pub fn lit_arrow_shapes(&self, a: &Ty) -> Vec<(FnId, Vec<Ty>, Vec<Ty>, Ty)> {
+        let mut shapes = Vec::new();
+        let mut seen = HashSet::new();
+        collect_lit_arrow_shapes(self.ctx(), a, &mut seen, &mut shapes);
+        shapes.sort();
+        shapes.dedup();
+        shapes
+    }
+
+    /// Does `dom` cover everything `sub` says, at one column of a correlated
+    /// input row? (fz-kdt.106)
+    ///
+    /// A row set is an ANTICHAIN of alternatives, but a caller's ascent
+    /// deposits a CHAIN: `conclude_preserving_frontier` joins every superseded
+    /// conclusion's row in and nothing takes it out again, so the row set
+    /// accumulates the history of one widening column. A covered rung carries
+    /// no evidence its dominator does not, and eight of them cross
+    /// `ACTIVATION_INPUT_ROW_BUDGET` and collapse the whole set columnwise --
+    /// which is how the schedule ends up deciding what gets specialized.
+    ///
+    /// The relation is deliberately NARROWER than `is_subtype`, on two counts
+    /// that are each load-bearing:
+    ///
+    /// - **Equal free-var sets.** A free var is absorbing under subtyping, so
+    ///   a value-TEMPLATE column would swallow its own ground instances. Those
+    ///   are two different activations of one body -- the erased shared
+    ///   specialization and its representable sibling -- and dropping the
+    ///   template misroutes every element family that was keyed through it.
+    /// - **Closure-literal shape containment.** `func_clause_empty` (see
+    ///   `emptiness.rs`) decides `P \ N` for a negative arrow carrying a
+    ///   `ClosureLit` from `fn_id` and `captures` alone -- `args` and `ret`
+    ///   are never read -- so subtyping calls a ground reducer arrow and a
+    ///   var-carrying template arrow over ONE lambda equivalent. Requiring
+    ///   `sub`'s literal shapes to appear verbatim among `dom`'s puts the
+    ///   signature back into the judgement. Containment, not equality: a
+    ///   ladder's closure column grows by ADDING literals, and those rungs
+    ///   must still absorb.
+    ///
+    /// WHAT IS BY CONSTRUCTION, AND WHAT IS ONLY MEASURED. Two properties
+    /// matter to the antichain that uses this, and they have different
+    /// standing:
+    ///
+    /// - TRANSITIVITY is by construction. The relation is a conjunction of
+    ///   three transitive relations (set equality on free-var ids, containment
+    ///   on literal shapes, `is_subtype`) plus a reflexive `sub == dom`
+    ///   short-circuit, and a conjunction of transitive relations is
+    ///   transitive.
+    /// - ANTISYMMETRY -- and so the confluence of absorption, which is what
+    ///   makes the surviving set independent of insertion order -- is
+    ///   EMPIRICAL. Nothing here forbids a mutually-dominating pair of
+    ///   DISTINCT types: `is_subtype` is not antisymmetric on closure-literal
+    ///   columns, and equal free-var sets plus equal shape sets do not force
+    ///   equal types. What is known is that the corpus contains no such pair
+    ///   (measured count 0 over 577 fixtures), which is a fact about today's
+    ///   inputs, not a theorem.
+    ///
+    /// TERMINATION has the same empirical standing. Absorption is inflationary
+    /// in denotation -- a dominated row adds nothing to the union, and a
+    /// dominator that lands only grows it -- which is the fixpoint argument,
+    /// but that argument leans on the relation implying denotational
+    /// containment, and `is_subtype` is not denotational on closure-literal
+    /// columns. Every fixture in the corpus settles;
+    /// `ACTIVATION_INPUT_ROW_BUDGET` remains the backstop that makes
+    /// termination a theorem regardless.
+    ///
+    /// Memoized on its own NON-symmetric key: `sub` and `dom` are not
+    /// interchangeable, so this may never route through `symmetric_key`.
+    pub fn row_column_dominates(&self, sub: &Ty, dom: &Ty) -> bool {
+        if sub == dom {
+            return true;
+        }
+        self.cached_comparison(ComparisonKey::RowColumnDominates(*sub, *dom), |types| {
+            if types.free_var_ids(sub) != types.free_var_ids(dom) {
+                return false;
+            }
+            let dom_shapes = types.lit_arrow_shapes(dom);
+            if !types
+                .lit_arrow_shapes(sub)
+                .iter()
+                .all(|shape| dom_shapes.contains(shape))
+            {
+                return false;
+            }
+            types.is_subtype(sub, dom)
+        })
+    }
+
+    /// The row-level lift of [`Types::row_column_dominates`]: same arity, and
+    /// every column of `sub` dominated by the column beside it in `dom`.
+    ///
+    /// Not memoized -- the columns underneath it are, and a row pair is a
+    /// larger, sparser key than the column pairs it decomposes into.
+    pub fn row_dominates(&self, sub: &[Ty], dom: &[Ty]) -> bool {
+        sub.len() == dom.len()
+            && sub
+                .iter()
+                .zip(dom)
+                .all(|(sub, dom)| self.row_column_dominates(sub, dom))
+    }
+
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
         let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
         self.intern(descr)
@@ -2187,6 +2346,111 @@ fn specialize_callable_clause(
         args: clause.args.iter().map(|arg| types.instantiate(arg, &sigma)).collect(),
         ret: types.instantiate(&clause.ret, &sigma),
         closure: clause.closure.clone(),
+    }
+}
+
+/// Collect every free type-var id `d` mentions, mirroring `has_vars`'
+/// recursion: the same axes, the same structural children, plus a closure
+/// literal's captures, which `has_vars` reaches through the arrow's own args.
+fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
+    ids.extend(d.vars.values.iter().copied());
+    for c in &d.tuples {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for t in &sig.elems {
+                collect_free_vars(cx, cx.descr(t), ids);
+            }
+        }
+    }
+    for c in &d.lists {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            if let Some(t) = sig.elem {
+                collect_free_vars(cx, cx.descr(&t), ids);
+            }
+        }
+    }
+    for c in &d.resources {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            collect_free_vars(cx, cx.descr(&sig.payload), ids);
+        }
+    }
+    for c in &d.funcs {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for t in &sig.args {
+                collect_free_vars(cx, cx.descr(t), ids);
+            }
+            collect_free_vars(cx, cx.descr(&sig.ret), ids);
+            if let Some(lit) = sig.lit.as_ref() {
+                for t in &lit.captures {
+                    collect_free_vars(cx, cx.descr(t), ids);
+                }
+            }
+        }
+    }
+    for c in &d.maps {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for t in sig.fields.values() {
+                collect_free_vars(cx, cx.descr(t), ids);
+            }
+        }
+    }
+}
+
+/// Collect every closure-literal arrow reachable from `t`, mirroring
+/// `collect_free_vars`' recursion: the same axes, the same structural
+/// children, plus a literal's own captures.
+///
+/// `seen` is a cycle guard, not a memo -- an interned type may be its own
+/// descendant (a recursive list element, a closure captured in its own
+/// capture vector), and revisiting one adds nothing the first visit did not.
+fn collect_lit_arrow_shapes(
+    cx: TyCtx<'_>,
+    t: &Ty,
+    seen: &mut HashSet<Ty>,
+    shapes: &mut Vec<(FnId, Vec<Ty>, Vec<Ty>, Ty)>,
+) {
+    if !seen.insert(*t) {
+        return;
+    }
+    let d = cx.descr(t);
+    for c in &d.tuples {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for e in &sig.elems {
+                collect_lit_arrow_shapes(cx, e, seen, shapes);
+            }
+        }
+    }
+    for c in &d.lists {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            if let Some(e) = sig.elem {
+                collect_lit_arrow_shapes(cx, &e, seen, shapes);
+            }
+        }
+    }
+    for c in &d.resources {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            collect_lit_arrow_shapes(cx, &sig.payload, seen, shapes);
+        }
+    }
+    for c in &d.funcs {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            if let Some(lit) = sig.lit.as_ref() {
+                shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
+                for capture in &lit.captures {
+                    collect_lit_arrow_shapes(cx, capture, seen, shapes);
+                }
+            }
+            for arg in &sig.args {
+                collect_lit_arrow_shapes(cx, arg, seen, shapes);
+            }
+            collect_lit_arrow_shapes(cx, &sig.ret, seen, shapes);
+        }
+    }
+    for c in &d.maps {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for field in sig.fields.values() {
+                collect_lit_arrow_shapes(cx, field, seen, shapes);
+            }
+        }
     }
 }
 

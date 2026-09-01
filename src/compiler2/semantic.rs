@@ -846,12 +846,56 @@ impl ActivationInputAlternatives {
         self.rebuild(types);
     }
 
-    /// Insert one row, keeping the set canonical. The only permitted
-    /// compression is whole-row EQUIVALENCE — every column of the dropped row
-    /// equivalent to the corresponding column of the survivor. Deliberately
-    /// NOT template subsumption (`key_list_subsumes`): a polymorphic template
-    /// row would absorb its exact ground siblings, erasing the very
-    /// correlation this type preserves. Callers rebuild afterwards.
+    /// Insert one row, keeping the set an antichain. Callers rebuild
+    /// afterwards.
+    ///
+    /// Two compressions fire here, and they are DIFFERENT judgements about a
+    /// pair of rows:
+    ///
+    /// 1. Whole-row EQUIVALENCE (`Vec<Ty>::equivalent`, pointwise mutual
+    ///    `is_subtype`): the incoming row says exactly what a standing row
+    ///    says, so it is not an alternative.
+    /// 2. DOMINANCE (`Types::row_dominates`, fz-kdt.106): a row every column
+    ///    of which is covered by the row beside it, under a relation narrower
+    ///    than subtyping. A dominated incoming row is not inserted; standing
+    ///    rows dominated by the incoming one leave with its landing. This is
+    ///    what stops a caller's ascent LADDER -- one row per superseded
+    ///    conclusion, preserved by `conclude_preserving_frontier` -- from
+    ///    accumulating until it crosses `ACTIVATION_INPUT_ROW_BUDGET` and
+    ///    collapses the whole set columnwise.
+    ///
+    /// Neither judgement is the other. Dominance deliberately REFUSES pairs
+    /// equivalence accepts: `is_subtype` decides a closure-literal arrow from
+    /// its `fn_id` and captures alone (`types::emptiness::func_clause_empty`),
+    /// so it calls a template arrow and a ground arrow over one lambda
+    /// equivalent, and absorbing on that judgement drops a template row whose
+    /// element families were keyed through it. Dominance therefore asks for
+    /// equal free-var sets and containment of the literal ARROW SHAPES, and
+    /// dominance is the authority on which rows absorb.
+    ///
+    /// That leaves the equivalence skip judging exactly the pairs dominance
+    /// rejects, with ARRIVAL ORDER deciding the outcome -- and fz-kdt.106
+    /// ENLARGES what arrival order decides. Before it, the skip chose WHICH of
+    /// a template/ground pair survived, and the surviving COUNT was the same
+    /// either way. Now the skip returns EARLY, before dominance is consulted,
+    /// so an incoming row that is equivalent to some standing row never gets
+    /// to absorb the standing rows it dominates. Measured, on the three rows
+    /// `A = [:a|:b, template]`, `B = [:a, ground]`, `C = [:a|:b, ground]`
+    /// (`C` dominates `B`; `A` and `C` are equivalent but neither dominates
+    /// the other): arrival order A,B,C settles at 2 rows and C,B,A at 1. At
+    /// base both orders settled at 2. Row count feeds
+    /// `ACTIVATION_INPUT_ROW_BUDGET` and the width of what gets specialized,
+    /// so this is a real widening of an order dependence, not a relabelling of
+    /// one. It is not reachable from any corpus fixture today -- the four
+    /// gated lenses are byte-identical FIFO vs LIFO -- which is why it is
+    /// recorded rather than fixed here.
+    /// fz-0za owns the decision: fold the two judgements into one relation, or
+    /// state why two contradictory verdicts about one pair coexist.
+    ///
+    /// Absorption is what template subsumption (`key_list_subsumes`) must
+    /// never be: a polymorphic template row absorbing its exact ground
+    /// siblings would erase the very correlation this type preserves, which is
+    /// why the free-var-set conjunct is not negotiable.
     fn insert_row(&mut self, types: &Types, row: ActivationInputRow) {
         if !self.rows.is_empty() {
             assert_eq!(
@@ -867,6 +911,15 @@ impl ActivationInputAlternatives {
         {
             return;
         }
+        if self
+            .rows
+            .iter()
+            .any(|standing| types.row_dominates(&row.columns, &standing.columns))
+        {
+            return;
+        }
+        self.rows
+            .retain(|standing| !types.row_dominates(&standing.columns, &row.columns));
         self.rows.push(row);
     }
 
@@ -883,6 +936,9 @@ impl ActivationInputAlternatives {
         }
         self.joined = joined;
         if self.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
+            // The count goes to the type store because the type store is the
+            // only thing this join holds: see `Types::activation_input_collapses`.
+            types.note_activation_input_collapse();
             self.rows = vec![ActivationInputRow::new(self.joined.clone())];
         }
     }
@@ -899,7 +955,8 @@ impl JoinContribution for ActivationInputAlternatives {
     }
 
     /// Antichain union. Rows never cross-pollinate columns; the join is row
-    /// insertion under whole-row subsumption, then one canonical rebuild.
+    /// insertion under `insert_row`'s equivalence and dominance judgements,
+    /// then one canonical rebuild.
     fn join_assign(&mut self, other: &Self, types: &mut Types) {
         if self.rows.is_empty() {
             self.clone_from(other);
@@ -1426,6 +1483,7 @@ mod tests {
     use super::*;
     use crate::compiler2::{ExecutableNeed, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
+    use crate::types::{ClosureTarget, Sigma};
 
     fn test_key(world: &mut World, _tel: &ConfiguredTelemetry) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
@@ -2070,6 +2128,196 @@ mod tests {
             }
         }
         panic!("the widening operator must terminate a strictly-deepening ascent");
+    }
+
+    /// The ground instance of a closure literal at one signature: the same
+    /// `fn_id` and captures, with the surface vars `closure_lit` mints for its
+    /// parameters and return replaced by concrete types.
+    fn ground_instance(world: &mut World, lambda: Ty, args: &[Ty], ret: Ty) -> Ty {
+        let shape = world.types_mut().arrow(args, ret);
+        let mut sigma = Sigma::new();
+        world
+            .types_mut()
+            .collect_instantiation_subst(&lambda, &shape, &mut sigma);
+        world.types_mut().instantiate(&lambda, &sigma)
+    }
+
+    /// Push rows into one antichain the way a publisher does, and read back the
+    /// column vectors that survived.
+    fn settled_rows(world: &mut World, rows: &[Vec<Ty>]) -> Vec<Vec<Ty>> {
+        let mut alternatives = ActivationInputAlternatives::from_row(rows[0].clone());
+        for row in &rows[1..] {
+            alternatives.push_row(world.types_mut(), row.clone());
+        }
+        alternatives.rows().iter().map(|row| row.columns().to_vec()).collect()
+    }
+
+    /// fz-kdt.106: an ascent LADDER is one caller's history, not four
+    /// alternatives.
+    ///
+    /// Every superseded conclusion of one callsite joins its row into the
+    /// antichain and never leaves (`conclude_preserving_frontier`), so a
+    /// column that widens over an epoch deposits one row per rung. The rungs
+    /// are totally ordered -- each covers the one below -- so only the
+    /// maximum carries evidence; the rest are the schedule's record of how it
+    /// got there, and eight of them cross `ACTIVATION_INPUT_ROW_BUDGET` and
+    /// collapse the whole set columnwise.
+    #[test]
+    fn activation_input_rows_keep_only_the_maximum_of_an_ascending_ladder() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let a = world.types_mut().atom_lit("a");
+        let b = world.types_mut().atom_lit("b");
+        let c = world.types_mut().atom_lit("c");
+        let ab = world.types_mut().union(a, b);
+        let abc = world.types_mut().union(ab, c);
+
+        let rows = settled_rows(&mut world, &[vec![int, a], vec![int, ab], vec![int, abc]]);
+
+        assert_eq!(
+            rows,
+            vec![vec![int, abc]],
+            "an ascending ladder covers itself: only its maximum is an alternative",
+        );
+    }
+
+    /// fz-kdt.106: absorption may not swallow a template row.
+    ///
+    /// A value-template row and its ground sibling are two DIFFERENT
+    /// activations of one body -- the template mints the erased shared
+    /// specialization, the ground row its representable instance -- and
+    /// `is_subtype` treats a free var as absorbing, so bare subtyping would
+    /// let the template eat its own instances and misroute the element
+    /// families that depended on them (the `Enum.with_index` shape;
+    /// `compiler2_jit_preserves_correlated_with_index_mapper_rows` is the
+    /// artifact-level gate). Equal free-var SETS per column is what refuses
+    /// it.
+    #[test]
+    fn activation_input_rows_keep_a_template_row_beside_its_ground_sibling() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let template = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+        let ground = ground_instance(&mut world, template, &[int], int);
+
+        assert!(
+            world.types().is_subtype(&template, &ground) && world.types().is_subtype(&ground, &template),
+            "the hazard this test guards must actually exist: func_clause_empty judges a \
+             var-carrying template arrow and its ground instance over one lambda equivalent",
+        );
+
+        assert_ne!(
+            world.types().free_var_ids(&template),
+            world.types().free_var_ids(&ground),
+            "the template's surface vars are what tells the two apart",
+        );
+
+        let rows = settled_rows(&mut world, &[vec![int, template], vec![int_or_nil, ground]]);
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "a template row and its ground sibling are two activations, not one: {rows:?}",
+        );
+    }
+
+    /// fz-kdt.106: `is_subtype` cannot decide a closure-literal column, so
+    /// dominance may not be "simplified" back to it.
+    ///
+    /// `types::emptiness::func_clause_empty` decides `P \ N` for a negative
+    /// arrow carrying a `ClosureLit` from `fn_id` and `captures` ALONE -- it
+    /// never reads `args` or `ret` -- so two arrows over ONE lambda are judged
+    /// mutually subtypes however far apart their signatures are. Absorbing on
+    /// that judgement drops a row whose reducer really is a different
+    /// specialization. `Types::row_column_dominates` therefore requires the
+    /// dominated column's closure-literal arrow shapes to appear verbatim in
+    /// the dominator's, which is the part subtyping refuses to look at.
+    #[test]
+    fn activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+        let narrow = ground_instance(&mut world, lambda, &[int], int);
+        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
+
+        assert_ne!(narrow, wide, "the two reducer arrows must be distinct types");
+        assert!(
+            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
+            "the hazard this test guards must actually exist: func_clause_empty judges two \
+             signatures over one lambda equivalent",
+        );
+
+        assert_eq!(
+            world.types().free_var_ids(&narrow),
+            world.types().free_var_ids(&wide),
+            "both arrows are ground, so free-var parity cannot be what keeps them apart -- the \
+             literal SHAPE has to",
+        );
+
+        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "two specializations of one lambda are two rows: subtyping is blind to the only \
+             thing that tells them apart: {rows:?}",
+        );
+    }
+
+    /// fz-kdt.106: the blind spot is STRUCTURAL, so the evidence has to be
+    /// collected structurally.
+    ///
+    /// `func_clause_empty` reaches a lambda wrapped in a tuple exactly as it
+    /// reaches a bare one, so `{:tag, fn}` columns over one lambda that differ
+    /// only in the nested arrow's signature are mutually subtypes too. A
+    /// `lit_arrow_shapes` that walked only the column's own funcs axis would
+    /// report no shapes on either side, containment would hold vacuously both
+    /// ways, and the pair would absorb -- the depth-0 sibling above, one tuple
+    /// deep. Nothing in the corpus builds this row today; the walk is
+    /// structural so that nothing has to.
+    #[test]
+    fn activation_input_rows_keep_nested_arrows_that_differ_only_where_subtyping_is_blind() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let tag = world.types_mut().atom_lit("tag");
+        let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+        let narrow = ground_instance(&mut world, lambda, &[int], int);
+        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
+        let narrow = world.types_mut().tuple(&[tag, narrow]);
+        let wide = world.types_mut().tuple(&[tag, wide]);
+
+        assert_ne!(narrow, wide, "the two wrapped reducer arrows must be distinct types");
+        assert!(
+            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
+            "the hazard this test guards must actually exist: subtyping is blind to the nested \
+             signature exactly as it is blind to a bare one",
+        );
+        assert_eq!(
+            world.types().free_var_ids(&narrow),
+            world.types().free_var_ids(&wide),
+            "both wrapped arrows are ground, so free-var parity cannot be what keeps them apart",
+        );
+        assert!(
+            !world.types().lit_arrow_shapes(&narrow).is_empty(),
+            "the shapes have to be found THROUGH the tuple, or containment holds vacuously",
+        );
+
+        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "a nested specialization is still a specialization: {rows:?}",
+        );
     }
 }
 
