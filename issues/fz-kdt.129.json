@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T21:45:04Z",
+  "description": "MEASURED by the fz-kdt.125 build (2026-09-01, base bd03d922e): the corpus's\nFIFO-vs-LIFO backend-dump population goes 3 -\u003e 4. Base differs on\n00277_enum_tier0_fixture, behavior/dead_closure_capture_empty_list and\nbehavior/enum_map_family; head adds behavior/enum_predicate_search, which is\none of canon_test's four LENSES and whose doc claims byte-identical dumps\neither way.\n\nWHAT MOVES: 28 lines, all in ONE List.reduce_while_step/3 call dispatch. Its\ntwo arms swap positions:\n\n  narrow  ({:halt, :false},                 #closure[Enum.empty?/1#lambda])\n  wide    ({:cont, :true} | {:halt, :false}, #closure[Enum.all?/1#lambda] |\n                                             #closure[Enum.all?/2#lambda] |\n                                             #closure[Enum.empty?/1#lambda])\n\nThese are the two arms fz-kdt.125 RESTORED: at base they projected to one\nruntime question, so fz-kdt.118 dropped the narrow one and the pair had no\norder to disagree about. With the callable axis they ask different questions,\nboth stay, and their arrival order is the semantic fixpoint's -- which is the\nagenda's.\n\nNOT a wrong answer, and not the fz-kdt.107 class: the narrow arm's domain is\nCONTAINED in the wide arm's on every observable axis, so the narrow test\nmatches only values its own domain names and the rest fall through. Whichever\norder they are tested in, every value lands in an arm whose domain contains it\n-- order costs precision here, not meaning. Measured: corpus stdout is\nbyte-identical FIFO vs LIFO at head (0 movers / 580 fixtures, interp) and\n`compiler2_dispatch_answers_the_same_under_a_reversed_arm_order` is green.\n\nTHE FREEDOM TO REMOVE: sibling executables already break their tie on\n`Types::cmp_tys` (`sibling_specializations_are_ordered_by_canonical_inputs_\nnot_interning_order`); dispatch ARMS have no such rule. The obvious candidate\nis `Order::Specificity`, which the dispatch matrix already models: order a\ncallsite's DISTINGUISHABLE arms narrow-first on the observable containment\norder, and leave a runtime-indistinguishable group in arrival order. That\ncarve-out matters -- fz-kdt.107 prototyped and REFUTED canonically ordering\nINDISTINGUISHABLE arms (4 lib failures incl. {:done,3} for {:halted,3}), and\nthis proposal must not re-open it. Price the corpus canon movement before\nbuilding: every fixture with nested arms would renumber its body ids.",
+  "id": "fz-kdt.129",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A dispatch's distinguishable arms are ordered by arrival, and one lens can now see the schedule",
+  "type": "bug",
+  "updated_at": "2026-09-01T21:45:04Z"
+}
