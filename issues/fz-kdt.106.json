@@ -17,7 +17,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "The artifact records the ascent path: cumulative correlated rows keep transient wide joins, and the row set is schedule-dependent (14-spec cone diagnosed)",
+  "title": "Schedule-authored demand residue: ascent-history rows trip the budget collapse; fix = dominance absorption in the correlated-input antichain (mechanism verified, 2 fix shapes refuted, prototype green)",
   "type": "task",
-  "updated_at": "2026-09-01T12:36:41Z"
+  "updated_at": "2026-09-01T12:36:48Z"
 }
