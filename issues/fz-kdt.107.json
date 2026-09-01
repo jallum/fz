@@ -7,9 +7,15 @@
   "id": "fz-kdt.107",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "DIG MEASUREMENTS (2026-09-01 at 788c0c21f, pre-design; proposal\nkdt107-proposal.md in session scratchpad, cold review in flight):\n\n(1) The previously-unmeasured FIFO/LIFO evidence: BEHAVIOR NEVER FLIPS.\nAll four shape-(2) fixtures stdout-identical FIFO vs LIFO on interp AND\nJIT. The defect is latent -- arm order is semantics in principle; the\ncorpus's values never disagree with the schedule's choice.\n\n(2) Post-fz-kdt.106 the ENTIRE remaining schedule-visible artifact\nsurface is two of this ticket's fixtures:\n- enum_map_family: key sets IDENTICAL (151==151), canon differs 1,170\n  lines (normalized-multiset residual 390): at the SAME dispatch node\n  FIFO tests type(list(binary)) where LIFO tests type(list(int)),\n  repeated ~45x. Both questions project to the SAME runtime predicate\n  (runtime_type_predicate_list_shapes records Empty/NonEmpty only,\n  types/mod.rs:2265) -- the match edge's arm is fiat, schedule-authored.\n- 00277: 180 vs 181 execs; key delta = LIFO mints dbg/fz_dbg_value\n  [empty_list()] where FIFO mints Range.reduce/5[...,{:cont,\n  empty_list()},...] -- a DEMAND divergence upstream of dispatch (not\n  kdt.106's chain class), plus 562 canon lines downstream.\n\n(3) Design space priced in the proposal: (A) predicate strengthening\n(O(n) list checks; O(1) first-element probe unsound for heterogeneous +\nanswers nothing for []); (B) don't-mint-indistinguishable-siblings (an\nepic: joins genuine post-106 correlation width, forces lanes wider --\nthe fz-y6w/qwf trade reversed); (C) HEADLINE: canonically order\nruntime-indistinguishable alternatives by cmp_ty on surfaces --\nschedule-confluence now, deterministic fiat instead of lucky fiat,\n(A)/(B) stay this ticket's long-term question on a stable base.",
+      "timestamp": "2026-09-01T18:31:34Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Runtime-indistinguishable dispatch twins that no arm covers: the predicate cannot separate what analysis minted (12 shapes / 18 pairs post-104; owns 00277's residual schedule gap)",
   "type": "bug",
-  "updated_at": "2026-09-01T13:13:01Z"
+  "updated_at": "2026-09-01T18:31:34Z"
 }
