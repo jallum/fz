@@ -11,11 +11,15 @@
     {
       "text": "RIDER (fz-kdt.106 landed, a010532e8, 2026-09-01): 106 changes this ticket's input -- re-measure the callable-flow edge population (was 18 edges) on the post-106 base before scoping; dominance absorption alters which correlated rows exist at the callable-flow surfaces.",
       "timestamp": "2026-09-01T16:56:37Z"
+    },
+    {
+      "text": "COLD-REVIEW FINDINGS FOLDED (fz-kdt.107 review, 2026-09-01 at\n788c0c21f):\n\n(1) THIS TICKET OWNS enum_map_family's FIFO/LIFO canon gap -- the last\nbig schedule-visible surface post-kdt.106. 570 of its ~1,504 diff lines\nsit under `selection` (this constructor's plan), and the movement is\nwhole-family BLOCKS across DIFFERENT question classes (FIFO's a0..a2\nrows appear at LIFO's a3..a5) -- cross-class EDGE ORDER, not\nwithin-class arm order. A within-class canonicalization is a measured\nno-op on it (option C changed its canon by 0 lines).\n\n(2) DIRECT CANONICALIZATION OF THE PLAN IS IMPOSSIBLE BY CONSTRUCTION\n(verified by panic): pattern_dispatch_from_source requires monotonically\nincreasing body_id (SourcePattern(NonMonotonicBodyId)), and body_id\nsimultaneously indexes the parallel CallableConstructionFact.members\nlist -- row order and body numbering are welded. The sound fix is a\ncanonical order on flow.first_class_edges UPSTREAM\n(jobs/runtime_demand.rs:~1155), BEFORE both members and selection are\nderived, so there is one ordering authority and everything downstream\ninherits it.\n\n(3) The drop half of this ticket (18 droppable edges) inherits\nfz-kdt.118's soundness question (observable-surface containment across\nfun_top-erased closure positions) -- sequence after 118's verdict.",
+      "timestamp": "2026-09-01T19:21:03Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Callable-flow selection plans carry the same arm-order-is-semantics trap fz-kdt.104 fixed for callsites",
   "type": "bug",
-  "updated_at": "2026-09-01T16:56:37Z"
+  "updated_at": "2026-09-01T19:21:03Z"
 }
