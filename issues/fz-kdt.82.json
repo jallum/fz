@@ -7,9 +7,15 @@
   "id": "fz-kdt.82",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RIDER (fz-kdt.106 landed, a010532e8, 2026-09-01): still open and still gating fz-kdt.64. Note 106's prototype record: mid-drive value-level replace (narrowing) on ActivationInputs was twice refuted by non-settlement -- the grow-only property is load-bearing for termination. Any route that enables withdrawal must carry a termination argument, not just correct shift classification.",
+      "timestamp": "2026-09-01T16:56:37Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A withdrawn ActivationInputs contribution propagates as an ascent",
   "type": "bug",
-  "updated_at": "2026-08-30T20:02:56Z"
+  "updated_at": "2026-09-01T16:56:37Z"
 }
