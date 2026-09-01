@@ -23,11 +23,15 @@
     {
       "text": "F5 note from the fz-kdt.118 refutation (optional fold, deferred to this ticket's step-3 touch of callsite_dispatch.rs): reverse_indistinguishable_groups recomputes runtime_dispatch_inputs + runtime_type_predicate and re-derives which-arms-ask-one-question -- the same grouping DispatchAlternative::runtime_indistinguishable derives twenty lines later. Two spellings of the one idea this ticket turns on; fold into a shared question_groups(types, targets) helper when this file is next opened.",
       "timestamp": "2026-09-01T20:24:52Z"
+    },
+    {
+      "text": "STEP 3 RETARGETED by the fz-kdt.125 cold review (2026-09-01): the closure-identity half of this ticket's census is DISCHARGED by fz-kdt.125's predicate axis (13/13 no-question groups separable by fn id alone -- the arms become live, fz-kdt.123 retargeted accordingly). What remains THIS ticket's: the 5 list-element groups (bodies with incompatible element accessors, no O(1) predicate; enum_map_family's arm-reversal abort is the live evidence, named in the fz-kdt.118 stress-gate doc). The 'unrepresentable plan' diagnostic is PROMOTED from interim option to REQUIRED backstop (it also owns fz-kdt.127's same-fn-id residue). Dependency now: blocked by 119 + 125; 118 closed.",
+      "timestamp": "2026-09-01T21:00:02Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "P1: runtime-indistinguishable dispatch arms are a latent miscompile, not a fiat -- arrival order is the only thing between the corpus and a wrong answer",
   "type": "bug",
-  "updated_at": "2026-09-01T20:24:52Z"
+  "updated_at": "2026-09-01T21:00:02Z"
 }
