@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T17:23:28Z",
+  "description": "From the fz-kdt.109 refutation (2026-09-01). DependencyIndex::unresolved\norders waits by the fact's Debug rendering; seven FactKey variants\n(Activation, ActivationInputs, ActivationAnalyzed, ReturnType,\nCallSiteTargets, CallSiteSummary, Executable) embed ActivationKey.arrow,\na raw interned Ty id, so the order is mint-order-dependent -- and the\nstall loop's output feeds poke order -\u003e job order -\u003e intern order, the\ncircular tie-break class fz-k22.21 was filed against. The taint is\nINHERITED (both pre-109 per-caller sorts used the identical key on the\nidentical facts; fz-kdt.109 proved the fold order-identical by in-process\ndifferential assertion over the full lib suite + release matrix), and\nboth byte-identical-double-compile determinism pins pass -- no live\ndefect. The structural cure: impl StableSortKey\u003cTypes\u003e for FactKey (30\nvariants; arrow renders via Types::display, the fz-k22.21 instrument)\nand order the two poke consumers by it -- they have self.types()\navailable (drive.rs:472 already does exactly this for\nactivation_frontier_keys 70 lines away). This WILL move poke order, so\nit needs its own full-matrix re-measure and determinism-pair run.\nfact-engine.md's fz-kdt.109 paragraph names this ticket as the open\nstructural follow-up.",
+  "id": "fz-kdt.114",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Poke order is keyed by a mint-order-dependent rendering: give FactKey a StableSortKey and order the stall/demand poke paths structurally",
+  "type": "task",
+  "updated_at": "2026-09-01T17:23:28Z"
+}
