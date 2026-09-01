@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T19:34:40Z",
+  "description": "Reclassified from the fz-kdt.107 review addendum (2026-09-01): on\n00277 under LIFO, Kernel.dbg/1[empty_list()] is minted and shipped\nbeside Kernel.dbg/1[list(int)] -- the first key's ENTIRE domain is\ncontained in the second's, same function, and nothing dedups keys.\nThis is NOT fz-kdt.106's class (its dominance is row-scoped within one\nactivation key by construction) and not dispatch-order (fz-kdt.107):\nit is an unowned question about key-level subsumption at specialization\nminting. It is also schedule-visible (the empty_list() key exists under\nLIFO only on 00277 -- half of that fixture's 180-vs-181 residue).\nDirection to weigh when picked up: dedup at mint (canonical_activation_\nkey answering the contained key with the container -- but beware\nfz-kdt.80's lesson that key equality != emission idempotence, and\nfz-y6w's that per-key precision is usually the point: a contained key\nwith NARROWER lanes may be the better executable; subsumption may be\nthe wrong direction entirely and the real cure demand-side). Measure\nthe population first: how many contained-key pairs exist corpus-wide.",
+  "id": "fz-kdt.124",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Cross-key specialization subsumption: an executable whose whole domain is contained in a same-function sibling is minted and kept",
+  "type": "task",
+  "updated_at": "2026-09-01T19:34:40Z"
+}
