@@ -9,9 +9,15 @@
   "id": "fz-kdt.126",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CURED by fz-kdt.125 (2026-09-01). The q2join probe landed as\n`fixtures2/behavior/closure_identity_tag_split.fz` with an Elixir oracle: base\nprints 12 90 90 12 on interp AND native, head prints 12 90 12 90 on interp, JIT\nand AOT, and the oracle agrees. The fixture is in ARM_ORDER_CENSUS and in\n`compiler2_dispatch_offers_no_runtime_indistinguishable_arm`, so its dispatch is\ngated shadow-free as well as answer-correct.\n\nThe general statement this ticket sharpened -- the plan tests the OBSERVABLE\ncolumns and then asserts the whole CORRELATED row -- is what the cure addresses\ndirectly: the callable column stopped being unobservable, so the row it asserts\nis the row it tested.",
+      "timestamp": "2026-09-01T21:45:48Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: tag-split keys still misroute -- the plan tests observable columns then asserts the whole correlated row",
   "type": "task",
-  "updated_at": "2026-09-01T20:59:51Z"
+  "updated_at": "2026-09-01T21:45:48Z"
 }
