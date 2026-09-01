@@ -7,14 +7,15 @@
   "blocks": [
     "fz-kdt.95"
   ],
+  "closed_at": "2026-09-01T01:56:20Z",
   "created": "2026-08-31T18:41:14Z",
   "description": "LANDED 1d44ac7cd (merged to wt/kdt13-boundaries 2026-08-31; adversarial\nreview MERGE, no blocking finding -- three observations widened into\nfz-kdt.112's hazard record).\n\nTHE FIX: every raw-Ty-id (and duplicate) sort key in artifact PACKAGING\nreplaced by the fz-kdt.105 canonical comparator through one chokepoint\n(jobs/artifact::compare_executable_symbols): 13 sites fixed/folded --\ncompare_executable_keys, 5 backend packaging sorts, codegen seam facts,\ntransport_executable_sort_key DELETED, transport's byte-for-byte\nduplicate symbol key + raw callable_direct_edge key folded,\ncompare_executable_needs 3 encodings -\u003e 1, sort_by_cached_key -\u003e sort_by\n(stale caching comment rewritten). Left with recorded reasons: FunctionId\nleading components (structurally safe for executables -- canon keys\nembed labels; wrapper cross-function corner recorded in fz-kdt.112),\nShapeId/CallableId/BoundaryId mint-order sorts (fz-kdt.112, unproven\nleaks), semantic-layer OrderedSets (load-bearing determinism), canon's\nrendered-text sorts (tie fallback now DOCUMENTED load-bearing on this\nfix). Key detail: canon re-sorts on id-free rendered keys but ties fall\nto PUBLISHED order -- which is why only byte-identical twins (the w10/w11\nwrappers) ever leaked; published order is now the injective structural\norder, closing the loop non-circularly (refuter-verified).\n\nRED-FIRST (both re-verified red by comparator-revert at HEAD -- genuine\nregression gates): canon_test sibling-order (20 sibling pairs in\ninterning order at base, verbatim) + transport_contract_test wrapper-tie\n(31 vs 0). LIFO recipes in the doc comments.\n\nRESULTS: 00420/00183/range_map canon BYTE-IDENTICAL FIFO vs LIFO (base\nhad the 4-line w10/w11 swap -- fz-kdt.101's original observable, gone);\npredicate residual = exactly fz-kdt.106's 14 keys, ZERO renumbering\nlines; 00277's pre-existing gap identical base/head (recorded in 106).\ncanon-gate at FIFO: 8/8/6 changed lines, ALL construction=wN\nrenumbering, normalized multisets identical, key sets equal, executables\n207/59/217 and wrappers 46/8/36 unchanged, pins untouched. Behavior\nbyte-identical 5 fixtures x interp+JIT (incl. 00277's known fz-kdt.111\nrc=1 abort, identical both sides). No positional consumer of any\nre-sorted list exists (refuter traced every consumer: set-wise only;\nwrapper member targets remapped through the sorted inventory's own index\n-- consistent by construction). Fresh gate on merged HEAD: lib 1527/0,\ncli 23/0, matrix 425/0, clippy -D warnings, fmt clean.",
   "id": "fz-kdt.101",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "DONE: an artifact's numbering says what it holds, not when it was interned (1d44ac7cd; FIFO==LIFO byte-identical on the ordering class)",
   "type": "bug",
-  "updated_at": "2026-09-01T01:56:19Z"
+  "updated_at": "2026-09-01T01:56:20Z"
 }
