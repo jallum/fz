@@ -101,11 +101,18 @@ Both halves of (b) are load-bearing. Domain containment alone is not behavioral
 completeness — a multi-target summary normally names one target per selected
 callee, which is exactly what protocol dispatch is, and a wider domain sitting
 on a different function's body is no stand-in at all. And one-way containment is
-not (a): when the questions differ, the narrower test matches only values its own
-domain names and everything else falls through, so whichever order the pair is
-tested in a value lands in an arm whose domain contains it — order costs
-precision, not meaning. A `:timeout` arm beside an `any` arm is that case, and
-both survive. Twins with no stand-in between them (neither observable domain
+not (a): when the questions differ the plan CAN separate the pair, so both
+survive. What separability does not buy is order-independence. A test is coarser
+than the surface it was projected from, so a value can pass an arm's test
+without belonging to the domain that test was projected from, and seating
+decides which arm receives it — order costs meaning wherever two tests overlap,
+and that is fz-kdt.107's subject one rung wider than the arms asking ONE
+question. (fz-kdt.129 corrects the "order costs precision, not meaning"
+phrasing this paragraph inherited; the measurement is under *Seating*.) A
+`:timeout` arm beside an `any` arm is the benign case — the atom test is exact,
+so nothing but a `:timeout` passes it — and the narrower TEST is seated first.
+
+Twins with no stand-in between them (neither observable domain
 contains the other, or two different functions) also survive and stay
 order-decided — including arms alike everywhere the runtime CAN look and
 different only where it cannot, where containment is mutual and strictness
@@ -124,6 +131,112 @@ order the fixpoint could have delivered. `arm_order_stress` makes that testable:
 reverses each runtime-indistinguishable group, and
 `compiler2_dispatch_answers_the_same_under_a_reversed_arm_order` holds the
 fixtures that carry such groups to one answer under both orders.
+
+## Seating
+
+Which arm is tested first is therefore not read off arrival alone.
+`specificity_order` starts from arrival order and corrects it wherever the arms
+themselves say it is wrong.
+
+### What a seat can get wrong
+
+An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
+compiled for: list shape erases the elements, tuple arity erases the payloads.
+So a value can satisfy every question an arm asks and still lie outside that
+arm's surface, and seating that arm first routes the value into a body whose
+representation never named it — `fz_list_head_int_ref` reads a list of atoms as
+a list of ints and aborts on the JIT and native doors, while the interpreter's
+dynamic tags hide it.
+
+Call that a BLIND ESCAPE: `early` is seated before `late`, and at some position
+the two tests both admit some value on an axis whose projection erases what the
+bodies read, while `late`'s surface holds values `early`'s does not. Two orderings were built on containment alone and BOTH
+create blind escapes, in opposite directions:
+
+- seating the narrower SURFACE first puts `list(int) × {all?/1, all?/2, empty?}`
+  ahead of `list(:ok) × {empty?}`. `list(int)` is a subtype of its sibling and
+  the very same test — every list is "a non-empty list" to a predicate that
+  records list shape and nothing else — so the surface rule seats an arm whose
+  CALLABLE test admits three lambdas in front of one admitting a single lambda,
+  where it swallows that sibling's values.
+- seating the narrower TEST first puts `list(int) × {all?/1}` ahead of
+  `list(:ok) × {all?/1, empty?}`, because a callable set of one is strictly
+  inside a set of two. Then `Enum.all?([:ok, :ok])` carrying the shared lambda
+  satisfies BOTH of its questions — list shape is element-blind — and reaches
+  the int-reading body. `dispatch_seat_element_blind` is that program.
+
+Neither containment is the criterion on its own. SURFACE COVERAGE is: `covers`
+holds of `(early, late)` when, at every position where their tests could both
+admit a value on an ERASING axis (list elements, tuple payloads, struct, map,
+binary and resource contents -- `overlaps_on_an_erasing_axis`), `early`'s
+surface already contains `late`'s. "The tests differ" is not separation on an
+erasing axis: tuple arities {2} and {2,3} both admit a 2-tuple, list shapes
+{NonEmpty} and {Empty, NonEmpty} both admit a cons cell. Only the exact axes
+(ints, floats, atoms, callables) separate by mere difference, because a value
+passes an exact test only by being in the tested set, which the arm's surface
+names. Under that definition, seating a covering arm first cannot escape
+anything, by construction -- the surface check is skipped only where the tests
+cannot both admit a value the projection would blur.
+
+### The rule
+
+- arms are seated by their QUESTION GROUP, and a group's members keep arrival
+  order. The carve-out is the safety story — no test the plan emits separates a
+  group's members, so their order decides which body their shared values run,
+  and fz-kdt.107 prototyped canonically ordering them and got `{:done, 3}` where
+  `{:halted, 3}` was due.
+- groups start in arrival order, and group `x` is moved ahead of group `y` when
+
+      covers(x, y) and ( not covers(y, x) or test(x) strictly inside test(y) )
+
+  The first disjunct is the OBLIGATION — only one direction is escape-free, so
+  take it. The second is the PRECISION preference — both directions are
+  escape-free, so hand a value both tests admit to the arm that named it most
+  precisely. The relation is antisymmetric: if both directions held, both would
+  need `covers` both ways, so both would rest on strict mutual containment of
+  the tests, which makes the tests equal and the two groups one.
+- where NEITHER group covers the other, no seat is escape-free and the rule
+  declines to have an opinion: the pair keeps arrival order. That is fz-kdt.107's
+  inseparable class one rung wider, and **fz-kdt.131** owns it. The cure is a
+  runtime test that can see what the body relies on — fz-kdt.119's per-position
+  tuple tags, fz-kdt.107 step 3's list elements — not a cleverer sort.
+
+The correction is one backward insertion pass: each group walks left past
+already-seated groups for as long as the relation holds of the pair, and stops
+at the first group it may not pass. A permutation comes out, so the seat is
+TOTAL by construction and needs no tie-break to fall through to, and it is a
+deterministic function of the arms and their arrival order. Stopping at the
+first refusal is a requirement, not a compromise: passing a group means passing
+everything between. `covers` is not transitive — two groups can be blind at
+different positions — so no rank or comparator linearizes it, which is why the
+pass is an explicit insertion rather than a sort.
+
+### What the seat guarantees
+
+Every pair whose seat differs from arrival order was individually checked and
+moved only under `covers`, which admits no blind escape; every other pair sits
+exactly as arrival left it. So **the seat's blind escapes are a SUBSET of
+arrival order's** — this rule can only ever remove one, never add one. A
+`debug_assert` in `specificity_order` holds every callsite of every debug
+compile to it, and
+`compiler2_dispatch_seats_the_covering_arm_where_one_covers` reads the same
+property back off the landed artifact across the arm-order census.
+
+What the seat does NOT guarantee is that no blind escape remains.
+`compiler2_dispatch_blind_escape_census_is_the_known_population` counts the
+survivors: 19 positions over 12 arm pairs, every one of them a list-shape test
+that cannot see its elements, and every one of them arrival order's before any
+seating rule existed. Three of `enum_map_family`'s are the ones that already
+abort natively under a reversed arm order; `dispatch_seat_element_blind`'s one
+is why that fixture prints the right answers only because arrival seats the atom
+arm first. The census is a RATCHET pointing at fz-kdt.131, not a target: a new
+entry is a new latent miscompile and wants a ticket, not a re-blessed constant.
+
+Arm order was the settled targets' order and nothing else before fz-kdt.129 —
+the fixpoint's, which is the agenda's — and `enum_predicate_search` seated one
+`List.reduce_while_step/3` dispatch's wide arm first under FIFO and its narrow
+one first under LIFO. That pair is now seated wide-first under both, because the
+wide arm is the one that covers.
 
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`

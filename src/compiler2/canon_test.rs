@@ -550,11 +550,19 @@ const LENSES: [(&str, &str); 4] = [
 /// two of the four at those counts. The byte-for-byte half is verified by
 /// hand, per the fz-kdt.93/.104 precedent: change `Agenda::pop` (src/compiler2/agenda.rs) to
 /// `self.queue.pop_back()`, rebuild, and `fz2 interp <fixture> --dump
-/// backend=<path>` must produce the same bytes as the FIFO build on three of
-/// the four -- `enum_predicate_search` differs by ONE dispatch's two
-/// DISTINGUISHABLE arms swapping (arrival order; precision, never meaning;
-/// fz-kdt.129 owns the specificity ordering). Its executable COUNT is
-/// schedule-independent (204 under both), which is what this gate pins.
+/// backend=<path>` must produce the same bytes as the FIFO build on all four.
+/// `enum_predicate_search` was the exception until fz-kdt.129 -- ONE dispatch
+/// whose two distinguishable arms swapped with the schedule that settled them,
+/// 28 lines apart -- and it is closed by seating the arm whose surface COVERS
+/// its sibling's ahead of it, whichever order the two arrived in
+/// (`callsite_dispatch::specificity_order`). Its executable COUNT is
+/// schedule-independent too (204 under both), which is what this gate pins.
+///
+/// Three corpus fixtures still move between the schedules and are not this
+/// gate's business: `00277_enum_tier0_fixture`, `enum_map_family` and
+/// `dead_closure_capture_empty_list`, by exactly the line counts they moved by
+/// at base. They carry arms no seat can separate -- fz-kdt.107's class and
+/// fz-kdt.131's -- so no ordering rule closes them.
 ///
 /// The budget itself STAYS — it is what makes termination a theorem rather
 /// than a property of lucky inputs. A collapse after this change would be

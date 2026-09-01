@@ -1,5 +1,7 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
+use crate::compiler2::artifact::{
+    BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge, DispatchCallEdge,
+};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
@@ -9,8 +11,8 @@ use crate::compiler2::{
     QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::{Region, SubjectId};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
 use crate::fz_ir::{ExternTy, FnId, PhysicalCapability, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
@@ -20,7 +22,7 @@ use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
@@ -9001,6 +9003,20 @@ fn compiler2_runtime_indistinguishable_arm_residue_stays_pinned() {
 /// Drives one fixture to its backend product and names every dispatch call
 /// edge arm pair that asks one and the same runtime question.
 fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
+    let (compiler, program) = driven_backend_program(fixture);
+    let types = compiler.world().types();
+    let mut findings = Vec::new();
+    for (callsite, dispatch) in dispatch_call_edges(&program) {
+        for twin in indistinguishable_arms(&dispatch.plan, types) {
+            findings.push(format!("callsite {callsite} {twin}"));
+        }
+    }
+    findings
+}
+
+/// Drives one fixture to its backend product, and hands back the program with
+/// the compiler whose world types it.
+fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, BackendProgram) {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -9024,8 +9040,13 @@ fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
         "{fixture} should drive to a settled backend product",
     );
     let program = backend.last(root_id).program;
-    let types = compiler.world().types();
-    let mut findings = Vec::new();
+    (compiler, program)
+}
+
+/// Every dispatching direct call a program's bodies tail into, named by its
+/// callsite.
+fn dispatch_call_edges(program: &BackendProgram) -> Vec<(u32, &DispatchCallEdge<usize, BackendReturnFlow>)> {
+    let mut edges = Vec::new();
     for executable in &program.executables {
         let BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
@@ -9039,12 +9060,237 @@ fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
             else {
                 continue;
             };
-            for twin in indistinguishable_arms(&dispatch.plan, types) {
-                findings.push(format!("callsite {} {twin}", callsite.as_u32()));
+            edges.push((callsite.as_u32(), dispatch.as_ref()));
+        }
+    }
+    edges
+}
+
+/// fz-kdt.129 / fz-kdt.131: a seat must carry surface coverage.
+///
+/// An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
+/// compiled for -- list shape erases the elements, tuple arity erases the
+/// payloads -- so a value can satisfy every question an arm asks and still lie
+/// outside the surface that arm's body was compiled for. Call that a BLIND
+/// ESCAPE: the earlier arm and the later arm ask the runtime the SAME question
+/// at some position, and the later arm's surface holds values the earlier
+/// arm's does not.
+///
+/// Two orderings were built on containment alone and BOTH miscompile, in
+/// opposite directions. Seating the narrower SURFACE first put
+/// `list(int) x {all?/1, all?/2, empty?}` ahead of `list(:ok) x {empty?}`.
+/// Seating the narrower TEST first -- fz-kdt.129's first build, which this
+/// gate used to assert -- put `list(int) x {all?/1}` ahead of
+/// `list(:ok) x {all?/1, empty?}`, because a callable set of one is inside a
+/// set of two, and `Enum.all?([:ok, :ok])` then satisfied every question the
+/// int arm asks and aborted in `fz_list_head_int_ref` on `run` and `build`.
+///
+/// So this gate asserts the SOUND condition instead of either containment: an
+/// arm is seated ahead of a sibling only where the seat it took is the one no
+/// worse than its opposite. Formally, for every seated pair
+///
+/// ```text
+///     covers(early, late)  or  not covers(late, early)
+/// ```
+///
+/// -- either the earlier arm's surface already names everything the blind
+/// positions would hand it, or the reverse seat is no safer and the pair is
+/// the fz-kdt.107 inseparable class one rung wider, which fz-kdt.131 owns.
+/// What this forbids is the one seat that is strictly wrong: taking the
+/// escaping direction when the covering direction was available.
+///
+/// RED at 1dc98b087 on `enum_predicate_search` and
+/// `dispatch_seat_element_blind`, whose covering arms were both displaced by
+/// their strictly-smaller-test siblings.
+#[test]
+fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
+    let mut proven = 0;
+    for fixture in ARM_ORDER_CENSUS {
+        let (compiler, program) = driven_backend_program(fixture);
+        let types = compiler.world().types();
+        let mut displaced = Vec::new();
+        for (callsite, dispatch) in dispatch_call_edges(&program) {
+            let seated = seated_arm_surfaces(dispatch);
+            for early in 0..seated.len() {
+                for late in early + 1..seated.len() {
+                    proven += 1;
+                    if !covers(types, &seated[early], &seated[late]) && covers(types, &seated[late], &seated[early]) {
+                        displaced.push(format!(
+                            "callsite {callsite}: arm {late} covers arm {early}'s surface where their tests are \
+                             blind, and arm {early} is seated first anyway",
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            displaced.is_empty(),
+            "{fixture}: a dispatch seated the escaping arm first where the covering one was available, so a \
+             value every question admits runs a body its representation does not fit: {displaced:#?}",
+        );
+    }
+    assert!(
+        proven > 0,
+        "the census proved no seated pair at all, so it cannot have held anything"
+    );
+}
+
+/// fz-kdt.131: the seats where no order is escape-free, counted.
+///
+/// A blind escape this gate still finds is one BOTH seats carry -- the gate
+/// next door proves the covering seat was taken wherever one existed -- so
+/// what is left is the population fz-kdt.131 owns: pairs whose surfaces are
+/// incomparable at a position their tests cannot see. Arrival order carried
+/// them before any seating rule existed and carries them still; the seating
+/// rule declines to move such a pair, so it can only ever remove one of these,
+/// never add one.
+///
+/// These are latent MISCOMPILES, not untidiness. `enum_map_family`'s three
+/// entries are the ones that already abort natively under a reversed arm order
+/// (`compiler2_dispatch_answers_the_same_under_a_reversed_arm_order` names the
+/// reproduction), and `dispatch_seat_element_blind`'s is the one whose fixture
+/// only prints the right answers because arrival happens to seat the atom arm
+/// first. Nothing here is safe by proof; it is safe by arrival.
+///
+/// The list is a RATCHET, not a target. It goes to zero when the runtime can
+/// see what the bodies rely on -- fz-kdt.119's per-position tuple tags and
+/// fz-kdt.107 step 3's list elements -- and not before. A new entry is a new
+/// latent miscompile and wants a ticket, not a re-blessed constant.
+#[test]
+fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
+    let mut escapes = Vec::new();
+    for fixture in ARM_ORDER_CENSUS {
+        let (compiler, program) = driven_backend_program(fixture);
+        let types = compiler.world().types();
+        for (_, dispatch) in dispatch_call_edges(&program) {
+            let seated = seated_arm_surfaces(dispatch);
+            for early in 0..seated.len() {
+                for late in early + 1..seated.len() {
+                    for subject in blind_escapes(types, &seated[early], &seated[late]) {
+                        escapes.push(format!(
+                            "{fixture} subject {}: {} is seated before {}",
+                            subject.0,
+                            types.display(&seated[early][&subject]),
+                            types.display(&seated[late][&subject]),
+                        ));
+                    }
+                }
             }
         }
     }
-    findings
+    escapes.sort();
+    assert_eq!(
+        escapes, BLIND_ESCAPE_POPULATION,
+        "the blind-escape population moved: every entry is a seat where a value the plan admits reaches a \
+         body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 can retire one",
+    );
+}
+
+/// Every position in the census where the arm seated first does not name what
+/// the arm seated second holds -- 19 of them, over 12 arm pairs, measured at
+/// fz-kdt.129's landing.
+///
+/// Each line reads: at this subject the two arms put ONE question to the
+/// runtime, and the arm seated second holds values the arm seated first does
+/// not name. Every subject here holds a LIST, and every entry is therefore
+/// fz-kdt.107 step 3's: a list-shape test cannot see elements. All but
+/// `dispatch_seat_element_blind`'s predate any seating rule -- they are
+/// arrival order's, and the rule leaves them where it found them because no
+/// order it could pick would be better.
+const BLIND_ESCAPE_POPULATION: &[&str] = &[
+    "fixtures2/00277_enum_tier0_fixture.fz subject 0: [:tail] is seated before [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz subject 0: [:tail] is seated before [{any, any}]",
+    "fixtures2/00277_enum_tier0_fixture.fz subject 0: [int] is seated before [{any, any}]",
+    "fixtures2/00277_enum_tier0_fixture.fz subject 1: [:tail] is seated before [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz subject 1: [:tail] is seated before [{any, any}]",
+    "fixtures2/00277_enum_tier0_fixture.fz subject 1: [int] is seated before [{any, any}]",
+    "fixtures2/behavior/dispatch_seat_element_blind.fz subject 0: [:ok] is seated before [int]",
+    "fixtures2/behavior/enum_map_family.fz subject 0: [:a | :b] is seated before [binary]",
+    "fixtures2/behavior/enum_map_family.fz subject 0: [:a | :b] is seated before [int]",
+    "fixtures2/behavior/enum_map_family.fz subject 0: [binary] is seated before [int]",
+    "fixtures2/behavior/enum_map_family.fz subject 1: [:a | :b] is seated before [binary]",
+    "fixtures2/behavior/enum_map_family.fz subject 1: [:a | :b] is seated before [int]",
+    "fixtures2/behavior/enum_map_family.fz subject 1: [binary] is seated before [int]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int | :nil]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int]",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz subject 0: [int] is seated before [{any, any}]",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz subject 1: [int] is seated before [{any, any}]",
+];
+
+/// The subjects at which seating `early` before `late` lets a value reach a
+/// body that never named it: the two arms put one and the same question there,
+/// so nothing the plan emits separates them, and `late`'s surface holds values
+/// `early`'s does not.
+fn blind_escapes(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> Vec<SubjectId> {
+    if early.len() != late.len() {
+        return Vec::new();
+    }
+    early
+        .iter()
+        .filter(|(subject, early)| {
+            late.get(subject).is_some_and(|late| {
+                types.runtime_type_predicate(early) == types.runtime_type_predicate(late)
+                    && !types.is_subtype(late, early)
+            })
+        })
+        .map(|(subject, _)| *subject)
+        .collect()
+}
+
+/// Whether seating `early` before `late` can route a value into a body that
+/// never named it: at every position, either their tests differ -- and the
+/// plan's own test keeps `late`'s values out -- or the test is blind there and
+/// `early`'s surface already contains `late`'s.
+///
+/// This mirrors `callsite_dispatch::covers`, read back off the LANDED
+/// artifact, which is the only place the whole materialization path can be
+/// held to it.
+fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
+    early.len() == late.len() && blind_escapes(types, early, late).is_empty()
+}
+
+/// A dispatch's arms in the order the plan seats them, each as the observable
+/// surface it puts to every subject it asks about.
+///
+/// The surface, not only the predicate projected from it: the projection is
+/// exactly what a seat may not be reasoned from alone, so both halves have to
+/// come off the artifact together.
+///
+/// An arm asking a question the plan does not put through `Region::Type` is not
+/// a test this can compare, and the whole dispatch is skipped rather than
+/// guessed at.
+fn seated_arm_surfaces(dispatch: &DispatchCallEdge<usize, BackendReturnFlow>) -> Vec<BTreeMap<SubjectId, Ty>> {
+    let mut seated = Vec::new();
+    for call_arm in &dispatch.arms {
+        let Some(outcome) = dispatch
+            .plan
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.body_id == call_arm.body_id)
+        else {
+            return Vec::new();
+        };
+        let Some(arm) = dispatch
+            .plan
+            .matrix
+            .arms
+            .iter()
+            .find(|arm| arm.outcome == outcome.outcome)
+        else {
+            return Vec::new();
+        };
+        let mut asked = BTreeMap::new();
+        for question in &arm.questions {
+            let Region::Type(ty) = &question.predicate.region else {
+                return Vec::new();
+            };
+            asked.insert(question.predicate.subject, *ty);
+        }
+        seated.push(asked);
+    }
+    seated
 }
 
 /// The arm pairs whose runtime questions are the same question.
@@ -9079,9 +9325,11 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 
 /// The fixtures fz-kdt.107's census found carrying dispatch arms one runtime
 /// question cannot separate -- 17 groups across 10 fixtures -- plus the one
-/// fz-kdt.118 added for the group it dissolves and the two fz-kdt.125 added
-/// for the callable-identity shape.
-const ARM_ORDER_CENSUS: [&str; 13] = [
+/// fz-kdt.118 added for the group it dissolves, the two fz-kdt.125 added for
+/// the callable-identity shape, and the one fz-kdt.129 added for the seat a
+/// blind list-shape test would otherwise take.
+const ARM_ORDER_CENSUS: [&str; 14] = [
+    "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
     "fixtures2/00275_enum_count_member_reduce.fz",
     "fixtures2/00277_enum_tier0_fixture.fz",

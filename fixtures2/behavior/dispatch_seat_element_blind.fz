@@ -1,0 +1,29 @@
+#---
+# purpose: "A dispatch arm is never seated ahead of a sibling holding elements its own surface does not name"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.129 / fz-kdt.131. All three calls reach one
+# `List.reduce_while_step/3` callsite, which settles two arms:
+#
+#     arm A   list(:ok)  x  {Enum.all?/1 lambda, Enum.empty?/1 lambda}
+#     arm B   list(int)  x  {Enum.all?/1 lambda}
+#
+# Arm B's runtime test is strictly INSIDE arm A's -- same list-shape question,
+# same `:true` question, and a callable set of one against a set of two. Seat
+# the smaller test first and `Enum.all?([:ok, :ok])` satisfies every question
+# arm B asks, because a list-shape test cannot see elements, and lands in the
+# body compiled for `list(int)`: `fz_list_head_int_ref` reads an atom as an int
+# and aborts on `run` and `build`. `interp` prints the right answers anyway --
+# its values carry their own tags -- so only the two compiled doors show it.
+#
+# Neither arm's surface covers the other's at the list position, so no seat is
+# escape-free here and the seating rule declines to move the pair: it keeps
+# arrival order, which is what these three lines pin. The standing cure is a
+# runtime test that can see a list's elements (fz-kdt.107) rather than an
+# ordering rule; fz-kdt.131 owns the population.
+fn main() do
+  dbg(Enum.all?([:ok, :ok]))
+  dbg(Enum.empty?([:ok, :ok]))
+  dbg(Enum.all?([1, 2]))
+end

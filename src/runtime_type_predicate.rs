@@ -91,6 +91,56 @@ impl RuntimeTypePredicate {
         !self.tuple_arities.is_none() || !self.named_structs.is_none() || self.allow_other_structs
     }
 
+    /// Whether every value this predicate's test admits, `other`'s admits too.
+    ///
+    /// Axis by axis, because the axes are independent: a value reaches exactly
+    /// one of them, so a test that admits more on every axis admits more,
+    /// full stop. This is CONTAINMENT OF TESTS, not of the semantic types the
+    /// tests were projected from -- `{:halt, :false}` and
+    /// `{:cont, :true} | {:halt, :false}` are two types and one test.
+    ///
+    /// It is what the runtime ASKS, and that is exactly why it does not settle
+    /// a dispatch's arm order on its own. A test is a projection and it drops
+    /// what the body reads: list shape erases the elements, tuple arity erases
+    /// the payloads. So a value can satisfy every question an arm asks and
+    /// still lie outside the surface that arm's body was compiled for, and
+    /// seating on this relation alone hands it to a body that never named it
+    /// (fz-kdt.131). `callsite_dispatch::covers` is the conjunct that makes a
+    /// seat sound; this is one half of it.
+    pub(crate) fn contained_in(&self, other: &Self) -> bool {
+        other.ints.contains_all(&self.ints)
+            && other.floats.contains_all(&self.floats)
+            && other.atoms.contains_all(&self.atoms)
+            && other.lists.contains_all(&self.lists)
+            && other.tuple_arities.contains_all(&self.tuple_arities)
+            && other.named_structs.contains_all(&self.named_structs)
+            && (other.allow_other_structs || !self.allow_other_structs)
+            && (other.maps || !self.maps)
+            && (other.binaries || !self.binaries)
+            && other.callables.contains_all(&self.callables)
+            && (other.resources || !self.resources)
+    }
+
+    /// Whether the two tests can both admit a value on an axis whose
+    /// projection ERASES something a body reads: list elements, tuple
+    /// payloads, struct fields, map fields, binary contents, resource
+    /// payloads. On those axes "the tests differ" is not separation --
+    /// tuple arities {2} and {2,3} both admit a 2-tuple, list shapes
+    /// {NonEmpty} and {Empty, NonEmpty} both admit a cons cell -- so a
+    /// dispatch seat may not skip the surface-coverage check there. The
+    /// exact axes (ints, floats, atoms, callables) are deliberately
+    /// absent: a value passes those tests only by being in the tested
+    /// set, which the arm's surface names.
+    pub(crate) fn overlaps_on_an_erasing_axis(&self, other: &Self) -> bool {
+        self.lists.overlaps(&other.lists)
+            || self.tuple_arities.overlaps(&other.tuple_arities)
+            || self.named_structs.overlaps(&other.named_structs)
+            || (self.allow_other_structs && other.allow_other_structs)
+            || (self.maps && other.maps)
+            || (self.binaries && other.binaries)
+            || (self.resources && other.resources)
+    }
+
     pub(crate) fn overlaps(&self, other: &Self) -> bool {
         self.ints.overlaps(&other.ints)
             || self.floats.overlaps(&other.floats)

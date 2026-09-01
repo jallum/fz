@@ -105,6 +105,26 @@ impl<T: Ord + Clone> FiniteSet<T> {
         }
     }
 
+    /// Whether every member of `other` is one of ours.
+    ///
+    /// A finite set is never reported as containing a COFINITE one. On an
+    /// infinite element domain that is exact; on a finite one (`ListShape`) a
+    /// finite set that happens to enumerate the whole domain is missed, and
+    /// the answer is `false` where `true` would have been sound. Its one caller
+    /// (`RuntimeTypePredicate::contained_in`) uses it to express a PREFERENCE
+    /// between two seats that are both already safe, never to drop an arm or
+    /// to justify a seat, so a missed containment costs a preference and
+    /// nothing else -- and the relation stays TRANSITIVE, because a link this
+    /// case refuses is never part of a chain.
+    pub(crate) fn contains_all(&self, other: &Self) -> bool {
+        match (self.cofinite, other.cofinite) {
+            (false, false) => other.values.is_subset(&self.values),
+            (false, true) => false,
+            (true, false) => other.values.iter().all(|value| !self.values.contains(value)),
+            (true, true) => self.values.is_subset(&other.values),
+        }
+    }
+
     pub(crate) fn overlaps(&self, other: &Self) -> bool {
         match (self.cofinite, other.cofinite) {
             (false, false) => self.values.iter().any(|value| other.values.contains(value)),
