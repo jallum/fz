@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T19:20:49Z",
+  "description": "From the fz-kdt.107 cold review census (2026-09-01): 12 of the 17\nruntime-indistinguishable groups are the closure-identity shape --\ndiscriminating_inputs finds nothing, the plan emits ZERO tests, and a\nbare source-order fallthrough routes EVERYTHING to arm 0. Arms 1..n are\ntherefore provably unreachable by construction, while their executables\nare still specialized, lowered, and shipped: dead specializations, a\nproportional-compilation cost (and misleading artifact content). Two\ndirections: stop lowering provably-unreachable arms (measure inventory\ndrop across the 10 census fixtures), or fold the sibling minting\nupstream (fz-kdt.107 option B territory -- coordinate). Also the\nnatural home for fz-kdt.117 item (3) (if-joined closures\nincomplete-semantic-plan -- triage it against this shape first).\nThis is documented POLICY today (callable correlation is\nruntime-unobservable; source-ordered selection) -- the policy may stand;\nthe dead lowering does not have to.",
+  "id": "fz-kdt.123",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "12 no-question dispatch groups emit zero tests: arms 1..n are unreachable by construction yet fully lowered",
+  "type": "task",
+  "updated_at": "2026-09-01T19:20:49Z"
+}
