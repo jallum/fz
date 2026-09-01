@@ -3946,7 +3946,6 @@ mod tests {
                     position_layouts: Vec::new(),
                     callable_boundaries: Vec::new(),
                     boundary_ids: Vec::new(),
-                    publication_boundaries: Vec::new(),
                     codegen_seam_facts: Box::default(),
                     callable_owners: Box::default(),
                     callable_facts: HashMap::new(),

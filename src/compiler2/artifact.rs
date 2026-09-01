@@ -67,7 +67,6 @@ pub struct MaterializedTransportPlan {
     /// construction products.
     pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
     pub boundary_ids: Vec<BoundaryId>,
-    pub publication_boundaries: Vec<(TransportPosition, BoundaryId)>,
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
     pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
     pub callable_facts: HashMap<CallableId, CallableFacts>,

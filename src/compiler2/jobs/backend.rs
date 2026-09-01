@@ -1277,13 +1277,6 @@ pub(crate) fn symbolic_materialized_transport_plan(
         assert_eq!(left.1, right.1, "one transport position must have one settled layout");
         true
     });
-    let mut publication_boundaries = boundaries
-        .iter()
-        .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
-        .collect::<Vec<_>>();
-    publication_boundaries.sort_by(|(left, left_boundary), (right, right_boundary)| {
-        compare_transport_positions(left, right, world.types()).then_with(|| left_boundary.cmp(right_boundary))
-    });
     let codegen_seam_facts = symbolic_codegen_seam_facts(backends, &position_layouts, world, boundaries);
     let mut callable_owners = backends
         .values()
@@ -1324,7 +1317,6 @@ pub(crate) fn symbolic_materialized_transport_plan(
             ids.sort_by_key(|boundary| boundary.as_u32());
             ids
         },
-        publication_boundaries,
         codegen_seam_facts,
         callable_owners: callable_owners.into_boxed_slice(),
         callable_facts: callables.clone(),
