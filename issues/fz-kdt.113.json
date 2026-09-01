@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-01T14:00:22Z",
+  "close_reason": "duplicate of fz-kdt.109 (same render-site defect; measurements folded there)",
   "created": "2026-09-01T13:56:17Z",
   "description": "Found during the fz-kdt.106 corpus sweep (2026-09-01, 1d44ac7cd). `fz2 interp` on a fixture that cannot settle prints `compiler2 root N product path waited on ... unresolved=[UnresolvedWait { ... }, ...]`, and the list order is HashSet iteration order: FIVE runs of ONE unmodified release binary over fixtures2/00050_empty.fz produced FOUR distinct stderr renderings. 90 of 577 fixtures show it (every fixture whose compile stalls). Consequences: (1) stderr is not usable as a byte-comparand in any base-vs-head sweep -- the fz-kdt.106 sweep had to classify 90 'movers' as noise by hand; (2) a user-facing error message is nondeterministic. The fix is the canonical-comparand discipline the rest of the tree already follows: sort the wait list at the rendering boundary by a representative-stable key (the same StableSortKey / Types::display idiom AppliedStep's blocked-wait lists already use per .agent/docs/telemetry.md), not by whatever the set iterated. Adjacent, same sweep: fixtures2/00424_protocol_no_impl.fz panics with a raw thread id in the message (artifact.rs:155), which is also run-varying but is a panic, not a diagnostic.",
   "id": "fz-kdt.113",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "The unresolved-wait stall diagnostic renders in HashSet order: one binary prints a different error text run to run",
   "type": "bug",
-  "updated_at": "2026-09-01T13:56:17Z"
+  "updated_at": "2026-09-01T14:00:22Z"
 }
