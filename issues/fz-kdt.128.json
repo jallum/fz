@@ -11,11 +11,15 @@
     {
       "text": "PARTIALLY LANDED with fz-kdt.125 (2026-09-01), and the measurement changes what\nis left.\n\nTHE VIOLATING ARM IS GONE, but not by an assert: `encode_runtime_value`'s\nShapeDescr::Callable branch used to push the caller's whole closure ValueRef as\nthough it were the callee's capture lane (jobs/native.rs, one line:\n`lanes.push(*var)`). That is the fz-kdt.125 captures-variant abort in\nfz_unbox_int. It now emits `Prim::ClosureCapture` per capture lane, reading each\nslot back through the boundary that wrote it, so the encoder is total: every\nshape it cannot bridge already returns `incomplete_native_program`, and the one\nsilent path is closed.\n\nTHE REMAINING HALF IS REAL AND STILL OPEN: a declarative \"an arm's callee\nparam_reprs must be satisfiable from the caller's lanes\" assert at arm\nconstruction. It did not land because the fact it needs is not carried where the\narms are built. `lower_materialized_call_target` (jobs/artifact.rs) sees the\ncallee's `BackendSemanticInputLayout.reprs` and the caller's value LAYOUT, but\nthe caller's produced lane REPRS are decided later, in codegen; comparing\nshapes instead would mean re-deriving the encoder's bridge relation beside it,\nwhich is the duplication this ticket should not create. Two candidates worth\npricing when picked up: publish the caller's per-argument lane reprs as an\nartifact fact so the comparison is a fact-to-fact one, or move the assert into\n`native_direct_call_target_and_args` where both sides are in hand.\n\nONE NEW COMPILE-TIME INVARIANT DID LAND, in the same spirit:\n`lower_closure_capture` refuses when a callable minted at several capture\nlayouts has boundaries that disagree about a slot's representation -- which is\nfz-kdt.127's samelambda3 shape. Corpus fallout zero.",
       "timestamp": "2026-09-01T21:45:48Z"
+    },
+    {
+      "text": "fz-kdt.125 refutation observations for this ticket (2026-09-01): O1 -- lower_closure_capture's disagreeing-layouts refusal is UNEXERCISED: samelambda3 fails EARLIER at the pre-existing absent-physical-identity check with byte-identical messages base vs head, and the refuter could not construct a program reaching the new guard; it needs a red-first test or an honest unreachable-today note. O2 -- Prim::ClosureCapture rests on a three-table index correspondence (transport capture_lanes[i] / boundary capture_reprs[i] / physical slot i) with only repr-agreement checked; a debug_assert on lane-count vs repr-count makes it correct by construction. Both land naturally with this ticket's remaining work.",
+      "timestamp": "2026-09-01T22:51:01Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A dispatch arm must not name a callee whose ABI the caller cannot satisfy",
   "type": "task",
-  "updated_at": "2026-09-01T21:45:48Z"
+  "updated_at": "2026-09-01T22:51:01Z"
 }
