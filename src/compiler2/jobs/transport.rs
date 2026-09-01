@@ -2168,7 +2168,7 @@ fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
             && !predicate.allow_other_structs
             && !predicate.maps
             && !predicate.binaries
-            && !predicate.closures
+            && predicate.callables.is_none()
             && !predicate.resources
     })
 }

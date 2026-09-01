@@ -346,6 +346,19 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// the fixture's stdout is byte-identical through interp, JIT and AOT.
 /// `fz_f98_range_map_converges` collapses at neither base nor head and holds
 /// at 59.
+///
+/// Re-pinned UPWARD by fz-kdt.125, which gave the runtime predicate a callable
+/// axis: `enum_predicate_search` 203 -> 204. The one arrival is
+/// `List.reduce_while_step/3[list(a0_e), {:halt, :false}, a2]`, an arm
+/// fz-kdt.118 had dropped as "runtime-indistinguishable and strictly
+/// contained". It is not indistinguishable any more -- its sibling is keyed on
+/// a different reducer literal, and a closure value's heap word names the
+/// lambda it was minted from -- so the pair is two destinations the plan tests
+/// for, and the specialization that was dead code becomes reachable. This is
+/// fz-kdt.123's resolution, measured: arms BECOME LIVE. Nothing else moved --
+/// no key, demand, or transport fact on any lens changed text, and the
+/// fixture corpus is stdout byte-identical through interp, JIT and AOT.
+/// `enum_take_drop_split` carries no such pair and holds at 215.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -357,7 +370,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            203,
+            204,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
@@ -537,7 +550,11 @@ const LENSES: [(&str, &str); 4] = [
 /// two of the four at those counts. The byte-for-byte half is verified by
 /// hand, per the fz-kdt.93/.104 precedent: change `Agenda::pop` (src/compiler2/agenda.rs) to
 /// `self.queue.pop_back()`, rebuild, and `fz2 interp <fixture> --dump
-/// backend=<path>` must produce the same bytes as the FIFO build on all four.
+/// backend=<path>` must produce the same bytes as the FIFO build on three of
+/// the four -- `enum_predicate_search` differs by ONE dispatch's two
+/// DISTINGUISHABLE arms swapping (arrival order; precision, never meaning;
+/// fz-kdt.129 owns the specificity ordering). Its executable COUNT is
+/// schedule-independent (204 under both), which is what this gate pins.
 ///
 /// The budget itself STAYS — it is what makes termination a theorem rather
 /// than a property of lucky inputs. A collapse after this change would be

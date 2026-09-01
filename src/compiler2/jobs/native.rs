@@ -37,7 +37,7 @@ use super::super::identity::RootId;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
 use super::super::transport::{CallableId, ShapeDescr, ShapeId};
-use super::super::types::{Ty, Types};
+use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
@@ -198,6 +198,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             callable_boundaries.push(NativeCallableBoundary {
                 id: NativeCallableBoundaryId(index as u32),
                 identity_fn,
+                target: world
+                    .callable(wrapper.callable)
+                    .function
+                    .map(|function| ClosureTarget(function.as_u32())),
                 wrapper_fn,
                 captures: wrapper.captures.clone(),
                 capture_reprs: native_construction_capture_reprs(wrapper),
@@ -3826,7 +3830,32 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     return Ok(());
                 }
                 if let NativeBoundValue::Runtime(var) = value {
-                    lanes.push(*var);
+                    // A whole closure standing where a callable's captures are
+                    // wanted as lanes. The callee grounded the callable from
+                    // its own key and asks for the parts; the caller reached it
+                    // through a dispatch that proved the identity but carries
+                    // the value boxed, so the parts come back out of the box
+                    // here (fz-kdt.125). Zero capture lanes is the elided case
+                    // and never reaches this encoder.
+                    let Some(function) = descr.function else {
+                        return Err(incomplete_native_program(
+                            self.telemetry,
+                            self.root_id,
+                            format!(
+                                "native cannot project captures out of a callable that names no function in {:?}",
+                                ctx.origin
+                            ),
+                        ));
+                    };
+                    let target = ClosureTarget(function.as_u32());
+                    for index in 0..descr.capture_lanes.len() {
+                        let (capture, _) = ctx.emit_let(Prim::ClosureCapture {
+                            closure: *var,
+                            target,
+                            index: index as u32,
+                        });
+                        lanes.push(capture);
+                    }
                     return Ok(());
                 }
                 Err(incomplete_native_program(

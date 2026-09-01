@@ -768,7 +768,18 @@ fn emit_runtime_type_predicate_heap_checks(
         let binary_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::BITSTRING)?;
         or_in(b, binary_flag);
     }
-    if predicate.closures {
+    if !predicate.callables.is_none() {
+        // A receive plan's questions come from message PATTERNS and from
+        // parameter annotations, and neither language can name one callable:
+        // the finest a source can say is "a function". So the callable axis
+        // arrives here as all-or-nothing, and a finite set would mean some
+        // other producer started routing on callable identity without teaching
+        // this emitter to read one (fz-kdt.125).
+        if !predicate.callables.is_any() {
+            return Err(CodegenError::new(
+                "receive dispatch cannot test callable identity: no message pattern can name one callable".to_string(),
+            ));
+        }
         let closure_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::CLOSURE)?;
         or_in(b, closure_flag);
     }

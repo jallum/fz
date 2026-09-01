@@ -5,10 +5,9 @@ use crate::dispatch_matrix::pattern::{
     PatternBodyId, PatternDispatchError, PatternDispatchPlan, PatternRow, PatternSubjectRef, SourcePatternRows,
     pattern_dispatch_from_source,
 };
-use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
 
-use super::semantic::{CallSiteSummary, CallTargetSummary, CallableFlowEdge, SelectedCallee};
+use super::semantic::{CallSiteSummary, CallTargetSummary, CallableFlowEdge};
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,14 +82,8 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
         .iter()
         .map(|target| runtime_dispatch_inputs(types, &target.surface_inputs))
         .collect::<Vec<_>>();
-    let unroutable = {
-        let alternatives = targets
-            .iter()
-            .zip(&observable_inputs)
-            .map(|(target, observable)| DispatchAlternative::new(types, target, observable))
-            .collect::<Vec<_>>();
-        unroutable_alternatives(types, &alternatives)
-    };
+    let groups = question_groups(types, targets);
+    let unroutable = unroutable_alternatives(types, targets, &observable_inputs, &groups);
     targets
         .iter()
         .cloned()
@@ -99,6 +92,48 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
         .filter(|(index, _)| !unroutable.contains(index))
         .map(|(_, alternative)| alternative)
         .unzip()
+}
+
+/// The partition of a callsite's targets by the question their observable
+/// surfaces project to.
+///
+/// One group is one question: every member asks the runtime the same thing of
+/// every input, so no emitted test separates them and whichever member the
+/// graph reaches first receives every value the group can see. A group of size
+/// one is a real choice; a group of size two or more is a choice the plan
+/// cannot make.
+///
+/// Neither the observable surface nor the question is the settled semantic
+/// surface. `runtime_type_test_envelope` erases what no runtime test can look
+/// at -- a callable's arrow and captures go, its IDENTITY stays, because the
+/// value's own heap word names the code it was minted from -- and
+/// `RuntimeTypePredicate` is coarser again: `{:cont, pair}` and
+/// `{:cont | :halt, pair}` both project to "a 2-tuple".
+pub(crate) fn question_groups(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<usize>> {
+    let questions = targets
+        .iter()
+        .map(|target| {
+            runtime_dispatch_inputs(types, &target.surface_inputs)
+                .iter()
+                .map(|ty| types.runtime_type_predicate(ty))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut groups = Vec::new();
+    let mut grouped = vec![false; targets.len()];
+    for index in 0..targets.len() {
+        if grouped[index] {
+            continue;
+        }
+        let group = (index..targets.len())
+            .filter(|other| questions[*other] == questions[index])
+            .collect::<Vec<_>>();
+        for slot in &group {
+            grouped[*slot] = true;
+        }
+        groups.push(group);
+    }
+    groups
 }
 
 pub(crate) fn dispatch_from_callable_flow_edges(
@@ -136,87 +171,6 @@ pub(crate) fn dispatch_from_callable_flow_edges(
     .map(Some)
 }
 
-/// One candidate destination of a dispatch: the surface the runtime can
-/// actually see of the target the analysis settled, beside the questions that
-/// surface projects to.
-///
-/// Neither is the settled semantic surface. `runtime_type_test_envelope`
-/// erases what no runtime test can look at -- a callable argument becomes
-/// `fun_top`, so `#66closure[]` and `#68closure[]` are one and the same
-/// observable -- and `RuntimeTypePredicate` is coarser again: `{:cont, pair}`
-/// and `{:cont | :halt, pair}` both project to "a 2-tuple".
-struct DispatchAlternative<'a> {
-    callee: &'a SelectedCallee,
-    observable: &'a [Ty],
-    questions: Vec<RuntimeTypePredicate>,
-}
-
-impl<'a> DispatchAlternative<'a> {
-    fn new(types: &Types, target: &'a CallTargetSummary, observable: &'a [Ty]) -> Self {
-        Self {
-            callee: &target.callee,
-            observable,
-            questions: observable.iter().map(|ty| types.runtime_type_predicate(ty)).collect(),
-        }
-    }
-
-    /// No runtime test can tell this alternative from `other`: the two
-    /// surfaces project to the same questions.
-    ///
-    /// One-way containment is NOT this relation. When the questions differ,
-    /// the narrower test matches only values its own domain names and
-    /// everything else falls through, so whichever order the two are tested
-    /// in, a value the pair can see lands in an arm whose domain contains it:
-    /// order costs precision, not meaning. When the questions are the SAME,
-    /// the narrower arm also matches values its domain does NOT contain, and
-    /// no order-independent reading survives. That is the defect.
-    fn runtime_indistinguishable(&self, other: &Self) -> bool {
-        self.questions == other.questions
-    }
-
-    /// This alternative's body is complete for everything `other` accepts
-    /// that the runtime can tell it accepts: it is the SAME function, on an
-    /// OBSERVABLE domain that contains `other`'s.
-    ///
-    /// The same-callee half is load-bearing and domain containment alone is
-    /// NOT behavioral completeness. A multi-target callsite normally names one
-    /// target per SELECTED CALLEE -- that is what protocol dispatch is
-    /// (`jobs/semantic.rs` settles one `CallTargetSummary` per viable impl) --
-    /// and a wider domain sitting on another function's body is no stand-in
-    /// at all. Rerouting a narrow domain into it would be a miscompile however
-    /// neatly the types line up.
-    ///
-    /// The containment half is judged on OBSERVABLE surfaces, not settled
-    /// semantic ones (fz-kdt.118). Judging it semantically asks a question the
-    /// runtime never gets to answer: at `Range.reduce_step/6` the two arms are
-    /// `({:cont, int} | {:halt, int}, #66closure[])` and
-    /// `({:cont, int}, #68closure[])`, so `is_subtype` says "not contained"
-    /// over a closure literal the envelope has already erased to `fun_top` --
-    /// and the exact pair fz-kdt.104 exists to kill survives, order-protected,
-    /// swallowing `:halt` under a legal arm order.
-    ///
-    /// This is not a widening of what gets dropped. It is the same question
-    /// asked about the surfaces the plan is actually built from: the
-    /// alternatives are already known runtime-indistinguishable when this is
-    /// consulted -- every question their rows ask projects to one and the same
-    /// RuntimeTypePredicate, so no emitted test separates them and the member
-    /// the graph reaches first was going to receive every value the group can
-    /// see, whatever the order. All this decides is WHICH: the survivors are
-    /// the MAXIMAL elements of the observable containment order (a chain has
-    /// one; two incomparable maxima both stay, and that pair remains
-    /// order-decided -- fz-kdt.107). Where the erased axis is the ONLY
-    /// difference the containment is mutual, the drop's strictness keeps both.
-    fn stands_in_for(&self, types: &Types, other: &Self) -> bool {
-        self.callee == other.callee
-            && self.observable.len() == other.observable.len()
-            && self
-                .observable
-                .iter()
-                .zip(other.observable)
-                .all(|(wide, narrow)| types.is_subtype(narrow, wide))
-    }
-}
-
 /// The alternatives no runtime test could ever route to: each accepts strictly
 /// less than a sibling the runtime cannot tell it apart from.
 ///
@@ -225,6 +179,13 @@ impl<'a> DispatchAlternative<'a> {
 /// body -- so arm order, which is the scheduler's and not the language's,
 /// would decide the program's meaning. Dropping it sends those values to the
 /// wider twin, which `stands_in_for` proves is complete for them.
+///
+/// `stands_in_for` is judged on OBSERVABLE surfaces, not settled semantic ones
+/// (fz-kdt.118), and its same-callee half is load-bearing: a multi-target
+/// callsite normally names one target per SELECTED CALLEE -- that is what
+/// protocol dispatch is (`jobs/semantic.rs` settles one `CallTargetSummary`
+/// per viable impl) -- and a wider domain sitting on another function's body is
+/// no stand-in at all.
 ///
 /// Strictness is what makes the relation antisymmetric: alternatives of equal
 /// denotation are never each other's excuse for disappearing. Both halves are
@@ -235,16 +196,31 @@ impl<'a> DispatchAlternative<'a> {
 /// other's, or they are different functions entirely -- are left alone:
 /// dropping either would lose a body nothing else can supply. Those callsites
 /// stay order-decided, and the cure is a runtime predicate that can tell them
-/// apart rather than a smaller plan (fz-kdt.107).
-fn unroutable_alternatives(types: &Types, alternatives: &[DispatchAlternative<'_>]) -> Vec<usize> {
-    (0..alternatives.len())
-        .filter(|index| {
-            let narrow = &alternatives[*index];
-            alternatives.iter().enumerate().any(|(other, wide)| {
-                other != *index
-                    && wide.runtime_indistinguishable(narrow)
-                    && wide.stands_in_for(types, narrow)
-                    && !narrow.stands_in_for(types, wide)
+/// apart rather than a smaller plan (fz-kdt.107). The callable axis is one such
+/// cure: two arms that differ only in which lambda they were keyed on are no
+/// longer one question at all (fz-kdt.125), so they never reach this rule.
+fn unroutable_alternatives(
+    types: &Types,
+    targets: &[CallTargetSummary],
+    observable: &[Vec<Ty>],
+    groups: &[Vec<usize>],
+) -> Vec<usize> {
+    let stands_in_for = |wide: usize, narrow: usize| {
+        targets[wide].callee == targets[narrow].callee
+            && observable[wide].len() == observable[narrow].len()
+            && observable[wide]
+                .iter()
+                .zip(&observable[narrow])
+                .all(|(wide, narrow)| types.is_subtype(narrow, wide))
+    };
+    groups
+        .iter()
+        .flat_map(|group| {
+            group.iter().copied().filter(|narrow| {
+                group
+                    .iter()
+                    .copied()
+                    .any(|wide| wide != *narrow && stands_in_for(wide, *narrow) && !stands_in_for(*narrow, wide))
             })
         })
         .collect()
@@ -279,7 +255,7 @@ fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow
 pub(crate) mod arm_order_stress {
     use std::cell::Cell;
 
-    use super::{CallTargetSummary, Types, runtime_dispatch_inputs};
+    use super::{CallTargetSummary, Types, question_groups};
 
     /// Names the environment variable that turns the perturbation on for a
     /// whole process, so a fixture can be swept through the real `fz2` binary
@@ -322,31 +298,8 @@ pub(crate) mod arm_order_stress {
         types: &mut Types,
         targets: &[CallTargetSummary],
     ) -> Vec<CallTargetSummary> {
-        let observable = targets
-            .iter()
-            .map(|target| runtime_dispatch_inputs(types, &target.surface_inputs))
-            .collect::<Vec<_>>();
-        let questions = observable
-            .iter()
-            .map(|inputs| {
-                inputs
-                    .iter()
-                    .map(|ty| types.runtime_type_predicate(ty))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
         let mut reversed = targets.to_vec();
-        let mut grouped = vec![false; targets.len()];
-        for index in 0..targets.len() {
-            if grouped[index] {
-                continue;
-            }
-            let group = (index..targets.len())
-                .filter(|other| questions[*other] == questions[index])
-                .collect::<Vec<_>>();
-            for slot in &group {
-                grouped[*slot] = true;
-            }
+        for group in question_groups(types, targets) {
             for (slot, source) in group.iter().zip(group.iter().rev()) {
                 reversed[*slot] = targets[*source].clone();
             }
@@ -398,7 +351,7 @@ mod tests {
     use crate::compiler2::dispatch_reachability::calculate_dispatch_reachability;
     use crate::compiler2::types::ClosureTarget;
     use crate::compiler2::{SelectedCallee, World};
-    use crate::dispatch_matrix::{DispatchNode, Region, SubjectSource};
+    use crate::dispatch_matrix::{DispatchNode, Region, SubjectId, SubjectSource};
     use crate::telemetry::ConfiguredTelemetry;
 
     #[test]
@@ -587,20 +540,22 @@ mod tests {
         );
     }
 
-    /// fz-kdt.118: the same pair, with a closure literal standing at the
-    /// argument that carries the reducer.
+    /// fz-kdt.125: the reducer literal is the answer, not the problem.
     ///
     /// This is the shape `Range.reduce_step/6` really settles: the wide arm is
     /// `({:cont, int} | {:halt, int}, #66closure[])` and the narrow one is
-    /// `({:cont, int}, #68closure[])`. Semantically neither domain contains the
-    /// other -- the closure literals are incomparable -- so fz-kdt.104's rule
-    /// let the exact pair it was built to kill survive, and `{:halt, 3}` was
-    /// one legal arm order away from being read as a continue. The runtime
-    /// never sees that difference: `runtime_type_test_envelope` erases both
-    /// literals to `fun_top`. Judged on what the runtime can see, the wide arm
-    /// contains the narrow one and is the callsite's only destination.
+    /// `({:cont, int}, #68closure[])`. The state column is one question --
+    /// both are "a 2-tuple" -- and fz-kdt.118 read the reducer column as no
+    /// question at all, so the pair collapsed to its wider half and `{:halt, 3}`
+    /// was kept safe by having nowhere else to go.
+    ///
+    /// It is a question. A closure value's heap word names the lambda it was
+    /// minted from, so these are two destinations the runtime can tell apart,
+    /// each reached only by the values it was keyed on -- and `{:halt, 3}` now
+    /// reaches the arm that handles it because the reducer it travelled with
+    /// says so, not because its alternative was deleted.
     #[test]
-    fn a_closure_literal_does_not_shield_a_narrower_indistinguishable_twin() {
+    fn a_closure_literal_tells_two_indistinguishable_states_apart() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -619,32 +574,41 @@ mod tests {
             activation_inputs: None,
             return_ty: None,
         };
-        let wide = target(command, halting_reducer);
         let summary = CallSiteSummary {
-            targets: vec![wide.clone(), target(cont, plain_reducer)],
+            targets: vec![target(command, halting_reducer), target(cont, plain_reducer)],
             return_ty: None,
         };
 
-        let destinations = call_destinations(world.types_mut(), &summary).expect("destinations should compile");
+        let CallDestinations::Dispatch(dispatch) =
+            call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+        else {
+            panic!("two reducers the runtime can name are two destinations");
+        };
 
         assert_eq!(
-            destinations,
-            CallDestinations::Direct(wide),
-            "a closure literal no runtime test can look at must not keep a narrower twin alive",
+            dispatch.targets, summary.targets,
+            "neither arm stands in for the other once the reducer column is a real question",
+        );
+        assert!(
+            dispatch.plan.matrix.arms.iter().all(|arm| arm
+                .questions
+                .iter()
+                .any(|question| question.predicate.subject == SubjectId(1))),
+            "every arm must ask which reducer arrived: {:#?}",
+            dispatch.plan.matrix.arms,
         );
     }
 
-    /// The line the fz-kdt.118 rule stops at. Two arms alike everywhere the
-    /// runtime CAN look, differing only where it cannot, are not a containment
-    /// either way: the strictness in `unroutable_alternatives` keeps both, and
-    /// the group stays exactly as order-decided as it was.
+    /// fz-kdt.125's headline, at the callsite that produced it: two arms alike
+    /// in everything but which lambda they were keyed on.
     ///
-    /// Dropping one here would name a winner without changing one routing --
-    /// the plan already asks no question that separates them, so whichever arm
-    /// is listed first receives every value the group can see. That is
-    /// fz-kdt.107's residue, not something a smaller plan can cure.
+    /// `Pipeline.run/2` forwards its callable, so one generalized body serves
+    /// both lambdas and its one callsite names both specializations of
+    /// `apply_twice/2`. Before the callable axis the plan asked nothing, arm 0
+    /// received every value the group could see, and `n * 3` never ran. The
+    /// arms are separable, and by the only thing that distinguishes them.
     #[test]
-    fn twins_that_differ_only_where_the_runtime_cannot_look_both_stay() {
+    fn arms_that_differ_only_in_their_lambda_are_told_apart_by_it() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -666,11 +630,18 @@ mod tests {
         let CallDestinations::Dispatch(dispatch) =
             call_destinations(world.types_mut(), &summary).expect("destinations should compile")
         else {
-            panic!("neither arm contains the other, so neither may be dropped");
+            panic!("two lambdas the runtime can name are two destinations");
         };
         assert_eq!(
             dispatch.targets, summary.targets,
-            "mutual containment is not strict containment: both arms stay",
+            "both arms stay, and now each is reachable",
+        );
+        assert!(
+            matches!(
+                dispatch.plan.graph.node(dispatch.plan.graph.root),
+                Some(DispatchNode::Test { .. })
+            ),
+            "the plan must ask which lambda arrived rather than resolve unconditionally",
         );
     }
 
@@ -795,8 +766,12 @@ mod tests {
         );
     }
 
+    /// fz-kdt.125: the callable-flow bridge dispatches on callable identity
+    /// too. Two members reached by two different lambdas are two runtime
+    /// questions, and semantic reachability agrees with the routing the plan
+    /// emits rather than with source order.
     #[test]
-    fn callable_flow_dispatch_does_not_discriminate_unobservable_callable_correlations() {
+    fn callable_flow_dispatch_discriminates_callable_correlations() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let closure_a = world.types_mut().closure_lit(ClosureTarget(1), Vec::new(), 1);
@@ -841,14 +816,14 @@ mod tests {
         let plan = dispatch_from_callable_flow_edges(world.types_mut(), &edges)
             .expect("callable flow dispatch should compile")
             .expect("distinct callable correlations should produce a plan");
-        assert_eq!(
+        assert_ne!(
             world.types().runtime_type_predicate(&closure_a),
             world.types().runtime_type_predicate(&closure_b),
-            "distinct callable correlations should have the same runtime-observable predicate",
+            "distinct callables are distinct runtime-observable predicates",
         );
         assert!(
-            plan.matrix.arms.iter().all(|arm| arm.questions.is_empty()),
-            "callable-flow dispatch must not mint Region::Type questions for unobservable callable correlations",
+            plan.matrix.arms.iter().all(|arm| !arm.questions.is_empty()),
+            "callable-flow dispatch must ask which callable arrived",
         );
         let reachability = calculate_dispatch_reachability(world.types_mut(), &plan, &[closure_b]);
         let bodies = plan
@@ -859,8 +834,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             bodies,
-            vec![0],
-            "semantic reachability must agree with the runtime's source-ordered selection",
+            vec![1],
+            "the member keyed on the callable that arrived is the one that runs",
         );
     }
 }

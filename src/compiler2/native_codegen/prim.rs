@@ -7,6 +7,7 @@ use crate::fz_ir::{
     UnOp, Var,
 };
 use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+use crate::types::ClosureTarget;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},
@@ -1119,7 +1120,48 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::RuntimeTypeTest(v, descr) => {
             lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
         }
+        Prim::ClosureCapture { closure, target, index } => {
+            lower_closure_capture(body, env, var_env, *closure, *target, *index)
+        }
     }
+}
+
+/// Read capture `index` back out of a closure, in the representation the
+/// callable's own boundary wrote it in.
+///
+/// `emit_capturing_closure` stores each capture through the boundary's
+/// `capture_reprs`; this is the same table read the other way, so the load and
+/// the store cannot drift. A callable minted at several capture layouts has
+/// several boundaries, and they must agree about this slot or there is no one
+/// answer to read.
+fn lower_closure_capture<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    closure: Var,
+    target: ClosureTarget,
+    index: u32,
+) -> Result<LowerOut, CodegenError> {
+    let mut reprs = env
+        .surface
+        .callable_boundaries_for_target(target)
+        .map(|boundary| boundary.capture_reprs.get(index as usize).copied());
+    let repr = match reprs.next() {
+        Some(Some(repr)) if reprs.all(|other| other == Some(repr)) => repr,
+        _ => {
+            return Err(CodegenError::new(format!(
+                "closure capture {index} of callable {} has no single settled representation",
+                target.0
+            )));
+        }
+    };
+    let value = *var_env.get(&closure.0).expect("closure capture subject");
+    let closure_ref = body.value_as_any_ref(value);
+    Ok(LowerOut::Strict(body.closure_capture_as_binding(
+        closure_ref,
+        index as usize,
+        repr,
+    )))
 }
 
 fn lower_runtime_type_predicate<M: cranelift_module::Module>(
@@ -1147,7 +1189,7 @@ fn lower_runtime_type_predicate<M: cranelift_module::Module>(
 
     let value = *var_env.get(&v.0).expect("type-test subject");
     let scalar = emit_runtime_type_predicate_scalar_checks(body, env.module, predicate, value)?;
-    let heap = emit_runtime_type_predicate_heap_checks(body, predicate, value);
+    let heap = emit_runtime_type_predicate_heap_checks(body, env, predicate, value)?;
     let struct_flag = predicate
         .has_structs()
         .then(|| emit_runtime_type_predicate_struct_check(body, runtime, env, value, predicate))
@@ -1232,9 +1274,10 @@ fn emit_runtime_type_predicate_scalar_checks<M: cranelift_module::Module>(
 
 fn emit_runtime_type_predicate_heap_checks<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
     predicate: &RuntimeTypePredicate,
     value: CodegenValue,
-) -> Option<ir::Value> {
+) -> Result<Option<ir::Value>, CodegenError> {
     let mut flag = None;
     let mut or_in = |body: &mut CodegenFn<'_, '_, '_, M>, next: ir::Value| {
         flag = Some(match flag.take() {
@@ -1253,15 +1296,72 @@ fn emit_runtime_type_predicate_heap_checks<M: cranelift_module::Module>(
         let binary_flag = body.value_is_tag(value, ValueKind::BITSTRING);
         or_in(body, binary_flag);
     }
-    if predicate.closures {
-        let closure_flag = body.value_is_tag(value, ValueKind::CLOSURE);
-        or_in(body, closure_flag);
+    if let Some(callable_flag) = emit_runtime_type_predicate_callable_check(body, env, value, &predicate.callables)? {
+        or_in(body, callable_flag);
     }
     if predicate.resources {
         let resource_flag = body.value_is_tag(value, ValueKind::RESOURCE);
         or_in(body, resource_flag);
     }
-    flag
+    Ok(flag)
+}
+
+/// "Is this value one of THESE callables?"
+///
+/// A closure object's word at `+8` is the address of the callable boundary that
+/// minted it, and a thin `MakeFnRef` singleton carries the same address
+/// (`fetch_static_closure` hands back a per-process object the boundary's code
+/// pointer was written into), so one comparison covers both shapes. Comparing
+/// addresses is what makes the check O(1) and independent of captures: the
+/// boundary is chosen at mint time, and the value remembers it.
+fn emit_runtime_type_predicate_callable_check<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    env: &CodegenEnv<'_>,
+    value: CodegenValue,
+    callables: &FiniteSet<ClosureTarget>,
+) -> Result<Option<ir::Value>, CodegenError> {
+    if callables.is_none() {
+        return Ok(None);
+    }
+    if callables.is_any() {
+        return Ok(Some(body.value_is_tag(value, ValueKind::CLOSURE)));
+    }
+    let mut addresses = Vec::new();
+    for target in &callables.values {
+        for boundary in env.surface.callable_boundaries_for_target(*target) {
+            let boundary_id = boundary.boundary_id.as_u32();
+            let func_id = env.callable_boundary_fn_ids.get(&boundary_id).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "callable identity test names callable boundary {boundary_id}, which was never published",
+                ))
+            })?;
+            addresses.push(*func_id);
+        }
+    }
+    Ok(Some(emit_kind_guarded_membership(
+        body,
+        value,
+        ValueKind::CLOSURE,
+        |body, value| {
+            let closure_ref = body.value_as_any_ref(value);
+            let code = body.closure_code_ref(closure_ref);
+            let mut hit = None;
+            for func_id in addresses {
+                let addr = fn_addr(body.jmod, func_id, body.b);
+                let eq = body.b.ins().icmp(IntCC::Equal, code, addr);
+                hit = Some(match hit {
+                    None => eq,
+                    Some(prev) => body.b.ins().bor(prev, eq),
+                });
+            }
+            let hit = hit.unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
+            if callables.cofinite {
+                body.b.ins().bxor_imm(hit, 1)
+            } else {
+                hit
+            }
+        },
+    )))
 }
 
 fn emit_runtime_type_predicate_struct_check<M: cranelift_module::Module>(

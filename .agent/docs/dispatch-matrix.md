@@ -57,13 +57,21 @@ than a one-armed dispatch.
 (b) is judged on the OBSERVABLE surfaces — the settled `surface_inputs` run
 through `Types::runtime_type_test_envelope`, which is the same projection the
 plan's rows are built from — not on the settled semantic types. The envelope
-erases a callable argument to `fun_top`, so two arms whose reducers are
-different closure literals are one and the same observable; judged
-semantically, that incomparable literal blocks the containment and keeps a
-narrow arm alive at a position no runtime test can look at. That is how
-`Range.reduce_step/6`'s `({:cont, int} | {:halt, int}, #66closure[])` /
-`({:cont, int}, #68closure[])` pair used to survive and swallow `:halt` under a
-legal arm order.
+erases what no runtime test can read back off a value: a callable argument
+keeps its literal `fn_id` and loses its arrow and its captures, because a
+closure object's heap word at `+8` is the code it was minted from and nothing
+else about it survives into the value.
+
+A callable position is therefore a real question, and it is what separates
+`Range.reduce_step/6`'s `({:cont, int} | {:halt, int}, #66closure[])` from its
+`({:cont, int}, #68closure[])` sibling. Both project to "a 2-tuple" at the
+state column, so before the callable axis existed the pair asked one question,
+neither arm contained the other, and `:halt` was one legal arm order away from
+being read as a continue. Now each arm is reached by the values its own reducer
+travelled with. What the callable axis does NOT reach is one callable at two
+capture layouts: `#66closure[int]` and `#66closure[float]` are one code
+pointer, and the capture record the runtime could read back is not on this axis
+(fz-kdt.127).
 
 Dropping does not decide a routing. Every question an indistinguishable
 group's rows ask projects to one and the same `RuntimeTypePredicate` — the

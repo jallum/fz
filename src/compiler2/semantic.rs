@@ -886,9 +886,11 @@ impl ActivationInputAlternatives {
     /// base both orders settled at 2. Row count feeds
     /// `ACTIVATION_INPUT_ROW_BUDGET` and the width of what gets specialized,
     /// so this is a real widening of an order dependence, not a relabelling of
-    /// one. It is not reachable from any corpus fixture today -- the four
-    /// gated lenses are byte-identical FIFO vs LIFO -- which is why it is
-    /// recorded rather than fixed here.
+    /// one. It is not reachable from any corpus fixture today: the lenses'
+    /// row and executable counts are schedule-identical (the one FIFO/LIFO
+    /// byte difference on `enum_predicate_search` is dispatch ARM order,
+    /// fz-kdt.129 -- not a row-set difference), which is why it is recorded
+    /// rather than fixed here.
     /// fz-0za owns the decision: fold the two judgements into one relation, or
     /// state why two contradictory verdicts about one pair coexist.
     ///

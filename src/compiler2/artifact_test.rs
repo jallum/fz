@@ -153,6 +153,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
             identity_fn,
+            target: None,
             wrapper_fn,
             captures: Box::default(),
             capture_reprs: Box::default(),
@@ -323,6 +324,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
             identity_fn,
+            target: None,
             wrapper_fn,
             captures: Box::default(),
             capture_reprs: Box::default(),

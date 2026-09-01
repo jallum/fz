@@ -22,6 +22,7 @@ use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
+use crate::types::ClosureTarget;
 use fz_runtime::heap::Schema;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -388,6 +389,17 @@ pub enum Prim {
     /// predicate seam because the runtime sees tags/shapes, not full semantic
     /// types.
     RuntimeTypeTest(Var, Box<RuntimeTypePredicate>),
+    /// Read one captured value back out of a closure object.
+    ///
+    /// The mirror of `MakeClosure`: a caller that holds a whole closure and a
+    /// callee that wants its captures as separate lanes meet here. `target`
+    /// names the callable, which is the authority on how each capture was
+    /// STORED -- reading it back any other way would be a guess.
+    ClosureCapture {
+        closure: Var,
+        target: ClosureTarget,
+        index: u32,
+    },
 }
 
 impl Prim {
@@ -476,6 +488,9 @@ impl Prim {
             }
             Prim::RuntimeTypeTest(v, _) => {
                 used.insert(*v);
+            }
+            Prim::ClosureCapture { closure, .. } => {
+                used.insert(*closure);
             }
         }
     }
@@ -1191,6 +1206,9 @@ impl fmt::Display for Prim {
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
             Prim::RuntimeTypeTest(v, d) => {
                 write!(f, "runtime_type_test({}, {})", v, d)
+            }
+            Prim::ClosureCapture { closure, target, index } => {
+                write!(f, "closure_capture({}, {}, {})", closure, target.0, index)
             }
         }
     }

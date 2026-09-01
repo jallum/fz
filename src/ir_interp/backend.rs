@@ -21,6 +21,7 @@ use crate::compiler2::{
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::matches_runtime_type_predicate;
 use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, struct_schema_id,
 };
@@ -222,6 +223,7 @@ impl IrInterpRuntime {
                 self,
                 types,
                 transport,
+                program,
                 module,
                 &park.clauses,
                 &park.dispatch,
@@ -493,12 +495,14 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                                 .transpose()
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    select_clause(runtime, types, module, dispatch, &dispatch_inputs)?.ok_or_else(|| {
-                        format!(
-                            "function_clause: no backend entry clause matched for executable {}",
-                            executable_index
-                        )
-                    })?
+                    select_clause(runtime, types, transport, program, module, dispatch, &dispatch_inputs)?.ok_or_else(
+                        || {
+                            format!(
+                                "function_clause: no backend entry clause matched for executable {}",
+                                executable_index
+                            )
+                        },
+                    )?
                 }
             };
             let clause = clauses
@@ -561,6 +565,8 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
 fn select_clause(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
     module: &Module,
     dispatch: &ExecutableDispatch,
     args: &[Option<AnyValue>],
@@ -578,30 +584,65 @@ fn select_clause(
         .iter()
         .map(|value| value.unwrap_or_else(interp_nil_value))
         .collect::<Vec<_>>();
-    let selected = select_dispatch_body(runtime, types, module, dispatch.plan(), &inputs, &HashMap::new())?;
+    let selected = select_dispatch_body(
+        runtime,
+        types,
+        transport,
+        program,
+        module,
+        dispatch.plan(),
+        &inputs,
+        &HashMap::new(),
+    )?;
     Ok(selected.and_then(|body_id| dispatch.clause_index(body_id)))
 }
 
 fn select_dispatch_body(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
     module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     args: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
 ) -> Result<Option<u32>, String> {
-    Ok(select_dispatch_match(runtime, types, module, plan, args, pinned)?.map(|(body_id, _)| body_id))
+    Ok(
+        select_dispatch_match(runtime, types, transport, program, module, plan, args, pinned)?
+            .map(|(body_id, _)| body_id),
+    )
+}
+
+/// The callable a runtime code word denotes, in the terms the type lattice uses.
+///
+/// A callable value the backend built through a construction wrapper carries
+/// that wrapper's synthetic identity, which is this backend's own numbering;
+/// the wrapper knows the callable behind it. Every other callable value carries
+/// its function's own id directly.
+fn backend_callable_identity(transport: &TransportStore, program: &BackendProgram, code: u64) -> Option<ClosureTarget> {
+    let fn_id = FnId(u32::try_from(code).ok()?);
+    match construction_wrapper_for_fn(program, fn_id) {
+        Some(wrapper) => transport
+            .interners()
+            .callable(wrapper.callable)
+            .function
+            .map(|function| ClosureTarget(function.as_u32())),
+        None => Some(ClosureTarget(fn_id.0)),
+    }
 }
 
 fn select_dispatch_match(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
     module: &Module,
     plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
     args: &[AnyValue],
     pinned: &HashMap<String, AnyValue>,
 ) -> Result<Option<DispatchMatch>, String> {
     let mut state = DispatchExecState::default();
+    let callables = |code: u64| backend_callable_identity(transport, program, code);
     let mut type_match =
         |runtime: &mut IrInterpRuntime, module: &Module, want: &crate::compiler2::Ty, value: AnyValue| {
             let predicate = types.runtime_type_predicate(want);
@@ -614,6 +655,7 @@ fn select_dispatch_match(
                 runtime_value,
                 &tuple_schema_ids,
                 &named_schema_ids,
+                &callables,
             ))
         };
     Ok(execute_dispatch_inputs(
@@ -717,14 +759,22 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                             }
                         })
                         .collect::<Result<Vec<_>, String>>()?;
-                    let body_id =
-                        select_dispatch_body(runtime, types, module, &dispatch.plan, &input_values, &HashMap::new())?
-                            .ok_or_else(|| {
-                            format!(
-                                "backend dispatch callsite in executable {} missed an exhaustive dispatch",
-                                executable_index
-                            )
-                        })?;
+                    let body_id = select_dispatch_body(
+                        runtime,
+                        types,
+                        transport,
+                        program,
+                        module,
+                        &dispatch.plan,
+                        &input_values,
+                        &HashMap::new(),
+                    )?
+                    .ok_or_else(|| {
+                        format!(
+                            "backend dispatch callsite in executable {} missed an exhaustive dispatch",
+                            executable_index
+                        )
+                    })?;
                     let arm = dispatch
                         .arms
                         .iter()
@@ -820,7 +870,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     .iter()
                     .map(|arg| env_get(transport, runtime.cur_proc(), &env, arg.value))
                     .collect::<Result<Vec<_>, _>>()?;
-                select_construction_member(runtime, types, module, wrapper, &args)?.target
+                select_construction_member(runtime, types, transport, program, module, wrapper, &args)?.target
             } else if let Some(target) = target {
                 *target
             } else {
@@ -865,6 +915,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 let member = select_construction_member(
                     runtime,
                     types,
+                    transport,
+                    program,
                     module,
                     wrapper,
                     &args
@@ -938,14 +990,22 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
         } => {
             let input_values = env_values(transport, runtime.cur_proc(), &env, inputs)?;
             let pinned_values = local_dispatch_pinned(transport, runtime.cur_proc(), &env, bindings, &dispatch.plan)?;
-            let target =
-                match select_dispatch_body(runtime, types, module, &dispatch.plan, &input_values, &pinned_values)? {
-                    Some(body_id) => *dispatch
-                        .arm_entries
-                        .get(body_id as usize)
-                        .ok_or_else(|| format!("backend local dispatch arm {} is out of bounds", body_id))?,
-                    None => dispatch.miss_entry,
-                };
+            let target = match select_dispatch_body(
+                runtime,
+                types,
+                transport,
+                program,
+                module,
+                &dispatch.plan,
+                &input_values,
+                &pinned_values,
+            )? {
+                Some(body_id) => *dispatch
+                    .arm_entries
+                    .get(body_id as usize)
+                    .ok_or_else(|| format!("backend local dispatch arm {} is out of bounds", body_id))?,
+                None => dispatch.miss_entry,
+            };
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable_index,
                 entry: target,
@@ -966,7 +1026,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     AnyValue::from_any_value_ref(proc.mailbox[mb_idx])?
                 };
                 if let Some((clause_index, bound_values)) = try_match_backend_receive(
-                    runtime, types, transport, module, clauses, dispatch, msg, bindings, &env,
+                    runtime, types, transport, program, module, clauses, dispatch, msg, bindings, &env,
                 )? {
                     hit = Some((mb_idx, clause_index, bound_values));
                     break;
@@ -1023,6 +1083,7 @@ fn try_match_backend_receive(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
+    program: &BackendProgram,
     module: &Module,
     clauses: &[crate::compiler2::ReceiveClause],
     dispatch: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
@@ -1031,7 +1092,9 @@ fn try_match_backend_receive(
     env: &HashMap<ValueId, BackendBoundValue>,
 ) -> Result<Option<(usize, Vec<AnyValue>)>, String> {
     let pinned = local_dispatch_pinned(transport, runtime.cur_proc(), env, bindings, dispatch)?;
-    let Some((body_id, binds)) = select_dispatch_match(runtime, types, module, dispatch, &[msg], &pinned)? else {
+    let Some((body_id, binds)) =
+        select_dispatch_match(runtime, types, transport, program, module, dispatch, &[msg], &pinned)?
+    else {
         return Ok(None);
     };
     let clause_index = body_id as usize;
@@ -1978,6 +2041,8 @@ fn construction_callable_value(
 fn select_construction_member<'a>(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
+    transport: &TransportStore,
+    program: &BackendProgram,
     module: &Module,
     wrapper: &'a BackendConstructionWrapper,
     args: &[AnyValue],
@@ -1991,8 +2056,17 @@ fn select_construction_member<'a>(
         ));
     }
     let member = match &wrapper.selection {
-        Some(selection) => select_dispatch_body(runtime, types, module, selection, args, &HashMap::new())?
-            .ok_or_else(|| format!("backend callable construction {} matched no member", wrapper.identity))?
+        Some(selection) => select_dispatch_body(
+            runtime,
+            types,
+            transport,
+            program,
+            module,
+            selection,
+            args,
+            &HashMap::new(),
+        )?
+        .ok_or_else(|| format!("backend callable construction {} matched no member", wrapper.identity))?
             as usize,
         None if wrapper.members.len() == 1 => 0,
         None => {
@@ -2025,7 +2099,7 @@ pub(super) fn construction_wrapper_invocation(
 ) -> Result<(usize, Vec<AnyValue>), String> {
     let wrapper = construction_wrapper_for_fn(program, fn_id)
         .ok_or_else(|| format!("backend callable {} has no construction wrapper", fn_id.0))?;
-    let member = select_construction_member(runtime, types, module, wrapper, args)?;
+    let member = select_construction_member(runtime, types, transport, program, module, wrapper, args)?;
     let target = member.target;
     let executable = program.executables.get(target).ok_or_else(|| {
         format!(

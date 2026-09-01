@@ -6,7 +6,8 @@
 
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::Module;
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, struct_schema_id};
+use crate::types::ClosureTarget;
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_fn_ptr, struct_schema_id};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
@@ -27,7 +28,11 @@ pub(crate) struct RuntimeTypePredicate {
     pub(crate) allow_other_structs: bool,
     pub(crate) maps: bool,
     pub(crate) binaries: bool,
-    pub(crate) closures: bool,
+    /// WHICH callable, not merely "a callable". A closure value's heap word at
+    /// `+8` is the code it was minted from, so the callable a value is IS
+    /// runtime-observable and belongs on the same finite-or-cofinite footing as
+    /// an atom or a tuple arity (fz-kdt.125).
+    pub(crate) callables: FiniteSet<ClosureTarget>,
     pub(crate) resources: bool,
 }
 
@@ -43,7 +48,7 @@ impl RuntimeTypePredicate {
             allow_other_structs: false,
             maps: false,
             binaries: false,
-            closures: false,
+            callables: FiniteSet::none(),
             resources: false,
         }
     }
@@ -59,7 +64,7 @@ impl RuntimeTypePredicate {
             allow_other_structs: true,
             maps: true,
             binaries: true,
-            closures: true,
+            callables: FiniteSet::any(),
             resources: true,
         }
     }
@@ -96,7 +101,7 @@ impl RuntimeTypePredicate {
             || (self.allow_other_structs && other.allow_other_structs)
             || (self.maps && other.maps)
             || (self.binaries && other.binaries)
-            || (self.closures && other.closures)
+            || self.callables.overlaps(&other.callables)
             || (self.resources && other.resources)
     }
 }
@@ -113,12 +118,22 @@ impl fmt::Display for RuntimeTypePredicate {
     }
 }
 
+/// Which callable a runtime code word denotes.
+///
+/// The word a closure carries at `+8` is the backend's, not the type lattice's:
+/// one callable can be minted through several code paths, and a backend is free
+/// to name them however it likes. The backend that minted them is therefore the
+/// authority on reading them back, and it answers here. `None` is a code word
+/// the program never described, which no finite callable set can name.
+pub(crate) type CallableIdentities<'a> = dyn Fn(u64) -> Option<ClosureTarget> + 'a;
+
 pub(crate) fn matches_runtime_type_predicate(
     predicate: &RuntimeTypePredicate,
     module: &Module,
     value: RuntimeAnyValue,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<String, u32>,
+    callables: &CallableIdentities<'_>,
 ) -> bool {
     match value {
         RuntimeAnyValue::Null => false,
@@ -136,12 +151,37 @@ pub(crate) fn matches_runtime_type_predicate(
             ValueKind::LIST => predicate.lists.contains(&ListShape::NonEmpty),
             ValueKind::MAP => predicate.maps,
             ValueKind::BITSTRING => predicate.binaries,
-            ValueKind::CLOSURE => predicate.closures,
+            ValueKind::CLOSURE => matches_runtime_callable(predicate, value, callables),
             ValueKind::RESOURCE => predicate.resources,
             ValueKind::STRUCT => matches_runtime_struct(predicate, module, value, tuple_schema_ids, named_schema_ids),
             ValueKind::NULL | ValueKind::INT | ValueKind::FLOAT | ValueKind::ATOM => false,
             _ => false,
         },
+    }
+}
+
+/// Read a closure value's identity and ask the predicate about it.
+///
+/// A cofinite callable set names every callable but the ones it lists, so a
+/// code word the backend cannot place is in it: the value is a callable, and
+/// none of the excluded ones.
+fn matches_runtime_callable(
+    predicate: &RuntimeTypePredicate,
+    value: RuntimeAnyValue,
+    callables: &CallableIdentities<'_>,
+) -> bool {
+    if predicate.callables.is_none() {
+        return false;
+    }
+    if predicate.callables.is_any() {
+        return true;
+    }
+    let Some(addr) = value.heap_addr() else {
+        return false;
+    };
+    match callables(unsafe { closure_fn_ptr(addr.cast_const()) }) {
+        Some(target) => predicate.callables.contains(&target),
+        None => predicate.callables.cofinite,
     }
 }
 

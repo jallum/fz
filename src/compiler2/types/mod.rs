@@ -1335,7 +1335,7 @@ impl Types {
             allow_other_structs: false,
             maps: !descr.maps.is_empty() && named_structs.is_none(),
             binaries: descr.basic.contains_all(BasicBits::BINARY),
-            closures: !descr.funcs.is_empty(),
+            callables: runtime_type_predicate_callables(descr),
             resources: !descr.resources.is_empty(),
         }
     }
@@ -1516,10 +1516,19 @@ impl Types {
         self.intern(descr)
     }
 
+    /// What a runtime test can see of `ty`.
+    ///
+    /// On the callable axis that is the callable's IDENTITY and nothing else:
+    /// a closure value's heap word at `+8` names the code it was minted from,
+    /// which is a fact about the value, while the arrow it was typed at and the
+    /// captures it closed over leave no trace the runtime can read back. So the
+    /// literal `fn_id`s survive here and everything around them is erased --
+    /// two literals over one function at different capture types collapse to
+    /// one observable, and two different functions stay two (fz-kdt.125).
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
         let mut descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
         if !descr.funcs.is_empty() {
-            descr.funcs = Descr::fun_top().funcs;
+            descr.funcs = callable_identity_clauses(self, &descr.funcs);
         }
         self.intern(descr)
     }
@@ -2308,6 +2317,41 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
     out
 }
 
+/// Every callable a function axis admits, named the way the runtime tells them
+/// apart: by the code each was minted from. `None` when the axis admits
+/// callables this side cannot enumerate.
+///
+/// A clause that pins no closure literal admits any callable at all, and one
+/// such clause makes the whole union unrestricted; so does a clause that
+/// SUBTRACTS a literal, whose remainder is not enumerable from this side. A
+/// clause that pins several literals at once is an intersection, which every
+/// one of them contains, so naming them all over-approximates it — and
+/// over-approximation is the direction a dispatch test must err in, exactly as
+/// the list-shape and tuple-arity axes do.
+fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
+    let mut targets = BTreeSet::new();
+    for clause in funcs {
+        let lits = clause
+            .pos
+            .iter()
+            .filter_map(|sig| sig.lit.as_ref())
+            .map(|lit| lit.fn_id)
+            .collect::<Vec<_>>();
+        if lits.is_empty() || !clause.neg.is_empty() {
+            return None;
+        }
+        targets.extend(lits);
+    }
+    Some(targets)
+}
+
+fn runtime_type_predicate_callables(descr: &Descr) -> FiniteSet<ClosureTarget> {
+    match callable_identity_targets(&descr.funcs) {
+        Some(targets) => FiniteSet::finite(targets.into_iter().map(ClosureTarget::from)),
+        None => FiniteSet::any(),
+    }
+}
+
 fn runtime_type_predicate_named_structs(descr: &Descr) -> FiniteSet<String> {
     const STRUCT_PREFIX: &str = "impl-target::";
     FiniteSet::finite(
@@ -2531,6 +2575,33 @@ fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity
         .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_map_sig))
         .collect();
     descr
+}
+
+/// The function axis reduced to the one question the runtime can ask of a
+/// callable value: which callable is it?
+///
+/// One clause per target `callable_identity_targets` names, carrying the
+/// identity and nothing else. Where it can name none the axis widens to
+/// `fun_top` rather than claim a precision the test could not honour.
+fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
+    let Some(targets) = callable_identity_targets(funcs) else {
+        return Descr::fun_top().funcs;
+    };
+    let ret = types.any();
+    targets
+        .into_iter()
+        .map(|fn_id| {
+            Conj::pos_of(ArrowSig {
+                args: Vec::new(),
+                ret,
+                lit: Some(ClosureLit {
+                    kind: CallableValueKind::Closure,
+                    fn_id,
+                    captures: Vec::new(),
+                }),
+            })
+        })
+        .collect()
 }
 
 fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity) -> Ty {

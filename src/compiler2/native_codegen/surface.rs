@@ -12,12 +12,14 @@ use crate::compiler2::NativeBody;
 use crate::compiler2::artifact::NativeCallableBoundaryId;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{FnId, FnIr, Module};
+use crate::types::ClosureTarget;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundarySurface {
     pub boundary_id: NativeCallableBoundaryId,
     pub identity_fn: FnId,
+    pub target: Option<ClosureTarget>,
     pub target_fn: FnId,
     pub capture_count: usize,
     pub capture_key: Vec<crate::types::KeySlot<crate::compiler2::Ty>>,
@@ -78,5 +80,18 @@ impl<'a> NativeCodegenSurface<'a> {
         self.callable_boundaries
             .values()
             .find(|boundary| boundary.identity_fn == identity_fn)
+    }
+
+    /// Every boundary that mints `target`. One callable can be minted through
+    /// several boundaries -- one per capture layout it is closed over at -- and
+    /// each stamps its own code address into the values it makes, so a test for
+    /// "is this value `target`" has to admit all of them.
+    pub(crate) fn callable_boundaries_for_target(
+        &self,
+        target: ClosureTarget,
+    ) -> impl Iterator<Item = &NativeCallableBoundarySurface> {
+        self.callable_boundaries
+            .values()
+            .filter(move |boundary| boundary.target == Some(target))
     }
 }

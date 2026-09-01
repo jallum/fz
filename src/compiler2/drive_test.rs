@@ -8935,18 +8935,65 @@ end
 /// contains the other, or they are different functions -- are a different,
 /// wider defect: no arm can supply the others' bodies, so the cure is a
 /// runtime predicate that can tell them apart, not a smaller plan
-/// (fz-kdt.107). These two fixtures carry none.
+/// (fz-kdt.107). fz-kdt.125 supplied one of those predicates -- which callable
+/// a value is -- and the five fixtures it clears are added here.
+///
+/// `closure_identity_tag_split` and `closure_identity_captures` are the two
+/// programs that named the defect and are shadow-free by the same cure.
+/// `repr_seam_enum_count_after_reduce2` and the other four census fixtures are
+/// NOT here: what survives on them is the residue, pinned next door.
 #[test]
 fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     for fixture in [
         "fixtures2/00183_enum_take_list_range.fz",
         "fixtures2/00420_enum_take_drop_split.fz",
+        "fixtures2/00275_enum_count_member_reduce.fz",
+        "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
+        "fixtures2/behavior/range_enumerable.fz",
+        "fixtures2/behavior/closure_identity_tag_split.fz",
+        "fixtures2/behavior/closure_identity_captures.fz",
     ] {
         let twins = indistinguishable_dispatch_arms(fixture);
         assert!(
             twins.is_empty(),
             "{fixture}: a dispatch must not offer two arms that ask one runtime question, \
              or arm order decides the program's meaning: {twins:#?}",
+        );
+    }
+}
+
+/// What the callable axis does NOT reach, measured and owned.
+///
+/// fz-kdt.125 gave the runtime predicate the one question a closure value can
+/// answer about itself: which callable it is. Two shapes are left over, and
+/// neither is a callable-identity question:
+///
+/// - SAME callable, different captures. `Enum.reduce/3#lambda@439-517/2` closed
+///   over `add_a/2` and the same lambda closed over `add_b/2` are one code
+///   pointer; the capture record differs and the identity does not. Six such
+///   groups across five fixtures, and fz-kdt.127 owns them.
+/// - Different list ELEMENT types. `[int]`, `[int | :ok | :true]` and
+///   `[:false | :true]` are all "a non-empty list" to a runtime that records
+///   list shape and nothing else. fz-kdt.107 step 3 owns them.
+///
+/// This pins the population so neither can grow unnoticed, and so the day
+/// either is cured the number falls here and says which.
+#[test]
+fn compiler2_runtime_indistinguishable_arm_residue_stays_pinned() {
+    for (fixture, expected) in [
+        ("fixtures2/00231_joined_fn_refs_enum_reduce.fz", 1),
+        ("fixtures2/00277_enum_tier0_fixture.fz", 5),
+        ("fixtures2/00281_opaque_reducer_closure.fz", 1),
+        ("fixtures2/behavior/enum_map_family.fz", 3),
+        ("fixtures2/behavior/opaque_fn_value_join.fz", 1),
+        ("fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz", 1),
+    ] {
+        let twins = indistinguishable_dispatch_arms(fixture);
+        assert_eq!(
+            twins.len(),
+            expected,
+            "{fixture}: the arm pairs one runtime question cannot separate moved off their pin; \
+             re-measure, name which residue moved, and re-pin: {twins:#?}",
         );
     }
 }
@@ -9032,8 +9079,9 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 
 /// The fixtures fz-kdt.107's census found carrying dispatch arms one runtime
 /// question cannot separate -- 17 groups across 10 fixtures -- plus the one
-/// fz-kdt.118 added for the group it dissolves.
-const ARM_ORDER_CENSUS: [&str; 11] = [
+/// fz-kdt.118 added for the group it dissolves and the two fz-kdt.125 added
+/// for the callable-identity shape.
+const ARM_ORDER_CENSUS: [&str; 13] = [
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
     "fixtures2/00275_enum_count_member_reduce.fz",
     "fixtures2/00277_enum_tier0_fixture.fz",
@@ -9045,6 +9093,8 @@ const ARM_ORDER_CENSUS: [&str; 11] = [
     "fixtures2/behavior/opaque_fn_value_join.fz",
     "fixtures2/behavior/range_enumerable.fz",
     "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
+    "fixtures2/behavior/closure_identity_tag_split.fz",
+    "fixtures2/behavior/closure_identity_captures.fz",
 ];
 
 /// fz-kdt.118 / fz-kdt.107: arm order is the scheduler's, so no answer may
@@ -9126,27 +9176,22 @@ fn interpreted_answer(fixture: &str) -> Vec<String> {
     dbg.lines()
 }
 
-/// fz-kdt.125 (found grounding fz-kdt.118's soundness obligation, RED at
-/// 788c0c21f and still red): a closure that reaches its invoker through one
-/// generalized hop is silently replaced by its sibling.
+/// fz-kdt.125: a closure that reaches its invoker through one generalized hop
+/// still runs, and it is the one the caller handed over.
 ///
 /// `run/2` only FORWARDS its callable, so its arrow position generalizes and
 /// one shared body serves both lambdas. `apply_twice/2` INVOKES it, so it
 /// specializes on the closure literal -- two bodies, each direct-calling its
-/// own lambda. `run/2`'s one callsite names both, `runtime_type_test_envelope`
-/// erases both literals to `fun_top`, so `discriminating_inputs` finds nothing
-/// to test and the plan compiles to an unconditional outcome: arm 1 is emitted
-/// and unreachable, and `n * 3` never runs.
+/// own lambda. `run/2`'s one callsite names both.
 ///
-/// This is NOT fz-kdt.118's drop rule -- the two observable surfaces are
-/// identical, containment is mutual, and the rule's strictness keeps both arms
-/// (output is byte-identical before and after it). It is fz-kdt.107's residue
-/// with the grounding path attached, and it is why fz-kdt.118 grounds its
-/// soundness on the routings base already produces rather than on the claim
-/// that an erased callable position is always invoked indirectly. That claim
-/// is what this test refutes.
+/// The two observable surfaces used to be identical, because
+/// `runtime_type_test_envelope` erased both literals to `fun_top`:
+/// `discriminating_inputs` found nothing to test, the plan compiled to an
+/// unconditional outcome, arm 1 was emitted unreachable, and `n * 3` never ran
+/// (12/12 for 12/90, on all three paths). The erasure was the defect. A closure
+/// value's heap word names the code it was minted from, so the envelope keeps
+/// literal fn ids and the plan asks which lambda arrived.
 #[test]
-#[ignore = "known red: fz-kdt.125 -- a forwarded closure is replaced by its sibling"]
 fn compiler2_forwarded_closures_are_not_replaced_by_their_sibling() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();

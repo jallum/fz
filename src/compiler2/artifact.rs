@@ -23,6 +23,7 @@ use crate::fz_ir::{
 };
 use crate::ground_value::GroundValue;
 use crate::source::Span;
+use crate::types::ClosureTarget;
 
 pub use super::body::ReusableConsCapture;
 use super::body::{
@@ -365,6 +366,11 @@ pub(crate) struct NativeBody {
 pub(crate) struct NativeCallableBoundary {
     pub id: NativeCallableBoundaryId,
     pub identity_fn: FnId,
+    /// The callable this boundary mints, as the type lattice names it. The
+    /// runtime word a minted value carries is `identity_fn`, which is this
+    /// backend's own numbering; a dispatch that asks WHICH callable a value is
+    /// asks in the lattice's terms, and this is the translation (fz-kdt.125).
+    pub target: Option<ClosureTarget>,
     pub wrapper_fn: FnId,
     pub captures: Box<[BackendConstructionCapture]>,
     pub capture_reprs: Box<[AbiValueRepr]>,

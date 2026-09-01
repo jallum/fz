@@ -1,0 +1,28 @@
+#---
+# purpose: "A dispatch that splits on a tag still routes each call to the lambda it was handed"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.126. `run/3` only FORWARDS its callable, so its arrow position
+# generalizes and one shared body serves both lambdas. `twice/3` INVOKES it, so
+# it specializes on the closure literal. The `:a`/`:b` argument splits `run/3`'s
+# callsite into two keys, and within each key both closure literals remain --
+# so an extra discriminable argument does not, on its own, make the routing
+# correct.
+#
+# What the four lines pin is that the tag and the lambda are independent. Each
+# tag arrives with each lambda, so a plan that tests the observable columns and
+# then asserts the whole correlated row reads the second and third lines
+# backwards. `12 90 12 90` is each call running the lambda it was given;
+# `12 90 90 12` is the routing following the tag instead.
+defmodule P do
+  fn twice(f, x, _t), do: f.(f.(x))
+  fn run(f, x, t), do: twice(f, x, t)
+end
+
+fn main() do
+  dbg(P.run(fn (n) -> n + 1 end, 10, :a))
+  dbg(P.run(fn (n) -> n * 3 end, 10, :b))
+  dbg(P.run(fn (n) -> n + 1 end, 10, :b))
+  dbg(P.run(fn (n) -> n * 3 end, 10, :a))
+end
