@@ -9,9 +9,15 @@
   "id": "fz-kdt.127",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "MEASURED by the fz-kdt.125 build (2026-09-01, base bd03d922e). Two premises in\nthis ticket's body and in fz-kdt.125's spec item 6 are REFUTED:\n\n(1) \"13/13 in-corpus groups are identity-separable\" is an artifact of the\ncensus helper. Its separability test regexes EVERY closure/fnref name out of a\nkey, including the ones sitting in CAPTURES -- and a capture is not identity.\nRe-measured against the landed axis: the no-question population falls 13 -\u003e 6,\nnot 13 -\u003e 0. The 6 survivors are THIS ticket's shape exactly, same fn id and\ndifferent captures:\n\n  00231_joined_fn_refs_enum_reduce      1  closure[Enum.reduce/3#lambda](fnref[add_a/2])\n                                           vs (fnref[add_b/2])\n  00277_enum_tier0_fixture              2  same lambda over two different inner closures\n  00281_opaque_reducer_closure          1  as 00231\n  behavior/opaque_fn_value_join         1  as 00231\n  behavior/repr_seam_enum_count_after_reduce2  1  as 00277\n\n(2) \"Corpus fallout of the backstop measured ZERO\" therefore does not hold. An\nunrepresentable-plan DIAGNOSTIC on inseparable groups would refuse to compile\nfive corpus fixtures. The fz-kdt.125 build did NOT land it for that reason --\nthe routing half of this ticket is still open and still unbuilt, and it needs\neither capture discrimination or a corpus that stops relying on the shape.\n\nWHAT DID LAND, and it is this ticket's ABI half: `Prim::ClosureCapture` reads a\ncapture back out of a closure through the boundary that WROTE it, and refuses\nat compile time when one callable was minted at several capture layouts that\ndisagree about a slot -- which is samelambda3's shape. That turns \"native\nexecutable lowering failed for index 11\" into a named invariant failure. The\ncompile failure itself (interp: \"omitted callee value 0 but target 17 needs\nsemantic inputs\") is untouched and still this ticket's.\n\nNOT A LIVE WRONG ANSWER, measured: 00281 with its twin function changed from\n`acc + x` to `acc - x` answers -6 on interp and JIT at head. The six groups'\narm-0-takes-all is order-decided but the members are interchangeable on the\nprobes tried; that is luck, not a proof.",
+      "timestamp": "2026-09-01T21:45:29Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: one lambda with two capture types compiles on no path -- and is the residue no identity axis can separate",
   "type": "task",
-  "updated_at": "2026-09-01T20:59:52Z"
+  "updated_at": "2026-09-01T21:45:29Z"
 }
