@@ -5,13 +5,13 @@
   ],
   "blocks": [],
   "created": "2026-09-01T19:20:33Z",
-  "description": "From the fz-kdt.107 cold review's Q4 dig, CORRECTED by its addendum\n(2026-09-01): the review first read 00277's dbg[empty_list()] vs\ndbg[list(int)] pair as a hole in fz-kdt.106's absorption -- WRONG.\nTypes::row_dominates has exactly two call sites, both inside\ninsert_row (semantic.rs:~917,922): the rule is scoped to ONE activation\nkey's correlated-row antichain BY CONSTRUCTION and never compares two\nkeys. That pair is a different question entirely (cross-key\nspecialization subsumption -- see its own ticket).\n\nWHAT THIS TICKET ACTUALLY OWNS: within one key, two rows differing only\nin a CAPTURED CLOSURE position (00277's FIFO\nRange.reduce/5[...{:cont,empty_list()}...] pair: Enum.reverse/1#lambda\nvs /2#lambda captures) are not absorbed although the payload column is\ndominated -- lit_arrow_shapes containment fails across distinct fn_ids.\nNOTE: this is a DELIBERATE guard, documented in row_column_dominates as\nstopping a template row from absorbing its ground sibling -- not an\noversight. The question is whether callable columns should instead be\ncompared through their runtime-observable erasure (fun_top), the same\njudgement fz-kdt.118 is making for the dispatch drop rule. SEQUENCE\nBEHIND fz-kdt.118: if 118's observable-surface judgement survives its\nrefuter (its soundness obligation is the same one), evaluate the\nanalogous relaxation here with the same discipline -- and remember the\nrelation's antisymmetry/termination are EMPIRICAL (documented as \"a\nfact about today's inputs, not a theorem\"), so any relaxation re-runs\nthe oscillation attack.",
+  "description": "CLOSED-AS-REFUTED pending fz-kdt.125's landing (2026-09-01 review\nverdict). This ticket asked whether kdt.106's row dominance should\ncompare captured-closure columns through their runtime-observable\nerasure (fun_top) -- the same judgement fz-kdt.118 made for the\ndispatch drop rule. The fz-kdt.125 review REFUTED THE PREMISE: the\nerasure of callables to fun_top is itself the defect (closure values\ncarry identity at runtime; the predicate gains an identity axis), so\n'compare through the erasure' inverts -- under the new axis the\nobservable form of a closure column IS its identity, and the proposed\nrelaxation would be a no-op at best, unsound at worst. The row\ndominance's verbatim closure-shape guard (lit_arrow_shapes\ncontainment) stays as-is: it is exactly identity-respecting, which is\nnow known to be the runtime-faithful comparison. The one standing\nconsequence (00277's FIFO Range.reduce pair with different captured\ninner closures not absorbing) is correct behaviour under the new\nunderstanding -- those rows ARE runtime-distinguishable. Close this\nticket when fz-kdt.125 lands and the 00277 pair re-measures under the\naxis; nothing to build here.",
   "id": "fz-kdt.121",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
   "status": "open",
-  "title": "Closure positions shield dominance: should the kdt.106 absorption compare callable columns through their runtime-observable erasure?",
+  "title": "REFUTED BY SEQUENCE: comparing callable columns through their runtime erasure inverts once the erasure itself is refuted",
   "type": "task",
-  "updated_at": "2026-09-01T19:34:40Z"
+  "updated_at": "2026-09-01T20:59:53Z"
 }
