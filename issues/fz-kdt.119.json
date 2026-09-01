@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T19:20:14Z",
+  "description": "Step 2 of fz-kdt.107's cure (cold review 2026-09-01).\nruntime_type_predicate_tuple_arities (types/mod.rs:2291) keeps a\nFiniteSet\u003cusize\u003e of arities and discards sig.elems entirely, so\n{:cont,X} and {:halt,Y} are ONE runtime question -- the root of\nfz-kdt.104's original miscompile class and of probes/halt.fz. Add\nper-position ATOM-TAG discrimination for fixed-arity tuples to\nRuntimeTypePredicate: {:cont,_} vs {:halt,_} become different questions,\nrestoring the sound 'narrow test first costs precision, not meaning'\nreading, dissolving the tuple class at the predicate rather than by\ndropping (makes fz-kdt.118 belt-and-braces rather than sole defence).\nCost measured cheap in principle: emit_i64_membership/\nemit_u64_membership already implement the per-value membership check\nlive for atom membership -- a new test SITE, not a new test kind; the\npredicate is consumed by three backends, measure all three paths.\nCorpus census note: this separates ZERO of the 17 in-corpus\nindistinguishable groups (12 closure-identity + 5 list-element) -- its\nvalue is the source-reachable tuple class (halt.fz), so the acceptance\nfixture is halt.fz-shaped, not a corpus lens.",
+  "id": "fz-kdt.119",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "The runtime predicate cannot see a tuple's tag: per-position atom discrimination for fixed-arity tuples",
+  "type": "task",
+  "updated_at": "2026-09-01T19:20:14Z"
+}
