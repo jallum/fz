@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T13:12:23Z",
+  "description": "From the fz-kdt.106 cold review (2026-09-01). Vec\u003cTy\u003e::equivalent is\npointwise Types::is_equivalent = mutual is_subtype, and is_subtype\ndecides closure-arrow emptiness from fn_id + captures alone\n(emptiness.rs::func_clause_empty ~:191-219 -- args/ret never read), so a\ntemplate arrow and a ground arrow over ONE lambda are judged equivalent.\nConsequence AT BASE, today: a template row and a ground row whose other\ncolumns match already collapse into each other in\nActivationInputAlternatives::insert_row, and which one survives is\nwhichever ARRIVED FIRST -- a pre-existing schedule-confluence hole in the\ncorrelated-input antichain. Measured (review harness, equiv_not_dom\ncounter): 8 fixtures exhibit pairs equivalence accepts that the kdt.106\ndominance relation rejects -- 52 on 00277, 46 on behavior/enum_map_family,\n30 on range_map, 16 on 00420, 8 on 00276, 6 each on\nlist_literal_trailing_call and map_enumerable.\n\nDECIDE: either the equivalence skip adopts the same\nfree-var-set/literal-shape discipline as Types::row_column_dominates and\nthe two fold into ONE relation (preferred -- fold-concordant), or\ninsert_row documents why two contradictory judgements about one pair\ncoexist and which is authoritative. fz-kdt.106's build documents the\ncoexistence; this ticket owns the fold decision and its artifact\nre-measurement.",
+  "id": "fz-0za",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "insert_row's whole-row equivalence skip is closure-literal-blind: arrival order decides which of a template/ground pair survives at base",
+  "type": "task",
+  "updated_at": "2026-09-01T13:12:23Z"
+}
