@@ -5647,3 +5647,52 @@ fn all_contract_strings() -> Vec<&'static str> {
     out.extend(SEAM_FACTS.iter().flat_map(|(seam, facts)| [*seam, *facts]));
     out
 }
+
+/// The construction wrappers a root publishes are NUMBERED by the order of the
+/// callable-owner positions they hang off, and the canonical dump prints those
+/// numbers as `construction=w<N>`. Two owners belonging to sibling
+/// specializations of one function agree on everything but their INPUT TYPES,
+/// so the input vector is the whole of their tiebreak — and keyed on raw `Ty`
+/// interner ids that tiebreak is interning order, which the agenda decides.
+///
+/// Measured red on `enum_take_drop_split` (fz-kdt.101): flip `Agenda::pop` to
+/// `pop_back` (src/compiler2/agenda.rs:36 — build, dump, revert) and two
+/// byte-identical `Enum.reduce/3#lambda@439-517/2` wrappers trade indices,
+/// `w10` <-> `w11`, moving four lines of a dump whose content did not change.
+///
+/// The invariant: owner positions sort on fz-kdt.105's canonical, id-free
+/// structural order, so the wrapper numbering says what the owners say.
+#[test]
+fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
+        include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let types = world.types();
+    let descents = plan
+        .callable_owners
+        .windows(2)
+        .filter(|pair| {
+            let left = pair[0].position.executable();
+            let right = pair[1].position.executable();
+            left.activation.function == right.activation.function
+        })
+        .filter(|pair| {
+            types
+                .cmp_tys(
+                    &pair[0].position.executable().activation.input,
+                    &pair[1].position.executable().activation.input,
+                )
+                .is_gt()
+        })
+        .count();
+    assert_eq!(
+        descents, 0,
+        "callable-owner positions sit in interning order rather than canonical order, so \
+         `construction=w<N>` numbering follows the schedule",
+    );
+}

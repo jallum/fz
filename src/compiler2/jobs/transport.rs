@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::super::body::{
@@ -22,6 +23,7 @@ use super::super::transport::{
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
+use super::artifact::{compare_executable_symbols, compare_transport_positions};
 use super::runtime_demand::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,16 +128,20 @@ impl TransportFactsBuilder {
         }
     }
 
-    fn finish(self) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
+    fn finish(self, types: &Types) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
         let callables = self
             .callables
             .into_iter()
             .map(|(id, mut draft)| {
-                draft.resolutions.sort_by_cached_key(executable_symbol_sort_key);
+                draft
+                    .resolutions
+                    .sort_by(|left, right| compare_executable_symbols(left, right, types));
                 draft
                     .direct_surfaces
                     .sort_by_cached_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
-                draft.direct_edges.sort_by_cached_key(callable_direct_edge_sort_key);
+                draft
+                    .direct_edges
+                    .sort_by(|left, right| compare_callable_direct_edges(left, right, types));
                 draft.boundary_ids.sort_by_key(|boundary| boundary.as_u32());
                 (
                     id,
@@ -154,8 +160,10 @@ impl TransportFactsBuilder {
             .map(|(id, mut draft)| {
                 draft
                     .publications
-                    .sort_by_cached_key(super::artifact::transport_position_global_sort_key);
-                draft.resolutions.sort_by_cached_key(executable_symbol_sort_key);
+                    .sort_by(|left, right| compare_transport_positions(left, right, types));
+                draft
+                    .resolutions
+                    .sort_by(|left, right| compare_executable_symbols(left, right, types));
                 (
                     id,
                     BoundaryFacts {
@@ -449,7 +457,7 @@ fn project_owner_answer(
     position: &TransportPosition,
 ) -> CallableConstructionOwner {
     let projected = project_generic_owner_facts(world, evidence, layout.structural, ty, demand, position);
-    let (callable_facts, boundary_facts) = projected.finish();
+    let (callable_facts, boundary_facts) = projected.finish(world.types());
     CallableConstructionOwner {
         layout,
         construction: None,
@@ -1252,7 +1260,7 @@ fn produce_local_callable_construction(
             .expect("settled callable flow edges should produce a dispatch plan"),
         })
     };
-    let (callable_facts, boundary_facts) = builder.finish();
+    let (callable_facts, boundary_facts) = builder.finish(world.types());
     Ok(CallableConstructionOwner {
         layout: TransportLayout {
             structural: world.intern_shape(ShapeDescr::Callable(callable)),
@@ -2035,7 +2043,6 @@ fn lanes_for_codegen_seam_shape(world: &World, shape: ShapeId) -> Vec<(ShapeId, 
     }
 }
 
-type ExecutableSymbolSortKey = (u32, Ty, Vec<Ty>, u8, usize);
 fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSymbol {
     ExecutableSymbol {
         activation: ActivationSymbol {
@@ -2047,25 +2054,13 @@ fn executable_symbol(executable: &ExecutableKey, types: &Types) -> ExecutableSym
     }
 }
 
-fn executable_symbol_sort_key(symbol: &ExecutableSymbol) -> ExecutableSymbolSortKey {
-    let need = match symbol.need {
-        ExecutableNeed::Value => (0, 0),
-        ExecutableNeed::TupleFields(arity) => (1, arity),
-    };
-    (
-        symbol.activation.function.as_u32(),
-        symbol.activation.arrow,
-        symbol.activation.input.to_vec(),
-        need.0,
-        need.1,
-    )
-}
-
-fn callable_direct_edge_sort_key(edge: &CallableDirectEdge) -> (Vec<Ty>, ExecutableSymbolSortKey) {
-    (
-        edge.surface_inputs.to_vec(),
-        executable_symbol_sort_key(&edge.resolution),
-    )
+/// A direct edge orders by the SURFACE it is reached through, then by the
+/// resolution it names — both canonically (fz-kdt.101), so the edge list a
+/// construction wrapper publishes is a function of what the edges say.
+fn compare_callable_direct_edges(left: &CallableDirectEdge, right: &CallableDirectEdge, types: &Types) -> Ordering {
+    types
+        .cmp_tys(&left.surface_inputs, &right.surface_inputs)
+        .then_with(|| compare_executable_symbols(&left.resolution, &right.resolution, types))
 }
 
 fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {

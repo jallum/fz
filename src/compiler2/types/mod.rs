@@ -306,7 +306,31 @@ impl Types {
     }
 
     fn order_clauses(&self, d: &mut Descr) {
-        order::ClauseOrder::new(self.ctx(), &self.callable_labels).sort_axes(d);
+        self.clause_order().sort_axes(d);
+    }
+
+    fn clause_order(&self) -> order::ClauseOrder<'_> {
+        order::ClauseOrder::new(self.ctx(), &self.callable_labels)
+    }
+
+    /// The canonical order on interned types, read from OUTSIDE the persistence
+    /// boundary (fz-kdt.101). It is the same comparator that puts a
+    /// descriptor's DNF clauses in canonical order at `intern` — structural,
+    /// id-free in effect, injective — so a packaging sort keyed on it names
+    /// what a type SAYS rather than when it happened to be interned.
+    ///
+    /// Raw `Ty` ordering is interning order, which the agenda decides: sort an
+    /// artifact inventory by it and a re-ordered pull renumbers entries that
+    /// are otherwise identical. Sorting by this instead removes the degree of
+    /// freedom, up to the two residuals `super::order` documents (free-var ties
+    /// and lambda byte-span labels), neither of which moves within one compile.
+    pub(crate) fn cmp_ty(&self, a: Ty, b: Ty) -> std::cmp::Ordering {
+        self.clause_order().cmp_ty(a, b)
+    }
+
+    /// Elementwise [`Types::cmp_ty`], shorter slice first.
+    pub(crate) fn cmp_tys(&self, a: &[Ty], b: &[Ty]) -> std::cmp::Ordering {
+        self.clause_order().cmp_tys(a, b)
     }
 
     /// The persistence boundary keeps the tuples axis of every

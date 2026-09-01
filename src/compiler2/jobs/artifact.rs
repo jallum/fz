@@ -4,6 +4,7 @@
 //! producer names the exact fact or product it needs instead of deriving a
 //! root-wide projection stack.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::diag::Diagnostic;
@@ -126,7 +127,7 @@ pub(crate) fn produce_materialized_executable_product(
         &body,
         &callsite_args,
     ));
-    let position_layouts = match read_transport_layouts(tel, context, transport_positions) {
+    let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -391,7 +392,7 @@ pub(crate) fn produce_abi_executable_product(
         executable,
         &materialized,
     ));
-    let position_layouts = match read_transport_layouts(tel, context, transport_positions) {
+    let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -463,7 +464,7 @@ fn materialized_executable_transport(
     types: &Types,
 ) -> MaterializedExecutableTransport {
     let symbol = transport_executable_symbol(executable, types);
-    position_layouts.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
+    position_layouts.sort_by(|(left, _), (right, _)| compare_transport_positions(left, right, types));
     position_layouts.dedup_by(|left, right| {
         if left.0 != right.0 {
             return false;
@@ -536,62 +537,72 @@ impl ArtifactTransportLookup<'_> {
     }
 }
 
-pub(crate) type CodegenSeamOwnerKey = (u8, u32, Option<Ty>, Vec<Ty>, u8, usize, u32);
-pub(crate) type CodegenSeamSortKey = (u8, CodegenSeamOwnerKey, u32, u32, u32, u32, u8);
-
-pub(crate) fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamSortKey {
-    let (kind, owner, secondary, tertiary) = codegen_seam_kind_key(&fact.seam);
-    (
-        kind,
-        owner,
-        secondary,
-        tertiary,
-        fact.shape.map(ShapeId::as_u32).unwrap_or(u32::MAX),
-        fact.lane.as_u32(),
-        codegen_lane_repr_rank(fact.repr),
-    )
+/// Canonical packaging order for the codegen-seam facts of one root: seam kind,
+/// then the owner the seam hangs off, then the seam's own structural
+/// discriminants, then the lane it names.
+pub(crate) fn compare_codegen_seam_facts(left: &CodegenSeamFact, right: &CodegenSeamFact, types: &Types) -> Ordering {
+    let (left_kind, left_owner, left_second, left_third) = codegen_seam_parts(&left.seam);
+    let (right_kind, right_owner, right_second, right_third) = codegen_seam_parts(&right.seam);
+    left_kind
+        .cmp(&right_kind)
+        .then_with(|| compare_codegen_seam_owners(&left_owner, &right_owner, types))
+        .then_with(|| left_second.cmp(&right_second))
+        .then_with(|| left_third.cmp(&right_third))
+        .then_with(|| shape_rank(left.shape).cmp(&shape_rank(right.shape)))
+        .then_with(|| left.lane.as_u32().cmp(&right.lane.as_u32()))
+        .then_with(|| codegen_lane_repr_rank(left.repr).cmp(&codegen_lane_repr_rank(right.repr)))
 }
 
-fn executable_owner_key(executable: &ExecutableSymbol) -> CodegenSeamOwnerKey {
-    let (function, arrow, inputs, need0, need1) = transport_executable_sort_key(executable);
-    (0, function, Some(arrow), inputs, need0, need1, 0)
+/// What a codegen seam hangs off. Executable-owned seams lead; the seam KIND
+/// already separates the two, so this only ever compares like with like.
+enum CodegenSeamOwner<'a> {
+    Executable(&'a ExecutableSymbol),
+    Boundary(BoundaryId),
 }
 
-fn boundary_owner_key(boundary: BoundaryId) -> CodegenSeamOwnerKey {
-    (1, 0, None, Vec::new(), 0, 0, boundary.as_u32())
+fn compare_codegen_seam_owners(left: &CodegenSeamOwner<'_>, right: &CodegenSeamOwner<'_>, types: &Types) -> Ordering {
+    match (left, right) {
+        (CodegenSeamOwner::Executable(left), CodegenSeamOwner::Executable(right)) => {
+            compare_executable_symbols(left, right, types)
+        }
+        (CodegenSeamOwner::Executable(_), CodegenSeamOwner::Boundary(_)) => Ordering::Less,
+        (CodegenSeamOwner::Boundary(_), CodegenSeamOwner::Executable(_)) => Ordering::Greater,
+        (CodegenSeamOwner::Boundary(left), CodegenSeamOwner::Boundary(right)) => left.as_u32().cmp(&right.as_u32()),
+    }
 }
 
-fn codegen_seam_kind_key(seam: &CodegenSeam) -> (u8, CodegenSeamOwnerKey, u32, u32) {
+/// A seam's kind rank, its owner, and the two structural discriminants that
+/// separate seams of one kind on one owner.
+fn codegen_seam_parts(seam: &CodegenSeam) -> (u8, CodegenSeamOwner<'_>, u32, u32) {
+    use CodegenSeamOwner::{Boundary, Executable};
     match seam {
         CodegenSeam::FunctionEntry {
             executable,
             semantic_index,
-        } => (0, executable_owner_key(executable), *semantic_index as u32, 0),
-        CodegenSeam::BlockParam { executable, entry } => (1, executable_owner_key(executable), entry.as_u32(), 0),
+        } => (0, Executable(executable), *semantic_index as u32, 0),
+        CodegenSeam::BlockParam { executable, entry } => (1, Executable(executable), entry.as_u32(), 0),
         CodegenSeam::EntryCapture {
             executable,
             entry,
             capture_index,
-        } => (
-            2,
-            executable_owner_key(executable),
-            entry.as_u32(),
-            *capture_index as u32,
-        ),
-        CodegenSeam::ReturnDelivery { executable } => (3, executable_owner_key(executable), 0, 0),
+        } => (2, Executable(executable), entry.as_u32(), *capture_index as u32),
+        CodegenSeam::ReturnDelivery { executable } => (3, Executable(executable), 0, 0),
         CodegenSeam::ContinuationEntry {
             executable,
             callsite,
             entry,
-        } => (4, executable_owner_key(executable), callsite.as_u32(), entry.as_u32()),
-        CodegenSeam::ReturnContinuation { executable, callsite } => {
-            (5, executable_owner_key(executable), callsite.as_u32(), 0)
-        }
-        CodegenSeam::TailCall { executable, callsite } => (6, executable_owner_key(executable), callsite.as_u32(), 0),
-        CodegenSeam::CallableBoundary { boundary } => (7, boundary_owner_key(*boundary), 0, 0),
-        CodegenSeam::ExternBoundary { executable } => (8, executable_owner_key(executable), 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => (9, boundary_owner_key(*boundary), 0, 0),
+        } => (4, Executable(executable), callsite.as_u32(), entry.as_u32()),
+        CodegenSeam::ReturnContinuation { executable, callsite } => (5, Executable(executable), callsite.as_u32(), 0),
+        CodegenSeam::TailCall { executable, callsite } => (6, Executable(executable), callsite.as_u32(), 0),
+        CodegenSeam::CallableBoundary { boundary } => (7, Boundary(*boundary), 0, 0),
+        CodegenSeam::ExternBoundary { executable } => (8, Executable(executable), 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => (9, Boundary(*boundary), 0, 0),
     }
+}
+
+/// A seam without a shape sorts after every seam that has one.
+fn shape_rank(shape: Option<ShapeId>) -> u32 {
+    shape.map(ShapeId::as_u32).unwrap_or(u32::MAX)
 }
 
 fn codegen_lane_repr_rank(repr: CodegenLaneRepr) -> u8 {
@@ -855,6 +866,7 @@ fn required_local_backend_transport_positions(
 fn read_transport_layouts(
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
+    types: &Types,
     positions: impl IntoIterator<Item = TransportPosition>,
 ) -> Result<Vec<(TransportPosition, TransportLayout)>, Vec<PullWait>> {
     let mut positions = positions
@@ -862,7 +874,7 @@ fn read_transport_layouts(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    positions.sort_by_cached_key(transport_position_global_sort_key);
+    positions.sort_by(|left, right| compare_transport_positions(left, right, types));
     let mut layouts = Vec::with_capacity(positions.len());
     let mut waits = Vec::new();
     for position in positions {
@@ -1061,8 +1073,7 @@ fn sort_transport_positions(positions: &mut [TransportPosition]) {
     positions.sort_by_key(transport_position_local_sort_key);
 }
 
-pub(crate) type TransportPositionLocalSortKey = (u32, u32, usize);
-pub(crate) type TransportExecutableSortKey = (u32, Ty, Vec<Ty>, u8, usize);
+type TransportPositionLocalSortKey = (u32, u32, usize);
 
 fn transport_position_local_sort_key(position: &TransportPosition) -> TransportPositionLocalSortKey {
     match position {
@@ -1086,25 +1097,54 @@ fn transport_position_local_sort_key(position: &TransportPosition) -> TransportP
     }
 }
 
-fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExecutableSortKey {
-    let need = match executable.need {
-        ExecutableNeed::Value => (0, 0),
-        ExecutableNeed::TupleFields(arity) => (1, arity),
-    };
-    (
-        executable.activation.function.as_u32(),
-        executable.activation.arrow,
-        executable.activation.input.to_vec(),
-        need.0,
-        need.1,
-    )
+/// Canonical packaging order for two executable symbols, and through them for
+/// every cross-executable artifact vector: transport positions, codegen seam
+/// facts, the construction wrappers keyed off owner positions.
+///
+/// The type components compare through [`Types::cmp_ty`] — fz-kdt.105's id-free
+/// structural order — and NOT as raw interner ids. Raw ids are assigned in
+/// interning order, which the agenda decides, so an id-keyed sort renumbers
+/// `entry x<N>` / `construction=w<N>` whenever the pull is re-ordered even
+/// though the artifact says exactly the same thing (fz-kdt.101).
+///
+/// TOTAL: `arrow` determines `input` and the comparator is injective, so no two
+/// distinct symbols of one root tie and nothing is left to sort stability.
+pub(crate) fn compare_executable_symbols(left: &ExecutableSymbol, right: &ExecutableSymbol, types: &Types) -> Ordering {
+    left.activation
+        .function
+        .as_u32()
+        .cmp(&right.activation.function.as_u32())
+        .then_with(|| types.cmp_ty(left.activation.arrow, right.activation.arrow))
+        .then_with(|| types.cmp_tys(&left.activation.input, &right.activation.input))
+        .then_with(|| compare_executable_needs(left.need, right.need))
 }
 
-pub(crate) type TransportPositionGlobalSortKey = (TransportExecutableSortKey, u8, TransportPositionLocalSortKey);
+/// A whole-value need leads the tuple-field needs it stands beside; two field
+/// needs order by arity.
+pub(crate) fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> Ordering {
+    match (left, right) {
+        (ExecutableNeed::Value, ExecutableNeed::Value) => Ordering::Equal,
+        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => Ordering::Less,
+        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => Ordering::Greater,
+        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
+    }
+}
 
-/// Canonical packaging order for a cross-executable set of transport positions.
-pub(crate) fn transport_position_global_sort_key(position: &TransportPosition) -> TransportPositionGlobalSortKey {
-    let variant = match position {
+/// Canonical packaging order for a cross-executable set of transport positions:
+/// the owning executable, then the position's variant, then its variant-local
+/// structural discriminants.
+pub(crate) fn compare_transport_positions(
+    left: &TransportPosition,
+    right: &TransportPosition,
+    types: &Types,
+) -> Ordering {
+    compare_executable_symbols(left.executable(), right.executable(), types)
+        .then_with(|| transport_position_variant_rank(left).cmp(&transport_position_variant_rank(right)))
+        .then_with(|| transport_position_local_sort_key(left).cmp(&transport_position_local_sort_key(right)))
+}
+
+fn transport_position_variant_rank(position: &TransportPosition) -> u8 {
+    match position {
         TransportPosition::ExecutableInput { .. } => 0,
         TransportPosition::ExecutableReturn { .. } => 1,
         TransportPosition::ResumePayload { .. } => 2,
@@ -1112,12 +1152,7 @@ pub(crate) fn transport_position_global_sort_key(position: &TransportPosition) -
         TransportPosition::CallArg { .. } => 4,
         TransportPosition::EntryCapture { .. } => 5,
         TransportPosition::Value { .. } => 6,
-    };
-    (
-        transport_executable_sort_key(position.executable()),
-        variant,
-        transport_position_local_sort_key(position),
-    )
+    }
 }
 
 fn materialize_call_edges(

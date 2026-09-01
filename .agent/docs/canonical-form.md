@@ -96,13 +96,21 @@ Built on `canon(Ty)`, by three rules:
   descriptor tree, bottoming out in lanes (a type plus a class) and callables (a
   function label plus capture types); a `FunctionId` becomes `Module.name/arity`;
   a `Span`'s code id becomes the submission's name.
-- **program-wide positions are re-sorted** on an id-free key. The executable
-  vector's published order settles on `Ty`-valued keys, so it moves with the
-  arena; the canonical order is an executable's function, input types and need.
-  Construction wrappers get the same treatment. Every index into either vector —
-  the program entry, direct and closure call targets, wrapper identities, the
-  `construction` field on a step — is remapped through that order. The remap
-  lives in the RENDERING; nothing renumbers the real structures.
+- **program-wide positions are re-sorted** on an id-free key: an executable's
+  function, input types and need; a wrapper's callable, arity, return form and
+  member boundaries. Every index into either vector — the program entry, direct
+  and closure call targets, wrapper identities, the `construction` field on a
+  step — is remapped through that order. The remap lives in the RENDERING;
+  nothing renumbers the real structures.
+
+  Two entries that render the same TIE, and a tie falls back to published
+  order — so the published order has to be id-free too, and it is: both
+  packaging sorts (`jobs::backend::compare_executable_keys` and
+  `jobs::artifact::compare_transport_positions`, the one the wrapper vector is
+  numbered by) compare their type components through `Types::cmp_ty` rather
+  than as raw interner ids. Before fz-kdt.101 they compared raw ids — interning
+  order, which the agenda decides — and a schedule flip swapped the indices of
+  two byte-identical construction wrappers on `enum_take_drop_split`.
 - **body-local ids are re-densified**. `ValueId` and `CallSiteId` are sparse
   after pruning (entries are reindexed, values and callsites are not), so names
   are handed out at first appearance in the body walk: `v0`, `v1`, `cs0`. A

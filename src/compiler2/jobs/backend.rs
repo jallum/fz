@@ -27,7 +27,7 @@ use super::super::body::{
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactUse;
 use super::super::identity::RootId;
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
+use super::super::identity::{ActivationKey, ExecutableKey};
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, SymbolicBackendBody, SymbolicBackendClause,
     SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportLayout,
@@ -39,7 +39,7 @@ use super::super::transport::{
 };
 use super::super::types::Ty;
 use super::super::world::World;
-use super::artifact::{codegen_seam_fact_sort_key, transport_position_global_sort_key};
+use super::artifact::{compare_codegen_seam_facts, compare_executable_needs, compare_transport_positions};
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -881,7 +881,8 @@ fn package_backend_construction_wrappers(
                 .map(|construction| (positioned, construction))
         })
         .collect::<Vec<_>>();
-    constructions.sort_by_cached_key(|(positioned, _)| transport_position_global_sort_key(&positioned.position));
+    constructions
+        .sort_by(|(left, _), (right, _)| compare_transport_positions(&left.position, &right.position, world.types()));
     let identities = constructions
         .iter()
         .enumerate()
@@ -1023,7 +1024,21 @@ fn executable_key_for_symbol_in_index(
         .cloned()
 }
 
-fn compare_executable_keys(
+/// The order the executable inventory is packaged in, and so the order its
+/// `x<N>` indices are handed out in.
+///
+/// The input types compare through [`super::super::Types::cmp_tys`] — the
+/// canonical, id-free structural order — and NOT as raw interner ids, which are
+/// assigned in interning order and therefore move with the agenda. Two
+/// specializations of one function differ only in their inputs, so that
+/// tiebreak is the whole of the numbering for a family of siblings: keyed on
+/// raw ids, a re-ordered pull renumbers entries that say exactly the same thing
+/// (fz-kdt.101).
+///
+/// TOTAL: root and function are ids the source decides, the inputs determine
+/// the rest of the key, and `cmp_tys` is injective — so nothing is left to sort
+/// stability.
+pub(crate) fn compare_executable_keys(
     left: &ExecutableKey,
     right: &ExecutableKey,
     types: &super::super::Types,
@@ -1038,17 +1053,8 @@ fn compare_executable_keys(
                 .as_u32()
                 .cmp(&right.activation.function.as_u32())
         })
-        .then_with(|| left.activation.inputs(types).cmp(&right.activation.inputs(types)))
+        .then_with(|| types.cmp_tys(&left.activation.inputs(types), &right.activation.inputs(types)))
         .then_with(|| compare_executable_needs(left.need, right.need))
-}
-
-fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std::cmp::Ordering {
-    match (left, right) {
-        (ExecutableNeed::Value, ExecutableNeed::Value) => std::cmp::Ordering::Equal,
-        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => std::cmp::Ordering::Less,
-        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => std::cmp::Ordering::Greater,
-        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
-    }
 }
 
 fn lower_symbolic_body(
@@ -1258,11 +1264,12 @@ pub(crate) fn symbolic_materialized_transport_plan(
             )
         })
         .collect::<Vec<_>>();
-    // Structural keys, not `format!("{position:?}")` comparators: these are
+    // Structural comparison, not `format!("{position:?}")`: these are
     // final-packaging sorts over the GLOBAL position set, and Debug-string
-    // keys recomputed per comparison were ~21% of the release compile. Cached
-    // because the key allocates (interned input types).
-    position_layouts.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
+    // keys recomputed per comparison were ~21% of the release compile. Compared
+    // in place rather than through a materialized key, so a comparison stops at
+    // the first difference and the input-type vector is never cloned.
+    position_layouts.sort_by(|(left, _), (right, _)| compare_transport_positions(left, right, world.types()));
     position_layouts.dedup_by(|left, right| {
         if left.0 != right.0 {
             return false;
@@ -1274,14 +1281,15 @@ pub(crate) fn symbolic_materialized_transport_plan(
         .iter()
         .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
         .collect::<Vec<_>>();
-    publication_boundaries
-        .sort_by_cached_key(|(position, boundary)| (transport_position_global_sort_key(position), boundary.as_u32()));
+    publication_boundaries.sort_by(|(left, left_boundary), (right, right_boundary)| {
+        compare_transport_positions(left, right, world.types()).then_with(|| left_boundary.cmp(right_boundary))
+    });
     let codegen_seam_facts = symbolic_codegen_seam_facts(backends, &position_layouts, world, boundaries);
     let mut callable_owners = backends
         .values()
         .flat_map(|backend| backend.abi.callable_owners.iter().cloned())
         .collect::<Vec<_>>();
-    callable_owners.sort_by_cached_key(|positioned| transport_position_global_sort_key(&positioned.position));
+    callable_owners.sort_by(|left, right| compare_transport_positions(&left.position, &right.position, world.types()));
     callable_owners.dedup_by(|left, right| {
         if left.position != right.position {
             return false;
@@ -1482,10 +1490,10 @@ fn symbolic_codegen_seam_facts(
     for boundary in boundaries.keys().copied() {
         push_symbolic_boundary_codegen_seams(backends, world, boundary, &boundaries[&boundary], &mut out);
     }
-    // Same structural key the session's codegen-seam-fact product uses
+    // Same comparator the session's codegen-seam-fact product uses
     // (`jobs/artifact.rs`), so the plan's facts and the session product share
     // one canonical order.
-    out.sort_by_cached_key(codegen_seam_fact_sort_key);
+    out.sort_by(|left, right| compare_codegen_seam_facts(left, right, world.types()));
     out.into_boxed_slice()
 }
 
@@ -2284,6 +2292,7 @@ mod tests {
     use super::*;
     use crate::compiler2::FunctionId;
     use crate::compiler2::artifact::BackendValueLayout;
+    use crate::compiler2::identity::ExecutableNeed;
     use crate::compiler2::pull::TransportCarrier;
     use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol};
 

@@ -400,3 +400,68 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
         );
     }
 }
+
+/// The executable inventory is NUMBERED by its position in the final-packaging
+/// sort, and the canonical dump prints those numbers everywhere — `entry x<N>`,
+/// `callee=x<N>`, and the construction wrappers keyed off the same executable
+/// symbols. Two specializations of one function differ only in their INPUT
+/// TYPES, so the input vector is the tiebreak that decides their indices; keyed
+/// on raw `Ty` interner ids that tiebreak is INTERNING order, which the agenda
+/// decides.
+///
+/// Measured on `enum_take_drop_split` (fz-kdt.101): flip `Agenda::pop` to
+/// `pop_back` (src/compiler2/agenda.rs:36 — build, dump, revert) and two
+/// byte-identical `Enum.reduce/3#lambda@439-517/2` construction wrappers trade
+/// indices, `w10` <-> `w11`, because their owning specializations carry the
+/// same types under different ids.
+///
+/// The invariant that removes the freedom: siblings break their tie on
+/// fz-kdt.105's canonical, id-free structural comparator (`Types::cmp_tys`), so
+/// two entries a reader cannot tell apart still have ONE order, and it is a
+/// function of what they say rather than of when they were interned.
+#[test]
+fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order() {
+    for (name, text) in [
+        TARGETS[0],
+        TARGETS[1],
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        ),
+    ] {
+        let (mut compiler, root) = submit(name, text);
+        compiler
+            .drive_root_to_dump_stage(root, DumpStage::Backend)
+            .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
+        let world = compiler.world();
+        let types = world.types();
+        let program = world.backend_program(root);
+        let descents = program
+            .executables
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair[0].key.activation.function == pair[1].key.activation.function)
+            .filter(|(_, pair)| {
+                types
+                    .cmp_tys(
+                        &pair[0].key.activation.inputs(types),
+                        &pair[1].key.activation.inputs(types),
+                    )
+                    .is_gt()
+            })
+            .map(|(index, pair)| {
+                format!(
+                    "x{index}/x{} {}",
+                    index + 1,
+                    function_label(world, pair[0].key.activation.function)
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            descents.is_empty(),
+            "{name}: {} sibling pair(s) sit in interning order rather than canonical order, so \
+             `entry x<N>` numbering follows the schedule: {descents:?}",
+            descents.len(),
+        );
+    }
+}

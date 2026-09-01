@@ -16,6 +16,13 @@
 //! becomes a function of the clause MULTISET, so same-denotation unions carved
 //! the same way intern to ONE `Ty`.
 //!
+//! The order has a second consumer, reached through `Types::cmp_ty`: the
+//! artifact's final-packaging sorts (fz-kdt.101). They used to compare raw `Ty`
+//! ids, which is interning order, so a re-ordered pull renumbered
+//! `entry x<N>` / `construction=w<N>` on artifacts that said the same thing.
+//! The two residuals below bound what that buys: schedule-independence WITHIN
+//! one compile, which is what those sorts need.
+//!
 //! # What the order is
 //!
 //! Lexicographic over the raw stored structure, in the spirit of the canonical
@@ -108,7 +115,7 @@ impl<'a> ClauseOrder<'a> {
     // Types
     // ------------------------------------------------------------------
 
-    fn cmp_ty(&self, a: Ty, b: Ty) -> Ordering {
+    pub(super) fn cmp_ty(&self, a: Ty, b: Ty) -> Ordering {
         if a == b {
             return Ordering::Equal;
         }
@@ -129,7 +136,7 @@ impl<'a> ClauseOrder<'a> {
             .then_with(|| self.cmp_axis(&a.maps, &b.maps))
     }
 
-    fn cmp_tys(&self, a: &[Ty], b: &[Ty]) -> Ordering {
+    pub(super) fn cmp_tys(&self, a: &[Ty], b: &[Ty]) -> Ordering {
         lex(a, b, |x, y| self.cmp_ty(*x, *y))
     }
 
