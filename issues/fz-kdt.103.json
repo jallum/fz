@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-31T19:03:00Z",
-  "description": "Found by the fz-kdt.96 adversarial review (2026-08-31): MaterializedTransportPlan.publication_boundaries (artifact.rs:70) is built and sorted at backend.rs:1273-1277,1319 (+ pull.rs:3947 test harness) and has ZERO production readers -- dead at base and at HEAD. Pre-existing debt that fz-kdt.96's record_layout_publication deletion proof silently leaned on (safe partly BECAUSE the field is dead). Also the only artifact surface that moved under fz-kdt.96 (298 -\u003e 290 rows on take_drop -- the clone's fabricated Value-position publications vanishing). DELETE the field and its builders (rip-out law); if some future consumer wants per-boundary publication rows, that is a new decision. Cheap; batches with any backend.rs touch.",
+  "description": "LANDED (2026-09-01; gate lib 1533/0, cli 24/0, matrix 425/0/9,\nclippy/fmt clean). Found by the fz-kdt.96 adversarial review:\nMaterializedTransportPlan.publication_boundaries was built and sorted at\nbackend.rs and initialized in the pull.rs harness with ZERO production\nreaders -- dead at base and every head. It was also the only artifact\nsurface that moved under fz-kdt.96 (298-\u003e290 rows on take_drop, the\nclone's fabricated Value-position publications vanishing) -- movement\ninto a ledger nothing consults. Deleted field + builder + packaging sort\n+ harness init in one motion; grep-zero references; canon never rendered\nit (artifact provably unmoved). The upstream publications field on\nTransportBoundaryFacts has real readers (jobs/transport.rs) and stays.",
   "id": "fz-kdt.103",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
   "status": "open",
-  "title": "MaterializedTransportPlan.publication_boundaries is dead: built, sorted, stored, never read",
+  "title": "Delete the publication ledger nothing ever read (MaterializedTransportPlan.publication_boundaries)",
   "type": "task",
-  "updated_at": "2026-08-31T19:03:00Z"
+  "updated_at": "2026-09-01T17:30:31Z"
 }
