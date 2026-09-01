@@ -7,9 +7,15 @@
   "id": "fz-kdt.64",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RIDER (fz-kdt.106 landed, a010532e8, 2026-09-01): NOT dissolved, but the decision is easier now. Dominance absorption removed the ascent-history accumulation that made input narrowing look necessary (the predicate wide cone is gone; per-callsite maxima are what settle). The asymmetry itself stands: ActivationInputs still cannot narrow on rebase while ReturnType can, and fz-kdt.82's withdrawal-as-ascent hazard still gates enabling it. Also relevant: both replace-shaped semantics were REFUTED BY PROTOTYPE during 106 (non-settlement via the budget-cliff ping-pong through the caller-callee 2-cycle; see fz-kdt.106's record) -- any resolution of this ticket that adds a mid-drive narrowing path must answer that refutation.",
+      "timestamp": "2026-09-01T16:56:36Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "ActivationInputs cannot narrow on rebase while ReturnType can: decide the asymmetry",
   "type": "bug",
-  "updated_at": "2026-08-30T23:46:03Z"
+  "updated_at": "2026-09-01T16:56:36Z"
 }
