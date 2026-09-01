@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.106"
+  ],
   "blocks": [],
   "created": "2026-09-01T13:12:24Z",
   "description": "From the fz-kdt.106 cold review (2026-09-01). On a 34-line program (14\nelement families x 14 distinct lambdas through Enum.all?/2, parked at the\nreview scratchpad as kdt106-review-stress1.fz) the base compiler at\n1d44ac7cd spends 172.8s and emits 526 executables with 24 budget\ncollapses; with dominance absorption it spends 1.63s and emits 588 with\n3. Same stdout, both schedules confluent. Two consequences:\n\n(1) The artifact RISES by 62 executables under the fix -- so \"counts must\nnot rise anywhere\" is not a property of the design; the correct gate is a\nCLASSIFICATION gate: a rise is acceptable exactly when paired with a\nreduction in budget collapses on that fixture (precision replacing\ncollapse-widened sharing). Recorded here as the standing rationale.\n\n(2) The real signal is compile WORK, and nothing in fixtures2 captures a\n100x collapse cascade. Add a corpus fixture in this shape with a\nwork-based ratchet (settlement counts from --log-telemetry, per\nfz-f98.23's no-wall-clock law), not a wall-clock one, once the\nfz-kdt.106-landed baseline exists to pin against.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Budget-collapse cascades are a compile-work catastrophe the corpus never captures: add a collapse-cascade fixture with a work ratchet",
   "type": "task",
-  "updated_at": "2026-09-01T13:12:35Z"
+  "updated_at": "2026-09-01T13:12:40Z"
 }
