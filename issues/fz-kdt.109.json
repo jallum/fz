@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-01T17:27:00Z",
   "created": "2026-08-31T23:20:05Z",
   "description": "LANDED fbd2ff6f2 (2026-09-01; refuter FIX-THEN-MERGE, doc-only fixes\nfolded; gate lib 1533/0, cli 24/0, matrix 425/0/9).\n\nTwice-measured defect: DependencyIndex::unresolved iterated the waiters\nHashMap, so the stall diagnostic's wait list was RandomState-ordered --\none release binary, 4 distinct stderr renderings in 5 runs of\n00050_empty.fz; 3 md5s in 3 runs of 00421; 90 of 577 fixtures stall, so\ncorpus stderr was useless as a sweep comparand.\n\nFIX: one packaging sort at the chokepoint -- key (fact Debug rendering,\nreadiness variant tie-break). Both poking consumers' local sorts folded\naway, PROVEN order-identical by in-process differential assertion\n(legacy computation vs new, full lib suite + full release matrix, zero\nfires). Debug over an Ord bound is deliberate and documented: it is\nbyte-for-byte the folded callers' key (what makes the fold provable),\nand derived Ord over arrow-bearing FactKeys is equally mint-order\ntainted (fz-k22.21 class) -- legal here only because the scope is\nWITHIN-RUN; the structural poke-path ordering is fz-kdt.114, and the\nsame defect on the demand_on_stall telemetry stream is fz-kdt.115.\nRefuter also proved Debug injectivity over live FactKeys (structural:\nderived Debug to primitive fields on all 30 variants; empirical:\nadjacent-equal assertion over lib+matrix, zero fires; worst case if\never broken = duplicated poke, never a merged/dropped fact -- dedup is\nPartialEq).\n\nPins: unit pin builds the same 24-wait set through the PRODUCTION\ncomplete path in two opposite orders (captured RED at base, fully\nscrambled); CLI pin runs 3 processes and requires byte-identical stderr\n(captured RED with the sort disabled). Post-fix: 5-run md5 stable on\n00050/00421 + 3 more stalling fixtures. All 90 corpus stalls are ONE\ndegenerate 4-wait shape (root entry never defined) -- 00421 is that\nsame shape (no entry fn), NOT truncation; the unit pin carries the\ncoverage variety. Bycatch triaged: 00424's run-varying thread id is\nstd's panic header, not a render site -- no defect.",
   "id": "fz-kdt.109",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A stalled compile's standing waits are a list, not a map: one packaging sort at the unresolved() chokepoint",
   "type": "task",
-  "updated_at": "2026-09-01T17:26:59Z"
+  "updated_at": "2026-09-01T17:27:00Z"
 }
