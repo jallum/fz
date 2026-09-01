@@ -568,8 +568,27 @@ set and embeds each callable-construction answer with its position; and
 packages a wrapper only from a positioned owner whose `construction` is
 present. Direct-only owners retain their layout and direct callable facts with
 no construction, so final packaging does not rejoin boundary publications to
-recover first-class eligibility. The root backend producer traverses its exact
-reachable backend-product values, then densifies
+recover first-class eligibility.
+
+A value whose positioned layout settled to `Nothing` carries no lanes, so
+nothing downstream can read it. Backend lowering applies that proof once, in the
+shared symbolic lowering: every fresh construction step
+(`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
+goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
+when its own value is proven absent — a closure the plan proves is never invoked
+is never built, on any path. Runtime consumers therefore read an artifact that
+already carries no dead construction. The proof is derived once, in lowering;
+the runtimes honor it rather than re-derive it for constructions — an `Omitted`
+step binds an absent value in both runtimes, and call-argument encoding elides
+any position whose layout carries no reprs, so an absent operand is skipped by
+the same fact that omitted its construction. The same proof holds at the other
+end of a body: a return contract whose layout publishes no lanes has nothing to
+encode, so a value tail returning through it reads no value at all
+(`return_lane_vars` in `jobs/native.rs`, the `BackendTail::Value` arm in
+`ir_interp/backend.rs`).
+
+The root backend producer traverses its exact reachable backend-product
+values, then densifies
 their embedded layouts and callable owners into one root product answer. The
 answer retains that `MaterializedTransportPlan` beside the closed
 `BackendProgram`; runtime consumers project only the program.

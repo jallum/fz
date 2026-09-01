@@ -1137,14 +1137,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     function: _,
                     construction,
                 } => {
+                    // A reference the transport plan settled to `Nothing` never
+                    // reaches here: backend lowering already omits it
+                    // (`construction_step_or_omitted`), so every surviving
+                    // `FunctionRef` carries lanes.
                     let shape = value_shape(executable, *value);
-                    if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
-                        // The transport plan settled this reference to Nothing: it is
-                        // never demanded as a runtime callable (passed only to an
-                        // ignoring boundary or discarded), so it carries no lanes.
-                        // Honor that proof and construct nothing.
-                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
-                    } else if let Some(identity) = construction {
+                    if let Some(identity) = construction {
                         let boundary = self.native_callable_boundary_for_construction(*identity)?;
                         let var = self.emit_callable_construction(ctx, boundary, Vec::new());
                         self.bind_runtime_value(ctx, executable, env, *value, var);
@@ -1168,14 +1166,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     captures,
                     construction,
                 } => {
+                    // As with `FunctionRef`, a settled-`Nothing` closure is omitted
+                    // by backend lowering, so every surviving `Lambda` really is
+                    // constructed and its captures really are demanded.
                     let shape = value_shape(executable, *value);
-                    if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
-                        // A settled-Nothing constructed callable is never demanded at
-                        // runtime, so its captures carry nothing. Honor the transport
-                        // plan's proof and construct nothing.
-                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
-                        continue;
-                    }
                     let callable_boundary = construction
                         .map(|identity| self.native_callable_boundary_for_construction(identity))
                         .transpose()?;

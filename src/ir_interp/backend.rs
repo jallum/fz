@@ -671,7 +671,19 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     })?;
     let transition = match &entry.tail {
         BackendTail::Value { value, dest } => {
-            let result = env_get_value(&env, *value)?;
+            // fz-kdt.111: honor the return contract's own absence proof, the way
+            // native's `return_lane_vars` does. Transport publishes no lane for a
+            // demand-ignored input, so `bind_executable_inputs` leaves it out of
+            // the env entirely; returning it is only ever reached when the return
+            // contract publishes no lanes either, so there is nothing to encode
+            // and nothing to read. Any other env miss is still a real fault.
+            let returns_no_lanes =
+                matches!(dest, ControlDestination::Return) && executable.return_layout.layout.reprs.is_empty();
+            let result = if returns_no_lanes && !env.contains_key(value) {
+                BackendBoundValue::Absent
+            } else {
+                env_get_value(&env, *value)?
+            };
             match dest {
                 ControlDestination::Return => {
                     continue_backend_value(runtime, transport, program, result, continuations)

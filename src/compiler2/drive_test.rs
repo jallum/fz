@@ -8121,6 +8121,42 @@ fn compiler2_unused_construction_call_binding_keeps_the_root_runnable() {
     );
 }
 
+/// fz-kdt.111: on the empty-list path `Enum.drop_while/2` never invokes its
+/// predicate, so runtime demand marks the closure input `ignore` and transport
+/// gives the `Lambda` value no lane at all -- nothing downstream can read it.
+/// The construction step for that dead closure must therefore be omitted like
+/// any other fresh construction of a proven-absent value: the interp evaluates
+/// steps eagerly and used to fault reading the never-bound capture ("backend
+/// value 1 is unbound") while native, which materializes absent values lazily,
+/// ran the same program correctly -- a three-path-parity break.
+#[test]
+fn compiler2_dead_closure_capture_does_not_starve_the_empty_list_path() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/dead_closure_capture_empty_list.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/dead_closure_capture_empty_list.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root)
+        .expect("interp must not evaluate the dead predicate closure's capture read");
+    compiler.run_root_jit(root).expect("JIT must run the same fixture");
+    let lines = dbg.lines();
+    assert_eq!(
+        lines,
+        vec!["[]".to_string(), "[3]".to_string(), "[]".to_string(), "[3]".to_string()],
+        "both paths must drop nothing from the empty list and still run the live predicate",
+    );
+}
+
 /// A rendered closure reports the arity its source declares, not the size of
 /// the environment the compiler happened to give it. Both closures here carry
 /// exactly one capture, so a renderer keyed on the environment cannot tell

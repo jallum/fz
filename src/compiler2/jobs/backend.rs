@@ -1869,21 +1869,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     fields: fields.clone(),
                 },
             ),
-            LoweredStep::FunctionRef { value, function } => BackendStep::FunctionRef {
-                value: *value,
-                function: *function,
-                construction: None,
-            },
+            LoweredStep::FunctionRef { value, function } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::FunctionRef {
+                    value: *value,
+                    function: *function,
+                    construction: None,
+                },
+            ),
             LoweredStep::Lambda {
                 value,
                 function,
                 captures,
-            } => BackendStep::Lambda {
-                value: *value,
-                function: *function,
-                captures: captures.clone(),
-                construction: None,
-            },
+            } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::Lambda {
+                    value: *value,
+                    function: *function,
+                    captures: captures.clone(),
+                    construction: None,
+                },
+            ),
             LoweredStep::BinaryOp { value, op, left, right } => BackendStep::BinaryOp {
                 value: *value,
                 op: *op,
@@ -1971,11 +1977,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     }
 
     /// Every fresh-construction step (Tuple/List/Map/MapUpdate/Struct/
-    /// Bitstring) must respect the absence proof: when transport proves the
-    /// constructed value runtime-absent, its operands were never demanded and
-    /// may be unbound at runtime, so the step lowers as `Omitted` instead of
-    /// executing a read of never-materialized values (fz-9in: a dead binding
-    /// whose construction call survives because it allocates).
+    /// Bitstring/FunctionRef/Lambda) must respect the absence proof: when
+    /// transport proves the constructed value runtime-absent, its operands were
+    /// never demanded and may be unbound at runtime, so the step lowers as
+    /// `Omitted` instead of executing a read of never-materialized values
+    /// (fz-9in: a dead binding whose construction call survives because it
+    /// allocates; fz-kdt.111: a predicate closure a shared `Enum` body proves
+    /// it never invokes, whose ignored capture the eager interp still read).
     fn construction_step_or_omitted(&self, value: ValueId, step: BackendStep) -> BackendStep {
         if self.value_is_proven_runtime_absent(value) {
             BackendStep::Omitted { value }
