@@ -1,0 +1,43 @@
+#---
+# purpose: "Enumerable.reduce halts on :halt and runs the reducer it was handed, whatever order the dispatch arms arrived in"
+#---
+#
+# ## What this fixture pins
+#
+# Two `Enumerable.reduce/3` calls over one range, with two different reducer
+# lambdas. The compiler shares one `Range.reduce_cont/6` body between them, and
+# its step callsite settles two targets of `Range.reduce_step/6`:
+#
+#     arm0  (..., {:cont, int} | {:halt, int}, #66closure[])
+#     arm1  (..., {:cont, int},                #68closure[])
+#
+# Those two are ONE question to the runtime. `RuntimeTypePredicate` records a
+# tuple's arity and nothing else, so `{:cont, int}` and `{:cont, int} |
+# {:halt, int}` both project to "a 2-tuple" and `{:halt, 3}` passes arm1's test
+# as readily as arm0's; `runtime_type_test_envelope` erases both closure
+# literals to `fun_top`, so the position that really separates the two arms is
+# invisible to every test the plan can emit. Nothing but arm order decides
+# which body runs, and arm order is the scheduler's.
+#
+# Line 1 is what that costs when the order goes the other way: with the narrow
+# arm first, `{:halt, 3}` lands in the body specialized on `{:cont, int}`, the
+# halt is read as a continue, and the reduce reports `{:done, 3}` instead of
+# `{:halted, 3}`. fz-kdt.118 drops the narrow arm -- its observable domain is
+# contained in its twin's -- so no order can swallow the halt.
+#
+# Line 2 is the other half, and it is why dropping is safe here. Both reducers
+# reach one surviving body, the one keyed on the OTHER closure literal. `1500`
+# is `100 + 200 + 300 + 400 + 500`: the reducer the value carried is the one
+# that ran. Were the callable position lowered as a grounded direct call to the
+# body's own closure, this line would read `{:done, 15}`.
+
+fn main() do
+  dbg(Enumerable.reduce(1..5, {:cont, 0}, fn (x, acc) ->
+    if x > 2 do
+      {:halt, acc}
+    else
+      {:cont, acc + x}
+    end
+  end))
+  dbg(Enumerable.reduce(1..5, {:cont, 0}, fn (x, acc) -> {:cont, acc + x * 100} end))
+end

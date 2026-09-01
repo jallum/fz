@@ -9030,6 +9030,198 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
     twins
 }
 
+/// The fixtures fz-kdt.107's census found carrying dispatch arms one runtime
+/// question cannot separate -- 17 groups across 10 fixtures -- plus the one
+/// fz-kdt.118 added for the group it dissolves.
+const ARM_ORDER_CENSUS: [&str; 11] = [
+    "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
+    "fixtures2/00275_enum_count_member_reduce.fz",
+    "fixtures2/00277_enum_tier0_fixture.fz",
+    "fixtures2/00281_opaque_reducer_closure.fz",
+    "fixtures2/behavior/enum_map_family.fz",
+    "fixtures2/behavior/enum_predicate_search.fz",
+    "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures2/behavior/opaque_fn_value_join.fz",
+    "fixtures2/behavior/range_enumerable.fz",
+    "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
+];
+
+/// fz-kdt.118 / fz-kdt.107: arm order is the scheduler's, so no answer may
+/// depend on it.
+///
+/// Reversing each runtime-indistinguishable group is a permutation of the
+/// callsite's targets, which is all arrival order ever is -- so every order
+/// this produces is one the fixpoint could legally have delivered on its own,
+/// and an answer that moves under it is an answer arm order decides. This is
+/// the only gate that catches the class: the arms ask ONE question, so the
+/// corpus's own schedules never disagree about them (FIFO and LIFO are stdout-
+/// identical on all 579 fixtures) and the miscompiling orders stay legal but
+/// unproduced until something perturbs them.
+///
+/// RED at 788c0c21f on `enum_reduce_halt_arm_order`, which returns
+/// `{:done, 3}` for `{:halted, 3}` when the narrow `{:cont, int}` arm is
+/// listed first -- the fz-kdt.104 defect verbatim, still constructible because
+/// that rule judged containment on semantic surfaces and the two arms differ
+/// by a closure literal `runtime_type_test_envelope` has already erased.
+///
+/// This gate drives the interpreter, which is where every fixture's answer is
+/// defined. Natively `enum_map_family` still moves under reversal -- it aborts
+/// in `fz_list_head_int_ref` -- and that is a DIFFERENT class this ticket does
+/// not touch: three list arms over `[:false | :true]`, `[int | :ok | :true]`
+/// and `[int]` whose bodies use incompatible element accessors, no one of
+/// which covers another (fz-kdt.107 step 3). Reproduce it outside the harness,
+/// where an abort cannot take the suite down with it:
+///
+///     FZ_STRESS_REVERSE_DISPATCH_ARMS=1 \
+///       cargo run --bin fz2 -- run fixtures2/behavior/enum_map_family.fz
+#[test]
+fn compiler2_dispatch_answers_the_same_under_a_reversed_arm_order() {
+    for fixture in ARM_ORDER_CENSUS {
+        let settled = settled_arm_order_answer(fixture);
+        let reversed = {
+            let _stress = crate::compiler2::callsite_dispatch::arm_order_stress::ReversedArmOrder::install();
+            interpreted_answer(fixture)
+        };
+        assert_eq!(
+            reversed, settled,
+            "{fixture}: reversing the arms no runtime test can separate is a legal arrival order, \
+             so it must not change a single answer",
+        );
+    }
+}
+
+/// The answer to hold a reversed arm order to: the blessed golden where the
+/// fixture matrix owns one, and otherwise this tree's own settled-order run.
+fn settled_arm_order_answer(fixture: &str) -> Vec<String> {
+    let golden = fixture.strip_suffix(".fz").map(|stem| format!("{stem}.expected.txt"));
+    match golden.and_then(|path| std::fs::read_to_string(path).ok()) {
+        Some(text) => text.lines().map(str::to_string).collect(),
+        None => interpreted_answer(fixture),
+    }
+}
+
+/// One fixture's `dbg` output, through the backend interpreter.
+fn interpreted_answer(fixture: &str) -> Vec<String> {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        panic!(
+            "{fixture} should run on the backend interpreter: {error}; dbg={}",
+            dbg.lines().join("\n")
+        )
+    });
+    dbg.lines()
+}
+
+/// fz-kdt.125 (found grounding fz-kdt.118's soundness obligation, RED at
+/// 788c0c21f and still red): a closure that reaches its invoker through one
+/// generalized hop is silently replaced by its sibling.
+///
+/// `run/2` only FORWARDS its callable, so its arrow position generalizes and
+/// one shared body serves both lambdas. `apply_twice/2` INVOKES it, so it
+/// specializes on the closure literal -- two bodies, each direct-calling its
+/// own lambda. `run/2`'s one callsite names both, `runtime_type_test_envelope`
+/// erases both literals to `fun_top`, so `discriminating_inputs` finds nothing
+/// to test and the plan compiles to an unconditional outcome: arm 1 is emitted
+/// and unreachable, and `n * 3` never runs.
+///
+/// This is NOT fz-kdt.118's drop rule -- the two observable surfaces are
+/// identical, containment is mutual, and the rule's strictness keeps both arms
+/// (output is byte-identical before and after it). It is fz-kdt.107's residue
+/// with the grounding path attached, and it is why fz-kdt.118 grounds its
+/// soundness on the routings base already produces rather than on the claim
+/// that an erased callable position is always invoked indirectly. That claim
+/// is what this test refutes.
+#[test]
+#[ignore = "known red: fz-kdt.125 -- a forwarded closure is replaced by its sibling"]
+fn compiler2_forwarded_closures_are_not_replaced_by_their_sibling() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/forwarded_closure_siblings.fz".to_string()),
+        text: r#"
+defmodule Pipeline do
+  fn apply_twice(f, x), do: f.(f.(x))
+  fn run(f, x), do: apply_twice(f, x)
+end
+
+fn main() do
+  dbg(Pipeline.run(fn (n) -> n + 1 end, 10))
+  dbg(Pipeline.run(fn (n) -> n * 3 end, 10))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_interp(root_id)
+        .unwrap_or_else(|error| panic!("forwarded closures should run: {error}"));
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["12", "90"],
+        "each call must invoke the lambda it was handed, not the one the surviving specialization was keyed on",
+    );
+}
+
+/// fz-kdt.118, the three-path half: `:halt` halts on the native path too,
+/// under either arm order.
+///
+/// The interpreter carries a dynamic tag on every value, so it can survive
+/// routing a value into a body that was not specialized for it. Native code
+/// cannot, and this fixture's answer is a plan-level fact -- it must read the
+/// same whichever way the arms arrived.
+#[test]
+fn compiler2_jit_halts_a_reduce_under_either_arm_order() {
+    for reversed in [false, true] {
+        let tel = ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures2/behavior/enum_reduce_halt_arm_order.fz".to_string()),
+            text: include_str!("../../fixtures2/behavior/enum_reduce_halt_arm_order.fz").to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let _stress = reversed.then(crate::compiler2::callsite_dispatch::arm_order_stress::ReversedArmOrder::install);
+        compiler
+            .run_root_jit(root_id)
+            .unwrap_or_else(|error| panic!("the halt fixture should run on the JIT (reversed={reversed}): {error}"));
+        assert_eq!(
+            dbg.lines().as_slice(),
+            ["{:halted, 3}", "{:done, 1500}"],
+            "reversed={reversed}: `:halt` must halt whichever arm the plan lists first, \
+             and the reducer the value carried is the one that must run",
+        );
+    }
+}
+
 #[test]
 fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let tel = ConfiguredTelemetry::new();
