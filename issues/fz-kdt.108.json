@@ -7,9 +7,15 @@
   "id": "fz-kdt.108",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RIDER (fz-kdt.106 landed, a010532e8, 2026-09-01): 106 changes this ticket's input -- re-measure the callable-flow edge population (was 18 edges) on the post-106 base before scoping; dominance absorption alters which correlated rows exist at the callable-flow surfaces.",
+      "timestamp": "2026-09-01T16:56:37Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Callable-flow selection plans carry the same arm-order-is-semantics trap fz-kdt.104 fixed for callsites",
   "type": "bug",
-  "updated_at": "2026-08-31T23:10:44Z"
+  "updated_at": "2026-09-01T16:56:37Z"
 }
