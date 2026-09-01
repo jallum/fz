@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T18:26:31Z",
+  "description": "Bycatch from the fz-kdt.111 refutation (2026-09-01), all verified\nIDENTICAL at base 24b228068 and head -- pre-existing, not introduced.\nProbe programs parked at the session scratchpad k111/probes/.\n\n(1) Enum.map over a LIST OF CLOSURES: interp dies 'backend executable 22\nfunction 122 entry 2 tail failed: compiler2_unreachable_control'; JIT\nprints the correct answer. Three-path-parity break, same family as\nfz-kdt.111, different site (a tail, not a construction).\n\n(2) A closure stored as a MAP VALUE (%{:p =\u003e fn(x) -\u003e ... end}): JIT and\nAOT abort (exit 134, non-unwinding panic in _fz_ref_load_int); head\ninterp now runs it CORRECTLY ([], true) -- fz-kdt.111 turned a\nboth-paths-red case into interp-green/JIT-abort, exposing the native bug.\n\n(3) Two closures joined through an `if`, then passed to Enum.drop_while:\nerror[artifact/incomplete-semantic-plan] native lowering failure on both\nrun and build. Possibly fz-kdt.107/108 family (joined callable at a\ndispatch surface) -- check there before fixing standalone.\n\nTriage each separately when picked up; they share a smell, not a proven\nroot.",
+  "id": "fz-kdt.117",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Three pre-existing parity/lowering bugs found by fz-kdt.111 refuter probes (closure-in-map JIT abort; Enum.map closure-list interp unreachable_control; if-joined closures incomplete-semantic-plan)",
+  "type": "task",
+  "updated_at": "2026-09-01T18:26:31Z"
+}
