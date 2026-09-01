@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.125"
+  ],
   "blocks": [],
   "created": "2026-09-01T20:59:31Z",
   "description": "Found by the fz-kdt.125 cold review (2026-09-01, probe samelambda3.fz\nin session scratchpad rev125/). Legal program, zero paths compile:\n\n  fn mk(c), do: fn (n) -\u003e n + c end\n  P.run(P.mk(1), 10)    # capture int\n  P.run(P.mk(0.5), 10)  # capture float\n\nmeans 12 / 11.0. Base: interp 'closure call ... omitted callee value 0\nbut target 17 needs semantic inputs' (fz-kdt.111's signature, different\nsite); native 'native executable lowering failed for index 11'.\n\nTWO halves: (1) the compile failure itself; (2) the two arms are\ntwice/2[closure[L](int)] vs twice/2[closure[L](float)] -- SAME fn id,\nso fz-kdt.125's identity axis cannot separate them (captures differ,\nidentity does not). This shape is therefore the natural home of\nfz-kdt.107's 'unrepresentable plan' DIAGNOSTIC, promoted from interim\noption to REQUIRED backstop: where no runtime question (identity\nincluded) separates arms whose bodies differ, refuse with a\ncompile-time diagnostic rather than order-decided routing. Corpus\nfallout of the backstop measured ZERO (13/13 in-corpus groups are\nidentity-separable). Alternative worth one paragraph when picked up:\ncapture-REPR discrimination (the capture record's layout differs\nint-vs-float) -- but weigh against just diagnosing. Zero corpus\noccurrences; constructible from ordinary source. Sequence after\nfz-kdt.125.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "P1: one lambda with two capture types compiles on no path -- and is the residue no identity axis can separate",
   "type": "task",
-  "updated_at": "2026-09-01T20:59:31Z"
+  "updated_at": "2026-09-01T20:59:52Z"
 }
