@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T01:04:31Z",
+  "description": "Bycatch from the fz-kdt.105 adversarial review (2026-08-31, verified identical at base fba7d72e3 and head): fz2 interp on Enum.drop_while([], pred) dies with 'backend value 1 is unbound'; fixture 00277_enum_tier0_fixture aborts identically at output line 13 ('backend value 0 is unbound') on both sides, while JIT and AOT are correct and byte-identical. Pre-existing, NOT introduced by the kdt.104/105 chain. Three-path-parity law: the interp lane's binding of backend values diverges from native on some drop_while/empty-list shape. Related in smell to fz-kdt.3 (backend value unbound, reusable-cons exit counters, enum_tier0) -- possibly the same root; check fz-kdt.3 first and fold if so. Repro: fz2 interp fixtures2/00277_enum_tier0_fixture.fz (aborts at line 13); minimal: drop_while over [].",
+  "id": "fz-kdt.111",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Interp backend dies 'backend value N is unbound' on drop_while over empty list; 00277 aborts at line 13 -- JIT/AOT correct (pre-existing three-path-parity bug)",
+  "type": "task",
+  "updated_at": "2026-09-01T01:04:31Z"
+}
