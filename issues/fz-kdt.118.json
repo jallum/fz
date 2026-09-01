@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-kdt.107"
+    "fz-kdt.107",
+    "fz-kdt.121"
   ],
   "created": "2026-09-01T19:20:13Z",
   "description": "Step 1 of fz-kdt.107's cure (cold review 2026-09-01, protoE.patch in\nsession scratchpad rev107/, ~8 lines, measured green). fz-kdt.104's\ndrop rule (stands_in_for, callsite_dispatch.rs:~183) judges domain\ncontainment on SEMANTIC surfaces; at the {:cont,X} vs {:cont,X}|{:halt,X}\nsite the two arms differ only by their reducer's closure literal\n(#66closure[] vs #68closure[]) at a position runtime_type_test_envelope\nalready erases to fun_top -- is_subtype says not-contained, so the exact\npair kdt.104 was built to kill SURVIVES, order-protected, and\nprobes/halt.fz returns {:done,3} under a legal arm order.\n\nFIX: judge containment on the OBSERVABLE (runtime_type_test_envelope)\nsurfaces; keep the same-callee conjunct unchanged. Measured (protoE):\nlib 1534/0, corpus stdout 0/579 moved, 1 canon file moves\n(enum_predicate_search), arm-reversal crashers 2 -\u003e 1, halt.fz correct\nunder ANY order (the narrow arm is dropped so no order can swallow\n:halt).\n\nRED-FIRST GATE: halt.fz as a drive_test fixture asserting {:halted,3}\nunder the arm-REVERSAL knob (red at base -- today green only by arrival\nluck).\n\nSOUNDNESS OBLIGATION BEFORE LANDING (the review's named open question,\nthe builder must ground it and the refuter must attack it): dropping on\nenvelope-containment routes a value carrying closure #68 into a body\nspecialized on #66 -- prove a callable position erased to fun_top is\nALWAYS invoked indirectly at the surviving body (evidence for:\nprobes/q3b.fz, three reducers through one shared dispatch, correct on\ninterp+native; evidence needed against: the CallableConstructionFact\ngrounding path and fz-kdt.111's grounded-closure machinery). If a\ngrounded-callable counterexample exists, the envelope judgement needs a\ngrounded-position carve-out.",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "P1: the dispatch drop rule is blocked by closure identity at a position no runtime test can see",
   "type": "task",
-  "updated_at": "2026-09-01T19:20:32Z"
+  "updated_at": "2026-09-01T19:34:40Z"
 }

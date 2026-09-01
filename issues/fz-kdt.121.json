@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.118"
+  ],
   "blocks": [],
   "created": "2026-09-01T19:20:33Z",
   "description": "From the fz-kdt.107 cold review's Q4 dig, CORRECTED by its addendum\n(2026-09-01): the review first read 00277's dbg[empty_list()] vs\ndbg[list(int)] pair as a hole in fz-kdt.106's absorption -- WRONG.\nTypes::row_dominates has exactly two call sites, both inside\ninsert_row (semantic.rs:~917,922): the rule is scoped to ONE activation\nkey's correlated-row antichain BY CONSTRUCTION and never compares two\nkeys. That pair is a different question entirely (cross-key\nspecialization subsumption -- see its own ticket).\n\nWHAT THIS TICKET ACTUALLY OWNS: within one key, two rows differing only\nin a CAPTURED CLOSURE position (00277's FIFO\nRange.reduce/5[...{:cont,empty_list()}...] pair: Enum.reverse/1#lambda\nvs /2#lambda captures) are not absorbed although the payload column is\ndominated -- lit_arrow_shapes containment fails across distinct fn_ids.\nNOTE: this is a DELIBERATE guard, documented in row_column_dominates as\nstopping a template row from absorbing its ground sibling -- not an\noversight. The question is whether callable columns should instead be\ncompared through their runtime-observable erasure (fun_top), the same\njudgement fz-kdt.118 is making for the dispatch drop rule. SEQUENCE\nBEHIND fz-kdt.118: if 118's observable-surface judgement survives its\nrefuter (its soundness obligation is the same one), evaluate the\nanalogous relaxation here with the same discipline -- and remember the\nrelation's antisymmetry/termination are EMPIRICAL (documented as \"a\nfact about today's inputs, not a theorem\"), so any relaxation re-runs\nthe oscillation attack.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Closure positions shield dominance: should the kdt.106 absorption compare callable columns through their runtime-observable erasure?",
   "type": "task",
-  "updated_at": "2026-09-01T19:34:39Z"
+  "updated_at": "2026-09-01T19:34:40Z"
 }
