@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T19:20:48Z",
+  "description": "Bycatch from the fz-kdt.107 cold review's Q1 probes (2026-09-01;\nprobes/q1a.fz, q1b.fz in session scratchpad rev107/probes/): a valid\nprogram with two reduce calls over different element families sharing\nan [] seed accumulator is REFUSED at compile time with spec/violation\n-- the analysis conflates the two closures' parameter types. Valid\nElixir refused. Consequence beyond the bug itself: a whole family of\nadversarial dispatch-twin programs (fz-kdt.107's Q1 shapes) is\nUNWRITABLE today, which is part of why the corpus looks safe -- fixing\nthis may EXPOSE more of 107's class, so re-run the arm-reversal stress\nafter fixing.",
+  "id": "fz-kdt.122",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Two reducers over different element families sharing an [] accumulator are rejected with a false spec/violation",
+  "type": "task",
+  "updated_at": "2026-09-01T19:20:48Z"
+}
