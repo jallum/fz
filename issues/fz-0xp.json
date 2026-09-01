@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-01T13:12:23Z",
-  "description": "From the fz-kdt.106 cold review (2026-09-01). ACTIVATION_INPUT_ROW_BUDGET\nfiring is the primary signal that the compiler is doing history-driven\nrather than input-driven work, and after fz-kdt.106 lands a fire means\nGENUINE correlation width. Today it is observable only by patching in an\neprintln. Emit a telemetry event carrying the activation key, the row\ncount at collapse, and the joined projection, so the kdt.106 acceptance\ngate (0 collapses corpus-wide) and the compile-work ratchet\n(fz-kdt.113-class) can be asserted from telemetry per the\ntests-observe-telemetry rule. Baseline at 1d44ac7cd: 3 of 449 dumping\nfixtures collapse at base (00420_enum_take_drop_split at 30,\nbehavior/enum_take_drop_split at 30, behavior/enum_predicate_search at\n28); zero after dominance absorption. NOTE: fz-kdt.106's build may land\nthis in-story since its acceptance depends on it -- if so, close this as\nabsorbed by that commit.",
+  "description": "From the fz-kdt.106 cold review (2026-09-01). ACTIVATION_INPUT_ROW_BUDGET\nfiring is the primary signal that the compiler is doing history-driven\nrather than input-driven work, and after fz-kdt.106 lands a fire means\nGENUINE correlation width. The fz-kdt.106 build (eace470ea) landed a\nREAL public telemetry event for it (allowlisted, readable from\n--log-telemetry) but via a THREAD-LOCAL ledger drained in drive.rs --\nJoinContribution::Ctx is an associated type, so a borrowed sink cannot\nride the context without a GAT on all three implementors, and World\nholds no telemetry handle. THIS TICKET'S REMAINING WORK: decide whether\nthe thread-local producer/drain split (which follows the existing\nflush_reported_warnings precedent) is the permanent shape or whether a\nfirst-class threaded sink is worth the GAT plumbing; if the former,\nclose with that decision recorded. The event feeds fz-zih's\ncollapse-cascade work-ratchet fixture. Baseline at 1d44ac7cd: 3 of 449\ndumping fixtures collapse at base (00420 at 30,\nbehavior/enum_take_drop_split at 30, behavior/enum_predicate_search at\n28; 88 events corpus-wide); zero after dominance absorption (the\nengineered stress shape still collapses 3x -- genuine correlation width,\nby design).",
   "id": "fz-0xp",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "The activation-input row budget needs a telemetry event: a collapse is the history-vs-input work signal",
   "type": "task",
-  "updated_at": "2026-09-01T13:12:34Z"
+  "updated_at": "2026-09-01T14:00:02Z"
 }
