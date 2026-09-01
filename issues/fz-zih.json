@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-09-01T13:12:24Z",
-  "description": "From the fz-kdt.106 cold review (2026-09-01). On a 34-line program (14\nelement families x 14 distinct lambdas through Enum.all?/2, parked at the\nreview scratchpad as kdt106-review-stress1.fz) the base compiler at\n1d44ac7cd spends 172.8s and emits 526 executables with 24 budget\ncollapses; with dominance absorption it spends 1.63s and emits 588 with\n3. Same stdout, both schedules confluent. Two consequences:\n\n(1) The artifact RISES by 62 executables under the fix -- so \"counts must\nnot rise anywhere\" is not a property of the design; the correct gate is a\nCLASSIFICATION gate: a rise is acceptable exactly when paired with a\nreduction in budget collapses on that fixture (precision replacing\ncollapse-widened sharing). Recorded here as the standing rationale.\n\n(2) The real signal is compile WORK, and nothing in fixtures2 captures a\n100x collapse cascade. Add a corpus fixture in this shape with a\nwork-based ratchet (settlement counts from --log-telemetry, per\nfz-f98.23's no-wall-clock law), not a wall-clock one, once the\nfz-kdt.106-landed baseline exists to pin against.",
+  "description": "From the fz-kdt.106 cold review (2026-09-01), corrected by the build.\nOn a 34-line program (14 element families x 14 distinct lambdas through\nEnum.all?/2, parked at the review scratchpad as kdt106-review-stress1.fz)\nthe WORK numbers reproduce across two independent measurements: base 526\nexecutables with 18-24 budget collapses -\u003e 588 executables with 3\ncollapses under dominance absorption, same stdout, both schedules\nconfluent. The review's 172.8s -\u003e 1.63s wall-clock headline did NOT\nreproduce on the build round (0.80s base / 0.88s head, same machine\nclass) -- treat the wall-clock claim as unreproduced and build the\nratchet on WORK numbers only (settlement counts from --log-telemetry,\nper fz-f98.23's no-wall-clock-on-CI law), which is what this ticket\nrequires anyway.\n\nTWO DELIVERABLES:\n(1) The standing CLASSIFICATION-GATE rationale (recorded here, referenced\nby fz-kdt.106's close): \"executable counts must not rise\" is not a\nproperty of dominance absorption -- the stress shape RISES 526-\u003e588\nbecause precision replaces collapse-widened sharing. The correct gate:\na rise is acceptable exactly when paired with a reduction in budget\ncollapses on that fixture; anything else is a STOP.\n(2) A corpus fixture in the collapse-cascade shape with a work-based\nratchet pinned against the fz-kdt.106-landed baseline. Note the landed\nhead still collapses 3x on the stress shape -- genuine correlation\nwidth, by design; the fixture pins THAT number, not zero.\nBlocked by fz-kdt.106 (needs its baseline + its telemetry event fz-0xp).",
   "id": "fz-zih",
   "labels": [],
   "parent": "fz-kdt",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Budget-collapse cascades are a compile-work catastrophe the corpus never captures: add a collapse-cascade fixture with a work ratchet",
   "type": "task",
-  "updated_at": "2026-09-01T13:12:40Z"
+  "updated_at": "2026-09-01T14:00:34Z"
 }
