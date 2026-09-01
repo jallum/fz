@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T20:59:32Z",
+  "description": "Found by the fz-kdt.125 cold review (2026-09-01): lower_materialized_\ncall_target builds dispatch arms with marshals=None into callees whose\nparam_reprs the caller cannot satisfy, and NOTHING checks agreement.\nThe interp catches it late (direct_callable_capture_lanes errors on\nthe wrong fn id); native does not catch it at all -- it aborts inside\nfz_unbox_int when a ValueRef closure word lands in a RawInt capture\nlane (the fz-kdt.125 captures-variant abort). Cheap, high-value\nred-first ASSERT at arm construction: an arm's callee param_reprs must\nbe satisfiable from the caller's lanes + declared marshals; violation\nis a compile-time invariant failure, not a runtime tag abort. Lands\nnaturally with or after fz-kdt.125 (which removes today's known\nviolating arms by routing correctly).",
+  "id": "fz-kdt.128",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A dispatch arm must not name a callee whose ABI the caller cannot satisfy",
+  "type": "task",
+  "updated_at": "2026-09-01T20:59:32Z"
+}
