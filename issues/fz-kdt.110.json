@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-01T00:33:09Z",
-  "description": "fz-kdt.105 (canonical clause order at intern) moved the take_drop\nAnalyzeActivation ratchet UP 787 -\u003e 805 (zero-change 8 -\u003e 13): with one\ninterned id per carving, the drop_while accumulator settled at the\nprecise {[], :true} | {[int], :false} instead of the widened form, and a\nnarrower carried type takes more rungs of define_return's ladder.\n\nREPAID BY fz-kdt.106 (a010532e8, 2026-09-01): dominance absorption\nremoved the ascent-history rows those extra evaluations were re-walking;\ntake_drop AnalyzeActivation is now 742 -- BELOW the pre-105 787 -- with\nzero-change and lifecycle columns down across the board (claims ratchet\nre-pinned in-story with per-column causes). The original question (\"is\nthe extra ascent necessary or re-derivation?\") is answered: it was\nre-derivation over history, and the history is gone.\n\nREMAINING before close: one telemetry pass on the post-106 base\nconfirming the take_drop zero-change column sits at-or-below its\npre-105 value (the 13 -\u003e ? residual was never isolated); if it does,\nclose with that number. If it does not, the residual is a new question,\nnot this ticket's.",
+  "description": "CLOSED with numbers (2026-09-01, post-fz-kdt.106 a010532e8).\n\nfz-kdt.105 moved the take_drop AnalyzeActivation ratchet UP 787 -\u003e 805\n(zero-change 8 -\u003e 13): with one interned id per carving, the narrower\ndrop_while accumulator took more rungs of define_return's ladder.\nQuestion: necessary ascent, or re-derivation?\n\nANSWER: re-derivation over ascent HISTORY. fz-kdt.106's dominance\nabsorption removed the superseded rows those evaluations re-walked:\ntake_drop AnalyzeActivation 805 -\u003e 742, BELOW the pre-105 787;\nzero-change 13 -\u003e 9; claims 219 -\u003e 211; totals 2300 -\u003e 2237 (all\nre-pinned in-story with per-column causes, exact-equality ratchet).\n\nCARRIED RESIDUE: zero-change 9 vs pre-105's 8 -- one evaluation above\nthe pre-105 floor, unisolated, recorded openly per the fz-kdt.84\nprecedent (its 00420 +1 was carried the same way). The rise this ticket\nwatched is repaid; a +1 residue does not re-open it.",
   "id": "fz-kdt.110",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "AnalyzeActivation rise on take_drop (787-\u003e805 at kdt.105) REPAID by kdt.106 (742): verify the residual question is closed",
   "type": "task",
-  "updated_at": "2026-09-01T16:55:57Z"
+  "updated_at": "2026-09-01T16:56:24Z"
 }
