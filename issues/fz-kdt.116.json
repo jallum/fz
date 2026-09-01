@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T18:26:30Z",
+  "description": "From the fz-kdt.111 refutation (2026-09-01, e2fb695e5/788c0c21f). The\n'provably absent at runtime' idea is now spelled several ways and split\nacross two conventions:\n\nSPELLINGS in ir_interp/backend.rs: (1) the new BackendTail::Value arm\ngates on return_layout.layout.reprs.is_empty(); (2) bind_delivered_value\n(~:2313) on structural == Nothing \u0026\u0026 carrier == Absent; (3)\nraw_lanes_for_shape_value (~:2530) on (Nothing, Absent).\nreprs.is_empty() is the broadest (also true for a zero-capture direct\nCallable and a zero-lane Tuple); instrumentation says the corpus only\nexercises structural = Nothing today, so nothing diverges -- fold to one\nnamed predicate before something does.\n\nCONVENTIONS: the interp carries two contradictory encodings of absence\n-- a MISSING env entry (demand-ignored inputs, deliberately kept: the\nclosure-call resolution reads a missing callee entry as\nomitted-use-direct-target, and fz-kdt.111 measured that an explicit\nAbsent there regresses) vs an Absent BINDING (omitted constructions,\nnative.rs:1012 / ir_interp/backend.rs:1067). Only the first triggers the\nmissing_direct_callee fallback. Decide one convention or document the\nsplit as load-bearing with the fz-kdt.111 measurement as the reason.\n\nDUPLICATED SOURCE in jobs/backend.rs: executable_value_shapes (~:342)\nrecomputes value shapes from abi.transport.value_positions although\nabi.value_layouts (what native reads via value_shape()) is on the same\nstruct -- NOT identical: jobs/artifact.rs:2178-2188 overrides clause\nparams with input.layout, which executable_value_shapes lacks. Harmless\ntoday (a construction target is never a clause param; a corpus-wide\nassertion proved agreement at every Lambda/FunctionRef) -- fold or\ndocument the divergent override. Also: the FunctionRef half of the\nomission is symmetric-but-unproven (zero corpus movers) -- a fixture\nthat exercises a dead FunctionRef would make it load-bearing.",
+  "id": "fz-kdt.116",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "One absence proof, one spelling: fold the interp's three absent-value predicates and the duplicated shape source",
+  "type": "task",
+  "updated_at": "2026-09-01T18:26:30Z"
+}
