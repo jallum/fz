@@ -234,6 +234,28 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
     );
 }
 
+/// fz-kdt.105 — every closure literal the compile interns names a callable the
+/// owner labelled.
+///
+/// Canonical clause order compares closure literals by their stable
+/// `Module.name/arity` label, never by the mint-order `FnId` behind them. That
+/// only holds if the label table is COMPLETE: an unlabelled callable falls back
+/// to raw-id order, which would quietly reintroduce the cross-version movement
+/// the label discipline exists to prevent. `World` names each callable as it
+/// mints the id, and this is the sweep that says the two mint sites are all of
+/// them.
+#[test]
+fn every_closure_literal_names_a_labelled_callable() {
+    for (name, text) in TARGETS {
+        let compiler = drive_fixture(name, text);
+        let unnamed = compiler.world().types().unnamed_callables();
+        assert!(
+            unnamed.is_empty(),
+            "{name}: closure literals over unlabelled callables {unnamed:?} would order by raw FnId"
+        );
+    }
+}
+
 /// Two compiles of one input in one process publish one canonical form. This
 /// is the weakest of the three determinism properties and the one the canonical
 /// form OWNS: it holds by construction, with no sort of Debug text behind it.
@@ -270,6 +292,24 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// So: re-measure through THIS door before re-pinning, and say which door any
 /// new number came from.
 ///
+/// Re-pinned DOWNWARD again by fz-kdt.105, which put every DNF axis in
+/// canonical clause order at `Types::intern`: `enum_take_drop_split` 211 -> 207,
+/// the other two unchanged (their canonical backend dumps are byte-identical).
+/// The cause, measured: `drop_while`'s accumulator `{[], :true} | {[int],
+/// :false}` was interned TWICE at base -- `Ty(501)` and `Ty(517)`, the same two
+/// clauses in the two orders `dnf_union` can produce -- so re-deriving the
+/// answer looked like a CHANGE and the return-widening ladder climbed past it to
+/// the wider `{[int], :false} | {[int], :true}`. With one id for one carving the
+/// answer reproduces, the ladder stops a rung lower, and the four
+/// `Enum.drop_while/2#lambda@7205-7420/2` specializations keyed on the wide type
+/// lose their only callers to the precise sibling that already existed beside
+/// them; the same narrowing turns one `List.reduce_while_cont/3` key into its
+/// precise form (1-for-1, no count change). Every one of the eight boundaries
+/// that named a wide arm still names an arm -- no destination was dropped, and
+/// the fixture corpus is stdout byte-identical. The differently-CARVED twin
+/// `{[int], :false | :true}` still interns apart: one denotation, two
+/// decompositions, which clause ORDER cannot reconcile (fz-kdt.48).
+///
 /// Re-pinned DOWNWARD by fz-kdt.104, which stopped offering dispatch
 /// alternatives no runtime test could ever route to. Each disappearance is a
 /// dropped arm: `enum_predicate_search` 221 -> 217 (four narrow
@@ -296,7 +336,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
             include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
-            211,
+            207,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);

@@ -8,7 +8,7 @@ pub struct CallableClause<T> {
     pub closure: Option<ClosureLitInfo<T>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CallableValueKind {
     FnRef,
     Closure,

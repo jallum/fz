@@ -13,10 +13,12 @@ mod descr;
 mod dnf;
 mod emptiness;
 mod format;
+mod order;
 mod sigs;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
@@ -78,6 +80,10 @@ pub struct Types {
     /// by the id's dense slot (its tag bit masked off). Lets display render an
     /// address structurally (`a1_0`, `r0`) instead of as a bare `αN`.
     address_paths: Vec<Vec<addressed::AddrStep>>,
+    /// The stable label of every callable a closure literal can name. A raw
+    /// `FnId` is a mint-order index, so it cannot decide canonical clause order
+    /// (`order`); the owner names each callable as it mints the id.
+    callable_labels: order::CallableLabels,
 }
 
 #[derive(Default)]
@@ -202,9 +208,12 @@ impl TypeInterner {
 /// rows publishes an edge naming neither activation its walk actually read
 /// (fz-kdt.80).
 ///
-/// First occurrence wins, so clause order is preserved: nothing downstream may
-/// depend on it, but a canonicalization that also permuted would make every
-/// artifact diff unreadable.
+/// First occurrence wins, so the canonical order the `order` pass just imposed
+/// survives this filter — which is the whole reason the two compose. The
+/// comparator here stays `PartialEq`, deliberately: it is the very equality the
+/// interner index is keyed on, so collapsing exactly these pairs is what makes
+/// `A ∨ A` and `A` reach one `Ty`. Anything coarser would fold clauses the index
+/// still tells apart.
 fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
     if clauses.len() < 2 {
         return;
@@ -268,13 +277,36 @@ impl Types {
             .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
     }
 
+    /// The persistence boundary, in three passes that each leave the next one's
+    /// precondition intact.
+    ///
+    /// ORDER first (fz-kdt.105): every axis goes into canonical clause order, so
+    /// a descriptor's clause list is a function of its clause set rather than of
+    /// the arrival order that built it. It has to lead, because the absorption
+    /// below picks the survivor of a mutually-subsuming pair by ARRIVAL — sort
+    /// afterwards and the schedule would still be choosing which clause lives.
+    ///
+    /// ABSORPTION and IDEMPOTENCE follow, and both are order-preserving filters
+    /// (`canonicalize_tuple_axis` keeps survivors in input order;
+    /// `dedupe_exact_clauses` keeps the first occurrence), so what reaches the
+    /// interner index is still sorted.
+    ///
+    /// One pass suffices because the composition is idempotent: re-interning an
+    /// already-interned descriptor sorts an already-sorted list to itself, finds
+    /// no empty or subsumed tuple clause left to drop and no exact duplicate
+    /// left to collapse, and so hashes to the descriptor already in the index.
     fn intern(&mut self, mut d: Descr) -> Ty {
+        self.order_clauses(&mut d);
         self.canonicalize_tuple_axis(&mut d);
         dedupe_exact_clauses(&mut d.lists);
         dedupe_exact_clauses(&mut d.resources);
         dedupe_exact_clauses(&mut d.funcs);
         dedupe_exact_clauses(&mut d.maps);
         self.interner.intern(d)
+    }
+
+    fn order_clauses(&self, d: &mut Descr) {
+        order::ClauseOrder::new(self.ctx(), &self.callable_labels).sort_axes(d);
     }
 
     /// The persistence boundary keeps the tuples axis of every
@@ -1328,6 +1360,34 @@ impl Types {
 }
 
 impl Types {
+    /// Record the stable, version-independent name of one callable.
+    ///
+    /// A closure literal carries an `FnId`, which is a mint-order index: it
+    /// shifts whenever the source gains or loses a function, so it cannot be
+    /// what decides canonical clause order (see `order`). The owner knows the
+    /// `Module.name/arity` behind the id and names it here as the id is minted,
+    /// which is before any literal can reference it.
+    pub(crate) fn name_callable(&mut self, target: ClosureTarget, label: impl Into<Arc<str>>) {
+        self.callable_labels.insert(target.into(), label.into());
+    }
+
+    /// Every callable a closure literal in the arena names, that the owner
+    /// never named. Empty in production — the gate that says so is
+    /// `canon_test`'s `every_closure_literal_names_a_labelled_callable`.
+    #[cfg(test)]
+    pub(crate) fn unnamed_callables(&self) -> BTreeSet<u32> {
+        self.interner
+            .arena
+            .iter()
+            .flat_map(|d| d.funcs.iter())
+            .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
+            .filter_map(|sig| sig.lit.as_ref())
+            .map(|lit| lit.fn_id)
+            .filter(|fn_id| !self.callable_labels.contains_key(fn_id))
+            .map(|fn_id| fn_id.0)
+            .collect()
+    }
+
     pub fn fn_ref_lit(&mut self, target: ClosureTarget, n_args: usize) -> Ty {
         let fn_id = target.into();
         let args: Vec<Ty> = (0..n_args)

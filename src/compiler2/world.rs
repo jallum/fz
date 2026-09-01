@@ -868,7 +868,19 @@ impl World {
     }
 
     pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
-        self.functions.reference(module, name, arity)
+        let id = self.functions.reference(module, name, arity);
+        self.name_callable(id);
+        id
+    }
+
+    /// Hand the type lattice the stable name behind a freshly minted function
+    /// id, so a closure literal over it can be ordered canonically without
+    /// touching the mint-order `FnId` (see `types::order`). Naming at the mint
+    /// is what makes the table complete: no literal can name a function that
+    /// was never referenced.
+    fn name_callable(&mut self, id: FunctionId) {
+        let label = super::function_label(self, id);
+        self.types.name_callable(ClosureTarget(id.as_u32()), label);
     }
 
     /// Holds a `@type` declaration's unresolved decl — parsed body plus the
@@ -2799,6 +2811,7 @@ impl World {
         let id = self
             .functions
             .reference_generated(owner, owner_module, surface.span, surface.arity());
+        self.name_callable(id);
         let fn_source = FunctionSource {
             code: owner_source.code,
             owner_module: owner_source.owner_module,

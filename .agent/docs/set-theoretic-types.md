@@ -63,12 +63,46 @@ coordinate or resource payload, a non-empty list sig with no element left).
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
 
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
-entering the interner. On the tuples axis: provably-empty clauses are dropped
+entering the interner, in three order-preserving passes.
+
+First, ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
+order on clauses, so a descriptor's clause list is a function of its clause set
+rather than of the arrival order that built it. A DNF axis denotes a set but is
+stored as a `Vec` and every producer appends, so `A ∨ B` and `B ∨ A` used to
+reach the interner as two vectors and be handed two `Ty`s for one type — and a
+`Ty` IS the identity of a specialization, so which bodies exist was a function
+of the schedule (fz-kdt.105). The order is lexicographic over the structure,
+compared in place rather than rendered as text: two `Ty`s compare by their
+descriptors, recursively, which terminates because a descriptor can only name
+`Ty`s interned before it. It is injective — ties happen only between identical
+clauses — because the interner is keyed by `Descr`, so distinct ids have
+distinct structure; a comparator that could tie two DIFFERENT clauses would hand
+the survivor back to arrival order. Closure literals order by the owner's stable
+`Module.name/arity` label (`Types::name_callable`, filled in by `World` as it
+mints each function id) and structural address vars by their `AddrStep` path,
+never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
+deliberate: a tie broken by two FREE type vars falls back to mint order, and
+intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
+order) is a second dimension this pass does not touch.
+
+Then ABSORPTION, on the tuples axis: provably-empty clauses are dropped
 (`A ∨ ∅ = A`) and subsumed clauses absorbed (`A ⊆ B ⇒ A ∨ B = B`, via
-`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache). On the
-lists, resources, funcs and maps axes: exact-duplicate clauses are dropped
-(`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence kept so clause order
-survives). Union-time hygiene is not enough, because clauses are also made
+`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache). It has to
+run AFTER the sort: it keeps the FIRST of a mutually-subsuming pair, so without
+a canonical order the schedule would still be choosing which clause lives.
+
+Then IDEMPOTENCE, on the lists, resources, funcs and maps axes: exact-duplicate
+clauses are dropped (`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence
+kept). Both later passes are order-preserving filters, so what reaches the
+interner index is still sorted — which is also why one pass suffices:
+re-interning an interned descriptor sorts a sorted list to itself, finds nothing
+left to absorb or collapse, and hits the index.
+
+What clause order canNOT reconcile is a different CARVING of one type:
+`{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
+denotation in two decompositions and still intern apart (fz-kdt.48).
+
+Union-time hygiene is not enough, because clauses are also made
 equal AFTER a union — `erase_closure_identity` strips closure brands in place,
 turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
 otherwise intern as a different `Ty` than `funcs = [A]`. That difference is

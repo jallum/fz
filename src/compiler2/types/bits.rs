@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub(crate) struct BasicBits(pub(super) u32);
 
 impl BasicBits {

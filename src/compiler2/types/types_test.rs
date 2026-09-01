@@ -2059,3 +2059,65 @@ mod erased_closure_dnf_hygiene {
         );
     }
 }
+
+/// fz-kdt.105 — a union's interned identity is its DENOTATION, not the order
+/// its clauses arrived in.
+///
+/// `dnf_union` concatenates clause lists, so `A ∨ B` and `B ∨ A` reach the
+/// interner as two different `Vec<Conj<_>>` and hash to two different `Descr`s.
+/// Two `Ty`s for one set means the ACTIVATION KEY built from them differs too,
+/// so which specializations exist becomes a function of the scheduler's arrival
+/// order rather than of the program. The shape below is the one the reduce
+/// bridge actually joins: `{:cont, list(int)} | {:halt, int}`.
+mod union_clause_order {
+    use super::*;
+    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
+
+    fn cont_and_halt(t: &mut Types) -> (Ty, Ty) {
+        let int = t.int();
+        let ints = t.list(int);
+        let cont = t.atom_lit("cont");
+        let halt = t.atom_lit("halt");
+        let cont_arm = t.tuple(&[cont, ints]);
+        let halt_arm = t.tuple(&[halt, int]);
+        (cont_arm, halt_arm)
+    }
+
+    #[test]
+    fn a_union_interns_to_one_type_whichever_arm_arrives_first() {
+        let mut t = Types::new();
+        let (cont, halt) = cont_and_halt(&mut t);
+        let forward = t.union(cont, halt);
+        let backward = t.union(halt, cont);
+        assert_eq!(
+            forward,
+            backward,
+            "one denotation, one interned id: got {} vs {}",
+            t.display(&forward),
+            t.display(&backward)
+        );
+    }
+
+    #[test]
+    fn the_activation_key_of_a_union_does_not_depend_on_arm_order() {
+        let mut t = Types::new();
+        let (cont, halt) = cont_and_halt(&mut t);
+        let forward = t.union(cont, halt);
+        let backward = t.union(halt, cont);
+
+        // `from_inputs` addresses its inputs, and the addresser numbers a tuple
+        // union's alternatives by CLAUSE POSITION (`AddrStep::Variant`), so one
+        // key for both arms is also the assertion that the variant numbering —
+        // and every `a0_uK_…` var name derived from it — follows canonical
+        // order rather than arrival order.
+        let key_of =
+            |t: &mut Types, ty: Ty| ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[ty], t);
+        let forward_key = key_of(&mut t, forward);
+        let backward_key = key_of(&mut t, backward);
+        assert_eq!(
+            forward_key, backward_key,
+            "the specialization a callee gets must be a function of the type it is passed, \
+             not of which branch the scheduler ran first"
+        );
+    }
+}

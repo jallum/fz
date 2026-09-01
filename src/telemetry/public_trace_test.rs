@@ -1195,7 +1195,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         activations: lifecycle(174, 174, 0),
         callsites: lifecycle(215, 248, 33),
         shifts: shifts(1, 2),
-        analyze_evaluations: 553,
+        // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
+        // makes one more re-derived union reproduce its previous id instead
+        // of minting a permuted twin, so one AnalyzeActivation run that used
+        // to see a "changed" input no longer runs at all. The fixture's
+        // canonical backend dump is byte-identical either way -- this is
+        // work removed, not an answer moved.
+        analyze_evaluations: 552,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -1205,16 +1211,31 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // See the header: one formula's ascent shortened 18 -> 9 runs and
         // its last run reproduces the answer.
         analyze_zero_change: 6,
-        total_evaluations: 1364,
+        // 1364 -> 1363: the same single evaluation, seen from the whole-run
+        // denominator.
+        total_evaluations: 1363,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
         activations: lifecycle(219, 219, 0),
-        callsites: lifecycle(379, 391, 12),
+        // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
+        // narrowed `drop_while` accumulator leaves one fewer distinct callsite
+        // summary -- the wide arm the four lambda specializations were keyed on
+        // is no longer a destination anywhere.
+        callsites: lifecycle(378, 390, 12),
         shifts: shifts(6, 10),
-        analyze_evaluations: 787,
-        analyze_zero_change: 8,
-        total_evaluations: 2282,
+        // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
+        // one RISING row in this landing, and it is the price of the precision
+        // the same change bought: the accumulator that used to widen to
+        // `{[int], :false} | {[int], :true}` now settles at `{[], :true} |
+        // {[int], :false}`, and a narrower carried type takes more rungs to
+        // reach its fixed point than a widened one does. Emitted executables
+        // fall 211 -> 207 in the same motion. Not the ladder running away: the
+        // run still settles, the artifact is behaviourally identical, and the
+        // rise is bounded (+18 on 219 activations). Traced further in fz-kdt.110.
+        analyze_evaluations: 805,
+        analyze_zero_change: 13,
+        total_evaluations: 2300,
     },
 ];
 

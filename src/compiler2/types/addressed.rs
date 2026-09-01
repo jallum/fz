@@ -35,7 +35,7 @@ use crate::finite_set::FiniteSet;
 
 /// One step of a structural address. A full address is a `&[AddrStep]` path
 /// rooted at a parameter or the result slot.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AddrStep {
     /// Parameter `i` of the arrow (top level).
     Param(u16),

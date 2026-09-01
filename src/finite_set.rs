@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FiniteSet<T> {
     pub(crate) values: BTreeSet<T>,
     pub(crate) cofinite: bool,
