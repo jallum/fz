@@ -27,11 +27,15 @@
     {
       "text": "STEP 3 RETARGETED by the fz-kdt.125 cold review (2026-09-01): the closure-identity half of this ticket's census is DISCHARGED by fz-kdt.125's predicate axis (13/13 no-question groups separable by fn id alone -- the arms become live, fz-kdt.123 retargeted accordingly). What remains THIS ticket's: the 5 list-element groups (bodies with incompatible element accessors, no O(1) predicate; enum_map_family's arm-reversal abort is the live evidence, named in the fz-kdt.118 stress-gate doc). The 'unrepresentable plan' diagnostic is PROMOTED from interim option to REQUIRED backstop (it also owns fz-kdt.127's same-fn-id residue). Dependency now: blocked by 119 + 125; 118 closed.",
       "timestamp": "2026-09-01T21:00:02Z"
+    },
+    {
+      "text": "Step 3's closure-identity half is DISCHARGED by fz-kdt.125 (2026-09-01), and the\ncensus numbers move:\n\n- no-question dispatch groups 13 -\u003e 6, fixtures 9 -\u003e 5. All six survivors are\n  fz-kdt.127's same-fn-id/different-capture shape; the earlier \"13/13 separable\n  by fn id\" was a census-helper artifact (it counted closure names appearing in\n  CAPTURES as identity). See the fz-kdt.127 comment.\n- `compiler2_dispatch_offers_no_runtime_indistinguishable_arm` widened from 2\n  fixtures to 7 (adds 00275, enum_reduce_halt_arm_order, range_enumerable and\n  the two new fz-kdt.125 fixtures), still asserting ZERO.\n- The measured residue is pinned by a new sibling gate,\n  `compiler2_runtime_indistinguishable_arm_residue_stays_pinned`: 00231 1,\n  00277 5, 00281 1, enum_map_family 3, opaque_fn_value_join 1,\n  repr_seam_enum_count_after_reduce2 1. Two owners: the same-fn-id shape\n  (fz-kdt.127) and the list-ELEMENT shape, which is this ticket's remaining\n  step 3.\n- ARM_ORDER_CENSUS is now 13 fixtures; the reversal stress gate is green.\n\nNEW, and it is this ticket's own subject read from the other side: making the\narms live gives the SCHEDULE something new to decide. fz-kdt.129 records it --\nthe corpus's FIFO-vs-LIFO backend-dump population goes 3 -\u003e 4, and the fourth is\nenum_predicate_search, a lens. The 28 moved lines are two arms of one dispatch\nswapping positions; they are DISTINGUISHABLE and nested, so order costs\nprecision rather than meaning (corpus stdout is byte-identical either way), but\nthe artifact is no longer schedule-confluent there. fz-kdt.129 names\n`Order::Specificity` over the observable containment order as the candidate,\nwith the explicit carve-out that indistinguishable groups keep arrival order --\nthis ticket's option (C) stays refuted.",
+      "timestamp": "2026-09-01T21:46:10Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "P1: runtime-indistinguishable dispatch arms are a latent miscompile, not a fiat -- arrival order is the only thing between the corpus and a wrong answer",
   "type": "bug",
-  "updated_at": "2026-09-01T21:00:02Z"
+  "updated_at": "2026-09-01T21:46:10Z"
 }
