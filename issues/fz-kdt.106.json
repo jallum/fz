@@ -9,9 +9,15 @@
   "id": "fz-kdt.106",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.105 measurement (post-landing, door = fz2 interp --dump backend=, release build): the FIFO-vs-LIFO key-set gap on enum_predicate_search falls from 35 keys to exactly 14. Base fba7d72e3: FIFO 217 keys, LIFO 182, 35 FIFO-only. With canonical clause order: FIFO 217, LIFO 203, 14 FIFO-only, zero LIFO-only. Every one of the surviving 14 carries the same over-wide join 'int | :false | :ok | :true' (Enum.all?/1#lambda@4125-4170/2, three Enum.all?/2#lambda@4286-4337/2, Enum.all_value_step/1, Enum.empty?/1#lambda@4753-4792/2, Kernel.\u003c/2, Kernel.==/2, Kernel.fz_op_eq/2, Kernel.fz_op_lt/2 and siblings) -- i.e. the 21 that vanished were the clause-ORDER class and the 14 that remain are exactly this ticket's transient-wide-join class, now isolated with nothing else mixed in. 00420 and 00183 are fully key-confluent FIFO vs LIFO at both base and head.",
+      "timestamp": "2026-09-01T00:33:21Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "14 FIFO-only over-wide specializations on enum_predicate_search: schedule-dependent demand of transient wide joins",
   "type": "task",
-  "updated_at": "2026-09-01T00:00:51Z"
+  "updated_at": "2026-09-01T00:33:21Z"
 }
