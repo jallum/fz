@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-01T00:33:09Z",
+  "description": "fz-kdt.105 (canonical clause order at Types::intern) is the one landing in this campaign whose analysis-work ratchet moved UP: enum_take_drop_split AnalyzeActivation evaluations 787 -\u003e 805, zero-change 8 -\u003e 13, total formula evaluations 2282 -\u003e 2300. Measured cause: with one interned id per carving, the drop_while accumulator settles at the precise {[], :true} | {[int], :false} instead of ascending to the widened {[int], :false} | {[int], :true}; a narrower carried type takes more rungs of define_return's ascent ladder to reach its fixed point. The trade bought 211 -\u003e 207 emitted executables, behaviour is stdout byte-identical on interp and AOT, and wall clock is neutral-to-slightly-better (release, 5 runs: 0.521 vs 0.522 median on take_drop, 0.309 vs 0.316 on predicate), so this is not a runaway. What is UNEXAMINED: 13 evaluations now reproduce their previous answer (up from 8) -- that is churn, and the north star is compile work proportional to input. Question to answer: is the extra ascent a necessary consequence of carrying the narrower type, or is the ladder re-deriving an answer it already had? Isolate with --log-telemetry and the causal report on enum_take_drop_split; compare the AnalyzeActivation spans for List.reduce_while_cont/3 and Enum.drop_while/2#lambda@7205-7420/2 against the base fba7d72e3.",
+  "id": "fz-kdt.110",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "AnalyzeActivation work rises 787 -\u003e 805 on take_drop when the accumulator stops widening",
+  "type": "task",
+  "updated_at": "2026-09-01T00:33:09Z"
+}
