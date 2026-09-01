@@ -7,9 +7,15 @@
   "id": "fz-kdt.3",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.111 fold-check findings (2026-09-01, e2fb695e5 build round -- this\nticket is NOT closed by it, mechanism differs):\n\n(1) The reusable_cons_exit_counters #[ignore]d lib test still fails at\nhead with the byte-identical native-side signature ('backend value\nValueId(0) in FunctionId(32)/Ty(23) must be bound before runtime use'),\nverified identical at base 24b228068 in a scratch worktree. fz-kdt.111\nfixed the INTERP-side eager evaluation of dead constructions; this\nrepro is a NATIVE lowering invariant on a value that native itself\nexpects bound -- a different mechanism. Still the live repro to start\nfrom.\n\n(2) The enum_tier0 claim in this ticket's body ('with the fz-bfh.3 line\nskipped it prints eight further values then dies with backend value 0\nis unbound') is NOT OBSERVABLE at current heads: base and head behave\nidentically on all three paths -- interp stops at fz panic\n\"Enum.EmptyError\" (fz-bfh.3, the FIRST blocker) and run/build abort in\n_fz_unbox_atom (a DIFFERENT failure than interp's, which the fixture's\none-line deferral rationale does not capture). Re-derive the second\nblocker only after fz-bfh.3 lands; update the fixture header's deferral\nrationale to name both per-path failures when touched.\n\n(3) Related repair for triangulation: fz-kdt.111 made Lambda/FunctionRef\nconstructions with Nothing transport layouts lower as Omitted (shared\nlowering, native's inline proof deleted as superseded), and taught the\ninterp's lane-less return contract to treat an env miss on the returned\nvalue as the absence proof. If this ticket's native invariant is the\nsame proof missing at a THIRD site, check jobs/native.rs's remaining\nbound-before-use asserts against transport value_positions first.",
+      "timestamp": "2026-09-01T17:56:26Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Generic Enum HOF leaves a backend value unbound (reusable-cons exit counters, enum_tier0)",
   "type": "bug",
-  "updated_at": "2026-08-25T01:08:53Z"
+  "updated_at": "2026-09-01T17:56:26Z"
 }
