@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-01T13:12:23Z",
-  "description": "From the fz-kdt.106 cold review (2026-09-01). ACTIVATION_INPUT_ROW_BUDGET\nfiring is the primary signal that the compiler is doing history-driven\nrather than input-driven work, and after fz-kdt.106 lands a fire means\nGENUINE correlation width. The fz-kdt.106 build (eace470ea) landed a\nREAL public telemetry event for it (allowlisted, readable from\n--log-telemetry) but via a THREAD-LOCAL ledger drained in drive.rs --\nJoinContribution::Ctx is an associated type, so a borrowed sink cannot\nride the context without a GAT on all three implementors, and World\nholds no telemetry handle. THIS TICKET'S REMAINING WORK: decide whether\nthe thread-local producer/drain split (which follows the existing\nflush_reported_warnings precedent) is the permanent shape or whether a\nfirst-class threaded sink is worth the GAT plumbing; if the former,\nclose with that decision recorded. The event feeds fz-zih's\ncollapse-cascade work-ratchet fixture. Baseline at 1d44ac7cd: 3 of 449\ndumping fixtures collapse at base (00420 at 30,\nbehavior/enum_take_drop_split at 30, behavior/enum_predicate_search at\n28; 88 events corpus-wide); zero after dominance absorption (the\nengineered stress shape still collapses 3x -- genuine correlation width,\nby design).",
+  "description": "CLOSED as absorbed by fz-kdt.106 (a010532e8, 2026-09-01). The event\nlanded: budget_collapsed is a real public telemetry event (allowlisted,\nreadable from --log-telemetry, proven end-to-end by a budget=1 probe -\u003e\n75 event lines). The sink-shape question was answered BY MEASUREMENT\nduring the refuter fix round: the collapses fire in\nActivationInputAlternatives::join_assign/rebuild -- a JoinContribution\ntrait method whose only reachable handle is Ctx = Types -- NOT in\npush_row (instrumented: 28/28 predicate collapses from join_assign,\nzero from push_row), so the counter lives on Types\n(activation_input_collapses + note/take), drained through\nWorld::take_activation_input_collapses in the flush_reported_warnings\nproducer/drain shape at the World API boundary. No thread-local\nsurvives. A first-class threaded sink would require growing\nJoinContribution::Ctx into a GAT across all three implementors for no\nmeasured benefit -- rejected. Baseline record: 3 of 449 dumping fixtures\ncollapsed at base (00420 x2 aliases at 30, predicate 28, 88 events\ncorpus-wide); zero at head; the engineered stress shape still collapses\n3x (genuine correlation width, pinned by fz-zih's fixture when built).",
   "id": "fz-0xp",
   "labels": [],
   "parent": "fz-kdt",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "The activation-input row budget needs a telemetry event: a collapse is the history-vs-input work signal",
   "type": "task",
-  "updated_at": "2026-09-01T14:00:02Z"
+  "updated_at": "2026-09-01T17:31:32Z"
 }
