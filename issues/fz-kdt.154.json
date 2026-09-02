@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T10:12:00Z",
+  "description": "From the fz-kdt.130 refutation: ir_interp/backend.rs:~969 builds closure-call continuations from dest and IGNORES return_flow entirely, while native reads return_flow -- which is why the interp was right on 130's byte-identical backend program and also why the interp CANNOT see the dropped-continuation class by construction. Two doors reading different fields of one instruction is a parity hazard: either the interp honors return_flow (and the fz-kdt.130 fixtures would have been red on THREE doors), or the field's authority is documented as native-only with the interp's dest-reading justified. Decide and align.",
+  "id": "fz-kdt.154",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The interpreter ignores return_flow: one instruction, two readings, and a door constitutionally blind to a bug class",
+  "type": "task",
+  "updated_at": "2026-09-02T10:12:00Z"
+}
