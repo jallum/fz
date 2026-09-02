@@ -11,9 +11,15 @@
   "id": "fz-kdt.119",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "BUILT at 533089cd0 (2026-09-01), one commit, all six spec items plus the gate list. Not closed -- left for the review round.\n\nEverything the spec predicted reproduced, to the number: canon 4 movers (the predicate lens plus three receive fixtures), inventory 4929 -\u003e 4971 with the +42 exactly the three receive fixtures' dbg specs going 1 -\u003e 8 per function, the 19-escape census unmoved, the FIFO/LIFO census still at 3.\n\nFull record is in the commit message. Numbers: lib 1558/0/5 (base 1546, +12 gates), cli 24/0, matrix 446/0/9 (base 443, +3 doors), 584-fixture interp+JIT sweep 0 movers besides the new fixture, AOT green on every canon mover, four lenses byte-identical FIFO vs LIFO, determinism pair and reversal stress green, clippy -D warnings and fmt clean.\n\nTWO DEVIATIONS FROM THE SPEC, both flagged:\n\n1. Spec item 1 said keep an arities() PROJECTION beside the shapes. Built as a DERIVED field inside TupleShapes instead -- exact(shapes) computes the arity set from the shapes' lengths -- so the coarse reading and the precise one are one fact rather than two that must be kept in step. arity_only(arities) carries the coarse case where no shape could be built. Same four oracle sites, one fewer invariant to police.\n\n2. The measured predicate-lens canon move is 28 lines, not the 36 the spec quoted from the prototype. Same move (the narrow arm reseated first, arm/graph/plan lines only); the prototype's count came from a build without the envelope refinement and the delivered-fields repair.\n\nTWO FINDINGS FILED:\n- fz-kdt.140: the 2^arity per-position specialization product (the +42's cause); dbg/1 reads no position, so eight bodies differ in a type none of them projects. The review handed this to 'fz-3bb', which is not an issue in this tracker.\n- fz-kdt.139: the fixture budget.* headers name counters nothing produces -- only budget.codegen.functions has a live producer, nothing enforces any of the ten, and receive_map_pattern read 26 against a measured 32 BEFORE this landing touched it.\n\nLanded in-story per the gate list: fz-kdt.133 (repaired, and measured unreachable on today's corpus), fz-kdt.134 (folded), fz-kdt.135 (tripwire + baseline). fz-kdt.137 stays red and is why the nested-callable claim is gated by unit tests at the dispatch layer; its reproducer's error text moved, recorded there.",
+      "timestamp": "2026-09-02T02:38:56Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: the tuple axis becomes per-position sub-predicate shapes; the envelope erases identity-preserving at every depth (Scope A; nested lists stay erasing pending the take_drop blocker)",
   "type": "task",
-  "updated_at": "2026-09-02T01:45:07Z"
+  "updated_at": "2026-09-02T02:38:56Z"
 }
