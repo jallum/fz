@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T08:22:59Z",
+  "description": "Recorded by three separate refutation rounds (109's bycatch triage, 132's sweep): fixtures2/00424_protocol_no_impl.fz -- a defprotocol/no-impl program -- panics with 'product materialization should have complete call edges after waits' (jobs/artifact.rs:~155) identically at every measured revision, on interp; the only run-varying byte is the panic header's thread id. A user-facing INTERNAL PANIC on a legal-shaped (if erroneous) program: should be a diagnostic (protocol lacks an impl) not an expect(). Unowned until now. Related: fz-kdt.2 (protocol domain), fz-kdt.11 (defimpl panics).",
+  "id": "fz-kdt.149",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "00424_protocol_no_impl panics inside product materialization at base: unowned pre-existing internal panic",
+  "type": "task",
+  "updated_at": "2026-09-02T08:22:59Z"
+}
