@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T10:11:59Z",
+  "description": "From the fz-kdt.130 refutation (2026-09-02, PRE-EXISTING at c2041041e and after): Enum.reduce([1,2,3], 0, f) where f came from receive -- interp 'closure call ... omitted callee value 9 but target 14 needs semantic inputs' (fz-kdt.111's signature family); JIT/AOT error[artifact/incomplete-semantic-plan], AOT fails to BUILD. The natural next shape after 130's fixtures and the one a user hits first. (Enum.map with a mailbox closure WORKS after 130 -- was silently wrong at base.) Suspect: the reducer's callable-demand path meeting the no-summary mailbox callable (130's carrier rule covers direct closure_call edges; the Enum HOF path goes through callable-flow construction instead). Triage against fz-kdt.111/127 machinery.",
+  "id": "fz-kdt.152",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "P1: a mailbox-delivered closure cannot be an Enum reducer -- fails on all three doors",
+  "type": "task",
+  "updated_at": "2026-09-02T10:11:59Z"
+}
