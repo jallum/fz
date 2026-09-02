@@ -7,9 +7,15 @@
   "id": "fz-kdt.133",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "LANDED IN-STORY at fz-kdt.119 (4ca1dc7e7). Repaired, not deleted: lower_runtime_type_predicate now collects the delivered field params in position order and asks each position's sub-predicate directly (emit_delivered_tuple_test), so there is no constant left in the path and no tuple to rebuild.\n\nMEASURED while landing, and it changes the ticket's risk reading: body.cache.tuple_field_params is EMPTY at every one of the 1783 RuntimeTypeTest lowerings the 584-fixture corpus produces -- probed at head with a temporary counter, removed before commit. So the fast path is not reached today and the 'wrong and silent on exactly the destination-passing lanes' hazard was LATENT, not live; the corpus could not have caught it either way. The repair is correct by construction rather than by execution, and that is recorded in its doc comment.\n\nIt was kept rather than deleted because deleting it leaves `var_env.get(\u0026v.0).expect(\"type-test subject\")` to fire on the day destination-passing does deliver a type-tested tuple, and a correct answer beats a loud crash.\n\nOne behaviour difference worth noting: the old delivered_tuple_field_arity COUNTED matching cache keys, so a non-contiguous set (say only index 1 present) reported an arity of 1; the new collector walks 0,1,2,... and stops, so it reports None instead. Both answer identically on the corpus (both None everywhere).",
+      "timestamp": "2026-09-02T02:35:58Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: delivered_tuple_field_arity answers a runtime type test with a compile-time constant",
   "type": "task",
-  "updated_at": "2026-09-02T01:44:23Z"
+  "updated_at": "2026-09-02T02:35:58Z"
 }
