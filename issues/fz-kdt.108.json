@@ -19,11 +19,15 @@
     {
       "text": "fz-kdt.141 establishes and exercises this ticket's prescribed ordering point.\n\nYour finding (2) said the sound fix is a canonical order on flow.first_class_edges UPSTREAM (jobs/runtime_demand.rs), BEFORE both members and selection derive, because pattern_dispatch_from_source requires monotonically increasing body_id and body_id simultaneously indexes CallableConstructionFact.members. That is exactly where the wrapper stress reorders now: dispatch_stress::perturbed_construction_members wraps callable_flow_resolution_edges_product's result, so members, the selection plan, boundary_resolution_symbols_for_flow_surfaces and the flow's resolutions list all inherit one order and the weld never has to be broken. No consumer needed changing; the point works.\n\nCorpus evidence that the point is live and reaches everything: 19 fixtures' backend canon moves under a wrappers: seed (00183, 00197, 00230, 00276, 00277, 00391, 00418, 00419, 00420, dispatch_seat_element_blind, enum_hof_three_distinct_closures, enum_map_family, enum_predicate_search, enum_take_drop_split, fz_f98_range_map_converges, list_literal_trailing_call, map_enumerable, opaque_fn_mixed_return, unused_range_binding), and the moved lines include the selection plan's own test nodes. stdout and exit are invariant on all three doors, so this ticket's 'find a fixture where the FLOW plan order alone changes behavior, or prove none exists' now has a measured answer for BEHAVIOR: none exists in the corpus at 584 fixtures x 6 wrapper settings x 3 doors. It is NOT artifact hygiene, though -- see fz-kdt.147: the order decides the whole surface-membership escape population (268 -\u003e 68 -\u003e 20), so the ordering authority this ticket asks for has a real objective to be chosen against.",
       "timestamp": "2026-09-02T04:31:33Z"
+    },
+    {
+      "text": "fz-kdt.132 ripple (2026-09-02): fz-kdt.147 is RETIRED — the 268-escape census its quality-dimension note was built on is EMPTY under every legal wrapper order (the order only ever chose which uncovering member took values; coverage is now correct by construction). This ticket's canonical-edge-order fix therefore has NO escape-minimization dimension left: the goal is pure schedule CONFLUENCE again (enum_map_family's 1170-line FIFO/LIFO gap, the last big one), and any deterministic canonical order on flow.first_class_edges upstream of the members/selection weld suffices. Pick the simplest sound key (cmp_ty-based, per the kdt.101/129 instruments).",
+      "timestamp": "2026-09-02T08:23:51Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Callable-flow selection plans carry the same arm-order-is-semantics trap fz-kdt.104 fixed for callsites",
   "type": "bug",
-  "updated_at": "2026-09-02T04:31:33Z"
+  "updated_at": "2026-09-02T08:23:51Z"
 }
