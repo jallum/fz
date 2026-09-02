@@ -172,12 +172,13 @@ Every callsite the walk REACHES publishes its edge, resolved or not
 - **`Unresolved`** — the walk reached a live call and can name no target yet.
   This is NOT a provider boundary and NOT an empty target list; it is the
   lattice bottom, so `CallSiteMap`/`CallSiteTargetsMap` never let it overwrite
-  a resolved answer and re-emitting it moves no revision. On the measured
-  corpus a still-`Unresolved` edge at the end of a drive occurs only on
-  programs that fail to compile — an observation, not an invariant: the
-  earned-`any` opaque-callable tail (`resolve_closure_call`) can publish a
-  permanently-`Unresolved` edge on a compiling program and measures zero
-  today.
+  a resolved answer and re-emitting it moves no revision. A
+  permanently-`Unresolved` edge on a COMPILING program is a standing state
+  since fz-kdt.130: a mailbox-delivered callable's callsite settles with no
+  summary at all (measured: five such callsites across the two mailbox
+  fixtures, behind the settled gate, all three doors correct) — and the
+  carrier rule below is exactly what lowers that population as live indirect
+  calls instead of misreading the absent evidence as a dead call.
 - **`Resolved`** — the targets. A provider-boundary target is a resolved edge
   whose `CallTargetEdge::activation` is `None`, because a boundary names no
   compiler2 activation.
@@ -191,11 +192,21 @@ kind; only `Activation` still rides preservation (fz-kdt.69.2).
 and demand ask — did this callsite NAME targets? — so they read `None` for an
 absent edge and for an unresolved one alike; `World::callsite_resolution`/
 `callsite_target_resolution` hand back the published answer itself.
-Materialization reads the named-no-targets case with the same Kleene rule
-`CallTargetSummary::settled_return` uses: behind the settled gate
-`materialize_closure_call_edge` lowers such a closure call as
-`CallReturnFlow::NoReturn` over the empty type, because every `ClosureCall`
-tail needs a return flow and a call that never happens never returns.
+Naming no targets is not the same claim as never running. For a closure call
+the two are told apart by the callee's transport CARRIER, not by its target
+evidence: `materialize_closure_call_edge` lowers any callee whose layout
+carries a `TransportCarrier::ValueRef` as a live public indirect call, because
+a runtime callable value reaches that callsite and the boxed-apply wrapper can
+call it. A callable that arrived from outside the analysed world — a mailbox
+message — is exactly this shape: no target is named and none ever will be, so
+"no targets" there reads UNKNOWN. Only a callsite with neither a callable
+carrier nor any evidence is the dead call, and it alone lowers as
+`CallReturnFlow::NoReturn` over the empty type — every `ClosureCall` tail
+needs a return flow, and a call that never happens never returns. The
+distinction is load-bearing at the native door, where `NoReturn` emits a tail
+call: lowering a live call that way returns the callee's result straight to the
+caller's caller and silently drops everything the call was supposed to return
+to (fz-kdt.130).
 Published outputs:
 
 ```text

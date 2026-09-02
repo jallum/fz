@@ -1,0 +1,23 @@
+#---
+# purpose: "two distinct closures delivered by the mailbox each apply twice, not once"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.130, the arity-of-application half. `apply_twice/2` is the fz-kdt.125
+# shape, which already works when the callable arrives as a literal argument.
+# Here both callables arrive through the mailbox instead, so the callsite names
+# no static target. `12` is `n + 1` over `10` twice and `90` is `n * 3` over `10`
+# twice: a single application would render `11` and `30`, which is the exact
+# signature of a dropped call continuation.
+defmodule Pipeline do
+  fn apply_twice(f, x), do: f.(f.(x))
+end
+
+fn main() do
+  send(self(), fn (n) -> n + 1 end)
+  send(self(), fn (n) -> n * 3 end)
+  a = receive do g -> g end
+  b = receive do g -> g end
+  dbg(Pipeline.apply_twice(a, 10))
+  dbg(Pipeline.apply_twice(b, 10))
+end

@@ -1,0 +1,25 @@
+#---
+# purpose: "a closure delivered by the mailbox is invoked, and the work after that call still runs"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.130. A lambda sent through the mailbox reaches the receiving process as
+# an opaque callable: no static evidence names the body behind it. The call must
+# still happen AND still return, because everything after it is that call's
+# continuation. Dropping the continuation is invisible to an in-language
+# assertion -- an assertion that never runs never fails -- so the claim is
+# pinned on rendered output instead: all three lines have to appear.
+#
+# The first invoke is the witness shape, inside the receive arm; the rest prove
+# control came back past the receive and that a mailbox-delivered callable can
+# be invoked more than once.
+fn main() do
+  send(self(), fn (n) -> n + 1 end)
+  send(self(), fn (n) -> n + 1 end)
+  receive do
+    f -> dbg(f.(10))
+  end
+  g = receive do h -> h end
+  dbg(g.(20))
+  dbg(g.(30))
+end

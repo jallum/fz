@@ -1351,39 +1351,19 @@ fn materialize_closure_call_edge(
         activation: executable.activation.clone(),
         callsite,
     };
-    let Some(summary) = world.callsite_summary(&key).cloned() else {
-        // Behind the settled materialization gate, a callsite that named no
-        // targets is the Kleene bottom — exactly as
-        // `CallTargetSummary::settled_return` reads an absent return. No
-        // callable evidence ever arrived, so this call never happens. Lower it
-        // as the dead call it is: every `ClosureCall` tail needs a return
-        // flow, and `NoReturn` is the name for one that never returns.
-        // Emitting no edge at all instead leaves native lowering with a
-        // `Deliver` destination and nothing to deliver (fz-f98.18). An
-        // `Unresolved` edge (fz-kdt.69.2) reaches this same answer: at
-        // settlement the analysis never named a target, so there is nothing to
-        // call.
-        let never = world.types_mut().none();
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
-            return_ty: never,
-        }));
-    };
-    let target = summary.single_target().cloned();
+    let summary = world.callsite_summary(&key).cloned();
+    let target = summary.as_ref().and_then(|summary| summary.single_target().cloned());
+    // The callee's CARRIER decides whether this call happens, not the static
+    // target evidence standing behind it. A `ValueRef` carrier means a real
+    // callable value reaches this callsite at runtime and the boxed-apply
+    // wrapper can call it, however little the analysis managed to name. That is
+    // the standing state for a closure that arrived from outside the analysed
+    // world — a mailbox message — where no target is ever named and none ever
+    // will be: "no targets" there is UNKNOWN, not `none` (fz-kdt.130).
     let public_callable = matches!(callee_layout.carrier, TransportCarrier::ValueRef);
-    if public_callable || target.is_none() {
-        if !public_callable {
-            return Err(incomplete_semantic_plan(
-                tel,
-                root_id,
-                format!(
-                    "closure callsite {} has no runtime callable carrier or single direct target",
-                    callsite.as_u32()
-                ),
-            ));
-        }
+    if public_callable {
         let return_ty =
-            public_indirect_return_ty(world, tel, root_id, analysis, Some(&summary), callsite, result_value)?;
+            public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
         let return_flow = if world.types().is_empty(&return_ty) {
             CallReturnFlow::NoReturn { local_source: None }
         } else {
@@ -1405,7 +1385,30 @@ fn materialize_closure_call_edge(
             return_ty,
         }));
     }
-    let target = target.expect("a non-public closure call must have one settled target");
+    let Some(target) = target else {
+        if summary.is_some() {
+            return Err(incomplete_semantic_plan(
+                tel,
+                root_id,
+                format!(
+                    "closure callsite {} has no runtime callable carrier or single direct target",
+                    callsite.as_u32()
+                ),
+            ));
+        }
+        // No callable carrier AND no evidence at all: nothing can be called
+        // here, so this call really never happens. Lower it as the dead call it
+        // is — every `ClosureCall` tail needs a return flow, and `NoReturn` is
+        // the name for one that never returns. Emitting no edge at all instead
+        // leaves native lowering with a `Deliver` destination and nothing to
+        // deliver (fz-f98.18). An `Unresolved` edge (fz-kdt.69.2) reaches this
+        // same answer.
+        let never = world.types_mut().none();
+        return Ok(Some(MaterializedCallEdge {
+            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
+            return_ty: never,
+        }));
+    };
     let (direct, return_ty) = lower_materialized_call_target(
         world,
         tel,
@@ -2508,8 +2511,34 @@ mod tests {
         );
     }
 
-    fn try_materialize_ambiguous_closure_edge(
-        returns: bool,
+    /// What static target evidence stands behind the closure callsite under
+    /// test -- the axis that decides how the edge is lowered.
+    #[derive(Clone, Copy)]
+    enum ClosureCallEvidence {
+        /// Two settled targets, each with a return type.
+        AmbiguousReturning,
+        /// Two settled targets, none of which returns.
+        AmbiguousNonReturning,
+        /// No summary at all. This is the standing state for a callable that
+        /// arrived from outside the analysed world -- a mailbox message -- and
+        /// no later evidence will ever name a target for it (fz-kdt.130).
+        Unnamed,
+    }
+
+    impl ClosureCallEvidence {
+        fn summary_targets_return(self) -> bool {
+            matches!(self, Self::AmbiguousReturning)
+        }
+
+        /// Whether the callsite's semantic result carries a value. An unnamed
+        /// callee still produces one: only its *targets* are unknown.
+        fn call_returns(self) -> bool {
+            !matches!(self, Self::AmbiguousNonReturning)
+        }
+    }
+
+    fn try_materialize_closure_edge(
+        evidence: ClosureCallEvidence,
         carrier: TransportCarrier,
     ) -> (World, Result<Option<MaterializedCallEdge>, FatalError>) {
         let tel = ConfiguredTelemetry::new();
@@ -2521,31 +2550,35 @@ mod tests {
             activation: caller.activation.clone(),
             callsite,
         };
-        world.define_callsite_summary(
-            key,
-            CallSiteResolution::Resolved(CallSiteSummary {
-                targets: [302, 303]
-                    .into_iter()
-                    .map(|function| CallTargetSummary {
-                        callee: SelectedCallee::Function(FunctionId::for_test(function)),
-                        surface_inputs: vec![int],
-                        activation: None,
-                        activation_inputs: None,
-                        return_ty: returns.then_some(int),
-                    })
-                    .collect(),
-                return_ty: returns.then_some(int),
-            }),
-        );
+        let targets_return = evidence.summary_targets_return();
+        if !matches!(evidence, ClosureCallEvidence::Unnamed) {
+            world.define_callsite_summary(
+                key,
+                CallSiteResolution::Resolved(CallSiteSummary {
+                    targets: [302, 303]
+                        .into_iter()
+                        .map(|function| CallTargetSummary {
+                            callee: SelectedCallee::Function(FunctionId::for_test(function)),
+                            surface_inputs: vec![int],
+                            activation: None,
+                            activation_inputs: None,
+                            return_ty: targets_return.then_some(int),
+                        })
+                        .collect(),
+                    return_ty: targets_return.then_some(int),
+                }),
+            );
+        }
+        let call_returns = evidence.call_returns();
         let result_value = ValueId::from_u32(2);
         let analysis = ActivationAnalysis {
             entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             latent_executables: Vec::new(),
-            value_types: returns.then_some((result_value, int)).into_iter().collect(),
+            value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
         };
-        let positions = if returns {
+        let positions = if call_returns {
             let caller_symbol = transport_executable_symbol(&caller, world.types());
             let caller_return = TransportPosition::ExecutableReturn {
                 executable: caller_symbol.clone(),
@@ -2595,17 +2628,17 @@ mod tests {
         (world, edge)
     }
 
-    fn materialize_ambiguous_closure_edge(returns: bool) -> (World, MaterializedCallEdge) {
-        let (world, edge) = try_materialize_ambiguous_closure_edge(returns, TransportCarrier::ValueRef);
+    fn materialize_closure_edge(evidence: ClosureCallEvidence) -> (World, MaterializedCallEdge) {
+        let (world, edge) = try_materialize_closure_edge(evidence, TransportCarrier::ValueRef);
         let edge = edge
             .expect("materialization should not fail")
-            .expect("settled multi-target closure call should produce an edge");
+            .expect("a closure call over a runtime callable should produce an edge");
         (world, edge)
     }
 
     #[test]
     fn materialize_closure_call_edge_routes_ambiguous_multi_target_through_indirect() {
-        let (_world, edge) = materialize_ambiguous_closure_edge(true);
+        let (_world, edge) = materialize_closure_edge(ClosureCallEvidence::AmbiguousReturning);
         let CallEdge::Indirect(CallReturnFlow::Continue {
             source,
             payload,
@@ -2620,7 +2653,7 @@ mod tests {
 
     #[test]
     fn materialize_closure_call_edge_routes_settled_empty_multi_target_without_a_result_value() {
-        let (world, edge) = materialize_ambiguous_closure_edge(false);
+        let (world, edge) = materialize_closure_edge(ClosureCallEvidence::AmbiguousNonReturning);
         assert!(world.types().is_empty(&edge.return_ty));
         assert_eq!(
             edge.target,
@@ -2630,7 +2663,39 @@ mod tests {
 
     #[test]
     fn materialize_closure_call_edge_rejects_absent_multi_target_carrier() {
-        let (_world, edge) = try_materialize_ambiguous_closure_edge(true, TransportCarrier::Absent);
+        let (_world, edge) =
+            try_materialize_closure_edge(ClosureCallEvidence::AmbiguousReturning, TransportCarrier::Absent);
         assert!(edge.is_err());
+    }
+
+    /// fz-kdt.130. A callable that arrived through the mailbox names no target
+    /// and never will, but it is a real value the boxed-apply wrapper can call.
+    /// Reading "no targets" as the empty type made this a `NoReturn` edge, and
+    /// native lowering turns `NoReturn` into a tail call -- which silently drops
+    /// everything the caller meant to do after the call. The carrier decides.
+    #[test]
+    fn materialize_closure_call_edge_calls_an_unnamed_callable_and_comes_back() {
+        let (world, edge) = materialize_closure_edge(ClosureCallEvidence::Unnamed);
+        assert!(!world.types().is_empty(&edge.return_ty));
+        assert!(
+            matches!(edge.target, CallEdge::Indirect(CallReturnFlow::Continue { .. })),
+            "an unnamed callable behind a runtime carrier must return to its caller, got {:?}",
+            edge.target
+        );
+    }
+
+    /// The other side of that line: with no carrier AND no evidence there is
+    /// nothing to call, so the dead-call lowering still stands (fz-f98.18).
+    #[test]
+    fn materialize_closure_call_edge_keeps_the_dead_call_when_nothing_can_be_called() {
+        let (world, edge) = try_materialize_closure_edge(ClosureCallEvidence::Unnamed, TransportCarrier::Absent);
+        let edge = edge
+            .expect("materialization should not fail")
+            .expect("a dead closure call still needs an edge to carry its return flow");
+        assert!(world.types().is_empty(&edge.return_ty));
+        assert_eq!(
+            edge.target,
+            CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
+        );
     }
 }
