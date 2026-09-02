@@ -46,7 +46,8 @@ body ids assigned to the destinations in order.
 
 A settled target is not automatically a destination. An arm asks its question
 through `RuntimeTypePredicate`, which is coarser than the type it is projected
-from: `{:cont, pair}` and `{:cont | :halt, pair}` both project to "a 2-tuple".
+from: `[int]` and `[:ok]` both project to "a non-empty list", because a list
+test reads the cons cell and nothing inside it.
 Two targets that project to ONE question are not two alternatives — nothing but
 their order would decide which body runs, and that order is the scheduler's. A
 target is therefore dropped when a sibling both (a) is runtime-indistinguishable
@@ -64,14 +65,20 @@ else about it survives into the value.
 
 A callable position is therefore a real question, and it is what separates
 `Range.reduce_step/6`'s `({:cont, int} | {:halt, int}, #66closure[])` from its
-`({:cont, int}, #68closure[])` sibling. Both project to "a 2-tuple" at the
-state column, so before the callable axis existed the pair asked one question,
-neither arm contained the other, and `:halt` was one legal arm order away from
-being read as a continue. Now each arm is reached by the values its own reducer
-travelled with. What the callable axis does NOT reach is one callable at two
-capture layouts: `#66closure[int]` and `#66closure[float]` are one code
-pointer, and the capture record the runtime could read back is not on this axis
-(fz-kdt.127).
+`({:cont, int}, #68closure[])` sibling by its reducer. Before the callable axis
+existed the pair asked one question, neither arm contained the other, and
+`:halt` was one legal arm order away from being read as a continue. Now each arm
+is reached by the values its own reducer travelled with. What the callable axis
+does NOT reach is one callable at two capture layouts: `#66closure[int]` and
+`#66closure[float]` are one code pointer, and the capture record the runtime
+could read back is not on this axis (fz-kdt.127).
+
+The callable envelope is applied AT EVERY DEPTH (fz-kdt.119), not only to a
+top-level argument. A closure nested in a tuple is read by the same one
+comparison as a top-level one, so `{:tag, #66(int)}` and `{:tag, #66(float)}`
+are one observable and `{:tag, #66}` and `{:tag, #68}` are two. Widening a
+nested callable to `fun_top` instead would reproduce the defect above one tuple
+deep, and leave a depth-0/depth-1 seam nothing in the runtime justifies.
 
 Dropping does not decide a routing. Every question an indistinguishable
 group's rows ask projects to one and the same `RuntimeTypePredicate` — the
@@ -132,6 +139,55 @@ reverses each runtime-indistinguishable group, and
 `compiler2_dispatch_answers_the_same_under_a_reversed_arm_order` holds the
 fixtures that carry such groups to one answer under both orders.
 
+### What a test can see
+
+`RuntimeTestAxis` (`src/runtime_type_predicate.rs`) is the table of every axis a
+runtime test can decide, and it is the ONE table this layer is written against.
+A predicate is a union over those axes and nothing else: a value reaches exactly
+the axes its kind names, so a test is the OR of its axes' answers, containment
+is the AND of them, and two tests overlap when they overlap on some axis. The
+three lowerings — the interpreter's `matches_runtime_type_predicate`, and the
+one native emitter in `native_codegen::runtime_test` that both the compiled-body
+door and the receive door go through — each decide the axes by matching the
+table exhaustively, so an axis cannot join the lattice without every lowering
+refusing to compile until it is taught to test it.
+
+Each axis carries an `AxisPrecision`, which is what a SEAT may read from
+deciding it:
+
+| axis | precision | why |
+| --- | --- | --- |
+| atoms | separating | passing is BEING one of the named values |
+| callables | separating | passing is being MINTED FROM a named function -- identity, not captures; honest only while the same-fn-id/different-capture shape compiles on no path (fz-kdt.127) |
+| ints, floats | separating | presence bits: one representation, so no admitted body can misread what arrives — brands are runtime-erased by construction (fz-bsx), and restoring numeric singletons to the lattice would re-open this row |
+| lists | erasing | empty-or-cons, nothing of the elements |
+| named/other structs, maps, binaries, resources | erasing | a schema id or a kind, never the contents |
+| tuples | per position | as separating as the positions' own sub-tests |
+
+The tuple axis is `TupleShapes`: one shape per tuple CLAUSE of the descriptor it
+was projected from, each carrying its positions' own predicates, plus the arity
+reading derived from the shapes' lengths for the callers that only want that.
+One shape per clause is what keeps cross-position correlation — `{:cont, int} |
+{:halt, atom}` is two shapes, and joining them position-wise would admit
+`{:cont, atom}`, which neither clause names (fz-kdt.126: never re-join what the
+lattice kept apart). A clause with several positive signatures is an
+intersection and one with negations is a difference; neither is a list of
+positions, so either degrades the whole axis to the arity-only reading, which is
+what every clause answered before fz-kdt.119 and is a sound over-approximation
+of what it says now.
+
+**The Scope-A carve-out.** A position that can hold a LIST is not tested at all
+(`lowering_tests_position`), by the lattice and by all three lowerings alike.
+Testing only such a position's non-list axes would make the test STRICTER than
+the type — a position's question is a disjunction and dropping a disjunct
+rejects values the arm's surface names — so the choice is to decide the list
+axis there or to be blind, and deciding it separates `{[], int}` from
+`{[int], int}`, which wakes the dead-and-broken accumulator specialization
+**fz-kdt.132** owns. Blind is the over-approximation, and it is what this layer
+said everywhere before per-position shapes existed. A blind position therefore
+counts as overlapping AND as erasing: what a lowering declines to ask, a seat
+may not claim as separation. **fz-kdt.138** is Scope B, which retires it.
+
 ## Seating
 
 Which arm is tested first is therefore not read off arrival alone.
@@ -141,7 +197,8 @@ themselves say it is wrong.
 ### What a seat can get wrong
 
 An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
-compiled for: list shape erases the elements, tuple arity erases the payloads.
+compiled for: list shape erases the elements, and a tuple position erases
+whatever its own sub-test erases.
 So a value can satisfy every question an arm asks and still lie outside that
 arm's surface, and seating that arm first routes the value into a body whose
 representation never named it — `fz_list_head_int_ref` reads a list of atoms as
@@ -167,16 +224,19 @@ create blind escapes, in opposite directions:
 
 Neither containment is the criterion on its own. SURFACE COVERAGE is: `covers`
 holds of `(early, late)` when, at every position where their tests could both
-admit a value on an ERASING axis (list elements, tuple payloads, struct, map,
-binary and resource contents -- `overlaps_on_an_erasing_axis`), `early`'s
-surface already contains `late`'s. "The tests differ" is not separation on an
-erasing axis: tuple arities {2} and {2,3} both admit a 2-tuple, list shapes
-{NonEmpty} and {Empty, NonEmpty} both admit a cons cell. Only the exact axes
-(ints, floats, atoms, callables) separate by mere difference, because a value
-passes an exact test only by being in the tested set, which the arm's surface
-names. Under that definition, seating a covering arm first cannot escape
-anything, by construction -- the surface check is skipped only where the tests
-cannot both admit a value the projection would blur.
+admit a value on an ERASING axis (`overlaps_on_an_erasing_axis`, which reads the
+`AxisPrecision` table above), `early`'s surface already contains `late`'s. "The
+tests differ" is not separation on an erasing axis: list shapes {NonEmpty} and
+{Empty, NonEmpty} both admit a cons cell, and an arity-only tuple test at {2}
+and one at {2,3} both admit a 2-tuple. A separating axis excuses the surface
+check, because a value passing it is pinned down far enough that no admitted
+body can misread it. A tuple pair is judged position by position: it is erasing
+only where two shapes that could both admit a value overlap at a position that
+is itself erasing — so `{:cont, int}` against `{:halt, int}` separates on an
+atom and needs no surface check, while `{:ok, [int]}` against `{:ok, [:ok]}` is
+one and the same question. Under that definition, seating a covering arm first
+cannot escape anything, by construction -- the surface check is skipped only
+where the tests cannot both admit a value the projection would blur.
 
 ### The rule
 
@@ -231,12 +291,59 @@ abort natively under a reversed arm order; `dispatch_seat_element_blind`'s one
 is why that fixture prints the right answers only because arrival seats the atom
 arm first. The census is a RATCHET pointing at fz-kdt.131, not a target: a new
 entry is a new latent miscompile and wants a ticket, not a re-blessed constant.
+fz-kdt.119 retires NONE of the 19: every one is a list subject, and only
+fz-kdt.107 step 3 can move that number.
+
+### The dynamic tripwire
+
+The static census reasons about pairs of arms on hand-picked fixtures.
+`FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` measures the real thing instead, on the
+production path, over whatever the corpus actually runs (fz-kdt.135): the
+interpreter answers each dispatch type test as the lowerings do — under
+`PositionScope::Lowered`, blind where they are blind — and then re-asks the
+tuple axis under `PositionScope::Full`, which looks at the positions they skip.
+A value admitted by the first reading and refused by the second passed a test no
+shape of the arm's surface names, which is precisely a blind routing. Unset, it
+is off and costs nothing; set to `abort` each finding is fatal, which is how a
+single fixture is bisected down to the dispatch; set to anything else each
+finding is reported on stderr, and a corpus census is
+
+    FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp <fixture> 2>&1 >/dev/null \
+      | grep -c 'surface-membership escape'
+
+The instrument has no reading before fz-kdt.119 — without per-position shapes
+there is no record of what an arm's surface named — so its baseline is the
+landing's own measurement: SEVEN fixtures, 268 occurrences.
+
+| fixture | occurrences |
+| --- | --- |
+| `00183_enum_take_list_range` | 16 |
+| `00230_enum_take_chained` | 16 |
+| `00418_enum_count_range` | 4 |
+| `00419_enum_take_mixed` | 16 |
+| `00420_enum_take_drop_split` | 106 |
+| `enum_take_drop_split` | 106 |
+| `unused_range_binding` | 4 |
+
+Every one is a nested LIST position — the Scope-A carve-out, blind on purpose —
+and the two at 106 are the same program reached twice and are what fz-kdt.132
+owns. These are LATENT SITES, not regressions: like the 19-escape census this is
+a ratchet, and a new entry wants a ticket rather than a re-blessed constant.
 
 Arm order was the settled targets' order and nothing else before fz-kdt.129 —
 the fixpoint's, which is the agenda's — and `enum_predicate_search` seated one
 `List.reduce_while_step/3` dispatch's wide arm first under FIFO and its narrow
-one first under LIFO. That pair is now seated wide-first under both, because the
-wide arm is the one that covers.
+one first under LIFO. That pair is now seated the same way under both, and
+fz-kdt.119 moved WHICH way: the two arms' `{:halt, :false}` and
+`{:cont, :true} | {:halt, :false}` states used to be one question, so coverage
+had to seat the wide arm first to keep a `{:cont, :true}` out of the narrow
+arm's body. Both positions of that state are atoms, the test now asks them, a
+`{:cont, :true}` fails the narrow arm's first question outright, and with
+nothing left for coverage to protect the second conjunct — precision — seats the
+narrow arm first. Measured at the landing: all four schedule lenses stay
+byte-identical under FIFO and LIFO, and the corpus dump census stays at the same
+three schedule-movers (`00277_enum_tier0_fixture`, `enum_map_family`,
+`dead_closure_capture_empty_list`), which carry arms no seat can separate.
 
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`

@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
-use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate, TupleShapes};
 
 use super::keying::DispatchDemand;
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
@@ -1330,7 +1330,7 @@ impl Types {
             },
             atoms: descr.atoms.clone(),
             lists: runtime_type_predicate_list_shapes(descr),
-            tuple_arities: runtime_type_predicate_tuple_arities(descr),
+            tuples: self.runtime_type_predicate_tuples(descr),
             named_structs: named_structs.clone(),
             allow_other_structs: false,
             maps: !descr.maps.is_empty() && named_structs.is_none(),
@@ -1338,6 +1338,38 @@ impl Types {
             callables: runtime_type_predicate_callables(descr),
             resources: !descr.resources.is_empty(),
         }
+    }
+
+    /// The tuple axis a runtime test can put to a value.
+    ///
+    /// One shape per tuple CLAUSE, each carrying its positions' own
+    /// predicates, because a clause is the unit the lattice keeps correlated:
+    /// `{:cont, int} | {:halt, atom}` is two clauses, and joining them
+    /// position-wise would admit `{:cont, atom}`, which neither names
+    /// (fz-kdt.126).
+    ///
+    /// A clause is shapeable only when it is exactly one positive signature
+    /// with nothing subtracted. Several positive signatures are an
+    /// INTERSECTION of tuple types and negations are a DIFFERENCE; neither is
+    /// a list of positions, and inventing one would claim a precision the
+    /// emitted test could not honour. Those degrade the whole axis to the
+    /// arity-only reading, which is what every clause answered before
+    /// fz-kdt.119.
+    fn runtime_type_predicate_tuples(&self, descr: &Descr) -> TupleShapes {
+        let mut shapes = Vec::with_capacity(descr.tuples.len());
+        for clause in &descr.tuples {
+            if clause.pos.len() != 1 || !clause.neg.is_empty() {
+                return TupleShapes::arity_only(runtime_type_predicate_tuple_arities(descr));
+            }
+            shapes.push(
+                clause.pos[0]
+                    .elems
+                    .iter()
+                    .map(|elem| self.runtime_type_predicate(elem))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        TupleShapes::exact(shapes)
     }
 
     pub(crate) fn atom_literals(&self, a: &Ty) -> Vec<String> {
@@ -1512,7 +1544,7 @@ impl Types {
     }
 
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
+        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive, CallableReading::AsTyped);
         self.intern(descr)
     }
 
@@ -1525,11 +1557,15 @@ impl Types {
     /// literal `fn_id`s survive here and everything around them is erased --
     /// two literals over one function at different capture types collapse to
     /// one observable, and two different functions stay two (fz-kdt.125).
+    ///
+    /// AT EVERY DEPTH (fz-kdt.119). A tuple position holding a closure is read
+    /// by the same one comparison as a top-level one, so `{:tag, #66(int)}`
+    /// and `{:tag, #66(float)}` are one observable here and `{:tag, #66}` and
+    /// `{:tag, #68}` are two. Widening a nested callable to `fun_top` instead
+    /// would reproduce fz-kdt.125's defect one tuple deep, and leave a
+    /// depth-0/depth-1 seam nothing in the runtime justifies.
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
-        let mut descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
-        if !descr.funcs.is_empty() {
-            descr.funcs = callable_identity_clauses(self, &descr.funcs);
-        }
+        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive, CallableReading::Identity);
         self.intern(descr)
     }
 
@@ -2530,7 +2566,7 @@ fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RuntimeEnvelopePolarity {
     Positive,
     Negative,
@@ -2545,7 +2581,17 @@ impl RuntimeEnvelopePolarity {
     }
 }
 
-fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity) -> Descr {
+/// Whether the envelope keeps a callable's typing or reduces it to the one
+/// thing a runtime value tells about itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallableReading {
+    /// Leave the function axis as the lattice typed it.
+    AsTyped,
+    /// Collapse it to callable IDENTITY, at every depth.
+    Identity,
+}
+
+fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity, callables: CallableReading) -> Descr {
     let mut descr = types.descr(&ty).clone();
     if !descr.vars.values.is_empty() {
         match (polarity, descr.vars.cofinite) {
@@ -2554,25 +2600,34 @@ fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity
             (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
         }
     }
+    // Only in a positive position: identity clauses OVER-approximate the set
+    // they replace, which is the direction a test must err in -- and the
+    // opposite of the direction a subtracted region may.
+    if callables == CallableReading::Identity
+        && polarity == RuntimeEnvelopePolarity::Positive
+        && !descr.funcs.is_empty()
+    {
+        descr.funcs = callable_identity_clauses(types, &descr.funcs);
+    }
     descr.tuples = descr
         .tuples
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_tuple_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_tuple_sig))
         .collect();
     descr.lists = descr
         .lists
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_list_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_list_sig))
         .collect();
     descr.resources = descr
         .resources
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_resource_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_resource_sig))
         .collect();
     descr.maps = descr
         .maps
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_map_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_map_sig))
         .collect();
     descr
 }
@@ -2604,8 +2659,8 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
         .collect()
 }
 
-fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity) -> Ty {
-    let descr = runtime_envelope(types, ty, polarity);
+fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity, callables: CallableReading) -> Ty {
+    let descr = runtime_envelope(types, ty, polarity, callables);
     types.intern(descr)
 }
 
@@ -2613,31 +2668,42 @@ fn runtime_structural_conj<T>(
     types: &mut Types,
     conj: Conj<T>,
     polarity: RuntimeEnvelopePolarity,
-    transform: fn(&mut Types, T, RuntimeEnvelopePolarity) -> Option<T>,
+    callables: CallableReading,
+    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, CallableReading) -> Option<T>,
 ) -> Option<Conj<T>> {
     let mut pos = Vec::with_capacity(conj.pos.len());
     for sig in conj.pos {
-        pos.push(transform(types, sig, polarity)?);
+        pos.push(transform(types, sig, polarity, callables)?);
     }
     let neg = conj
         .neg
         .into_iter()
-        .filter_map(|sig| transform(types, sig, polarity.flipped()))
+        .filter_map(|sig| transform(types, sig, polarity.flipped(), callables))
         .collect();
     Some(Conj { pos, neg })
 }
 
-fn runtime_tuple_sig(types: &mut Types, sig: TupleSig, polarity: RuntimeEnvelopePolarity) -> Option<TupleSig> {
+fn runtime_tuple_sig(
+    types: &mut Types,
+    sig: TupleSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<TupleSig> {
     let elems = sig
         .elems
         .into_iter()
-        .map(|ty| runtime_envelope_ty(types, ty, polarity))
+        .map(|ty| runtime_envelope_ty(types, ty, polarity, callables))
         .collect::<Vec<_>>();
     (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
 }
 
-fn runtime_list_sig(types: &mut Types, sig: ListSig, polarity: RuntimeEnvelopePolarity) -> Option<ListSig> {
-    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity));
+fn runtime_list_sig(
+    types: &mut Types,
+    sig: ListSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<ListSig> {
+    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity, callables));
     match elem {
         Some(elem) if types.is_empty(&elem) && !sig.empty => None,
         Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
@@ -2645,16 +2711,26 @@ fn runtime_list_sig(types: &mut Types, sig: ListSig, polarity: RuntimeEnvelopePo
     }
 }
 
-fn runtime_resource_sig(types: &mut Types, sig: ResourceSig, polarity: RuntimeEnvelopePolarity) -> Option<ResourceSig> {
-    let payload = runtime_envelope_ty(types, sig.payload, polarity);
+fn runtime_resource_sig(
+    types: &mut Types,
+    sig: ResourceSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<ResourceSig> {
+    let payload = runtime_envelope_ty(types, sig.payload, polarity, callables);
     (!types.is_empty(&payload)).then_some(ResourceSig { payload })
 }
 
-fn runtime_map_sig(types: &mut Types, sig: sigs::MapSig, polarity: RuntimeEnvelopePolarity) -> Option<sigs::MapSig> {
+fn runtime_map_sig(
+    types: &mut Types,
+    sig: sigs::MapSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<sigs::MapSig> {
     let fields = sig
         .fields
         .into_iter()
-        .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity)))
+        .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, callables)))
         .collect::<BTreeMap<_, _>>();
     (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { fields })
 }

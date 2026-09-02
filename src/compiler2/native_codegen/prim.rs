@@ -1,12 +1,13 @@
 //! Primitive lowering helpers for codegen.
 
+use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::{
-    BinOp, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId, Module, Prim,
-    UnOp, Var,
+    BinOp, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId, Prim, UnOp,
+    Var,
 };
-use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{RuntimeTypePredicate, lowering_tests_position};
 use crate::types::ClosureTarget;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
@@ -1164,6 +1165,13 @@ fn lower_closure_capture<M: cranelift_module::Module>(
     )))
 }
 
+/// Lower a `RuntimeTypeTest` prim.
+///
+/// Two subject shapes reach here. Usually the value is in hand and the shared
+/// emitter reads it. Under destination-passing the tuple was never boxed --
+/// `fz-qwf` delivered its fields as separate parameters -- so there is no
+/// value to read, and the test is answered against the FIELDS instead, which
+/// is exactly what a per-position test wants anyway (fz-kdt.133).
 fn lower_runtime_type_predicate<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -1173,430 +1181,207 @@ fn lower_runtime_type_predicate<M: cranelift_module::Module>(
     predicate: &RuntimeTypePredicate,
     dest_var: Var,
 ) -> Result<LowerOut, CodegenError> {
-    if let Some(delivered_arity) = delivered_tuple_field_arity(body, v)
+    let flag = if let Some(delivered) = delivered_tuple_fields(body, v)
         && !predicate.allow_other_structs
         && predicate.named_structs.is_none()
     {
-        let flag = body
-            .b
-            .ins()
-            .iconst(types::I8, i64::from(predicate.tuple_arities.contains(&delivered_arity)));
-        if body.cache.if_only_conds.contains(&dest_var.0) {
-            return Ok(LowerOut::Condition(flag));
-        }
-        return Ok(LowerOut::Strict(strict_bool(body.b, flag)));
-    }
-
-    let value = *var_env.get(&v.0).expect("type-test subject");
-    let scalar = emit_runtime_type_predicate_scalar_checks(body, env.module, predicate, value)?;
-    let heap = emit_runtime_type_predicate_heap_checks(body, env, predicate, value)?;
-    let struct_flag = predicate
-        .has_structs()
-        .then(|| emit_runtime_type_predicate_struct_check(body, runtime, env, value, predicate))
-        .transpose()?;
-
-    let flag = [scalar, heap, struct_flag]
-        .into_iter()
-        .flatten()
-        .reduce(|acc, f| body.b.ins().bor(acc, f))
-        .unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
+        emit_delivered_tuple_test(body, env, runtime, predicate, &delivered)?
+    } else {
+        let value = *var_env.get(&v.0).expect("type-test subject");
+        let mut emitter = PrimTestEmitter { body, env, runtime };
+        emit_runtime_type_test(&mut emitter, value, predicate)?
+    };
     if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(flag));
     }
     Ok(LowerOut::Strict(strict_bool(body.b, flag)))
 }
 
-fn delivered_tuple_field_arity<M: cranelift_module::Module>(
+/// The field parameters a destination-passing boundary delivered in place of a
+/// tuple, in position order, or `None` where the subject is an ordinary value.
+fn delivered_tuple_fields<M: cranelift_module::Module>(
     body: &CodegenFn<'_, '_, '_, M>,
     tuple: Var,
-) -> Option<usize> {
-    let mut count = 0;
-    for (logical_tuple, _) in body.cache.tuple_field_params.keys() {
-        if *logical_tuple == tuple.0 {
-            count += 1;
+) -> Option<Vec<CodegenValue>> {
+    let mut fields = Vec::new();
+    for index in 0.. {
+        match body.cache.tuple_field_params.get(&(tuple.0, index)) {
+            Some(field) => fields.push(*field),
+            None => break,
         }
     }
-    (count > 0).then_some(count)
+    (!fields.is_empty()).then_some(fields)
 }
 
-fn emit_runtime_type_predicate_scalar_checks<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    module: &Module,
-    predicate: &RuntimeTypePredicate,
-    value: CodegenValue,
-) -> Result<Option<ir::Value>, CodegenError> {
-    let mut scalar = None;
-    let or_in = |b: &mut FunctionBuilder<'_>, flag: ir::Value, scalar: &mut Option<ir::Value>| {
-        *scalar = Some(match scalar.take() {
-            None => flag,
-            Some(prev) => b.ins().bor(prev, flag),
-        });
-    };
-    if !predicate.ints.is_none() {
-        let flag = emit_kind_guarded_membership(body, value, ValueKind::INT, |body, value| {
-            let raw = body.value_raw_int(value);
-            emit_i64_membership(body.b, raw, &predicate.ints)
-        });
-        or_in(body.b, flag, &mut scalar);
-    }
-    if !predicate.floats.is_none() {
-        let flag = emit_kind_guarded_membership(body, value, ValueKind::FLOAT, |body, value| {
-            let raw = body.value_raw_float(value);
-            let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
-            emit_u64_membership(body.b, bits, &predicate.floats)
-        });
-        or_in(body.b, flag, &mut scalar);
-    }
-    if !predicate.atoms.is_none() {
-        let name_to_id: HashMap<&str, u32> = module
-            .atom_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| (name.as_str(), i as u32))
-            .collect();
-        let atom_ids = FiniteSet {
-            cofinite: predicate.atoms.cofinite,
-            values: predicate
-                .atoms
-                .values
-                .iter()
-                .filter_map(|name| name_to_id.get(name.as_str()).copied().map(i64::from))
-                .collect(),
-        };
-        let flag = emit_kind_guarded_membership(body, value, ValueKind::ATOM, |body, value| {
-            let raw = body.value_raw_atom(value);
-            emit_i64_membership(body.b, raw, &atom_ids)
-        });
-        or_in(body.b, flag, &mut scalar);
-    }
-    Ok(scalar)
-}
-
-fn emit_runtime_type_predicate_heap_checks<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    env: &CodegenEnv<'_>,
-    predicate: &RuntimeTypePredicate,
-    value: CodegenValue,
-) -> Result<Option<ir::Value>, CodegenError> {
-    let mut flag = None;
-    let mut or_in = |body: &mut CodegenFn<'_, '_, '_, M>, next: ir::Value| {
-        flag = Some(match flag.take() {
-            None => next,
-            Some(prev) => body.b.ins().bor(prev, next),
-        });
-    };
-    if let Some(list_flag) = emit_runtime_type_predicate_list_check(body, value, &predicate.lists) {
-        or_in(body, list_flag);
-    }
-    if predicate.maps {
-        let map_flag = body.value_is_tag(value, ValueKind::MAP);
-        or_in(body, map_flag);
-    }
-    if predicate.binaries {
-        let binary_flag = body.value_is_tag(value, ValueKind::BITSTRING);
-        or_in(body, binary_flag);
-    }
-    if let Some(callable_flag) = emit_runtime_type_predicate_callable_check(body, env, value, &predicate.callables)? {
-        or_in(body, callable_flag);
-    }
-    if predicate.resources {
-        let resource_flag = body.value_is_tag(value, ValueKind::RESOURCE);
-        or_in(body, resource_flag);
-    }
-    Ok(flag)
-}
-
-/// "Is this value one of THESE callables?"
+/// Answer a type test about a tuple that was delivered as separate fields.
 ///
-/// A closure object's word at `+8` is the address of the callable boundary that
-/// minted it, and a thin `MakeFnRef` singleton carries the same address
-/// (`fetch_static_closure` hands back a per-process object the boundary's code
-/// pointer was written into), so one comparison covers both shapes. Comparing
-/// addresses is what makes the check O(1) and independent of captures: the
-/// boundary is chosen at mint time, and the value remembers it.
-fn emit_runtime_type_predicate_callable_check<M: cranelift_module::Module>(
+/// The arity is a compile-time fact here -- it is how many parameters the
+/// boundary handed over -- so the arity half of the question is decided
+/// without touching a value. The SHAPE half is not: the WHOLE test was answered
+/// with that one constant until fz-kdt.119 made the predicate payload-aware, at
+/// which point a constant would have been silently wrong on exactly the lanes
+/// destination-passing optimized (fz-kdt.133). The fields are right here, so
+/// each position is asked directly, with no tuple to rebuild.
+///
+/// Measured at the landing: `tuple_field_params` is EMPTY at every one of the
+/// 1783 type tests the corpus lowers, so this path is not reached today and the
+/// hazard it repairs was latent rather than live. It is kept rather than
+/// deleted because the alternative is the `expect` below firing on the day
+/// destination-passing does deliver a type-tested tuple, and a correct answer
+/// beats a loud crash.
+fn emit_delivered_tuple_test<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
-    value: CodegenValue,
-    callables: &FiniteSet<ClosureTarget>,
-) -> Result<Option<ir::Value>, CodegenError> {
-    if callables.is_none() {
-        return Ok(None);
-    }
-    if callables.is_any() {
-        return Ok(Some(body.value_is_tag(value, ValueKind::CLOSURE)));
-    }
-    let mut addresses = Vec::new();
-    for target in &callables.values {
-        for boundary in env.surface.callable_boundaries_for_target(*target) {
-            let boundary_id = boundary.boundary_id.as_u32();
-            let func_id = env.callable_boundary_fn_ids.get(&boundary_id).ok_or_else(|| {
-                CodegenError::new(format!(
-                    "callable identity test names callable boundary {boundary_id}, which was never published",
-                ))
-            })?;
-            addresses.push(*func_id);
-        }
-    }
-    Ok(Some(emit_kind_guarded_membership(
-        body,
-        value,
-        ValueKind::CLOSURE,
-        |body, value| {
-            let closure_ref = body.value_as_any_ref(value);
-            let code = body.closure_code_ref(closure_ref);
-            let mut hit = None;
-            for func_id in addresses {
-                let addr = fn_addr(body.jmod, func_id, body.b);
-                let eq = body.b.ins().icmp(IntCC::Equal, code, addr);
-                hit = Some(match hit {
-                    None => eq,
-                    Some(prev) => body.b.ins().bor(prev, eq),
-                });
-            }
-            let hit = hit.unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
-            if callables.cofinite {
-                body.b.ins().bxor_imm(hit, 1)
-            } else {
-                hit
-            }
-        },
-    )))
-}
-
-fn emit_runtime_type_predicate_struct_check<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
-    env: &CodegenEnv<'_>,
-    value: CodegenValue,
     predicate: &RuntimeTypePredicate,
+    fields: &[CodegenValue],
 ) -> Result<ir::Value, CodegenError> {
-    if predicate.allow_other_structs && predicate.tuple_arities.is_any() && predicate.named_structs.is_any() {
-        return Ok(body.value_is_tag(value, ValueKind::STRUCT));
+    if !predicate.tuples.arities().contains(&fields.len()) {
+        return Ok(body.b.ins().iconst(types::I8, 0));
     }
-
-    let is_struct = body.value_is_tag(value, ValueKind::STRUCT);
-    let struct_blk = body.b.create_block();
-    let join_blk = body.b.create_block();
-    body.b.append_block_param(join_blk, types::I8);
-    let false8 = body.b.ins().iconst(types::I8, 0);
-    let no_args: Vec<BlockArg> = Vec::new();
-    body.b
-        .ins()
-        .brif(is_struct, struct_blk, &no_args, join_blk, &[BlockArg::Value(false8)]);
-
-    body.b.switch_to_block(struct_blk);
-    body.b.seal_block(struct_blk);
-    let struct_ref = body.value_as_any_ref(value);
-    let fref = body
-        .jmod
-        .declare_func_in_func(runtime.struct_schema_id_ref_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[struct_ref]);
-    let schema_raw = body.b.inst_results(inst)[0];
-    let schema64 = body.b.ins().uextend(types::I64, schema_raw);
-
-    let tuple_match =
-        emit_struct_tuple_membership(body.b, schema64, env.tuple_schema_ids, env.named_schema_ids, predicate);
-    let named_match = emit_struct_named_membership(body.b, schema64, env.named_schema_ids, &predicate.named_structs);
-    let other_match = if predicate.allow_other_structs {
-        let known_tuple = emit_any_schema_id_match(body.b, schema64, env.tuple_schema_ids.values().copied());
-        let known_named = emit_any_schema_id_match(body.b, schema64, env.named_schema_ids.values().copied());
-        let known_struct = body.b.ins().bor(known_tuple, known_named);
-        body.b.ins().icmp_imm(IntCC::Equal, known_struct, 0)
-    } else {
-        body.b.ins().iconst(types::I8, 0)
-    };
-    let tuple_or_named = body.b.ins().bor(tuple_match, named_match);
-    let flag = body.b.ins().bor(tuple_or_named, other_match);
-    body.b.ins().jump(join_blk, &[BlockArg::Value(flag)]);
-
-    body.b.switch_to_block(join_blk);
-    body.b.seal_block(join_blk);
-    Ok(body.b.block_params(join_blk)[0])
-}
-
-fn emit_runtime_type_predicate_list_check<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    value: CodegenValue,
-    lists: &FiniteSet<ListShape>,
-) -> Option<ir::Value> {
-    if lists.is_none() {
-        return None;
+    if !predicate.tuples.is_exact() {
+        return Ok(body.b.ins().iconst(types::I8, 1));
     }
-    let allow_empty = lists.contains(&ListShape::Empty);
-    let allow_non_empty = lists.contains(&ListShape::NonEmpty);
-    match (allow_empty, allow_non_empty) {
-        (false, false) => None,
-        (true, true) => Some(body.value_is_tag(value, ValueKind::LIST)),
-        (true, false) => Some(emit_is_empty_list_flag(body, value)),
-        (false, true) => Some(emit_is_list_cons_flag(body, value)),
-    }
-}
-
-fn emit_kind_guarded_membership<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    value: CodegenValue,
-    kind: ValueKind,
-    build: impl FnOnce(&mut CodegenFn<'_, '_, '_, M>, CodegenValue) -> ir::Value,
-) -> ir::Value {
-    match value {
-        CodegenValue::AnyRef(_) => {
-            let is_kind = body.value_is_tag(value, kind);
-            let match_blk = body.b.create_block();
-            let join_blk = body.b.create_block();
-            body.b.append_block_param(join_blk, types::I8);
-            let false8 = body.b.ins().iconst(types::I8, 0);
-            let no_args: Vec<BlockArg> = Vec::new();
-            body.b
-                .ins()
-                .brif(is_kind, match_blk, &no_args, join_blk, &[BlockArg::Value(false8)]);
-            body.b.switch_to_block(match_blk);
-            body.b.seal_block(match_blk);
-            let matched = build(body, value);
-            body.b.ins().jump(join_blk, &[BlockArg::Value(matched)]);
-            body.b.switch_to_block(join_blk);
-            body.b.seal_block(join_blk);
-            body.b.block_params(join_blk)[0]
-        }
-        CodegenValue::RawInt(_)
-        | CodegenValue::Known {
-            kind: ValueKind::INT, ..
-        } if kind == ValueKind::INT => build(body, value),
-        CodegenValue::RawF64(_)
-        | CodegenValue::Known {
-            kind: ValueKind::FLOAT, ..
-        } if kind == ValueKind::FLOAT => build(body, value),
-        CodegenValue::RawAtom(_)
-        | CodegenValue::Condition(_)
-        | CodegenValue::Known {
-            kind: ValueKind::ATOM, ..
-        } if kind == ValueKind::ATOM => build(body, value),
-        _ => body.b.ins().iconst(types::I8, 0),
-    }
-}
-
-/// Per-value membership check, shared by two callers: atom membership
-/// (live in production, `values` routinely non-empty — atom ids are i64
-/// here) and numeric (`ints`) membership, whose sole producer
-/// (`Types::runtime_type_predicate`) always leaves `values` empty today —
-/// numbers are a kind check, not a value-membership set, from that
-/// pipeline. The numeric call site is dormant, not dead: it is the wiring
-/// point for a deferred numeric-singleton-precision restoration to the
-/// type lattice, and is kept for that reuse rather than pruned.
-fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<i64>) -> ir::Value {
-    if values.is_any() {
-        return b.ins().iconst(types::I8, 1);
-    }
-    let mut eq_any = b.ins().iconst(types::I8, 0);
-    for want in &values.values {
-        let next = b.ins().icmp_imm(IntCC::Equal, raw, *want);
-        eq_any = b.ins().bor(eq_any, next);
-    }
-    if values.cofinite {
-        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
-    } else {
-        eq_any
-    }
-}
-
-/// See `emit_i64_membership`: the `floats` counterpart, same dormant-wiring
-/// status (`Types::runtime_type_predicate` always leaves `values` empty for
-/// floats in production; no other caller populates it).
-fn emit_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<u64>) -> ir::Value {
-    if values.is_any() {
-        return b.ins().iconst(types::I8, 1);
-    }
-    let mut eq_any = b.ins().iconst(types::I8, 0);
-    for want in &values.values {
-        let want = b.ins().iconst(types::I64, *want as i64);
-        let next = b.ins().icmp(IntCC::Equal, raw, want);
-        eq_any = b.ins().bor(eq_any, next);
-    }
-    if values.cofinite {
-        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
-    } else {
-        eq_any
-    }
-}
-
-fn emit_any_schema_id_match(
-    b: &mut FunctionBuilder<'_>,
-    schema64: ir::Value,
-    ids: impl IntoIterator<Item = u32>,
-) -> ir::Value {
-    let mut matched = b.ins().iconst(types::I8, 0);
-    for id in ids {
-        let want = b.ins().iconst(types::I64, id as i64);
-        let next = b.ins().icmp(IntCC::Equal, schema64, want);
-        matched = b.ins().bor(matched, next);
-    }
-    matched
-}
-
-fn emit_struct_tuple_membership(
-    b: &mut FunctionBuilder<'_>,
-    schema64: ir::Value,
-    tuple_schema_ids: &HashMap<usize, u32>,
-    named_schema_ids: &HashMap<String, u32>,
-    predicate: &RuntimeTypePredicate,
-) -> ir::Value {
-    if predicate.tuple_arities.is_none() {
-        return b.ins().iconst(types::I8, 0);
-    }
-    if predicate.tuple_arities.is_any() {
-        let known_named = emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-        return b.ins().icmp_imm(IntCC::Equal, known_named, 0);
-    }
-    if predicate.tuple_arities.cofinite {
-        let excluded = predicate
-            .tuple_arities
-            .values
-            .iter()
-            .filter_map(|arity| tuple_schema_ids.get(arity).copied())
-            .collect::<Vec<_>>();
-        let known_named = emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-        let is_named = b.ins().icmp_imm(IntCC::NotEqual, known_named, 0);
-        let excluded_match = emit_any_schema_id_match(b, schema64, excluded);
-        let excluded_ok = b.ins().icmp_imm(IntCC::Equal, excluded_match, 0);
-        let not_named = b.ins().bxor_imm(is_named, 1);
-        b.ins().band(not_named, excluded_ok)
-    } else {
-        emit_any_schema_id_match(
-            b,
-            schema64,
-            predicate
-                .tuple_arities
-                .values
-                .iter()
-                .filter_map(|arity| tuple_schema_ids.get(arity).copied()),
-        )
-    }
-}
-
-fn emit_struct_named_membership(
-    b: &mut FunctionBuilder<'_>,
-    schema64: ir::Value,
-    named_schema_ids: &HashMap<String, u32>,
-    names: &FiniteSet<String>,
-) -> ir::Value {
-    if names.is_none() {
-        return b.ins().iconst(types::I8, 0);
-    }
-    if names.is_any() {
-        return emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-    }
-    let relevant_ids = names
-        .values
+    let mut emitter = PrimTestEmitter { body, env, runtime };
+    let mut hit = emitter.body.b.ins().iconst(types::I8, 0);
+    for shape in predicate
+        .tuples
+        .shapes()
         .iter()
-        .filter_map(|name| named_schema_ids.get(name).copied())
-        .collect::<Vec<_>>();
-    let matched = emit_any_schema_id_match(b, schema64, relevant_ids);
-    if names.cofinite {
-        let any_named = emit_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-        let not_excluded = b.ins().icmp_imm(IntCC::Equal, matched, 0);
-        b.ins().band(any_named, not_excluded)
-    } else {
-        matched
+        .filter(|shape| shape.len() == fields.len())
+    {
+        let mut matched: Option<ir::Value> = None;
+        for (field, position) in fields.iter().zip(shape) {
+            if !lowering_tests_position(position) {
+                continue;
+            }
+            let flag = emit_runtime_type_test(&mut emitter, *field, position)?;
+            matched = Some(match matched {
+                None => flag,
+                Some(prev) => emitter.body.b.ins().band(prev, flag),
+            });
+        }
+        let matched = matched.unwrap_or_else(|| emitter.body.b.ins().iconst(types::I8, 1));
+        hit = emitter.body.b.ins().bor(hit, matched);
+    }
+    Ok(hit)
+}
+
+/// The compiled-body door onto the shared runtime-test emitter.
+struct PrimTestEmitter<'a, 'b, 'env, 'fb, M: cranelift_module::Module> {
+    body: &'a mut CodegenFn<'b, 'env, 'fb, M>,
+    env: &'a CodegenEnv<'a>,
+    runtime: &'a RuntimeRefs,
+}
+
+impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitter<'_, '_, '_, 'fb, M> {
+    type Value = CodegenValue;
+
+    fn builder(&mut self) -> &mut FunctionBuilder<'fb> {
+        self.body.b
+    }
+
+    fn atom_names(&self) -> &[String] {
+        &self.env.module.atom_names
+    }
+
+    fn tuple_schema_ids(&self) -> &HashMap<usize, u32> {
+        self.env.tuple_schema_ids
+    }
+
+    fn named_schema_ids(&self) -> &HashMap<String, u32> {
+        self.env.named_schema_ids
+    }
+
+    fn kind_evidence(&self, value: CodegenValue) -> KindEvidence {
+        match value {
+            CodegenValue::AnyRef(_) => KindEvidence::Tagged,
+            CodegenValue::RawInt(_) => KindEvidence::Unboxed(ValueKind::INT),
+            CodegenValue::RawF64(_) => KindEvidence::Unboxed(ValueKind::FLOAT),
+            CodegenValue::RawAtom(_) | CodegenValue::Condition(_) => KindEvidence::Unboxed(ValueKind::ATOM),
+            CodegenValue::Known {
+                kind: ValueKind::INT, ..
+            } => KindEvidence::Unboxed(ValueKind::INT),
+            CodegenValue::Known {
+                kind: ValueKind::FLOAT, ..
+            } => KindEvidence::Unboxed(ValueKind::FLOAT),
+            CodegenValue::Known {
+                kind: ValueKind::ATOM, ..
+            } => KindEvidence::Unboxed(ValueKind::ATOM),
+            CodegenValue::Known { .. } => KindEvidence::Opaque,
+        }
+    }
+
+    fn kind_flag(&mut self, value: CodegenValue, kind: ValueKind) -> Result<ir::Value, CodegenError> {
+        Ok(self.body.value_is_tag(value, kind))
+    }
+
+    fn raw_int(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        Ok(self.body.value_raw_int(value))
+    }
+
+    fn raw_float_bits(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        let raw = self.body.value_raw_float(value);
+        Ok(self.body.b.ins().bitcast(types::I64, MemFlags::new(), raw))
+    }
+
+    fn raw_atom(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        Ok(self.body.value_raw_atom(value))
+    }
+
+    fn empty_list_flag(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        Ok(emit_is_empty_list_flag(self.body, value))
+    }
+
+    fn cons_flag(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        Ok(emit_is_list_cons_flag(self.body, value))
+    }
+
+    fn schema_id(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        let struct_ref = self.body.value_as_any_ref(value);
+        let fref = self
+            .body
+            .jmod
+            .declare_func_in_func(self.runtime.struct_schema_id_ref_id, self.body.b.func);
+        let inst = self.body.b.ins().call(fref, &[struct_ref]);
+        let raw = self.body.b.inst_results(inst)[0];
+        Ok(self.body.b.ins().uextend(types::I64, raw))
+    }
+
+    fn tuple_field(&mut self, value: CodegenValue, index: usize) -> Result<CodegenValue, CodegenError> {
+        let struct_ref = self.body.value_as_any_ref(value);
+        let fref = self
+            .body
+            .jmod
+            .declare_func_in_func(self.runtime.struct_get_field_id, self.body.b.func);
+        let offset = self.body.b.ins().iconst(types::I32, (index as i64) * SLOT_BYTES as i64);
+        let process = self.body.process_arg();
+        let inst = self.body.b.ins().call(fref, &[process, struct_ref, offset]);
+        Ok(CodegenValue::AnyRef(self.body.b.inst_results(inst)[0]))
+    }
+
+    fn closure_code(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        let closure_ref = self.body.value_as_any_ref(value);
+        Ok(self.body.closure_code_ref(closure_ref))
+    }
+
+    fn callable_addresses(&mut self, targets: &FiniteSet<ClosureTarget>) -> Result<Vec<ir::Value>, CodegenError> {
+        let mut func_ids = Vec::new();
+        for target in &targets.values {
+            for boundary in self.env.surface.callable_boundaries_for_target(*target) {
+                let boundary_id = boundary.boundary_id.as_u32();
+                let func_id = self.env.callable_boundary_fn_ids.get(&boundary_id).ok_or_else(|| {
+                    CodegenError::new(format!(
+                        "callable identity test names callable boundary {boundary_id}, which was never published",
+                    ))
+                })?;
+                func_ids.push(*func_id);
+            }
+        }
+        Ok(func_ids
+            .into_iter()
+            .map(|func_id| fn_addr(self.body.jmod, func_id, self.body.b))
+            .collect())
     }
 }
 

@@ -2733,7 +2733,7 @@ fn main(), do: make_pairer()
     assert!(
         lambda_return_predicates
             .iter()
-            .any(|predicate| predicate.tuple_arities.contains(&2)),
+            .any(|predicate| predicate.tuples.arities().contains(&2)),
         "the control must retain a tuple semantic return type while runtime demand remains ignored"
     );
 }
@@ -5345,9 +5345,9 @@ fn shape_matches_surface_input_ty(world: &mut World, shape: ShapeId, ty: Ty) -> 
 
 fn exact_tuple_field_tys_for_surface(world: &mut World, ty: Ty, arity: usize) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
-    if predicate.tuple_arities.cofinite
-        || predicate.tuple_arities.values.len() != 1
-        || !predicate.tuple_arities.values.contains(&arity)
+    if predicate.tuples.arities().cofinite
+        || predicate.tuples.arities().values.len() != 1
+        || !predicate.tuples.arities().values.contains(&arity)
     {
         return None;
     }

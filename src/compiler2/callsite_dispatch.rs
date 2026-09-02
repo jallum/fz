@@ -698,13 +698,26 @@ mod tests {
         );
     }
 
-    /// fz-kdt.104: `{:cont, pair}` and `{:cont | :halt, pair}` are one question
-    /// to the runtime -- both are just "a 2-tuple". Offering both as arms would
-    /// make arm order, which is the scheduler's, decide whether `:halt` ever
-    /// halts. The wider one alone is the destination, and a callsite with one
-    /// destination is a direct call.
+    /// fz-kdt.119 REVERSES fz-kdt.104's headline on this pair, and the reason
+    /// it may is that the premise changed under it.
+    ///
+    /// `{:cont, pair}` and `{:cont | :halt, pair}` used to be one question --
+    /// both projected to "a 2-tuple" -- so offering both as arms would have let
+    /// arm order, which is the scheduler's, decide whether `:halt` ever halts,
+    /// and dropping the narrow twin was the only way to keep order out of the
+    /// language. The tuple test now carries a sub-predicate per position, and
+    /// position 0 is an ATOM: `{:cont}` and `{:cont, :halt}` are two questions,
+    /// the plan can ask them, and the drop would now be throwing away a
+    /// destination the runtime CAN route to.
+    ///
+    /// So the callsite compiles to an honest two-armed dispatch, and the seat
+    /// is the wide arm first: the two overlap at the payload position, whose
+    /// own test is blind to a nested list, and only the wide arm's surface
+    /// names everything the narrow one's holds there. The old assertion and
+    /// this one are the same law -- never let arm order decide meaning -- read
+    /// against two different runtimes.
     #[test]
-    fn a_narrower_twin_of_an_indistinguishable_arm_is_no_destination() {
+    fn a_narrower_twin_becomes_an_arm_once_the_test_can_tell_it_apart() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -728,12 +741,22 @@ mod tests {
             return_ty: None,
         };
 
-        let destinations = call_destinations(world.types_mut(), &summary).expect("destinations should compile");
-
+        let CallDestinations::Dispatch(dispatch) =
+            call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+        else {
+            panic!("an atom position the plan can test makes the narrow twin a real destination");
+        };
         assert_eq!(
-            destinations,
-            CallDestinations::Direct(target(command)),
-            "the narrow `{{:cont, _}}` twin is not an alternative the runtime could route to",
+            dispatch.targets,
+            vec![target(command), target(cont)],
+            "both arms survive, and the arm whose surface covers its sibling's blind payload \
+             position is tested first",
+        );
+        let questions = runtime_questions(world.types_mut(), &dispatch.targets);
+        assert_ne!(
+            questions[0][1], questions[1][1],
+            "the two arms put different questions to the state, which is what makes them two \
+             destinations rather than a coin toss",
         );
     }
 
@@ -847,6 +870,98 @@ mod tests {
         );
     }
 
+    /// The callable envelope reaches a closure NESTED IN A TUPLE, and it names
+    /// which callable it is.
+    ///
+    /// `{:tag, #66}` and `{:tag, #68}` are two questions: a closure value's
+    /// heap word at `+8` names the code it was minted from, the tuple test
+    /// reads position 1 with the very same comparison a top-level argument
+    /// would get, and neither arm can take the other's values.
+    ///
+    /// This is fz-kdt.119's nested half, and it is gated HERE rather than by a
+    /// fixture on purpose: a closure nested in a tuple and threaded through a
+    /// forwarding hop compiles on no path today (fz-kdt.137, pre-existing), so
+    /// the acceptance program that would exercise it cannot be written yet.
+    /// When fz-kdt.137 lands, this claim gets a three-door fixture too.
+    #[test]
+    fn a_closure_nested_in_a_tuple_is_named_by_the_test() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let tag = world.types_mut().atom_lit("tag");
+        let one = world.types_mut().closure_lit(ClosureTarget(66), Vec::new(), 1);
+        let other = world.types_mut().closure_lit(ClosureTarget(68), Vec::new(), 1);
+        let boxed_one = world.types_mut().tuple(&[tag, one]);
+        let boxed_other = world.types_mut().tuple(&[tag, other]);
+        let apply = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "apply_boxed", 1);
+        let target = |boxed| CallTargetSummary {
+            callee: SelectedCallee::Function(apply),
+            surface_inputs: vec![boxed],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+
+        let questions = runtime_questions(world.types_mut(), &[target(boxed_one), target(boxed_other)]);
+        assert_ne!(
+            questions[0], questions[1],
+            "a nested callable position must be a question, or the tuple hides the one thing \
+             about a closure the runtime can read",
+        );
+        assert!(
+            !questions[0][0].overlaps(&questions[1][0]),
+            "and the two questions must be disjoint: no value passes both",
+        );
+
+        let CallDestinations::Dispatch(dispatch) = call_destinations(
+            world.types_mut(),
+            &CallSiteSummary {
+                targets: vec![target(boxed_one), target(boxed_other)],
+                return_ty: None,
+            },
+        )
+        .expect("destinations should compile") else {
+            panic!("two boxed lambdas the runtime can name are two destinations");
+        };
+        assert_eq!(dispatch.targets.len(), 2, "neither arm stands in for the other");
+    }
+
+    /// The other half of the same law: the envelope preserves IDENTITY, never
+    /// more.
+    ///
+    /// One callable closed over an `int` and the same callable closed over a
+    /// `float` are one code pointer, and the capture record is not something a
+    /// dispatch test reads back. So `{:tag, #66(int)}` and `{:tag, #66(float)}`
+    /// are one question at every depth, exactly as they are at depth 0
+    /// (fz-kdt.125), and the pair joins fz-kdt.127's population rather than
+    /// getting a test that cannot be honoured.
+    #[test]
+    fn a_nested_callables_captures_are_not_a_question() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let tag = world.types_mut().atom_lit("tag");
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let over_int = world.types_mut().closure_lit(ClosureTarget(66), vec![int], 1);
+        let over_float = world.types_mut().closure_lit(ClosureTarget(66), vec![float], 1);
+        let boxed_int = world.types_mut().tuple(&[tag, over_int]);
+        let boxed_float = world.types_mut().tuple(&[tag, over_float]);
+        let apply = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "apply_boxed", 1);
+        let target = |boxed| CallTargetSummary {
+            callee: SelectedCallee::Function(apply),
+            surface_inputs: vec![boxed],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+
+        assert_ne!(boxed_int, boxed_float, "the lattice keeps the two capture types apart");
+        let questions = runtime_questions(world.types_mut(), &[target(boxed_int), target(boxed_float)]);
+        assert_eq!(
+            questions[0], questions[1],
+            "and the runtime cannot: one code pointer is one question, one tuple deep as at the top",
+        );
+    }
+
     /// fz-kdt.125's headline, at the callsite that produced it: two arms alike
     /// in everything but which lambda they were keyed on.
     ///
@@ -949,14 +1064,22 @@ mod tests {
     /// seated the wide arm first and LIFO the narrow one, and one lens's
     /// artifact stopped being a function of its program.
     ///
-    /// The WIDE arm is seated first, and its own containment is why. The two
-    /// ask one and the same question of the state -- "a 2-tuple" -- so the
-    /// plan is blind to the difference between `{:halt, :false}` and
-    /// `{:cont, :true}` there, and only the wide arm's surface names both. Seat
-    /// the narrow arm ahead of it and a `{:cont, :true}` carrying the shared
-    /// lambda satisfies every question the narrow arm asks and runs a body that
-    /// never named it. Precision would have preferred the narrow arm; coverage
-    /// overrules it, and coverage is the conjunct that makes a seat sound.
+    /// The NARROW arm is seated first, and fz-kdt.119 is why the answer moved.
+    ///
+    /// It used to be the wide arm, and the reasoning was coverage: the two
+    /// asked one and the same question of the state -- "a 2-tuple" -- so the
+    /// plan was blind to the difference between `{:halt, :false}` and
+    /// `{:cont, :true}`, and only the wide arm's surface named both. Seat the
+    /// narrow arm ahead of it and a `{:cont, :true}` carrying the shared lambda
+    /// satisfied every question the narrow arm asked and ran a body that never
+    /// named it, so precision had to yield to coverage.
+    ///
+    /// The state test is now per position, and both positions are ATOMS. A
+    /// `{:cont, :true}` fails the narrow arm's first question outright, so
+    /// there is nothing left for coverage to protect: the pair overlaps
+    /// NOWHERE erasing, `covers` holds both ways, and the second conjunct --
+    /// precision -- settles it for the arm that named its values most tightly.
+    /// The wide arm still receives everything the narrow one's test refuses.
     ///
     /// Both arrival orders are legal, so both must produce ONE plan.
     #[test]
@@ -1000,8 +1123,8 @@ mod tests {
             };
             assert_eq!(
                 dispatch.targets,
-                vec![wide.clone(), narrow.clone()],
-                "the plan must test the covering arm first whichever order it arrived in, \
+                vec![narrow.clone(), wide.clone()],
+                "the plan must test the more precise arm first whichever order it arrived in, \
                  and this one arrived {arrival:#?}",
             );
         }
@@ -1136,38 +1259,49 @@ mod tests {
     /// The carve-out fz-kdt.107 refuted a canonical order without: arms one
     /// runtime question cannot separate keep the order they arrived in.
     ///
-    /// Two DIFFERENT functions over subtype-related domains that project to one
-    /// question. Nothing the plan emits tells them apart, so whichever is
-    /// listed first receives every value the pair can see -- and re-deciding
-    /// that is not a reordering, it is a rerouting. fz-kdt.107 prototyped
-    /// exactly this and got `{:done, 3}` where `{:halted, 3}` was due, so the
-    /// order above is keyed on the GROUP: a key constant across a group cannot
-    /// move a member of one.
+    /// Two DIFFERENT functions over list domains that project to one question.
+    /// A list test sees empty-or-cons and nothing of the elements, so
+    /// `list(int)` and `list(:ok)` are the same thing to the runtime however
+    /// far apart the lattice holds them; nothing the plan emits tells the arms
+    /// apart, and whichever is listed first receives every value the pair can
+    /// see. Re-deciding that is not a reordering, it is a rerouting -- fz-kdt.107
+    /// prototyped exactly this and got `{:done, 3}` where `{:halted, 3}` was
+    /// due -- so the order is keyed on the GROUP: a key constant across a
+    /// group cannot move a member of one.
+    ///
+    /// This pair used to be a tagged-tuple one. fz-kdt.119 gave tuples a
+    /// per-position test, which separates tags, so the tuple example stopped
+    /// being inseparable and stopped gating the carve-out. List elements are
+    /// the population that is still blind, and fz-kdt.107 step 3 is what
+    /// retires this shape.
     #[test]
     fn runtime_indistinguishable_arms_keep_the_order_they_arrived_in() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
-        let list = world.types_mut().list(int);
-        let pair = world.types_mut().tuple(&[list, int]);
-        let cont_atom = world.types_mut().atom_lit("cont");
-        let halt_atom = world.types_mut().atom_lit("halt");
-        let cont = world.types_mut().tuple(&[cont_atom, pair]);
-        let halt = world.types_mut().tuple(&[halt_atom, pair]);
-        let command = world.types_mut().union(cont, halt);
-        let wide_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "wide_impl", 2);
-        let narrow_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "narrow_impl", 2);
-        let target = |function, state| CallTargetSummary {
+        let ok_atom = world.types_mut().atom_lit("ok");
+        let int_list = world.types_mut().list(int);
+        let ok_list = world.types_mut().list(ok_atom);
+        let first_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "int_impl", 1);
+        let second_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "atom_impl", 1);
+        let target = |function, elements| CallTargetSummary {
             callee: SelectedCallee::Function(function),
-            surface_inputs: vec![list, state],
+            surface_inputs: vec![elements],
             activation: None,
             activation_inputs: None,
             return_ty: None,
         };
-        let wide = target(wide_fn, command);
-        let narrow = target(narrow_fn, cont);
+        let ints = target(first_fn, int_list);
+        let atoms = target(second_fn, ok_list);
 
-        for order in [[&wide, &narrow], [&narrow, &wide]] {
+        let questions = runtime_questions(world.types_mut(), &[ints.clone(), atoms.clone()]);
+        assert_eq!(
+            questions[0], questions[1],
+            "the two arms must put one and the same question, or this gate is not about the \
+             inseparable class at all",
+        );
+
+        for order in [[&ints, &atoms], [&atoms, &ints]] {
             let arrival = order.into_iter().cloned().collect::<Vec<_>>();
             let summary = CallSiteSummary {
                 targets: arrival.clone(),
@@ -1176,7 +1310,7 @@ mod tests {
             let CallDestinations::Dispatch(dispatch) =
                 call_destinations(world.types_mut(), &summary).expect("destinations should compile")
             else {
-                panic!("two functions are two destinations, however their domains nest");
+                panic!("two functions are two destinations, however alike their domains look");
             };
             assert_eq!(
                 dispatch.targets, arrival,

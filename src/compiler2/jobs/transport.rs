@@ -2157,7 +2157,7 @@ fn generic_shape_from_demand(
 
 fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
     let predicate = world.types().runtime_type_predicate(&ty);
-    predicate.tuple_arities.finite_elems().is_some_and(|mut arities| {
+    predicate.tuples.arities().finite_elems().is_some_and(|mut arities| {
         arities.next() == Some(arity)
             && arities.next().is_none()
             && predicate.ints.is_none()
@@ -2312,10 +2312,10 @@ fn boundary_lanes_for_shape(world: &mut World, shape: ShapeId, ty: Ty) -> Vec<La
 
 fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
-    if predicate.tuple_arities.cofinite || predicate.tuple_arities.values.len() != 1 {
+    if predicate.tuples.arities().cofinite || predicate.tuples.arities().values.len() != 1 {
         return None;
     }
-    let arity = *predicate.tuple_arities.values.iter().next()?;
+    let arity = *predicate.tuples.arities().values.iter().next()?;
     Some(tuple_field_tys(world, ty, arity))
 }
 

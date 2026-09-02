@@ -2879,10 +2879,10 @@ fn runtime_demand_for_type(world: &mut World, ty: Ty, escape: bool) -> RuntimeDe
 
 fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
-    if predicate.tuple_arities.cofinite || predicate.tuple_arities.values.len() != 1 {
+    if predicate.tuples.arities().cofinite || predicate.tuples.arities().values.len() != 1 {
         return None;
     }
-    let arity = *predicate.tuple_arities.values.iter().next()?;
+    let arity = *predicate.tuples.arities().values.iter().next()?;
     Some(tuple_field_tys(world, ty, arity))
 }
 

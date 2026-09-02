@@ -19,7 +19,7 @@ use crate::compiler2::{
     ExecutableDispatch, ValueId, required_dispatch_input_ordinals,
 };
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
-use crate::runtime_type_predicate::matches_runtime_type_predicate;
+use crate::runtime_type_predicate::{RuntimeValueReader, matches_runtime_type_predicate, surface_membership};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
@@ -649,14 +649,27 @@ fn select_dispatch_match(
             let runtime_value = value.value(runtime.cur_proc()).ok()?;
             let (tuple_schema_ids, named_schema_ids) =
                 interp_runtime_type_predicate_schema_ids(runtime, module, &predicate);
-            Some(matches_runtime_type_predicate(
-                &predicate,
+            // The representation's owner answers what only it can: which
+            // callable a code word denotes, and what a tuple's field holds.
+            let proc = runtime.cur_proc();
+            let fields = |value: RuntimeAnyValue, index: usize| {
+                let field = fz_struct_get_field_ref(proc, value.ref_word().raw_word(), (index as u32) * 8);
+                interp_value_from_ref_word(field, "tuple shape field")
+                    .ok()
+                    .and_then(|value| value.value(proc).ok())
+            };
+            let reader = RuntimeValueReader {
                 module,
-                runtime_value,
-                &tuple_schema_ids,
-                &named_schema_ids,
-                &callables,
-            ))
+                tuple_schema_ids: &tuple_schema_ids,
+                named_schema_ids: &named_schema_ids,
+                callables: &callables,
+                fields: &fields,
+            };
+            let matched = matches_runtime_type_predicate(&predicate, &reader, runtime_value);
+            if matched {
+                surface_membership::observe(&predicate, &reader, runtime_value);
+            }
+            Some(matched)
         };
     Ok(execute_dispatch_inputs(
         runtime,

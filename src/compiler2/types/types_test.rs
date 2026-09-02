@@ -147,8 +147,18 @@ fn runtime_type_predicate_projects_integer_kind() {
     );
 }
 
+/// The list axis erases its elements and the tuple axis does not.
+///
+/// It used to erase them too -- both projected to a bare shape, and
+/// `{:cont, int}` and `{:halt, int}` were the same question (fz-kdt.119). The
+/// tuple axis now carries one sub-predicate per position per clause, so the
+/// projection of a tuple type is a projection of each of its elements, and the
+/// arity reading the coarse callers want is derived from the shapes rather
+/// than stated beside them. The LIST axis is unchanged: `[int]` and `[:ok]`
+/// still project to one and the same "a non-empty list" (fz-kdt.107 step 3
+/// owns that half).
 #[test]
-fn runtime_type_predicate_projects_tuple_and_list_shapes() {
+fn runtime_type_predicate_projects_tuple_positions_and_bare_list_shapes() {
     let mut t = Types::new();
     let empty_list_ty = t.empty_list();
     let empty_list = t.runtime_type_predicate(&empty_list_ty);
@@ -162,14 +172,40 @@ fn runtime_type_predicate_projects_tuple_and_list_shapes() {
 
     let int = t.int();
     let atom = t.atom();
+    let int_list = t.list(int);
+    let atom_list = t.list(atom);
+    assert_eq!(
+        t.runtime_type_predicate(&int_list),
+        t.runtime_type_predicate(&atom_list),
+        "a list test sees empty-or-cons and nothing of the elements",
+    );
+
     let tuple_ty = t.tuple(&[int, atom]);
     let tuple = t.runtime_type_predicate(&tuple_ty);
+    assert_eq!(*tuple.tuples.arities(), FiniteSet::lit(2));
+    assert!(tuple.tuples.is_exact());
     assert_eq!(
-        tuple,
-        RuntimeTypePredicate {
-            tuple_arities: FiniteSet::lit(2),
-            ..RuntimeTypePredicate::none()
-        }
+        tuple.tuples.shapes(),
+        [vec![t.runtime_type_predicate(&int), t.runtime_type_predicate(&atom)]],
+        "each position carries its own question",
+    );
+
+    let cont = t.atom_lit("cont");
+    let halt = t.atom_lit("halt");
+    let cont_int = t.tuple(&[cont, int]);
+    let halt_int = t.tuple(&[halt, int]);
+    let either = t.union(cont_int, halt_int);
+    let either_predicate = t.runtime_type_predicate(&either);
+    assert_eq!(
+        either_predicate.tuples.shapes().len(),
+        2,
+        "a two-clause union is two shapes: joining them position-wise would admit {{:cont, _}} \
+         and {{:halt, _}} crossed with each other's payloads",
+    );
+    assert!(
+        !t.runtime_type_predicate(&cont_int)
+            .overlaps(&t.runtime_type_predicate(&halt_int)),
+        "and the tags separate, which is the whole point",
     );
 }
 
