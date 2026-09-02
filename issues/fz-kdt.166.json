@@ -9,9 +9,15 @@
   "id": "fz-kdt.166",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "THE BLIND SPOT IS NOW IN THE CODE, at one named site (fz-kdt.127.1,\nf34c2aaa3). `ir_interp/backend.rs::backend_callable_identity` answers a\ncode word that is NOT a construction wrapper with\n`CallableShape { target: ClosureTarget(fn_id.0), captures: Vec::new() }`.\nA capture-bearing arm shape refuses it on capture-count alone\n(`CallableShape::inside` demands equal lengths), which is the sound\ndirection and moved nothing in the corpus -- 0 behaviour movers over 594\nfixtures on three doors -- but a value boxed by\n`materialize_transport_value` with a bare function id can never pass a\ncapture-bearing test, and no diagnostic says so.\n\nThe red-first witness this ticket wants is now writable: a dispatch on\nthe capture type of a value that reaches one of the six fixtures'\n`materialize_transport_value` boxing sites.",
+      "timestamp": "2026-09-02T20:24:28Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Interp boxes a capturing direct-layout callable with a bare function id: 32 words on 6 fixtures name no construction",
   "type": "bug",
-  "updated_at": "2026-09-02T18:53:11Z"
+  "updated_at": "2026-09-02T20:24:28Z"
 }
