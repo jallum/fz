@@ -7,9 +7,15 @@
   "id": "fz-kdt.130",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.119 refutation bycatch (F5): every closure-in-a-MESSAGE probe crashes identically at base -- interp 'RefCell already borrowed'; a semantic.rs:1194 activation-key assertion with two distinct lambdas; JIT/AOT silently produce NO output. Same family as this ticket's two witnesses (the silent-no-output mode matches N2's signature); fold these probe shapes into the triage when picked up.",
+      "timestamp": "2026-09-02T03:14:50Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: closures through the mailbox break on JIT/AOT -- invoked once where source says twice; direct invoke prints nothing",
   "type": "task",
-  "updated_at": "2026-09-01T22:51:01Z"
+  "updated_at": "2026-09-02T03:14:50Z"
 }
