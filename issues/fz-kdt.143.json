@@ -9,9 +9,15 @@
   "id": "fz-kdt.143",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "SAFETY DIMENSION added by the fz-kdt.107 step-3 refutation (2026-09-02, cc fz-kdt.131): losing fz-kdt.118's drop when a question group splits is not only +native code -- an un-dropped narrow list arm is a NEW BLIND-ESCAPE SEAT under legal arrivals base could never produce. Measured: under arms:3 the head-refined trio callsite's census reports 5 escapes where the settled order pins 3; the two extras are [int]-before-[int|:ok|:true] and [int]-before-[int|:ok] -- seatings impossible at base because 118 dropped both narrow arms (only two destinations settled). Zero behavior impact today (585x2-door + 30 seeds x JIT + 8 x AOT all clean), and the settled-order census is structurally blind to it (scope note added to the gate); fz-kdt.141's stress is the instrument that sees them. This ticket's cure (test-containment drop) closes the seats, not just the bytes.",
+      "timestamp": "2026-09-02T06:57:44Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "unroutable_alternatives should judge test-containment, not question-equality",
   "type": "task",
-  "updated_at": "2026-09-02T03:54:33Z"
+  "updated_at": "2026-09-02T06:57:44Z"
 }
