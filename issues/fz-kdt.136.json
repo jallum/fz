@@ -11,11 +11,15 @@
     {
       "text": "fz-kdt.141 (2026-09-01) unifies this ticket's wrapper-selection gap with the step-3 review's finding that the reversal stress goes toothless on lists after 107.3 -- one stress design for all the seat-free orderings. This ticket closes as folded into fz-kdt.141 when that lands.",
       "timestamp": "2026-09-02T03:54:33Z"
+    },
+    {
+      "text": "FOLDED INTO fz-kdt.141, which landed the wrapper-permutation sibling this ticket asked for plus the cross-group arm permutation. Close as folded.\n\nOne correction this ticket's expectation earned, recorded on fz-kdt.132: the wrapper permutation does NOT catch the take_drop blocker. It reaches the pair (the selection plan's test nodes swap, 972 canon lines on enum_take_drop_split) but reordering makes the dead member live INSTEAD of its sibling rather than alongside it, and each member is self-consistent when it takes every value -- so no order can produce 'matched no member'. What the wrapper half did catch instead is fz-kdt.147: the entire 268-escape surface-membership baseline is wrapper-order-decided, and the settled order is the worst of the legal ones.",
+      "timestamp": "2026-09-02T04:30:51Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "The arm-reversal stress does not perturb construction-wrapper selection plans",
   "type": "task",
-  "updated_at": "2026-09-02T03:54:33Z"
+  "updated_at": "2026-09-02T04:30:51Z"
 }
