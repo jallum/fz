@@ -7,9 +7,15 @@
   "id": "fz-kdt.136",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.141 (2026-09-01) unifies this ticket's wrapper-selection gap with the step-3 review's finding that the reversal stress goes toothless on lists after 107.3 -- one stress design for all the seat-free orderings. This ticket closes as folded into fz-kdt.141 when that lands.",
+      "timestamp": "2026-09-02T03:54:33Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The arm-reversal stress does not perturb construction-wrapper selection plans",
   "type": "task",
-  "updated_at": "2026-09-02T01:44:25Z"
+  "updated_at": "2026-09-02T03:54:33Z"
 }
