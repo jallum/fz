@@ -13,11 +13,15 @@
     {
       "text": "fz-kdt.125 LANDED (2026-09-01). Re-run of the census helper against the landed\ncallable axis: no-question dispatch groups 13 -\u003e 6, fixtures carrying them\n9 -\u003e 5. This ticket does NOT close at zero, and the reason is measured, not\ndeferred: the helper's \"separable by closure-literal identity\" count was\nregexing closure names out of CAPTURES as well as out of identity positions.\nAll six survivors are fz-kdt.127's same-fn-id shape (one lambda closed over two\ndifferent inner callables), which no identity axis can separate. See the\nfz-kdt.127 comment for the per-fixture table.\n\nThe arms that WERE separable did become live, and two of them came back as\nexecutables: enum_predicate_search 203 -\u003e 204 and enum_reduce_halt_arm_order\n+1, each an arm fz-kdt.118 had dropped as \"runtime-indistinguishable and\nstrictly contained\" that is no longer indistinguishable. Classified base vs\nhead across the whole corpus: zero pre-existing key, demand or transport line\nchanged text; the only additions are those two executables' own lines and eight\ndispatch plans gaining callable-identity tests. Corpus stdout is byte-identical\non all 580 fixtures.\n\nThe refuted \"callable correlation is runtime-unobservable\" claim is gone from\ncallsite_dispatch.rs (the whole DispatchAlternative struct went with it), from\n.agent/docs/dispatch-matrix.md, and from behavior/enum_reduce_halt_arm_order.fz.\nThe permanent gate for the residue is\n`compiler2_runtime_indistinguishable_arm_residue_stays_pinned`.",
       "timestamp": "2026-09-01T21:45:29Z"
+    },
+    {
+      "text": "fz-kdt.119 review confirmation (2026-09-01): the +42 executable delta on three receive_* fixtures (dbg specs 1-\u003e8 per function, the 2^arity per-position product) is this ticket's arms-become-LIVE at scale, now measured. The specialization-count pressure is handed to fz-3bb with the mechanism recorded in fz-kdt.119's body.",
+      "timestamp": "2026-09-02T01:44:46Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "12 no-question dispatch groups: the resolution is arms that BECOME LIVE, not arms never minted",
   "type": "task",
-  "updated_at": "2026-09-01T21:45:29Z"
+  "updated_at": "2026-09-02T01:44:46Z"
 }
