@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-02T15:41:24Z",
   "created": "2026-09-02T01:44:23Z",
   "description": "CLOSED as absorbed by fz-kdt.119's landing (dd97b2df2, 2026-09-01): the constant-answer fast path was repaired to emit_delivered_tuple_test (native_codegen/prim.rs:1188/1232), which tests the field params directly instead of answering the whole type test from lane arity. Probed unreachable on today's corpus (0/1783 lowered type tests reach the delivered path) so it is correct-by-construction rather than corpus-witnessed; kept rather than deleted because deleting leaves an expect() to crash the day it IS reached. Verified present in the tree at fz-kdt.108's HEAD.",
   "id": "fz-kdt.133",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "P1: delivered_tuple_field_arity answers a runtime type test with a compile-time constant",
   "type": "task",
   "updated_at": "2026-09-02T15:41:24Z"
