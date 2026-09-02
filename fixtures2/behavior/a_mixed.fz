@@ -1,0 +1,30 @@
+#---
+# purpose: "one lambda driven by Enum.each both through a grounded call and through the boxed seam settles on one return convention"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.155's two-sided witness. `double` is reached BOTH ways in one program:
+# the first `Enum.each` names it, so its each-step callsite calls the lambda's
+# own executable directly; the mailbox round trip erases that name, so the
+# second `Enum.each` reaches the very same lambda through its construction
+# wrapper.
+#
+# The wrapper's public return form is derived from its MEMBERS -- the lambda's
+# own return -- and only the grounded callsite reaches that return. So the two
+# callsites cannot be allowed to answer "how many lanes come back?"
+# independently: when the grounded callsite's discarded result narrowed the
+# member to zero lanes while the boxed callsite expected the wrapper's one, the
+# wrapper wrote its returned value into the register the continuation reads as
+# its own closure pointer and the run aborted in `fz_closure_get_capture_atom`
+# after the FIRST boxed element, on JIT and AOT alike.
+#
+# `:done` proves control came back past both halves.
+fn main() do
+  double = fn (x) -> dbg(x * 2) end
+  Enum.each([1, 2], double)
+
+  send(self(), double)
+  boxed = receive do f -> f end
+  Enum.each([3, 4], boxed)
+  dbg(:done)
+end

@@ -14,11 +14,11 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
-    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
-    BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, EmissionReadyExecutable,
-    MaterializedTransportPlan, RootBackendProductAnswer,
+    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableReturn, BackendClause,
+    BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
+    BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
+    BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
+    EmissionReadyExecutable, MaterializedTransportPlan, RootBackendProductAnswer,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -30,7 +30,8 @@ use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey};
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, SymbolicBackendBody, SymbolicBackendClause,
-    SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportLayout,
+    SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportCarrier,
+    TransportLayout,
 };
 use super::super::scheduler::FatalError;
 use super::super::transport::{
@@ -257,6 +258,8 @@ pub(crate) fn produce_root_backend_product(
         executables,
         construction_wrappers,
     };
+    verify_boxed_apply_seam_return_convention(tel, root, &program)
+        .expect("root backend product should compile one return convention across the boxed apply seam");
     super::super::drive::ExecutionContext::new(world, tel).define_backend_program(root, program.clone());
     PullOutcome::Produced(ProductValue::RootBackendProduct(Box::new(RootBackendProductAnswer {
         program,
@@ -2272,6 +2275,97 @@ fn push_atom(seen: &mut HashSet<String>, atoms: &mut Vec<String>, name: &str) {
     }
 }
 
+/// How many lanes a construction wrapper hands its caller back.
+fn callable_return_lanes(form: BackendCallableReturn) -> usize {
+    match form {
+        BackendCallableReturn::Diverges | BackendCallableReturn::Absent => 0,
+        BackendCallableReturn::ValueRef => 1,
+    }
+}
+
+/// fz-kdt.155 — the two halves of the boxed apply seam are one calling
+/// convention, and this is the only place both halves are in the same room.
+///
+/// A wrapper's public return form is derived from its MEMBERS' return layouts;
+/// a boxed callsite's delivered payload is derived from the CALLSITE's own
+/// demand. Nothing structural forces the two to agree, and when they disagreed
+/// the wrapper wrote its returned value into the register the continuation
+/// reads as its own closure pointer — a corrupt closure handed to
+/// `fz_closure_get_capture_atom`, which the program discovers as a
+/// non-unwinding abort at the FIRST call, on every door. The demand rule that
+/// keeps them equal (`settle_demand_cone`'s bootstrap keeping every wrapper
+/// member off the bottom, and `widen_boxed_closure_call_results` giving a
+/// boxed callsite the seam's one lane) is a rule about facts several jobs
+/// apart, so it gets a named invariant here rather than an abort out there.
+///
+/// A closure callsite reaches a wrapper exactly when its callee VALUE travels
+/// in the boxed `ValueRef` carrier — the same condition
+/// `materialize_closure_call_edge` uses to choose the seam over a direct edge
+/// to a named target. An exact-carrier callee is excluded because it needs no
+/// agreement: its result aliases the target executable's own return fact, so
+/// caller and callee read one shape by construction. Among the wrappers, the
+/// ones a boxed callsite could reach are those taking the same number of call
+/// arguments; a wrapper whose every member diverges publishes no lanes because
+/// it never returns at all, and is not a party to the convention.
+fn verify_boxed_apply_seam_return_convention(
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+    program: &BackendProgram,
+) -> Result<(), FatalError> {
+    let mut published: HashMap<usize, Vec<&BackendConstructionWrapper>> = HashMap::new();
+    for wrapper in &program.construction_wrappers {
+        if matches!(wrapper.return_form, BackendCallableReturn::Diverges) {
+            continue;
+        }
+        published.entry(wrapper.call_arity).or_default().push(wrapper);
+    }
+    for executable in &program.executables {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let BackendTail::ClosureCall {
+                callee,
+                args,
+                return_flow,
+                ..
+            } = &entry.tail
+            else {
+                continue;
+            };
+            if !executable
+                .value_layouts
+                .get(callee)
+                .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef))
+            {
+                continue;
+            }
+            let delivered = match return_flow {
+                Some(BackendReturnFlow::Deliver { source, .. } | BackendReturnFlow::Continue { source }) => {
+                    source.layout.reprs.len()
+                }
+                Some(BackendReturnFlow::Tail) | Some(BackendReturnFlow::NoReturn) | None => continue,
+            };
+            for wrapper in published.get(&args.len()).into_iter().flatten() {
+                let published_lanes = callable_return_lanes(wrapper.return_form);
+                if published_lanes != delivered {
+                    return Err(incomplete_backend_program(
+                        tel,
+                        root_id,
+                        format!(
+                            "boxed closure call in {:?} expects {delivered} delivered lane(s) but construction \
+                             wrapper {} it can reach publishes {published_lanes} ({:?}): the two halves of one \
+                             calling convention were compiled against different contracts",
+                            executable.key.activation.function, wrapper.identity, wrapper.return_form,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn incomplete_backend_program(
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
@@ -2343,6 +2437,125 @@ mod tests {
                 &divergent,
             )
             .is_err()
+        );
+    }
+
+    /// FIX-1 of the fz-kdt.155 re-refutation: the seam tripwire's REFUSING
+    /// half must have a witness -- neutering `verify_boxed_apply_seam_return_
+    /// convention` shipped green through every gate (the fz-kdt.157 pattern).
+    /// A hand-built program with one Absent wrapper and one boxed closure
+    /// call delivering a lane is the mismatch `a_mixed` hits when the
+    /// producer half is reverted; agreement (ValueRef wrapper) must pass.
+    #[test]
+    fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
+        use crate::compiler2::artifact::{
+            BackendBody, BackendCallArg, BackendCallableReturn, BackendConstructionWrapper, BackendEntry,
+            BackendEntryOrigin, BackendProgram, BackendReturnFlow, BackendTail,
+        };
+        use crate::compiler2::body::ControlDestination;
+        use crate::compiler2::semantic::ExecutableRuntimeDemand;
+        use crate::compiler2::transport::CallableId;
+        use crate::compiler2::{CallSiteId, ControlEntryId, ValueId};
+        use crate::telemetry::ConfiguredTelemetry;
+
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let shape = world.intern_shape(ShapeDescr::Nothing);
+        let value_layout = |carrier, reprs: Vec<AbiValueRepr>| BackendValueLayout {
+            structural: shape,
+            carrier,
+            tys: Box::default(),
+            reprs: reprs.into_boxed_slice(),
+        };
+        let callee = ValueId::from_u32(1);
+        let program = |return_form| BackendProgram {
+            backend_revision: 0,
+            entry: 0,
+            atom_names: Vec::new(),
+            struct_schemas: std::collections::BTreeMap::new(),
+            construction_wrappers: vec![BackendConstructionWrapper {
+                identity: 0,
+                callable: CallableId::for_test(0),
+                captures: Box::default(),
+                call_arity: 1,
+                return_form,
+                members: Box::default(),
+                selection: None,
+            }],
+            executables: vec![BackendExecutable {
+                key: ExecutableKey {
+                    activation: ActivationKey {
+                        root: RootId::for_test(0),
+                        function: FunctionId::for_test(0),
+                        arrow: int,
+                    },
+                    need: ExecutableNeed::Value,
+                },
+                entry_dispatch: None,
+                return_ty: int,
+                param_reprs: Vec::new(),
+                semantic_inputs: Box::default(),
+                return_layout: BackendReturnLayout {
+                    layout: value_layout(TransportCarrier::Absent, Vec::new()),
+                    diverges: false,
+                },
+                runtime_demand: ExecutableRuntimeDemand::default(),
+                value_types: HashMap::new(),
+                value_layouts: HashMap::from([(
+                    callee,
+                    value_layout(TransportCarrier::ValueRef, vec![AbiValueRepr::ValueRef]),
+                )]),
+                effects: crate::compiler2::artifact::EffectSummary::default(),
+                body: BackendBody::Clauses {
+                    clauses: Vec::new(),
+                    generated: Vec::new(),
+                    entries: vec![BackendEntry {
+                        span: Span::DUMMY,
+                        origin: BackendEntryOrigin::Clause,
+                        params: Vec::new(),
+                        captures: Vec::new(),
+                        reusable_cons_captures: Vec::new(),
+                        steps: Vec::new(),
+                        tail: BackendTail::ClosureCall {
+                            value: ValueId::from_u32(2),
+                            callsite: CallSiteId::from_u32(0),
+                            callee,
+                            target: None,
+                            args: vec![BackendCallArg {
+                                value: ValueId::from_u32(3),
+                            }],
+                            dest: ControlDestination::Return,
+                            return_flow: Some(BackendReturnFlow::Deliver {
+                                source: Box::new(BackendReturnLayout {
+                                    layout: value_layout(TransportCarrier::ValueRef, vec![AbiValueRepr::ValueRef]),
+                                    diverges: false,
+                                }),
+                                entry: ControlEntryId::from_u32(0),
+                            }),
+                        },
+                    }],
+                },
+            }],
+        };
+
+        assert!(
+            verify_boxed_apply_seam_return_convention(
+                &tel,
+                RootId::for_test(0),
+                &program(BackendCallableReturn::Absent)
+            )
+            .is_err(),
+            "a boxed call delivering one lane must refuse an Absent wrapper it can reach"
+        );
+        assert!(
+            verify_boxed_apply_seam_return_convention(
+                &tel,
+                RootId::for_test(0),
+                &program(BackendCallableReturn::ValueRef)
+            )
+            .is_ok(),
+            "agreement at one lane must pass"
         );
     }
 }

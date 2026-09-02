@@ -407,6 +407,49 @@ value — inputs, executable returns, delivered resumes, and closure captures al
 draw their shape from the same demand-derived recursive layout family, so a
 return can never collapse to a narrower vocabulary than an input.
 
+Demand narrows a value only where the narrowing reaches whatever produces it,
+and the **boxed apply seam** is where that rule has to be applied from both
+sides at once. A callable whose members are reached first-class mints a
+construction wrapper. The wrapper's public return form is derived from those
+members' own return layouts, so the members are the single authority for what
+crosses the seam — and no callsite past the seam can narrow them, because it
+names none of them (a mailbox callable names no target at all). Two rules
+follow, and they are two halves of one convention:
+
+- The construction owner bootstraps a seam member to **whole** exactly where
+  the member's visible contributions add to BOTTOM (absent or all-`ignore`) —
+  a richer contribution stands, which is what keeps destination-passing's
+  field-split returns intact. This is the only place the seam's existence is
+  a local fact, and it is what stops a *grounded* sibling callsite — which
+  does name the member — from pulling a lane to zero that the seam still
+  hands back. The bootstrap raises the SHAPE axis only: a member whose
+  return is a zero-lane callable (shape-`ignore` with an exact callable
+  axis) is not bottom, keeps zero lanes, and its wrapper stays `Absent` —
+  the tripwire refuses such a program rather than miscompiling it (the
+  residual family's own ticket records the shapes).
+- A callsite whose callee travels in the boxed `ValueRef` carrier demands its
+  result **whole**. Whether a call goes through the seam is a property of the
+  callee VALUE, not of the callsite: a callsite that names an exact target is
+  still a boxed call when the same lambda is handed out of the function two
+  lines later, and `materialize_closure_call_edge` lowers a direct edge only
+  while the callee's carrier stays exact.
+
+A callee that does stay in its exact carrier needs no rule at all: its result
+aliases the named target executable's own return fact, so caller and callee
+read one shape by construction. So a callable **no** seam ever boxes builds no
+wrapper, and a discarded call through it really does reach zero lanes on both
+sides. `Enum.each/2` shows all three at once — its step calls the mapper for
+the effect and returns the accumulator — compiling to zero delivered lanes for
+a lambda named where it is used, and one boxed lane for the same lambda once a
+mailbox round trip has erased the name (`static_closure_each`, `a_mixed`).
+
+Getting either half alone is an abort, not a diagnostic: the wrapper writes its
+returned value into the register the continuation reads as its own closure
+pointer, and the program dies in `fz_closure_get_capture_atom` at the first
+call. `verify_boxed_apply_seam_return_convention` turns that into a named
+invariant at backend packaging — every boxed closure callsite must deliver
+exactly what the wrappers it can reach publish.
+
 The exact callable surfaces demand reads from live in
 `CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
 callable shape a call actually uses, and it is small and executable-origin-aware
@@ -543,6 +586,17 @@ layouts, member selection, and one public return form: `Diverges`, `Absent`, or
 `ValueRef`. Every nonempty returning member adapts to that one public word;
 mixed empty and nonempty returning members are invalid. The public form is not
 copied from one private member or reconstructed from a semantic return type.
+Because the construction owner bootstraps bottom members to whole, a wrapper
+over returning members publishes `ValueRef` — at HEAD every corpus wrapper
+does (354/354; the two spawned zero-arity `server/0` bodies that used to sit
+at `Absent` now publish their `:nil` in one raw atom lane, at zero measured
+allocation cost). `Absent` remains reachable only by a member whose return is
+a zero-lane callable (shape-`ignore`, exact callable axis — not bottom, so the
+bootstrap does not raise it), and the packaging tripwire refuses any program
+where a boxed callsite could reach such a wrapper.
+The lane count a wrapper publishes and the lane count every boxed closure
+callsite delivers are checked against each other at packaging
+(`verify_boxed_apply_seam_return_convention`).
 
 Construction identity is allocation-only. `MakeFnRef` or `MakeClosure` selects
 the producer wrapper when the runtime object is created; the resulting code

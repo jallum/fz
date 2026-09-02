@@ -1840,11 +1840,17 @@ end
                 (resolution.clone(), demand)
             })
             .collect::<Vec<_>>();
+        // The direct surface above and this boundary are two ways to reach one
+        // lambda, and only the direct one carries the discard. A boundary is
+        // the boxed apply seam: its wrapper's public return form comes from
+        // these members, and no callsite past the seam names them, so the
+        // discard on the direct side must not narrow them (fz-kdt.155).
         assert!(
             target_demands
                 .iter()
-                .all(|(_, demand)| demand.as_ref().is_some_and(RuntimeDemand::is_ignore)),
-            "an ignored direct call must retain its direct surface without inventing target return demand: {target_demands:?}",
+                .all(|(_, demand)| demand.as_ref().is_some_and(|demand| !demand.is_ignore())),
+            "a member behind a first-class boundary carries the seam's return lane even while a direct \
+             sibling callsite discards its result: {target_demands:?}",
         );
     }
 }
@@ -2360,12 +2366,47 @@ end
     );
 }
 
+/// fz-kdt.155 — INTENT: what a discarded closure call narrows its callee to
+/// depends on whether a boxed apply seam reaches that callee, and on nothing
+/// else. Both programs below discard `f.(1)` through a callsite that names its
+/// target. They differ in one line: the first hands `f` back out of `main`, so
+/// a construction wrapper is built for it and the members behind that wrapper
+/// are the seam's authority for what crosses it — no consumer past the seam can
+/// narrow them, so nothing may. The second keeps `f` to itself, no wrapper
+/// exists, and the discard reaches the lambda's own return exactly as it always
+/// did.
+///
+/// This is the axis fz-kdt.155 turns on. Getting it wrong in either direction
+/// is a `fz_closure_get_capture_atom` abort (narrow a boxed member and the
+/// wrapper hands back a lane the caller never reserved) or dead work (widen a
+/// callable nobody boxes).
 #[test]
-fn compiler2_runtime_demand_does_not_invent_target_return_demand_for_ignored_first_class_result() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    world.submit_code(
-        Some("ignored_first_class_callable_result.fz".to_string()),
+fn compiler2_a_discarded_closure_call_narrows_its_callee_only_when_no_seam_boxes_it() {
+    fn returned_lambda_return_demand(source: &str) -> RuntimeDemand {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(Some("discarded_closure_call.fz".to_string()), source.to_string());
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+        let _ = &plan;
+        let session = driver.session();
+        let demands = runtime_demands_for_frontier(session);
+        // The callable-flow fact names the function it constructs; that is the
+        // lambda whose own return the discarded call may or may not reach.
+        let lambda_function = demands
+            .values()
+            .flat_map(|demand| demand.callable_flows.values())
+            .map(|flow| flow.function)
+            .next()
+            .expect("`f` is a locally constructed callable and publishes a callable-flow fact");
+        demands
+            .iter()
+            .find(|(executable, _)| executable.activation.function == lambda_function)
+            .map(|(_, demand)| demand.return_demand.clone())
+            .expect("the adder lambda should be part of the settled demand closure")
+    }
+
+    let boxed = returned_lambda_return_demand(
         r#"
 fn make_adder(a), do: fn (x) -> x + a end
 fn main() do
@@ -2373,28 +2414,28 @@ fn main() do
   f.(1)
   f
 end
-"#
-        .to_string(),
+"#,
     );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let _ = &plan;
-    let session = driver.session();
-
-    let demands = runtime_demands_for_frontier(session);
-    let target = demands
-        .values()
-        .flat_map(|demand| demand.callable_flows.values())
-        .flat_map(|flow| flow.first_class_edges.iter())
-        .map(|edge| edge.resolution.clone())
-        .next()
-        .expect("escaped callable should publish a first-class executable target");
-    let target_demand = session.memo().runtime_demand(&target).unwrap_or_else(|| {
-        panic!("first-class callable target should be part of the settled demand closure: {target:?}")
-    });
     assert!(
-        target_demand.return_demand.is_ignore(),
-        "an ignored call result must not be reconstructed from the escaped callable's semantic return type: {target:?} -> {target_demand:?}",
+        !boxed.is_ignore(),
+        "a lambda handed out through a construction wrapper carries the seam's return lane however \
+         little its own callsites want it: {boxed:?}",
+    );
+
+    let never_boxed = returned_lambda_return_demand(
+        r#"
+fn make_adder(a), do: fn (x) -> x + a end
+fn main() do
+  f = make_adder(10)
+  f.(1)
+  0
+end
+"#,
+    );
+    assert!(
+        never_boxed.is_ignore(),
+        "no seam boxes this lambda, so the discarded call reaches its own return and narrows it to \
+         nothing: {never_boxed:?}",
     );
 }
 

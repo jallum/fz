@@ -5006,7 +5006,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
 }
 
 #[test]
-fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
+fn compiler2_opaque_callable_each_uses_a_boxed_return_boundary() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -5018,8 +5018,8 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_each_discarded_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5050,11 +5050,15 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
         .collect::<HashSet<_>>();
     assert_eq!(boundary_ids.len(), 2);
     assert_eq!(member_functions, HashSet::from([each_a_id, each_b_id]));
+    // `Enum.each` throws the mapper's result away, but these members are
+    // reached through the boxed apply seam, whose wrapper always hands a value
+    // back. The member's own return has to supply it, so it carries the one
+    // boxed lane the wrapper returns -- the caller drops it (fz-kdt.155).
     assert!(boundaries.iter().all(|boundary| {
         boundary
             .members
             .iter()
-            .all(|member| member.target_return.layout.reprs.is_empty())
+            .all(|member| member.target_return.layout.reprs.len() == 1)
     }));
     assert!(
         native_closure_call_count(&program) > 0,
@@ -5066,7 +5070,7 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
             .fns
             .iter()
             .find(|function| function.id == boundary.wrapper_fn)
-            .expect("absent-return boundary wrapper");
+            .expect("boxed-return boundary wrapper");
         assert!(wrapper.blocks.iter().all(|block| {
             matches!(
                 block.terminator,
@@ -8207,8 +8211,8 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_each_discarded_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -11604,8 +11608,8 @@ end
     );
 }
 
-/// fz-f98.14.11 — an indirect closure call's return payload is the CALLSITE
-/// RESULT's contract, not the caller's own return. `Enum.each`'s step
+/// fz-f98.14.11, re-aimed by fz-kdt.155 — the two halves of one indirect
+/// calling convention are compiled against ONE contract. `Enum.each`'s step
 /// discards the mapper's result:
 ///
 /// ```fz
@@ -11615,17 +11619,125 @@ end
 /// end
 /// ```
 ///
-/// so the callsite's delivered payload carries no demand and must publish no
-/// lanes -- the same zero the callee-side boundary derives (`return_form:
-/// Absent`, the contract `opaque_fn_each_absent_return` pins). Before this
-/// landed, the payload layout was derived from the CALLER's return type and
-/// demand -- `each_step` returns a demanded `acc`, so the discarded result
-/// published a one-lane ValueRef delivery while the boundary delivered zero
-/// lanes, and the two halves of one calling convention were compiled against
-/// different contracts (the caller's continuation read an unwritten register:
-/// the `fz_closure_get_capture_atom` SIGABRT).
+/// and the question is which lane count both halves settle on. Deriving the
+/// payload from the CALLER's own return was the original break (`each_step`
+/// returns a demanded `acc`, so a discarded result claimed a lane the boundary
+/// never delivered). Deriving it from the callsite's own appetite -- zero
+/// lanes for a discarded result -- only moved the disagreement: a callsite
+/// reaching a FIRST-CLASS callee owns none of the members behind the wrapper,
+/// so its "ignore" never reaches them and the wrapper hands a value back
+/// anyway (`mailbox_closure_each`).
+///
+/// So the claim is not about any one lane count. It is that the two halves
+/// AGREE: every boxed closure callsite delivers exactly what the wrappers it
+/// can reach publish. `a_mixed` is the program that made the difference
+/// visible -- one lambda reached both grounded and boxed, and wrappers of two
+/// different arities in one program, so the honest comparison is per wrapper
+/// and not a single set over the whole program.
 #[test]
-fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
+fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
+    fn assert_seam_halves_agree(name: &str, text: &str) {
+        let tel = ConfiguredTelemetry::new();
+        let backend = BackendProgramCapture::new();
+        backend.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(name.to_string()),
+            text: text.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        demand_backend_product(&mut compiler, root);
+        assert_resolved(compiler.drive(), "the seam-agreement root should settle");
+        let program = backend.last(root).program;
+
+        let mut checked = 0;
+        for executable in &program.executables {
+            let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+                continue;
+            };
+            for entry in entries {
+                let crate::compiler2::BackendTail::ClosureCall {
+                    callee,
+                    args,
+                    return_flow,
+                    ..
+                } = &entry.tail
+                else {
+                    continue;
+                };
+                // A grounded callee is lowered as a direct edge and aliases its
+                // target's own return fact; only a boxed one reaches a wrapper.
+                if !executable
+                    .value_layouts
+                    .get(callee)
+                    .is_some_and(|layout| matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef))
+                {
+                    continue;
+                }
+                let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
+                    continue;
+                };
+                let delivered = source.layout.reprs.len();
+                for wrapper in program
+                    .construction_wrappers
+                    .iter()
+                    .filter(|wrapper| wrapper.call_arity == args.len())
+                    .filter(|wrapper| {
+                        !matches!(
+                            wrapper.return_form,
+                            crate::compiler2::artifact::BackendCallableReturn::Diverges
+                        )
+                    })
+                {
+                    let published = match wrapper.return_form {
+                        crate::compiler2::artifact::BackendCallableReturn::ValueRef => 1,
+                        crate::compiler2::artifact::BackendCallableReturn::Absent
+                        | crate::compiler2::artifact::BackendCallableReturn::Diverges => 0,
+                    };
+                    assert_eq!(
+                        published,
+                        delivered,
+                        "{name}: a boxed closure call taking {} argument(s) delivers {delivered} lane(s) while \
+                         wrapper {} it can reach publishes {published} ({:?})",
+                        args.len(),
+                        wrapper.identity,
+                        wrapper.return_form,
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "{name} should contain at least one boxed closure callsite reaching a wrapper",
+        );
+    }
+
+    assert_seam_halves_agree(
+        "fixtures2/behavior/opaque_fn_each_discarded_return.fz",
+        include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz"),
+    );
+    assert_seam_halves_agree(
+        "fixtures2/behavior/a_mixed.fz",
+        include_str!("../../fixtures2/behavior/a_mixed.fz"),
+    );
+}
+
+/// fz-kdt.155 — the other side of the same axis, at the lane level: a callable
+/// NO boxed seam reaches builds no construction wrapper, so nothing outranks
+/// its callsites and a discarded closure call really does compile to zero
+/// delivered lanes on both halves. `static_closure_each` is
+/// `mailbox_closure_each` with the mailbox removed, and this is the pin that
+/// says removing the mailbox is what changes the answer -- without it, the
+/// seam rule could quietly widen every closure call in the language and every
+/// behavioural fixture would still pass, one boxed allocation per call poorer.
+#[test]
+fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -11633,8 +11745,8 @@ fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
     backend.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+        name: Some("fixtures2/behavior/static_closure_each.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/static_closure_each.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -11643,10 +11755,23 @@ fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
         need: ExecutableNeed::Value,
     });
     demand_backend_product(&mut compiler, root);
-    assert_resolved(compiler.drive(), "the opaque each root should settle");
-
-    let each_step_id = function_id(&functions, "each_step", 3);
+    assert_resolved(compiler.drive(), "the static closure each root should settle");
     let program = backend.last(root).program;
+
+    assert!(
+        program.construction_wrappers.is_empty(),
+        "a lambda named where it is used never crosses the boxed seam, so the program builds no \
+         construction wrapper at all: {:?}",
+        program
+            .construction_wrappers
+            .iter()
+            .map(|wrapper| (wrapper.identity, wrapper.return_form))
+            .collect::<Vec<_>>(),
+    );
+
+    // `each_step` is the one call in the program that throws its callee's
+    // result away; the reducer calls around it legitimately use theirs.
+    let each_step_id = function_id(&functions, "each_step", 3);
     let mut checked = 0;
     for executable in &program.executables {
         if executable.key.activation.function != each_step_id {
@@ -11660,18 +11785,21 @@ fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
                 continue;
             };
             let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
-                panic!("each_step's discarded mapper call should deliver its (empty) payload");
+                continue;
             };
             checked += 1;
             assert!(
                 source.layout.reprs.is_empty(),
-                "a discarded indirect call result must publish no return lanes; \
-                 the callsite payload claimed {:?} while the callee boundary delivers zero",
-                source.layout.reprs
+                "no seam boxes this callable, so a discarded closure call publishes no return lanes; \
+                 it claimed {:?}",
+                source.layout.reprs,
             );
         }
     }
-    assert!(checked > 0, "each_step should contain the indirect mapper callsite");
+    assert!(
+        checked > 0,
+        "static_closure_each should contain the each-step closure callsite",
+    );
 }
 
 /// fz-6gb — a lambda literal's *identity* must not fan functions that merely

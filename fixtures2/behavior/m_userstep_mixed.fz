@@ -1,0 +1,29 @@
+#---
+# purpose: "a plain user function discarding f.(x) drives the same seam disagreement as Enum.each, with no Enum in sight"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.155's second witness, and the one that says the bug is not about
+# `Enum`. `apply_discarding/2` is the whole of `Enum.each`'s step written out
+# by hand: call the callable, throw the result away, return something else. One
+# lambda reaches it twice -- once named, once after a mailbox round trip has
+# erased the name -- so the same grounded call and boxed call meet over one
+# construction wrapper.
+#
+# Nothing about the runtime library is involved, so a fix that leans on
+# `Enum.each`'s shape rather than on the seam's own return convention leaves
+# this program aborting in `fz_closure_get_capture_ref`.
+fn apply_discarding(f, x) do
+  f.(x)
+  :ok
+end
+
+fn main() do
+  double = fn (x) -> dbg(x * 2) end
+  dbg(apply_discarding(double, 1))
+
+  send(self(), double)
+  boxed = receive do f -> f end
+  dbg(apply_discarding(boxed, 2))
+  dbg(:done)
+end

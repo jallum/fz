@@ -1,0 +1,32 @@
+#---
+# purpose: "a closure delivered by the mailbox drives Enum.each, whose step throws the call's result away"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.155. `Enum.each/2` is the one Enum higher-order call that DISCARDS what
+# the callable returns: `each_step` calls `fun.(entry)` for its effect and hands
+# the accumulator on. A mailbox callable is reached through the boxed apply
+# seam, and the callsite that reaches it there names none of the wrapper's
+# members, so its discard never reaches them: the wrapper hands a value back
+# and the callsite has to receive one however little it wants it. Publishing
+# no delivered lanes there compiled the two halves of one calling convention
+# against different lane counts: the
+# continuation read the returned value as its own closure pointer and the
+# native run aborted in `fz_closure_get_capture_atom` after the FIRST element.
+#
+# Three shapes drive the seam from different directions: a bare mailbox lambda,
+# one carrying a capture of its own, and the empty list as the control that
+# never reaches a step at all. `:done` proves control came back past every one.
+fn main() do
+  send(self(), fn (x) -> dbg(x * 2) end)
+  double = receive do f -> f end
+  Enum.each([1, 2, 3], double)
+
+  scale = 10
+  send(self(), fn (x) -> dbg(x * scale) end)
+  scaled = receive do f -> f end
+  Enum.each([4, 5], scaled)
+
+  Enum.each([], double)
+  dbg(:done)
+end

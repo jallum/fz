@@ -66,6 +66,11 @@ impl CallableId {
     pub fn as_u32(self) -> u32 {
         self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
