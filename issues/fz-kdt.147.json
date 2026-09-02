@@ -7,9 +7,15 @@
   "id": "fz-kdt.147",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RETIRED BY MEASUREMENT at fz-kdt.132 (c31b309d0) -- check before building anything here.\n\nThis ticket's direction (a) was right: 'check whether fz-kdt.138 makes the position testable and the question dissolves'. It dissolved one layer lower than 138. The 268 escapes were never an ordering fact at all: they were a MISSING SPECIALIZATION. A fold's reducer was clamped onto the arrow it was minted beside, so its accumulator stopped one rung short and the grown accumulator got no member; the wrapper order decided which of the uncovering members took those values, never whether a covering member existed.\n\nMeasured at head: the census is 0 at the settled order AND 0 under wrappers:1, wrappers:6, arms:reverse, arms:1, arms:6 -- all seven fixtures, whole corpus. There is no population left for an order to be the worst of, so directions (b) 'widest member first' and (c) 'stop letting mint order decide' have no escape count behind them any more.\n\nWhat survives, if anything: the wrapper member order is STILL nothing but the interner's mint order, which is still the agenda's. That is a fact about determinism, not about escapes, and it is held today by compiler2_dispatch_answers_the_same_under_a_permuted_wrapper_order (invariance) plus compiler2_a_permuted_wrapper_order_reseats_the_construction_members (the perturbation lands). Re-scope or close.",
+      "timestamp": "2026-09-02T07:46:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The settled construction-wrapper member order is the worst of the legal orders for surface-membership escapes",
   "type": "bug",
-  "updated_at": "2026-09-02T04:30:11Z"
+  "updated_at": "2026-09-02T07:46:05Z"
 }
