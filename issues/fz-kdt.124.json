@@ -7,9 +7,15 @@
   "id": "fz-kdt.124",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Data point from fz-kdt.132 (c31b309d0), which this ticket was named as a neighbour of. The take_drop 'cross-key subsumption smell' this ticket's neighbourhood was suspected of was NOT subsumption: the three same-function accumulator keys ({[], []}, {[], [int]}, {[], [int]} | {[int], []}) were a truncated ASCENT LADDER, not redundant siblings. Deduping them by containment would have been the wrong cure -- the right one minted the rung above them and the ladder collapsed to a single key on its own (three reducer specializations per captured lambda became one, 00420 215 -\u003e 196 executables). Worth re-measuring 00277's Kernel.dbg/1[empty_list()] vs Kernel.dbg/1[list(int)] pair against HEAD before building: the population this ticket asks to count may have moved.",
+      "timestamp": "2026-09-02T07:46:15Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Cross-key specialization subsumption: an executable whose whole domain is contained in a same-function sibling is minted and kept",
   "type": "task",
-  "updated_at": "2026-09-01T19:34:40Z"
+  "updated_at": "2026-09-02T07:46:15Z"
 }
