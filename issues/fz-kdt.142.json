@@ -5,7 +5,7 @@
     "fz-kdt.107"
   ],
   "created": "2026-09-02T03:54:23Z",
-  "description": "From the fz-kdt.107 step-3 review (2026-09-01): the 19-escape census\nhelper (drive_test.rs:~9231 blind_escapes) triggers on predicate\nEQUALITY; production's covers uses overlaps_on_an_erasing_axis. At\ndd97b2df2 both triggers report 19 (independently verifiable), but\nunder 107.3's refined axis the equality trigger reports 0 while the\nhonest relation reports 2 -- the instrument would blind itself\nexactly when its number becomes the headline. One-line correction +\nre-pin; land BEFORE 107.3 so its 19-\u003e2 is measured on a trustworthy\ninstrument.",
+  "description": "LANDED 949dfce65 (2026-09-01): blind_escapes now triggers on overlaps_on_an_erasing_axis (the relation production's covers consults) instead of predicate equality. Verified in place: the 19-population is unchanged at base under both relations (all six dispatch gates green, full gate lib 1559-line run below); the divergence appears only under refined axes -- the step-3 prototype measured equality reporting 0 vs the honest 2. Gate: lib 1558/0/5, cli 24/0, matrix 446/0/9, clippy/fmt clean.",
   "id": "fz-kdt.142",
   "labels": [],
   "parent": "fz-kdt",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "blind_escapes must trigger on the relation production uses",
   "type": "task",
-  "updated_at": "2026-09-02T03:54:32Z"
+  "updated_at": "2026-09-02T03:56:58Z"
 }
