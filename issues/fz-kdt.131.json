@@ -13,11 +13,15 @@
     {
       "text": "fz-kdt.119 review correction (2026-09-01): overlaps_on_an_erasing_axis's doc calls ints/floats exact ('a value passes only by being in the tested set, which the arm's surface names') -- but runtime_type_predicate stores ints/floats as PRESENCE BITS only and ignores descr.brands unless cofinite, so two arms with surfaces 'brand X of int' / 'brand Y of int' have EQUAL tests and incomparable surfaces, and covers declares the position non-erasing and seats freely. Benign today (brands are runtime-erased by design, reprs identical -- fz-bsx) but the doc claim is false as written and becomes a live hole if numeric singletons return (the predicate's own comment says they are recoverable from history). Correct the doc claim when this ticket or 119 next touches the file. ALSO: 119 partially unblocks this ticket (tuple pairs gain separation and leave the neither-covers population; LIST pairs do not -- the queue does not empty).",
       "timestamp": "2026-09-02T01:44:45Z"
+    },
+    {
+      "text": "fz-kdt.119 LANDED (4ca1dc7e7). Three things here are now settled or measured.\n\n1. THE DOC CLAIM IS CORRECTED, as this ticket's comment asked. overlaps_on_an_erasing_axis no longer says ints/floats are exact 'because a value passes only by being in the tested set, which the arm's surface names' -- that was false, since the projection stores them as PRESENCE BITS and ignores brands, so 'brand X of int' and 'brand Y of int' put the same question and hold incomparable surfaces. The classification (separating) is unchanged and the stated REASON is now the true one: every value the axis admits has ONE representation, brands being runtime-erased by construction (fz-bsx), so no admitted body can misread what arrives. The row also records that restoring numeric singletons re-opens it. The claim now lives in RuntimeTestAxis::precision, the one table three lowerings and this relation share.\n\n2. THE TUPLE POPULATION LEAVES, THE LIST POPULATION DOES NOT, as this ticket predicted. A tuple pair is now judged position by position: erasing only where two shapes that could both admit a value overlap at a position that is ITSELF erasing. Measured consequence on the corpus: enum_predicate_search's List.reduce_while_step/3 pair stops needing coverage at all (both state positions are atoms) and precision re-seats it narrow-first -- the 28-line canon move in 119. The 19-escape census is UNMOVED, entry for entry, because every one of the 19 is a list subject; only fz-kdt.107 step 3 can move that number, exactly as this ticket's other comment said.\n\n3. THE THIRD FACET ({A,B} vs {B,C} overlapping without containment) is untouched and still owned here. Re-census after fz-kdt.107 step 3, not before: the neither-covers population is what enum_map_family's 150 schedule-dependent arm lines sit in, and it is still arrival-decided.\n\nAlso relevant: the seating rule itself is unchanged. What changed underneath it is what 'the tests differ' is allowed to mean.",
+      "timestamp": "2026-09-02T02:37:04Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A seat must carry surface coverage: any arm ordering not covering-safe is unsound wherever the test is blind to what the body relies on",
   "type": "task",
-  "updated_at": "2026-09-02T01:44:45Z"
+  "updated_at": "2026-09-02T02:37:04Z"
 }
