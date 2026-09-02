@@ -16,8 +16,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A construction whose capture type is a union must be admitted by CONTAINMENT, never overlap: red-first fixture wanted",
   "type": "bug",
-  "updated_at": "2026-09-02T21:08:59Z"
+  "updated_at": "2026-09-02T21:19:07Z"
 }
