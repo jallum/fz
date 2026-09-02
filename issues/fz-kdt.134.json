@@ -7,9 +7,15 @@
   "id": "fz-kdt.134",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "DONE at fz-kdt.119 (4ca1dc7e7), in the same motion as the per-position recursion, exactly as this ticket asked.\n\nThe two parallel copies are gone. src/compiler2/native_codegen/runtime_test.rs is the one emitter: a RuntimeTestEmitter trait carries only what a door genuinely owns -- how it reads a tag, a scalar payload, a schema id, a struct field, a closure code word, and what it already knows of a value's kind (KindEvidence) -- and everything above that is written once. prim.rs lost 382 lines, receive.rs lost 393, and the new module is ~490 including the per-position recursion neither had.\n\nThe fold is also what makes fz-kdt.119 item 6 constructive: emit_axis matches RuntimeTestAxis exhaustively, so 'every axis the seat treats as separating is decided by every lowering' holds because the compiler will not accept anything else, and the two native doors cannot drift from one another at all now.\n\nBoth doors' behaviour was preserved deliberately where it was odd: KindEvidence::Opaque reproduces the old '_ =\u003e iconst 0' arm for a CodegenValue::Known of a heap kind, rather than quietly fixing it, and receive's refusal to test callable identity is now an explicit error from callable_addresses/closure_code. Verified by the 584-fixture interp+JIT sweep (0 movers) and the matrix's build leg.",
+      "timestamp": "2026-09-02T02:36:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Fold the two native RuntimeTypePredicate emitters before they double",
   "type": "task",
-  "updated_at": "2026-09-02T01:44:24Z"
+  "updated_at": "2026-09-02T02:36:08Z"
 }
