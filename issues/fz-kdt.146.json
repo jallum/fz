@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T03:54:25Z",
+  "description": "From the fz-kdt.107 step-3 review (2026-09-01): 107.3's degrade rule\nsends ANY negated or multi-positive-sig list clause to shape_only --\nconservative, unmeasured. After landing, census how many corpus list\nclauses degrade and whether any deserve per-clause heads (the\nTupleShapes one-shape-per-clause discipline extends naturally if\nthe population justifies it).",
+  "id": "fz-kdt.146",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "How much head precision does the list-clause degrade rule cost?",
+  "type": "task",
+  "updated_at": "2026-09-02T03:54:25Z"
+}
