@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T02:38:04Z",
+  "description": "Measured at fz-kdt.119's landing (4ca1dc7e7). The review handed this to 'fz-3bb', which is not an issue in this tracker; this is its home.\n\nWHAT WAS MEASURED. fz-kdt.119 gave the tuple axis a sub-predicate per position, so tuple clauses the arity-only test used to collapse are now separate destinations. Corpus executable inventory 4929 -\u003e 4971, and every one of the +42 is on three fixtures:\n\n  receive_map_pattern              11 -\u003e 25\n  receive_list_cons_pattern        11 -\u003e 25\n  receive_interleaved_tuple_arity  11 -\u003e 25\n\nEach is Kernel.dbg/1 and Kernel.fz_dbg_value/1 going 1 -\u003e 8 specializations. The argument type is a 3-tuple whose positions are each ':unknown | any', the lattice carries that as eight clauses, the test now tells them apart, and eight arms are minted where one stood. 2 functions x 7 x 3 fixtures = 42. Codegen functions moved with them (32 -\u003e 46, 35 -\u003e 49, 35 -\u003e 49 on fz.codegen.define_function).\n\nWHY IT IS WASTE HERE, not precision. dbg/1 does not READ the tuple's positions -- it renders a value. Eight bodies that differ in nothing but a type the body never projects is the over-specialization shape fz-y6w collapsed elsewhere: the separation is real (the test can ask it) but nothing downstream USES it, so the product is paid for nothing. 2^arity is the growth law, so a 4- or 5-position union of the same shape is 16 or 32.\n\nFIX DIRECTION. Two candidates, and they are not exclusive:\n(a) do not mint a specialization on a distinction the callee's body never projects -- a demand-side question (which positions does this body read?), which is the fz-y6w dispatch-mask idea one level in;\n(b) collapse ':unknown | any' at the source: 'any' already contains ':unknown', so the eight clauses are a union-carved decomposition of ONE type that the lattice keeps apart for carving reasons rather than denotational ones (fz-kdt.48's differently-carved twins, fz-f98.21's widening cure).\n\nDo not 'fix' it by making the tuple test coarser again: the coarse test is the fz-kdt.119 P1.\n\nThe three fixtures' budget.codegen.functions headers were re-priced at the landing with this cause recorded in each.",
+  "id": "fz-kdt.140",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A per-position tuple test specializes 2^arity where the callee reads no position",
+  "type": "task",
+  "updated_at": "2026-09-02T02:38:04Z"
+}
