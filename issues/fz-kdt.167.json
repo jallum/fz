@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T18:52:39Z",
+  "description": "From the fz-kdt.127 cold review (2026-09-02, F1). The proposal's admission\nrelation \"same target AND captures overlap pointwise\" is unsound for a\nconstruction whose capture TYPE is a union (a wrapper over `int | float`\noverlaps arm closure[L](int): the value reaches a body whose capture lane\nis RawInt while the wrapper stored ValueRef). Admission must be\nCONTAINMENT of the value's construction shape inside the arm's shape (the\nlattice's closure-literal subtyping, emptiness.rs:177-217); only arm TESTS\nrelate by overlap / erasing-overlap, as TupleShapes. fz-kdt.127 stage (B)\nbuilds containment; this ticket owns the red-first fixture that DISTINGUISHES\nthe two (not in the corpus): a closure minted at one site with a\nunion-typed capture (e.g. `c = if \u003cruntime\u003e, do: 1, else: 0.5; mk(c)`),\nforwarded to a consumer specialized per capture type. Expected: correct\non all doors under containment; wrong/abort under overlap. Also pin the\ninterp/native agreement.",
+  "id": "fz-kdt.167",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A construction whose capture type is a union must be admitted by CONTAINMENT, never overlap: red-first fixture wanted",
+  "type": "bug",
+  "updated_at": "2026-09-02T18:52:39Z"
+}
