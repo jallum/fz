@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.107"
+  ],
   "created": "2026-09-02T03:54:23Z",
   "description": "From the fz-kdt.107 step-3 review (2026-09-01) + the fz-kdt.136\nfinding, unified. FZ_STRESS_REVERSE_DISPATCH_ARMS permutes only\nWITHIN runtime-indistinguishable question groups. Two measured\nconsequences: (1) after 107.3 splits the list groups, the one gate\nthat ever caught the list-element abort class cannot perturb a single\nlist seat -- green becomes green-by-construction, not\ngreen-by-safety (sixth demonstration that instruments, not corpus,\nare the gate); (2) fz-kdt.131's neither-covers pairs and\nconstruction-wrapper SELECTION plans (fz-kdt.136) were never\nperturbed at all. THE FIX, one design for all three gaps: a stress\nmode that permutes EVERY arm order the seat leaves free (i.e.\npermute arrival, then let specificity_order do its work -- the seat's\ncovers-proven inversions are deterministic, so what varies is exactly\nthe arrival-kept residue) + a wrapper-member permutation sibling.\nAssert corpus stdout invariance under N seeds x 3 doors. Expected\nimmediate catches: fz-kdt.132's broken member (via the wrapper half).\nMUST LAND BEFORE fz-kdt.107 step 3 (its green depends on this\ninstrument being honest). Absorbs fz-kdt.136 -- close that as folded\nhere when this lands.",
   "id": "fz-kdt.141",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "P1: the arm-reversal stress must permute ALL arms, not only indistinguishable groups",
   "type": "task",
-  "updated_at": "2026-09-02T03:54:23Z"
+  "updated_at": "2026-09-02T03:54:32Z"
 }
