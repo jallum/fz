@@ -20,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "One lambda at two capture types: static cases answered by the key (brand-only forwarder erasure), dynamic cases by the word (the callable axis names the construction) -- DONE",
   "type": "task",
-  "updated_at": "2026-09-02T23:21:26Z"
+  "updated_at": "2026-09-02T23:21:27Z"
 }
