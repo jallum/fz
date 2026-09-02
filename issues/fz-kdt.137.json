@@ -7,9 +7,15 @@
   "id": "fz-kdt.137",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "STILL RED at fz-kdt.119's head (4ca1dc7e7), as expected -- 119 did not touch it and this ticket still owns it. One symptom MOVED, so the reproducer's error text in this ticket is now stale:\n\n  refnest.fz  (the {tag, f} = box destructure through a forwarding hop)\n    base  b32d645ac: 'native executable lowering failed for index 13'\n    head  4ca1dc7e7: 'native cannot project captures out of a callable that\n                      names no function in Executable(... FunctionId(66) ...)'\n  refnest2.fz: unchanged, still fails all three doors.\n\nSame failure, one layer earlier: the callable-identity envelope now reaches the nested position (that is 119's item 3), so the nested callable is named where it used to be widened, and the lowering refuses at capture projection rather than at the end. Neither compiles, so 119's REFNEST acceptance probe stayed unconstructible exactly as this ticket said.\n\nCONSEQUENCE HONOURED: 119's nested-callable separation is gated by UNIT tests at the dispatch layer instead --\n  callsite_dispatch::tests::a_closure_nested_in_a_tuple_is_named_by_the_test\n  callsite_dispatch::tests::a_nested_callables_captures_are_not_a_question\n-- which pin both halves of the law (two callables one tuple deep are two disjoint questions; one callable at two capture layouts is ONE question, joining fz-kdt.127's population). When this ticket lands, those claims want the three-door fixture the probes were meant to be.",
+      "timestamp": "2026-09-02T02:36:33Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: a closure nested in a tuple through a forwarding hop compiles on no path",
   "type": "task",
-  "updated_at": "2026-09-02T01:44:25Z"
+  "updated_at": "2026-09-02T02:36:33Z"
 }
