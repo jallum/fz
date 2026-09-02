@@ -11,11 +11,15 @@
     {
       "text": "IN-STORY HALF LANDED at fz-kdt.119 (4ca1dc7e7): FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP is a permanent env-gated tripwire in runtime_type_predicate::surface_membership, documented in .agent/docs/dispatch-matrix.md (### The dynamic tripwire). What remains here is the corpus-sweep integration and the triage.\n\nMECHANISM, which is sharper than the review's probe. The interpreter answers each dispatch type test as the three lowerings do -- PositionScope::Lowered, blind exactly where they are blind -- and the tripwire then re-asks the tuple axis under PositionScope::Full, which looks at the positions they skip. A value admitted by the first reading and refused by the second passed a test no shape of the arm's surface names. Off unless the var is set; 'abort' makes each finding fatal (bisect one fixture down to a dispatch); anything else reports each on stderr. Census recipe:\n\n  FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp \u003cfixture\u003e 2\u003e\u00261 \u003e/dev/null | grep -c 'surface-membership escape'\n\nBASELINE, pinned at the landing (584 fixtures, interp): SEVEN fixtures, 268 occurrences.\n\n  00183_enum_take_list_range     16\n  00230_enum_take_chained        16\n  00418_enum_count_range          4\n  00419_enum_take_mixed          16\n  00420_enum_take_drop_split    106\n  enum_take_drop_split          106\n  unused_range_binding            4\n\nEvery one is a nested LIST position -- the Scope-A carve-out, blind on purpose -- and the two at 106 are the same program reached by two paths: that is the fz-kdt.132 population. LATENT SITES, not regressions; a ratchet like the 19-escape census, and a new entry wants a ticket rather than a re-blessed number.\n\nThree of the review's ten are CLOSED by fz-kdt.119 itself, because their blind routing went through tuple positions the test can now see: hof_three_distinct (x6), enum_predicate_search (x7), receive_map_pattern (x1).\n\nNOTE ON COMPARABILITY: this instrument has no reading before fz-kdt.119. Without per-position shapes there is no record of what an arm's surface named, so there is nothing to compare a value against. The review's FZ_DEBUG_TUPLE_SHAPE counted something else (its experimental partial check missing), which is why 00420 reads 106 here against the review's 81 -- different instruments, same population.",
       "timestamp": "2026-09-02T02:36:22Z"
+    },
+    {
+      "text": "Scope correction from the fz-kdt.119 refutation: the landed tripwire's Full re-ask un-blinds WHICH positions are asked, not what the LIST axis can see -- it cannot detect list-ELEMENT escapes (measured: a program misrouting [:p,:q] into a [integer] body reports 0). The earlier 'sees the real thing corpus-wide' claim is over-broad: it sees the TUPLE axis corpus-wide. The 19-escape static census remains the only list-element instrument until fz-kdt.107 step 3 gives lists element discrimination.",
+      "timestamp": "2026-09-02T03:14:50Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A dynamic surface-membership tripwire: the instrument the dispatch class has been missing",
   "type": "task",
-  "updated_at": "2026-09-02T02:36:22Z"
+  "updated_at": "2026-09-02T03:14:50Z"
 }
