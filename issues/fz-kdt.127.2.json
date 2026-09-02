@@ -26,8 +26,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-kdt.127 stage A: the forwarder key erases the brand and keeps the captures -- samelambda3 answered by the key, zero dispatch nodes",
   "type": "bug",
-  "updated_at": "2026-09-02T23:21:25Z"
+  "updated_at": "2026-09-02T23:21:26Z"
 }
