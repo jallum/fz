@@ -21,8 +21,7 @@ use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::ValueKind;
 
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate};
-use crate::types::ClosureTarget;
+use crate::runtime_type_predicate::{CallableShapes, ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate};
 
 use super::CodegenError;
 
@@ -77,9 +76,10 @@ pub(super) trait RuntimeTestEmitter<'f> {
     /// The code word a closure value carries. Only asked under a CLOSURE
     /// guard.
     fn closure_code(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
-    /// The code addresses `targets` can have been minted through, or an error
-    /// where this door cannot name a callable at all.
-    fn callable_addresses(&mut self, targets: &FiniteSet<ClosureTarget>) -> Result<Vec<ir::Value>, CodegenError>;
+    /// The code addresses of every construction the test ENUMERATES -- the
+    /// listed side; the emitter applies the cofinite complement itself. An
+    /// error where this door cannot name a callable at all.
+    fn callable_addresses(&mut self, callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError>;
 }
 
 /// Ask `predicate` of `value`: an `I8` flag, 1 where it is admitted.
@@ -272,23 +272,25 @@ fn emit_list_axis<'f, E: RuntimeTestEmitter<'f>>(
     Ok(e.builder().ins().bor(is_empty, admitted))
 }
 
-/// "Is this value one of THESE callables?"
+/// "Is this value one of THESE constructions?"
 ///
 /// A closure object's word at `+8` is the address of the callable boundary that
 /// minted it, and a thin `MakeFnRef` singleton carries the same address, so one
-/// comparison covers both shapes. Comparing addresses is what makes the check
-/// O(1) and independent of captures: the boundary is chosen at mint time, and
-/// the value remembers it.
+/// comparison covers both shapes. A boundary is one function at one capture
+/// layout, so WHICH boundaries a test enumerates is decided here at codegen
+/// from each boundary's own construction shape, and the value pays one address
+/// compare per enumerated boundary -- its captures are never loaded
+/// (fz-kdt.127).
 fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
-    callables: &FiniteSet<ClosureTarget>,
+    callables: &CallableShapes,
 ) -> Result<ir::Value, CodegenError> {
     if callables.is_any() {
         return e.kind_flag(value, ValueKind::CLOSURE);
     }
     let addresses = e.callable_addresses(callables)?;
-    let cofinite = callables.cofinite;
+    let cofinite = callables.targets().cofinite;
     kind_guarded(e, value, ValueKind::CLOSURE, move |e, value| {
         let code = e.closure_code(value)?;
         let b = e.builder();

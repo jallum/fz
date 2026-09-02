@@ -345,9 +345,10 @@ fn stands_in_for(
 ///
 /// Neither the observable surface nor the question is the settled semantic
 /// surface. `runtime_type_test_envelope` erases what no runtime test can look
-/// at -- a callable's arrow and captures go, its IDENTITY stays, because the
-/// value's own heap word names the code it was minted from -- and
-/// `RuntimeTypePredicate` is coarser again: `{:cont, pair}` and
+/// at -- a callable's arrow goes, its CONSTRUCTION stays, function and capture
+/// types together, because the value's own heap word names the construction
+/// wrapper it was minted from and a wrapper is one function at one capture
+/// layout -- and `RuntimeTypePredicate` is coarser again: `{:cont, pair}` and
 /// `{:cont | :halt, pair}` both project to "a 2-tuple".
 pub(crate) fn question_groups(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<usize>> {
     let questions = runtime_questions(types, targets);
@@ -1151,17 +1152,18 @@ mod tests {
         assert_eq!(dispatch.targets.len(), 2, "neither arm stands in for the other");
     }
 
-    /// The other half of the same law: the envelope preserves IDENTITY, never
-    /// more.
+    /// The other half of the same law: the envelope preserves the whole
+    /// CONSTRUCTION, identity and captures alike.
     ///
-    /// One callable closed over an `int` and the same callable closed over a
-    /// `float` are one code pointer, and the capture record is not something a
-    /// dispatch test reads back. So `{:tag, #66(int)}` and `{:tag, #66(float)}`
-    /// are one question at every depth, exactly as they are at depth 0
-    /// (fz-kdt.125), and the pair joins fz-kdt.127's population rather than
-    /// getting a test that cannot be honoured.
+    /// A closure's heap word at `+8` is the address of the construction
+    /// wrapper that minted it, and a wrapper is one function at ONE capture
+    /// layout -- so one callable closed over an `int` and the same callable
+    /// closed over a `float` are two words, and the runtime can tell them
+    /// apart without ever loading a capture. `{:tag, #66(int)}` and
+    /// `{:tag, #66(float)}` are therefore two questions at every depth,
+    /// exactly as they are at depth 0 (fz-kdt.127).
     #[test]
-    fn a_nested_callables_captures_are_not_a_question() {
+    fn a_nested_callables_captures_are_a_question() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let tag = world.types_mut().atom_lit("tag");
@@ -1182,10 +1184,27 @@ mod tests {
 
         assert_ne!(boxed_int, boxed_float, "the lattice keeps the two capture types apart");
         let questions = runtime_questions(world.types_mut(), &[target(boxed_int), target(boxed_float)]);
-        assert_eq!(
+        assert_ne!(
             questions[0], questions[1],
-            "and the runtime cannot: one code pointer is one question, one tuple deep as at the top",
+            "and so does the runtime: two capture layouts are two construction wrappers, one \
+             tuple deep as at the top",
         );
+        assert!(
+            !questions[0][0].overlaps(&questions[1][0]),
+            "and the two questions must be disjoint: no value passes both",
+        );
+
+        let CallDestinations::Dispatch(dispatch) = call_destinations(
+            world.types_mut(),
+            &CallSiteSummary {
+                targets: vec![target(boxed_int), target(boxed_float)],
+                return_ty: None,
+            },
+        )
+        .expect("destinations should compile") else {
+            panic!("two boxed constructions the runtime can name are two destinations");
+        };
+        assert_eq!(dispatch.targets.len(), 2, "neither arm stands in for the other");
     }
 
     /// fz-kdt.125's headline, at the callsite that produced it: two arms alike
@@ -1673,32 +1692,35 @@ mod tests {
     /// The carve-out fz-kdt.107 refuted a canonical order without: arms one
     /// runtime question cannot separate keep the order they arrived in.
     ///
-    /// Two DIFFERENT functions taking the SAME lambda over different CAPTURES.
-    /// A callable test reads the heap word at `+8`, which names the code a
-    /// value was minted from and nothing about the environment beside it, so
-    /// `#66 closed over an int` and `#66 closed over a float` are one and the
-    /// same question. Nothing the plan emits tells the arms apart, and
-    /// whichever is listed first receives every value the pair can see.
-    /// Re-deciding that is not a reordering, it is a rerouting -- fz-kdt.107
-    /// prototyped a canonical order over this class and got `{:done, 3}` where
+    /// Two DIFFERENT functions taking a MAP with the same keys at different
+    /// value types. A map test is a KIND check -- the axis is `Erasing`
+    /// because a map value tells the runtime it is a map and nothing about
+    /// what it holds -- so `%{a: int}` and `%{a: float}` are one and the same
+    /// question. Nothing the plan emits tells the arms apart, and whichever is
+    /// listed first receives every value the pair can see. Re-deciding that is
+    /// not a reordering, it is a rerouting -- fz-kdt.107 prototyped a
+    /// canonical order over this class and got `{:done, 3}` where
     /// `{:halted, 3}` was due -- so the order is keyed on the GROUP: a key
     /// constant across a group cannot move a member of one.
     ///
-    /// THE SHAPE HAS MOVED TWICE, and each move is a population leaving.
-    /// It was two tagged tuples until fz-kdt.119 gave tuples a per-position
-    /// test, which separates tags. It was `list(int)` against `list(:ok)`
-    /// until fz-kdt.107 step 3 gave the list axis a head question, which
-    /// separates disjoint element types. Same fn id, different captures, is
-    /// what is left: fz-kdt.127's shape, the only genuinely inseparable
-    /// population in the corpus, and the one this carve-out now exists for.
+    /// THE SHAPE HAS MOVED THREE TIMES, and each move is a population leaving
+    /// this carve-out for a real question. It was two tagged tuples until
+    /// fz-kdt.119 gave tuples a per-position test, which separates tags. It
+    /// was `list(int)` against `list(:ok)` until fz-kdt.107 step 3 gave the
+    /// list axis a head question, which separates disjoint element types. It
+    /// was one lambda at two capture types until fz-kdt.127 made the callable
+    /// axis name the CONSTRUCTION, which separates capture layouts. What is
+    /// left is the contents of the kinds whose test is a kind check: a map, a
+    /// binary, a resource, an unnamed struct.
     #[test]
     fn runtime_indistinguishable_arms_keep_the_order_they_arrived_in() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
         let float = world.types_mut().float();
-        let over_int = world.types_mut().closure_lit(ClosureTarget(66), vec![int], 1);
-        let over_float = world.types_mut().closure_lit(ClosureTarget(66), vec![float], 1);
+        let key = crate::ground_value::MapKey::Atom("a".to_string());
+        let over_int = world.types_mut().map(&[(key.clone(), int)]);
+        let over_float = world.types_mut().map(&[(key, float)]);
         let first_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "int_impl", 1);
         let second_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "float_impl", 1);
         let target = |function, reducer| CallTargetSummary {
@@ -1710,6 +1732,8 @@ mod tests {
         };
         let ints = target(first_fn, over_int);
         let atoms = target(second_fn, over_float);
+
+        assert_ne!(over_int, over_float, "the lattice keeps the two value types apart");
 
         let questions = runtime_questions(world.types_mut(), &[ints.clone(), atoms.clone()]);
         assert_eq!(

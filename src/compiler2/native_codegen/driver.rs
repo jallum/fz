@@ -747,10 +747,9 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
         let next = NativeCallableBoundarySurface {
             boundary_id: boundary.id(),
             identity_fn: boundary.identity_fn,
-            target: boundary.target,
+            shape: boundary.shape.clone(),
             target_fn: boundary.wrapper_fn,
             capture_count: boundary.capture_reprs.len(),
-            capture_key: Vec::new(),
             capture_reprs: boundary
                 .capture_reprs
                 .iter()

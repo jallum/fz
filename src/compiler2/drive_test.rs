@@ -8941,18 +8941,26 @@ end
 /// contains the other, or they are different functions -- are a different,
 /// wider defect: no arm can supply the others' bodies, so the cure is a
 /// runtime predicate that can tell them apart, not a smaller plan
-/// (fz-kdt.107). fz-kdt.125 supplied one of those predicates -- which callable
-/// a value is -- and the five fixtures it clears are added here.
+/// (fz-kdt.107). Three predicates cleared the corpus of them, and every
+/// fixture each one cleared is listed here.
 ///
+/// fz-kdt.125 supplied the first -- which callable a value is.
 /// `closure_identity_tag_split` and `closure_identity_captures` are the two
-/// programs that named the defect and are shadow-free by the same cure.
+/// programs that named the defect and are shadow-free by that cure.
 ///
-/// fz-kdt.107 step 3 supplied the second such predicate -- what a cons cell's
-/// first element is -- and `enum_map_family` is the fixture it clears: its
-/// three `[:a | :b]` / `[binary]` / `[int]` arms were one question, they are
-/// three now, and its arm-reversal abort dies with them. The remaining census
-/// fixtures are NOT here: what survives on them is the residue, pinned next
-/// door, and every entry of it is fz-kdt.127's.
+/// fz-kdt.107 step 3 supplied the second -- what a cons cell's first element
+/// is -- and `enum_map_family` is the fixture it clears: its three
+/// `[:a | :b]` / `[binary]` / `[int]` arms were one question, they are three
+/// now, and its arm-reversal abort dies with them.
+///
+/// fz-kdt.127 supplied the third -- which CONSTRUCTION a callable value was
+/// minted from, function and capture layout together -- and it clears the last
+/// five: `00231`, `00277`, `00281`, `opaque_fn_value_join` and
+/// `repr_seam_enum_count_after_reduce2` each had one or two groups that were
+/// one lambda over two capture types, which is one code pointer only while
+/// the axis stops at the function. The corpus census is now empty, and this
+/// list is the ratchet that keeps it so: a new entry is a new latent
+/// miscompile and wants a ticket, not a re-blessed constant.
 #[test]
 fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     for fixture in [
@@ -8964,6 +8972,11 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
         "fixtures2/behavior/closure_identity_tag_split.fz",
         "fixtures2/behavior/closure_identity_captures.fz",
         "fixtures2/behavior/enum_map_family.fz",
+        "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
+        "fixtures2/00277_enum_tier0_fixture.fz",
+        "fixtures2/00281_opaque_reducer_closure.fz",
+        "fixtures2/behavior/opaque_fn_value_join.fz",
+        "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
     ] {
         let twins = indistinguishable_dispatch_arms(fixture);
         assert!(
@@ -8974,58 +8987,68 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     }
 }
 
-/// What no runtime question reaches, measured and owned -- and after
-/// fz-kdt.107 step 3 it is ONE shape, not two.
+/// The question that clears the last of them, in the program that names it.
 ///
-/// fz-kdt.125 gave the predicate the question a closure value can answer about
-/// itself (which callable it is) and fz-kdt.107 step 3 gave it the question a
-/// cons cell can (what its first element is). What the two together leave is:
+/// `same_lambda_two_capture_types` forwards ONE lambda -- closed over an int at
+/// one callsite and over a float at another -- through `P.run/2`, whose
+/// erasure drops the closure literal, so both calls share one `run` body and
+/// which `twice` specialization runs is left to a runtime test. Until
+/// fz-kdt.127 that test could only name the FUNCTION, the two arms asked one
+/// and the same question, and arm 0 took every value: the fixture answered
+/// `12.0` for `12` on the interpreter and refused to compile on the native
+/// door.
 ///
-/// - SAME callable, different captures. `Enum.reduce/3#lambda@439-517/2` closed
-///   over `add_a/2` and the same lambda closed over `add_b/2` are one code
-///   pointer; the capture record differs and the identity does not. Every
-///   surviving group is this shape, and fz-kdt.127 owns all of them.
-///
-/// The list-ELEMENT half of this ticket's census is GONE: `[int]`,
-/// `[int | :ok | :true]` and `[:false | :true]` used to be one and the same
-/// "a non-empty list", and are now three questions -- `00277` sheds three
-/// groups and `enum_map_family` all three of its. What that leaves is not a
-/// list problem, and the residue is 12 -> 6.
-///
-/// This pins the population per fixture so it cannot grow unnoticed, and so
-/// the day fz-kdt.127 cures the shape the number falls here.
+/// The word a value carries is the address of the construction WRAPPER that
+/// minted it, and a wrapper is one function at one capture layout. So the two
+/// arms ask about the same function and their capture questions are disjoint,
+/// which is what this asserts: the pair separates on the callable axis alone,
+/// and no value can pass both tests.
 #[test]
-fn compiler2_runtime_indistinguishable_arm_residue_stays_pinned() {
-    let measured = INDISTINGUISHABLE_ARM_RESIDUE
-        .iter()
-        .map(|(fixture, _)| (*fixture, indistinguishable_dispatch_arms(fixture)))
-        .collect::<Vec<_>>();
-    let counted = measured
-        .iter()
-        .map(|(fixture, twins)| (*fixture, twins.len()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        counted,
-        INDISTINGUISHABLE_ARM_RESIDUE.to_vec(),
-        "the arm pairs one runtime question cannot separate moved off their pin; re-measure, \
-         name which residue moved, and re-pin: {measured:#?}",
-    );
-    assert_eq!(
-        counted.iter().map(|(_, count)| count).sum::<usize>(),
-        6,
-        "six groups, all fz-kdt.127's same-fn-id/different-capture shape",
+fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
+    let (compiler, program) = driven_backend_program(fixture);
+    let types = compiler.world().types();
+    let mut separated = Vec::new();
+    for (callsite, dispatch) in dispatch_call_edges(&program) {
+        let asked = dispatch
+            .plan
+            .matrix
+            .arms
+            .iter()
+            .map(|arm| {
+                arm.questions
+                    .iter()
+                    .filter_map(|question| match &question.predicate.region {
+                        Region::Type(ty) => Some(types.runtime_type_predicate(ty)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        for (index, left) in asked.iter().enumerate() {
+            for right in asked.iter().skip(index + 1) {
+                let ([left], [right]) = (left.as_slice(), right.as_slice()) else {
+                    continue;
+                };
+                if left.callables.targets() != right.callables.targets() || left.callables.targets().values.len() != 1 {
+                    continue;
+                }
+                assert!(
+                    !left.overlaps(right),
+                    "{fixture} callsite {callsite}: two constructions of one lambda must put \
+                     disjoint questions, or a value reaches a body whose capture lane never \
+                     named it -- {left} vs {right}",
+                );
+                separated.push(format!("callsite {callsite}: {left} vs {right}"));
+            }
+        }
+    }
+    assert!(
+        !separated.is_empty(),
+        "{fixture} forwards one lambda at two capture layouts, so some dispatch must separate \
+         them by construction; none did, which is fz-kdt.127's defect back again",
     );
 }
-
-/// The groups no runtime question separates, per fixture. All six are
-/// fz-kdt.127's: one lambda, two capture types, one code pointer.
-const INDISTINGUISHABLE_ARM_RESIDUE: [(&str, usize); 5] = [
-    ("fixtures2/00231_joined_fn_refs_enum_reduce.fz", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", 2),
-    ("fixtures2/00281_opaque_reducer_closure.fz", 1),
-    ("fixtures2/behavior/opaque_fn_value_join.fz", 1),
-    ("fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz", 1),
-];
 
 /// Drives one fixture to its backend product and names every dispatch call
 /// edge arm pair that asks one and the same runtime question.
@@ -14440,6 +14463,123 @@ fn backend_direct_call_in_entry<'a>(
             .or_else(|| backend_direct_call_in_entry(entries, *else_entry, program, callee)),
         _ => None,
     }
+}
+
+/// The capture unpack is keyed on the CONSTRUCTIONS that mint the layout the
+/// callee grounded on, not on the callee's function (fz-kdt.127, fz-kdt.157).
+///
+/// `same_lambda_two_capture_types` mints ONE lambda through boundaries that
+/// disagree about slot 0 -- a raw int in one, a raw float in the other -- and
+/// that disagreement is the whole point of the fixture. A prim keyed on the
+/// function would ask both boundaries how slot 0 was stored, get two answers,
+/// and refuse to compile: that is the abort this fixture had at base. So the
+/// two halves below are the invariant and its witness in one program.
+///
+/// This is also fz-kdt.157's missing coverage. Its refusing half had no
+/// program that could reach it, because a function minted at two capture
+/// layouts compiled on no path; loosening the keying back to the function is
+/// exactly what the first assertion detects.
+#[test]
+fn compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "native lowering of {fixture} must settle",
+    );
+    let program = native.last(root_id).program;
+
+    let mut by_function: BTreeMap<u32, Vec<&crate::compiler2::artifact::NativeCallableBoundary>> = BTreeMap::new();
+    for boundary in &program.callable_boundaries {
+        let Some(shape) = boundary.shape.as_ref() else {
+            continue;
+        };
+        by_function.entry(shape.target.0).or_default().push(boundary);
+    }
+    let split = by_function
+        .values()
+        .find(|boundaries| {
+            let mut reprs = boundaries
+                .iter()
+                .map(|boundary| boundary.capture_reprs.first().copied());
+            let Some(first) = reprs.next() else {
+                return false;
+            };
+            reprs.any(|other| other != first)
+        })
+        .expect(
+            "this fixture mints one lambda at an int capture and at a float capture, so some \
+             function must have boundaries that disagree about slot 0",
+        );
+    assert!(
+        split.len() >= 2,
+        "a disagreement needs two boundaries: {:?}",
+        split
+            .iter()
+            .map(|boundary| boundary.capture_reprs.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    let reprs_by_construction = program
+        .callable_boundaries
+        .iter()
+        .map(|boundary| (boundary.identity_fn, boundary.capture_reprs.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut unpacks = 0;
+    for body in &program.bodies {
+        for block in &program.module.fn_by_id(body.fn_id).blocks {
+            for stmt in &block.stmts {
+                let IrStmt::Let(
+                    _,
+                    IrPrim::ClosureCapture {
+                        constructions, index, ..
+                    },
+                ) = stmt
+                else {
+                    continue;
+                };
+                unpacks += 1;
+                assert!(
+                    !constructions.is_empty(),
+                    "a capture unpack that names no construction has no authority to read from",
+                );
+                let mut reprs = constructions.iter().map(|construction| {
+                    reprs_by_construction
+                        .get(construction)
+                        .unwrap_or_else(|| panic!("construction {construction:?} mints no boundary"))
+                        .get(*index as usize)
+                        .copied()
+                });
+                let first = reprs.next().expect("a non-empty construction list has a first repr");
+                assert!(
+                    first.is_some() && reprs.all(|other| other == first),
+                    "the constructions a capture unpack names must agree about the slot they \
+                     minted, or there is no single answer to read: {constructions:?} slot {index}",
+                );
+            }
+        }
+    }
+    assert!(
+        unpacks > 0,
+        "the forwarder hands a whole closure to a callee that wants its captures as lanes, so \
+         this fixture must lower at least one capture unpack",
+    );
 }
 
 fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> bool {

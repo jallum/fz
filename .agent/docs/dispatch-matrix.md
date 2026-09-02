@@ -63,26 +63,35 @@ than a one-armed dispatch.
 through `Types::runtime_type_test_envelope`, which is the same projection the
 plan's rows are built from — not on the settled semantic types. The envelope
 erases what no runtime test can read back off a value: a callable argument
-keeps its literal `fn_id` and loses its arrow and its captures, because a
-closure object's heap word at `+8` is the code it was minted from and nothing
-else about it survives into the value.
+keeps its literal `fn_id` AND the capture types beside it, and loses the arrow
+it was typed at, because a closure object's heap word at `+8` is the address of
+the construction wrapper that minted it — and a wrapper is one function at one
+capture layout, so the capture TYPES are a fact about the value while the arrow
+is not.
 
 A callable position is therefore a real question, and it is what separates
 `Range.reduce_step/6`'s `({:cont, int} | {:halt, int}, #66closure[])` from its
 `({:cont, int}, #68closure[])` sibling by its reducer. Before the callable axis
 existed the pair asked one question, neither arm contained the other, and
 `:halt` was one legal arm order away from being read as a continue. Now each arm
-is reached by the values its own reducer travelled with. What the callable axis
-does NOT reach is one callable at two capture layouts: `#66closure[int]` and
-`#66closure[float]` are one code pointer, and the capture record the runtime
-could read back is not on this axis (fz-kdt.127).
+is reached by the values its own reducer travelled with. The axis reaches one
+callable at two capture layouts too: `#66closure[int]` and `#66closure[float]`
+are two construction wrappers, so they are two addresses and two questions, and
+a value's captures are never loaded to decide it (fz-kdt.127). What the axis
+cannot reach is a capture layout the projection could not shape — a clause that
+pins several literals at once is an intersection, and it degrades the whole
+axis to the target-only reading. The envelope hands such a clause on whole,
+literals and all, so that degradation is decided in one place and the plan path
+— which projects the ENVELOPED type, not the settled one — reads exactly what
+projecting the settled type would.
 
 The callable envelope is applied AT EVERY DEPTH (fz-kdt.119), not only to a
 top-level argument. A closure nested in a tuple is read by the same one
 comparison as a top-level one, so `{:tag, #66(int)}` and `{:tag, #66(float)}`
-are one observable and `{:tag, #66}` and `{:tag, #68}` are two. Widening a
-nested callable to `fun_top` instead would reproduce the defect above one tuple
-deep, and leave a depth-0/depth-1 seam nothing in the runtime justifies.
+are two observables exactly as `#66(int)` and `#66(float)` are, and
+`{:tag, #66}` and `{:tag, #68}` are two. Widening a nested callable to
+`fun_top` instead would reproduce the defect above one tuple deep, and leave a
+depth-0/depth-1 seam nothing in the runtime justifies.
 
 Dropping does not decide a routing. Every question an indistinguishable
 group's rows ask projects to one and the same `RuntimeTypePredicate` — the
@@ -267,7 +276,7 @@ deciding it:
 | axis | precision | why |
 | --- | --- | --- |
 | atoms | separating | passing is BEING one of the named values |
-| callables | separating | passing is being MINTED FROM a named function -- identity, not captures; honest only while the same-fn-id/different-capture shape compiles on no path (fz-kdt.127) |
+| callables | per position | passing is being MINTED FROM a named construction -- a function AND the capture types it closed over -- so it separates exactly as far as the capture sub-tests do |
 | ints, floats | separating | presence bits: one representation, so no admitted body can misread what arrives — brands are runtime-erased by construction (fz-bsx), and restoring numeric singletons to the lattice would re-open this row |
 | lists | per position | empty-or-cons, plus the first element's own question — as separating as two head questions are DISJOINT |
 | named/other structs, maps, binaries, resources | erasing | a schema id or a kind, never the contents |
@@ -284,6 +293,36 @@ intersection and one with negations is a difference; neither is a list of
 positions, so either degrades the whole axis to the arity-only reading, which is
 what every clause answered before fz-kdt.119 and is a sound over-approximation
 of what it says now.
+
+The callable axis is `CallableShapes`, built to the same pattern: one shape per
+positive closure-literal CLAUSE, each carrying the function it names and one
+sub-predicate per CAPTURE position, plus the target set derived from the shapes
+for the callers that only want that. A construction wrapper is one function at
+one capture layout and stamps its own address into every value it mints, so
+which wrappers a test admits is decided at codegen from each wrapper's own
+shape, and the value pays one address compare per admitted wrapper — its
+captures are never loaded. A clause that pins several literals at once is an
+intersection and is not one shape, so it degrades the whole axis to the
+target-only reading, which is what every clause answered before fz-kdt.127.
+
+That degradation is decided exactly once, in
+`Types::runtime_type_predicate_callables`. `callable_identity_clauses` — the
+envelope the plan path projects through — keeps the clause shape it was handed
+rather than splitting such a clause into its several literals over no captures:
+several zero-capture literals would arrive here as EXACT shapes with no capture
+positions, and since a shape is admitted only at an equal capture count, that
+axis would refuse every CAPTURING construction of the very targets it names.
+Under-admission is the one direction a runtime test may never err in.
+
+ADMISSION on this axis is CONTAINMENT, not overlap, and it is the one place the
+axes differ in kind. A capture type is the ANNOTATION the mint stamped, not a
+fact re-read off the value: the layout a capture was STORED in belongs to the
+construction. A wrapper closed over `int | float` therefore stores a boxed
+word, and a body whose capture lane is a raw int must not receive it even
+though the two tests overlap — so a value is admitted only where its
+construction shape lies INSIDE a shape the test names. The two-test relations a
+seat reads (containment, overlap, erasing overlap) are the ordinary ones, and
+recurse into the captures exactly as a tuple's recurse into its positions.
 
 The list axis is `ListShapes`: which shapes the test admits, plus one HEAD
 question per list clause that admits a cons cell — the same one-per-clause rule,

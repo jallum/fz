@@ -20,7 +20,7 @@ use crate::fz_ir::{
     ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
-use crate::runtime_type_predicate::RuntimeTypePredicate;
+use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate};
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
@@ -99,6 +99,18 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
 }
 
 impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
+    /// The construction words that mint `callable`: one per boundary over that
+    /// layout. Each boundary stamps its own `identity_fn` into the values it
+    /// makes, so this is the whole set a value of that layout can carry -- and
+    /// the set whose capture representations a reader must agree with.
+    fn constructions_minting(&self, callable: CallableId) -> Box<[FnId]> {
+        self.callable_boundaries
+            .iter()
+            .filter(|boundary| boundary.callable == callable)
+            .map(|boundary| boundary.identity_fn)
+            .collect()
+    }
+
     fn new(
         world: &'a mut World,
         telemetry: &'tel T,
@@ -195,13 +207,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     }
                 }
             };
+            let callable = world.callable(wrapper.callable);
+            let shape = callable.function.map(|function| CallableShape {
+                target: ClosureTarget(function.as_u32()),
+                captures: callable
+                    .capture_tys
+                    .iter()
+                    .map(|ty| world.types().runtime_type_predicate(ty))
+                    .collect(),
+            });
             callable_boundaries.push(NativeCallableBoundary {
                 id: NativeCallableBoundaryId(index as u32),
                 identity_fn,
-                target: world
-                    .callable(wrapper.callable)
-                    .function
-                    .map(|function| ClosureTarget(function.as_u32())),
+                callable: wrapper.callable,
+                shape,
                 wrapper_fn,
                 captures: wrapper.captures.clone(),
                 capture_reprs: native_construction_capture_reprs(wrapper),
@@ -3847,11 +3866,22 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             ),
                         ));
                     };
-                    let target = ClosureTarget(function.as_u32());
+                    let constructions = self.constructions_minting(callable);
+                    if constructions.is_empty() {
+                        return Err(incomplete_native_program(
+                            self.telemetry,
+                            self.root_id,
+                            format!(
+                                "native cannot project captures out of callable {callable:?} for function {}: no construction mints it in {:?}",
+                                function.as_u32(),
+                                ctx.origin,
+                            ),
+                        ));
+                    }
                     for index in 0..descr.capture_lanes.len() {
                         let (capture, _) = ctx.emit_let(Prim::ClosureCapture {
                             closure: *var,
-                            target,
+                            constructions: constructions.clone(),
                             index: index as u32,
                         });
                         lanes.push(capture);

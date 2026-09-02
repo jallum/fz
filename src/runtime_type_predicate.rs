@@ -102,16 +102,16 @@ impl RuntimeTestAxis {
             // so passing the test is being one of the named values, which the
             // arm's surface names.
             Self::Atoms => AxisPrecision::Separating,
-            // Callable membership is IDENTITY membership: the heap word at
-            // `+8` names the code a closure was minted from (fz-kdt.125),
-            // but a surface can additionally constrain CAPTURES, which the
-            // test does not read -- `#66 over int` and `#66 over float` are
-            // one test. Separating is honest today only because the
-            // same-fn-id/different-capture shape compiles on no path
-            // (fz-kdt.127, whose population fz-kdt.119's depth-recursive
-            // identity erasure GROWS); if fz-kdt.127 makes that shape
-            // compile, this row must be re-judged before it ships.
-            Self::Callables => AxisPrecision::Separating,
+            // Callable membership is CONSTRUCTION membership: the heap word
+            // at `+8` names the construction a closure was minted from, and a
+            // construction is a function together with the capture types it
+            // closed over (fz-kdt.127). A test admits a value when the
+            // value's construction shape lies INSIDE a shape the test names,
+            // position by position, so the axis separates exactly as far as
+            // the capture sub-questions do -- `#66 over int` and `#66 over
+            // float` are two tests, `#66 over [int]` and `#66 over
+            // [int | :ok]` erase the tail exactly as the list axis does.
+            Self::Callables => AxisPrecision::PerPosition,
             // Numbers are PRESENCE BITS here, never value sets: the projection
             // records "INT is present" and drops literals and brands alike
             // (`Types::runtime_type_predicate`). So the reason this axis is
@@ -188,11 +188,12 @@ pub(crate) struct RuntimeTypePredicate {
     pub(crate) allow_other_structs: bool,
     pub(crate) maps: bool,
     pub(crate) binaries: bool,
-    /// WHICH callable, not merely "a callable". A closure value's heap word at
-    /// `+8` is the code it was minted from, so the callable a value is IS
-    /// runtime-observable and belongs on the same finite-or-cofinite footing as
-    /// an atom or a tuple arity (fz-kdt.125).
-    pub(crate) callables: FiniteSet<ClosureTarget>,
+    /// The whole callable axis: WHICH construction, not merely "a callable".
+    /// A closure value's heap word at `+8` names the construction it was
+    /// minted from -- the code AND the capture types that construction closed
+    /// over -- so the callable a value is is runtime-observable at the same
+    /// grain the lattice's closure literal names it. See [`CallableShapes`].
+    pub(crate) callables: CallableShapes,
     pub(crate) resources: bool,
 }
 
@@ -208,7 +209,7 @@ impl RuntimeTypePredicate {
             allow_other_structs: false,
             maps: false,
             binaries: false,
-            callables: FiniteSet::none(),
+            callables: CallableShapes::none(),
             resources: false,
         }
     }
@@ -224,7 +225,7 @@ impl RuntimeTypePredicate {
             allow_other_structs: true,
             maps: true,
             binaries: true,
-            callables: FiniteSet::any(),
+            callables: CallableShapes::any(),
             resources: true,
         }
     }
@@ -289,9 +290,15 @@ impl RuntimeTypePredicate {
         match axis {
             RuntimeTestAxis::Tuples => self.tuples.shapes().iter().flatten().collect(),
             RuntimeTestAxis::Lists => self.lists.heads().iter().collect(),
+            // A callable test reads a code word, and the word names a
+            // construction whose capture shapes are then compared to the
+            // test's STATICALLY -- the value's captures are never loaded --
+            // so a tuple nested in a capture is a question about the shape,
+            // not about the value, and needs no schema of its own.
+            //
             // A scalar axis decides a value outright, and a struct, map,
-            // binary, resource or callable test reads a schema id, a kind or a
-            // code word -- never anything the value CONTAINS.
+            // binary or resource test reads a schema id or a kind -- never
+            // anything the value CONTAINS.
             RuntimeTestAxis::Ints
             | RuntimeTestAxis::Floats
             | RuntimeTestAxis::Atoms
@@ -373,6 +380,7 @@ impl RuntimeTypePredicate {
             AxisPrecision::PerPosition => match axis {
                 RuntimeTestAxis::Tuples => self.tuples.erasing_overlap(&other.tuples),
                 RuntimeTestAxis::Lists => self.lists.erasing_overlap(&other.lists),
+                RuntimeTestAxis::Callables => self.callables.erasing_overlap(&other.callables),
                 // A further per-position axis must name its own store here --
                 // answering about tuples for it would silently break the seat.
                 _ => unreachable!("per-position precision with no per-position store: {axis:?}"),
@@ -767,6 +775,204 @@ impl TupleShapes {
     }
 }
 
+/// One callable CONSTRUCTION as a runtime test sees it: the code a value was
+/// minted from and, per capture position, the question that capture answers.
+///
+/// This is the lattice's closure literal `closure[L](captures)` projected the
+/// way a tuple clause is projected into a [`TupleShapes`] shape -- the
+/// identity stays, and every capture becomes its own [`RuntimeTypePredicate`].
+/// Both doors stamp exactly this onto a value at mint time, because a
+/// construction wrapper is one function at one capture layout, so it is the
+/// grain the runtime can answer at (fz-kdt.127).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CallableShape {
+    pub(crate) target: ClosureTarget,
+    pub(crate) captures: Vec<RuntimeTypePredicate>,
+}
+
+impl CallableShape {
+    /// Whether every value minted through this construction is one `other`
+    /// names: the same code, and every capture's question inside `other`'s.
+    ///
+    /// A construction's capture types are the ANNOTATION the mint stamped, so
+    /// this is the containment of one annotation in another -- capture by
+    /// capture, [`RuntimeTypePredicate::contained_in`], which is containment of
+    /// the projected TESTS and not of the semantic types they came from -- and
+    /// not the overlap of two tests. A
+    /// construction over `int | float` is not one a body compiled for `int`
+    /// captures may receive, whatever the value in that capture happens to be,
+    /// because the layout the capture was STORED in is the construction's and
+    /// not the value's (fz-kdt.167).
+    fn inside(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.captures.len() == other.captures.len()
+            && self
+                .captures
+                .iter()
+                .zip(&other.captures)
+                .all(|(ours, theirs)| ours.contained_in(theirs))
+    }
+
+    /// Whether one construction could satisfy both shapes' capture questions.
+    fn overlaps(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.captures.len() == other.captures.len()
+            && self.captures.iter().zip(&other.captures).all(|(l, r)| l.overlaps(r))
+    }
+
+    /// Whether the two shapes meet at a capture position NEITHER can see past.
+    fn erasing_overlap(&self, other: &Self) -> bool {
+        self.overlaps(other)
+            && self
+                .captures
+                .iter()
+                .zip(&other.captures)
+                .any(|(l, r)| l.overlaps_on_an_erasing_axis(r))
+    }
+}
+
+/// The callable constructions a test admits, one shape per closure literal.
+///
+/// This is the callable axis' answer to [`TupleShapes`] and it follows the
+/// same discipline: `shapes` holds one entry per positive closure-literal
+/// CLAUSE of the descriptor it was projected from, and `exact` records whether
+/// every clause could be shaped. A clause that pins several literals at once
+/// is an intersection and is not one shape, so it degrades the whole axis to
+/// the target-only reading -- which is what this layer asked before fz-kdt.127
+/// and is a sound over-approximation of it. The target set is DERIVED from the
+/// shapes when the axis is exact, never stated twice, so the two readings
+/// cannot drift apart.
+///
+/// ADMISSION of a value is [`Self::admits`]: CONTAINMENT of the value's
+/// construction shape in a shape named here, never overlap. The two-test
+/// relations a dispatch SEAT reads -- [`Self::contains_all`],
+/// [`Self::overlaps`], [`Self::erasing_overlap`] -- are the ordinary ones,
+/// exactly as for tuples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CallableShapes {
+    targets: FiniteSet<ClosureTarget>,
+    shapes: Vec<CallableShape>,
+    exact: bool,
+}
+
+impl CallableShapes {
+    /// No callable at all: the exact reading of no clauses, which is what
+    /// projecting a callable-free type produces.
+    pub(crate) fn none() -> Self {
+        Self::exact(Vec::new())
+    }
+
+    /// Every callable, of every construction.
+    pub(crate) fn any() -> Self {
+        Self::target_only(FiniteSet::any())
+    }
+
+    /// One shape per clause, and the targets they name.
+    pub(crate) fn exact(shapes: Vec<CallableShape>) -> Self {
+        Self {
+            targets: FiniteSet::finite(shapes.iter().map(|shape| shape.target)),
+            shapes,
+            exact: true,
+        }
+    }
+
+    /// The coarse reading: these targets, and nothing about their captures.
+    pub(crate) fn target_only(targets: FiniteSet<ClosureTarget>) -> Self {
+        Self {
+            targets,
+            shapes: Vec::new(),
+            exact: false,
+        }
+    }
+
+    /// Which functions the test admits values minted from. Always answerable,
+    /// and what the native emitter reads to apply the cofinite complement.
+    pub(crate) fn targets(&self) -> &FiniteSet<ClosureTarget> {
+        &self.targets
+    }
+
+    pub(crate) fn is_none(&self) -> bool {
+        self.targets.is_none()
+    }
+
+    pub(crate) fn is_any(&self) -> bool {
+        self.targets.is_any()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_exact(&self) -> bool {
+        self.exact
+    }
+
+    /// Whether this test ENUMERATES `shape`: membership in the listed side,
+    /// before the cofinite complement is applied. The emitters read this to
+    /// pick the addresses they compare against and apply the complement
+    /// themselves.
+    pub(crate) fn enumerates(&self, shape: &CallableShape) -> bool {
+        if self.exact {
+            self.shapes.iter().any(|ours| shape.inside(ours))
+        } else {
+            self.targets.values.contains(&shape.target)
+        }
+    }
+
+    /// Whether this test admits a value minted through the construction
+    /// `shape`.
+    pub(crate) fn admits(&self, shape: &CallableShape) -> bool {
+        self.enumerates(shape) != self.targets.cofinite
+    }
+
+    /// Whether every construction `other` admits, this axis admits too.
+    ///
+    /// An inexact axis is the target-only reading, which admits every capture
+    /// layout of its targets, so it contains anything of them; and nothing
+    /// exact contains it.
+    fn contains_all(&self, other: &Self) -> bool {
+        if !self.targets.contains_all(&other.targets) {
+            return false;
+        }
+        if !self.exact {
+            return true;
+        }
+        if !other.exact {
+            return false;
+        }
+        other
+            .shapes
+            .iter()
+            .all(|theirs| self.shapes.iter().any(|ours| theirs.inside(ours)))
+    }
+
+    /// Whether one construction could pass both tests.
+    fn overlaps(&self, other: &Self) -> bool {
+        if !self.targets.overlaps(&other.targets) {
+            return false;
+        }
+        if !self.exact || !other.exact {
+            return true;
+        }
+        self.shapes
+            .iter()
+            .any(|left| other.shapes.iter().any(|right| left.overlaps(right)))
+    }
+
+    /// Whether one construction could pass both tests through a capture
+    /// position NEITHER test can see past. Two shapes that meet only through
+    /// captures whose own questions separate are a real separation, and a seat
+    /// may skip the surface check for them.
+    fn erasing_overlap(&self, other: &Self) -> bool {
+        if !self.targets.overlaps(&other.targets) {
+            return false;
+        }
+        if !self.exact || !other.exact {
+            return true;
+        }
+        self.shapes
+            .iter()
+            .any(|left| other.shapes.iter().any(|right| left.erasing_overlap(right)))
+    }
+}
+
 impl Default for RuntimeTypePredicate {
     fn default() -> Self {
         Self::none()
@@ -779,14 +985,16 @@ impl fmt::Display for RuntimeTypePredicate {
     }
 }
 
-/// Which callable a runtime code word denotes.
+/// Which CONSTRUCTION a runtime code word denotes.
 ///
 /// The word a closure carries at `+8` is the backend's, not the type lattice's:
 /// one callable can be minted through several code paths, and a backend is free
 /// to name them however it likes. The backend that minted them is therefore the
-/// authority on reading them back, and it answers here. `None` is a code word
-/// the program never described, which no finite callable set can name.
-pub(crate) type CallableIdentities<'a> = dyn Fn(u64) -> Option<ClosureTarget> + 'a;
+/// authority on reading them back, and it answers here with the construction's
+/// shape -- the function, and the projected capture types it closed over.
+/// `None` is a code word the program never described, which no finite callable
+/// set can name.
+pub(crate) type CallableIdentities<'a> = dyn Fn(u64) -> Option<CallableShape> + 'a;
 
 /// Read field `index` out of a tuple value.
 ///
@@ -903,7 +1111,7 @@ fn struct_schema_of(value: RuntimeAnyValue) -> Option<u32> {
     Some(unsafe { struct_schema_id(ptr.cast_const()) })
 }
 
-/// Read a closure value's identity and ask the predicate about it.
+/// Read a closure value's CONSTRUCTION and ask the predicate about it.
 ///
 /// A cofinite callable set names every callable but the ones it lists, so a
 /// code word the backend cannot place is in it: the value is a callable, and
@@ -923,8 +1131,8 @@ fn matches_runtime_callable(
         return false;
     };
     match callables(unsafe { closure_fn_ptr(addr.cast_const()) }) {
-        Some(target) => predicate.callables.contains(&target),
-        None => predicate.callables.cofinite,
+        Some(shape) => predicate.callables.admits(&shape),
+        None => predicate.callables.targets().cofinite,
     }
 }
 
@@ -1256,9 +1464,131 @@ mod tests {
             RuntimeTestAxis::OtherStructs => predicate.allow_other_structs = true,
             RuntimeTestAxis::Maps => predicate.maps = true,
             RuntimeTestAxis::Binaries => predicate.binaries = true,
-            RuntimeTestAxis::Callables => predicate.callables = FiniteSet::any(),
+            RuntimeTestAxis::Callables => predicate.callables = CallableShapes::any(),
             RuntimeTestAxis::Resources => predicate.resources = true,
         }
+    }
+
+    /// A test that admits exactly the floats, for use as a capture question.
+    fn floats() -> RuntimeTypePredicate {
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.floats = FiniteSet::any();
+        predicate
+    }
+
+    fn construction(target: u32, captures: Vec<RuntimeTypePredicate>) -> CallableShape {
+        CallableShape {
+            target: ClosureTarget(target),
+            captures,
+        }
+    }
+
+    /// ADMISSION IS CONTAINMENT, NEVER OVERLAP (fz-kdt.167).
+    ///
+    /// A construction's capture types are the annotation its mint stamped, and
+    /// the LAYOUT the capture was stored in is the construction's, not the
+    /// value's. So a wrapper closed over `int | float` stores a boxed word,
+    /// and a body compiled for an `int` capture reads a raw int out of that
+    /// slot -- which is why the union construction must be refused by the
+    /// narrow test even though the two overlap. Only a test naming a capture
+    /// question the construction's own is INSIDE may admit it.
+    #[test]
+    fn a_union_capture_construction_is_admitted_only_by_a_test_that_contains_it() {
+        let mut int_or_float = ints();
+        int_or_float.floats = FiniteSet::any();
+        let minted = construction(66, vec![int_or_float.clone()]);
+
+        let narrow = CallableShapes::exact(vec![construction(66, vec![ints()])]);
+        assert!(
+            narrow.targets().values.contains(&ClosureTarget(66)),
+            "the two do name one function, so nothing but the captures can separate them",
+        );
+        assert!(
+            !narrow.admits(&minted),
+            "a construction over `int | float` stored a boxed capture; a body whose capture \
+             lane is a raw int must not receive it",
+        );
+
+        let equal = CallableShapes::exact(vec![construction(66, vec![int_or_float.clone()])]);
+        assert!(equal.admits(&minted), "the construction's own shape admits it");
+
+        let mut wider = int_or_float;
+        wider.atoms = FiniteSet::any();
+        let wide = CallableShapes::exact(vec![construction(66, vec![wider])]);
+        assert!(wide.admits(&minted), "and so does any shape that contains it");
+
+        let other_function = CallableShapes::exact(vec![construction(68, vec![ints()])]);
+        assert!(
+            !other_function.admits(&minted),
+            "a different function is a different word"
+        );
+    }
+
+    /// The target-only reading is what a clause pinning several literals at
+    /// once degrades to, and it admits every capture layout of its targets --
+    /// which is what this layer asked before fz-kdt.127.
+    #[test]
+    fn a_target_only_axis_admits_every_capture_layout_of_its_targets() {
+        let coarse = CallableShapes::target_only(FiniteSet::lit(ClosureTarget(66)));
+        assert!(!coarse.is_exact(), "several literals at once are not one shape");
+        assert!(coarse.admits(&construction(66, vec![ints()])));
+        assert!(coarse.admits(&construction(66, vec![floats()])));
+        assert!(!coarse.admits(&construction(68, vec![ints()])));
+    }
+
+    /// The callable axis is PER POSITION: it separates exactly as far as its
+    /// capture questions do, and erases exactly where they erase.
+    ///
+    /// Two constructions of one function over disjoint capture types are a
+    /// real separation -- a seat may put either first. Two over capture types
+    /// that meet only through what a capture's own test cannot see past are
+    /// not, and the seat owes them the surface-coverage check (fz-kdt.131).
+    #[test]
+    fn the_callable_axis_erases_exactly_where_its_captures_do() {
+        let over_int = CallableShapes::exact(vec![construction(66, vec![ints()])]);
+        let over_float = CallableShapes::exact(vec![construction(66, vec![floats()])]);
+        let mut both = RuntimeTypePredicate::none();
+        both.callables = over_int;
+        let mut other = RuntimeTypePredicate::none();
+        other.callables = over_float;
+        assert!(
+            !both.overlaps(&other),
+            "int and float captures are disjoint, so no construction passes both tests",
+        );
+        assert!(
+            !both.overlaps_on_an_erasing_axis(&other),
+            "and a disjoint capture position is a separation the seat may rely on",
+        );
+
+        let int_list = cons_of(vec![ints()]);
+        let int_or_atom_list = cons_of(vec![{
+            let mut heads = ints();
+            heads.atoms = FiniteSet::any();
+            heads
+        }]);
+        let mut over_int_list = RuntimeTypePredicate::none();
+        over_int_list.callables = CallableShapes::exact(vec![construction(66, vec![int_list])]);
+        let mut over_wider_list = RuntimeTypePredicate::none();
+        over_wider_list.callables = CallableShapes::exact(vec![construction(66, vec![int_or_atom_list])]);
+        assert!(
+            over_int_list.overlaps(&over_wider_list),
+            "`[int]` and `[int | :ok]` admit the same cons cells at the head",
+        );
+        assert!(
+            over_int_list.overlaps_on_an_erasing_axis(&over_wider_list),
+            "and they disagree only about a tail no test reads, so the callable axis must \
+             report the erasure through the capture rather than claim a separation",
+        );
+
+        let coarse = {
+            let mut predicate = RuntimeTypePredicate::none();
+            predicate.callables = CallableShapes::target_only(FiniteSet::lit(ClosureTarget(66)));
+            predicate
+        };
+        assert!(
+            coarse.overlaps_on_an_erasing_axis(&both),
+            "and an axis that could not be shaped claims nothing at all",
+        );
     }
 
     /// The invariant behind fz-kdt.119 item 6: the axis table is the whole

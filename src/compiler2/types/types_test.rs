@@ -5,7 +5,7 @@ use std::slice;
 use super::*;
 use crate::compiler2::keying::DispatchDemand;
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
 
 #[test]
 fn ty_is_an_integer_handle() {
@@ -297,6 +297,63 @@ fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
     assert!(
         !range_predicate.overlaps(&map_predicate),
         "protocol matching must not select the Map implementation for a Range struct value",
+    );
+}
+
+/// A clause that pins SEVERAL closure literals at once is an intersection, not
+/// one construction, so neither projection can name a capture layout for it --
+/// and the reading both must fall back to is the target-only one, which admits
+/// every capture layout of those targets.
+///
+/// The envelope used to answer this clause with its several literals over NO
+/// captures, which the predicate then read as EXACT zero-capture shapes.
+/// `CallableShape::inside` matches capture counts, so that arm refused every
+/// CAPTURING construction of its own targets -- under-admission, the one
+/// direction a runtime test may never err in.
+#[test]
+fn a_multi_literal_callable_clause_admits_every_capture_layout_of_its_targets() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let over_int = t.closure_lit(ClosureTarget(66), vec![int], 1);
+    let over_float = t.closure_lit(ClosureTarget(68), vec![float], 1);
+    let both = t.intersect(over_int, over_float);
+    let clauses = t.descr(&both).funcs.clone();
+    assert_eq!(clauses.len(), 1, "the subject here is ONE clause pinning two literals");
+    assert_eq!(clauses[0].pos.iter().filter(|sig| sig.lit.is_some()).count(), 2);
+
+    let enveloped = t.runtime_type_test_envelope(both);
+    let axis = t.runtime_type_predicate(&enveloped).callables;
+    let capturing = CallableShape {
+        target: ClosureTarget(66),
+        captures: vec![t.runtime_type_predicate(&int)],
+    };
+    assert!(
+        axis.admits(&capturing),
+        "a clause it cannot shape must admit any capture layout of the targets it names",
+    );
+}
+
+/// The predicate projection and the envelope are two roads to the same axis --
+/// the plan path goes through the envelope first and projects the result -- so
+/// they must decide a clause the same way or a value fails to match its own
+/// arm. `runtime_type_predicate_callables` is the one place that decides;
+/// `callable_identity_clauses` keeps the clause shape it decides on.
+#[test]
+fn the_envelope_and_the_predicate_agree_on_a_multi_literal_callable_clause() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let over_int = t.closure_lit(ClosureTarget(66), vec![int], 1);
+    let over_float = t.closure_lit(ClosureTarget(68), vec![float], 1);
+    let both = t.intersect(over_int, over_float);
+
+    let direct = t.runtime_type_predicate(&both).callables;
+    let enveloped = t.runtime_type_test_envelope(both);
+    let through_envelope = t.runtime_type_predicate(&enveloped).callables;
+    assert_eq!(
+        direct, through_envelope,
+        "projecting a clause and projecting its envelope must reach the same callable axis",
     );
 }
 

@@ -28,12 +28,10 @@ use crate::dispatch_matrix::{
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
-use crate::finite_set::FiniteSet;
 use crate::fz_ir::{Module, ReceiveClause, Var};
-use crate::types::ClosureTarget;
 
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
-use crate::runtime_type_predicate::RuntimeTypePredicate;
+use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -774,7 +772,7 @@ impl<'f> RuntimeTestEmitter<'f> for ReceiveTestEmitter<'_, 'f, '_> {
         Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
     }
 
-    fn callable_addresses(&mut self, _targets: &FiniteSet<ClosureTarget>) -> Result<Vec<ir::Value>, CodegenError> {
+    fn callable_addresses(&mut self, _callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError> {
         // A receive plan's questions come from message PATTERNS and from
         // parameter annotations, and neither language can name one callable:
         // the finest a source can say is "a function". So the callable axis

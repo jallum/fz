@@ -2,13 +2,11 @@
 
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
-use crate::finite_set::FiniteSet;
 use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId, Prim, UnOp,
     Var,
 };
-use crate::runtime_type_predicate::RuntimeTypePredicate;
-use crate::types::ClosureTarget;
+use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
     condcodes::{FloatCC, IntCC},
@@ -1121,38 +1119,42 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::RuntimeTypeTest(v, descr) => {
             lower_runtime_type_predicate(body, env, var_env, runtime, *v, descr, dest_var)
         }
-        Prim::ClosureCapture { closure, target, index } => {
-            lower_closure_capture(body, env, var_env, *closure, *target, *index)
-        }
+        Prim::ClosureCapture {
+            closure,
+            constructions,
+            index,
+        } => lower_closure_capture(body, env, var_env, *closure, constructions, *index),
     }
 }
 
 /// Read capture `index` back out of a closure, in the representation the
-/// callable's own boundary wrote it in.
+/// CONSTRUCTION that minted it wrote it in.
 ///
 /// `emit_capturing_closure` stores each capture through the boundary's
 /// `capture_reprs`; this is the same table read the other way, so the load and
-/// the store cannot drift. A callable minted at several capture layouts has
-/// several boundaries, and they must agree about this slot or there is no one
-/// answer to read.
+/// the store cannot drift. The prim names every construction of the ONE
+/// callable layout the callee grounded on -- one layout, several mint
+/// positions -- and those agree about this slot by construction, because the
+/// reprs are derived from the layout. The check stays as a tripwire over
+/// exactly that set (fz-kdt.157).
 fn lower_closure_capture<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     closure: Var,
-    target: ClosureTarget,
+    constructions: &[FnId],
     index: u32,
 ) -> Result<LowerOut, CodegenError> {
-    let mut reprs = env
-        .surface
-        .callable_boundaries_for_target(target)
-        .map(|boundary| boundary.capture_reprs.get(index as usize).copied());
+    let mut reprs = constructions.iter().map(|identity_fn| {
+        env.surface
+            .callable_boundary_for_identity(*identity_fn)
+            .and_then(|boundary| boundary.capture_reprs.get(index as usize).copied())
+    });
     let repr = match reprs.next() {
         Some(Some(repr)) if reprs.all(|other| other == Some(repr)) => repr,
         _ => {
             return Err(CodegenError::new(format!(
-                "closure capture {index} of callable {} has no single settled representation",
-                target.0
+                "closure capture {index} of constructions {constructions:?} has no single settled representation",
             )));
         }
     };
@@ -1367,18 +1369,16 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         Ok(self.body.closure_code_ref(closure_ref))
     }
 
-    fn callable_addresses(&mut self, targets: &FiniteSet<ClosureTarget>) -> Result<Vec<ir::Value>, CodegenError> {
+    fn callable_addresses(&mut self, callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError> {
         let mut func_ids = Vec::new();
-        for target in &targets.values {
-            for boundary in self.env.surface.callable_boundaries_for_target(*target) {
-                let boundary_id = boundary.boundary_id.as_u32();
-                let func_id = self.env.callable_boundary_fn_ids.get(&boundary_id).ok_or_else(|| {
-                    CodegenError::new(format!(
-                        "callable identity test names callable boundary {boundary_id}, which was never published",
-                    ))
-                })?;
-                func_ids.push(*func_id);
-            }
+        for boundary in self.env.surface.callable_boundaries_enumerated_by(callables) {
+            let boundary_id = boundary.boundary_id.as_u32();
+            let func_id = self.env.callable_boundary_fn_ids.get(&boundary_id).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "callable identity test names callable boundary {boundary_id}, which was never published",
+                ))
+            })?;
+            func_ids.push(*func_id);
         }
         Ok(func_ids
             .into_iter()

@@ -22,7 +22,9 @@ use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
-use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTypePredicate, TupleShapes};
+use crate::runtime_type_predicate::{
+    CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
+};
 
 use super::keying::DispatchDemand;
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
@@ -1335,7 +1337,7 @@ impl Types {
             allow_other_structs: false,
             maps: !descr.maps.is_empty() && named_structs.is_none(),
             binaries: descr.basic.contains_all(BasicBits::BINARY),
-            callables: runtime_type_predicate_callables(descr),
+            callables: self.runtime_type_predicate_callables(descr),
             resources: !descr.resources.is_empty(),
         }
     }
@@ -1413,6 +1415,43 @@ impl Types {
             );
         }
         TupleShapes::exact(shapes)
+    }
+
+    /// The callable axis a runtime test can put to a value.
+    ///
+    /// One shape per closure-literal CLAUSE, each carrying its captures' own
+    /// predicates, because a clause is the unit the lattice keeps correlated
+    /// -- the same reason [`Self::runtime_type_predicate_tuples`] keeps one
+    /// shape per clause. A construction wrapper stamps exactly one such shape
+    /// onto every value it mints (fz-kdt.127), which is what makes the capture
+    /// positions answerable without ever loading a capture.
+    ///
+    /// A clause is shapeable only when it pins exactly one literal. Several
+    /// literals at once are an INTERSECTION, which is not one shape; that
+    /// degrades the whole axis to the target-only reading, which is what every
+    /// clause answered before fz-kdt.127 and is a sound over-approximation of
+    /// it. `callable_identity_targets` has already refused the clauses that
+    /// name no literal or subtract one.
+    fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
+        let Some(targets) = callable_identity_targets(&descr.funcs) else {
+            return CallableShapes::any();
+        };
+        let mut shapes = Vec::with_capacity(descr.funcs.len());
+        for clause in &descr.funcs {
+            let mut lits = clause.pos.iter().filter_map(|sig| sig.lit.as_ref());
+            let (Some(lit), None) = (lits.next(), lits.next()) else {
+                return CallableShapes::target_only(FiniteSet::finite(targets.into_iter().map(ClosureTarget::from)));
+            };
+            shapes.push(CallableShape {
+                target: ClosureTarget::from(lit.fn_id),
+                captures: lit
+                    .captures
+                    .iter()
+                    .map(|capture| self.runtime_type_predicate(capture))
+                    .collect(),
+            });
+        }
+        CallableShapes::exact(shapes)
     }
 
     pub(crate) fn atom_literals(&self, a: &Ty) -> Vec<String> {
@@ -1593,20 +1632,22 @@ impl Types {
 
     /// What a runtime test can see of `ty`.
     ///
-    /// On the callable axis that is the callable's IDENTITY and nothing else:
-    /// a closure value's heap word at `+8` names the code it was minted from,
-    /// which is a fact about the value, while the arrow it was typed at and the
-    /// captures it closed over leave no trace the runtime can read back. So the
-    /// literal `fn_id`s survive here and everything around them is erased --
-    /// two literals over one function at different capture types collapse to
-    /// one observable, and two different functions stay two (fz-kdt.125).
+    /// On the callable axis that is the value's CONSTRUCTION: a closure
+    /// value's heap word at `+8` names the construction it was minted from,
+    /// and a construction is a function together with the capture types it
+    /// closed over, because a construction wrapper is one function at one
+    /// capture layout. So the literal `fn_id`s and their captures survive
+    /// here, each capture enveloped by this same reading, and the arrow the
+    /// literal was typed at is erased -- no value carries it (fz-kdt.125,
+    /// fz-kdt.127).
     ///
     /// AT EVERY DEPTH (fz-kdt.119). A tuple position holding a closure is read
     /// by the same one comparison as a top-level one, so `{:tag, #66(int)}`
-    /// and `{:tag, #66(float)}` are one observable here and `{:tag, #66}` and
-    /// `{:tag, #68}` are two. Widening a nested callable to `fun_top` instead
-    /// would reproduce fz-kdt.125's defect one tuple deep, and leave a
-    /// depth-0/depth-1 seam nothing in the runtime justifies.
+    /// and `{:tag, #66(float)}` are two observables here exactly as `#66(int)`
+    /// and `#66(float)` are, and `{:tag, #66}` and `{:tag, #68}` are two.
+    /// Widening a nested callable to `fun_top` instead would reproduce
+    /// fz-kdt.125's defect one tuple deep, and leave a depth-0/depth-1 seam
+    /// nothing in the runtime justifies.
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
         let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive, CallableReading::Identity);
         self.intern(descr)
@@ -2424,13 +2465,6 @@ fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>>
     Some(targets)
 }
 
-fn runtime_type_predicate_callables(descr: &Descr) -> FiniteSet<ClosureTarget> {
-    match callable_identity_targets(&descr.funcs) {
-        Some(targets) => FiniteSet::finite(targets.into_iter().map(ClosureTarget::from)),
-        None => FiniteSet::any(),
-    }
-}
-
 fn runtime_type_predicate_named_structs(descr: &Descr) -> FiniteSet<String> {
     const STRUCT_PREFIX: &str = "impl-target::";
     FiniteSet::finite(
@@ -2630,7 +2664,9 @@ impl RuntimeEnvelopePolarity {
 enum CallableReading {
     /// Leave the function axis as the lattice typed it.
     AsTyped,
-    /// Collapse it to callable IDENTITY, at every depth.
+    /// Reduce it to the CONSTRUCTION -- the literal's identity together with
+    /// its capture types, each capture reduced by this same reading -- and drop
+    /// the arrow, at every depth.
     Identity,
 }
 
@@ -2643,9 +2679,10 @@ fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity
             (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
         }
     }
-    // Only in a positive position: identity clauses OVER-approximate the set
-    // they replace, which is the direction a test must err in -- and the
-    // opposite of the direction a subtracted region may.
+    // Only in a positive position: a construction clause drops the arrow and
+    // widens each capture by this same reading, so it names at least the
+    // callables the clause it replaces named -- the direction a test must err
+    // in, and the opposite of the direction a subtracted region may.
     if callables == CallableReading::Identity
         && polarity == RuntimeEnvelopePolarity::Positive
         && !descr.funcs.is_empty()
@@ -2676,30 +2713,60 @@ fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity
 }
 
 /// The function axis reduced to the one question the runtime can ask of a
-/// callable value: which callable is it?
+/// callable value: which CONSTRUCTION is it?
 ///
-/// One clause per target `callable_identity_targets` names, carrying the
-/// identity and nothing else. Where it can name none the axis widens to
-/// `fun_top` rather than claim a precision the test could not honour.
+/// One literal per literal and one clause per clause, carrying the identity
+/// and the captures -- each capture itself reduced to what a test can see of
+/// it, at every depth -- and nothing else: the arrow the literal was typed at
+/// is gone, because no value carries it. Where it can name no literal at all
+/// the axis widens to `fun_top` rather than claim a precision the test could
+/// not honour.
+///
+/// The CLAUSE SHAPE survives untouched, and that is the point: how a clause
+/// projects is decided in exactly one place,
+/// [`Types::runtime_type_predicate_callables`], and this function hands it the
+/// same clause it would have seen unenveloped. A clause pinning several
+/// literals at once is an intersection and is not one construction, so that
+/// one place degrades it to the target-only reading -- every capture layout of
+/// those targets -- on both roads. Splitting it here into several literals over
+/// NO captures would instead reach that place as EXACT zero-capture shapes,
+/// which `CallableShape::inside` refuses every capturing construction of, on a
+/// capture-count mismatch: under-admission, the one direction a runtime test
+/// may never err in.
 fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
-    let Some(targets) = callable_identity_targets(funcs) else {
+    if callable_identity_targets(funcs).is_none() {
         return Descr::fun_top().funcs;
-    };
+    }
     let ret = types.any();
-    targets
-        .into_iter()
-        .map(|fn_id| {
-            Conj::pos_of(ArrowSig {
+    let mut clauses = Vec::with_capacity(funcs.len());
+    for clause in funcs {
+        let mut pos = Vec::with_capacity(clause.pos.len());
+        for lit in clause.pos.iter().filter_map(|sig| sig.lit.as_ref()) {
+            let captures = lit
+                .captures
+                .iter()
+                .map(|capture| {
+                    runtime_envelope_ty(
+                        types,
+                        *capture,
+                        RuntimeEnvelopePolarity::Positive,
+                        CallableReading::Identity,
+                    )
+                })
+                .collect();
+            pos.push(ArrowSig {
                 args: Vec::new(),
                 ret,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::Closure,
-                    fn_id,
-                    captures: Vec::new(),
+                    fn_id: lit.fn_id,
+                    captures,
                 }),
-            })
-        })
-        .collect()
+            });
+        }
+        clauses.push(Conj { pos, neg: Vec::new() });
+    }
+    clauses
 }
 
 fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity, callables: CallableReading) -> Ty {

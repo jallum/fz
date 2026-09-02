@@ -604,6 +604,14 @@ pointer and environment are the callable's identity thereafter. Generic calls
 do not carry a parallel construction ID or per-variable boundary table. Exact
 calls may bypass the public object and use a member's private ABI.
 
+That code pointer is the whole construction, not merely its function: a wrapper
+is one function at one capture layout, so each `NativeCallableBoundary` records
+the projected shape it mints (`shape`) beside the layout it mints it at
+(`callable`). A runtime callable test compares a value's word against the
+addresses of the wrappers whose shape it names, and `Prim::ClosureCapture`
+reads a capture back through the wrappers that minted the layout the reader
+grounded on — never through the function, which several layouts can share.
+
 Packaged call flow is `NoReturn`, `Tail`, `Continue { source }`, or
 `Deliver { source, entry }`. Every settled-empty callsite or exact target
 publishes `NoReturn` before physical packaging, including public indirect

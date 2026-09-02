@@ -22,7 +22,6 @@ use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::modules::identity::{Mfa, ModuleName};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::source::Span;
-use crate::types::ClosureTarget;
 use fz_runtime::heap::Schema;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -392,12 +391,15 @@ pub enum Prim {
     /// Read one captured value back out of a closure object.
     ///
     /// The mirror of `MakeClosure`: a caller that holds a whole closure and a
-    /// callee that wants its captures as separate lanes meet here. `target`
-    /// names the callable, which is the authority on how each capture was
-    /// STORED -- reading it back any other way would be a guess.
+    /// callee that wants its captures as separate lanes meet here.
+    /// `constructions` names the code words of every construction that mints
+    /// the callable at the layout the callee grounded -- the same words
+    /// `MakeClosure` stamps -- and those are the authority on how each capture
+    /// was STORED; reading it back any other way would be a guess
+    /// (fz-kdt.127).
     ClosureCapture {
         closure: Var,
-        target: ClosureTarget,
+        constructions: Box<[FnId]>,
         index: u32,
     },
 }
@@ -1207,8 +1209,17 @@ impl fmt::Display for Prim {
             Prim::RuntimeTypeTest(v, d) => {
                 write!(f, "runtime_type_test({}, {})", v, d)
             }
-            Prim::ClosureCapture { closure, target, index } => {
-                write!(f, "closure_capture({}, {}, {})", closure, target.0, index)
+            Prim::ClosureCapture {
+                closure,
+                constructions,
+                index,
+            } => {
+                let constructions = constructions
+                    .iter()
+                    .map(|construction| construction.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "closure_capture({closure}, [{constructions}], {index})")
             }
         }
     }
