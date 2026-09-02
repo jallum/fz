@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-02T15:39:39Z",
   "created": "2026-08-31T23:08:38Z",
   "description": "LANDED 172ab21f1 (2026-09-02; refuter BLOCK OVERTURNED by the\ncoordinator's own clean measurement -- the block rested on a failed\nmacOS sed that left its 'LIFO' build identical to FIFO, so it saw 0\nmovers everywhere at base and misread head's real residues as\nregressions; distinct-md5 binaries prove the truth below).\n\nGROUND TRUTH (coordinator-measured, both flips verified by md5):\nbase 910a023f2 -\u003e head 172ab21f1, FIFO-vs-LIFO backend canon:\nenum_map_family 1170 -\u003e 0 (CLOSES), 00277 562 -\u003e 562 (unchanged\nresidue), dead_closure 2 -\u003e 2 (unchanged residue). The builder's\nreport was exact.\n\nFIX: canonical Types::cmp_tys order on first_class_edges (and the\ndirect callable_flow_edges_for_targets set) INSIDE\ncallable_flow_resolution_edges_product, before mint/members/selection\nderive -- one canonical order to everything, mint order included; the\nbody_id weld (transport.rs positional members/selection) forbids\npost-hoc reorder, so the sort is at assembly. SECOND leak folded\n(refuter-confirmed sound, positional zip at all 3 call sites):\nsurface_shapes re-sorted rows by mint-order ShapeId while callers zip\npositionally -\u003e a boundary carried mismatched shapes (args=[int] but\ninputs=[binary], RawInt vs ValueRef); removal restores the\ncorrespondence (latent boundary-content correctness fix, present at\nbase FIFO, no live symptom found -- codegen tolerated it).\n\nfz-kdt.141 COEXISTENCE (proven): its perturbation wraps the product\nDOWNSTREAM of the sort, so wrappers:\u003cseed\u003e permutes the canonical\norder and its gate still lands on a moved artifact -- 9/9 stress green.\n\nRESIDUES deliberately NOT forced: 00277 (kdt.107 dispatch-twin class +\na cmp_tys FREE-VAR TIE whose TypeVarId-mint fallback is itself\nschedule-visible = fz-kdt.161, filed with the schedule-stable-key fix\ndirection); dead_closure (kdt.120 return-precision). Both\nbehavior-identical 3 doors both schedules. Stale census comment in\ncanon_test.rs corrected (enum_map_family removed from the 'still move'\nlist, now stated closed; the two survivors named with their tickets).\nGate: lib 1577/0/5, cli 24/0, matrix 476/0/9, clippy/fmt clean,\n141 stress 9/9. THE SCHEDULE-AUTHORSHIP CRACKDOWN'S LAST BIG ARTIFACT\nGAP IS CLOSED.",
   "id": "fz-kdt.108",
@@ -26,7 +27,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Give the callable-flow construction wrapper one canonical edge order: the last big schedule gap closed",
   "type": "bug",
   "updated_at": "2026-09-02T15:39:39Z"
