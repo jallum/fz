@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T10:47:53Z",
+  "description": "Found by the fz-kdt.152 build (2026-09-02). PRE-EXISTING: identical at 62b5b09fe and after fz-kdt.152's fix, so it is a distinct root.\n\n  fn main() do\n    send(self(), fn (x) -\u003e dbg(x * 2) end)\n    f = receive do g -\u003e g end\n    Enum.each([1, 2, 3], f)\n  end\n\ninterp prints 2/4/6 (correct). JIT and AOT print the FIRST element only and\nthen abort:\n\n  fz_closure_get_capture_atom closure: ExpectedTag { expected: ValueKind(4), found: ValueKind(13) }\n  (runtime/src/ir_runtime.rs:1777) -- panic in a function that cannot unwind\n\nValueKind(4) is CLOSURE and ValueKind(13) is INT, so the native side reads a\ncapture slot expecting the closure it stored and finds the element instead:\na capture-lane/ABI mismatch on the each path specifically. Enum.map,\nEnum.filter and Enum.reduce with the same mailbox callable are correct on all\nthree doors after fz-kdt.152 (pinned by fixtures2/behavior/mailbox_closure_reduce.fz\nand mailbox_closure_enum_hofs.fz); each is the one HOF still red, and it is\nred only at the native door, which is why fz-kdt.152 could not pin it as a\ncompanion.\n\nThird three-path parity break in the closures x mailbox intersection\n(fz-kdt.130, fz-kdt.152). Suspect Enum.each's own wrapper closure -- each\ndiscards the reducer result, so its lambda's capture surface differs from\nmap's; compare against Prim::ClosureCapture's repr-from-the-storing-boundary\nrule (fz-kdt.125/.128).",
+  "id": "fz-kdt.155",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "P1: a mailbox closure passed to Enum.each aborts on JIT and AOT",
+  "type": "bug",
+  "updated_at": "2026-09-02T10:47:53Z"
+}
