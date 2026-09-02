@@ -21,11 +21,15 @@
     {
       "text": "fz-kdt.107 step-3 review (2026-09-01): after Stage 2 lands, this ticket's facet-3 (overlap-without-containment) population is EXACTLY 2, both in enum_predicate_search, both named ([:false|:nil]/[int|:nil] and [:false|:true]/[int|:ok|:true]) -- arrival-kept, meaning-neutral today only because both arms are specializations of one source function with boxed element access (luck, ARGUED not proven). The cure for these two is nothing dispatch can do (heads overlap; tails erased); they wait on a repr-level or minting-level decision. Re-measure on landing.",
       "timestamp": "2026-09-02T03:53:53Z"
+    },
+    {
+      "text": "fz-kdt.141: the neither-covers residue this ticket owns is now perturbable, and it is what the new stress moves.\n\nThe retired reversal knob mirrored WITHIN a question group only, so it never touched a cross-group pair -- your recorded gap ('the reversal stress does NOT exercise cross-group order -- fz-kdt.131 needs a cross-group permutation stress'). FZ_STRESS_PERMUTE_DISPATCH=arms:\u003cseed\u003e permutes the whole arrival order and then lets specificity_order do its deterministic work, so what varies is exactly the arrival-kept residue: a question group's members (fz-kdt.107) and every pair where neither group covers the other (this ticket). The unit gate a_seed_moves_an_arrival_order_the_group_reversal_cannot pins that difference on three arms in three singleton groups -- the shape this ticket owns -- where the reversal is provably the identity.\n\nMeasured: arms:reverse moves 8 fixtures' artifacts, an arm seed moves 27. enum_predicate_search, whose two facet-3 pairs your latest comment names, now ABORTS natively under arms:6 (_fz_list_head_int_ref) where reversal left it green -- so the 'benign today only by a correlation the compiler never proved (luck, ARGUED not proven)' reading has an instrument behind it now.",
+      "timestamp": "2026-09-02T04:30:50Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A seat must carry surface coverage: any arm ordering not covering-safe is unsound wherever the test is blind to what the body relies on",
   "type": "task",
-  "updated_at": "2026-09-02T03:53:53Z"
+  "updated_at": "2026-09-02T04:30:50Z"
 }
