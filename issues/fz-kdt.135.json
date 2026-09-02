@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T01:44:24Z",
+  "description": "From the fz-kdt.119 cold review (2026-09-01). The review's\nFZ_DEBUG_TUPLE_SHAPE probe -- a runtime counter firing when a value\npasses an arm's test while lying outside the surface that arm's body\nwas compiled for -- found TEN fixtures in one corpus pass (00183 x16,\n00230 x16, 00418 x4, 00419 x16, 00420 x81, hof_three_distinct x6,\npredicate_search x7, take_drop_split x81, receive_map_pattern x1,\nunused_range_binding x4). The static fz-kdt.129 gate sees 19 pairwise\nescapes on 14 hand-picked fixtures; this sees the real thing, on the\nproduction path, corpus-wide, cheaply. Land it as a permanent\nenv-gated tripwire (FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP: count, or\nhard-error under the flag) + a corpus sweep recipe. This is the\nfourth demonstration that corpus stdout sweeps pass while dispatch\ndefects ship -- this instrument is the corrective. fz-kdt.119 lands\nit in-story per its gate list; this ticket tracks the corpus-sweep\nintegration and the triage of the ten findings (each is a latent\nblind-routing site; the two x81 are the take_drop blocker ticket).",
+  "id": "fz-kdt.135",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A dynamic surface-membership tripwire: the instrument the dispatch class has been missing",
+  "type": "task",
+  "updated_at": "2026-09-02T01:44:24Z"
+}
