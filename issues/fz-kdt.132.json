@@ -9,9 +9,15 @@
   "id": "fz-kdt.132",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CONFIRMED and QUANTIFIED from fz-kdt.119's landing (4ca1dc7e7), which shipped the carve-out this ticket blocks.\n\nThe carve-out is one function, read by the lattice and by all three lowerings alike: runtime_type_predicate::lowering_tests_position -- a tuple position whose sub-predicate can admit a LIST is not tested at all. Testing only its non-list axes would make the test STRICTER than the type (a position's question is a disjunction; dropping a disjunct rejects values the arm's surface names), so the choice was to decide the list axis there or be blind, and deciding it is what reaches this ticket's dead-and-broken member. Blind counts as overlapping AND as erasing, so no seat can claim it as separation.\n\nThe new tripwire measures the cost of staying blind. FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 over the corpus at head reports 106 escapes on 00420_enum_take_drop_split and 106 on behavior/enum_take_drop_split (the same program by two paths) -- 212 of the baseline's 268, and a sampled line shows exactly the shape this ticket names: lists {Empty} at position 0 of a 2-tuple, taking a cons.\n\nSo this ticket is the single largest entry in the tripwire baseline, and closing it is what lets fz-kdt.138 flip lowering_tests_position to true and take those 212 with it.",
+      "timestamp": "2026-09-02T02:36:49Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "P1: a dead-because-blind accumulator specialization does not work when reached",
   "type": "task",
-  "updated_at": "2026-09-02T01:45:06Z"
+  "updated_at": "2026-09-02T02:36:49Z"
 }
