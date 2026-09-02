@@ -14,7 +14,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "callable_union_capture_containment stops asking its question under the type-preserving forwarder key: fz-kdt.167's end-to-end witness is now answered statically",
   "type": "task",
   "updated_at": "2026-09-02T23:06:05Z"
