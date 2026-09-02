@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T03:54:24Z",
+  "description": "From the fz-kdt.107 step-3 review (2026-09-01): fz-kdt.118's drop\nrule runs only WITHIN a question group (callsite_dispatch.rs:~452),\nso refining an axis (119 tuples, 107.3 lists) splits groups and\nLOSES the drop -- measured: the un-dropped narrow arms are the +6-9%\nnative code growth on enum_map_family/00277 and leave permanently\nunreachable-in-practice arms lowered. Generalize the drop to: same\ncallee AND test contained AND surface contained (the 118 theorem\nholds -- a value passing the narrow test also passes the wide one,\nand surface containment makes the wide body complete for it).\nRe-measure the growth back out; re-run 118's gates. Sequence after\n107.3 (its numbers are the acceptance baseline).",
+  "id": "fz-kdt.143",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "unroutable_alternatives should judge test-containment, not question-equality",
+  "type": "task",
+  "updated_at": "2026-09-02T03:54:24Z"
+}
