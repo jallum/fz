@@ -37,9 +37,9 @@ impl PullTelemetryCapture {
             produced: Rc::new(RefCell::new(Vec::new())),
         };
         let produced = Rc::clone(&capture.produced);
-        telemetry.attach_raw_event2::<ProductKey, ProductValue, _>(
+        telemetry.attach_raw_event3::<ProductKey, ProductValue, super::pull::ProductSettlement, _>(
             &["fz", "compiler2", "pull", "product", "settled"],
-            move |_, _, _, product, _| produced.borrow_mut().push(product.clone()),
+            move |_, _, _, product, _, _| produced.borrow_mut().push(product.clone()),
         );
         capture
     }
@@ -4446,6 +4446,7 @@ fn main(), do: caller(1)
     // return demand is the bottom `ignore` (an observed discard, not absence),
     // so `id` settles with its input undemanded.
     driver.session_mut().replace_settled_return_demand_contributions(
+        &tel,
         phantom_caller,
         HashMap::from([(id_exec.clone(), RuntimeDemand::ignore())]),
         &HashSet::new(),

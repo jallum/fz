@@ -63,6 +63,16 @@ and does not enable raw events. Concrete handlers:
 - `Capture` (`capture.rs`) — the test handler; copies events into an owned
   buffer for assertions. Gated behind `#[cfg(test)]`.
 
+**`PublicTrace`** (`public_trace.rs`, `#[cfg(test)]`) — parses the rendered
+public JSONL text a `JsonlBackend::new_public_writer` produces, the same
+allowlisted stream `fz2 --log-telemetry` writes in production. `compile`
+drives a source string to completion behind a public-only writer inside an
+inner scope, drops the `Compiler2` so the buffered backend flushes its tail,
+then parses the shared buffer into ordered `PublicEvent`s and paired
+`PublicSpan`s. It parses text rather than reusing `Capture` because `Capture`
+attaches ahead of the allowlist and would expose pre-projection `Any`
+payloads a production reader of the JSONL stream never sees.
+
 **Legacy compatibility surface** — `Event`, `Measurements`, `Metadata`, and
 `Value` remain for legacy emitters and tests. They do not define the production
 compiler2 payload model and do not enable raw events or spans.
@@ -220,22 +230,141 @@ handlers derive timing and presentation fields only after matching these raw
 signatures. There is no separate per-outcome drive stop schema, extra
 `job_fatal` event, or redundant `fact_published` stream.
 
+The public JSONL projection (`jsonl.rs::write_opaque`) renders `Job`,
+`FactKey`, `ProductKey`, `CallSiteKey`, and `TransportPosition` as
+within-run identity, not a bare variant name: each carries its raw payload
+ids (`root_id`, `function_id`, `arrow`, `code_id`, `module_id`, `callsite`,
+`entry`, `semantic_index`, `need`, ...) alongside `kind`. `arrow` is the
+interned `Ty`'s raw handle (`Ty::as_u32`), never `Types::display` — display
+is measured non-injective and would conflate distinct activations that
+happen to render the same. A raw handle is a within-run join key only; the
+`fz.compiler2.canon.*` definition lines below are what make it mean something
+to a reader in another process. This is what lets a reader of the public log
+distinguish, for example, the many separate `AnalyzeActivation` evaluations
+one real compile can produce, each a different `(root, function, arrow)`
+triple where the projection used to render only `"kind":"AnalyzeActivation"`
+for all of them alike. `ExecutableKey` and `TransportPosition`'s
+`ExecutableSymbol` render the same way nested inside a `ProductKey`
+(`BackendExecutable`, `TransportShape`, ...): activation identity plus
+`need` (`"value"` or `"tuple_fields"` with a count). The blocked-wait lists
+on `AppliedStep` and `JobCompletion` render each waited-on `FactKey` as its
+own identity object, sorted as rendered strings (a presentation-boundary
+sort) rather than as bare kind strings.
+
+`[fz, compiler2, work_graph, applied]` is public (fz-kdt.34.3). It fires
+unconditionally on every job completion — all five `ExecutionContext::
+complete_job` call sites (`compiler.rs`, `drive.rs`, `product_drive.rs`,
+`jobs/native.rs`, `jobs/macro_runtime.rs`) route through `emit_job_completion`
+(`drive.rs`), which always emits it — carrying the raw `JobCompletion` under
+`metadata.completion`. `write_applied_step_body` (`jsonl.rs`) renders the
+shared `AppliedStep` body once and both the standalone `AppliedStep` opaque
+arm and the `JobCompletion` arm call it, so the two can never drift apart:
+`"changed"` is every `FactChange` as a full identity object (`kind` + ids,
+`old_revision`/`new_revision`, `old_settled`/`new_settled`), in the
+completion's own emission order; `"wakes"` is every `Wake` this completion
+caused, in wake order, each `{"cause": <FactUse identity>, "job": <Job
+identity>, "disposition": "enqueued"|"coalesced", "shift": bool}` —
+`AppliedStep::wakes` replaced the old deduped `enqueued`/`coalesced` job
+lists, so a job coalesced by two distinct causes in the same `Scheduler::
+complete` call now renders as two `Wake` records, not one; `"movements"` is
+the full post-wave `FactMovement` report, each entry a full identity object.
+Both `"movements"` and the event's own `"semantic":{"reads":[...]}` (the
+completed job's current `deps.reads`, read directly off
+`World.work_graph.reads` at render time — nothing new is stored) are
+rendered as presentation-sorted strings, because their source in both cases
+is a `HashSet` with no meaningful iteration order — the same
+presentation-boundary sort the blocked-wait lists already used.
+
+The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
+is a position in one `World`, so a log that carries only ids means nothing to a
+second process — fz-kdt.47 measured 16 differing arena slots over four runs, and
+the `World` that could translate them is gone by the time the log is read. So
+the first time the sink renders a given raw id it emits a DEFINITION line first,
+then the referencing event:
+
+```json
+{"name":["fz","compiler2","canon","type"],...,"metadata":{"type_id":133,"canon":"fp[F] (list(int)) -> r0"}}
+{"name":["fz","compiler2","canon","function"],...,"metadata":{"function_id":230,"canon":"Enum.reduce/3"}}
+```
+
+`canon` is fz-f98.21's faithful canonical form (`types::canon::TyCanon` for a
+type, `compiler2::canon::function_label` for a function), never
+`Types::display` — display is measured non-injective, so two different
+activations would compare equal. The `type` domain covers every raw `Ty` on the
+stream: the `arrow` field and the elements of an `ActivationSymbol`'s `input`
+array both resolve through it. The canonical form is an EQUIVALENCE, not an
+injection on ids: two mutually-subtype arena slots share one canonical form and
+are one identity to a reader, which is the point — that is the pair a
+renumbering is free to swap.
+
+This lives entirely in the sink (`CanonStream`, `jsonl.rs`). No production emit
+site changed, telemetry-off renders nothing, and the cost is per DISTINCT id
+(measured on `00181_enum_reduce_operator_ref`: 203 definition lines, 38KB, on a
+917KB log). Definitions need a `&World`, which only some events carry, so a line
+naming a still-undefined id is PARKED until an event arrives that can define it;
+once anything is parked everything parks, so the stream's own order never
+changes and a streaming reader never sees an id it has no dictionary entry for.
+On `enum_take_drop_split`, 128 of 325 distinct types are first named by an event
+that carries no world — 99 by a `pull.product.settled`, 29 by a `job`
+`span_start` whose `span_stop` carries the world a few lines later.
+
+`telemetry::causal` (`causal.rs`, `pub`, re-exported as `fz::causal`) replays a
+public log into a `CausalReport`: per canonical formula identity, evaluations
+classified `Initial`/`Content`/`Readiness`/`Uncaused` plus changed outputs,
+wakes and blocked completions; per canonical `ProductKey`, settlements,
+generations, the changed split, cache hits and displacements; and the summed
+session tallies. Causality is DERIVED, never stored: for evaluation `e` of
+formula `F` at stream position `t`, the moved inputs are `(F's reads UNION F's
+blocked-set from its previous completion)` for which a movement appears in
+`[F's previous conclusion, t)`. Both boundaries are load-bearing and both are
+measured — `reads` alone false-flags wait-satisfied jobs as uncaused, and the
+window must INCLUDE the previous conclusion because a formula that writes a fact
+it also reads wakes itself. Raw ids are the within-run join key; the canon
+tables are applied at report time, which is what makes `canonical_multiset()`
+comparable across processes. Never infer identity or causality from counts: both
+are on the stream exactly.
+
+The `[fz, compiler2, job]` span still covers only two of these five
+completion sites (`drive.rs`'s and `product_drive.rs`'s job-pop loops, the
+only two callers wrapped in `start_job_span`/`stop_job_span`); that stays a
+deliberate timing-only measurement, unchanged by this. `work_graph.applied`
+is the one signal that observes every completion — it is the causality
+record, the job span is the clock.
+
 When the agenda drains with unresolved waiters, `ExecutionContext::drive()`
 (`drive.rs`) runs its stall pass: it demands every submitted root's entry
 analysis and, for each blocked waiter's fact not already demanded since the
 last content change, pokes that fact's mapped producer through the
 fact->producer map (`demand_fact_producer`). If that expansion pokes at least
 one producer, the pass emits `[fz, compiler2, drive, demand_on_stall]`
-(raw event, no span) with `&usize` for the total pokes this round and the
-existing demanded fact set as a raw borrow. This lets a test
-or trace tell *which* facts were stalled, not just that a stall-demand
-happened. A round with `producer_pokes == 0` is a genuine stall: the drive
-breaks out and reports `DriveOutcome::Unresolved` instead of emitting the
-event. Separately, `[fz, compiler2, drive, timed_out]` fires when a deadline
-passed to `drive` elapses mid-agenda, before any stall pass runs. It carries
-only the independently semantic raw configured timeout; `pending_jobs`
-and `jobs_ran` belong to the drive span's raw `TimedOut` outcome. JSON and test
-handlers derive `timeout_ms` during the callback.
+(raw event, no span) with `&u64` for the total pokes this round and the
+existing demanded fact set (`&HashSet<FactKey>`) as a raw borrow. `demand_on_stall`
+is public (allowlisted in `is_public_compiler2_trace_event`, `jsonl.rs`):
+its projected metadata carries `"producer_pokes"`, a `"demanded_facts"`
+object with `"count"` and a `"facts"` array of presentation-sorted full fact
+identities (`kind` + ids, via `render_fact_identity` — the same
+presentation-boundary sort `blocked`/`movements` use, since the source is a
+`HashSet`), and a hard-coded `"reason":"blocked_waiter_expansion"` — safe to
+hard-code because `demand_on_stall` has exactly one emit site and every
+member of the demanded set was passed through that one call to
+`demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion)`. This
+lets a public trace name *which* facts were stalled and why, not just that a
+stall-demand happened — the aggregate `pull.session.finished` tally
+(`work_starts_blocked_waiter_expansion`) says how many; this event says
+which one, and its fact->producer expansion is readable from the same log by
+matching the next `work_graph.applied` completion the fact's producer job
+runs as. One caveat: `stall_demanded` (and so `"demanded_facts"`) is
+cumulative across stall passes within a single drive — it is cleared only
+when something changed since the last stall (`changed_since_stall`) — so
+each event carries the running demanded set at that pass, not a per-pass
+delta; a later event's `"facts"` is a superset of an earlier one's unless the
+set was cleared in between. A round with `producer_pokes == 0` is a genuine
+stall: the drive breaks out and reports `DriveOutcome::Unresolved` instead of
+emitting the event. Separately, `[fz, compiler2, drive, timed_out]` fires
+when a deadline passed to `drive` elapses mid-agenda, before any stall pass
+runs. It carries only the independently semantic raw configured timeout;
+`pending_jobs` and `jobs_ran` belong to the drive span's raw `TimedOut`
+outcome. JSON and test handlers derive `timeout_ms` during the callback.
 
 Product artifact producers lean on pull telemetry as their contract surface. The
 tests assert that the interpreter front door requests `RootBackendProduct(root)`,
@@ -281,17 +410,36 @@ are produced for the positions and boundaries named by demanded executable
 products. Tests assert ShapeId relationships from the demanded
 `MaterializedTransportPlan` when correctness depends on sharing.
 
-`ProductDriver` (`pull.rs`) exposes three `[fz, compiler2, pull, product, *]`
-leaves. `cache_hit` and `reentered` carry the existing raw `ProductKey` and
-identify paths that do not run a producer. `settled` carries the raw
-`ProductKey` and authoritative `ProductValue` only after memo settlement
-succeeds. Waiting outcomes do not claim completion. There is no `requested`,
-`produced`, `waited`, or generic `finished` alias.
+`ProductDriver`/`ProductMemo` (`pull.rs`) expose four
+`[fz, compiler2, pull, product, *]` leaves, all public (allowlisted in
+`jsonl.rs::is_public_compiler2_trace_event`). `cache_hit` and `reentered` carry
+the existing raw `ProductKey` and identify paths that do not run a producer.
+`displaced` carries the raw `ProductKey` of a settled product the memo just
+displaced (rejected group member, or a reader invalidated by a changed
+dependency, stale fact, or explicit reproduction) -- Waiting outcomes do not
+claim completion, and there is no `requested`, `produced`, `waited`, or generic
+`finished` alias.
+
+`settled` is the memo's own act of installing a value, not the driver's: it
+fires once per PRODUCT that actually settles, from inside `ProductMemo::finish`
+and `ProductMemo::finish_group` -- the single authority for both. A group
+settle (`finish_group`, e.g. a callable-construction or transport-shape SCC)
+fires once per member, not once for the anchor `ProductDriver::pull` happened
+to be pulling; `ProductReadContext::publish_product`'s co-published members
+(a demand cone's non-anchor executables, an effect SCC's non-anchor
+executables) settle through the same `finish` authority and are equally
+visible. The event carries the raw `ProductKey`, the authoritative
+`ProductValue`, and a stack-built `ProductSettlement { generation, changed,
+group }`: `generation` and `changed` are the memo's own bookkeeping (no
+longer discarded after computation), and `group` is `Some(id)` for every
+member of one group settle (a monotone id, distinct per settle, `None`
+outside a group).
 
 Transport uses the same product events. A settled `TransportShape(position)` or
-`CallableConstruction(position)` event carries the raw `ProductKey` and
-`ProductValue`; handlers inspect the borrowed position-owned answer directly.
-There is no parallel projection, component, or solve event.
+`CallableConstruction(position)` event carries the raw `ProductKey`,
+`ProductValue`, and `ProductSettlement`; handlers inspect the borrowed
+position-owned answer directly. There is no parallel projection, component, or
+solve event.
 
 `[fz, compiler2, pull, session, finished]` (`pull.rs::PullSession::emit_finished`,
 called from `ProductDriver::finish_session`) fires once per pull session, when

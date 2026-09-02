@@ -57,12 +57,197 @@ fn note_codegen_projection() {
     CODEGEN_PROJECTIONS.with(|count| count.set(count.get() + 1));
 }
 
+thread_local! {
+    /// The raw ids named by the line currently being rendered (fz-kdt.34.6).
+    ///
+    /// The identity writers below are pure `String` builders reached through
+    /// the 350-line `write_opaque` match, and none of them has any use for an
+    /// out-parameter. A collector threaded through every signature on that
+    /// path would be a parameter ~30 functions carry and none reads. The
+    /// backend is single-threaded by construction (`RefCell` fields, no
+    /// `Send`/`Sync`) and renders one line at a time, so this thread-local is
+    /// exactly as precise and costs one `Cell` check per id when the sink is
+    /// not collecting.
+    static NAMED_IDS: RefCell<NamedIds> = const { RefCell::new(NamedIds::new()) };
+}
+
+/// The raw ids one rendered line names, in first-appearance order.
+struct NamedIds {
+    collecting: bool,
+    types: Vec<crate::compiler2::Ty>,
+    functions: Vec<crate::compiler2::FunctionId>,
+}
+
+impl NamedIds {
+    const fn new() -> Self {
+        Self {
+            collecting: false,
+            types: Vec::new(),
+            functions: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.types.is_empty() && self.functions.is_empty()
+    }
+}
+
+fn note_named_type(ty: crate::compiler2::Ty) {
+    NAMED_IDS.with(|named| {
+        let mut named = named.borrow_mut();
+        if named.collecting && !named.types.contains(&ty) {
+            named.types.push(ty);
+        }
+    });
+}
+
+fn note_named_function(function: crate::compiler2::FunctionId) {
+    NAMED_IDS.with(|named| {
+        let mut named = named.borrow_mut();
+        if named.collecting && !named.functions.contains(&function) {
+            named.functions.push(function);
+        }
+    });
+}
+
+/// Renders one line and reports the raw ids it named. Collection is armed only
+/// for the duration of `render`, so a non-public sink pays a single flag test
+/// per id and nothing else.
+fn render_naming_ids(render: impl FnOnce()) -> NamedIds {
+    NAMED_IDS.with(|named| {
+        let mut borrowed = named.borrow_mut();
+        borrowed.collecting = true;
+        borrowed.types.clear();
+        borrowed.functions.clear();
+    });
+    render();
+    NAMED_IDS.with(|named| {
+        let mut borrowed = named.borrow_mut();
+        borrowed.collecting = false;
+        NamedIds {
+            collecting: false,
+            types: std::mem::take(&mut borrowed.types),
+            functions: std::mem::take(&mut borrowed.functions),
+        }
+    })
+}
+
+/// The buffered writer's auto-flush threshold: a write that pushes the
+/// internal buffer to at least this many bytes flushes immediately. Every
+/// production constructor uses this; only the `#[cfg(test)]`
+/// `new_public_writer_with_threshold` seam overrides it, to force a
+/// deterministic mid-stream flush boundary a test can reason about instead
+/// of one that depends on incidental total byte volume.
+const DEFAULT_FLUSH_THRESHOLD: usize = 64 * 1024;
+
 pub struct JsonlBackend {
     writer: RefCell<Box<dyn Write>>,
     buffer: RefCell<Vec<u8>>,
     start: Instant,
     public_compiler2_trace: bool,
     buffered: bool,
+    flush_threshold: usize,
+    canon: RefCell<CanonStream>,
+}
+
+/// Makes the public stream self-describing (fz-kdt.34.6).
+///
+/// A raw `Ty` or `FunctionId` is a position in one `World`; across processes
+/// the same position means something else (fz-kdt.47 measured 16 differing
+/// arena slots over four runs). Raw ids stay on the stream because they are
+/// the free within-run join key, and every one of them is *defined* the first
+/// time the sink renders it, by a `canon.type`/`canon.function` line carrying
+/// the id-free canonical form (fz-f98.21). A reader then joins raw -> canonical
+/// per log and compares two logs written by two processes.
+///
+/// Definitions need a `&World`, which only some events carry. A line naming a
+/// still-undefined id is therefore PARKED until an event arrives that can
+/// define it; once anything is parked everything parks, so the stream's own
+/// order never changes. Measured on `enum_take_drop_split`: 128 of 325 distinct
+/// types are first named by a world-less event — 99 by a `pull.product.settled`
+/// and 29 by a `job` span_start, whose `span_stop` carries the world a few
+/// lines later.
+#[derive(Default)]
+struct CanonStream {
+    defined_types: std::collections::HashSet<crate::compiler2::Ty>,
+    defined_functions: std::collections::HashSet<crate::compiler2::FunctionId>,
+    parked_types: Vec<crate::compiler2::Ty>,
+    parked_functions: Vec<crate::compiler2::FunctionId>,
+    parked_lines: Vec<u8>,
+}
+
+impl CanonStream {
+    /// True when `named` cannot be written yet: it names an undefined id, or
+    /// an earlier line is already parked and order must be preserved.
+    fn must_park(&self, named: &NamedIds) -> bool {
+        !self.parked_lines.is_empty()
+            || named.types.iter().any(|ty| !self.defined_types.contains(ty))
+            || named.functions.iter().any(|f| !self.defined_functions.contains(f))
+    }
+
+    fn park(&mut self, named: NamedIds, line: &str) {
+        self.parked_types.extend(named.types);
+        self.parked_functions.extend(named.functions);
+        self.parked_lines.extend_from_slice(line.as_bytes());
+    }
+
+    /// Appends a definition line for every not-yet-defined id in `named` and
+    /// in the parked backlog. Cost is per DISTINCT id: a defined id is a set
+    /// hit and renders nothing.
+    fn define(&mut self, world: &crate::compiler2::World, named: &NamedIds, time_ns: u64, out: &mut String) {
+        let functions = self
+            .parked_functions
+            .drain(..)
+            .chain(named.functions.iter().copied())
+            .filter(|function| !self.defined_functions.contains(function))
+            .collect::<Vec<_>>();
+        let types = self
+            .parked_types
+            .drain(..)
+            .chain(named.types.iter().copied())
+            .filter(|ty| !self.defined_types.contains(ty))
+            .collect::<Vec<_>>();
+        if functions.is_empty() && types.is_empty() {
+            return;
+        }
+        for function in functions {
+            if self.defined_functions.insert(function) {
+                let label = crate::compiler2::function_label(world, function);
+                write_canon_definition(out, time_ns, "function", "function_id", function.as_u32(), &label);
+            }
+        }
+        // Built here rather than held on the backend: `TyCanon` borrows a
+        // label resolver that borrows the `World`, which lives only for this
+        // event. It is constructed only when a type is actually undefined.
+        if !types.is_empty() {
+            let labels =
+                |fn_id| crate::compiler2::function_label(world, crate::compiler2::FunctionId::from_fn_id(fn_id));
+            let mut canon = crate::compiler2::TyCanon::new(&labels);
+            for ty in types {
+                if self.defined_types.insert(ty) {
+                    let rendered = canon.render(world.types(), ty);
+                    write_canon_definition(out, time_ns, "type", "type_id", ty.as_u32(), &rendered);
+                }
+            }
+        }
+    }
+}
+
+/// One definition line, in the same shape `write_event` produces so a reader
+/// needs no special case: a span-less `fz.compiler2.canon.*` event whose
+/// metadata is the raw id and its canonical form.
+fn write_canon_definition(out: &mut String, time_ns: u64, domain: &str, id_key: &str, id: u32, canon: &str) {
+    out.push_str("{\"name\":[\"fz\",\"compiler2\",\"canon\",");
+    write_str_lit(out, domain);
+    out.push_str("],\"time_ns\":");
+    push_u64(out, time_ns);
+    out.push_str(",\"kind\":\"event\",\"span_id\":0,\"parent_span_id\":0,\"measurements\":{},\"metadata\":{");
+    write_str_lit(out, id_key);
+    out.push(':');
+    push_u64(out, id as u64);
+    out.push_str(",\"canon\":");
+    write_str_lit(out, canon);
+    out.push_str("}}\n");
 }
 
 impl JsonlBackend {
@@ -70,10 +255,12 @@ impl JsonlBackend {
         let f = File::create(path)?;
         Ok(Self {
             writer: RefCell::new(Box::new(f)),
-            buffer: RefCell::new(Vec::with_capacity(64 * 1024)),
+            buffer: RefCell::new(Vec::with_capacity(DEFAULT_FLUSH_THRESHOLD)),
             start: Instant::now(),
             public_compiler2_trace: false,
             buffered: false,
+            flush_threshold: DEFAULT_FLUSH_THRESHOLD,
+            canon: RefCell::new(CanonStream::default()),
         })
     }
 
@@ -202,9 +389,14 @@ impl JsonlBackend {
             "product",
         );
         let product_backend = Rc::clone(&backend);
-        telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductValue, _>(
+        telemetry.attach_raw_event3::<
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::ProductValue,
+            crate::compiler2::pull::ProductSettlement,
+            _,
+        >(
             &["fz", "compiler2", "pull", "product", "settled"],
-            move |name, span_id, parent_span_id, product, value| {
+            move |name, span_id, parent_span_id, product, value, settlement| {
                 product_backend.handle_raw_event(
                     name,
                     span_id,
@@ -212,6 +404,7 @@ impl JsonlBackend {
                     crate::metadata! {
                         product: crate::telemetry::opaque(product),
                         value: crate::telemetry::opaque(value),
+                        settlement: crate::telemetry::opaque(settlement),
                     },
                 );
             },
@@ -368,7 +561,7 @@ impl JsonlBackend {
             },
         );
         let stall_backend = Rc::clone(backend);
-        telemetry.attach_raw_event2::<usize, std::collections::HashSet<crate::compiler2::FactKey>, _>(
+        telemetry.attach_raw_event2::<u64, std::collections::HashSet<crate::compiler2::FactKey>, _>(
             &["fz", "compiler2", "drive", "demand_on_stall"],
             move |name, span_id, parent_span_id, producer_pokes, demanded_facts| {
                 stall_backend.handle_raw_event(
@@ -378,6 +571,16 @@ impl JsonlBackend {
                     crate::metadata! {
                         producer_pokes: *producer_pokes,
                         demanded_facts: crate::telemetry::opaque(demanded_facts),
+                        // Hard-coded, not read off the emit: `demand_on_stall`
+                        // has exactly one emit site (drive.rs's `drive_until`
+                        // stall pass), and every fact it names was demanded
+                        // through that single call to
+                        // `world.demand_fact_producer(fact,
+                        // WorkStartReason::BlockedWaiterExpansion)` — the
+                        // reason is uniform by construction, so projecting it
+                        // here is safe without threading it through the emit
+                        // itself.
+                        reason: "blocked_waiter_expansion",
                     },
                 );
             },
@@ -725,10 +928,12 @@ impl JsonlBackend {
     pub fn new_writer(w: impl Write + 'static) -> Self {
         Self {
             writer: RefCell::new(Box::new(w)),
-            buffer: RefCell::new(Vec::with_capacity(64 * 1024)),
+            buffer: RefCell::new(Vec::with_capacity(DEFAULT_FLUSH_THRESHOLD)),
             start: Instant::now(),
             public_compiler2_trace: false,
             buffered: false,
+            flush_threshold: DEFAULT_FLUSH_THRESHOLD,
+            canon: RefCell::new(CanonStream::default()),
         }
     }
 
@@ -739,6 +944,19 @@ impl JsonlBackend {
         backend.buffered = true;
         backend
     }
+
+    /// A public-projection writer whose auto-flush threshold is `threshold`
+    /// bytes instead of the production 64KB -- lets a test that reasons
+    /// about the buffered/Drop-flush boundary itself (not about production
+    /// content) pick a threshold no natural compile's byte volume can
+    /// coincidentally straddle, rather than depending on incidental total
+    /// output size lining up (or not) with a fixed 64KB boundary.
+    #[cfg(test)]
+    pub fn new_public_writer_with_threshold(w: impl Write + 'static, threshold: usize) -> Self {
+        let mut backend = Self::new_public_writer(w);
+        backend.flush_threshold = threshold;
+        backend
+    }
 }
 
 impl Handler for JsonlBackend {
@@ -747,19 +965,63 @@ impl Handler for JsonlBackend {
             return;
         }
         let time_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        let mut buf = String::with_capacity(128);
-        write_event(&mut buf, ev, time_ns);
-        buf.push('\n');
-        let mut buffer = self.buffer.borrow_mut();
-        buffer.extend_from_slice(buf.as_bytes());
-        if !self.buffered || buffer.len() >= 64 * 1024 {
-            let mut writer = self.writer.borrow_mut();
-            write_buffer(&mut **writer, &mut buffer);
+        let mut line = String::with_capacity(128);
+        if !self.public_compiler2_trace {
+            write_event(&mut line, ev, time_ns);
+            line.push('\n');
+            self.append(line.as_bytes());
+            return;
         }
+        let named = render_naming_ids(|| {
+            write_event(&mut line, ev, time_ns);
+            line.push('\n');
+        });
+        self.append_self_describing(ev, named, &line, time_ns);
     }
 }
 
 impl JsonlBackend {
+    /// Writes one already-rendered line, preceded by definitions for the raw
+    /// ids it names, so the stream never references an id it has not defined.
+    /// See `CanonStream`.
+    fn append_self_describing(&self, ev: &Event<'_, '_, '_>, named: NamedIds, line: &str, time_ns: u64) {
+        let mut canon = self.canon.borrow_mut();
+        let world = ev
+            .metadata
+            .get("world")
+            .and_then(Value::downcast_ref::<crate::compiler2::World>);
+        let Some(world) = world else {
+            if canon.must_park(&named) {
+                canon.park(named, line);
+            } else {
+                drop(canon);
+                self.append(line.as_bytes());
+            }
+            return;
+        };
+        if named.is_empty() && canon.parked_lines.is_empty() {
+            drop(canon);
+            self.append(line.as_bytes());
+            return;
+        }
+        let mut out = String::new();
+        canon.define(world, &named, time_ns, &mut out);
+        let mut bytes = out.into_bytes();
+        bytes.append(&mut canon.parked_lines);
+        bytes.extend_from_slice(line.as_bytes());
+        drop(canon);
+        self.append(&bytes);
+    }
+
+    fn append(&self, bytes: &[u8]) {
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.extend_from_slice(bytes);
+        if !self.buffered || buffer.len() >= self.flush_threshold {
+            let mut writer = self.writer.borrow_mut();
+            write_buffer(&mut **writer, &mut buffer);
+        }
+    }
+
     #[cfg(test)]
     pub fn flush(&self) {
         let mut buffer = self.buffer.borrow_mut();
@@ -773,7 +1035,11 @@ impl JsonlBackend {
 
 impl Drop for JsonlBackend {
     fn drop(&mut self) {
+        // Tail lines parked for a `&World` that never arrived: the stream ends
+        // here, so writing them is the only way not to lose them.
+        let parked = std::mem::take(&mut self.canon.get_mut().parked_lines);
         let buffer = self.buffer.get_mut();
+        buffer.extend_from_slice(&parked);
         write_buffer(self.writer.get_mut(), buffer);
         let _ = self.writer.get_mut().flush();
     }
@@ -799,16 +1065,24 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
         ["fz", "compiler2", "pull", "session", ..]
             | ["fz", "compiler2", "pull", "phase", ..]
             | ["fz", "compiler2", "pull", "product", "settled"]
+            | ["fz", "compiler2", "pull", "product", "cache_hit"]
+            | ["fz", "compiler2", "pull", "product", "reentered"]
+            | ["fz", "compiler2", "pull", "product", "displaced"]
             | ["fz", "compiler2", "work", "started"]
             | ["fz", "compiler2", "demand", "cone", "settled"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
+            | ["fz", "compiler2", "drive", "demand_on_stall"]
             | ["fz", "compiler2", "job"]
+            | ["fz", "compiler2", "work_graph", "applied"]
             | ["fz", "compiler2", "backend_program", "defined"]
             | ["fz", "compiler2", "native_program", "defined"]
             | ["fz", "compiler2", "native_program", "reusable_cons"]
             | ["fz", "compiler2", "native_backend", ..]
             | ["fz", "compiler2", "aot", ..]
+            // Born in the sink (`CanonStream`), never emitted by the compiler.
+            // Listed so "public" has exactly one definition.
+            | ["fz", "compiler2", "canon", ..]
     )
 }
 
@@ -900,6 +1174,34 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                 out.push(']');
             }
             out.push('}');
+        }
+        out.push_str("]}");
+        return;
+    }
+    if ev.name == ["fz", "compiler2", "work_graph", "applied"] {
+        let Some(completion) = ev
+            .metadata
+            .get("completion")
+            .and_then(Value::downcast_ref::<crate::compiler2::JobCompletion>)
+        else {
+            return;
+        };
+        // `reads` comes from `deps`' `HashSet`, so presentation-sort the
+        // rendered identities rather than trusting iteration order.
+        let mut reads = world
+            .work_graph
+            .reads(&completion.job)
+            .into_iter()
+            .flatten()
+            .map(render_fact_use_identity)
+            .collect::<Vec<_>>();
+        reads.sort();
+        out.push_str(",\"semantic\":{\"reads\":[");
+        for (index, entry) in reads.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(entry);
         }
         out.push_str("]}");
         return;
@@ -1079,6 +1381,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "kind");
         out.push(':');
         write_str_lit(out, job_kind(job));
+        write_job_identity(out, job);
     } else if let Some(outcome) =
         opaque.downcast_ref::<crate::compiler2::DriveOutcome<crate::compiler2::Job, crate::compiler2::FactKey>>()
     {
@@ -1100,6 +1403,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                 write_str_lit(out, "job_kind");
                 out.push(':');
                 write_str_lit(out, job_kind(job));
+                write_job_identity(out, job);
             }
             crate::compiler2::DriveOutcome::TimedOut { jobs_ran, pending_jobs } => {
                 write_str_lit(out, "timed_out");
@@ -1245,39 +1549,13 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
     } else if let Some(step) =
         opaque.downcast_ref::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>>()
     {
-        out.push(',');
-        write_str_lit(out, "changed");
-        out.push(':');
-        push_u64(out, step.changed.len() as u64);
-        out.push(',');
-        write_str_lit(out, "enqueued");
-        out.push(':');
-        push_u64(out, step.enqueued.len() as u64);
-        out.push(',');
-        write_str_lit(out, "blocked");
-        out.push(':');
-        out.push('[');
-        let mut blocked = step
-            .blocked
-            .iter()
-            .map(|wait| fact_kind(wait.fact()))
-            .collect::<Vec<_>>();
-        blocked.sort_unstable();
-        for (index, kind) in blocked.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            write_str_lit(out, kind);
-        }
-        out.push(']');
+        write_applied_step_body(out, step);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::ActivationKey>() {
         write_activation_key(out, key);
     } else if let Some(key) = opaque.downcast_ref::<crate::compiler2::CallSiteKey>() {
-        out.push(',');
-        write_str_lit(out, "callsite");
-        out.push(':');
-        push_u64(out, key.callsite.as_u32() as u64);
-        write_activation_key(out, &key.activation);
+        write_callsite_key_identity(out, key);
+    } else if let Some(position) = opaque.downcast_ref::<crate::compiler2::transport::TransportPosition>() {
+        write_transport_position(out, position);
     } else if let Some(function) = opaque.downcast_ref::<crate::compiler2::FunctionRef>() {
         out.push(',');
         write_str_lit(out, "module_id");
@@ -1296,6 +1574,23 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "kind");
         out.push(':');
         write_str_lit(out, key.kind());
+        write_product_key_identity(out, key);
+    } else if let Some(settlement) = opaque.downcast_ref::<crate::compiler2::pull::ProductSettlement>() {
+        out.push(',');
+        write_str_lit(out, "generation");
+        out.push(':');
+        push_u64(out, settlement.generation);
+        out.push(',');
+        write_str_lit(out, "changed");
+        out.push(':');
+        out.push_str(if settlement.changed { "true" } else { "false" });
+        out.push(',');
+        write_str_lit(out, "group");
+        out.push(':');
+        match settlement.group {
+            Some(group) => push_u64(out, group),
+            None => out.push_str("null"),
+        }
     } else if let Some(outcome) = opaque.downcast_ref::<crate::compiler2::pull::PullOutcome>() {
         out.push(',');
         write_str_lit(out, "status");
@@ -1360,36 +1655,12 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "kind");
         out.push(':');
         write_str_lit(out, job_kind(&completion.job));
+        write_job_identity(out, &completion.job);
         out.push(',');
         write_str_lit(out, "rebased");
         out.push(':');
         out.push_str(if completion.rebased { "true" } else { "false" });
-        out.push(',');
-        write_str_lit(out, "changed");
-        out.push(':');
-        push_u64(out, completion.step.changed.len() as u64);
-        out.push(',');
-        write_str_lit(out, "enqueued");
-        out.push(':');
-        push_u64(out, completion.step.enqueued.len() as u64);
-        out.push(',');
-        write_str_lit(out, "blocked");
-        out.push(':');
-        out.push('[');
-        let mut blocked = completion
-            .step
-            .blocked
-            .iter()
-            .map(|wait| fact_kind(wait.fact()))
-            .collect::<Vec<_>>();
-        blocked.sort_unstable();
-        for (index, kind) in blocked.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            write_str_lit(out, kind);
-        }
-        out.push(']');
+        write_applied_step_body(out, &completion.step);
     } else if let Some(world) = opaque.downcast_ref::<crate::compiler2::World>() {
         let (codes, roots, frontier) = world.telemetry_counts();
         out.push(',');
@@ -1429,6 +1700,28 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "value");
         out.push(':');
         write_str_lit(out, &format!("{summary:?}"));
+    } else if let Some(facts) = opaque.downcast_ref::<std::collections::HashSet<crate::compiler2::FactKey>>() {
+        // The stall pass's cumulative demand set (`demand_on_stall`'s
+        // `stall_demanded`, drive.rs). It is a `HashSet`, so its iteration
+        // order is a `RandomState` artifact — presentation-sort the
+        // rendered identities, same as `write_blocked`/`render_movement`.
+        out.push(',');
+        write_str_lit(out, "count");
+        out.push(':');
+        push_u64(out, facts.len() as u64);
+        out.push(',');
+        write_str_lit(out, "facts");
+        out.push(':');
+        out.push('[');
+        let mut rendered = facts.iter().map(render_fact_identity).collect::<Vec<_>>();
+        rendered.sort();
+        for (index, entry) in rendered.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(entry);
+        }
+        out.push(']');
     }
     out.push('}');
 }
@@ -1460,14 +1753,449 @@ fn reusable_cons_counts(program: &crate::compiler2::BackendProgram) -> (u64, u64
 }
 
 fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey) {
+    write_root_id(out, key.root);
+    write_function_id(out, key.function);
+    write_arrow(out, key.arrow);
+}
+
+fn write_id_field(out: &mut String, key: &'static str, id: u32) {
     out.push(',');
-    write_str_lit(out, "root_id");
+    write_str_lit(out, key);
     out.push(':');
-    push_u64(out, key.root.as_u32() as u64);
+    push_u64(out, id as u64);
+}
+
+fn write_code_id(out: &mut String, code: crate::compiler2::CodeId) {
+    write_id_field(out, "code_id", code.as_u32());
+}
+
+fn write_module_id(out: &mut String, module: crate::compiler2::ModuleId) {
+    write_id_field(out, "module_id", module.as_u32());
+}
+
+fn write_function_id(out: &mut String, function: crate::compiler2::FunctionId) {
+    note_named_function(function);
+    write_id_field(out, "function_id", function.as_u32());
+}
+
+/// An activation's arrow, the one raw `Ty` the public stream carries. Its
+/// canonical form is what makes the stream comparable across processes, so
+/// every rendering funnels through here to be noted for definition.
+fn write_arrow(out: &mut String, arrow: crate::compiler2::Ty) {
+    note_named_type(arrow);
+    write_id_field(out, "arrow", arrow.as_u32());
+}
+
+fn write_root_id(out: &mut String, root: crate::compiler2::RootId) {
+    write_id_field(out, "root_id", root.as_u32());
+}
+
+fn write_type_name(out: &mut String, name: &crate::compiler2::TypeName) {
+    write_module_id(out, name.module);
     out.push(',');
-    write_str_lit(out, "function_id");
+    write_str_lit(out, "name");
     out.push(':');
-    push_u64(out, key.function.as_u32() as u64);
+    write_str_lit(out, &name.name);
+    out.push(',');
+    write_str_lit(out, "arity");
+    out.push(':');
+    push_u64(out, name.arity as u64);
+}
+
+fn write_executable_need(out: &mut String, need: crate::compiler2::ExecutableNeed) {
+    use crate::compiler2::ExecutableNeed;
+    out.push(',');
+    write_str_lit(out, "need");
+    out.push(':');
+    match need {
+        ExecutableNeed::Value => write_str_lit(out, "value"),
+        ExecutableNeed::TupleFields(n) => {
+            write_str_lit(out, "tuple_fields");
+            out.push(',');
+            write_str_lit(out, "tuple_fields");
+            out.push(':');
+            push_u64(out, n as u64);
+        }
+    }
+}
+
+fn write_executable_key(out: &mut String, key: &crate::compiler2::ExecutableKey) {
+    write_activation_key(out, &key.activation);
+    write_executable_need(out, key.need);
+}
+
+fn write_callsite_id(out: &mut String, callsite: crate::compiler2::CallSiteId) {
+    write_id_field(out, "callsite", callsite.as_u32());
+}
+
+fn write_control_entry_id(out: &mut String, entry: crate::compiler2::ControlEntryId) {
+    write_id_field(out, "entry", entry.as_u32());
+}
+
+fn write_semantic_index(out: &mut String, semantic_index: usize) {
+    write_id_field(out, "semantic_index", semantic_index as u32);
+}
+
+fn write_callsite_key_identity(out: &mut String, key: &crate::compiler2::CallSiteKey) {
+    write_callsite_id(out, key.callsite);
+    write_activation_key(out, &key.activation);
+}
+
+/// `TransportPosition`'s variant kind — analogous to `job_kind`/`fact_kind`,
+/// kept alongside `write_transport_position_body` since both are driven by
+/// the same match.
+fn transport_position_kind(position: &crate::compiler2::transport::TransportPosition) -> &'static str {
+    use crate::compiler2::transport::TransportPosition;
+    match position {
+        TransportPosition::ExecutableInput { .. } => "ExecutableInput",
+        TransportPosition::ExecutableReturn { .. } => "ExecutableReturn",
+        TransportPosition::ResumePayload { .. } => "ResumePayload",
+        TransportPosition::ReturnPayload { .. } => "ReturnPayload",
+        TransportPosition::CallArg { .. } => "CallArg",
+        TransportPosition::EntryCapture { .. } => "EntryCapture",
+        TransportPosition::Value { .. } => "Value",
+    }
+}
+
+fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transport::ActivationSymbol) {
+    write_function_id(out, symbol.function);
+    write_arrow(out, symbol.arrow);
+    out.push(',');
+    write_str_lit(out, "input");
+    out.push(':');
+    out.push('[');
+    for (index, ty) in symbol.input.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        note_named_type(*ty);
+        push_u64(out, ty.as_u32() as u64);
+    }
+    out.push(']');
+}
+
+fn write_executable_symbol(out: &mut String, symbol: &crate::compiler2::transport::ExecutableSymbol) {
+    write_activation_symbol(out, &symbol.activation);
+    write_executable_need(out, symbol.need);
+}
+
+/// Appends the identity fields of `position` beyond its `kind` (which the
+/// caller writes first, either flat or as the first field of a nested
+/// object) — the owning executable's identity plus whatever
+/// callsite/entry/semantic_index/capture_index/value_id the variant carries.
+fn write_transport_position_body(out: &mut String, position: &crate::compiler2::transport::TransportPosition) {
+    use crate::compiler2::transport::TransportPosition;
+    write_executable_symbol(out, position.executable());
+    match position {
+        TransportPosition::ExecutableInput { semantic_index, .. } => {
+            write_semantic_index(out, *semantic_index);
+        }
+        TransportPosition::ExecutableReturn { .. } => {}
+        TransportPosition::ResumePayload { callsite, entry, .. } => {
+            if let Some(callsite) = callsite {
+                write_callsite_id(out, *callsite);
+            }
+            write_control_entry_id(out, *entry);
+        }
+        TransportPosition::ReturnPayload { callsite, .. } => {
+            write_callsite_id(out, *callsite);
+        }
+        TransportPosition::CallArg {
+            callsite,
+            semantic_index,
+            ..
+        } => {
+            write_callsite_id(out, *callsite);
+            write_semantic_index(out, *semantic_index);
+        }
+        TransportPosition::EntryCapture {
+            entry, capture_index, ..
+        } => {
+            write_control_entry_id(out, *entry);
+            write_id_field(out, "capture_index", *capture_index as u32);
+        }
+        TransportPosition::Value { value, .. } => {
+            write_id_field(out, "value_id", value.as_u32());
+        }
+    }
+}
+
+/// Flat rendering for an event whose sole payload is a `TransportPosition`
+/// (the standalone `write_opaque` downcast arm): appends `"kind"` plus the
+/// identity body directly under the enclosing object.
+fn write_transport_position(out: &mut String, position: &crate::compiler2::transport::TransportPosition) {
+    out.push(',');
+    write_str_lit(out, "kind");
+    out.push(':');
+    write_str_lit(out, transport_position_kind(position));
+    write_transport_position_body(out, position);
+}
+
+/// Nested rendering for a `TransportPosition` carried inside a `ProductKey`
+/// (`TransportShape`/`CallableConstruction`), whose own `"kind"` field
+/// already names the product — the position's identity goes under
+/// `"position"` so the two `kind`s never collide.
+fn write_transport_position_field(out: &mut String, position: &crate::compiler2::transport::TransportPosition) {
+    out.push_str(",\"position\":{\"kind\":");
+    write_str_lit(out, transport_position_kind(position));
+    write_transport_position_body(out, position);
+    out.push('}');
+}
+
+/// The identity payload for a `Job`, shared by the `Job` arm and the
+/// `JobCompletion` arm (a completion carries the job it completed).
+fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
+    use crate::compiler2::Job;
+    match job {
+        Job::IndexCode(code) | Job::ScopeCode(code) => write_code_id(out, *code),
+        Job::DefineModule(module) | Job::DefineModuleInterface(module) => write_module_id(out, *module),
+        Job::PublishFunctionSource(function)
+        | Job::ExpandFunctionSource(function)
+        | Job::DefineFunction(function)
+        | Job::DeriveFunctionContract(function)
+        | Job::LowerFunction(function)
+        | Job::ReifyGuardDispatch(function)
+        | Job::PlanEntryDispatch(function)
+        | Job::BuildMacroExecutable(function)
+        | Job::DeriveRecursive(function)
+        | Job::DeriveDispatchMask(function) => write_function_id(out, *function),
+        Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
+        Job::SeedRoot(root) | Job::BuildBackendProduct(root) | Job::LowerNativeProgram(root) => {
+            write_root_id(out, *root)
+        }
+        Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
+    }
+}
+
+/// The identity payload for a `FactKey`, shared by the `blocked` wait lists
+/// (`AppliedStep`, `JobCompletion`) and any event that carries a `FactKey`
+/// directly.
+fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
+    use crate::compiler2::FactKey;
+    match fact {
+        FactKey::CodeIndexed(code) | FactKey::CodeScoped(code) => write_code_id(out, *code),
+        FactKey::ModuleIndexed(module)
+        | FactKey::ModuleDefined(module)
+        | FactKey::ModuleInterface(module)
+        | FactKey::StructDefined(module)
+        | FactKey::ProtocolDispatch(module)
+        | FactKey::ProtocolImplProviders(module) => write_module_id(out, *module),
+        FactKey::FunctionSource(function)
+        | FactKey::FunctionSourceStash(function)
+        | FactKey::ExpandedFunctionSource(function)
+        | FactKey::FunctionDefined(function)
+        | FactKey::FunctionContract(function)
+        | FactKey::LoweredBody(function)
+        | FactKey::GuardDispatch(function)
+        | FactKey::EntryDispatch(function)
+        | FactKey::MacroExecutable(function)
+        | FactKey::Recursive(function)
+        | FactKey::DispatchMask(function) => write_function_id(out, *function),
+        FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
+        FactKey::RootEntry(root) | FactKey::BackendProgram(root) | FactKey::NativeProgram(root) => {
+            write_root_id(out, *root)
+        }
+        FactKey::Activation(key)
+        | FactKey::ActivationInputs(key)
+        | FactKey::ActivationAnalyzed(key)
+        | FactKey::ReturnType(key) => write_activation_key(out, key),
+        FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
+        FactKey::Executable(key) => write_executable_key(out, key),
+    }
+}
+
+/// One blocked-wait entry as a self-contained `{"kind":...,...}` string, so
+/// callers can sort the *rendered identities* (a presentation-boundary sort,
+/// deterministic — not a sort over `FactKey` itself) rather than the bare
+/// kind strings the old rendering compared.
+fn render_fact_identity(fact: &crate::compiler2::FactKey) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("{\"kind\":");
+    write_str_lit(&mut rendered, fact_kind(fact));
+    write_fact_identity(&mut rendered, fact);
+    rendered.push('}');
+    rendered
+}
+
+fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::compiler2::FactKey>]) {
+    out.push_str(",\"blocked\":[");
+    let mut rendered = blocked
+        .iter()
+        .map(|wait| render_fact_identity(wait.fact()))
+        .collect::<Vec<_>>();
+    rendered.sort();
+    for (index, entry) in rendered.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(entry);
+    }
+    out.push(']');
+}
+
+/// The use-marker for a `FactUse`, shared by every renderer that needs to
+/// distinguish which subscription a fact identity is standing in for.
+fn fact_use_marker<F>(fact_use: &crate::compiler2::FactUse<F>) -> &'static str {
+    use crate::compiler2::FactUse;
+    match fact_use {
+        FactUse::Current(_) => "current",
+        FactUse::Settled(_) => "settled",
+        FactUse::SettledPresence(_) => "settled_presence",
+    }
+}
+
+/// The identity payload for a `FactUse<FactKey>`: the use marker plus the
+/// underlying fact's own identity (`"kind"` + ids), as one self-contained
+/// object. Shared by `wakes[].cause` and `semantic.reads[]` — both project a
+/// fact subscription, not a bare fact.
+fn write_fact_use_identity(out: &mut String, fact_use: &crate::compiler2::FactUse<crate::compiler2::FactKey>) {
+    out.push_str("{\"use\":");
+    write_str_lit(out, fact_use_marker(fact_use));
+    out.push_str(",\"kind\":");
+    write_str_lit(out, fact_kind(fact_use.fact()));
+    write_fact_identity(out, fact_use.fact());
+    out.push('}');
+}
+
+/// A `FactUse<FactKey>` identity as a self-contained string, for callers
+/// that need to presentation-sort a batch of them (their source is a
+/// `HashSet`, so iteration order is a `RandomState` artifact).
+fn render_fact_use_identity(fact_use: &crate::compiler2::FactUse<crate::compiler2::FactKey>) -> String {
+    let mut rendered = String::new();
+    write_fact_use_identity(&mut rendered, fact_use);
+    rendered
+}
+
+fn write_optional_u64(out: &mut String, value: Option<u64>) {
+    match value {
+        Some(n) => push_u64(out, n),
+        None => out.push_str("null"),
+    }
+}
+
+/// One `FactChange<FactKey>` as a full identity object: the changed fact's
+/// own identity plus its before/after revision and settledness. Emission
+/// order (the order `AppliedStep::changed` already carries) is preserved —
+/// it is not a `HashSet` source, so no presentation sort is needed.
+fn write_fact_change_identity(out: &mut String, change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) {
+    out.push_str("{\"kind\":");
+    write_str_lit(out, fact_kind(&change.key));
+    write_fact_identity(out, &change.key);
+    out.push_str(",\"old_revision\":");
+    write_optional_u64(out, change.old_revision);
+    out.push_str(",\"new_revision\":");
+    write_optional_u64(out, change.new_revision);
+    out.push_str(",\"old_settled\":");
+    out.push_str(if change.old_settled { "true" } else { "false" });
+    out.push_str(",\"new_settled\":");
+    out.push_str(if change.new_settled { "true" } else { "false" });
+    out.push('}');
+}
+
+/// One `Wake<Job, FactKey>`: the cause fact use, the woken job's identity,
+/// its disposition (new work start vs. already-pending), and the
+/// ground-shift classification `complete` computed for the cause.
+fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::Job, crate::compiler2::FactKey>) {
+    use crate::compiler2::WakeDisposition;
+
+    out.push_str("{\"cause\":");
+    write_fact_use_identity(out, &wake.cause);
+    out.push_str(",\"job\":{\"kind\":");
+    write_str_lit(out, job_kind(&wake.job));
+    write_job_identity(out, &wake.job);
+    out.push('}');
+    out.push_str(",\"disposition\":");
+    write_str_lit(
+        out,
+        match wake.disposition {
+            WakeDisposition::Enqueued => "enqueued",
+            WakeDisposition::Coalesced => "coalesced",
+        },
+    );
+    out.push_str(",\"shift\":");
+    out.push_str(if wake.shift { "true" } else { "false" });
+    out.push('}');
+}
+
+/// One `FactMovement<FactKey>` as a self-contained string, for
+/// presentation-sorting a batch (`AppliedStep::movements`' source is a
+/// `HashSet`, so its iteration order is a `RandomState` artifact).
+fn render_movement(movement: &crate::compiler2::FactMovement<crate::compiler2::FactKey>) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("{\"kind\":");
+    write_str_lit(&mut rendered, fact_kind(&movement.key));
+    write_fact_identity(&mut rendered, &movement.key);
+    rendered.push_str(",\"revision\":");
+    write_optional_u64(&mut rendered, movement.state.revision);
+    rendered.push_str(",\"settled\":");
+    rendered.push_str(if movement.state.settled { "true" } else { "false" });
+    rendered.push('}');
+    rendered
+}
+
+/// The shared applied-step body: `"changed"`, `"wakes"`, `"movements"`, and
+/// `"blocked"`, appended directly onto an already-open JSON object. Used by
+/// both the standalone `AppliedStep` opaque arm and the `JobCompletion` arm
+/// (a completion's `step` carries the exact same shape) so the two never
+/// drift apart.
+fn write_applied_step_body(
+    out: &mut String,
+    step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
+) {
+    out.push_str(",\"changed\":[");
+    for (index, change) in step.changed.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_fact_change_identity(out, change);
+    }
+    out.push(']');
+
+    out.push_str(",\"wakes\":[");
+    for (index, wake) in step.wakes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_wake(out, wake);
+    }
+    out.push(']');
+
+    out.push_str(",\"movements\":[");
+    let mut movements = step.movements.iter().map(render_movement).collect::<Vec<_>>();
+    movements.sort();
+    for (index, entry) in movements.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(entry);
+    }
+    out.push(']');
+
+    write_blocked(out, &step.blocked);
+}
+
+/// The identity payload for a `ProductKey`, appended after its `"kind"`.
+fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductKey) {
+    use crate::compiler2::ProductKey;
+    match key {
+        ProductKey::RootBackendProduct(root)
+        | ProductKey::OutgoingEdgeFrontier(root)
+        | ProductKey::IncomingInputRelations(root) => write_root_id(out, *root),
+        ProductKey::BackendExecutable(executable)
+        | ProductKey::AbiExecutable(executable)
+        | ProductKey::MaterializedExecutable(executable)
+        | ProductKey::ExecutableEffects(executable)
+        | ProductKey::ExecutableFacts(executable)
+        | ProductKey::RuntimeDemand(executable)
+        | ProductKey::OutgoingInputEdges(executable) => write_executable_key(out, executable),
+        ProductKey::IncomingInputSlot(slot) => {
+            write_executable_key(out, &slot.executable);
+            write_semantic_index(out, slot.semantic_index);
+        }
+        ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) => {
+            write_transport_position_field(out, position);
+        }
+    }
 }
 
 fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {

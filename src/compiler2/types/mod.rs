@@ -6,6 +6,7 @@
 mod addressed;
 mod arrow_match;
 mod bits;
+mod canon;
 mod closure_surface_var;
 mod conj;
 mod descr;
@@ -36,6 +37,8 @@ pub use crate::types::{
 
 pub use arrow_match::ArrowMatch;
 
+pub(crate) use canon::TyCanon;
+
 use addressed::AddrStep;
 #[cfg(test)]
 pub(crate) use closure_surface_var::{ClosureSurfacePos, decode_closure_surface_var};
@@ -48,6 +51,17 @@ use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, ResourceSig, TupleS
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Ty(u32);
+
+impl Ty {
+    /// The raw interned handle, valid only within the `Types` instance that
+    /// minted it (see `ModuleId`/`FunctionId`/`RootId::as_u32`). Telemetry
+    /// projections render this instead of `Types::display` — display is
+    /// measured non-injective and would conflate distinct types that happen
+    /// to render the same.
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
 
 #[derive(Default)]
 pub struct Types {
@@ -307,6 +321,15 @@ impl Types {
         };
         self.value_lane_reprs.insert(ty, repr);
         repr
+    }
+
+    /// Every type the arena holds, in mint order.
+    ///
+    /// Comparison-only: the canon faithfulness ratchet sweeps the whole
+    /// interned population, and needs the census rather than any particular id.
+    #[cfg(test)]
+    pub(crate) fn interned_tys(&self) -> Vec<Ty> {
+        (0..self.interner.arena.len() as u32).map(Ty).collect()
     }
 
     #[cfg(test)]

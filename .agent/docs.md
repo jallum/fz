@@ -12,6 +12,7 @@ Read:
 - [semantic fixpoint](docs/semantic-fixpoint.md) — activation inputs as joined facts, executable demand from local semantic analysis, the key/value split, and the `Recursive`/`DispatchMask` keying facts consumed by product roots.
 - [pipeline](docs/pipeline.md) — source→artifact across direct facts and product keys: demand from a root, lazy runtime code, product-local artifact derivation, final root packaging, and retraction by fact ownership.
 - [compiler2 migration](docs/compiler2-migration.md) — cutover status: compiler2 owns the command-line compiler surface through `fz2`; the old `fz` wrapper/front door is deleted.
+- [canonical form](docs/canonical-form.md) — the id-free comparison form for types and artifacts: why an interned id is never a comparand, the three determinism properties and their three comparands, the type normalization that makes one rendering per type, and the `--dump backend` output.
 - [type world](docs/type-world.md) — the World-owned interned type kernel: `Ty` as an id, one threaded `Types`, and why cheap id-equality lets facts detect change without hashing.
 - [type naming](docs/type-naming.md) — source type names resolve through namespaces to `TypeName` identities, then to hard `Ty` through `TypeDefined` facts.
 - [quoted source](docs/quoted-source.md) — compiler2's Fz-shaped quoted-source substrate: `{heap, root}` keys, fast-fail `semantically_eq` comparison with `Horizon` depth, Elixir-shaped AST tuples, private metadata keys, and `ScopeSnapshot`-based `__MODULE__` / `__ENV__` projection.

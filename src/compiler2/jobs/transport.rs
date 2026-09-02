@@ -192,11 +192,12 @@ impl TransportFactsBuilder {
 
 pub(crate) fn produce_transport_shape_product(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     position: &TransportPosition,
 ) -> PullOutcome {
     let executable = executable_key_for_transport_position(context.session().root(), position);
-    if let Some(outcome) = produce_named_transport_position(world, context, &executable, position) {
+    if let Some(outcome) = produce_named_transport_position(world, tel, context, &executable, position) {
         return outcome;
     }
     let layout = TransportLayout::structural(world.intern_shape(ShapeDescr::Nothing));
@@ -205,29 +206,31 @@ pub(crate) fn produce_transport_shape_product(
 
 pub(crate) fn produce_callable_construction_product(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     position: &TransportPosition,
 ) -> PullOutcome {
     let executable = executable_key_for_transport_position(context.session().root(), position);
-    let facts = match context.read_executable_facts(&executable) {
+    let facts = match context.read_executable_facts(tel, &executable) {
         Some(facts) => facts,
         None => return PullOutcome::wait_on_product(ProductKey::ExecutableFacts(executable)),
     };
-    let runtime = match context.read_runtime_demand(&executable) {
+    let runtime = match context.read_runtime_demand(tel, &executable) {
         Some(runtime) => runtime,
         None => return PullOutcome::wait_on_product(ProductKey::RuntimeDemand(executable)),
     };
     let TransportPosition::Value { value, .. } = position else {
-        return produce_generic_callable_owner(world, context, &executable, facts.as_ref(), &runtime, position);
+        return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
     let Some(TransportSource::CallableValue(producer)) = facts.value_origin(*value) else {
-        return produce_generic_callable_owner(world, context, &executable, facts.as_ref(), &runtime, position);
+        return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
     let Some(flow) = runtime.callable_flows.get(value) else {
-        return produce_generic_callable_owner(world, context, &executable, facts.as_ref(), &runtime, position);
+        return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
     let demand = runtime.value_demands.get(value).cloned().unwrap_or_default();
-    match produce_local_callable_construction(world, context, &executable, facts.as_ref(), producer, flow, demand) {
+    match produce_local_callable_construction(world, tel, context, &executable, facts.as_ref(), producer, flow, demand)
+    {
         Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(answer))),
         Err(waits) => PullOutcome::Waiting(waits),
     }
@@ -235,6 +238,7 @@ pub(crate) fn produce_callable_construction_product(
 
 fn produce_generic_callable_owner(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     facts: &super::runtime_demand::ExecutableFacts,
@@ -242,7 +246,7 @@ fn produce_generic_callable_owner(
     position: &TransportPosition,
 ) -> PullOutcome {
     let shape_key = ProductKey::TransportShape(position.clone());
-    let layout = match context.read_product(shape_key.clone()) {
+    let layout = match context.read_product(tel, shape_key.clone()) {
         Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
         Some(value) => panic!("transport shape produced unexpected value {value:?}"),
         None => return PullOutcome::wait_on_product(shape_key),
@@ -358,7 +362,7 @@ fn produce_generic_callable_owner(
                     executable: executable.clone(),
                     semantic_index: *semantic_index,
                 });
-                match context.read_product(key.clone()) {
+                match context.read_product(tel, key.clone()) {
                     Some(ProductValue::IncomingInputSlot(sources)) => {
                         source_positions.extend(sources.iter().map(|source| TransportPosition::Value {
                             executable: executable_symbol(&source.producer, world.types()),
@@ -477,7 +481,7 @@ fn produce_generic_callable_owner(
         let key = ProductKey::CallableConstruction(source.clone());
         let current = ProductKey::CallableConstruction(position.clone());
         if context.pending_dependency_reaches(&key, &current) {
-            let _ = context.read_product(key);
+            let _ = context.read_product(tel, key);
             let members = context.pending_recursive_group(&current);
             let mut settled = TransportFactsBuilder::default();
             settled.merge(&builder);
@@ -509,7 +513,7 @@ fn produce_generic_callable_owner(
                     }))
                 })
                 .collect();
-            if !context.finish_callable_construction_group(&current, &members, values) {
+            if !context.finish_callable_construction_group(tel, &current, &members, values) {
                 return PullOutcome::wait_on_product(current);
             }
             return context
@@ -520,7 +524,7 @@ fn produce_generic_callable_owner(
                 .map(PullOutcome::Produced)
                 .expect("settled callable owner group must contain the requested member");
         }
-        match context.read_product(key.clone()) {
+        match context.read_product(tel, key.clone()) {
             Some(ProductValue::CallableConstruction(owner)) => builder.merge_owner(owner),
             Some(value) => panic!("callable construction produced unexpected value {value:?}"),
             None => return PullOutcome::wait_on_product(key),
@@ -729,6 +733,7 @@ enum RecipeLayout {
 
 fn evaluate_transport_recipe(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     current: &ProductKey,
     recipe: &TransportRecipe,
@@ -737,7 +742,7 @@ fn evaluate_transport_recipe(
     position: &TransportPosition,
 ) -> RecipeLayout {
     match recipe {
-        TransportRecipe::Terminal => exact_direct_callable_layout(world, context, current, ty, demand, position)
+        TransportRecipe::Terminal => exact_direct_callable_layout(world, tel, context, current, ty, demand, position)
             .unwrap_or_else(|| RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[]))),
         TransportRecipe::PublicCallableReturn => {
             let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
@@ -751,17 +756,18 @@ fn evaluate_transport_recipe(
             // when the callee value's carrier is exact; the claim grounds on
             // exactly that condition.
             let callee_key = ProductKey::TransportShape(callee.clone());
-            let callee_layout = match context.read_product(callee_key.clone()) {
+            let callee_layout = match context.read_product(tel, callee_key.clone()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => *layout,
                 Some(value) => panic!("closure callee shape produced unexpected value {value:?}"),
                 None => return RecipeLayout::Waiting(callee_key),
             };
             match grounded {
                 Some(grounded) if !matches!(callee_layout.carrier, TransportCarrier::ValueRef) => {
-                    evaluate_transport_recipe(world, context, current, grounded, ty, demand, position)
+                    evaluate_transport_recipe(world, tel, context, current, grounded, ty, demand, position)
                 }
                 _ => evaluate_transport_recipe(
                     world,
+                    tel,
                     context,
                     current,
                     &TransportRecipe::PublicCallableReturn,
@@ -774,10 +780,10 @@ fn evaluate_transport_recipe(
         TransportRecipe::Alias(child) => {
             let key = ProductKey::TransportShape(child.clone());
             if key == *current || context.pending_dependency_reaches(&key, current) {
-                let _ = context.read_product(key);
+                let _ = context.read_product(tel, key);
                 return RecipeLayout::Recursive(Vec::new());
             }
-            match context.read_product(key.clone()) {
+            match context.read_product(tel, key.clone()) {
                 Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => RecipeLayout::Exact(*layout),
                 Some(value) => panic!("transport shape produced unexpected value {value:?}"),
                 None => RecipeLayout::Waiting(key),
@@ -787,7 +793,7 @@ fn evaluate_transport_recipe(
             let mut layouts = Vec::new();
             let mut recursive = false;
             for recipe in recipes {
-                match evaluate_transport_recipe(world, context, current, recipe, ty, demand, position) {
+                match evaluate_transport_recipe(world, tel, context, current, recipe, ty, demand, position) {
                     RecipeLayout::Exact(layout) => layouts.push(layout),
                     RecipeLayout::Recursive(anchors) => {
                         recursive = true;
@@ -805,7 +811,7 @@ fn evaluate_transport_recipe(
         TransportRecipe::Tuple(fields) => {
             let mut layouts = Vec::with_capacity(fields.len());
             for field in fields {
-                match evaluate_transport_recipe(world, context, current, field, ty, demand, position) {
+                match evaluate_transport_recipe(world, tel, context, current, field, ty, demand, position) {
                     RecipeLayout::Exact(layout) => layouts.push(layout),
                     RecipeLayout::Recursive(anchors) => return RecipeLayout::Recursive(anchors),
                     waiting @ RecipeLayout::Waiting(_) => return waiting,
@@ -831,7 +837,7 @@ fn evaluate_transport_recipe(
             })
         }
         TransportRecipe::TupleField { tuple, index } => {
-            match evaluate_transport_recipe(world, context, current, tuple, ty, demand, position) {
+            match evaluate_transport_recipe(world, tel, context, current, tuple, ty, demand, position) {
                 RecipeLayout::Exact(layout) => match world.shape(layout.structural) {
                     ShapeDescr::Tuple(fields) => fields.get(*index).copied().map_or_else(
                         || RecipeLayout::Exact(joined_transport_layout(world, ty, demand, position, &[])),
@@ -854,6 +860,7 @@ fn evaluate_transport_recipe(
 
 fn exact_direct_callable_layout(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     current: &ProductKey,
     ty: Ty,
@@ -882,11 +889,11 @@ fn exact_direct_callable_layout(
             semantic_index,
         });
         if key == *current || context.pending_dependency_reaches(&key, current) {
-            let _ = context.read_product(key);
+            let _ = context.read_product(tel, key);
             recursive = true;
             continue;
         }
-        match context.read_product(key.clone()) {
+        match context.read_product(tel, key.clone()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
             None => return Some(RecipeLayout::Waiting(key)),
@@ -1057,6 +1064,7 @@ fn callable_ty_arity(world: &mut World, ty: Ty) -> u16 {
 
 fn produce_local_callable_construction(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     facts: &super::runtime_demand::ExecutableFacts,
@@ -1088,7 +1096,7 @@ fn produce_local_callable_construction(
     let mut waits = Vec::new();
     for resolution in &flow.resolutions {
         let key = ProductKey::RuntimeDemand(resolution.clone());
-        let Some(value) = context.read_product(key.clone()) else {
+        let Some(value) = context.read_product(tel, key.clone()) else {
             waits.push(PullWait::Product(key));
             continue;
         };
@@ -1110,7 +1118,7 @@ fn produce_local_callable_construction(
             executable: symbol.clone(),
             value: capture,
         });
-        match context.read_product(key.clone()) {
+        match context.read_product(tel, key.clone()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
             None => waits.push(PullWait::Product(key)),
@@ -1322,11 +1330,12 @@ fn resume_payload_ty(types: &Types, executable: &ExecutableKey, facts: &Executab
 
 fn produce_named_transport_position(
     world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     position: &TransportPosition,
 ) -> Option<PullOutcome> {
-    let facts = match context.read_executable_facts(executable) {
+    let facts = match context.read_executable_facts(tel, executable) {
         Some(facts) => facts,
         None => {
             return Some(PullOutcome::wait_on_product(ProductKey::ExecutableFacts(
@@ -1334,7 +1343,7 @@ fn produce_named_transport_position(
             )));
         }
     };
-    let runtime = match context.read_runtime_demand(executable) {
+    let runtime = match context.read_runtime_demand(tel, executable) {
         Some(runtime) => runtime,
         None => {
             return Some(PullOutcome::wait_on_product(ProductKey::RuntimeDemand(
@@ -1387,7 +1396,7 @@ fn produce_named_transport_position(
             match facts.value_origin(*value) {
                 Some(TransportSource::CallableValue(_)) if runtime.callable_flows.contains_key(value) => {
                     let key = ProductKey::CallableConstruction(position.clone());
-                    let construction = context.read_product(key.clone()).cloned();
+                    let construction = context.read_product(tel, key.clone()).cloned();
                     return Some(match construction {
                         Some(ProductValue::CallableConstruction(construction)) => PullOutcome::Produced(
                             ProductValue::TransportShape(TransportShapeFact::Layout(construction.layout)),
@@ -1555,7 +1564,7 @@ fn produce_named_transport_position(
     };
 
     let current = ProductKey::TransportShape(position.clone());
-    match evaluate_transport_recipe(world, context, &current, &recipe, ty, &demand, position) {
+    match evaluate_transport_recipe(world, tel, context, &current, &recipe, ty, &demand, position) {
         RecipeLayout::Exact(layout) => Some(PullOutcome::Produced(ProductValue::TransportShape(
             TransportShapeFact::Layout(layout),
         ))),
@@ -1565,7 +1574,7 @@ fn produce_named_transport_position(
             anchors.extend(context.recursive_group_transport_layouts(&members));
             let layout = joined_transport_layout(world, ty, &demand, position, &anchors);
             let value = ProductValue::TransportShape(TransportShapeFact::Layout(layout));
-            if !context.finish_transport_shape_group(&current, &members, value.clone()) {
+            if !context.finish_transport_shape_group(tel, &current, &members, value.clone()) {
                 return Some(PullOutcome::wait_on_product(current));
             }
             Some(PullOutcome::Produced(value))

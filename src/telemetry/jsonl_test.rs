@@ -347,12 +347,26 @@ fn pull_product_settled_renders_the_value_authority() {
     JsonlBackend::new_writer(writer).install(&telemetry);
     let product = crate::compiler2::pull::ProductKey::RootBackendProduct(crate::compiler2::RootId::for_test(9));
     let value = crate::compiler2::pull::ProductValue::Unit;
-    telemetry.raw_event2(&["fz", "compiler2", "pull", "product", "settled"], &product, &value);
+    let settlement = crate::compiler2::pull::ProductSettlement {
+        generation: 1,
+        changed: true,
+        group: None,
+    };
+    telemetry.raw_event3(
+        &["fz", "compiler2", "pull", "product", "settled"],
+        &product,
+        &value,
+        &settlement,
+    );
     drop(telemetry);
 
     let output = String::from_utf8(buf.borrow().clone()).unwrap();
     assert_eq!(output.lines().count(), 1);
     assert!(output.contains("\"value\""), "{output}");
+    assert!(output.contains("\"settlement\""), "{output}");
+    assert!(output.contains("\"generation\":1"), "{output}");
+    assert!(output.contains("\"changed\":true"), "{output}");
+    assert!(output.contains("\"group\":null"), "{output}");
     assert!(!output.contains("\"product\",\"produced\""), "{output}");
     assert!(!output.contains("\"product\",\"waited\""), "{output}");
 }

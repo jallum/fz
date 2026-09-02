@@ -2,6 +2,7 @@ mod agenda;
 mod artifact;
 mod body;
 pub(crate) mod callsite_dispatch;
+mod canon;
 mod cli;
 mod code;
 mod compiler;
@@ -61,6 +62,7 @@ pub use body::{
     LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredBodyMap, LoweredClause, LoweredEntry,
     LoweredExtern, LoweredReceive, LoweredStep, LoweredTail, ReceiveAfter, ReceiveClause, ValueId,
 };
+pub(crate) use canon::function_label;
 pub use cli::run as run_cli;
 pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
@@ -90,7 +92,9 @@ pub use module_interface::{
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, PullSession};
-pub use scheduler::{AppliedStep, DriveOutcome, FatalError, Scheduler, WorkStartReason, WorkStartTally};
+pub use scheduler::{
+    AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
+};
 pub use scope::ScopeSnapshot;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteSummary, CallTargetSummary,
@@ -101,6 +105,7 @@ pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
     QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,
 };
+pub(crate) use types::TyCanon;
 pub use types::{
     CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
     Ty, TypeVarId, Types,
@@ -110,6 +115,8 @@ pub use world::World;
 
 #[cfg(test)]
 mod artifact_test;
+#[cfg(test)]
+mod canon_test;
 #[cfg(test)]
 mod code_test;
 #[cfg(test)]

@@ -133,6 +133,10 @@ fn compile_enum_predicate_search() -> (Vec<Job>, super::BackendProgram) {
 
 /// Same input, same work — the CAUSAL half of the determinism contract.
 ///
+/// One of THREE properties, none of which subsumes another: the canonical
+/// external form (`compiler2::canon`) measures the ARTIFACT, raw `Ty` equality
+/// below measures the BOOKKEEPING, and this test measures the CAUSE.
+///
 /// Job order is not an implementation detail. It decides which conclusion lands
 /// first at a keep-first merge, and it decides the order fresh types reach the
 /// interner, whose ids are arena positions. So a run-to-run difference here is
@@ -166,18 +170,24 @@ fn compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order() {
 /// artifact -- including every raw `Ty` an executable's signature or body
 /// carries, not just the executable inventory's shape.
 ///
-/// Raw `Ty` equality is a valid comparand HERE and nowhere else. A `Ty` is an
-/// arena index in one `World`, so comparing ids across two worlds is normally
-/// far too strong a bar -- one extra incidental intern shifts every later id
-/// without changing what the program means. What makes it sound in this test is
-/// that both compiles run the same binary over the same input in one process:
-/// the code path is identical, so the ONLY thing that can renumber the arena is
-/// nondeterminism. Under those conditions "different ids" implies "different
-/// work order", which is a real defect. Do not lift this comparison to
-/// cross-process, cross-version, or cached-artifact equivalence; that needs a
-/// canonical externalized form, which does not exist yet (fz-f98.21) and cannot
-/// be faked from `{:?}` -- `HashMap`'s own Debug order is unstable, so the
-/// rendering differs run to run even when the structs are equal.
+/// This is the BOOKKEEPING property, one of three (see the sibling above for
+/// the CAUSE, and `compiler2::canon` for the ARTIFACT). Raw `Ty` equality is a
+/// valid comparand HERE and nowhere else. A `Ty` is an arena index in one
+/// `World`, so comparing ids across two worlds is normally far too strong a bar
+/// -- one extra incidental intern shifts every later id without changing what
+/// the program means. What makes it sound in this test is that both compiles
+/// run the same binary over the same input in one process: the code path is
+/// identical, so the ONLY thing that can renumber the arena is nondeterminism.
+/// Under those conditions "different ids" implies "different work order", which
+/// is a real defect.
+///
+/// Do not lift this comparison to cross-process, cross-version, or
+/// cached-artifact equivalence. That is what `compiler2::canon` is for, and it
+/// answers a strictly different question: it is blind to renumbering, so it
+/// would pass on fz-f98.19's defect (the same 836 types minted in a permuted
+/// order) that this test catches. It also cannot be faked from `{:?}` --
+/// `HashMap`'s own Debug order is unstable, so a Debug-derived rendering
+/// differs run to run even when the structs are equal.
 ///
 /// fz-k22.21 raised this past bare success/failure (the JIT-outcome check
 /// above), and fz-k22.28 pinned the folds that minted types AS THEY ITERATED

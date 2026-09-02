@@ -62,12 +62,12 @@ pub(crate) fn produce_materialized_executable_product(
     if !context.read_fact(world, FactUse::settled(lowered_fact.clone())) {
         waits.push(PullWait::Fact(FactUse::settled(lowered_fact)));
     }
-    let runtime_demand = context.read_runtime_demand(executable);
+    let runtime_demand = context.read_runtime_demand(tel, executable);
     if runtime_demand.is_none() {
         waits.push(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
     }
     let outgoing_key = ProductKey::OutgoingInputEdges(executable.clone());
-    if context.read_product(outgoing_key.clone()).is_none() {
+    if context.read_product(tel, outgoing_key.clone()).is_none() {
         waits.push(PullWait::Product(outgoing_key));
     }
     if let Some(analysis) = world.activation_analysis(&executable.activation) {
@@ -125,7 +125,7 @@ pub(crate) fn produce_materialized_executable_product(
         &body,
         &callsite_args,
     ));
-    let position_layouts = match read_transport_layouts(context, transport_positions) {
+    let position_layouts = match read_transport_layouts(tel, context, transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -165,21 +165,21 @@ pub(crate) fn produce_materialized_executable_product(
     };
     context
         .session_mut()
-        .record_materialized_executable(executable.clone(), materialized.clone());
+        .record_materialized_executable(tel, executable.clone(), materialized.clone());
     PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)))
 }
 
-pub(crate) fn produce_executable_effects_product(
-    _tel: &impl crate::telemetry::Telemetry,
+pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>(
+    tel: &T,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    let graph = match collect_effect_cone(context, executable) {
+    let graph = match collect_effect_cone(tel, context, executable) {
         Ok(graph) => graph,
         Err(waits) => return PullOutcome::Waiting(waits),
     };
     let scc = effect_scc_containing(executable, &graph.edges);
-    let (waits, external_effects) = effect_scc_external_waits(context, &scc, &graph.edges);
+    let (waits, external_effects) = effect_scc_external_waits(tel, context, &scc, &graph.edges);
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
@@ -187,6 +187,7 @@ pub(crate) fn produce_executable_effects_product(
     for (key, effects) in &settled {
         if key != executable {
             context.publish_product(
+                tel,
                 ProductKey::ExecutableEffects(key.clone()),
                 ProductValue::ExecutableEffects(*effects),
             );
@@ -206,6 +207,7 @@ struct EffectGraph {
 }
 
 fn collect_effect_cone(
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> Result<EffectGraph, Vec<PullWait>> {
@@ -219,7 +221,7 @@ fn collect_effect_cone(
             continue;
         }
         let key = ProductKey::MaterializedExecutable(current.clone());
-        let Some(value) = context.read_product(key.clone()) else {
+        let Some(value) = context.read_product(tel, key.clone()) else {
             waits.push(PullWait::Product(key));
             continue;
         };
@@ -281,6 +283,7 @@ fn collect_effect_reachable(
 }
 
 fn effect_scc_external_waits(
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     scc: &HashSet<ExecutableKey>,
     edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
@@ -293,7 +296,7 @@ fn effect_scc_external_waits(
                 continue;
             }
             let key = ProductKey::ExecutableEffects(callee.clone());
-            match context.read_product(key.clone()).cloned() {
+            match context.read_product(tel, key.clone()).cloned() {
                 Some(ProductValue::ExecutableEffects(value)) => {
                     effects.insert(callee.clone(), value);
                 }
@@ -347,13 +350,13 @@ fn settle_effect_scc(
 
 pub(crate) fn produce_abi_executable_product(
     world: &mut World,
-    _tel: &impl crate::telemetry::Telemetry,
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
     let mut waits = Vec::new();
     let materialized_key = ProductKey::MaterializedExecutable(executable.clone());
-    let materialized = match context.read_product(materialized_key.clone()) {
+    let materialized = match context.read_product(tel, materialized_key.clone()) {
         Some(ProductValue::MaterializedExecutable(materialized)) => Some(materialized.as_ref().clone()),
         Some(other) => panic!("materialized executable product produced unexpected value {other:?}"),
         None => {
@@ -362,7 +365,7 @@ pub(crate) fn produce_abi_executable_product(
         }
     };
     let effects_key = ProductKey::ExecutableEffects(executable.clone());
-    let effects = match context.read_product(effects_key.clone()) {
+    let effects = match context.read_product(tel, effects_key.clone()) {
         Some(ProductValue::ExecutableEffects(effects)) => Some(*effects),
         Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
         None => {
@@ -387,7 +390,7 @@ pub(crate) fn produce_abi_executable_product(
         executable,
         &materialized,
     ));
-    let position_layouts = match read_transport_layouts(context, transport_positions) {
+    let position_layouts = match read_transport_layouts(tel, context, transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -400,7 +403,7 @@ pub(crate) fn produce_abi_executable_product(
     let mut callable_owners = Vec::new();
     for position in executable_transport_positions(&materialized.transport) {
         let key = ProductKey::CallableConstruction(position.clone());
-        match context.read_product(key.clone()) {
+        match context.read_product(tel, key.clone()) {
             Some(ProductValue::CallableConstruction(owner)) => {
                 callable_owners.push(PositionedCallableConstructionOwner {
                     position: position.clone(),
@@ -849,6 +852,7 @@ fn required_local_backend_transport_positions(
 }
 
 fn read_transport_layouts(
+    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     positions: impl IntoIterator<Item = TransportPosition>,
 ) -> Result<Vec<(TransportPosition, TransportLayout)>, Vec<PullWait>> {
@@ -862,7 +866,7 @@ fn read_transport_layouts(
     let mut waits = Vec::new();
     for position in positions {
         let key = ProductKey::TransportShape(position.clone());
-        match context.read_product(key.clone()) {
+        match context.read_product(tel, key.clone()) {
             Some(ProductValue::TransportShape(super::super::pull::TransportShapeFact::Layout(layout))) => {
                 layouts.push((position, *layout));
             }

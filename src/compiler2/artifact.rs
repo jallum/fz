@@ -491,6 +491,10 @@ impl ExecutableDispatch {
         &self.plan
     }
 
+    pub(crate) fn clause_ids(&self) -> &[u32] {
+        &self.clause_ids
+    }
+
     pub(crate) fn clause_index(&self, body_id: u32) -> Option<usize> {
         self.clause_ids.iter().position(|candidate| *candidate == body_id)
     }

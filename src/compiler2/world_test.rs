@@ -23,6 +23,9 @@ fn production_telemetry_boundaries_are_raw_and_allocation_free() {
         include_str!("../ir_interp/backend.rs"),
         include_str!("../ir_interp/extern_call.rs"),
         include_str!("../parser/lexer.rs"),
+        include_str!("pull.rs"),
+        include_str!("product_drive.rs"),
+        include_str!("jobs/runtime_demand.rs"),
     ];
     for source in sources {
         for rejected in [

@@ -163,7 +163,7 @@ pub(crate) fn produce_root_backend_product(
         if !reachable.insert(current.clone()) {
             continue;
         }
-        let Some(value) = context.read_product(ProductKey::BackendExecutable(current.clone())) else {
+        let Some(value) = context.read_product(tel, ProductKey::BackendExecutable(current.clone())) else {
             waits.push(PullWait::Product(ProductKey::BackendExecutable(current)));
             continue;
         };
@@ -310,7 +310,7 @@ pub(crate) fn produce_backend_executable_product(
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    let Some(value) = context.read_product(ProductKey::AbiExecutable(executable.clone())) else {
+    let Some(value) = context.read_product(tel, ProductKey::AbiExecutable(executable.clone())) else {
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
     let ProductValue::AbiExecutable(abi) = value else {
