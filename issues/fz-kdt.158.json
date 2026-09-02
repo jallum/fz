@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T12:02:15Z",
+  "description": "Found while sweeping the numbered corpus for fz-kdt.155 (base e132fe768 and after the fix behave identically, so this is unowned and pre-existing).\n\n  fz2 run fixtures2/00429_external_impl_residual.fz\n\nfails on every native door with\n\n  error[artifact/incomplete-semantic-plan]: compiler2 native lowering for root 0:\n  native attempted to materialize absent value as runtime value with ty Some(Ty(34))\n  in Continuation { owner: FnId(0), index: 1 }\n  ... backend value ValueId(2) ... must be runtime-materializable; value=Absent\n\nThe fixture is a protocol with an Integer impl called over a [7, 1.0] list, so\nthe Float arm has no impl and stays a residual stub. Its only consumer,\nport_planner_test::external_provider_protocol_impl_stays_as_stub_fallback,\ndrives the compiler and DISCARDS the result with a comment calling it a\n'pre-existing pipeline gap for external protocol impl dispatch', plus a TODO\nnaming the dispatch-matrix shape it should assert. So the gap is recorded in a\ncomment nobody will look at again, which is what this ticket replaces.\n\nSibling of fz-kdt.77 / fz-kdt.149 (00424_protocol_no_impl panics inside product\nmaterialization): same family -- a protocol call with no reachable impl should\nDIAGNOSE, not reach native lowering with an absent value.",
+  "id": "fz-kdt.158",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] 00429_external_impl_residual cannot be compiled: native lowering hits an Absent value in a continuation",
+  "type": "bug",
+  "updated_at": "2026-09-02T12:02:15Z"
+}
