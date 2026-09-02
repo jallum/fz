@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T18:16:07Z",
+  "description": "Found by the fz-kdt.127 research (2026-09-02, HEAD 172ab21f1; probes\nscratchpad probeB1.fz, pin6gb.fz, canon dumps beside them).\n\nA lambda that captures a callable and calls it -- `fn mk(g), do: fn (n) -\u003e\ng.(n) end`; make_reducer's `predicate.(entry)` in the fz-6gb pin -- is keyed\nonce per captured IDENTITY (consumes_callable_identity: capture params /\nClosureCall / Lambda, jobs/keying.rs:257), e.g. mk/1#lambda[fnref[double]]\nand [fnref[triple]]. Both bodies compile the call as `closure_call ...\ncallee=v0 target=-` with v0 carried as `callable(\u003cunknown\u003e/0) carrier=\nValueRef tys=[any]`: the captured fn is NOT grounded (escape raised by\nboundary_value_demand, runtime_demand.rs:3029-3036), the call goes through\nthe captured value's own code word, and the two specializations differ in\nnothing. This is why the same-layout/different-identity population\n(probeB1 4/9, probeB2 6/-6, 00281, the six fz-kdt.125 residue groups) is\ncorrect today although their forwarder-hosted dispatch has no question:\narm 0 takes all and it does not matter.\n\nTwo consequences to settle:\n (1) proportional compilation: one body per captured identity buys\n     nothing here -- the per-identity split should collapse where the\n     body does not ground the capture, or the capture should ground to a\n     direct call (the key pins one target; kdt.152's exact layout would\n     be Absent) -- pick by measurement (closure_allocs pins, wall clock).\n (2) the fz-6gb pin drive_test.rs:4869 compiler2_native_program_keeps_\n     distinct_direct_callable_executables_for_same_surface_when_capture_\n     identity_differs asserts two such duplicates exist and its \"direct\"\n     rationale is not what the artifact does; rewrite the pin to what it\n     actually protects (or delete it with the collapse).\nSequence after fz-kdt.127 (whose shape axis gives these arms a real\nquestion, so the collapse must be measured against live arms).",
+  "id": "fz-kdt.163",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Identity-specialized lambda bodies that call their captured callable through its word are byte-duplicates",
+  "type": "task",
+  "updated_at": "2026-09-02T18:16:07Z"
+}
