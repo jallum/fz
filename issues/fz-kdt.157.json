@@ -14,7 +14,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The layout-agreement check's refusing half has zero coverage: loosening it to function-identity-only ships green through every gate",
   "type": "task",
   "updated_at": "2026-09-02T23:59:10Z"
