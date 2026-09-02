@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T11:26:51Z",
+  "description": "From the fz-kdt.152 refutation (2026-09-02): exact_direct_callable_layout's agreement is full CallableDescr equality and its REFUSING half (disagreement -\u003e fallback) is correct by construction -- but has zero test and zero corpus witness: the refuter loosened agreement to function-identity-only and ALL 875 fixtures stayed byte-identical in canon and behavior. A future 'simplification' could gut the refusal unnoticed. The natural red witness is fz-kdt.127's same-fn-id/different-captures shape, WHICH DOES NOT COMPILE TODAY -- so this ticket is blocked-in-practice by 127 (or by any compiling shape that mints one function at two capture layouts). When 127's shape compiles: write the refusal test red-first against the loosened check. Until then this records the invariant's unguarded status.",
+  "id": "fz-kdt.157",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The layout-agreement check's refusing half has zero coverage: loosening it to function-identity-only ships green through every gate",
+  "type": "task",
+  "updated_at": "2026-09-02T11:26:51Z"
+}
