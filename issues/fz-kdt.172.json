@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T23:04:02Z",
+  "description": "FOUND by the fz-kdt.127.2 adversarial refutation (F5), folded-commit\n1d7943335's successor.\n\nsrc/compiler2/types/types_test.rs::erased_closure_dnf_hygiene::branded_pair\nbuilds its two literals with ZERO captures:\n\n    let left  = t.closure_lit(ClosureTarget(3), vec![], 1);\n    let right = t.closure_lit(ClosureTarget(4), vec![], 1);\n\nUnder fz-kdt.127.2's erasure a capture-free literal is DROPPED WHOLE (there is\nnothing left to say once the brand is gone), so both arms become the bare\narrow before the module's two tests ever look at them. What they now pin is\n\"two bare arrows intern as one\", not the hazard the module exists for.\n\nThe hazard the module documents (and .agent/docs/set-theoretic-types.md:126\nstates) is that `erase_closure_identity` makes two DISTINCT clauses equal IN\nPLACE, after union-time dedupe has already run, so only `Types::intern`'s\n`dedupe_exact_clauses` can catch the resulting `A OR A` -- and after\nfz-kdt.127.2 that case lives exclusively in the capture-BEARING literal:\n`erase(L3(int) | L5(int))` is one anonymous clause `closure[?](int)`, reached\nfrom two.\n\nNOT A DEFECT TODAY: the refuter measured the collapse holding --\n`erase(L3(int) | L5(int)) == erase(L3(int))` is true, and the 32-site\nsame-typed int-capture `Enum.find` ladder shares perfectly (59 executables at\nbase and at head). This is missing COVERAGE.\n\nWORK: give `branded_pair` a capture (or add a capture-bearing twin) so both\n`erasing_two_brands_of_one_surface_leaves_one_funcs_clause` and\n`the_activation_key_of_an_erased_union_is_the_key_of_each_arm` run on the case\nthe erasure can actually collapse. Prove it red-first by disabling\n`dedupe_exact_clauses` and watching the capture-bearing arm go red where the\nzero-capture arm stays green.",
+  "id": "fz-kdt.172",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "erased_closure_dnf_hygiene covers only ZERO-capture literals, so the A-or-A hazard in the capture-BEARING case the type-preserving key created is untested",
+  "type": "task",
+  "updated_at": "2026-09-02T23:04:02Z"
+}
