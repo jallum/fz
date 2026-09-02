@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T18:52:38Z",
+  "description": "From the fz-kdt.127 cold review (2026-09-02, F5; env-gated probe over 466\nfixtures, reverted). ir_interp/backend.rs materialize_transport_value\n(:2410-2424) boxes a Transport-shaped callable (direct layout, capturing)\nwith the BARE function id as its code word instead of a construction\nwrapper id. Census: 32 events on 6 fixtures (mailbox_closure_reduce 9,\nmailbox_closure_each 7, enum_predicate_search 6, tailcall_closure_captures\n4, opaque_fn_each_discarded_return 4, 00284 2). Bare-fnref mint (:1295)\nand bare-lambda mint (:1336): 0 hits. Under fz-kdt.127 (B) such a word\nresolves to a shape with no captures -- rejected by capture-bearing arms\n(the sound direction; 0 corpus movement) but blind: a construction-shape\nquestion cannot see these values. Fix: name a construction when boxing\n(the wrapper for that CallableId exists whenever the value is\nfirst-class; if none exists the boxing itself is the finding). Red-first:\na dispatch on such a value's capture type. Sequence inside or right after\nfz-kdt.127's stage (B).",
+  "id": "fz-kdt.166",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Interp boxes a capturing direct-layout callable with a bare function id: 32 words on 6 fixtures name no construction",
+  "type": "bug",
+  "updated_at": "2026-09-02T18:52:38Z"
+}
