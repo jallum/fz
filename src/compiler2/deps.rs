@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-use super::facts::FactUse;
+use super::facts::{DerivationId, FactUse, Publisher};
 use super::ordered_set::OrderedSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,13 +10,27 @@ pub struct UnresolvedWait<J, F> {
     pub jobs: Vec<J>,
 }
 
+/// Two identities, kept apart on purpose (fz-kdt.13.1).
+///
+/// `reads`/`subscribers`/`outputs` are keyed by `Publisher<J>` — one job's one
+/// derivation — because those three are the ledger: a claim belongs to the
+/// answer it came from, and finality is a property of that answer's reads.
+///
+/// `waits`/`waiters` and the derivation roster are keyed by `J`, because a job
+/// blocks and runs WHOLE. A wait carries no derivation attribution and could
+/// not honestly be given one.
 #[derive(Debug)]
 pub struct DependencyIndex<J, F> {
-    reads: HashMap<J, HashSet<FactUse<F>>>,
-    subscribers: HashMap<FactUse<F>, OrderedSet<J>>,
+    reads: HashMap<Publisher<J>, HashSet<FactUse<F>>>,
+    subscribers: HashMap<FactUse<F>, OrderedSet<Publisher<J>>>,
     waits: HashMap<J, HashSet<FactUse<F>>>,
     waiters: HashMap<FactUse<F>, OrderedSet<J>>,
-    outputs: HashMap<J, OrderedSet<F>>,
+    outputs: HashMap<Publisher<J>, OrderedSet<F>>,
+    /// Which derivations each job currently publishes under, in the order the
+    /// job first reported them. Insertion-ordered because every job-level fold
+    /// below (the claim set, the read union, dirtying a whole job) iterates it,
+    /// and those folds feed wake order (`ordered_set.rs`).
+    derivations: HashMap<J, OrderedSet<DerivationId>>,
 }
 
 impl<J, F> Default for DependencyIndex<J, F> {
@@ -27,6 +41,7 @@ impl<J, F> Default for DependencyIndex<J, F> {
             waits: HashMap::new(),
             waiters: HashMap::new(),
             outputs: HashMap::new(),
+            derivations: HashMap::new(),
         }
     }
 }
@@ -40,33 +55,86 @@ where
         Self::default()
     }
 
-    pub fn reads(&self, job: &J) -> Option<&HashSet<FactUse<F>>> {
-        self.reads.get(job)
+    pub fn reads(&self, publisher: &Publisher<J>) -> Option<&HashSet<FactUse<F>>> {
+        self.reads.get(publisher)
     }
 
-    /// Add reads without dropping existing subscriptions. A partial (waiting)
-    /// run reads less than the job's last full conclusion did, but its
-    /// standing claims still depend on those earlier reads — replacing would
-    /// unsubscribe the job from facts that can invalidate them.
-    pub fn union_reads(&mut self, job: J, mut next_reads: HashSet<FactUse<F>>) {
-        if let Some(previous) = self.reads.get(&job) {
+    /// Every fact use the job read, across all its derivations. The
+    /// job-granular projection: telemetry attributes reads to the job that ran,
+    /// because the job is what ran.
+    pub fn job_reads(&self, job: &J) -> HashSet<FactUse<F>> {
+        self.publishers(job)
+            .into_iter()
+            .filter_map(|publisher| self.reads.get(&publisher))
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    /// Records the derivations `job` published under this run. Idempotent, and
+    /// first-registration order is the order the roster keeps. A job that
+    /// completes always gets a roster entry, even an empty one — that entry is
+    /// what `has_run` reads.
+    pub fn register_derivations(&mut self, job: &J, reported: &[DerivationId]) {
+        let roster = self.derivations.entry(job.clone()).or_default();
+        for derivation in reported {
+            roster.insert(*derivation);
+        }
+    }
+
+    /// The job's derivations as publishers, in roster order.
+    pub fn publishers(&self, job: &J) -> Vec<Publisher<J>> {
+        self.derivations
+            .get(job)
+            .map(|ids| ids.iter().map(|id| Publisher::new(job.clone(), *id)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Drops every derivation of `job` outside `reported`, returning the
+    /// publishers that were dropped so the caller can retract their claims.
+    /// Retraction-by-omission lifted to the derivation: a job that concludes
+    /// and does not report a derivation has withdrawn that whole answer,
+    /// exactly as an unlisted output key withdraws one claim.
+    pub fn retain_derivations(&mut self, job: &J, reported: &[DerivationId]) -> Vec<Publisher<J>> {
+        let dropped = self
+            .publishers(job)
+            .into_iter()
+            .filter(|publisher| !reported.contains(&publisher.derivation))
+            .collect::<Vec<_>>();
+        if let Some(roster) = self.derivations.get_mut(job) {
+            for publisher in &dropped {
+                roster.remove(&publisher.derivation);
+            }
+        }
+        dropped
+    }
+
+    /// Add reads without dropping existing subscriptions. A derivation that
+    /// did not reach its conclusion reads less than its last full conclusion
+    /// did, but its standing claims still depend on those earlier reads —
+    /// replacing would unsubscribe it from facts that can invalidate them.
+    pub fn union_reads(&mut self, publisher: Publisher<J>, mut next_reads: HashSet<FactUse<F>>) {
+        if let Some(previous) = self.reads.get(&publisher) {
             next_reads.retain(|key| !previous.contains(key));
         }
         if next_reads.is_empty() {
             return;
         }
         for key in &next_reads {
-            self.subscribers.entry(key.clone()).or_default().insert(job.clone());
+            self.subscribers
+                .entry(key.clone())
+                .or_default()
+                .insert(publisher.clone());
         }
-        self.reads.entry(job).or_default().extend(next_reads);
+        self.reads.entry(publisher).or_default().extend(next_reads);
     }
 
-    pub fn replace_reads(&mut self, job: J, next_reads: HashSet<FactUse<F>>) {
-        if let Some(previous_reads) = self.reads.insert(job.clone(), next_reads.clone()) {
+    pub fn replace_reads(&mut self, publisher: Publisher<J>, next_reads: HashSet<FactUse<F>>) {
+        if let Some(previous_reads) = self.reads.insert(publisher.clone(), next_reads.clone()) {
             for key in previous_reads {
-                if let Some(jobs) = self.subscribers.get_mut(&key) {
-                    jobs.remove(&job);
-                    if jobs.is_empty() {
+                if let Some(publishers) = self.subscribers.get_mut(&key) {
+                    publishers.remove(&publisher);
+                    if publishers.is_empty() {
                         self.subscribers.remove(&key);
                     }
                 }
@@ -74,7 +142,23 @@ where
         }
 
         for key in next_reads {
-            self.subscribers.entry(key).or_default().insert(job.clone());
+            self.subscribers.entry(key).or_default().insert(publisher.clone());
+        }
+    }
+
+    /// Forgets a derivation entirely: its reads unsubscribe and its read entry
+    /// goes. Paired with `replace_outputs(publisher, empty)` this is how a
+    /// withdrawn answer leaves the ledger with nothing behind.
+    pub fn forget_reads(&mut self, publisher: &Publisher<J>) {
+        if let Some(previous_reads) = self.reads.remove(publisher) {
+            for key in previous_reads {
+                if let Some(publishers) = self.subscribers.get_mut(&key) {
+                    publishers.remove(publisher);
+                    if publishers.is_empty() {
+                        self.subscribers.remove(&key);
+                    }
+                }
+            }
         }
     }
 
@@ -95,22 +179,34 @@ where
         }
     }
 
-    pub fn replace_outputs(&mut self, job: J, next_outputs: OrderedSet<F>) {
+    pub fn replace_outputs(&mut self, publisher: Publisher<J>, next_outputs: OrderedSet<F>) {
         if next_outputs.is_empty() {
-            self.outputs.remove(&job);
+            self.outputs.remove(&publisher);
         } else {
-            self.outputs.insert(job, next_outputs);
+            self.outputs.insert(publisher, next_outputs);
         }
     }
 
-    pub fn output_keys(&self, job: &J) -> OrderedSet<F> {
-        self.outputs.get(job).cloned().unwrap_or_default()
+    pub fn output_keys(&self, publisher: &Publisher<J>) -> OrderedSet<F> {
+        self.outputs.get(publisher).cloned().unwrap_or_default()
     }
 
-    pub fn subscribers(&self, fact_use: &FactUse<F>) -> Vec<J> {
+    /// Every key the job claims, across all its derivations, in roster order
+    /// then emission order. Both halves are ordered, so this is too.
+    pub fn job_output_keys(&self, job: &J) -> OrderedSet<F> {
+        let mut keys = OrderedSet::default();
+        for publisher in self.publishers(job) {
+            if let Some(outputs) = self.outputs.get(&publisher) {
+                keys.extend(outputs.iter().cloned());
+            }
+        }
+        keys
+    }
+
+    pub fn subscribers(&self, fact_use: &FactUse<F>) -> Vec<Publisher<J>> {
         self.subscribers
             .get(fact_use)
-            .map(|jobs| jobs.iter().cloned().collect())
+            .map(|publishers| publishers.iter().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -130,23 +226,74 @@ where
         self.waits.get(job).is_some_and(|waits| !waits.is_empty())
     }
 
-    /// Whether `job` has ever completed a run: concluding records reads (even
-    /// an empty set), blocking records standing waits.
+    /// Whether `job` has ever completed a run: completing registers its
+    /// derivations (even one that reads and publishes nothing), blocking
+    /// records standing waits.
     pub fn has_run(&self, job: &J) -> bool {
-        self.reads.contains_key(job) || self.blocked(job)
+        self.derivations.contains_key(job) || self.blocked(job)
     }
 
     pub fn has_unresolved(&self) -> bool {
         !self.waiters.is_empty()
     }
 
-    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>> {
+    /// The facts blocked waiters currently wait on with `Settled` readiness,
+    /// facts only — no job lists cloned, no dedup needed (each `FactUse` keys
+    /// one waiter set). Iteration order is the `waiters` map's own, so the
+    /// caller orders by data before acting.
+    pub fn waited_settled_facts(&self) -> Vec<F> {
         self.waiters
+            .keys()
+            .filter(|fact| fact.readiness() == crate::compiler2::facts::FactReadiness::Settled)
+            .map(|fact| fact.fact().clone())
+            .collect()
+    }
+
+    /// Every standing wait, ordered by data (fz-kdt.109).
+    ///
+    /// The `waiters` map is the one unordered thing here: each fact's job list
+    /// is an `OrderedSet`, and the facts themselves are minted deterministically,
+    /// so the only run-to-run variation in this list was `HashMap` iteration
+    /// order — a per-process `RandomState` artifact. That order reached a
+    /// user-facing error message (`no_ready_producer` renders this vec), so one
+    /// binary printed different text run to run.
+    ///
+    /// Ordering once here is the whole cure: every caller either presents this
+    /// list or pokes the producers it names, and the two pokers were each
+    /// pinning the order themselves with this same key, which they no longer
+    /// need to. The key is the fact's `Debug` rendering, readiness variant as
+    /// tie-break so two uses of one fact cannot fall back on map order. `Debug`
+    /// over a derived `Ord` bound is a deliberate choice, for two reasons: it
+    /// is byte-for-byte the key both folded callers already used, which is what
+    /// makes the fold provably order-identical, and a derived `Ord` would gain
+    /// no canonicality — `FactKey` variants embedding `ActivationKey.arrow`
+    /// order by the raw interned `Ty` id either way (the fz-k22.21 class;
+    /// within-run use is why that is legal here, see fact-engine.md). The
+    /// dedup a poking caller runs downstream relies on this rendering being
+    /// injective over live facts: `FactKey` is derived `Debug` to primitive
+    /// fields throughout, and if that ever broke, `Vec::dedup` compares by
+    /// `PartialEq` so the worst case is a duplicated poke, never a merged or
+    /// dropped fact.
+    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>>
+    where
+        F: std::fmt::Debug,
+    {
+        let mut waits = self
+            .waiters
             .iter()
             .map(|(fact, jobs)| UnresolvedWait {
                 fact: fact.clone(),
                 jobs: jobs.iter().cloned().collect(),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        waits.sort_by_cached_key(|wait| {
+            let readiness = match wait.fact {
+                FactUse::Current(_) => 0_u8,
+                FactUse::Settled(_) => 1,
+                FactUse::SettledPresence(_) => 2,
+            };
+            (format!("{:?}", wait.fact.fact()), readiness)
+        });
+        waits
     }
 }

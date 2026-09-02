@@ -34,8 +34,13 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
 macro     BuildMacroExecutable
             one demanded defmacro -> hidden macro root
             -> BackendProgram -> MacroExecutable
-keying    DeriveRecursive, DeriveDispatchMask
-            stable per-function facts used to canonicalize activation keys
+keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveDispatchMask
+            one body -> StaticCallees, the call graph's out-edges for that function
+            stable per-function facts used to canonicalize activation keys:
+            DeriveCallGraphComponent walks the StaticCallees facts ONCE and
+            publishes two: CallGraphComponent(f), the smallest FunctionId
+            mutually reachable with f, and Recursive(f), which that component
+            decides (more than one member, or f's own edges name f)
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand
@@ -120,7 +125,8 @@ submit_root(main/0)
 ```
 
 Each fact wait names the exact prerequisite: `LowerFunction` /
-`PlanEntryDispatch` / `DeriveRecursive` / `DeriveDispatchMask` run because a
+`PlanEntryDispatch` / `DeriveCallGraphComponent` / `DeriveDispatchMask` run
+because a
 product asked for a fact that requires them. New artifact producers must not
 self-schedule or smuggle broad follow-up work into that path.
 
@@ -322,13 +328,50 @@ position owner's `ExecutableFacts`, settled `RuntimeDemand`, and only the
 upstream position products named by the normalized origin. `ExecutableFacts`
 distinguishes direct call returns from public callable returns before transport:
 direct returns refine from the selected target position, while public returns
-project every nonempty result to `ValueRef`. Recursive position dependencies are
-settled as one atomic product group from external anchors, so no member observes
-a partial result. `CallableConstruction(position)` uses the same position-owned
+project every nonempty result to `ValueRef`. Recursion is cut out of the recipe
+before it is evaluated, from call-graph facts alone: an edge naming the return
+of a callee in the position owner's own strong component whose function id does
+not rise is replaced by a cut, so what remains strictly climbs and is acyclic.
+A GROUNDED CLOSURE-CALL edge reaches its callee through a value, so the static
+graph carries no edge for it and component membership answers nothing about it
+-- a closure built outside a recursion and threaded back through it leaves
+caller and lambda in different components while their products still cycle.
+That edge is cut exactly when its target reaches the owner in the static call
+graph, walked over `StaticCallees` the way `DeriveCallGraphComponent` walks it;
+when it does not, the edge adds no reachability the condensation did not
+already have, and keeping it is what preserves one authority for an
+exact-carrier closure call. A cut contributes no evidence about the position's form, and a
+form the readable arms agree on is believed only while it still carries the
+position's whole analyzed type; otherwise the position falls back to the
+CONTRACT -- the form its type and demand describe, reading a whole-value demand
+on an exact tuple type as the per-field demand it stands for, so both ends of a
+cut invent the same one. An executable return whose recipe named an in-component
+return at all -- cut or kept -- publishes that contract outright, whatever its
+own arms saw: the cut runs one way round a recursion cycle, so its members do
+not all read each other, and only a form each derives from its own type and
+demand is the same on every view of one calling convention. That is what makes a
+recursive call a TAIL call, since `CallReturnFlow` asks the callee return, the
+caller return and the caller's `ReturnPayload` to name one layout; deriving them
+apart cost about a quarter of the runtime of a 30,000-element
+`Enum.split_while` (fz-kdt.97). Evaluation therefore reads no scheduler state
+and no product group, and the published layouts do not move under a re-ordered
+pull.
+`CallableConstruction(position)` uses the same position-owned
 layout and carries direct callable and boundary facts independently of wrapper
 authority. A direct-only local producer owns `construction: None`; a first-class
 producer owns `Some` with at least one exact executable member. There is no root
 solve, component inventory, or absence-provenance side channel.
+
+Unlike transport shapes, callable construction still settles a recursive product
+GROUP: a callable threaded through a mutual recursion reaches its own owner, and
+the group is how the cycle closes. What the group shares is EVIDENCE -- the
+members' own facts plus the facts of every product they read from outside the
+group. It does not share an answer. Each member projects that evidence through
+its OWN layout, analyzed type and runtime demand, derived from its own position
+by `generic_owner_ty_and_demand`, so the group's facts stay per-position: a
+boundary publication names the one position that publishes it, and no member
+speaks for a group-mate. Which member's job happens to close the cycle therefore
+cannot change what any member says.
 
 Closure-call materialization reads the callee's positioned transport carrier.
 `ValueRef` calls through the public wrapper even when semantic resolution has
@@ -363,6 +406,49 @@ for one. One shared boundary-transport model governs every runtime-carried
 value — inputs, executable returns, delivered resumes, and closure captures all
 draw their shape from the same demand-derived recursive layout family, so a
 return can never collapse to a narrower vocabulary than an input.
+
+Demand narrows a value only where the narrowing reaches whatever produces it,
+and the **boxed apply seam** is where that rule has to be applied from both
+sides at once. A callable whose members are reached first-class mints a
+construction wrapper. The wrapper's public return form is derived from those
+members' own return layouts, so the members are the single authority for what
+crosses the seam — and no callsite past the seam can narrow them, because it
+names none of them (a mailbox callable names no target at all). Two rules
+follow, and they are two halves of one convention:
+
+- The construction owner bootstraps a seam member to **whole** exactly where
+  the member's visible contributions add to BOTTOM (absent or all-`ignore`) —
+  a richer contribution stands, which is what keeps destination-passing's
+  field-split returns intact. This is the only place the seam's existence is
+  a local fact, and it is what stops a *grounded* sibling callsite — which
+  does name the member — from pulling a lane to zero that the seam still
+  hands back. The bootstrap raises the SHAPE axis only: a member whose
+  return is a zero-lane callable (shape-`ignore` with an exact callable
+  axis) is not bottom, keeps zero lanes, and its wrapper stays `Absent` —
+  the tripwire refuses such a program rather than miscompiling it (the
+  residual family's own ticket records the shapes).
+- A callsite whose callee travels in the boxed `ValueRef` carrier demands its
+  result **whole**. Whether a call goes through the seam is a property of the
+  callee VALUE, not of the callsite: a callsite that names an exact target is
+  still a boxed call when the same lambda is handed out of the function two
+  lines later, and `materialize_closure_call_edge` lowers a direct edge only
+  while the callee's carrier stays exact.
+
+A callee that does stay in its exact carrier needs no rule at all: its result
+aliases the named target executable's own return fact, so caller and callee
+read one shape by construction. So a callable **no** seam ever boxes builds no
+wrapper, and a discarded call through it really does reach zero lanes on both
+sides. `Enum.each/2` shows all three at once — its step calls the mapper for
+the effect and returns the accumulator — compiling to zero delivered lanes for
+a lambda named where it is used, and one boxed lane for the same lambda once a
+mailbox round trip has erased the name (`static_closure_each`, `a_mixed`).
+
+Getting either half alone is an abort, not a diagnostic: the wrapper writes its
+returned value into the register the continuation reads as its own closure
+pointer, and the program dies in `fz_closure_get_capture_atom` at the first
+call. `verify_boxed_apply_seam_return_convention` turns that into a named
+invariant at backend packaging — every boxed closure callsite must deliver
+exactly what the wrappers it can reach publish.
 
 The exact callable surfaces demand reads from live in
 `CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
@@ -500,12 +586,31 @@ layouts, member selection, and one public return form: `Diverges`, `Absent`, or
 `ValueRef`. Every nonempty returning member adapts to that one public word;
 mixed empty and nonempty returning members are invalid. The public form is not
 copied from one private member or reconstructed from a semantic return type.
+Because the construction owner bootstraps bottom members to whole, a wrapper
+over returning members publishes `ValueRef` — at HEAD every corpus wrapper
+does (354/354; the two spawned zero-arity `server/0` bodies that used to sit
+at `Absent` now publish their `:nil` in one raw atom lane, at zero measured
+allocation cost). `Absent` remains reachable only by a member whose return is
+a zero-lane callable (shape-`ignore`, exact callable axis — not bottom, so the
+bootstrap does not raise it), and the packaging tripwire refuses any program
+where a boxed callsite could reach such a wrapper.
+The lane count a wrapper publishes and the lane count every boxed closure
+callsite delivers are checked against each other at packaging
+(`verify_boxed_apply_seam_return_convention`).
 
 Construction identity is allocation-only. `MakeFnRef` or `MakeClosure` selects
 the producer wrapper when the runtime object is created; the resulting code
 pointer and environment are the callable's identity thereafter. Generic calls
 do not carry a parallel construction ID or per-variable boundary table. Exact
 calls may bypass the public object and use a member's private ABI.
+
+That code pointer is the whole construction, not merely its function: a wrapper
+is one function at one capture layout, so each `NativeCallableBoundary` records
+the projected shape it mints (`shape`) beside the layout it mints it at
+(`callable`). A runtime callable test compares a value's word against the
+addresses of the wrappers whose shape it names, and `Prim::ClosureCapture`
+reads a capture back through the wrappers that minted the layout the reader
+grounded on — never through the function, which several layouts can share.
 
 Packaged call flow is `NoReturn`, `Tail`, `Continue { source }`, or
 `Deliver { source, entry }`. Every settled-empty callsite or exact target
@@ -656,3 +761,9 @@ redefine main to drop the qsort call
 The blast radius is exactly the dependency chain, propagated by fact ownership.
 A function that was defined but never reached is untouched: redefining it changes
 its definition fact and wakes no semantic work for that root.
+
+The pruning rides the REBASE. `LoweredBody(main)` is a replacing fact, so its
+change is a ground shift: `AnalyzeActivation(main)` re-runs rebased and its
+omission of `Activation(qsort,...)` is a withdrawal. A rerun that is not rebased
+keeps the claims it could not re-derive — see *Absence is bottom; rebasing is
+the narrowing path* in [`fact-engine`](fact-engine.md).

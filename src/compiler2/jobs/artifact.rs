@@ -4,6 +4,7 @@
 //! producer names the exact fact or product it needs instead of deriving a
 //! root-wide projection stack.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::diag::Diagnostic;
@@ -23,6 +24,7 @@ use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
     LoweredStep, LoweredTail, ValueId,
 };
+use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
@@ -125,7 +127,7 @@ pub(crate) fn produce_materialized_executable_product(
         &body,
         &callsite_args,
     ));
-    let position_layouts = match read_transport_layouts(tel, context, transport_positions) {
+    let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -390,7 +392,7 @@ pub(crate) fn produce_abi_executable_product(
         executable,
         &materialized,
     ));
-    let position_layouts = match read_transport_layouts(tel, context, transport_positions) {
+    let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -462,7 +464,7 @@ fn materialized_executable_transport(
     types: &Types,
 ) -> MaterializedExecutableTransport {
     let symbol = transport_executable_symbol(executable, types);
-    position_layouts.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
+    position_layouts.sort_by(|(left, _), (right, _)| compare_transport_positions(left, right, types));
     position_layouts.dedup_by(|left, right| {
         if left.0 != right.0 {
             return false;
@@ -535,62 +537,72 @@ impl ArtifactTransportLookup<'_> {
     }
 }
 
-pub(crate) type CodegenSeamOwnerKey = (u8, u32, Option<Ty>, Vec<Ty>, u8, usize, u32);
-pub(crate) type CodegenSeamSortKey = (u8, CodegenSeamOwnerKey, u32, u32, u32, u32, u8);
-
-pub(crate) fn codegen_seam_fact_sort_key(fact: &CodegenSeamFact) -> CodegenSeamSortKey {
-    let (kind, owner, secondary, tertiary) = codegen_seam_kind_key(&fact.seam);
-    (
-        kind,
-        owner,
-        secondary,
-        tertiary,
-        fact.shape.map(ShapeId::as_u32).unwrap_or(u32::MAX),
-        fact.lane.as_u32(),
-        codegen_lane_repr_rank(fact.repr),
-    )
+/// Canonical packaging order for the codegen-seam facts of one root: seam kind,
+/// then the owner the seam hangs off, then the seam's own structural
+/// discriminants, then the lane it names.
+pub(crate) fn compare_codegen_seam_facts(left: &CodegenSeamFact, right: &CodegenSeamFact, types: &Types) -> Ordering {
+    let (left_kind, left_owner, left_second, left_third) = codegen_seam_parts(&left.seam);
+    let (right_kind, right_owner, right_second, right_third) = codegen_seam_parts(&right.seam);
+    left_kind
+        .cmp(&right_kind)
+        .then_with(|| compare_codegen_seam_owners(&left_owner, &right_owner, types))
+        .then_with(|| left_second.cmp(&right_second))
+        .then_with(|| left_third.cmp(&right_third))
+        .then_with(|| shape_rank(left.shape).cmp(&shape_rank(right.shape)))
+        .then_with(|| left.lane.as_u32().cmp(&right.lane.as_u32()))
+        .then_with(|| codegen_lane_repr_rank(left.repr).cmp(&codegen_lane_repr_rank(right.repr)))
 }
 
-fn executable_owner_key(executable: &ExecutableSymbol) -> CodegenSeamOwnerKey {
-    let (function, arrow, inputs, need0, need1) = transport_executable_sort_key(executable);
-    (0, function, Some(arrow), inputs, need0, need1, 0)
+/// What a codegen seam hangs off. Executable-owned seams lead; the seam KIND
+/// already separates the two, so this only ever compares like with like.
+enum CodegenSeamOwner<'a> {
+    Executable(&'a ExecutableSymbol),
+    Boundary(BoundaryId),
 }
 
-fn boundary_owner_key(boundary: BoundaryId) -> CodegenSeamOwnerKey {
-    (1, 0, None, Vec::new(), 0, 0, boundary.as_u32())
+fn compare_codegen_seam_owners(left: &CodegenSeamOwner<'_>, right: &CodegenSeamOwner<'_>, types: &Types) -> Ordering {
+    match (left, right) {
+        (CodegenSeamOwner::Executable(left), CodegenSeamOwner::Executable(right)) => {
+            compare_executable_symbols(left, right, types)
+        }
+        (CodegenSeamOwner::Executable(_), CodegenSeamOwner::Boundary(_)) => Ordering::Less,
+        (CodegenSeamOwner::Boundary(_), CodegenSeamOwner::Executable(_)) => Ordering::Greater,
+        (CodegenSeamOwner::Boundary(left), CodegenSeamOwner::Boundary(right)) => left.as_u32().cmp(&right.as_u32()),
+    }
 }
 
-fn codegen_seam_kind_key(seam: &CodegenSeam) -> (u8, CodegenSeamOwnerKey, u32, u32) {
+/// A seam's kind rank, its owner, and the two structural discriminants that
+/// separate seams of one kind on one owner.
+fn codegen_seam_parts(seam: &CodegenSeam) -> (u8, CodegenSeamOwner<'_>, u32, u32) {
+    use CodegenSeamOwner::{Boundary, Executable};
     match seam {
         CodegenSeam::FunctionEntry {
             executable,
             semantic_index,
-        } => (0, executable_owner_key(executable), *semantic_index as u32, 0),
-        CodegenSeam::BlockParam { executable, entry } => (1, executable_owner_key(executable), entry.as_u32(), 0),
+        } => (0, Executable(executable), *semantic_index as u32, 0),
+        CodegenSeam::BlockParam { executable, entry } => (1, Executable(executable), entry.as_u32(), 0),
         CodegenSeam::EntryCapture {
             executable,
             entry,
             capture_index,
-        } => (
-            2,
-            executable_owner_key(executable),
-            entry.as_u32(),
-            *capture_index as u32,
-        ),
-        CodegenSeam::ReturnDelivery { executable } => (3, executable_owner_key(executable), 0, 0),
+        } => (2, Executable(executable), entry.as_u32(), *capture_index as u32),
+        CodegenSeam::ReturnDelivery { executable } => (3, Executable(executable), 0, 0),
         CodegenSeam::ContinuationEntry {
             executable,
             callsite,
             entry,
-        } => (4, executable_owner_key(executable), callsite.as_u32(), entry.as_u32()),
-        CodegenSeam::ReturnContinuation { executable, callsite } => {
-            (5, executable_owner_key(executable), callsite.as_u32(), 0)
-        }
-        CodegenSeam::TailCall { executable, callsite } => (6, executable_owner_key(executable), callsite.as_u32(), 0),
-        CodegenSeam::CallableBoundary { boundary } => (7, boundary_owner_key(*boundary), 0, 0),
-        CodegenSeam::ExternBoundary { executable } => (8, executable_owner_key(executable), 0, 0),
-        CodegenSeam::FirstClassPublication { boundary } => (9, boundary_owner_key(*boundary), 0, 0),
+        } => (4, Executable(executable), callsite.as_u32(), entry.as_u32()),
+        CodegenSeam::ReturnContinuation { executable, callsite } => (5, Executable(executable), callsite.as_u32(), 0),
+        CodegenSeam::TailCall { executable, callsite } => (6, Executable(executable), callsite.as_u32(), 0),
+        CodegenSeam::CallableBoundary { boundary } => (7, Boundary(*boundary), 0, 0),
+        CodegenSeam::ExternBoundary { executable } => (8, Executable(executable), 0, 0),
+        CodegenSeam::FirstClassPublication { boundary } => (9, Boundary(*boundary), 0, 0),
     }
+}
+
+/// A seam without a shape sorts after every seam that has one.
+fn shape_rank(shape: Option<ShapeId>) -> u32 {
+    shape.map(ShapeId::as_u32).unwrap_or(u32::MAX)
 }
 
 fn codegen_lane_repr_rank(repr: CodegenLaneRepr) -> u8 {
@@ -854,6 +866,7 @@ fn required_local_backend_transport_positions(
 fn read_transport_layouts(
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
+    types: &Types,
     positions: impl IntoIterator<Item = TransportPosition>,
 ) -> Result<Vec<(TransportPosition, TransportLayout)>, Vec<PullWait>> {
     let mut positions = positions
@@ -861,7 +874,7 @@ fn read_transport_layouts(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    positions.sort_by_cached_key(transport_position_global_sort_key);
+    positions.sort_by(|left, right| compare_transport_positions(left, right, types));
     let mut layouts = Vec::with_capacity(positions.len());
     let mut waits = Vec::new();
     for position in positions {
@@ -1060,8 +1073,7 @@ fn sort_transport_positions(positions: &mut [TransportPosition]) {
     positions.sort_by_key(transport_position_local_sort_key);
 }
 
-pub(crate) type TransportPositionLocalSortKey = (u32, u32, usize);
-pub(crate) type TransportExecutableSortKey = (u32, Ty, Vec<Ty>, u8, usize);
+type TransportPositionLocalSortKey = (u32, u32, usize);
 
 fn transport_position_local_sort_key(position: &TransportPosition) -> TransportPositionLocalSortKey {
     match position {
@@ -1085,25 +1097,54 @@ fn transport_position_local_sort_key(position: &TransportPosition) -> TransportP
     }
 }
 
-fn transport_executable_sort_key(executable: &ExecutableSymbol) -> TransportExecutableSortKey {
-    let need = match executable.need {
-        ExecutableNeed::Value => (0, 0),
-        ExecutableNeed::TupleFields(arity) => (1, arity),
-    };
-    (
-        executable.activation.function.as_u32(),
-        executable.activation.arrow,
-        executable.activation.input.to_vec(),
-        need.0,
-        need.1,
-    )
+/// Canonical packaging order for two executable symbols, and through them for
+/// every cross-executable artifact vector: transport positions, codegen seam
+/// facts, the construction wrappers keyed off owner positions.
+///
+/// The type components compare through [`Types::cmp_ty`] — fz-kdt.105's id-free
+/// structural order — and NOT as raw interner ids. Raw ids are assigned in
+/// interning order, which the agenda decides, so an id-keyed sort renumbers
+/// `entry x<N>` / `construction=w<N>` whenever the pull is re-ordered even
+/// though the artifact says exactly the same thing (fz-kdt.101).
+///
+/// TOTAL: `arrow` determines `input` and the comparator is injective, so no two
+/// distinct symbols of one root tie and nothing is left to sort stability.
+pub(crate) fn compare_executable_symbols(left: &ExecutableSymbol, right: &ExecutableSymbol, types: &Types) -> Ordering {
+    left.activation
+        .function
+        .as_u32()
+        .cmp(&right.activation.function.as_u32())
+        .then_with(|| types.cmp_ty(left.activation.arrow, right.activation.arrow))
+        .then_with(|| types.cmp_tys(&left.activation.input, &right.activation.input))
+        .then_with(|| compare_executable_needs(left.need, right.need))
 }
 
-pub(crate) type TransportPositionGlobalSortKey = (TransportExecutableSortKey, u8, TransportPositionLocalSortKey);
+/// A whole-value need leads the tuple-field needs it stands beside; two field
+/// needs order by arity.
+pub(crate) fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> Ordering {
+    match (left, right) {
+        (ExecutableNeed::Value, ExecutableNeed::Value) => Ordering::Equal,
+        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => Ordering::Less,
+        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => Ordering::Greater,
+        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
+    }
+}
 
-/// Canonical packaging order for a cross-executable set of transport positions.
-pub(crate) fn transport_position_global_sort_key(position: &TransportPosition) -> TransportPositionGlobalSortKey {
-    let variant = match position {
+/// Canonical packaging order for a cross-executable set of transport positions:
+/// the owning executable, then the position's variant, then its variant-local
+/// structural discriminants.
+pub(crate) fn compare_transport_positions(
+    left: &TransportPosition,
+    right: &TransportPosition,
+    types: &Types,
+) -> Ordering {
+    compare_executable_symbols(left.executable(), right.executable(), types)
+        .then_with(|| transport_position_variant_rank(left).cmp(&transport_position_variant_rank(right)))
+        .then_with(|| transport_position_local_sort_key(left).cmp(&transport_position_local_sort_key(right)))
+}
+
+fn transport_position_variant_rank(position: &TransportPosition) -> u8 {
+    match position {
         TransportPosition::ExecutableInput { .. } => 0,
         TransportPosition::ExecutableReturn { .. } => 1,
         TransportPosition::ResumePayload { .. } => 2,
@@ -1111,12 +1152,7 @@ pub(crate) fn transport_position_global_sort_key(position: &TransportPosition) -
         TransportPosition::CallArg { .. } => 4,
         TransportPosition::EntryCapture { .. } => 5,
         TransportPosition::Value { .. } => 6,
-    };
-    (
-        transport_executable_sort_key(position.executable()),
-        variant,
-        transport_position_local_sort_key(position),
-    )
+    }
 }
 
 fn materialize_call_edges(
@@ -1213,45 +1249,54 @@ fn materialize_direct_call_edge(
         activation: executable.activation.clone(),
         callsite,
     };
-    if !world.has_fact(&FactKey::CallSiteSummary(key.clone())) {
-        return Ok(None);
-    }
+    // One door: a callsite that named no targets -- never reached, proven
+    // dead, or reached and still unresolved -- materializes no edge. (The
+    // `has_fact` pre-test that used to stand here asked a DIFFERENT question:
+    // the ledger's, where the store below is lowering's authority and is
+    // never pruned. The two diverge only in the ledger-withdrawn/store-stale
+    // state, measured to occur zero times across the 574-fixture corpus, lib,
+    // and matrix -- so the store answers alone: fz-kdt.69.2. fz-kdt.69.3
+    // makes the ledger authoritative over exactly this divergence; revisit
+    // then.)
     let Some(summary) = world.callsite_summary(&key).cloned() else {
         return Ok(None);
     };
-    if let Some(target) = summary.single_target().cloned() {
-        let (direct, return_ty) = lower_materialized_call_target(
-            world,
-            tel,
-            root_id,
-            transport_plan,
-            executable,
-            analysis,
-            need,
-            callsite,
-            dest,
-            original_entry_ids,
-            callsite_args,
-            target,
-        )?;
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Direct(direct),
-            return_ty,
-        }));
-    }
-    let dispatch = super::super::callsite_dispatch::dispatch_from_callsite_summary(world.types_mut(), &summary);
-    let Some(dispatch) = dispatch.map_err(|error| {
-        incomplete_semantic_plan(
-            tel,
-            root_id,
-            format!(
-                "materialization could not build dispatch for multi-target direct callsite {}: {error:?}",
-                callsite.as_u32()
-            ),
-        )
-    })?
-    else {
-        return Ok(None);
+    // The callsite's DESTINATIONS, not its settled targets: a target the
+    // runtime could never route to is no destination at all (fz-kdt.104), and
+    // a callsite left with one of them is a direct call.
+    let dispatch = match call_destinations(world.types_mut(), &summary) {
+        Ok(CallDestinations::None) => return Ok(None),
+        Ok(CallDestinations::Direct(target)) => {
+            let (direct, return_ty) = lower_materialized_call_target(
+                world,
+                tel,
+                root_id,
+                transport_plan,
+                executable,
+                analysis,
+                need,
+                callsite,
+                dest,
+                original_entry_ids,
+                callsite_args,
+                target,
+            )?;
+            return Ok(Some(MaterializedCallEdge {
+                target: CallEdge::Direct(direct),
+                return_ty,
+            }));
+        }
+        Ok(CallDestinations::Dispatch(dispatch)) => dispatch,
+        Err(error) => {
+            return Err(incomplete_semantic_plan(
+                tel,
+                root_id,
+                format!(
+                    "materialization could not build dispatch for multi-target direct callsite {}: {error:?}",
+                    callsite.as_u32()
+                ),
+            ));
+        }
     };
     let mut arms = Vec::new();
     for (body_id, target) in dispatch.arm_body_ids.into_iter().zip(dispatch.targets) {
@@ -1275,16 +1320,6 @@ fn materialize_direct_call_edge(
             return_flow: direct.return_flow,
             extern_marshals: direct.extern_marshals,
         });
-    }
-    if arms.is_empty() {
-        return Err(incomplete_semantic_plan(
-            tel,
-            root_id,
-            format!(
-                "multi-target direct callsite {} has no dispatch arms",
-                callsite.as_u32()
-            ),
-        ));
     }
     let return_ty = summary.settled_return(world.types_mut());
     Ok(Some(MaterializedCallEdge {
@@ -1316,36 +1351,19 @@ fn materialize_closure_call_edge(
         activation: executable.activation.clone(),
         callsite,
     };
-    let Some(summary) = world.callsite_summary(&key).cloned() else {
-        // Behind the settled materialization gate, an absent callsite summary is
-        // the Kleene bottom — exactly as `CallTargetSummary::settled_return`
-        // reads an absent return. No callable evidence ever arrived, so this
-        // call never happens. Lower it as the dead call it is: every
-        // `ClosureCall` tail needs a return flow, and `NoReturn` is the name for
-        // one that never returns. Emitting no edge at all instead leaves native
-        // lowering with a `Deliver` destination and nothing to deliver
-        // (fz-f98.18).
-        let never = world.types_mut().none();
-        return Ok(Some(MaterializedCallEdge {
-            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
-            return_ty: never,
-        }));
-    };
-    let target = summary.single_target().cloned();
+    let summary = world.callsite_summary(&key).cloned();
+    let target = summary.as_ref().and_then(|summary| summary.single_target().cloned());
+    // The callee's CARRIER decides whether this call happens, not the static
+    // target evidence standing behind it. A `ValueRef` carrier means a real
+    // callable value reaches this callsite at runtime and the boxed-apply
+    // wrapper can call it, however little the analysis managed to name. That is
+    // the standing state for a closure that arrived from outside the analysed
+    // world — a mailbox message — where no target is ever named and none ever
+    // will be: "no targets" there is UNKNOWN, not `none` (fz-kdt.130).
     let public_callable = matches!(callee_layout.carrier, TransportCarrier::ValueRef);
-    if public_callable || target.is_none() {
-        if !public_callable {
-            return Err(incomplete_semantic_plan(
-                tel,
-                root_id,
-                format!(
-                    "closure callsite {} has no runtime callable carrier or single direct target",
-                    callsite.as_u32()
-                ),
-            ));
-        }
+    if public_callable {
         let return_ty =
-            public_indirect_return_ty(world, tel, root_id, analysis, Some(&summary), callsite, result_value)?;
+            public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
         let return_flow = if world.types().is_empty(&return_ty) {
             CallReturnFlow::NoReturn { local_source: None }
         } else {
@@ -1367,7 +1385,30 @@ fn materialize_closure_call_edge(
             return_ty,
         }));
     }
-    let target = target.expect("a non-public closure call must have one settled target");
+    let Some(target) = target else {
+        if summary.is_some() {
+            return Err(incomplete_semantic_plan(
+                tel,
+                root_id,
+                format!(
+                    "closure callsite {} has no runtime callable carrier or single direct target",
+                    callsite.as_u32()
+                ),
+            ));
+        }
+        // No callable carrier AND no evidence at all: nothing can be called
+        // here, so this call really never happens. Lower it as the dead call it
+        // is — every `ClosureCall` tail needs a return flow, and `NoReturn` is
+        // the name for one that never returns. Emitting no edge at all instead
+        // leaves native lowering with a `Deliver` destination and nothing to
+        // deliver (fz-f98.18). An `Unresolved` edge (fz-kdt.69.2) reaches this
+        // same answer.
+        let never = world.types_mut().none();
+        return Ok(Some(MaterializedCallEdge {
+            target: CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None }),
+            return_ty: never,
+        }));
+    };
     let (direct, return_ty) = lower_materialized_call_target(
         world,
         tel,
@@ -2371,7 +2412,9 @@ fn incomplete_semantic_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler2::semantic::{CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee};
+    use crate::compiler2::semantic::{
+        CallSiteResolution, CallSiteSummary, CallTargetSummary, EntryReachability, SelectedCallee,
+    };
     use crate::compiler2::{ActivationKey, FunctionId};
     use crate::telemetry::ConfiguredTelemetry;
 
@@ -2468,8 +2511,34 @@ mod tests {
         );
     }
 
-    fn try_materialize_ambiguous_closure_edge(
-        returns: bool,
+    /// What static target evidence stands behind the closure callsite under
+    /// test -- the axis that decides how the edge is lowered.
+    #[derive(Clone, Copy)]
+    enum ClosureCallEvidence {
+        /// Two settled targets, each with a return type.
+        AmbiguousReturning,
+        /// Two settled targets, none of which returns.
+        AmbiguousNonReturning,
+        /// No summary at all. This is the standing state for a callable that
+        /// arrived from outside the analysed world -- a mailbox message -- and
+        /// no later evidence will ever name a target for it (fz-kdt.130).
+        Unnamed,
+    }
+
+    impl ClosureCallEvidence {
+        fn summary_targets_return(self) -> bool {
+            matches!(self, Self::AmbiguousReturning)
+        }
+
+        /// Whether the callsite's semantic result carries a value. An unnamed
+        /// callee still produces one: only its *targets* are unknown.
+        fn call_returns(self) -> bool {
+            !matches!(self, Self::AmbiguousNonReturning)
+        }
+    }
+
+    fn try_materialize_closure_edge(
+        evidence: ClosureCallEvidence,
         carrier: TransportCarrier,
     ) -> (World, Result<Option<MaterializedCallEdge>, FatalError>) {
         let tel = ConfiguredTelemetry::new();
@@ -2481,31 +2550,35 @@ mod tests {
             activation: caller.activation.clone(),
             callsite,
         };
-        world.define_callsite_summary(
-            key,
-            CallSiteSummary {
-                targets: [302, 303]
-                    .into_iter()
-                    .map(|function| CallTargetSummary {
-                        callee: SelectedCallee::Function(FunctionId::for_test(function)),
-                        surface_inputs: vec![int],
-                        activation: None,
-                        activation_inputs: None,
-                        return_ty: returns.then_some(int),
-                    })
-                    .collect(),
-                return_ty: returns.then_some(int),
-            },
-        );
+        let targets_return = evidence.summary_targets_return();
+        if !matches!(evidence, ClosureCallEvidence::Unnamed) {
+            world.define_callsite_summary(
+                key,
+                CallSiteResolution::Resolved(CallSiteSummary {
+                    targets: [302, 303]
+                        .into_iter()
+                        .map(|function| CallTargetSummary {
+                            callee: SelectedCallee::Function(FunctionId::for_test(function)),
+                            surface_inputs: vec![int],
+                            activation: None,
+                            activation_inputs: None,
+                            return_ty: targets_return.then_some(int),
+                        })
+                        .collect(),
+                    return_ty: targets_return.then_some(int),
+                }),
+            );
+        }
+        let call_returns = evidence.call_returns();
         let result_value = ValueId::from_u32(2);
         let analysis = ActivationAnalysis {
             entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
             latent_executables: Vec::new(),
-            value_types: returns.then_some((result_value, int)).into_iter().collect(),
+            value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
         };
-        let positions = if returns {
+        let positions = if call_returns {
             let caller_symbol = transport_executable_symbol(&caller, world.types());
             let caller_return = TransportPosition::ExecutableReturn {
                 executable: caller_symbol.clone(),
@@ -2555,17 +2628,17 @@ mod tests {
         (world, edge)
     }
 
-    fn materialize_ambiguous_closure_edge(returns: bool) -> (World, MaterializedCallEdge) {
-        let (world, edge) = try_materialize_ambiguous_closure_edge(returns, TransportCarrier::ValueRef);
+    fn materialize_closure_edge(evidence: ClosureCallEvidence) -> (World, MaterializedCallEdge) {
+        let (world, edge) = try_materialize_closure_edge(evidence, TransportCarrier::ValueRef);
         let edge = edge
             .expect("materialization should not fail")
-            .expect("settled multi-target closure call should produce an edge");
+            .expect("a closure call over a runtime callable should produce an edge");
         (world, edge)
     }
 
     #[test]
     fn materialize_closure_call_edge_routes_ambiguous_multi_target_through_indirect() {
-        let (_world, edge) = materialize_ambiguous_closure_edge(true);
+        let (_world, edge) = materialize_closure_edge(ClosureCallEvidence::AmbiguousReturning);
         let CallEdge::Indirect(CallReturnFlow::Continue {
             source,
             payload,
@@ -2580,7 +2653,7 @@ mod tests {
 
     #[test]
     fn materialize_closure_call_edge_routes_settled_empty_multi_target_without_a_result_value() {
-        let (world, edge) = materialize_ambiguous_closure_edge(false);
+        let (world, edge) = materialize_closure_edge(ClosureCallEvidence::AmbiguousNonReturning);
         assert!(world.types().is_empty(&edge.return_ty));
         assert_eq!(
             edge.target,
@@ -2590,7 +2663,39 @@ mod tests {
 
     #[test]
     fn materialize_closure_call_edge_rejects_absent_multi_target_carrier() {
-        let (_world, edge) = try_materialize_ambiguous_closure_edge(true, TransportCarrier::Absent);
+        let (_world, edge) =
+            try_materialize_closure_edge(ClosureCallEvidence::AmbiguousReturning, TransportCarrier::Absent);
         assert!(edge.is_err());
+    }
+
+    /// fz-kdt.130. A callable that arrived through the mailbox names no target
+    /// and never will, but it is a real value the boxed-apply wrapper can call.
+    /// Reading "no targets" as the empty type made this a `NoReturn` edge, and
+    /// native lowering turns `NoReturn` into a tail call -- which silently drops
+    /// everything the caller meant to do after the call. The carrier decides.
+    #[test]
+    fn materialize_closure_call_edge_calls_an_unnamed_callable_and_comes_back() {
+        let (world, edge) = materialize_closure_edge(ClosureCallEvidence::Unnamed);
+        assert!(!world.types().is_empty(&edge.return_ty));
+        assert!(
+            matches!(edge.target, CallEdge::Indirect(CallReturnFlow::Continue { .. })),
+            "an unnamed callable behind a runtime carrier must return to its caller, got {:?}",
+            edge.target
+        );
+    }
+
+    /// The other side of that line: with no carrier AND no evidence there is
+    /// nothing to call, so the dead-call lowering still stands (fz-f98.18).
+    #[test]
+    fn materialize_closure_call_edge_keeps_the_dead_call_when_nothing_can_be_called() {
+        let (world, edge) = try_materialize_closure_edge(ClosureCallEvidence::Unnamed, TransportCarrier::Absent);
+        let edge = edge
+            .expect("materialization should not fail")
+            .expect("a dead closure call still needs an edge to carry its return flow");
+        assert!(world.types().is_empty(&edge.return_ty));
+        assert_eq!(
+            edge.target,
+            CallEdge::Indirect(CallReturnFlow::NoReturn { local_source: None })
+        );
     }
 }

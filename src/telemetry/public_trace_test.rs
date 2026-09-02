@@ -1,6 +1,6 @@
 use super::*;
 use crate::compiler2::DriveOutcome;
-use crate::telemetry::causal::{CausalReport, Dependencies};
+use crate::telemetry::causal::{CausalReport, Dependencies, FactLifecycle, FormulaWork, ShiftWork};
 use crate::telemetry::handler::EventKind;
 
 /// The ticket's acceptance scenario: two functions, one calling the other.
@@ -835,5 +835,665 @@ fn a_double_compile_produces_one_canonical_work_multiset() {
         first.len() > 100,
         "expected a substantial multiset, got {} entries",
         first.len()
+    );
+}
+
+/// The work one job family did, summed over its per-function formulas, plus
+/// how many distinct formulas that family had. `CausalReport` keys formulas by
+/// canonical identity (`{"function_id":"main/0","kind":"DeriveCallGraphComponent"}`), so
+/// the family is the rows whose kind matches.
+fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
+    let mut formulas = 0;
+    let mut totals = FormulaWork::default();
+    for (formula, work) in &report.formulas {
+        if !formula.contains(&format!("\"kind\":\"{kind}\"")) {
+            continue;
+        }
+        formulas += 1;
+        totals.evaluations += work.evaluations;
+        totals.changed_outputs += work.changed_outputs;
+        totals.unchanged_outputs += work.unchanged_outputs;
+        totals.blocked_completions += work.blocked_completions;
+    }
+    (formulas, totals)
+}
+
+/// fz-kdt.56's ratchet, per target fixture: `(DeriveCallGraphComponent
+/// evaluations, evaluations that concluded nothing)`.
+///
+/// Measured at 1c7201b9b, before the call graph became a fact, the same three
+/// fixtures ran 85/47, 83/22 and 165/65 -- one evaluation per BFS layer of
+/// each function's own reachable cone, every one of them re-extracting the
+/// callees of every body it could already see. The numbers below are what the
+/// same compiles do now that the edges are read from `StaticCallees` facts
+/// instead.
+///
+/// fz-kdt.61 renamed the walking job `DeriveRecursive` ->
+/// `DeriveCallGraphComponent` and gave it a second output: the same walk now
+/// publishes the function's strong-component id alongside the body keying that
+/// component decides. The counts below are UNCHANGED by that -- which is the
+/// point of folding rather than splitting. A separate component job would have
+/// made every function pay one blocked evaluation waiting for its component
+/// fact before recursion could conclude, roughly +200 evaluations on
+/// enum_take_drop_split; one walk answering both questions costs nothing over
+/// the walk that was already there.
+/// Per fixture: DeriveCallGraphComponent (evaluations, concluded-nothing),
+/// then DeriveStaticCallees (evaluations, blocked) -- the family fz-kdt.56
+/// ADDED. Its cost is pinned alongside the family it shrank so the trade stays
+/// visible: on enum_take_drop_split the recursion-and-component answer costs
+/// 134 + 251 evaluations against 165 before, cheaper per evaluation (fact
+/// reads, not cone re-scans) but more of them. The residual blocked
+/// completions (24/12/34) are the pull's own layered discovery of the edge
+/// facts, which no formulation avoids: a cone cannot be known before it is
+/// walked.
+const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
+    ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 101, 51),
+    ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 142, 75),
+    ("fixtures2/behavior/enum_take_drop_split.fz", 134, 34, 251, 129),
+];
+
+/// fz-kdt.56: recursion is answered from the call graph's edge facts, so
+/// discovering a layer costs a fact read instead of a re-scan of every body
+/// already known.
+///
+/// Two halves, and the second is what keeps the first honest:
+///
+/// - The walking job's restart pyramid shrinks to the pinned counts. The
+///   evaluations that conclude nothing -- pure restart cost, 39% of the work on
+///   `enum_take_drop_split` before this ticket -- roughly halve.
+/// - `DeriveStaticCallees`, the job that replaced the re-scan, publishes each
+///   function's edges from exactly ONE evaluation. A body is extracted once no
+///   matter how many reachability walks cross it, which is the property the old
+///   traversal could not have: it re-extracted per walk, per layer.
+///
+/// The uncaused check rides along deliberately. A count can also fall by
+/// LOSING wakes, and a formula that stopped re-running because its
+/// subscriptions no longer reach it would look like an improvement here while
+/// being a correctness regression; fz-kdt.34.6's acceptance says every
+/// evaluation names a moved input, and it still must.
+#[test]
+fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
+    for (fixture, evaluations, concluded_nothing, callee_evaluations, callee_blocked) in DERIVE_RECURSIVE_RATCHET {
+        let trace = compile_fixture(fixture);
+        assert!(
+            matches!(trace.outcome, DriveOutcome::Resolved),
+            "{fixture} must resolve for its causal report to describe a whole compile"
+        );
+        let report = CausalReport::derive(trace.events());
+
+        let (_, recursive) = family_work(&report, "DeriveCallGraphComponent");
+        assert_eq!(
+            (recursive.evaluations, recursive.unchanged_outputs),
+            (evaluations, concluded_nothing),
+            "{fixture}: DeriveCallGraphComponent work moved off its fz-kdt.56 pin; re-measure \
+             and re-pin with the reason. Full row: {recursive:?}"
+        );
+
+        let (functions, callees) = family_work(&report, "DeriveStaticCallees");
+        assert!(
+            functions > 0,
+            "{fixture}: the edge facts must exist for the one-extraction claim to say anything"
+        );
+        assert_eq!(
+            callees.changed_outputs, functions,
+            "{fixture}: {functions} functions should have published {functions} edge sets -- one \
+             body, one extraction. Full row: {callees:?}"
+        );
+        assert_eq!(
+            callees.evaluations - callees.changed_outputs,
+            callees.blocked_completions,
+            "{fixture}: every DeriveStaticCallees evaluation that published nothing must be one \
+             that blocked waiting for the body; {callees:?}"
+        );
+        assert_eq!(
+            (callees.evaluations, callees.blocked_completions),
+            (callee_evaluations, callee_blocked),
+            "{fixture}: DeriveStaticCallees work moved off its fz-kdt.56 pin; the family this \
+             ticket added must not drift silently. Full row: {callees:?}"
+        );
+
+        for (formula, work) in &report.formulas {
+            if formula.contains("DeriveStaticCallees") {
+                assert_eq!(
+                    work.changed_outputs, 1,
+                    "{fixture}: {formula} must publish its edge set from exactly one evaluation"
+                );
+            }
+        }
+
+        assert_eq!(
+            report.uncaused,
+            Vec::new(),
+            "{fixture}: the drop must come from doing less work, not from losing the wakes that \
+             cause it"
+        );
+    }
+}
+
+/// fz-kdt.63's ratchet, per target fixture: what the analysis's own claims
+/// did over a whole compile, and what that cost the schedule.
+///
+/// `lifecycle` columns are `(distinct facts, first appearances, retractions)`
+/// as the stream reports them. `first_appearances > distinct` is the
+/// retract-and-remint signature — a claim withdrawn and later re-derived
+/// appears out of nothing twice — so the gap between those two columns is
+/// the churn that got re-minted. Since fz-kdt.69.1 a withdrawal can STICK
+/// (SeedActivation no longer resurrects caller-discovered keys), so the gap
+/// can be smaller than the retraction count: retractions that stuck appear
+/// only once.
+///
+/// The two families read differently since fz-kdt.69.2. `Activation` still
+/// rides preservation, so its row is the ratchet fz-kdt.63 set. The callsite
+/// row no longer can: every callsite the walk REACHES publishes its edge, so
+/// preservation of those kinds is gone and the row now measures the WALK —
+/// how often the analysis stopped reaching a callsite it had reached before.
+struct AnalysisClaimRatchet {
+    fixture: &'static str,
+    activations: FactLifecycle,
+    /// Pinned once; `CallSiteSummary` and `CallSiteTargets` are two answers of
+    /// one derivation and must stay in lockstep.
+    callsites: FactLifecycle,
+    shifts: ShiftWork,
+    analyze_evaluations: u64,
+    /// Of those, how many concluded with nothing changed -- a whole
+    /// re-derivation of one activation that reproduced the answer it already
+    /// had. fz-kdt.84 is where this column stopped being mostly self-inflicted;
+    /// what is left is fz-kdt.85/.86's to explain.
+    analyze_zero_change: u64,
+    total_evaluations: u64,
+}
+
+const fn lifecycle(distinct: u64, first_appearances: u64, retractions: u64) -> FactLifecycle {
+    FactLifecycle {
+        distinct,
+        first_appearances,
+        retractions,
+    }
+}
+
+const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
+    ShiftWork {
+        shift_wakes,
+        rebased_completions,
+    }
+}
+
+/// Measured at 631da1a6d, before analysis claims survived their own silence,
+/// the same three compiles ran:
+///
+/// ```text
+///                                 Activation      CallSite*       shifts   Analyze  total
+///   fz_f98_range_map_converges    71/77/6         73/75/2         18/28      302     969
+///   enum_predicate_search        207/236/29      244/277/33       29/58      849    1667
+///   enum_take_drop_split         297/364/67      456/526/70      107/174    1353    2864
+/// ```
+///
+/// The residual retractions on `fz_f98_range_map_converges` are the ones this
+/// ticket must NOT remove: they ride rebased conclusions, where the analysis
+/// re-derived every claim from ground that genuinely narrowed. That fixture
+/// keeping 24 rebased completions while the other two fall to 2 and 10 is what
+/// says the narrowing path is still open.
+///
+/// `fz_f98_range_map_converges` is the one row fz-kdt.69.1 moved, and every
+/// number on it fell:
+///
+/// ```text
+///   Activation lifecycle   71/76/5 -> 71/74/5
+///   shifts                   17/24 -> 17/19
+///   AnalyzeActivation          300 -> 298
+///   total evaluations          966 -> 959
+/// ```
+///
+/// Retracting a caller-discovered `Activation(k)` used to route k's own
+/// blocked analysis back to `Job::SeedActivation`, which re-minted the key
+/// from its own arrow: all five retractions came straight back, and the
+/// re-minted claim rebased the analysis again. Two of the five now stick, and
+/// the self-gate concludes instead of blocking, so five rebased completions
+/// and the work they carried are gone. Nothing was lost with them --
+/// `distinct` (71), `retractions` (5), `shift_wakes` (17) and both callsite
+/// lifecycles are unchanged, and the other two fixtures' rows do not move at
+/// all. That is what rules out the "a count can also fall by LOSING wakes"
+/// hazard below: no subscription stopped reaching anyone.
+///
+/// fz-kdt.69.2 moved the CALLSITE rows and only those, exactly as its ticket
+/// pre-authorized:
+///
+/// ```text
+///                                 CallSite* before   after
+///   fz_f98_range_map_converges    73/75/2            73/75/2
+///   enum_predicate_search        239/239/0          239/272/33
+///   enum_take_drop_split         415/415/0          415/427/12
+/// ```
+///
+/// `distinct` does not move on any of the three: every callsite the walk ever
+/// reaches was already resolving at some point in the drive, so total emission
+/// adds no new key -- it publishes the ones it has earlier, and as
+/// `Unresolved`. What appears is retract-and-remint, because the reached-
+/// callsite set is NOT monotone: `analyze_tail` stops walking a tail chain at
+/// a call with no return evidence yet (an activation key migrating to one
+/// whose `ReturnType` has not arrived), so the callsites behind it go
+/// unreached for a round and their edges withdraw. Preservation used to hide
+/// that. The churn is free -- `Activation`, `shifts`, `AnalyzeActivation` and
+/// total evaluations are byte-for-byte what they were, because nothing holds a
+/// `Current` subscription on those edges while they move.
+///
+/// A walk fix (availability per READ -- the rule `entry_scope`'s captures
+/// already state, which `analyze_tail` alone does not obey) was measured
+/// during fz-kdt.69.2 to remove this churn entirely AND move the executable
+/// inventory -- which is that ticket's STOP condition, so it was reverted,
+/// not landed. CAUTION: two faithful reconstructions during the adversarial
+/// review did NOT reproduce its numbers; the follow-up ticket (fz-kdt on the
+/// tail-chain truncation) requires the actual patch as its starting point,
+/// not this prose.
+///
+/// fz-kdt.84 moved the two EVALUATION columns down and nothing else. Deleting
+/// the revision mint for a cumulative fact's first claim at bottom stopped
+/// `ReturnType`'s empty first claim from waking every `Current` reader of the
+/// empty join:
+///
+/// ```text
+///                              AnalyzeActivation   of those, zero-change    total
+///   fz_f98_range_map_converges  298 ->  256          85 ->  43        959 ->  917
+///   enum_predicate_search       766 ->  655         148 ->  35       1555 -> 1444
+///   enum_take_drop_split       1058 ->  946         193 ->  75       2502 -> 2390
+/// ```
+///
+/// The `AnalyzeActivation` delta and the TOTAL delta are the same number on
+/// every row (-42, -111, -112): every evaluation that stopped happening was an
+/// analysis re-run, and no other family ran less. It comes out of the
+/// zero-change column, which is the whole point -- a formula woken by an empty
+/// first claim had nothing new to read, so it re-derived the answer it already
+/// had. The zero-change column falls slightly FURTHER than the evaluation
+/// column on two rows (-113 against -111, -118 against -112) because a few
+/// evaluations that used to run before their evidence now run after it and
+/// publish: the same content reaching the store in fewer, fuller runs.
+///
+/// Nothing else moved. Both lifecycles, both shift columns and the emitted
+/// executable inventory (`backend_inventory_width_stays_pinned_on_the_target_fixtures`)
+/// are what they were, and the three fixtures' canonical
+/// backend/types/activations dumps are byte-identical across the change. The
+/// claims themselves are untouched -- measured on the same three sources
+/// through `fz2 interp --log-telemetry` (a longer drive than this harness's,
+/// so its counts are its own), joining each step's
+/// `changed[old_revision=null, new_revision=0]` against its `wakes[].cause`:
+/// the 46/152/135 empty first claims all still happen, and the 43/137/139
+/// `Current` wakes they used to cause are 0.
+/// fz-kdt.86 moved the two EVALUATION columns down again, and one `Activation`
+/// lifecycle with them. Folding the callee's contract ask together with the
+/// facts that key its activation (`require_callee_prerequisites`) collapsed a
+/// two-rung wait ladder inside `analyze_activation`'s own body:
+///
+/// ```text
+///                              AnalyzeActivation   of those, zero-change    total
+///   fz_f98_range_map_converges  256 ->  226          43 ->  13        917 ->  907
+///   enum_predicate_search       655 ->  623          35 ->   4       1444 -> 1434
+///   enum_take_drop_split        946 ->  875          75 ->   8       2390 -> 2370
+/// ```
+///
+/// Measured the same way on the longer `fz2 interp --log-telemetry` drive:
+/// zero-change analyses 72/43/37 -> 6/13/4 (take_drop/range_map/predicate),
+/// of which the FunctionContract-woken 65/30/33 -> 0; no analysis blocked on
+/// a callee's contract AND its keying facts together before this change
+/// (0/0/0), and 69/31/33 do now. The three facts' surviving wakes are
+/// 116/38/66 against the ticket's measured oracle ceiling of 120/38/66 --
+/// first-encounter arrivals, not rungs.
+///
+/// `enum_take_drop_split`'s `Activation` row falls 256 -> 255: with the ladder
+/// gone, the caller reaches the callsite with grounded evidence and never
+/// mints `Range.reduce_while_step/6` at
+/// `(int, int, int, int, {:halt, {list(a4_1_0_e), int}}, a5)` -- a transient
+/// specialization keyed on uninstantiated slots. One fewer speculative key is
+/// this ticket's direction, and it is invisible downstream: all three
+/// fixtures' canonical backend dumps are byte-identical across the change and
+/// the emitted inventory holds at 59/221/214
+/// (`backend_inventory_width_stays_pinned_on_the_target_fixtures`). Every
+/// other column here -- both other lifecycles, both shift columns -- is
+/// untouched.
+/// fz-kdt.80 moved two of the three rows down again, and this time the
+/// CLAIMS moved, not just the evaluations. Intern-time `A ∨ A = A` on the
+/// non-tuple DNF axes makes the activation key a join homomorphism, so a
+/// callsite reached down several rows stops re-minting a WIDER key than any
+/// row walked:
+///
+/// ```text
+///                              Activation   CallSite*    Analyze   total
+///   fz_f98_range_map_converges  71 ->  71   73 ->  73   226 -> 226  flat
+///   enum_predicate_search      198 -> 174  239 -> 215   623 -> 553  1434 -> 1364
+///   enum_take_drop_split       255 -> 219  415 -> 379   875 -> 787  2370 -> 2282
+/// ```
+///
+/// The 24 and 36 `Activation` claims that stopped being published were the
+/// re-mint's own inventions: measured on `enum_predicate_search`, the compile
+/// published 198 distinct `Activation` facts but ran only 174 distinct
+/// `AnalyzeActivation` formulas -- 24 keys nobody ever analysed. At HEAD the
+/// two numbers are the same 174. `CallSiteSummary`/`CallSiteTargets` fall by
+/// exactly the same 24/36 (retractions unchanged at 33/12): one invented key
+/// is one invented edge.
+///
+/// `analyze_zero_change` on `enum_predicate_search` goes 5 -> 6. That column
+/// rising while its own denominator falls 623 -> 553 is a shorter ascent, not
+/// more churn: the single new row is `List.reduce_while/3` at
+/// `(non_empty_list(int), :none, (int, :none) -> {:cont, :none} | {:halt, _})`,
+/// whose evaluations halve 18 -> 9 and whose ninth run reproduces the answer
+/// its eighth reached. No formula gained evaluations.
+///
+/// `fz_f98_range_map_converges` is untouched on every column -- it has no
+/// callsite reached down two brand-distinct rows, which is why it was the one
+/// fixture with zero lost edge keys before the fix.
+/// fz-kdt.106 moved every column of the two moving rows DOWN, and left
+/// `fz_f98_range_map_converges` untouched on all of them. A correlated-input
+/// row set now absorbs the rows it dominates, so one caller's ascent ladder
+/// deposits ONE row instead of one per superseded conclusion:
+///
+/// ```text
+///                              Activation   CallSite*      Analyze   total
+///   fz_f98_range_map_converges  71 ->  71   73 ->  73    226 -> 226   flat
+///   enum_predicate_search      174 -> 173  215 -> 212    552 -> 539  1363 -> 1350
+///   enum_take_drop_split       219 -> 211  378 -> 369    805 -> 742  2300 -> 2237
+/// ```
+///
+/// The `Activation` claims that stopped being published are keys minted from
+/// a row set that had crossed `ACTIVATION_INPUT_ROW_BUDGET` and widened to its
+/// column-wise join -- one wide key standing where the callers' correlation
+/// named narrow ones. `enum_predicate_search` loses exactly one, and its
+/// callsite lifecycles fall by the matching three (245 - 248 first appearances
+/// against 33 unchanged retractions): a widened key is reached from more than
+/// one callsite. `enum_take_drop_split` loses eight, and one retraction with
+/// them (12 -> 11) -- a callsite whose target evidence used to withdraw for a
+/// round while the wide key was in flight.
+///
+/// `analyze_zero_change` falls on both moving rows (6 -> 1, 13 -> 9) against
+/// denominators that fall too, which is a shorter ascent and not less
+/// coverage: an analysis re-run that used to re-derive the answer it already
+/// had was reading a row set that had just re-collapsed. Both shift columns
+/// are untouched on all three fixtures, and `report.uncaused` stays empty --
+/// the drop comes from doing less work, not from losing the wakes that cause
+/// it.
+///
+/// The emitted inventory moves the other way on `enum_take_drop_split`
+/// (207 -> 215 executables): fewer analysed keys, more emitted ones, because
+/// the keys that survive carry the callers' correlation instead of a widened
+/// join. `backend_inventory_width_stays_pinned_on_the_target_fixtures` owns
+/// that number and its classification.
+const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
+    AnalysisClaimRatchet {
+        fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        activations: lifecycle(71, 74, 5),
+        callsites: lifecycle(73, 75, 2),
+        shifts: shifts(17, 19),
+        analyze_evaluations: 226,
+        analyze_zero_change: 13,
+        total_evaluations: 907,
+    },
+    AnalysisClaimRatchet {
+        fixture: "fixtures2/behavior/enum_predicate_search.fz",
+        // fz-kdt.106: 174 -> 173. One key minted from a budget-collapsed row
+        // set -- the wide `int | :false | :ok | :true` join -- is never minted,
+        // because the row set no longer collapses.
+        // fz-kdt.127: 173 -> 175. The forwarder erasure keeps capture TYPES,
+        // so the `reduce_while/3` chain keys the capture-free `Enum.all?/1`
+        // and `any?/1` wrappers apart from the capture-bearing `all?/2` and
+        // `any?/2` ones. Two more activations, no retractions.
+        activations: lifecycle(175, 175, 0),
+        // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
+        // retractions unchanged): the one vanished activation was named from
+        // three callsites.
+        // fz-kdt.127: 212 -> 215 distinct (245 -> 248 first appearances,
+        // retractions flat): the two new activations bring their edges.
+        callsites: lifecycle(215, 248, 33),
+        shifts: shifts(1, 2),
+        // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
+        // makes one more re-derived union reproduce its previous id instead
+        // of minting a permuted twin, so one AnalyzeActivation run that used
+        // to see a "changed" input no longer runs at all. The fixture's
+        // canonical backend dump is byte-identical either way -- this is
+        // work removed, not an answer moved.
+        // fz-kdt.106: 552 -> 539. Thirteen analysis runs were re-derivations
+        // driven by a row set that kept moving as its ladder accumulated.
+        // fz-kdt.127: 539 -> 538. One analysis run fewer: the reducer column
+        // that used to arrive as one erased arrow and be re-derived when the
+        // second wrapper joined it now arrives already split.
+        analyze_evaluations: 538,
+        // fz-kdt.91: with clause lists canonical (source order), one
+        // completion that used to publish a spuriously "changed"
+        // EntryReachability (same clause set, new arrival order) now
+        // publishes it unchanged -- evaluations flat, one fewer
+        // downstream wake. 4 -> 5.
+        // fz-kdt.80: 5 -> 6, against a denominator that fell 623 -> 553.
+        // See the header: one formula's ascent shortened 18 -> 9 runs and
+        // its last run reproduces the answer.
+        // fz-kdt.106: 6 -> 1, against a denominator that fell 552 -> 539.
+        analyze_zero_change: 1,
+        // 1364 -> 1363: the same single evaluation, seen from the whole-run
+        // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
+        // fz-kdt.127: 1350 -> 1349, the same single evaluation.
+        total_evaluations: 1349,
+    },
+    AnalysisClaimRatchet {
+        fixture: "fixtures2/behavior/enum_take_drop_split.fz",
+        // fz-kdt.106: 219 -> 211. Eight keys minted from a budget-collapsed
+        // row set are never minted, because the row sets no longer collapse.
+        // fz-kdt.132: 211 -> 250. A RISE, and it is the ascent this fixture
+        // was never finishing. A fold's reducer used to be clamped onto the
+        // specialization it was minted beside, so its accumulator stopped one
+        // rung short of the value the fold produces; unclamped, each fold
+        // climbs its last rung and every activation on that rung is new. The
+        // rise is bounded by the ladder's height (+39 on 211, no retractions,
+        // no uncaused work) and it BUYS the executables it costs: the emitted
+        // inventory falls 215 -> 196 in the same motion, because the three
+        // partial rungs per reducer collapse into the one grown accumulator.
+        // fz-kdt.127: 250 -> 258. Same cause as `enum_predicate_search`, on
+        // the same chain: capture-free `take_positive`/`drop_positive` key
+        // apart from `take_every`/`drop_every`, which close over the step.
+        // Eight more activations, no retractions.
+        activations: lifecycle(258, 258, 0),
+        // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
+        // narrowed `drop_while` accumulator leaves one fewer distinct callsite
+        // summary -- the wide arm the four lambda specializations were keyed on
+        // is no longer a destination anywhere.
+        // fz-kdt.106: 378 -> 369 distinct, 390 -> 380 first appearances, and
+        // one retraction with them (12 -> 11): the eight vanished activations
+        // take their edges, and the callsite whose evidence withdrew for a
+        // round while a widened key was in flight no longer does.
+        // fz-kdt.132: 369 -> 425 distinct, 380 -> 441 first appearances,
+        // 11 -> 16 retractions -- the 39 new activations bring their call
+        // edges, and a callsite that names a climbing accumulator withdraws
+        // its edge for the round the previous rung is displaced in.
+        // fz-kdt.127: 425 -> 434 distinct (441 -> 450 first appearances,
+        // retractions flat): the eight new activations bring their edges.
+        callsites: lifecycle(434, 450, 16),
+        shifts: shifts(6, 10),
+        // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
+        // one RISING row in this landing, and it is the price of the precision
+        // the same change bought: the accumulator that used to widen to
+        // `{[int], :false} | {[int], :true}` now settles at `{[], :true} |
+        // {[int], :false}`, and a narrower carried type takes more rungs to
+        // reach its fixed point than a widened one does. Emitted executables
+        // fall 211 -> 207 in the same motion. Not the ladder running away: the
+        // run still settles, the artifact is behaviourally identical, and the
+        // rise is bounded (+18 on 219 activations). Traced further in fz-kdt.110.
+        // fz-kdt.106: 805 -> 742, zero-change 13 -> 9, total 2300 -> 2237. The
+        // rise fz-kdt.105 booked is repaid: an accumulating row set re-ran its
+        // activation once per rung, and the rungs are gone.
+        // fz-kdt.132: 742 -> 880, total 2237 -> 2375, zero-change FLAT at 9.
+        // The last rung of every fold's accumulator now gets analyzed, which
+        // is work that was never done rather than work repeated -- flat
+        // zero-change is the evidence: not one of the 138 added runs
+        // reproduces an answer it already had.
+        // fz-kdt.127: 880 -> 890, total 2375 -> 2385, zero-change 9 -> 8. Ten
+        // runs for eight new activations, and one FEWER reproduces an answer
+        // it already had: the split reducer columns arrive settled instead of
+        // being re-derived as the second lambda joins them.
+        analyze_evaluations: 890,
+        analyze_zero_change: 8,
+        total_evaluations: 2385,
+    },
+];
+
+/// fz-kdt.63: an analysis that could not name a callee this run withdraws
+/// nothing.
+///
+/// The churn this pins away was entirely self-inflicted. A callsite whose
+/// target evidence was still climbing resolved to nothing, so the run emitted
+/// no `Activation` for it; plain output replacement read that silence as a
+/// WITHDRAWAL, which is a ground shift, which rebases every reader — who then
+/// re-derive, re-mint the same claims, and shift their own readers in turn.
+/// Absence is bottom, not retraction; only a rebased conclusion, which
+/// re-derived from moved ground, may narrow. Since fz-kdt.69.2 that reading
+/// applies to `Activation` alone: the callsite edges publish unconditionally,
+/// so their row is a measurement of the walk, not of preservation.
+///
+/// The uncaused check rides along because a count can also fall by LOSING
+/// wakes: a formula that stopped re-running because its subscriptions no
+/// longer reach it would read as an improvement here while being a
+/// correctness regression.
+#[test]
+fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
+    for row in ANALYSIS_CLAIM_RATCHET {
+        let AnalysisClaimRatchet {
+            fixture,
+            activations,
+            callsites,
+            shifts,
+            analyze_evaluations,
+            analyze_zero_change,
+            total_evaluations,
+        } = row;
+        let trace = compile_fixture(fixture);
+        assert!(
+            matches!(trace.outcome, DriveOutcome::Resolved),
+            "{fixture} must resolve for its causal report to describe a whole compile"
+        );
+        let report = CausalReport::derive(trace.events());
+        let lifecycle_of = |kind: &str| report.lifecycles.get(kind).cloned().unwrap_or_default();
+
+        assert_eq!(
+            lifecycle_of("Activation"),
+            activations,
+            "{fixture}: Activation claims moved off their fz-kdt.63 pin"
+        );
+        assert_eq!(
+            lifecycle_of("CallSiteSummary"),
+            callsites,
+            "{fixture}: CallSiteSummary claims moved off their fz-kdt.63 pin"
+        );
+        assert_eq!(
+            lifecycle_of("CallSiteTargets"),
+            callsites,
+            "{fixture}: CallSiteTargets must move in lockstep with CallSiteSummary -- they are two \
+             answers of one derivation"
+        );
+        assert_eq!(
+            report.shifts, shifts,
+            "{fixture}: ground-shift traffic moved off its fz-kdt.63 pin"
+        );
+
+        let (_, analyze) = family_work(&report, "AnalyzeActivation");
+        assert_eq!(
+            (analyze.evaluations, analyze.unchanged_outputs),
+            (analyze_evaluations, analyze_zero_change),
+            "{fixture}: AnalyzeActivation work moved off its fz-kdt.63/.84 pin. Full row: {analyze:?}"
+        );
+        assert_eq!(
+            report.formula_totals().evaluations,
+            total_evaluations,
+            "{fixture}: total formula evaluations moved off their fz-kdt.63 pin"
+        );
+
+        assert_eq!(
+            report.uncaused,
+            Vec::new(),
+            "{fixture}: the drop must come from doing less work, not from losing the wakes that \
+             cause it"
+        );
+    }
+}
+
+/// A callee whose `@spec` makes it a contract-declaring function. Analyzing
+/// `main` reaches the call while `M.helper/1` has neither its contract nor
+/// the facts that key its activation.
+const CONTRACT_CALLEE_SOURCE: &str =
+    "defmodule M do\n  @spec helper(integer) :: integer\n  fn helper(x), do: x + 1\nend\nfn main(), do: M.helper(41)\n";
+
+/// The function-keyed facts a completion reports itself blocked on, as
+/// `"Kind(function_id)"` — kind plus `function_id` is the whole identity the
+/// public stream renders for `FunctionContract`/`Recursive`/`DispatchMask`.
+fn blocked_function_facts(completion: &serde_json::Value) -> std::collections::HashSet<String> {
+    let Some(blocked) = completion.get("blocked").and_then(|v| v.as_array()) else {
+        return std::collections::HashSet::new();
+    };
+    blocked
+        .iter()
+        .filter_map(|fact| {
+            let kind = fact.get("kind")?.as_str()?;
+            let function = fact.get("function_id")?.as_u64()?;
+            Some(format!("{kind}({function})"))
+        })
+        .collect()
+}
+
+/// The raw id the public stream gave the function `label` names. The
+/// `canon.function` definition lines are the stream's own id dictionary.
+fn function_id_named(trace: &PublicTrace, label: &str) -> u64 {
+    trace
+        .events_named(&["fz", "compiler2", "canon", "function"])
+        .iter()
+        .find(|ev| ev.metadata_key("canon").and_then(|v| v.as_str()) == Some(label))
+        .and_then(|ev| ev.metadata_key("function_id")?.as_u64())
+        .unwrap_or_else(|| panic!("expected the public stream to define a canon.function line for {label}"))
+}
+
+/// fz-kdt.86: a callee's prerequisites are ONE ask, never a ladder.
+///
+/// Before a call to `M.helper/1` can resolve, the callee's contract must be
+/// applied to the surface AND the facts that key its activation
+/// (`Recursive`, `DispatchMask`) must exist. When the analysis first reaches
+/// the callsite none of the three is there yet. Waits are AND-satisfied, so
+/// naming all three in one completion costs exactly one block and one wake;
+/// asking for the contract alone and reaching the keying facts only on the
+/// next run is a two-rung ladder that re-runs the whole analysis to learn
+/// what it could have asked for in the first place.
+///
+/// The intent is the SHAPE of the ask, not a count of jobs: the analysis may
+/// block on other things and re-run for other reasons, but it must never
+/// spend two blocks on one callee's prerequisites.
+#[test]
+fn an_analysis_asks_for_a_callees_contract_and_keying_facts_in_one_block() {
+    let trace = PublicTrace::compile(CONTRACT_CALLEE_SOURCE);
+    assert!(
+        matches!(trace.outcome, DriveOutcome::Resolved),
+        "the contract-callee source must compile for its blocks to describe a whole drive"
+    );
+
+    let helper = function_id_named(&trace, "M.helper/1");
+    let prerequisites = ["FunctionContract", "Recursive", "DispatchMask"]
+        .into_iter()
+        .map(|kind| format!("{kind}({helper})"))
+        .collect::<std::collections::HashSet<_>>();
+
+    let blocks = trace
+        .events_named(&["fz", "compiler2", "work_graph", "applied"])
+        .into_iter()
+        .filter_map(|ev| {
+            let completion = ev.metadata_key("completion")?;
+            if completion.get("kind").and_then(|v| v.as_str()) != Some("AnalyzeActivation") {
+                return None;
+            }
+            let blocked = blocked_function_facts(completion);
+            (!blocked.is_disjoint(&prerequisites)).then_some(blocked)
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        blocks.len(),
+        1,
+        "an analysis must spend exactly ONE block on M.helper/1's prerequisites; \
+         each extra block is a rung of a ladder. Blocks seen: {blocks:?}"
+    );
+    assert!(
+        blocks[0].is_superset(&prerequisites),
+        "the single block must name the contract AND both keying facts together, \
+         so one wake satisfies them all. Named: {:?}, required: {prerequisites:?}",
+        blocks[0]
     );
 }

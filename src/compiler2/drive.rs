@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crate::telemetry::{RawSpanGuard, RawSpanStop1 as _, RawSpanStop2, RawSpanTelemetry, TelemetryExt};
 
 use super::code::CodeId;
-use super::facts::{ClaimShape, FactUse};
+use super::facts::{ClaimShape, DerivationId, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
 use super::semantic::{CallSiteKey, StableSortKey};
@@ -29,7 +29,30 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
         let completion = self.world.complete_job(job, effects);
         self.emit_job_completion(&completion);
+        self.emit_activation_input_budget_collapses();
         completion
+    }
+
+    /// Report the correlated-input row sets this completion widened to their
+    /// column-wise join because they crossed `ACTIVATION_INPUT_ROW_BUDGET`
+    /// (fz-0xp).
+    ///
+    /// A collapse throws away the correlation its publishers took the trouble
+    /// to keep, so one wide activation key stands where several narrow ones
+    /// would have; it is the compiler's own admission that it is specializing
+    /// on accumulated history rather than on the program. Since fz-kdt.106
+    /// absorbed the ascent ladders the corpus produces none of these, which is
+    /// what makes a single event worth reading.
+    fn emit_activation_input_budget_collapses(&mut self) {
+        let collapses = self.world.take_activation_input_collapses();
+        if collapses == 0 {
+            return;
+        }
+        self.telemetry.dispatch(
+            &["fz", "compiler2", "activation_inputs", "budget_collapsed"],
+            &crate::measurements! { collapses: collapses },
+            &crate::telemetry::Metadata::new(),
+        );
     }
 
     fn emit_job_completion(&self, completion: &super::world::JobCompletion) {
@@ -60,7 +83,8 @@ pub enum Job {
     ReifyGuardDispatch(FunctionId),
     PlanEntryDispatch(FunctionId),
     BuildMacroExecutable(FunctionId),
-    DeriveRecursive(FunctionId),
+    DeriveStaticCallees(FunctionId),
+    DeriveCallGraphComponent(FunctionId),
     DeriveDispatchMask(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
@@ -85,7 +109,7 @@ impl StableSortKey<Types> for Job {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FactKey {
     CodeIndexed(CodeId),
     CodeScoped(CodeId),
@@ -105,6 +129,8 @@ pub enum FactKey {
     GuardDispatch(FunctionId),
     EntryDispatch(FunctionId),
     MacroExecutable(FunctionId),
+    StaticCallees(FunctionId),
+    CallGraphComponent(FunctionId),
     Recursive(FunctionId),
     DispatchMask(FunctionId),
     RootEntry(RootId),
@@ -131,6 +157,26 @@ impl ClaimShape for FactKey {
 
 pub type WorkGraph = Scheduler<Job, FactKey>;
 
+/// One independently-keyed answer a job reached, beside the whole-body one.
+/// `reads`/`outputs`/`changed` are that answer's alone, and `concluded` says
+/// whether the run reached it before any block (see
+/// `scheduler::DerivationEffects`). A job that reports none of these publishes
+/// its whole body as one answer, which is what every job does today.
+#[derive(Debug, Clone)]
+pub(crate) struct JobDerivation {
+    pub(crate) derivation: DerivationId,
+    pub(crate) reads: Vec<FactUse<FactKey>>,
+    pub(crate) outputs: Vec<FactKey>,
+    pub(crate) changed: Vec<FactKey>,
+    pub(crate) concluded: bool,
+}
+
+/// What one job run reports. The flat `reads`/`outputs`/`changed` fields are
+/// the job's WHOLE-BODY answer — `DerivationId::SOLE` — and `waits` are the
+/// job's, since a job blocks whole. `derivations` names further answers the
+/// same run reached independently; leaving it empty (every job today) means
+/// the whole body is one answer and the ledger behaves exactly as it did
+/// before publisher identity was refined.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct JobEffects {
     pub(crate) reads: Vec<FactUse<FactKey>>,
@@ -138,6 +184,7 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    pub(crate) derivations: Vec<JobDerivation>,
 }
 
 impl JobEffects {
@@ -210,14 +257,20 @@ impl World {
                     },
                 )
             }
-            FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
+            FactKey::StaticCallees(function) => Some(Job::DeriveStaticCallees(*function)),
+            // One walk over the edge facts answers both: `Job::
+            // DeriveCallGraphComponent` publishes the component id and the
+            // body keying that component decides.
+            FactKey::CallGraphComponent(function) | FactKey::Recursive(function) => {
+                Some(Job::DeriveCallGraphComponent(*function))
+            }
             FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             FactKey::MacroExecutable(function) => Some(Job::BuildMacroExecutable(*function)),
             FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
-                Some(Job::SeedActivation(activation.clone()))
+                self.seed_activation_producer(activation)
             }
             FactKey::ActivationAnalyzed(activation)
             | FactKey::ReturnType(activation)
@@ -225,11 +278,8 @@ impl World {
             | FactKey::CallSiteSummary(CallSiteKey { activation, .. }) => {
                 let activation = activation.clone();
                 let mut pokes = 0;
-                if !self.has_fact(&FactKey::Activation(activation.clone()))
-                    || !self.has_fact(&FactKey::ActivationInputs(activation.clone()))
-                {
-                    pokes +=
-                        self.demand_producer_if_needed(Job::SeedActivation(activation.clone()), fact, reason) as u64;
+                if let Some(seed) = self.seed_activation_producer(&activation) {
+                    pokes += self.demand_producer_if_needed(seed, fact, reason) as u64;
                 }
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
             }
@@ -239,6 +289,22 @@ impl World {
             .unwrap_or(0)
     }
 
+    /// `Job::SeedActivation` as this activation's existence producer, or `None`
+    /// when the activation is not its to mint (fz-kdt.69.1).
+    ///
+    /// Seeding reconstructs an activation's inputs from the key's own arrow
+    /// (`jobs::root::seed_activation`). That is the truth only where nothing
+    /// else describes them: a root entry, or a key the runtime-demand frontier
+    /// minted from a callable surface no analysis ever walked. Once
+    /// `ActivationInputs(activation)` has a publisher, those inputs are that
+    /// publisher's evidence -- a caller's call edge -- and re-minting them from
+    /// the arrow would both fabricate the caller's contribution and undo the
+    /// caller's own withdrawal of the key, so no retraction could ever stick.
+    fn seed_activation_producer(&self, activation: &ActivationKey) -> Option<Job> {
+        (!self.has_fact(&FactKey::ActivationInputs(activation.clone())))
+            .then(|| Job::SeedActivation(activation.clone()))
+    }
+
     fn demand_producer_if_needed(&mut self, job: Job, target_fact: &FactKey, reason: WorkStartReason) -> bool {
         if !self.work_graph.has_run(&job) {
             // Never run: no wake source exists yet, so only a fresh demand
@@ -246,25 +312,34 @@ impl World {
             self.work_graph.enqueue(job, reason);
             return true;
         }
+        if self.work_graph.blocked(&job) {
+            // The producer already ran and paused on waits: those standing
+            // waits make it wake-reachable the moment its missing facts land,
+            // and every missing fact is itself a blocked wait whose producer
+            // the drain expansion demands. Re-demanding the paused job would
+            // only re-run it into the same unsatisfied waits.
+            //
+            // This gates ahead of the rebase test on purpose (fz-kdt.62). The
+            // rebase flag is cleared only by a CONCLUDING run, so a job that
+            // pauses on the same wait every time it runs stays flagged for the
+            // rest of the drive, and a rebase-first order re-enqueues it at
+            // every single drain. Nothing is lost by skipping it:
+            // `Scheduler::enqueue_dependents` never marks a job rebased
+            // without enqueueing it in the same step, so the shifted ground
+            // has already been offered to this job once — and what it did with
+            // the offer was block.
+            return false;
+        }
         if self.work_graph.rebased(&job) {
             // Ground shifted since its last conclusion: its claims are
-            // unsettled whether or not it names `target_fact` or is
-            // currently paused on waits, so it must re-run to re-derive them.
+            // unsettled whether or not it names `target_fact`, so it must
+            // re-run to re-derive them.
             self.work_graph.enqueue(job, reason);
             return true;
         }
         if self.work_graph.output_keys(&job).contains(target_fact) {
             // The producer claims the fact and its ground stands: a
             // re-run would republish byte-identically.
-            return false;
-        }
-        if self.work_graph.blocked(&job) {
-            // The producer already ran on standing ground and paused on
-            // waits: those standing waits make it wake-reachable the
-            // moment its missing facts land, and every missing fact is
-            // itself a blocked wait whose producer the drain expansion
-            // demands. Re-demanding the paused job would only re-run it
-            // byte-identically.
             return false;
         }
         // A producer that ran, concluded, and did not claim `target_fact`
@@ -277,6 +352,34 @@ impl World {
         false
     }
 
+    /// Answers, at a drain, the exact settled questions something is actually
+    /// asking: `facts`.
+    ///
+    /// Transitive finality is maintained by counting, and counting can never
+    /// finalize a cycle — `Scheduler::settle_quiescent` carries the proof. At
+    /// a drain the agenda decides instead: a locally clean cone holding no
+    /// dirty fact cannot move, so it is final. This is demand-driven, not a
+    /// sweep — nothing is arbitrated that nobody asked about — and the step it
+    /// produces is stashed for the execution context to emit, so the wake it
+    /// causes always has a movement on the public stream to name.
+    pub(crate) fn settle_quiescent(&mut self, facts: &[FactKey]) {
+        let step = self.work_graph.settle_quiescent(facts);
+        self.note_quiescence_step(step);
+    }
+
+    /// The blocked waiters' own settled questions. The waiter index is a
+    /// `HashMap`, so its iteration order is a per-process `RandomState`
+    /// artifact; the drain is already a barrier holding the full candidate
+    /// list, and ordering it by the keys' own `Ord` (pure data, no rendering)
+    /// pins the arbitration order deterministically. The scan-shaped drain
+    /// pass itself is fz-kdt.46's remaining target: the edge-triggered form
+    /// arbitrates the exact wait a completion left standing instead.
+    pub(crate) fn settle_quiescent_waits(&mut self) {
+        let mut facts = self.work_graph.waited_settled_facts();
+        facts.sort();
+        self.settle_quiescent(&facts);
+    }
+
     /// Expands every blocked waiter's missing fact to its producer through
     /// the fact->producer map. This is the drain-time pull: a blocked wait is
     /// a standing demand for the fact, and the fact names its single
@@ -284,25 +387,22 @@ impl World {
     /// — its missing facts are themselves blocked waits, so chains expand one
     /// frontier per pass. Returns how many producers were demanded.
     ///
-    /// *Which* facts get demanded is provably a set (the dedup above), but
+    /// *Which* facts get demanded is provably a set (the dedup below), but
     /// each demand enqueues its fact's producer job onto the same agenda, so
     /// the order these calls happen in decides the order those jobs actually
     /// run — and a job that observes another job's published fact can join
-    /// it under a keep-first merge, so run order is not free to vary. `Vec`
-    /// built from a `HashSet` carries `RandomState`'s per-process order;
-    /// sorting by `Debug` (pure data — ids and enum tags, no addresses or
-    /// hashes) pins it to a deterministic order without threading `Ord`
-    /// through every `FactKey` payload type.
+    /// it under a keep-first merge, so run order is not free to vary.
+    /// `unresolved()` hands back its waits ordered by the fact's `Debug`
+    /// rendering, so one fact's several uses arrive adjacent and dropping the
+    /// repeats leaves each fact once, in that same order.
     pub(crate) fn demand_blocked_wait_producers(&mut self) -> u64 {
         let mut facts: Vec<FactKey> = self
             .work_graph
             .unresolved()
             .into_iter()
-            .map(|wait| wait.fact.fact().clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
+            .map(|wait| wait.fact.into_fact())
             .collect();
-        facts.sort_by_cached_key(|fact| format!("{fact:?}"));
+        facts.dedup();
         facts
             .into_iter()
             .map(|fact| self.demand_fact_producer(&fact, WorkStartReason::BlockedWaiterExpansion))
@@ -321,9 +421,12 @@ impl World {
         let mut demanded = 0_u64;
         for root_id in roots {
             let root = self.root_entry(root_id);
-            if !self.fact_is_settled(&FactKey::Recursive(root.function))
-                || !self.fact_is_settled(&FactKey::DispatchMask(root.function))
-            {
+            let gates = [FactKey::Recursive(root.function), FactKey::DispatchMask(root.function)];
+            // A direct settled query is a settled question too: arbitrate it
+            // before answering, or a quiesced cone would gate the root's own
+            // entry analysis forever.
+            self.settle_quiescent(&gates);
+            if !gates.iter().all(|gate| self.fact_is_settled(gate)) {
                 continue;
             }
             let entry = self.activation_key(root_id, root.function, &root.input);
@@ -386,6 +489,10 @@ impl World {
     /// ignition is owned by the scheduler boundary, not by any job's
     /// follow-up.
     pub(crate) fn next_ready_job(&mut self) -> Option<Job> {
+        if let Some(job) = self.work_graph.pop() {
+            return Some(job);
+        }
+        self.settle_quiescent_waits();
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
@@ -474,31 +581,44 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 // *order* those jobs then run in — the agenda is a FIFO, and a
                 // job that observes another's published fact can join it under
                 // a keep-first merge, so the order this loop pokes producers in
-                // is still observable downstream. `unresolved()` is built from a
-                // `HashMap`, so its order is a per-process `RandomState`
-                // artifact; sort by `Debug` (pure data) to pin it.
+                // is still observable downstream — which is why `unresolved()`
+                // orders its waits by data rather than by map order.
                 if std::mem::take(&mut changed_since_stall) {
                     stall_demanded.clear();
                 }
+                // The agenda is empty, so every settled question standing over
+                // a quiesced cone can be answered now (fz-kdt.44). Doing it
+                // before the demand expansions is what lets a root's own
+                // recursion gate — a direct settled query — pass.
+                world.settle_quiescent_waits();
                 let mut producer_pokes =
                     world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
-                let mut unresolved = world.work_graph.unresolved();
-                unresolved.sort_by_cached_key(|wait| format!("{:?}", wait.fact.fact()));
+                let unresolved = world.work_graph.unresolved();
                 for wait in &unresolved {
                     if stall_demanded.insert(wait.fact.fact().clone()) {
                         producer_pokes +=
                             world.demand_fact_producer(wait.fact.fact(), WorkStartReason::BlockedWaiterExpansion);
                     }
                 }
+                if producer_pokes > 0 {
+                    tel.raw_event2(
+                        &["fz", "compiler2", "drive", "demand_on_stall"],
+                        &producer_pokes,
+                        &stall_demanded,
+                    );
+                }
+                let quiesced = flush_quiescence(world, tel);
+                if quiescence_woke_work(&quiesced) {
+                    // The arbiter satisfied a standing settled wait: real work
+                    // is queued, so this drain is not a stall however few
+                    // producers it managed to demand.
+                    changed_since_stall = true;
+                    continue 'drive;
+                }
                 if producer_pokes == 0 {
                     // Nothing left to demand: either resolved, or a genuine stall.
                     break 'drive;
                 }
-                tel.raw_event2(
-                    &["fz", "compiler2", "drive", "demand_on_stall"],
-                    &producer_pokes,
-                    &stall_demanded,
-                );
             }
             if !world.work_graph.has_unresolved() {
                 world.clear_unresolved_diagnostics();
@@ -514,6 +634,27 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         span.stop1(&outcome);
         outcome
     }
+}
+
+/// Emits every drain-arbiter step `World` stashed, and hands them back.
+///
+/// A readiness movement that satisfies a waiter is the one wake with no job
+/// completion behind it, so it gets its own public event — without it a woken
+/// waiter's next evaluation would name no moved input (fz-kdt.34.6).
+pub(super) fn flush_quiescence<T: RawSpanTelemetry>(
+    world: &mut World,
+    tel: &T,
+) -> Vec<super::AppliedStep<Job, FactKey>> {
+    let steps = world.take_quiescence_steps();
+    for step in &steps {
+        tel.raw_event1(&["fz", "compiler2", "work_graph", "quiesced"], step);
+    }
+    steps
+}
+
+/// Whether any of `steps` started work.
+pub(super) fn quiescence_woke_work(steps: &[super::AppliedStep<Job, FactKey>]) -> bool {
+    steps.iter().any(|step| !step.wakes.is_empty())
 }
 
 fn emit_drive_timed_out(tel: &impl crate::telemetry::Telemetry, timeout: &Option<Duration>) {

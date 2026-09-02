@@ -1,0 +1,32 @@
+#---
+# purpose: "a closure delivered by the mailbox reduces a list, whatever the accumulator turns out to be"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.152. `Enum.reduce/3` threads the reducer through `List.reduce_cont/3`,
+# which specializes on the accumulator: the first step carries the literal
+# accumulator's own type, every later step carries the reducer's widened return.
+# So ONE callable input reaches two activations of one lambda, and the plan has
+# to say what that input physically carries.
+#
+# Each shape below drives that split from a different direction: an int
+# accumulator (the literal type and the widened type are both int-shaped), a
+# list accumulator (the literal is the empty list and the steps widen away from
+# it), and a reducer holding a capture of its own (the mailbox callable is
+# itself a closure with a lane, not a bare function). The empty list is the
+# control: it never reaches a reducing step at all.
+fn main() do
+  send(self(), fn (x, acc) -> acc + x end)
+  sum = receive do f -> f end
+  dbg(Enum.reduce([1, 2, 3], 0, sum))
+  dbg(Enum.reduce([], 7, sum))
+
+  send(self(), fn (x, acc) -> [x | acc] end)
+  prepend = receive do f -> f end
+  dbg(Enum.reduce([1, 2, 3], [], prepend))
+
+  scale = 10
+  send(self(), fn (x, acc) -> acc + x * scale end)
+  scaled = receive do f -> f end
+  dbg(Enum.reduce([1, 2, 3], 0, scaled))
+end

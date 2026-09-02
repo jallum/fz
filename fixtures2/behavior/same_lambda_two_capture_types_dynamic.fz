@@ -1,0 +1,40 @@
+#---
+# purpose: "a closure chosen by a runtime branch reaches the forwarder as a union of two constructions, and the word it carries decides which body runs"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.127, the dynamic half. No key can pin which closure `f` is: the
+# `case` scrutinee comes back out of the mailbox, so `f` is typed as the union
+# `#lambda(int) | #lambda(float)` and the only thing that can separate the two
+# is the word the mint stamped on the value.
+#
+# `P.run/2` and `P.twice/2` are each ONE body here, taking that union, and the
+# call to `f` is indirect: the value's own word selects the construction
+# wrapper, whose members then answer for the capture layout they were built at.
+# So this program asks no callable question at a callsite -- the word answers
+# on its own -- and its plan is the same one it had before the callable axis
+# named constructions.
+#
+# The twin `same_lambda_two_capture_types` is the static shape of the same
+# defect, and it is the one that needs the question: there the forwarder is
+# shared by two callers whose consumers differ, so a callsite must ask.
+defmodule P do
+  fn twice(f, x), do: f.(f.(x))
+  fn run(f, x), do: twice(f, x)
+  fn mk(c), do: fn (n) -> n + c end
+end
+
+fn main() do
+  send(self(), 1)
+  n = receive do v -> v end
+  f = case n > 0 do
+    true -> P.mk(1)
+    _ -> P.mk(0.5)
+  end
+  dbg(P.run(f, 10))
+  g = case n < 0 do
+    true -> P.mk(1)
+    _ -> P.mk(0.5)
+  end
+  dbg(P.run(g, 10))
+end

@@ -287,15 +287,6 @@ impl Descr {
         out
     }
 
-    pub(super) fn without_closure_lits(mut self) -> Descr {
-        for conj in &mut self.funcs {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                sig.lit = None;
-            }
-        }
-        self
-    }
-
     pub(super) fn as_pure_list(&self, _cx: TyCtx<'_>) -> Option<&ListSig> {
         self.axis_free()
             .then_some(())

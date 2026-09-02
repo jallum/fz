@@ -1,0 +1,25 @@
+#---
+# purpose: "A forwarded closure that carries captures reaches its own body with its own capture record"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.125, the capture half. `run/2` forwards its callable to `apply_twice/2`,
+# which invokes it and therefore specializes on the closure literal: two bodies,
+# each grounded on its own lambda. `run/2`'s single callsite names both.
+#
+# Both lambdas capture one integer, so the two specializations of `apply_twice/2`
+# want that capture as a lane while `run/2` holds the callable boxed. The routing
+# and the ABI are both at stake: the plan has to name which lambda arrived, and
+# the caller has to hand that lambda's own capture record to the body it routes
+# to. `12` is `n + 1` twice over `10`; `210` is `n + 100` twice over `10`.
+defmodule Pipeline do
+  fn apply_twice(f, x), do: f.(f.(x))
+  fn run(f, x), do: apply_twice(f, x)
+end
+
+fn main() do
+  a = 1
+  b = 100
+  dbg(Pipeline.run(fn (n) -> n + a end, 10))
+  dbg(Pipeline.run(fn (n) -> n + b end, 10))
+end

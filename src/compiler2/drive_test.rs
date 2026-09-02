@@ -1,5 +1,7 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
+use crate::compiler2::artifact::{
+    BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge, DispatchCallEdge,
+};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
@@ -9,8 +11,8 @@ use crate::compiler2::{
     QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
-use crate::dispatch_matrix::Region;
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
+use crate::dispatch_matrix::{Region, SubjectId};
 use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
 use crate::fz_ir::{ExternTy, FnId, PhysicalCapability, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
@@ -20,7 +22,7 @@ use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 type OutputFacts = Vec<(FactKey, bool)>;
@@ -5004,7 +5006,7 @@ fn compiler2_native_program_joins_callable_resume_before_materializing_closure_c
 }
 
 #[test]
-fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
+fn compiler2_opaque_callable_each_uses_a_boxed_return_boundary() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -5016,8 +5018,8 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(dbg.sink());
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_each_discarded_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5048,11 +5050,15 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
         .collect::<HashSet<_>>();
     assert_eq!(boundary_ids.len(), 2);
     assert_eq!(member_functions, HashSet::from([each_a_id, each_b_id]));
+    // `Enum.each` throws the mapper's result away, but these members are
+    // reached through the boxed apply seam, whose wrapper always hands a value
+    // back. The member's own return has to supply it, so it carries the one
+    // boxed lane the wrapper returns -- the caller drops it (fz-kdt.155).
     assert!(boundaries.iter().all(|boundary| {
         boundary
             .members
             .iter()
-            .all(|member| member.target_return.layout.reprs.is_empty())
+            .all(|member| member.target_return.layout.reprs.len() == 1)
     }));
     assert!(
         native_closure_call_count(&program) > 0,
@@ -5064,7 +5070,7 @@ fn compiler2_opaque_callable_each_uses_an_absent_return_boundary() {
             .fns
             .iter()
             .find(|function| function.id == boundary.wrapper_fn)
-            .expect("absent-return boundary wrapper");
+            .expect("boxed-return boundary wrapper");
         assert!(wrapper.blocks.iter().all(|block| {
             matches!(
                 block.terminator,
@@ -8121,6 +8127,42 @@ fn compiler2_unused_construction_call_binding_keeps_the_root_runnable() {
     );
 }
 
+/// fz-kdt.111: on the empty-list path `Enum.drop_while/2` never invokes its
+/// predicate, so runtime demand marks the closure input `ignore` and transport
+/// gives the `Lambda` value no lane at all -- nothing downstream can read it.
+/// The construction step for that dead closure must therefore be omitted like
+/// any other fresh construction of a proven-absent value: the interp evaluates
+/// steps eagerly and used to fault reading the never-bound capture ("backend
+/// value 1 is unbound") while native, which materializes absent values lazily,
+/// ran the same program correctly -- a three-path-parity break.
+#[test]
+fn compiler2_dead_closure_capture_does_not_starve_the_empty_list_path() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/dead_closure_capture_empty_list.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/dead_closure_capture_empty_list.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .run_root_interp(root)
+        .expect("interp must not evaluate the dead predicate closure's capture read");
+    compiler.run_root_jit(root).expect("JIT must run the same fixture");
+    let lines = dbg.lines();
+    assert_eq!(
+        lines,
+        vec!["[]".to_string(), "[3]".to_string(), "[]".to_string(), "[3]".to_string()],
+        "both paths must drop nothing from the empty list and still run the live predicate",
+    );
+}
+
 /// A rendered closure reports the arity its source declares, not the size of
 /// the environment the compiler happened to give it. Both closures here carry
 /// exactly one capture, so a renderer keyed on the environment cannot tell
@@ -8169,8 +8211,8 @@ fn compiler2_native_program_keeps_published_closure_calls_indirect() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+        name: Some("fixtures2/behavior/opaque_fn_each_discarded_return.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -8874,6 +8916,1035 @@ end
     );
 }
 
+/// fz-kdt.104: arm order must not be the program's meaning.
+///
+/// A dispatch arm asks its question through `RuntimeTypePredicate`, which is
+/// coarser than the semantic type it is projected from -- `{:cont, pair}` and
+/// `{:cont | :halt, pair}` are both just "a 2-tuple". Two arms that project to
+/// ONE question are not two alternatives: nothing but their order decides
+/// which body runs, and that order is the scheduler's. At FIFO the wide arm of
+/// `Enum.take`'s `reduce_while_step` dispatch happens to come first and the
+/// narrow one is dead; at LIFO the narrow arm comes first, swallows
+/// `{:halt, _}`, and `Enum.take(xs, 3)` returns the whole list.
+///
+/// `call_destinations` therefore drops the narrower of two indistinguishable
+/// alternatives when the wider one is the SAME function on a domain that
+/// contains it, and this gate reads the landed artifact back to prove none
+/// survived. It is red at FIFO on today's tree -- no schedule knob needed.
+///
+/// The LIFO half is verified by hand, per the fz-kdt.93 precedent: change
+/// `Agenda::pop` (src/compiler2/agenda.rs) to `self.queue.pop_back()` and run
+/// `fz2 run fixtures2/00183_enum_take_list_range.fz`; its first line must be
+/// `[1, 2, 3]`.
+///
+/// Indistinguishable arms with no stand-in between them -- neither domain
+/// contains the other, or they are different functions -- are a different,
+/// wider defect: no arm can supply the others' bodies, so the cure is a
+/// runtime predicate that can tell them apart, not a smaller plan
+/// (fz-kdt.107). Three predicates cleared the corpus of them, and every
+/// fixture each one cleared is listed here.
+///
+/// fz-kdt.125 supplied the first -- which callable a value is.
+/// `closure_identity_tag_split` and `closure_identity_captures` are the two
+/// programs that named the defect and are shadow-free by that cure.
+///
+/// fz-kdt.107 step 3 supplied the second -- what a cons cell's first element
+/// is -- and `enum_map_family` is the fixture it clears: its three
+/// `[:a | :b]` / `[binary]` / `[int]` arms were one question, they are three
+/// now, and its arm-reversal abort dies with them.
+///
+/// fz-kdt.127 supplied the third -- which CONSTRUCTION a callable value was
+/// minted from, function and capture layout together -- and it clears the last
+/// five: `00231`, `00277`, `00281`, `opaque_fn_value_join` and
+/// `repr_seam_enum_count_after_reduce2` each had one or two groups that were
+/// one lambda over two capture types, which is one code pointer only while
+/// the axis stops at the function. The corpus census is now empty, and this
+/// list is the ratchet that keeps it so: a new entry is a new latent
+/// miscompile and wants a ticket, not a re-blessed constant.
+#[test]
+fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
+    for fixture in [
+        "fixtures2/00183_enum_take_list_range.fz",
+        "fixtures2/00420_enum_take_drop_split.fz",
+        "fixtures2/00275_enum_count_member_reduce.fz",
+        "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
+        "fixtures2/behavior/range_enumerable.fz",
+        "fixtures2/behavior/closure_identity_tag_split.fz",
+        "fixtures2/behavior/closure_identity_captures.fz",
+        "fixtures2/behavior/enum_map_family.fz",
+        "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
+        "fixtures2/00277_enum_tier0_fixture.fz",
+        "fixtures2/00281_opaque_reducer_closure.fz",
+        "fixtures2/behavior/opaque_fn_value_join.fz",
+        "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
+    ] {
+        let twins = indistinguishable_dispatch_arms(fixture);
+        assert!(
+            twins.is_empty(),
+            "{fixture}: a dispatch must not offer two arms that ask one runtime question, \
+             or arm order decides the program's meaning: {twins:#?}",
+        );
+    }
+}
+
+/// The question that clears the last of them, in the program that names it.
+///
+/// `same_lambda_two_capture_types_dynamic` picks its closure with a `case` on
+/// a value that came back out of the mailbox, so no key can pin which lambda
+/// reaches `P.run/2`: it arrives as the union of a construction over an int
+/// and a construction over a float, and only the word the mint stamped can
+/// separate them. Until fz-kdt.127 the test that reads that word could name
+/// only the FUNCTION, the two arms asked one and the same question, and arm 0
+/// took every value.
+///
+/// The word a value carries is the address of the construction WRAPPER that
+/// minted it, and a wrapper is one function at one capture layout. So the two
+/// arms ask about the same function and their capture questions are disjoint,
+/// which is what this asserts: the pair separates on the callable axis alone,
+/// and no value can pass both tests.
+///
+/// The static twin `same_lambda_two_capture_types` asks nothing at all --
+/// `compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key` pins that.
+#[test]
+fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz";
+    let (compiler, program) = driven_backend_program(fixture);
+    let types = compiler.world().types();
+    let mut separated = Vec::new();
+    for (callsite, dispatch) in dispatch_call_edges(&program) {
+        let asked = dispatch
+            .plan
+            .matrix
+            .arms
+            .iter()
+            .map(|arm| {
+                arm.questions
+                    .iter()
+                    .filter_map(|question| match &question.predicate.region {
+                        Region::Type(ty) => Some(types.runtime_type_predicate(ty)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        for (index, left) in asked.iter().enumerate() {
+            for right in asked.iter().skip(index + 1) {
+                let ([left], [right]) = (left.as_slice(), right.as_slice()) else {
+                    continue;
+                };
+                if left.callables.targets() != right.callables.targets() || left.callables.targets().values.len() != 1 {
+                    continue;
+                }
+                assert!(
+                    !left.overlaps(right),
+                    "{fixture} callsite {callsite}: two constructions of one lambda must put \
+                     disjoint questions, or a value reaches a body whose capture lane never \
+                     named it -- {left} vs {right}",
+                );
+                separated.push(format!("callsite {callsite}: {left} vs {right}"));
+            }
+        }
+    }
+    assert!(
+        !separated.is_empty(),
+        "{fixture} delivers one lambda at two capture layouts through a value no key can pin, \
+         so some dispatch must separate them by construction; none did, which is fz-kdt.127's \
+         defect back again",
+    );
+}
+
+/// The static twin asks NOTHING: the forwarder key carries the capture types,
+/// so each callsite has one callee and the program has no dispatch at all
+/// (fz-kdt.127 stage A).
+///
+/// `same_lambda_two_capture_types` forwards ONE lambda -- closed over an int at
+/// one callsite and over a float at another -- through `P.run/2`. Every call
+/// site in `main` knows which closure it passes, so the only thing that ever
+/// made this a runtime question was the forwarder erasure dropping the closure
+/// literal WHOLE: one `run` body for two callers whose `twice` consumers were
+/// never going to be shared. Erasing the BRAND and keeping the capture TYPES
+/// gives `run` one body per capture type, each with a single grounded callee,
+/// and the runtime test disappears. Static knowledge flows by KEY.
+#[test]
+fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
+    let (compiler, program) = driven_backend_program(fixture);
+    let dispatches = dispatch_call_edges(&program);
+    assert!(
+        dispatches.is_empty(),
+        "{fixture} passes a known closure at every call site, so nothing may be left for a \
+         runtime test; {} callsites still dispatch",
+        dispatches.len(),
+    );
+
+    let types = compiler.world().types();
+    let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<String>> = BTreeMap::new();
+    for executable in &program.executables {
+        let activation = &executable.key.activation;
+        let Some(first) = activation.inputs(types).first().copied() else {
+            continue;
+        };
+        keys_by_function
+            .entry(activation.function)
+            .or_default()
+            .insert(types.display(&first));
+    }
+    let forwarders_split_by_capture_type = keys_by_function
+        .values()
+        .filter(|slots| {
+            slots.len() > 1 && slots.iter().all(|slot| slot.contains("closure")) && {
+                let ints = slots.iter().filter(|slot| slot.contains("int")).count();
+                let floats = slots.iter().filter(|slot| slot.contains("float")).count();
+                ints > 0 && floats > 0
+            }
+        })
+        .count();
+    assert_eq!(
+        forwarders_split_by_capture_type, 4,
+        "`P.run/2`, `P.twice/2` and their `Q` mirrors each take the lambda at an int capture \
+         and at a float capture, and the key -- not a test -- is what separates them: {keys_by_function:#?}",
+    );
+}
+
+/// Drives one fixture to its backend product and names every dispatch call
+/// edge arm pair that asks one and the same runtime question.
+fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
+    let (compiler, program) = driven_backend_program(fixture);
+    let types = compiler.world().types();
+    let mut findings = Vec::new();
+    for (callsite, dispatch) in dispatch_call_edges(&program) {
+        for twin in indistinguishable_arms(&dispatch.plan, types) {
+            findings.push(format!("callsite {callsite} {twin}"));
+        }
+    }
+    findings
+}
+
+/// Drives one fixture to its backend product, and hands back the program with
+/// the compiler whose world types it.
+fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, BackendProgram) {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        compiler.demand(Job::BuildBackendProduct(root_id)),
+        "{fixture} should explicitly demand the backend product",
+    );
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "{fixture} should drive to a settled backend product",
+    );
+    let program = backend.last(root_id).program;
+    (compiler, program)
+}
+
+/// Every dispatching direct call a program's bodies tail into, named by its
+/// callsite.
+fn dispatch_call_edges(program: &BackendProgram) -> Vec<(u32, &DispatchCallEdge<usize, BackendReturnFlow>)> {
+    let mut edges = Vec::new();
+    for executable in &program.executables {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let BackendTail::DirectCall {
+                callsite,
+                target: CallEdge::Dispatch(dispatch),
+                ..
+            } = &entry.tail
+            else {
+                continue;
+            };
+            edges.push((callsite.as_u32(), dispatch.as_ref()));
+        }
+    }
+    edges
+}
+
+/// fz-kdt.129 / fz-kdt.131: a seat must carry surface coverage.
+///
+/// An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
+/// compiled for -- a list head says nothing about the tail, a tuple position
+/// erases whatever its own sub-test erases -- so a value can satisfy every
+/// question an arm asks and still lie outside the surface that arm's body was
+/// compiled for. Call that a BLIND ESCAPE: at some position the earlier and
+/// later arms put a question that cannot separate them, and the later arm's
+/// surface holds values the earlier arm's does not.
+///
+/// Two orderings were built on containment alone and BOTH miscompile, in
+/// opposite directions. Seating the narrower SURFACE first put
+/// `list(int) x {all?/1, all?/2, empty?}` ahead of `list(:ok) x {empty?}`
+/// (both measured when a list test still saw empty-or-cons and nothing else).
+/// Seating the narrower TEST first -- fz-kdt.129's first build, which this
+/// gate used to assert -- put `list(int) x {all?/1}` ahead of
+/// `list(:ok) x {all?/1, empty?}`, because a callable set of one is inside a
+/// set of two, and `Enum.all?([:ok, :ok])` then satisfied every question the
+/// int arm asks and aborted in `fz_list_head_int_ref` on `run` and `build`.
+///
+/// So this gate asserts the SOUND condition instead of either containment: an
+/// arm is seated ahead of a sibling only where the seat it took is the one no
+/// worse than its opposite. Formally, for every seated pair
+///
+/// ```text
+///     covers(early, late)  or  not covers(late, early)
+/// ```
+///
+/// -- either the earlier arm's surface already names everything the blind
+/// positions would hand it, or the reverse seat is no safer and the pair is
+/// the fz-kdt.107 inseparable class one rung wider, which fz-kdt.131 owns.
+/// What this forbids is the one seat that is strictly wrong: taking the
+/// escaping direction when the covering direction was available.
+///
+/// RED at 1dc98b087 on `enum_predicate_search` and
+/// `dispatch_seat_element_blind`, whose covering arms were both displaced by
+/// their strictly-smaller-test siblings.
+#[test]
+fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
+    let mut proven = 0;
+    for fixture in ARM_ORDER_CENSUS {
+        let (compiler, program) = driven_backend_program(fixture);
+        let types = compiler.world().types();
+        let mut displaced = Vec::new();
+        for (callsite, dispatch) in dispatch_call_edges(&program) {
+            let seated = seated_arm_surfaces(dispatch);
+            for early in 0..seated.len() {
+                for late in early + 1..seated.len() {
+                    proven += 1;
+                    if !covers(types, &seated[early], &seated[late]) && covers(types, &seated[late], &seated[early]) {
+                        displaced.push(format!(
+                            "callsite {callsite}: arm {late} covers arm {early}'s surface where their tests are \
+                             blind, and arm {early} is seated first anyway",
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            displaced.is_empty(),
+            "{fixture}: a dispatch seated the escaping arm first where the covering one was available, so a \
+             value every question admits runs a body its representation does not fit: {displaced:#?}",
+        );
+    }
+    assert!(
+        proven > 0,
+        "the census proved no seated pair at all, so it cannot have held anything"
+    );
+}
+
+/// fz-kdt.131: the seats where no order is escape-free, counted.
+///
+/// A blind escape this gate still finds is one BOTH seats carry -- the gate
+/// next door proves the covering seat was taken wherever one existed -- so
+/// what is left is the population fz-kdt.131 owns: pairs whose surfaces are
+/// incomparable at a position their tests cannot see. Arrival order carried
+/// them before any seating rule existed and carries them still; the seating
+/// rule declines to move such a pair, so it can only ever remove one of these,
+/// never add one.
+///
+/// These are latent MISCOMPILES, not untidiness. `enum_map_family`'s three
+/// entries are the ones that already abort natively under a reversed arm order
+/// (`compiler2_dispatch_answers_the_same_under_a_permuted_arm_order` names the
+/// reproduction), and `dispatch_seat_element_blind`'s is the one whose fixture
+/// only prints the right answers because arrival happens to seat the atom arm
+/// first. Nothing here is safe by proof; it is safe by arrival.
+///
+/// The list is a RATCHET, not a target. It goes to zero when the runtime can
+/// see what the bodies rely on -- fz-kdt.119's per-position tuple tags and
+/// fz-kdt.107 step 3's list elements -- and not before. A new entry is a new
+/// latent miscompile and wants a ticket, not a re-blessed constant.
+///
+/// SCOPE: measured at the SETTLED arrival only. An escape that only a legal
+/// permutation exposes does not move this constant -- the fz-kdt.107 step-3
+/// refutation measured 5 under `arms:3` where this pins 3, the two extras
+/// being un-dropped narrow arms a split question group re-arms (fz-kdt.143
+/// owns that cure; fz-kdt.141's stress is the instrument that sees them).
+#[test]
+fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
+    let mut escapes = Vec::new();
+    for fixture in ARM_ORDER_CENSUS {
+        let (compiler, program) = driven_backend_program(fixture);
+        let types = compiler.world().types();
+        for (_, dispatch) in dispatch_call_edges(&program) {
+            let seated = seated_arm_surfaces(dispatch);
+            for early in 0..seated.len() {
+                for late in early + 1..seated.len() {
+                    for subject in blind_escapes(types, &seated[early], &seated[late]) {
+                        escapes.push(format!(
+                            "{fixture} subject {}: {} is seated before {}",
+                            subject.0,
+                            types.display(&seated[early][&subject]),
+                            types.display(&seated[late][&subject]),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    escapes.sort();
+    assert_eq!(
+        escapes, BLIND_ESCAPE_POPULATION,
+        "the blind-escape population moved: every entry is a seat where a value the plan admits reaches a \
+         body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 can retire one",
+    );
+}
+
+/// Every position in the census where the arm seated first does not name what
+/// the arm seated second holds -- TWO of them on the fixtures that carried the
+/// 19 over 12 arm pairs at fz-kdt.129's landing, plus one this ticket's own
+/// reproducer contributes by design.
+///
+/// Each line reads: at this subject the two arms put ONE question to the
+/// runtime, and the arm seated second holds values the arm seated first does
+/// not name. Every subject here holds a LIST, and every one of the 19 was
+/// fz-kdt.107 step 3's, because a list-shape test could not see elements.
+///
+/// The list axis can see them now, and the census reads it: seventeen entries
+/// leave outright (disjoint heads are a real separation, so those pairs never
+/// meet on an erasing axis at all), and the two that remain are the pairs
+/// whose heads OVERLAP without either surface containing the other --
+/// `[:false | :nil]` against `[int | :nil]` on `:nil`, and `[:false | :true]`
+/// against `[int | :ok | :true]` on `:true`. That is fz-kdt.131's facet 3
+/// exactly: overlap without containment, where no seat is escape-free and
+/// arrival stands. Neither is a head the axis failed to read; both are heads
+/// that genuinely meet, with a tail no test reads behind them.
+///
+/// They are ARRIVAL-KEPT AND PINNED, not fixed. Both are benign today only
+/// because the two arms are specializations of one source function with boxed
+/// element access -- argued, never proven -- and the cure is a repr-level or
+/// minting-level decision, not an ordering rule.
+///
+/// The third entry is `dispatch_list_head_separates`, the fixture fz-kdt.107
+/// step 3 added, and it is here ON PURPOSE: the same A/B pair, written down as
+/// source, so the population fz-kdt.131 owns has a reproducer of its own
+/// beside the pairs this ticket cured. It is not a regression and it is not a
+/// new class.
+///
+/// The list is a RATCHET: any OTHER new entry is a new latent miscompile and
+/// wants a ticket, not a re-blessed constant.
+const BLIND_ESCAPE_POPULATION: &[&str] = &[
+    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int | :nil]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
+];
+
+/// The subjects at which seating `early` before `late` lets a value reach a
+/// body that never named it: the two arms put one and the same question there,
+/// so nothing the plan emits separates them, and `late`'s surface holds values
+/// `early`'s does not.
+fn blind_escapes(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> Vec<SubjectId> {
+    if early.len() != late.len() {
+        return Vec::new();
+    }
+    early
+        .iter()
+        .filter(|(subject, early)| {
+            late.get(subject).is_some_and(|late| {
+                // Trigger on the relation production's `covers` actually
+                // consults -- erasing overlap -- not on predicate EQUALITY.
+                // At the fz-kdt.129 baseline both triggers count the same 19
+                // escapes (equal predicates overlap on their erasing axes),
+                // so this correction is verifiable in place; under a REFINED
+                // axis (fz-kdt.119 tuples, fz-kdt.107 step 3 lists) equality
+                // under-triggers exactly when the census number becomes the
+                // headline (fz-kdt.142).
+                types
+                    .runtime_type_predicate(early)
+                    .overlaps_on_an_erasing_axis(&types.runtime_type_predicate(late))
+                    && !types.is_subtype(late, early)
+            })
+        })
+        .map(|(subject, _)| *subject)
+        .collect()
+}
+
+/// Whether seating `early` before `late` can route a value into a body that
+/// never named it: at every position, either their tests differ -- and the
+/// plan's own test keeps `late`'s values out -- or the test is blind there and
+/// `early`'s surface already contains `late`'s.
+///
+/// This mirrors `callsite_dispatch::covers`, read back off the LANDED
+/// artifact, which is the only place the whole materialization path can be
+/// held to it.
+fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
+    early.len() == late.len() && blind_escapes(types, early, late).is_empty()
+}
+
+/// A dispatch's arms in the order the plan seats them, each as the observable
+/// surface it puts to every subject it asks about.
+///
+/// The surface, not only the predicate projected from it: the projection is
+/// exactly what a seat may not be reasoned from alone, so both halves have to
+/// come off the artifact together.
+///
+/// An arm asking a question the plan does not put through `Region::Type` is not
+/// a test this can compare, and the whole dispatch is skipped rather than
+/// guessed at.
+fn seated_arm_surfaces(dispatch: &DispatchCallEdge<usize, BackendReturnFlow>) -> Vec<BTreeMap<SubjectId, Ty>> {
+    let mut seated = Vec::new();
+    for call_arm in &dispatch.arms {
+        let Some(outcome) = dispatch
+            .plan
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.body_id == call_arm.body_id)
+        else {
+            return Vec::new();
+        };
+        let Some(arm) = dispatch
+            .plan
+            .matrix
+            .arms
+            .iter()
+            .find(|arm| arm.outcome == outcome.outcome)
+        else {
+            return Vec::new();
+        };
+        let mut asked = BTreeMap::new();
+        for question in &arm.questions {
+            let Region::Type(ty) = &question.predicate.region else {
+                return Vec::new();
+            };
+            asked.insert(question.predicate.subject, *ty);
+        }
+        seated.push(asked);
+    }
+    seated
+}
+
+/// The arm pairs whose runtime questions are the same question.
+///
+/// A question the plan does not answer through `RuntimeTypePredicate` (a
+/// guard, say) makes the plan unprovable and is skipped rather than guessed
+/// at. One arm's questions merely CONTAINING another's is not this relation:
+/// nested regions are how dispatch is supposed to work, and either order
+/// routes each value to the arm that named it.
+fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<String> {
+    let mut asked = Vec::new();
+    for arm in &plan.matrix.arms {
+        let mut questions = std::collections::BTreeMap::new();
+        for question in &arm.questions {
+            let Region::Type(ty) = &question.predicate.region else {
+                return Vec::new();
+            };
+            questions.insert(question.predicate.subject, types.runtime_type_predicate(ty));
+        }
+        asked.push((arm.id, questions));
+    }
+    let mut twins = Vec::new();
+    for (left, (left_id, left_questions)) in asked.iter().enumerate() {
+        for (right_id, right_questions) in asked.iter().skip(left + 1) {
+            if left_questions == right_questions {
+                twins.push(format!("arm a{} asks arm a{}'s question", left_id.0, right_id.0));
+            }
+        }
+    }
+    twins
+}
+
+/// The fixtures fz-kdt.107's census found carrying dispatch arms one runtime
+/// question cannot separate -- 17 groups across 10 fixtures -- plus the one
+/// fz-kdt.118 added for the group it dissolves, the two fz-kdt.125 added for
+/// the callable-identity shape, and the one fz-kdt.129 added for the seat a
+/// blind list test would otherwise take.
+///
+/// fz-kdt.107 step 3 adds `dispatch_list_head_separates`, whose three arms are
+/// the trio a head question separates.
+///
+/// DELIBERATE SUBSET (fz-kdt.141 refutation): the arm perturbation moves 27
+/// fixtures' artifacts; the 13 not listed here (protocol-dispatch, bsx guard,
+/// pipe and receive shapes) move plan content but carry no known
+/// indistinguishable groups -- their coverage is the doc'd sweep recipe with
+/// the canon comparand, not this in-process gate, which exists to hold the
+/// census population's SEATS specifically. Widen it if any of the 13 ever
+/// gains an indistinguishable group.
+const ARM_ORDER_CENSUS: [&str; 15] = [
+    "fixtures2/behavior/dispatch_seat_element_blind.fz",
+    "fixtures2/behavior/dispatch_list_head_separates.fz",
+    "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
+    "fixtures2/00275_enum_count_member_reduce.fz",
+    "fixtures2/00277_enum_tier0_fixture.fz",
+    "fixtures2/00281_opaque_reducer_closure.fz",
+    "fixtures2/behavior/enum_map_family.fz",
+    "fixtures2/behavior/enum_predicate_search.fz",
+    "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures2/behavior/opaque_fn_value_join.fz",
+    "fixtures2/behavior/range_enumerable.fz",
+    "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
+    "fixtures2/behavior/closure_identity_tag_split.fz",
+    "fixtures2/behavior/closure_identity_captures.fz",
+];
+
+/// The fixtures whose CONSTRUCTION-WRAPPER member order is free: compiling each
+/// under a permuted wrapper order moves its `BackendProgram` canon, and
+/// compiling it under the settled one does not.
+///
+/// A callable value's construction wrapper carries one member per first-class
+/// surface it can be invoked at, and the selection plan that picks between them
+/// is built from the same list (`dispatch_from_callable_flow_edges` and the
+/// members beside it, `jobs/transport.rs`). That list is a `BTreeSet` walked in
+/// interned-surface order -- the type interner's mint order, which is the
+/// agenda's -- so its order is the scheduler's, exactly like a callsite's
+/// arrival order, and exactly as free to move.
+///
+/// This is the census the retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` never
+/// touched at all (fz-kdt.136). Measured at this commit by sweeping the corpus
+/// under `wrappers:` seeds and diffing the backend dump; five of the nineteen
+/// are named by the arm census too.
+const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
+    "fixtures2/00183_enum_take_list_range.fz",
+    "fixtures2/00197_poly_capture_ref.fz",
+    "fixtures2/00230_enum_take_chained.fz",
+    "fixtures2/00276_enum_to_list_and_map.fz",
+    "fixtures2/00277_enum_tier0_fixture.fz",
+    "fixtures2/00391_poly_capture_ref.fz",
+    "fixtures2/00418_enum_count_range.fz",
+    "fixtures2/00419_enum_take_mixed.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/behavior/dispatch_seat_element_blind.fz",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+    "fixtures2/behavior/enum_map_family.fz",
+    "fixtures2/behavior/enum_predicate_search.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures2/behavior/list_literal_trailing_call.fz",
+    "fixtures2/behavior/map_enumerable.fz",
+    "fixtures2/behavior/opaque_fn_mixed_return.fz",
+    "fixtures2/behavior/unused_range_binding.fz",
+];
+
+/// The arrival-order settings the in-process gate drives.
+///
+/// `arms:reverse` is the retired knob's exact permutation, kept because the
+/// fixtures and the prose around it were measured under it. The seeds are why
+/// this gate has teeth the reversal did not: at this commit `arms:reverse`
+/// moves 8 fixtures' artifacts and a seed moves 27, and the two seeds here are
+/// the ones whose native movers differ (seed 1 aborts `00277` and
+/// `dispatch_seat_element_blind`; seed 6 aborts `enum_map_family` and
+/// `enum_predicate_search`).
+const ARM_ORDER_STRESSES: [&str; 3] = ["arms:reverse", "arms:1", "arms:6"];
+
+/// The construction-member settings the in-process gate drives. Two seeds,
+/// because most wrappers carry exactly two members and one seed is one of the
+/// two orders they can be in.
+const WRAPPER_MEMBER_STRESSES: [&str; 2] = ["wrappers:1", "wrappers:6"];
+
+/// fz-kdt.118 / fz-kdt.107 / fz-kdt.141: the two orders that decide which body
+/// a value reaches are the scheduler's, so no answer may depend on either.
+///
+/// A callsite's ARRIVAL order is the settled targets' order, which is the
+/// semantic fixpoint's, which is the agenda's. A callable's CONSTRUCTION-
+/// WRAPPER member order is a `BTreeSet<CallableSurface>` walked in interned-id
+/// order, which is the type interner's mint order, which is the agenda's again.
+/// Any permutation of either is an order the fixpoint could legally have
+/// delivered, so an answer that moves under one is an answer a schedule
+/// decides. This is the only gate that catches the class: the corpus's own two
+/// schedules never disagree about these orders (FIFO and LIFO are stdout-
+/// identical on all 584 fixtures), so the miscompiling orders stay legal but
+/// unproduced until something perturbs them.
+///
+/// WHY THIS GATE IS NOT THE REVERSAL GATE IT REPLACES (fz-kdt.141). The
+/// retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` mirrored the members of each
+/// runtime-indistinguishable GROUP, and nothing else. That reaches one
+/// permutation of exactly the pairs the plan cannot separate -- so as
+/// fz-kdt.119 taught the predicate to separate more of them the same knob got
+/// weaker, and on a callsite whose groups are all singletons it is the
+/// IDENTITY. Measured at this commit: reversal moves 8 fixtures' artifacts, a
+/// seeded permutation moves 27, and reversal moves ZERO construction wrappers
+/// where a seed moves 19. Of the four fixtures that abort natively under a
+/// legal arm order, the reversal reaches ONE.
+///
+/// RED AT 788c0c21f on `enum_reduce_halt_arm_order`, which returned
+/// `{:done, 3}` for `{:halted, 3}` when the narrow `{:cont, int}` arm was
+/// listed first (fz-kdt.118 fixed it).
+///
+/// This gate drives the INTERPRETER, which is where every fixture's answer is
+/// defined and where a mis-seated value survives on its dynamic tag. Natively
+/// four fixtures abort under a legal order, all in one class -- three list arms
+/// whose bodies use incompatible element accessors, no one of which covers
+/// another, so `fz_list_head_int_ref` reads non-int elements as ints
+/// (atoms on two census fixtures, bitstrings and structs on the others)
+/// (fz-kdt.107 step 3). They are `enum_map_family` (`arms:reverse`, `6`),
+/// `00277_enum_tier0_fixture` (seeds 1-5), `dispatch_seat_element_blind`
+/// (every seed) and `enum_predicate_search` (`6`). Reproduce one outside the
+/// harness, where an abort cannot take the suite down with it:
+///
+///     FZ_STRESS_PERMUTE_DISPATCH=arms:1 \
+///       cargo run --bin fz2 -- run fixtures2/behavior/dispatch_seat_element_blind.fz
+///
+/// The full recipe -- every fixture, every door, N seeds -- is in
+/// `.agent/docs/dispatch-matrix.md`.
+#[test]
+fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
+    assert_no_answer_moves(&ARM_ORDER_CENSUS, &ARM_ORDER_STRESSES);
+}
+
+/// The same law on the other free order: which construction-wrapper member a
+/// callable value's invocation reaches is decided by the mint order the members
+/// were derived in, and nothing else.
+///
+/// This half is what fz-kdt.136 found missing. It is green on stdout at this
+/// commit, on every door. It used to be green over a live hazard: the
+/// surface-membership tripwire reported 268 escapes at the settled order, 68
+/// under `wrappers:1` and 20 under `wrappers:6` -- values reaching a member
+/// whose surface never named them, with the order deciding which. fz-kdt.132
+/// removed the population rather than the ordering (the escapes were a fold
+/// accumulator rung that had no member at all), so the tripwire now reads 0
+/// under every setting and this gate holds the law on its own:
+/// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members` is
+/// what proves the perturbation still lands.
+#[test]
+fn compiler2_dispatch_answers_the_same_under_a_permuted_wrapper_order() {
+    assert_no_answer_moves(&WRAPPER_MEMBER_CENSUS, &WRAPPER_MEMBER_STRESSES);
+}
+
+/// Each fixture's answer, under the settled order and under every setting.
+fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
+    for fixture in fixtures {
+        let settled = settled_arm_order_answer(fixture);
+        for stress in stresses {
+            let permuted = {
+                let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+                    crate::compiler2::callsite_dispatch::dispatch_stress::setting(stress),
+                );
+                interpreted_answer(fixture)
+            };
+            assert_eq!(
+                permuted, settled,
+                "{fixture} under FZ_STRESS_PERMUTE_DISPATCH={stress}: permuting an order the \
+                 fixpoint chose is a legal arrival, so it must not change a single answer",
+            );
+        }
+    }
+}
+
+/// fz-kdt.132: a value never reaches a body whose surface never named it.
+///
+/// A dispatch test is a PROJECTION of the surface an arm was compiled for, so
+/// passing the test is not the same as belonging to the surface. Where the two
+/// part company, a body typed for one domain runs on a value from another --
+/// today by luck: BEFORE fz-kdt.138 the emitted tuple test was blind at a
+/// list position (the fz-kdt.119 Scope-A carve-out, since deleted) and handed
+/// every value to whichever member came first; making the test exact would
+/// have left that population nowhere to go (`backend callable construction N
+/// matched no member`) -- which is why fz-kdt.132 (the covering rung) had to
+/// land first, and did.
+///
+/// The escapes were never a dispatch defect. They were a MISSING
+/// SPECIALIZATION: a fold's reducer is minted beside its initial accumulator
+/// and keeps that arrow, and `resolve_closure_call` used to intersect every
+/// later argument with it -- so each call was clamped back onto the initial
+/// specialization, the accumulator's ascent stopped one rung short, and the
+/// grown accumulator the fold actually produces got no specialization and no
+/// construction member at all. The values with nowhere to belong are exactly
+/// that rung.
+///
+/// This is the dynamic census the shell recipe in `.agent/docs/dispatch-matrix.md`
+/// reads off stderr, driven in process. The seven fixtures are the whole of the
+/// corpus that ever reported an escape; RED at 8002889ff with 268 of them
+/// (00183 16, 00230 16, 00418 4, 00419 16, 00420 106, enum_take_drop_split 106,
+/// unused_range_binding 4), and the corpus total is 0 either way outside this
+/// list.
+#[test]
+fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
+    let mut escaping = Vec::new();
+    for fixture in SURFACE_MEMBERSHIP_CENSUS {
+        let census = crate::runtime_type_predicate::surface_membership::SurfaceMembershipCensus::install();
+        interpreted_answer(fixture);
+        let escapes = census.escapes();
+        if escapes != 0 {
+            escaping.push(format!("{fixture}: {escapes}"));
+        }
+    }
+    assert!(
+        escaping.is_empty(),
+        "a value that passes an arm's test but lies outside the surface that arm was compiled for is \
+         running a body that never named it -- the arm is missing, not the test: {}",
+        escaping.join(", "),
+    );
+}
+
+/// Every fixture in the corpus that has ever reported a surface-membership
+/// escape. The whole corpus is the shell sweep in
+/// `.agent/docs/dispatch-matrix.md`; these seven are what it found.
+const SURFACE_MEMBERSHIP_CENSUS: [&str; 7] = [
+    "fixtures2/00183_enum_take_list_range.fz",
+    "fixtures2/00230_enum_take_chained.fz",
+    "fixtures2/00418_enum_count_range.fz",
+    "fixtures2/00419_enum_take_mixed.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/unused_range_binding.fz",
+];
+
+/// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
+///
+/// A gate that asserts invariance is worth exactly what its perturbation
+/// reaches, and the instrument this replaces reached the construction wrappers
+/// not at all. So assert the perturbation lands: the same fixture, compiled to
+/// the same stage, renders a DIFFERENT canonical backend program under a
+/// permuted wrapper order -- and an identical one under no setting, which is
+/// the inertness claim on the same comparand.
+///
+/// `enum_take_drop_split` is the subject because its wrappers carry members
+/// keyed on accumulator tuples that differ only at a list position -- pairs
+/// the tuple test COULD not separate before fz-kdt.138 (whichever the mint
+/// order put first took every value) and now separates by shape and head.
+/// Which member the mint order lists first is what this perturbation moves. (fz-kdt.132 made every one of those members cover the values that
+/// reach it, so the choice is no longer a hazard -- but it is still a choice
+/// nothing but the interner makes, which is what this gate holds to one
+/// answer.)
+#[test]
+fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
+    use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
+
+    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
+    let settled = backend_canon(fixture);
+    assert_eq!(
+        backend_canon(fixture),
+        settled,
+        "the same fixture compiled twice with no setting must render the same artifact, or this \
+         gate's comparand is noise",
+    );
+    let permuted = {
+        let _stress = DispatchStressed::install(setting("wrappers:1"));
+        backend_canon(fixture)
+    };
+    assert_ne!(
+        permuted, settled,
+        "a permuted wrapper order must reseat the construction members it was built to perturb; \
+         a stress that cannot move them proves nothing about the order they arrived in",
+    );
+}
+
+/// One fixture's canonical `BackendProgram` -- the comparand the `--dump
+/// backend` path renders.
+fn backend_canon(fixture: &str) -> String {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
+    let world = compiler.world();
+    crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root))
+}
+
+/// fz-kdt.108: the construction wrapper's members carry ONE canonical order --
+/// `Types::cmp_tys` over each member's surface inputs -- so the settled artifact
+/// stops depending on the type interner's mint order (which is the agenda's).
+/// The members and the selection plan's rows both derive positionally from the
+/// same `first_class_edges` list, and that list is ordered by `cmp_tys` where it
+/// is built (`callable_flow_resolution_edges_product`), before either derives;
+/// so a monotone member list is the whole construction authority being monotone.
+///
+/// `enum_map_family` is the subject: its reducer flows to three element families
+/// (atoms, binaries, ints), each crossed with the empty and the grown
+/// accumulator, so its wrapper carries a genuinely multi-surface member list --
+/// the shape whose FIFO/LIFO backend-canon gap (1170 lines) this ticket closes.
+/// The order is non-strict: two members whose surfaces are `cmp_tys`-equal (the
+/// same element with the empty vs the grown accumulator can tie) are `Equal`,
+/// never `Greater`.
+#[test]
+fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
+    use std::cmp::Ordering;
+
+    let fixture = "fixtures2/behavior/enum_map_family.fz";
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
+    let world = compiler.world();
+    let program = world.backend_program(root);
+
+    let mut multi_member_wrappers = 0;
+    for wrapper in &program.construction_wrappers {
+        if wrapper.members.len() > 1 {
+            multi_member_wrappers += 1;
+        }
+        for pair in wrapper.members.windows(2) {
+            assert_ne!(
+                world.types().cmp_tys(&pair[0].surface_inputs, &pair[1].surface_inputs),
+                Ordering::Greater,
+                "construction members must be non-decreasing under cmp_tys, so the settled artifact \
+                 no longer inherits the interner's mint order: {:?} came before {:?}",
+                pair[0].surface_inputs,
+                pair[1].surface_inputs,
+            );
+        }
+    }
+    assert!(
+        multi_member_wrappers > 0,
+        "{fixture} must exercise at least one multi-surface construction wrapper for this gate to \
+         mean anything",
+    );
+}
+
+/// The answer to hold a permuted order to: the blessed golden where the
+/// fixture matrix owns one, and otherwise this tree's own settled-order run.
+fn settled_arm_order_answer(fixture: &str) -> Vec<String> {
+    let golden = fixture.strip_suffix(".fz").map(|stem| format!("{stem}.expected.txt"));
+    match golden.and_then(|path| std::fs::read_to_string(path).ok()) {
+        Some(text) => text.lines().map(str::to_string).collect(),
+        None => interpreted_answer(fixture),
+    }
+}
+
+/// One fixture's `dbg` output, through the backend interpreter.
+fn interpreted_answer(fixture: &str) -> Vec<String> {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root_id).unwrap_or_else(|error| {
+        panic!(
+            "{fixture} should run on the backend interpreter: {error}; dbg={}",
+            dbg.lines().join("\n")
+        )
+    });
+    dbg.lines()
+}
+
+/// fz-kdt.125: a closure that reaches its invoker through one generalized hop
+/// still runs, and it is the one the caller handed over.
+///
+/// `run/2` only FORWARDS its callable, so its arrow position generalizes and
+/// one shared body serves both lambdas. `apply_twice/2` INVOKES it, so it
+/// specializes on the closure literal -- two bodies, each direct-calling its
+/// own lambda. `run/2`'s one callsite names both.
+///
+/// The two observable surfaces used to be identical, because
+/// `runtime_type_test_envelope` erased both literals to `fun_top`:
+/// `discriminating_inputs` found nothing to test, the plan compiled to an
+/// unconditional outcome, arm 1 was emitted unreachable, and `n * 3` never ran
+/// (12/12 for 12/90, on all three paths). The erasure was the defect. A closure
+/// value's heap word names the code it was minted from, so the envelope keeps
+/// literal fn ids and the plan asks which lambda arrived.
+#[test]
+fn compiler2_forwarded_closures_are_not_replaced_by_their_sibling() {
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/forwarded_closure_siblings.fz".to_string()),
+        text: r#"
+defmodule Pipeline do
+  fn apply_twice(f, x), do: f.(f.(x))
+  fn run(f, x), do: apply_twice(f, x)
+end
+
+fn main() do
+  dbg(Pipeline.run(fn (n) -> n + 1 end, 10))
+  dbg(Pipeline.run(fn (n) -> n * 3 end, 10))
+end
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .run_root_interp(root_id)
+        .unwrap_or_else(|error| panic!("forwarded closures should run: {error}"));
+
+    assert_eq!(
+        dbg.lines().as_slice(),
+        ["12", "90"],
+        "each call must invoke the lambda it was handed, not the one the surviving specialization was keyed on",
+    );
+}
+
+/// fz-kdt.118 / fz-kdt.141, the three-path half: `:halt` halts on the native
+/// path too, under every legal order of this callsite's arms.
+///
+/// The interpreter carries a dynamic tag on every value, so it can survive
+/// routing a value into a body that was not specialized for it. Native code
+/// cannot, and this fixture's answer is a plan-level fact -- it must read the
+/// same whichever way the arms arrived.
+///
+/// The corpus gates above drive the interpreter, because a mis-seated list
+/// element aborts the process natively and an abort takes the whole suite with
+/// it. This fixture is the one that can be held to the native door in process:
+/// its arms differ by a closure literal the callable axis separates exactly, so
+/// no order of them can route a value into a body that never named it -- and
+/// the settings below are the ones the corpus sweep measured as leaving it
+/// alone on every door.
+#[test]
+fn compiler2_jit_halts_a_reduce_under_every_arm_order() {
+    for stress in ["", "arms:reverse", "arms:1", "arms:6"] {
+        let tel = ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.set_output(dbg.sink());
+        compiler.submit_code(CodeSubmission {
+            name: Some("fixtures2/behavior/enum_reduce_halt_arm_order.fz".to_string()),
+            text: include_str!("../../fixtures2/behavior/enum_reduce_halt_arm_order.fz").to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+            crate::compiler2::callsite_dispatch::dispatch_stress::setting(stress),
+        );
+        compiler
+            .run_root_jit(root_id)
+            .unwrap_or_else(|error| panic!("the halt fixture should run on the JIT ({stress:?}): {error}"));
+        assert_eq!(
+            dbg.lines().as_slice(),
+            ["{:halted, 3}", "{:done, 1500}"],
+            "{stress:?}: `:halt` must halt whichever arm the plan lists first, \
+             and the reducer the value carried is the one that must run",
+        );
+    }
+}
+
 #[test]
 fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let tel = ConfiguredTelemetry::new();
@@ -9518,6 +10589,290 @@ fn compiler2_lower_function_mints_lambda_defs_without_eagerly_lowering_them() {
     );
 }
 
+/// fz-kdt.56's acceptance shape: a call chain three deep plus one mutually
+/// recursive pair, so the same program carries a plain reachability answer
+/// (nothing on the chain reaches itself) and a cyclic one.
+const STATIC_CALL_GRAPH_SOURCE: &str = r#"
+fn c(x), do: x + 1
+fn b(x), do: c(x) + 1
+fn a(x), do: b(x) + 1
+fn pong(n), do: ping(n - 1)
+fn ping(n) do
+  if n <= 0 do
+    0
+  else
+    pong(n)
+  end
+end
+fn main(), do: dbg(a(1) + ping(3))
+"#;
+
+/// fz-kdt.56: the static call graph is a per-function FACT, extracted from one
+/// body once, and recursion is answered by walking those edges.
+///
+/// Before this ticket `DeriveRecursive` owned the whole traversal: every
+/// evaluation re-extracted the callees of every body it could reach, so
+/// discovering one more layer of the graph cost a full re-scan of the layers
+/// already known (165 evaluations over 100 functions on
+/// `enum_take_drop_split`, 65 of them concluding nothing). Three things have to
+/// hold together for the edge fact to be the honest replacement:
+///
+/// (a) the edges are the body's real callees -- `main` reaches `a` and `ping`,
+///     the chain steps `a -> b -> c` one hop at a time, `c` is a leaf, and the
+///     mutual pair points at each other;
+/// (b) the answer the walking job publishes off those edges is unchanged --
+///     `recursive` is true for exactly the cycle, false for the chain and for
+///     `main`, which calls into the cycle without being in it;
+/// (c) one body, one extraction: each function's `StaticCallees` fact is
+///     published by exactly one evaluation of its own job. A function whose
+///     edges are read by five different callers still pays for one scan.
+#[test]
+fn compiler2_static_callee_facts_are_extracted_once_per_body_and_answer_recursion() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_static_call_graph.fz".to_string()),
+        text: STATIC_CALL_GRAPH_SOURCE.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "the static call graph fixture should settle");
+
+    let id = |name: &str, arity: u64| function_id(&functions, name, arity);
+    let (main, a, b, c, ping, pong) = (
+        id("main", 0),
+        id("a", 1),
+        id("b", 1),
+        id("c", 1),
+        id("ping", 1),
+        id("pong", 1),
+    );
+
+    // (a) the edges themselves. Named rather than id-compared, because the
+    // graph is the WHOLE static graph: an operator call is a call, so `+` and
+    // `<=` are edges into the runtime module exactly like `a` and `ping` are
+    // edges into this source.
+    let callees = |function: FunctionId| compiler.world().static_callees(function).to_vec();
+    let edge_names = |function: FunctionId| {
+        callees(function)
+            .into_iter()
+            .map(|callee| compiler.world().function_ref(callee).name.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let names = |names: [&str; 2]| names.map(str::to_string).into_iter().collect::<BTreeSet<_>>();
+    assert_eq!(
+        edge_names(main),
+        ["+", "dbg", "a", "ping"].map(str::to_string).into_iter().collect(),
+        "main's edges are every function its body calls, operators included",
+    );
+    assert_eq!(edge_names(a), names(["+", "b"]), "the chain steps one hop at a time");
+    assert_eq!(edge_names(b), names(["+", "c"]), "the chain steps one hop at a time");
+    assert_eq!(
+        edge_names(c),
+        ["+"].map(str::to_string).into_iter().collect(),
+        "c is a leaf of this source: its only edge is the operator",
+    );
+    assert_eq!(
+        edge_names(ping),
+        names(["<=", "pong"]),
+        "the mutual pair points at pong"
+    );
+    assert_eq!(edge_names(pong), names(["-", "ping"]), "the mutual pair points back");
+
+    // The published `Vec` is deterministic by construction: `static_edges`
+    // yields a body's edges in ascending function id, and the callee list keeps
+    // that order instead of re-sorting a set at publication time.
+    for function in [main, a, b, c, ping, pong] {
+        let edges = callees(function);
+        assert!(
+            edges.windows(2).all(|pair| pair[0].as_u32() < pair[1].as_u32()),
+            "{function:?} published its callees out of extraction order: {edges:?}",
+        );
+    }
+
+    // (b) the conclusion drawn from those edges is the same answer the old
+    // whole-graph re-walk produced.
+    let recursive = |function: FunctionId| {
+        compiler
+            .world()
+            .body_keying(function)
+            .unwrap_or_else(|| panic!("body keying for {function:?}"))
+            .recursive
+    };
+    assert!(recursive(ping) && recursive(pong), "the mutual pair is recursive");
+    for function in [main, a, b, c] {
+        assert!(
+            !recursive(function),
+            "{function:?} reaches the cycle but never itself, so it is not recursive",
+        );
+    }
+
+    // (c) one body, one extraction. `DeriveStaticCallees` may block while it
+    // waits for the body -- that is demand, not work -- but exactly one of its
+    // evaluations may conclude and publish the edges.
+    for function in [main, a, b, c, ping, pong] {
+        let publications = outputs
+            .stops_matching(|job| *job == Job::DeriveStaticCallees(function))
+            .into_iter()
+            .filter(|stop| {
+                stop.effects
+                    .as_ref()
+                    .is_some_and(|effects| effects.outputs.contains(&FactKey::StaticCallees(function)))
+            })
+            .count();
+        assert_eq!(
+            publications, 1,
+            "{function:?} should have its body scanned for edges exactly once, not once per reader",
+        );
+    }
+}
+
+/// fz-kdt.61: the call graph's strong components are a per-function FACT, and
+/// recursion is a projection of it.
+///
+/// `CallGraphComponent(f)` stores the SMALLEST `FunctionId` mutually reachable
+/// with `f`. A strong component is a set and its minimum is a function of that
+/// set alone, so two functions are mutually reachable exactly when their
+/// stored ids are EQUAL -- membership becomes a comparison of two fact reads
+/// instead of a traversal at every asking site.
+///
+/// Three things hold together on the same chain-plus-cycle fixture the edge
+/// facts use:
+///
+/// (a) the cycle shares one canonical id and the chain does not, and the id is
+///     genuinely the smallest member rather than whichever node was walked
+///     first;
+/// (b) recursion agrees with component membership everywhere -- `recursive` is
+///     true for exactly the functions whose component has more than one member
+///     or whose own edge set names them. This is the same answer the deleted
+///     `reaches_self` walk produced, now read off the component;
+/// (c) both facts come from ONE evaluation. The walk is not paid for twice:
+///     the evaluation that publishes `CallGraphComponent(f)` is the same one
+///     that publishes `Recursive(f)`.
+#[test]
+fn compiler2_call_graph_components_are_canonical_and_answer_recursion() {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/compiler2_call_graph_components.fz".to_string()),
+        text: STATIC_CALL_GRAPH_SOURCE.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "the call graph fixture should settle");
+
+    let id = |name: &str, arity: u64| function_id(&functions, name, arity);
+    let (main, a, b, c, ping, pong) = (
+        id("main", 0),
+        id("a", 1),
+        id("b", 1),
+        id("c", 1),
+        id("ping", 1),
+        id("pong", 1),
+    );
+    let component = |function: FunctionId| {
+        compiler
+            .world()
+            .call_graph_component(function)
+            .unwrap_or_else(|| panic!("call graph component for {function:?}"))
+    };
+
+    // (a) the mutual pair is one component; the chain is four separate ones.
+    assert_eq!(
+        component(ping),
+        component(pong),
+        "ping and pong reach each other, so they share one component",
+    );
+    assert_eq!(
+        component(ping),
+        ping.min(pong),
+        "the canonical member is the SMALLEST id in the component, not whichever \
+         node the walk happened to start from",
+    );
+    for function in [main, a, b, c] {
+        assert_eq!(
+            component(function),
+            function,
+            "{function:?} reaches nothing that reaches it back, so it is its own component",
+        );
+    }
+    let chain = [main, a, b, c, ping];
+    for (index, left) in chain.iter().enumerate() {
+        for right in &chain[index + 1..] {
+            assert_ne!(
+                component(*left),
+                component(*right),
+                "{left:?} and {right:?} are not mutually reachable and must not share an id",
+            );
+        }
+    }
+
+    // (b) recursion is that same answer, read off the component.
+    let recursive = |function: FunctionId| {
+        compiler
+            .world()
+            .body_keying(function)
+            .unwrap_or_else(|| panic!("body keying for {function:?}"))
+            .recursive
+    };
+    for function in [main, a, b, c, ping, pong] {
+        let members = [main, a, b, c, ping, pong]
+            .into_iter()
+            .filter(|other| component(*other) == component(function))
+            .count();
+        let self_edge = compiler.world().static_callees(function).contains(&function);
+        assert_eq!(
+            recursive(function),
+            members > 1 || self_edge,
+            "{function:?}: recursion must agree with its component membership",
+        );
+    }
+    assert!(recursive(ping) && recursive(pong), "the mutual pair is recursive");
+    for function in [main, a, b, c] {
+        assert!(
+            !recursive(function),
+            "{function:?} reaches the cycle but never itself, so it is not recursive",
+        );
+    }
+
+    // (c) one walk, two facts. A split job would pay for the traversal twice.
+    for function in [main, a, b, c, ping, pong] {
+        let publications = outputs
+            .stops_matching(|job| *job == Job::DeriveCallGraphComponent(function))
+            .into_iter()
+            .filter(|stop| {
+                stop.effects.as_ref().is_some_and(|effects| {
+                    effects.outputs.contains(&FactKey::CallGraphComponent(function))
+                        && effects.outputs.contains(&FactKey::Recursive(function))
+                })
+            })
+            .count();
+        assert_eq!(
+            publications, 1,
+            "{function:?}: the component and the keying it decides must publish from exactly \
+             one evaluation of one walk",
+        );
+    }
+}
+
 #[test]
 fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     let tel = ConfiguredTelemetry::new();
@@ -9556,8 +10911,8 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     );
     assert!(
         outputs
-            .take(Job::DeriveRecursive(build_id))
-            .expect("DeriveRecursive job effects for build/2")
+            .take(Job::DeriveCallGraphComponent(build_id))
+            .expect("DeriveCallGraphComponent job effects for build/2")
             .contains(&presence(FactKey::Recursive(build_id), true)),
         "the recursive fact should be published for closure-mediated recursion",
     );
@@ -10392,8 +11747,8 @@ end
     );
 }
 
-/// fz-f98.14.11 — an indirect closure call's return payload is the CALLSITE
-/// RESULT's contract, not the caller's own return. `Enum.each`'s step
+/// fz-f98.14.11, re-aimed by fz-kdt.155 — the two halves of one indirect
+/// calling convention are compiled against ONE contract. `Enum.each`'s step
 /// discards the mapper's result:
 ///
 /// ```fz
@@ -10403,17 +11758,125 @@ end
 /// end
 /// ```
 ///
-/// so the callsite's delivered payload carries no demand and must publish no
-/// lanes -- the same zero the callee-side boundary derives (`return_form:
-/// Absent`, the contract `opaque_fn_each_absent_return` pins). Before this
-/// landed, the payload layout was derived from the CALLER's return type and
-/// demand -- `each_step` returns a demanded `acc`, so the discarded result
-/// published a one-lane ValueRef delivery while the boundary delivered zero
-/// lanes, and the two halves of one calling convention were compiled against
-/// different contracts (the caller's continuation read an unwritten register:
-/// the `fz_closure_get_capture_atom` SIGABRT).
+/// and the question is which lane count both halves settle on. Deriving the
+/// payload from the CALLER's own return was the original break (`each_step`
+/// returns a demanded `acc`, so a discarded result claimed a lane the boundary
+/// never delivered). Deriving it from the callsite's own appetite -- zero
+/// lanes for a discarded result -- only moved the disagreement: a callsite
+/// reaching a FIRST-CLASS callee owns none of the members behind the wrapper,
+/// so its "ignore" never reaches them and the wrapper hands a value back
+/// anyway (`mailbox_closure_each`).
+///
+/// So the claim is not about any one lane count. It is that the two halves
+/// AGREE: every boxed closure callsite delivers exactly what the wrappers it
+/// can reach publish. `a_mixed` is the program that made the difference
+/// visible -- one lambda reached both grounded and boxed, and wrappers of two
+/// different arities in one program, so the honest comparison is per wrapper
+/// and not a single set over the whole program.
 #[test]
-fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
+fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
+    fn assert_seam_halves_agree(name: &str, text: &str) {
+        let tel = ConfiguredTelemetry::new();
+        let backend = BackendProgramCapture::new();
+        backend.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(name.to_string()),
+            text: text.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        demand_backend_product(&mut compiler, root);
+        assert_resolved(compiler.drive(), "the seam-agreement root should settle");
+        let program = backend.last(root).program;
+
+        let mut checked = 0;
+        for executable in &program.executables {
+            let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
+                continue;
+            };
+            for entry in entries {
+                let crate::compiler2::BackendTail::ClosureCall {
+                    callee,
+                    args,
+                    return_flow,
+                    ..
+                } = &entry.tail
+                else {
+                    continue;
+                };
+                // A grounded callee is lowered as a direct edge and aliases its
+                // target's own return fact; only a boxed one reaches a wrapper.
+                if !executable
+                    .value_layouts
+                    .get(callee)
+                    .is_some_and(|layout| matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef))
+                {
+                    continue;
+                }
+                let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
+                    continue;
+                };
+                let delivered = source.layout.reprs.len();
+                for wrapper in program
+                    .construction_wrappers
+                    .iter()
+                    .filter(|wrapper| wrapper.call_arity == args.len())
+                    .filter(|wrapper| {
+                        !matches!(
+                            wrapper.return_form,
+                            crate::compiler2::artifact::BackendCallableReturn::Diverges
+                        )
+                    })
+                {
+                    let published = match wrapper.return_form {
+                        crate::compiler2::artifact::BackendCallableReturn::ValueRef => 1,
+                        crate::compiler2::artifact::BackendCallableReturn::Absent
+                        | crate::compiler2::artifact::BackendCallableReturn::Diverges => 0,
+                    };
+                    assert_eq!(
+                        published,
+                        delivered,
+                        "{name}: a boxed closure call taking {} argument(s) delivers {delivered} lane(s) while \
+                         wrapper {} it can reach publishes {published} ({:?})",
+                        args.len(),
+                        wrapper.identity,
+                        wrapper.return_form,
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "{name} should contain at least one boxed closure callsite reaching a wrapper",
+        );
+    }
+
+    assert_seam_halves_agree(
+        "fixtures2/behavior/opaque_fn_each_discarded_return.fz",
+        include_str!("../../fixtures2/behavior/opaque_fn_each_discarded_return.fz"),
+    );
+    assert_seam_halves_agree(
+        "fixtures2/behavior/a_mixed.fz",
+        include_str!("../../fixtures2/behavior/a_mixed.fz"),
+    );
+}
+
+/// fz-kdt.155 — the other side of the same axis, at the lane level: a callable
+/// NO boxed seam reaches builds no construction wrapper, so nothing outranks
+/// its callsites and a discarded closure call really does compile to zero
+/// delivered lanes on both halves. `static_closure_each` is
+/// `mailbox_closure_each` with the mailbox removed, and this is the pin that
+/// says removing the mailbox is what changes the answer -- without it, the
+/// seam rule could quietly widen every closure call in the language and every
+/// behavioural fixture would still pass, one boxed allocation per call poorer.
+#[test]
+fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -10421,8 +11884,8 @@ fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
     backend.install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures2/behavior/opaque_fn_each_absent_return.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/opaque_fn_each_absent_return.fz").to_string(),
+        name: Some("fixtures2/behavior/static_closure_each.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/static_closure_each.fz").to_string(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -10431,10 +11894,23 @@ fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
         need: ExecutableNeed::Value,
     });
     demand_backend_product(&mut compiler, root);
-    assert_resolved(compiler.drive(), "the opaque each root should settle");
-
-    let each_step_id = function_id(&functions, "each_step", 3);
+    assert_resolved(compiler.drive(), "the static closure each root should settle");
     let program = backend.last(root).program;
+
+    assert!(
+        program.construction_wrappers.is_empty(),
+        "a lambda named where it is used never crosses the boxed seam, so the program builds no \
+         construction wrapper at all: {:?}",
+        program
+            .construction_wrappers
+            .iter()
+            .map(|wrapper| (wrapper.identity, wrapper.return_form))
+            .collect::<Vec<_>>(),
+    );
+
+    // `each_step` is the one call in the program that throws its callee's
+    // result away; the reducer calls around it legitimately use theirs.
+    let each_step_id = function_id(&functions, "each_step", 3);
     let mut checked = 0;
     for executable in &program.executables {
         if executable.key.activation.function != each_step_id {
@@ -10448,18 +11924,21 @@ fn compiler2_discarded_indirect_call_result_publishes_no_return_lanes() {
                 continue;
             };
             let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {
-                panic!("each_step's discarded mapper call should deliver its (empty) payload");
+                continue;
             };
             checked += 1;
             assert!(
                 source.layout.reprs.is_empty(),
-                "a discarded indirect call result must publish no return lanes; \
-                 the callsite payload claimed {:?} while the callee boundary delivers zero",
-                source.layout.reprs
+                "no seam boxes this callable, so a discarded closure call publishes no return lanes; \
+                 it claimed {:?}",
+                source.layout.reprs,
             );
         }
     }
-    assert!(checked > 0, "each_step should contain the indirect mapper callsite");
+    assert!(
+        checked > 0,
+        "static_closure_each should contain the each-step closure callsite",
+    );
 }
 
 /// fz-6gb — a lambda literal's *identity* must not fan functions that merely
@@ -12287,7 +13766,7 @@ impl OutputCapture {
                     .map(|change| change.key.clone())
                     .collect();
                 let effects = JobEffects {
-                    reads: world.job_reads(&job).into_iter().flatten().cloned().collect(),
+                    reads: world.job_reads(&job).into_iter().collect(),
                     waits: completion.blocked.clone(),
                     outputs: completion.outputs.iter().cloned().collect(),
                     changed,
@@ -13040,6 +14519,128 @@ fn backend_direct_call_in_entry<'a>(
             .or_else(|| backend_direct_call_in_entry(entries, *else_entry, program, callee)),
         _ => None,
     }
+}
+
+/// The capture unpack is keyed on the CONSTRUCTIONS that mint the layout the
+/// callee grounded on, not on the callee's function (fz-kdt.127, fz-kdt.157).
+///
+/// `same_lambda_two_capture_types_dynamic` mints ONE lambda through boundaries
+/// that disagree about slot 0 -- a raw int in one, a raw float in the other --
+/// and hands the value to `P.run/2` through a `case` no key can pin, so the
+/// whole closure really does travel to a callee that wants its captures as
+/// lanes. A prim keyed on the function would ask both boundaries how slot 0
+/// was stored, get two answers, and refuse to compile. So the two halves below
+/// are the invariant and its witness in one program.
+///
+/// The static twin carries the capture type in its forwarder KEY, so it lowers
+/// no unpack at all and cannot witness this; that is
+/// `compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key`.
+///
+/// This is also fz-kdt.157's missing coverage. Its refusing half had no
+/// program that could reach it, because a function minted at two capture
+/// layouts compiled on no path; loosening the keying back to the function is
+/// exactly what the first assertion detects.
+#[test]
+fn compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz";
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    assert!(
+        matches!(compiler.drive(), DriveOutcome::Resolved),
+        "native lowering of {fixture} must settle",
+    );
+    let program = native.last(root_id).program;
+
+    let mut by_function: BTreeMap<u32, Vec<&crate::compiler2::artifact::NativeCallableBoundary>> = BTreeMap::new();
+    for boundary in &program.callable_boundaries {
+        let Some(shape) = boundary.shape.as_ref() else {
+            continue;
+        };
+        by_function.entry(shape.target.0).or_default().push(boundary);
+    }
+    let split = by_function
+        .values()
+        .find(|boundaries| {
+            let mut reprs = boundaries
+                .iter()
+                .map(|boundary| boundary.capture_reprs.first().copied());
+            let Some(first) = reprs.next() else {
+                return false;
+            };
+            reprs.any(|other| other != first)
+        })
+        .expect(
+            "this fixture mints one lambda at an int capture and at a float capture, so some \
+             function must have boundaries that disagree about slot 0",
+        );
+    assert!(
+        split.len() >= 2,
+        "a disagreement needs two boundaries: {:?}",
+        split
+            .iter()
+            .map(|boundary| boundary.capture_reprs.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    let reprs_by_construction = program
+        .callable_boundaries
+        .iter()
+        .map(|boundary| (boundary.identity_fn, boundary.capture_reprs.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut unpacks = 0;
+    for body in &program.bodies {
+        for block in &program.module.fn_by_id(body.fn_id).blocks {
+            for stmt in &block.stmts {
+                let IrStmt::Let(
+                    _,
+                    IrPrim::ClosureCapture {
+                        constructions, index, ..
+                    },
+                ) = stmt
+                else {
+                    continue;
+                };
+                unpacks += 1;
+                assert!(
+                    !constructions.is_empty(),
+                    "a capture unpack that names no construction has no authority to read from",
+                );
+                let mut reprs = constructions.iter().map(|construction| {
+                    reprs_by_construction
+                        .get(construction)
+                        .unwrap_or_else(|| panic!("construction {construction:?} mints no boundary"))
+                        .get(*index as usize)
+                        .copied()
+                });
+                let first = reprs.next().expect("a non-empty construction list has a first repr");
+                assert!(
+                    first.is_some() && reprs.all(|other| other == first),
+                    "the constructions a capture unpack names must agree about the slot they \
+                     minted, or there is no single answer to read: {constructions:?} slot {index}",
+                );
+            }
+        }
+    }
+    assert!(
+        unpacks > 0,
+        "the forwarder hands a whole closure to a callee that wants its captures as lanes, so \
+         this fixture must lower at least one capture unpack",
+    );
 }
 
 fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> bool {
@@ -13906,6 +15507,34 @@ fn compiler2_string_constant_dispatch_keeps_the_miss_arm_reachable() {
         last,
         vec![0, 1],
         "a string constant cannot prove its miss edge dead; the wildcard clause must stay reachable",
+    );
+}
+
+/// Reachability is a SET — clauses union across the correlated input rows an
+/// activation collects — so which row arrived first is schedule, not meaning.
+/// Here the schedule is upside down on purpose: the outer call supplies a
+/// non-empty list, so the cons clause is reached first, and the base clause
+/// only once the recursion has widened its way down to `[]`. The published
+/// fact must still name the clauses by their own identity, source order, or
+/// every artifact built from it moves whenever the key population changes.
+#[test]
+fn compiler2_entry_reachability_names_clauses_in_source_order_not_arrival_order() {
+    let reachable = reachable_clauses_for_source(
+        "arrival_order_reachability.fz",
+        r#"
+fn count([], acc), do: acc
+fn count([_head | tail], acc), do: count(tail, acc + 1)
+
+fn main(), do: count([1, 2, 3], 0)
+"#,
+        "count",
+        2,
+    );
+    assert_eq!(
+        reachable,
+        vec![0, 1],
+        "both clauses are reachable; the base clause is written first and must be named first, \
+         however late its row arrived",
     );
 }
 

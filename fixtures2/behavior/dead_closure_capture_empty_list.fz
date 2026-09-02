@@ -1,0 +1,7 @@
+#---
+# purpose: "a predicate closure the empty-list path never invokes is a dead construction on every path: the interp must not evaluate its capture read -- fz-kdt.111"
+#---
+fn main() do
+  dbg(Enum.drop_while([], fn (x) -> x > 0 end))
+  dbg(Enum.drop_while([1, 2, 3], fn (x) -> x < 3 end))
+end

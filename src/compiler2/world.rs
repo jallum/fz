@@ -39,7 +39,9 @@ use super::identity::{
     FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NotedTypeDecl, PendingFunctionSourceMap,
     RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
-use super::keying::{BodyKeying, BodyKeyingMap, DispatchDemand, DispatchMaskMap};
+use super::keying::{
+    BodyKeying, BodyKeyingMap, CallGraphComponentMap, DispatchDemand, DispatchMaskMap, StaticCalleeMap,
+};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap,
@@ -52,11 +54,11 @@ use super::protocol::{
 };
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
-use super::scheduler::{FatalError, WorkStartReason, WorkStartTally};
+use super::scheduler::{DerivationEffects, FatalError, WorkStartReason, WorkStartTally};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, ContributionReplace,
+    CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, ContributionReplace,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -127,6 +129,8 @@ pub struct World {
     entry_dispatches: EntryDispatchMap,
     body_keying: BodyKeyingMap,
     dispatch_masks: DispatchMaskMap,
+    static_callees: StaticCalleeMap,
+    call_graph_components: CallGraphComponentMap,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
@@ -163,6 +167,12 @@ pub struct World {
     /// job outputs `Activation(key)` (unless already settled) and removes it
     /// once `ActivationAnalyzed(key)` settles.
     activation_frontier: HashSet<ActivationKey>,
+    /// Readiness steps the drain arbiter produced since the last flush
+    /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
+    /// context observes it — the same split `warning_diagnostics` uses, and
+    /// what lets a settled question be arbitrated from a `World` method that
+    /// holds no telemetry handle.
+    quiescence_steps: Vec<super::AppliedStep<Job, FactKey>>,
     pub(crate) work_graph: WorkGraph,
     #[cfg(test)]
     telemetry_query_count: Cell<u64>,
@@ -237,6 +247,8 @@ impl World {
             entry_dispatches: EntryDispatchMap::new(),
             body_keying: BodyKeyingMap::new(),
             dispatch_masks: DispatchMaskMap::new(),
+            static_callees: StaticCalleeMap::new(),
+            call_graph_components: CallGraphComponentMap::new(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
@@ -260,6 +272,7 @@ impl World {
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
             activation_frontier: HashSet::new(),
+            quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
             telemetry_query_count: Cell::new(0),
@@ -447,6 +460,9 @@ impl World {
         };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        if waits.is_empty() && !rebased {
+            outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
+        }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
@@ -467,7 +483,19 @@ impl World {
                 _ => None,
             })
             .collect();
-        let step = self.work_graph.complete(&job, reads, waits, outputs, changed);
+        // The flat fields are the job's whole-body answer; `derivations` names
+        // any further answers the same run reached independently. Every job
+        // today reports none, so this is exactly one `DerivationId::SOLE`
+        // completion — the ledger sees what it always saw.
+        let mut derivations = vec![DerivationEffects::sole(reads, outputs, changed, waits.is_empty())];
+        derivations.extend(effects.derivations.into_iter().map(|derivation| DerivationEffects {
+            derivation: derivation.derivation,
+            reads: derivation.reads.into_iter().collect(),
+            outputs: dedupe_job_facts(derivation.outputs),
+            changed: dedupe_job_facts(derivation.changed),
+            concluded: derivation.concluded,
+        }));
+        let step = self.work_graph.complete(&job, waits, derivations);
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);
@@ -482,6 +510,25 @@ impl World {
             activation_input_changed,
             rebased,
         }
+    }
+
+    /// The claims a job already holds, and the reads standing behind them.
+    ///
+    /// A conclusion REPLACES a publisher's outputs and reads, so a run with no
+    /// ground to stand on must re-list BOTH or corrupt one of two invariants:
+    /// omitting the claims silently retracts them; omitting the reads leaves
+    /// the claims subscribed to nothing, and a publisher whose only read is an
+    /// absent fact is quiet -- the claims would settle, manufacturing finality
+    /// from amnesia (measured, fz-kdt.69.1's review). Re-listing both keeps
+    /// every claim published at its own revision under the subscriptions that
+    /// derived it: nothing moves, nobody rebases, nothing settles early.
+    pub(crate) fn standing_claims_and_reads(
+        &self,
+        job: &Job,
+    ) -> (Vec<FactKey>, HashSet<super::facts::FactUse<FactKey>>) {
+        let claims = self.work_graph.output_keys(job).iter().cloned().collect();
+        let reads = self.work_graph.reads(job);
+        (claims, reads)
     }
 
     /// The SOLE insertion point into `activation_frontier`: a discovered
@@ -653,8 +700,7 @@ impl World {
             // canonical form. Idempotent on already-addressed contributions.
             let normalized = self.types.address_inputs(&inputs);
             let normalized = if self
-                .body_keying
-                .get(activation.function)
+                .body_keying(activation.function)
                 .is_some_and(|keying| keying.recursive)
             {
                 let mask = self
@@ -681,17 +727,35 @@ impl World {
         next
     }
 
+    /// The targets this callsite NAMED. A callsite the walk never reached and
+    /// one it reached without resolving both answer this question the same
+    /// way -- no targets -- which is why lowering and demand read one
+    /// accessor. Ask [`World::callsite_resolution`] when the difference is the
+    /// question.
     pub fn callsite_summary(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
+        #[cfg(test)]
+        self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
+        self.callsites.resolved(key)
+    }
+
+    /// The callsite's published answer itself, unresolved state included.
+    pub fn callsite_resolution(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteSummary>> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.callsites.get(key)
     }
 
-    pub fn define_callsite_targets(&mut self, key: CallSiteKey, targets: CallSiteTargets) -> bool {
+    pub fn define_callsite_targets(&mut self, key: CallSiteKey, targets: CallSiteResolution<CallSiteTargets>) -> bool {
         self.callsite_targets.define(key, targets)
     }
 
+    /// See [`World::callsite_summary`].
     pub fn callsite_targets(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+        self.callsite_targets.resolved(key)
+    }
+
+    /// See [`World::callsite_resolution`].
+    pub fn callsite_target_resolution(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteTargets>> {
         self.callsite_targets.get(key)
     }
 
@@ -804,7 +868,19 @@ impl World {
     }
 
     pub fn reference_function(&mut self, module: ModuleId, name: impl Into<String>, arity: usize) -> FunctionId {
-        self.functions.reference(module, name, arity)
+        let id = self.functions.reference(module, name, arity);
+        self.name_callable(id);
+        id
+    }
+
+    /// Hand the type lattice the stable name behind a freshly minted function
+    /// id, so a closure literal over it can be ordered canonically without
+    /// touching the mint-order `FnId` (see `types::order`). Naming at the mint
+    /// is what makes the table complete: no literal can name a function that
+    /// was never referenced.
+    fn name_callable(&mut self, id: FunctionId) {
+        let label = super::function_label(self, id);
+        self.types.name_callable(ClosureTarget(id.as_u32()), label);
     }
 
     /// Holds a `@type` declaration's unresolved decl — parsed body plus the
@@ -1110,6 +1186,42 @@ impl World {
 
     pub(crate) fn define_dispatch_mask(&mut self, function: FunctionId, mask: Vec<DispatchDemand>) -> bool {
         self.dispatch_masks.define(function, mask)
+    }
+
+    /// The call graph's out-edges for one function, behind
+    /// `FactKey::StaticCallees`. One body, one edge list: every reader of the
+    /// graph -- component membership, and the recursion answer derived from
+    /// it -- walks these instead of re-extracting edges from the bodies it
+    /// can reach.
+    pub(crate) fn define_static_callees(&mut self, function: FunctionId, callees: Vec<FunctionId>) -> bool {
+        self.static_callees.define(function, callees)
+    }
+
+    /// One function's place in the static call graph, behind
+    /// `FactKey::CallGraphComponent`: the canonical (smallest) member of its
+    /// strong component. Equal ids mean mutually reachable.
+    pub(crate) fn define_call_graph_component(&mut self, function: FunctionId, component: FunctionId) -> bool {
+        self.call_graph_components.define(function, component)
+    }
+
+    pub(crate) fn body_keying(&self, function: FunctionId) -> Option<BodyKeying> {
+        self.body_keying.get(function).copied()
+    }
+
+    /// The canonical (smallest) member of this function's strong component in
+    /// the static call graph, behind `FactKey::CallGraphComponent`. Equal ids
+    /// mean mutually reachable, so membership is a comparison rather than a
+    /// traversal. Transport reads it to cut recursion out of a shape recipe
+    /// (`cut_recursive_edges`); the `Recursive(f)` answer is derived inside the
+    /// same job, from the same walk.
+    pub(crate) fn call_graph_component(&self, function: FunctionId) -> Option<FunctionId> {
+        self.call_graph_components.get(function).copied()
+    }
+
+    pub(crate) fn static_callees(&self, function: FunctionId) -> &[FunctionId] {
+        self.static_callees
+            .get(function)
+            .expect("static callees should only be read after their fact is defined")
     }
 
     pub(crate) fn entry_dispatch(&self, function: FunctionId) -> PatternDispatchPlan<Ty> {
@@ -1469,7 +1581,7 @@ impl World {
     }
 
     #[cfg(test)]
-    pub(crate) fn job_reads(&self, job: &Job) -> Option<&HashSet<FactUse<FactKey>>> {
+    pub(crate) fn job_reads(&self, job: &Job) -> HashSet<FactUse<FactKey>> {
         self.work_graph.reads(job)
     }
 
@@ -1742,9 +1854,8 @@ impl World {
             .get(function)
             .expect("activation keying should wait for dispatch mask facts before activation")
             .clone();
-        let keying = *self
-            .body_keying
-            .get(function)
+        let keying = self
+            .body_keying(function)
             .expect("activation keying should wait for recursive facts before activation");
         // The arrow is the PRECISE evidence: address the whole input vector in one
         // pass (fz-hwn.27.6), so two distinct inference vars `[Ty27,Ty28]` address
@@ -1752,12 +1863,14 @@ impl World {
         let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
         if !keying.recursive {
             // A non-recursive body that never consumes callable identity only
-            // TRANSPORTS the closures that reach it, so closure identity is
-            // freight, not meaning: erase the literals from non-dispatch
-            // slots and every same-surface brand shares one activation
-            // (fz-6gb). A consuming body keeps the precise key -- its
-            // specializations buy direct dispatch. Evidence is precise
-            // either way.
+            // TRANSPORTS the closures that reach it, so WHICH lambda arrived
+            // is freight: erase the brands from non-dispatch slots and every
+            // same-shape lambda shares one activation (fz-6gb). What it closed
+            // over is NOT freight -- the capture types survive the erasure, so
+            // a forwarder handed one lambda at two capture types keys one body
+            // per type and its callees stay grounded (fz-kdt.127). A consuming
+            // body keeps the precise key -- its specializations buy direct
+            // dispatch. Evidence is precise either way.
             if keying.consumes_callable_identity {
                 return key;
             }
@@ -2105,6 +2218,39 @@ fn emit_job_diagnostic(tel: &impl Telemetry, diagnostic: Diagnostic) -> FatalErr
     FatalError
 }
 
+/// The claims a NON-rebased `AnalyzeActivation` conclusion keeps standing
+/// even though it did not re-emit them (fz-kdt.63).
+///
+/// `analyze_activation` claims a callee's `Activation` only from evidence that
+/// has arrived: a callsite whose target evidence is still climbing resolves to
+/// nothing and names no callee. That absence is bottom, not a proof the call
+/// is gone — the same reading `conclude_activation_input_contributions` already
+/// gives `ActivationInputs`. Re-listing the standing claims keeps them
+/// published at their own revisions, so nothing moves and nobody rebases.
+///
+/// Withdrawal is not lost, it is scoped: a REBASED conclusion re-derives every
+/// claim from the shifted ground, so what it omits is genuinely refuted and
+/// the ordinary replacement retracts it. `Activation` is claimed by every
+/// caller reaching it, and each caller's claim is withdrawn only by that
+/// caller's own rebase — preserving one publisher's standing claim never
+/// re-publishes another's.
+///
+/// `CallSiteSummary`/`CallSiteTargets` are NOT here: every callsite the walk
+/// reaches publishes its edge, unresolved and all
+/// ([`CallSiteResolution`](super::semantic::CallSiteResolution)), so silence
+/// about one is knowledge — the walk no longer reaches it — and nothing about
+/// them is preservable (fz-kdt.69.2).
+fn preserved_analysis_claims(job: &Job, previous_output_keys: &OrderedSet<FactKey>) -> Vec<FactKey> {
+    if !matches!(job, Job::AnalyzeActivation(_)) {
+        return Vec::new();
+    }
+    previous_output_keys
+        .iter()
+        .filter(|fact| matches!(fact, FactKey::Activation(_)))
+        .cloned()
+        .collect()
+}
+
 /// Drop repeats, keep the order the job emitted them in.
 ///
 /// A job may name the same fact twice; the fact table refuses duplicates, so
@@ -2368,6 +2514,31 @@ impl World {
         diagnostics
     }
 
+    /// Records one drain-arbiter step for the execution context to emit.
+    /// A step that moved nothing is not news and is dropped here.
+    pub(crate) fn note_quiescence_step(&mut self, step: super::AppliedStep<Job, FactKey>) {
+        if !step.changed.is_empty() {
+            self.quiescence_steps.push(step);
+        }
+    }
+
+    pub(crate) fn take_quiescence_steps(&mut self) -> Vec<super::AppliedStep<Job, FactKey>> {
+        std::mem::take(&mut self.quiescence_steps)
+    }
+
+    /// Take the correlated-input row sets widened past
+    /// `ACTIVATION_INPUT_ROW_BUDGET` since the last drain (fz-0xp).
+    ///
+    /// `World` owns the mutation and the execution context observes it — the
+    /// same producer/drain split `take_reported_warnings` and
+    /// `take_quiescence_steps` use, and what lets a fact produced deep inside a
+    /// monotone join be reported from a `World` that holds no telemetry handle.
+    /// The count itself is kept on `Types` because that is the only handle the
+    /// join has; see `Types::activation_input_collapses`.
+    pub(crate) fn take_activation_input_collapses(&mut self) -> u64 {
+        self.types.take_activation_input_collapses()
+    }
+
     fn take_reported_warnings(&mut self) -> Vec<Diagnostic> {
         self.warning_diagnostics.sort_by(|left, right| {
             let left_span = left.primary.span;
@@ -2401,11 +2572,17 @@ impl World {
         self.activations.define_return(&mut self.types, key, evidence, rebased)
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
-        for target in &mut summary.targets {
-            target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
+    pub fn define_callsite_summary(
+        &mut self,
+        key: CallSiteKey,
+        mut resolution: CallSiteResolution<CallSiteSummary>,
+    ) -> bool {
+        if let CallSiteResolution::Resolved(summary) = &mut resolution {
+            for target in &mut summary.targets {
+                target.surface_inputs = self.types.address_inputs(&target.surface_inputs);
+            }
         }
-        self.callsites.define(&mut self.types, key, summary)
+        self.callsites.define(&mut self.types, key, resolution)
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
@@ -2649,6 +2826,7 @@ impl World {
         let id = self
             .functions
             .reference_generated(owner, owner_module, surface.span, surface.arity());
+        self.name_callable(id);
         let fn_source = FunctionSource {
             code: owner_source.code,
             owner_module: owner_source.owner_module,
@@ -2850,8 +3028,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         outcome.changed
     }
 
-    pub fn define_callsite_summary(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
-        let changed = self.world.define_callsite_summary(key.clone(), summary);
+    pub fn define_callsite_summary(
+        &mut self,
+        key: CallSiteKey,
+        resolution: CallSiteResolution<CallSiteSummary>,
+    ) -> bool {
+        let changed = self.world.define_callsite_summary(key.clone(), resolution);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "callsite", "defined"], &key);
         }

@@ -14,11 +14,11 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::artifact::{
-    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
-    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
-    BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, EmissionReadyExecutable,
-    MaterializedTransportPlan, RootBackendProductAnswer,
+    AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableReturn, BackendClause,
+    BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
+    BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
+    BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
+    EmissionReadyExecutable, MaterializedTransportPlan, RootBackendProductAnswer,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -27,10 +27,11 @@ use super::super::body::{
 use super::super::drive::{FactKey, Job, JobEffects};
 use super::super::facts::FactUse;
 use super::super::identity::RootId;
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed};
+use super::super::identity::{ActivationKey, ExecutableKey};
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, SymbolicBackendBody, SymbolicBackendClause,
-    SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportLayout,
+    SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportCarrier,
+    TransportLayout,
 };
 use super::super::scheduler::FatalError;
 use super::super::transport::{
@@ -39,7 +40,7 @@ use super::super::transport::{
 };
 use super::super::types::Ty;
 use super::super::world::World;
-use super::artifact::{codegen_seam_fact_sort_key, transport_position_global_sort_key};
+use super::artifact::{compare_codegen_seam_facts, compare_executable_needs, compare_transport_positions};
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -257,6 +258,8 @@ pub(crate) fn produce_root_backend_product(
         executables,
         construction_wrappers,
     };
+    verify_boxed_apply_seam_return_convention(tel, root, &program)
+        .expect("root backend product should compile one return convention across the boxed apply seam");
     super::super::drive::ExecutionContext::new(world, tel).define_backend_program(root, program.clone());
     PullOutcome::Produced(ProductValue::RootBackendProduct(Box::new(RootBackendProductAnswer {
         program,
@@ -881,7 +884,8 @@ fn package_backend_construction_wrappers(
                 .map(|construction| (positioned, construction))
         })
         .collect::<Vec<_>>();
-    constructions.sort_by_cached_key(|(positioned, _)| transport_position_global_sort_key(&positioned.position));
+    constructions
+        .sort_by(|(left, _), (right, _)| compare_transport_positions(&left.position, &right.position, world.types()));
     let identities = constructions
         .iter()
         .enumerate()
@@ -1023,7 +1027,21 @@ fn executable_key_for_symbol_in_index(
         .cloned()
 }
 
-fn compare_executable_keys(
+/// The order the executable inventory is packaged in, and so the order its
+/// `x<N>` indices are handed out in.
+///
+/// The input types compare through [`super::super::Types::cmp_tys`] — the
+/// canonical, id-free structural order — and NOT as raw interner ids, which are
+/// assigned in interning order and therefore move with the agenda. Two
+/// specializations of one function differ only in their inputs, so that
+/// tiebreak is the whole of the numbering for a family of siblings: keyed on
+/// raw ids, a re-ordered pull renumbers entries that say exactly the same thing
+/// (fz-kdt.101).
+///
+/// TOTAL: root and function are ids the source decides, the inputs determine
+/// the rest of the key, and `cmp_tys` is injective — so nothing is left to sort
+/// stability.
+pub(crate) fn compare_executable_keys(
     left: &ExecutableKey,
     right: &ExecutableKey,
     types: &super::super::Types,
@@ -1038,17 +1056,8 @@ fn compare_executable_keys(
                 .as_u32()
                 .cmp(&right.activation.function.as_u32())
         })
-        .then_with(|| left.activation.inputs(types).cmp(&right.activation.inputs(types)))
+        .then_with(|| types.cmp_tys(&left.activation.inputs(types), &right.activation.inputs(types)))
         .then_with(|| compare_executable_needs(left.need, right.need))
-}
-
-fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> std::cmp::Ordering {
-    match (left, right) {
-        (ExecutableNeed::Value, ExecutableNeed::Value) => std::cmp::Ordering::Equal,
-        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => std::cmp::Ordering::Less,
-        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => std::cmp::Ordering::Greater,
-        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
-    }
 }
 
 fn lower_symbolic_body(
@@ -1258,11 +1267,12 @@ pub(crate) fn symbolic_materialized_transport_plan(
             )
         })
         .collect::<Vec<_>>();
-    // Structural keys, not `format!("{position:?}")` comparators: these are
+    // Structural comparison, not `format!("{position:?}")`: these are
     // final-packaging sorts over the GLOBAL position set, and Debug-string
-    // keys recomputed per comparison were ~21% of the release compile. Cached
-    // because the key allocates (interned input types).
-    position_layouts.sort_by_cached_key(|(position, _)| transport_position_global_sort_key(position));
+    // keys recomputed per comparison were ~21% of the release compile. Compared
+    // in place rather than through a materialized key, so a comparison stops at
+    // the first difference and the input-type vector is never cloned.
+    position_layouts.sort_by(|(left, _), (right, _)| compare_transport_positions(left, right, world.types()));
     position_layouts.dedup_by(|left, right| {
         if left.0 != right.0 {
             return false;
@@ -1270,18 +1280,12 @@ pub(crate) fn symbolic_materialized_transport_plan(
         assert_eq!(left.1, right.1, "one transport position must have one settled layout");
         true
     });
-    let mut publication_boundaries = boundaries
-        .iter()
-        .flat_map(|(boundary, facts)| facts.publications.iter().cloned().map(|position| (position, *boundary)))
-        .collect::<Vec<_>>();
-    publication_boundaries
-        .sort_by_cached_key(|(position, boundary)| (transport_position_global_sort_key(position), boundary.as_u32()));
     let codegen_seam_facts = symbolic_codegen_seam_facts(backends, &position_layouts, world, boundaries);
     let mut callable_owners = backends
         .values()
         .flat_map(|backend| backend.abi.callable_owners.iter().cloned())
         .collect::<Vec<_>>();
-    callable_owners.sort_by_cached_key(|positioned| transport_position_global_sort_key(&positioned.position));
+    callable_owners.sort_by(|left, right| compare_transport_positions(&left.position, &right.position, world.types()));
     callable_owners.dedup_by(|left, right| {
         if left.position != right.position {
             return false;
@@ -1316,7 +1320,6 @@ pub(crate) fn symbolic_materialized_transport_plan(
             ids.sort_by_key(|boundary| boundary.as_u32());
             ids
         },
-        publication_boundaries,
         codegen_seam_facts,
         callable_owners: callable_owners.into_boxed_slice(),
         callable_facts: callables.clone(),
@@ -1482,10 +1485,10 @@ fn symbolic_codegen_seam_facts(
     for boundary in boundaries.keys().copied() {
         push_symbolic_boundary_codegen_seams(backends, world, boundary, &boundaries[&boundary], &mut out);
     }
-    // Same structural key the session's codegen-seam-fact product uses
+    // Same comparator the session's codegen-seam-fact product uses
     // (`jobs/artifact.rs`), so the plan's facts and the session product share
     // one canonical order.
-    out.sort_by_cached_key(codegen_seam_fact_sort_key);
+    out.sort_by(|left, right| compare_codegen_seam_facts(left, right, world.types()));
     out.into_boxed_slice()
 }
 
@@ -1869,21 +1872,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     fields: fields.clone(),
                 },
             ),
-            LoweredStep::FunctionRef { value, function } => BackendStep::FunctionRef {
-                value: *value,
-                function: *function,
-                construction: None,
-            },
+            LoweredStep::FunctionRef { value, function } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::FunctionRef {
+                    value: *value,
+                    function: *function,
+                    construction: None,
+                },
+            ),
             LoweredStep::Lambda {
                 value,
                 function,
                 captures,
-            } => BackendStep::Lambda {
-                value: *value,
-                function: *function,
-                captures: captures.clone(),
-                construction: None,
-            },
+            } => self.construction_step_or_omitted(
+                *value,
+                BackendStep::Lambda {
+                    value: *value,
+                    function: *function,
+                    captures: captures.clone(),
+                    construction: None,
+                },
+            ),
             LoweredStep::BinaryOp { value, op, left, right } => BackendStep::BinaryOp {
                 value: *value,
                 op: *op,
@@ -1971,11 +1980,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     }
 
     /// Every fresh-construction step (Tuple/List/Map/MapUpdate/Struct/
-    /// Bitstring) must respect the absence proof: when transport proves the
-    /// constructed value runtime-absent, its operands were never demanded and
-    /// may be unbound at runtime, so the step lowers as `Omitted` instead of
-    /// executing a read of never-materialized values (fz-9in: a dead binding
-    /// whose construction call survives because it allocates).
+    /// Bitstring/FunctionRef/Lambda) must respect the absence proof: when
+    /// transport proves the constructed value runtime-absent, its operands were
+    /// never demanded and may be unbound at runtime, so the step lowers as
+    /// `Omitted` instead of executing a read of never-materialized values
+    /// (fz-9in: a dead binding whose construction call survives because it
+    /// allocates; fz-kdt.111: a predicate closure a shared `Enum` body proves
+    /// it never invokes, whose ignored capture the eager interp still read).
     fn construction_step_or_omitted(&self, value: ValueId, step: BackendStep) -> BackendStep {
         if self.value_is_proven_runtime_absent(value) {
             BackendStep::Omitted { value }
@@ -2264,6 +2275,97 @@ fn push_atom(seen: &mut HashSet<String>, atoms: &mut Vec<String>, name: &str) {
     }
 }
 
+/// How many lanes a construction wrapper hands its caller back.
+fn callable_return_lanes(form: BackendCallableReturn) -> usize {
+    match form {
+        BackendCallableReturn::Diverges | BackendCallableReturn::Absent => 0,
+        BackendCallableReturn::ValueRef => 1,
+    }
+}
+
+/// fz-kdt.155 — the two halves of the boxed apply seam are one calling
+/// convention, and this is the only place both halves are in the same room.
+///
+/// A wrapper's public return form is derived from its MEMBERS' return layouts;
+/// a boxed callsite's delivered payload is derived from the CALLSITE's own
+/// demand. Nothing structural forces the two to agree, and when they disagreed
+/// the wrapper wrote its returned value into the register the continuation
+/// reads as its own closure pointer — a corrupt closure handed to
+/// `fz_closure_get_capture_atom`, which the program discovers as a
+/// non-unwinding abort at the FIRST call, on every door. The demand rule that
+/// keeps them equal (`settle_demand_cone`'s bootstrap keeping every wrapper
+/// member off the bottom, and `widen_boxed_closure_call_results` giving a
+/// boxed callsite the seam's one lane) is a rule about facts several jobs
+/// apart, so it gets a named invariant here rather than an abort out there.
+///
+/// A closure callsite reaches a wrapper exactly when its callee VALUE travels
+/// in the boxed `ValueRef` carrier — the same condition
+/// `materialize_closure_call_edge` uses to choose the seam over a direct edge
+/// to a named target. An exact-carrier callee is excluded because it needs no
+/// agreement: its result aliases the target executable's own return fact, so
+/// caller and callee read one shape by construction. Among the wrappers, the
+/// ones a boxed callsite could reach are those taking the same number of call
+/// arguments; a wrapper whose every member diverges publishes no lanes because
+/// it never returns at all, and is not a party to the convention.
+fn verify_boxed_apply_seam_return_convention(
+    tel: &impl crate::telemetry::Telemetry,
+    root_id: RootId,
+    program: &BackendProgram,
+) -> Result<(), FatalError> {
+    let mut published: HashMap<usize, Vec<&BackendConstructionWrapper>> = HashMap::new();
+    for wrapper in &program.construction_wrappers {
+        if matches!(wrapper.return_form, BackendCallableReturn::Diverges) {
+            continue;
+        }
+        published.entry(wrapper.call_arity).or_default().push(wrapper);
+    }
+    for executable in &program.executables {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let BackendTail::ClosureCall {
+                callee,
+                args,
+                return_flow,
+                ..
+            } = &entry.tail
+            else {
+                continue;
+            };
+            if !executable
+                .value_layouts
+                .get(callee)
+                .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef))
+            {
+                continue;
+            }
+            let delivered = match return_flow {
+                Some(BackendReturnFlow::Deliver { source, .. } | BackendReturnFlow::Continue { source }) => {
+                    source.layout.reprs.len()
+                }
+                Some(BackendReturnFlow::Tail) | Some(BackendReturnFlow::NoReturn) | None => continue,
+            };
+            for wrapper in published.get(&args.len()).into_iter().flatten() {
+                let published_lanes = callable_return_lanes(wrapper.return_form);
+                if published_lanes != delivered {
+                    return Err(incomplete_backend_program(
+                        tel,
+                        root_id,
+                        format!(
+                            "boxed closure call in {:?} expects {delivered} delivered lane(s) but construction \
+                             wrapper {} it can reach publishes {published_lanes} ({:?}): the two halves of one \
+                             calling convention were compiled against different contracts",
+                            executable.key.activation.function, wrapper.identity, wrapper.return_form,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn incomplete_backend_program(
     tel: &impl crate::telemetry::Telemetry,
     root_id: RootId,
@@ -2284,6 +2386,7 @@ mod tests {
     use super::*;
     use crate::compiler2::FunctionId;
     use crate::compiler2::artifact::BackendValueLayout;
+    use crate::compiler2::identity::ExecutableNeed;
     use crate::compiler2::pull::TransportCarrier;
     use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol};
 
@@ -2334,6 +2437,125 @@ mod tests {
                 &divergent,
             )
             .is_err()
+        );
+    }
+
+    /// FIX-1 of the fz-kdt.155 re-refutation: the seam tripwire's REFUSING
+    /// half must have a witness -- neutering `verify_boxed_apply_seam_return_
+    /// convention` shipped green through every gate (the fz-kdt.157 pattern).
+    /// A hand-built program with one Absent wrapper and one boxed closure
+    /// call delivering a lane is the mismatch `a_mixed` hits when the
+    /// producer half is reverted; agreement (ValueRef wrapper) must pass.
+    #[test]
+    fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
+        use crate::compiler2::artifact::{
+            BackendBody, BackendCallArg, BackendCallableReturn, BackendConstructionWrapper, BackendEntry,
+            BackendEntryOrigin, BackendProgram, BackendReturnFlow, BackendTail,
+        };
+        use crate::compiler2::body::ControlDestination;
+        use crate::compiler2::semantic::ExecutableRuntimeDemand;
+        use crate::compiler2::transport::CallableId;
+        use crate::compiler2::{CallSiteId, ControlEntryId, ValueId};
+        use crate::telemetry::ConfiguredTelemetry;
+
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let shape = world.intern_shape(ShapeDescr::Nothing);
+        let value_layout = |carrier, reprs: Vec<AbiValueRepr>| BackendValueLayout {
+            structural: shape,
+            carrier,
+            tys: Box::default(),
+            reprs: reprs.into_boxed_slice(),
+        };
+        let callee = ValueId::from_u32(1);
+        let program = |return_form| BackendProgram {
+            backend_revision: 0,
+            entry: 0,
+            atom_names: Vec::new(),
+            struct_schemas: std::collections::BTreeMap::new(),
+            construction_wrappers: vec![BackendConstructionWrapper {
+                identity: 0,
+                callable: CallableId::for_test(0),
+                captures: Box::default(),
+                call_arity: 1,
+                return_form,
+                members: Box::default(),
+                selection: None,
+            }],
+            executables: vec![BackendExecutable {
+                key: ExecutableKey {
+                    activation: ActivationKey {
+                        root: RootId::for_test(0),
+                        function: FunctionId::for_test(0),
+                        arrow: int,
+                    },
+                    need: ExecutableNeed::Value,
+                },
+                entry_dispatch: None,
+                return_ty: int,
+                param_reprs: Vec::new(),
+                semantic_inputs: Box::default(),
+                return_layout: BackendReturnLayout {
+                    layout: value_layout(TransportCarrier::Absent, Vec::new()),
+                    diverges: false,
+                },
+                runtime_demand: ExecutableRuntimeDemand::default(),
+                value_types: HashMap::new(),
+                value_layouts: HashMap::from([(
+                    callee,
+                    value_layout(TransportCarrier::ValueRef, vec![AbiValueRepr::ValueRef]),
+                )]),
+                effects: crate::compiler2::artifact::EffectSummary::default(),
+                body: BackendBody::Clauses {
+                    clauses: Vec::new(),
+                    generated: Vec::new(),
+                    entries: vec![BackendEntry {
+                        span: Span::DUMMY,
+                        origin: BackendEntryOrigin::Clause,
+                        params: Vec::new(),
+                        captures: Vec::new(),
+                        reusable_cons_captures: Vec::new(),
+                        steps: Vec::new(),
+                        tail: BackendTail::ClosureCall {
+                            value: ValueId::from_u32(2),
+                            callsite: CallSiteId::from_u32(0),
+                            callee,
+                            target: None,
+                            args: vec![BackendCallArg {
+                                value: ValueId::from_u32(3),
+                            }],
+                            dest: ControlDestination::Return,
+                            return_flow: Some(BackendReturnFlow::Deliver {
+                                source: Box::new(BackendReturnLayout {
+                                    layout: value_layout(TransportCarrier::ValueRef, vec![AbiValueRepr::ValueRef]),
+                                    diverges: false,
+                                }),
+                                entry: ControlEntryId::from_u32(0),
+                            }),
+                        },
+                    }],
+                },
+            }],
+        };
+
+        assert!(
+            verify_boxed_apply_seam_return_convention(
+                &tel,
+                RootId::for_test(0),
+                &program(BackendCallableReturn::Absent)
+            )
+            .is_err(),
+            "a boxed call delivering one lane must refuse an Absent wrapper it can reach"
+        );
+        assert!(
+            verify_boxed_apply_seam_return_convention(
+                &tel,
+                RootId::for_test(0),
+                &program(BackendCallableReturn::ValueRef)
+            )
+            .is_ok(),
+            "agreement at one lane must pass"
         );
     }
 }

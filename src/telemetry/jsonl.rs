@@ -542,6 +542,16 @@ impl JsonlBackend {
 
     fn install_remaining_raw_boundaries(telemetry: &ConfiguredTelemetry, backend: &Rc<Self>) {
         Self::install_raw_value::<crate::diag::Diagnostic>(telemetry, backend, &["fz", "diag"], "diagnostic");
+        // The drain arbiter's readiness step (fz-kdt.44). It is the one graph
+        // movement with no job completion behind it, so it carries a bare
+        // `AppliedStep` rather than a `JobCompletion` — same body, no formula
+        // identity, because no formula ran.
+        Self::install_raw_value::<crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>>(
+            telemetry,
+            backend,
+            &["fz", "compiler2", "work_graph", "quiesced"],
+            "step",
+        );
         Self::install_raw_value::<std::time::Duration>(
             telemetry,
             backend,
@@ -1075,6 +1085,8 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "drive", "demand_on_stall"]
             | ["fz", "compiler2", "job"]
             | ["fz", "compiler2", "work_graph", "applied"]
+            | ["fz", "compiler2", "activation_inputs", "budget_collapsed"]
+            | ["fz", "compiler2", "work_graph", "quiesced"]
             | ["fz", "compiler2", "backend_program", "defined"]
             | ["fz", "compiler2", "native_program", "defined"]
             | ["fz", "compiler2", "native_program", "reusable_cons"]
@@ -1139,10 +1151,10 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
             .metadata
             .get("callsite")
             .and_then(|value| value.downcast_ref::<crate::compiler2::CallSiteKey>())
-            && let Some(summary) = world.callsite_summary(callsite)
+            && let Some(resolution) = world.callsite_resolution(callsite)
         {
             out.push_str(",\"semantic\":");
-            write_callsite_summary(out, world, summary);
+            write_callsite_resolution(out, world, resolution);
         }
         return;
     }
@@ -1188,13 +1200,8 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         };
         // `reads` comes from `deps`' `HashSet`, so presentation-sort the
         // rendered identities rather than trusting iteration order.
-        let mut reads = world
-            .work_graph
-            .reads(&completion.job)
-            .into_iter()
-            .flatten()
-            .map(render_fact_use_identity)
-            .collect::<Vec<_>>();
+        let job_reads = world.work_graph.reads(&completion.job);
+        let mut reads = job_reads.iter().map(render_fact_use_identity).collect::<Vec<_>>();
         reads.sort();
         out.push_str(",\"semantic\":{\"reads\":[");
         for (index, entry) in reads.iter().enumerate() {
@@ -1259,6 +1266,19 @@ fn write_optional_type(out: &mut String, world: &crate::compiler2::World, ty: Op
     match ty {
         Some(ty) => write_str_lit(out, &world.types().display(&ty)),
         None => out.push_str("null"),
+    }
+}
+
+/// A reached callsite's published answer. The unresolved state renders as
+/// itself -- it is a value, not a gap in the stream (fz-kdt.69.2).
+fn write_callsite_resolution(
+    out: &mut String,
+    world: &crate::compiler2::World,
+    resolution: &crate::compiler2::CallSiteResolution<crate::compiler2::CallSiteSummary>,
+) {
+    match resolution.resolved() {
+        None => out.push_str("{\"unresolved\":true}"),
+        Some(summary) => write_callsite_summary(out, world, summary),
     }
 }
 
@@ -1957,7 +1977,8 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::ReifyGuardDispatch(function)
         | Job::PlanEntryDispatch(function)
         | Job::BuildMacroExecutable(function)
-        | Job::DeriveRecursive(function)
+        | Job::DeriveStaticCallees(function)
+        | Job::DeriveCallGraphComponent(function)
         | Job::DeriveDispatchMask(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
         Job::SeedRoot(root) | Job::BuildBackendProduct(root) | Job::LowerNativeProgram(root) => {
@@ -1989,6 +2010,8 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::GuardDispatch(function)
         | FactKey::EntryDispatch(function)
         | FactKey::MacroExecutable(function)
+        | FactKey::StaticCallees(function)
+        | FactKey::CallGraphComponent(function)
         | FactKey::Recursive(function)
         | FactKey::DispatchMask(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
@@ -2077,6 +2100,12 @@ fn write_optional_u64(out: &mut String, value: Option<u64>) {
 /// own identity plus its before/after revision and settledness. Emission
 /// order (the order `AppliedStep::changed` already carries) is preserved —
 /// it is not a `HashSet` source, so no presentation sort is needed.
+fn render_fact_change_identity(change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) -> String {
+    let mut rendered = String::new();
+    write_fact_change_identity(&mut rendered, change);
+    rendered
+}
+
 fn write_fact_change_identity(out: &mut String, change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) {
     out.push_str("{\"kind\":");
     write_str_lit(out, fact_kind(&change.key));
@@ -2142,12 +2171,17 @@ fn write_applied_step_body(
     out: &mut String,
     step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
 ) {
+    // `changed` batches arrive in publish order, which for the arbiter's
+    // steps reflects the waiter index's iteration; sorted here like
+    // `movements` below, so the array is a presentation-stable set.
     out.push_str(",\"changed\":[");
-    for (index, change) in step.changed.iter().enumerate() {
+    let mut changed = step.changed.iter().map(render_fact_change_identity).collect::<Vec<_>>();
+    changed.sort();
+    for (index, entry) in changed.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        write_fact_change_identity(out, change);
+        out.push_str(entry);
     }
     out.push(']');
 
@@ -2220,6 +2254,8 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::GuardDispatch(_) => "GuardDispatch",
         FactKey::EntryDispatch(_) => "EntryDispatch",
         FactKey::MacroExecutable(_) => "MacroExecutable",
+        FactKey::StaticCallees(_) => "StaticCallees",
+        FactKey::CallGraphComponent(_) => "CallGraphComponent",
         FactKey::Recursive(_) => "Recursive",
         FactKey::DispatchMask(_) => "DispatchMask",
         FactKey::RootEntry(_) => "RootEntry",
@@ -2252,7 +2288,8 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::ReifyGuardDispatch(_) => "ReifyGuardDispatch",
         Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
         Job::BuildMacroExecutable(_) => "BuildMacroExecutable",
-        Job::DeriveRecursive(_) => "DeriveRecursive",
+        Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
+        Job::DeriveCallGraphComponent(_) => "DeriveCallGraphComponent",
         Job::DeriveDispatchMask(_) => "DeriveDispatchMask",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",

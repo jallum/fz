@@ -20,7 +20,7 @@ use crate::fz_ir::{
     ReceiveAfter, ReceiveClause, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
-use crate::runtime_type_predicate::RuntimeTypePredicate;
+use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate};
 use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 
@@ -37,7 +37,7 @@ use super::super::identity::RootId;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
 use super::super::transport::{CallableId, ShapeDescr, ShapeId};
-use super::super::types::{Ty, Types};
+use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
@@ -99,6 +99,18 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
 }
 
 impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
+    /// The construction words that mint `callable`: one per boundary over that
+    /// layout. Each boundary stamps its own `identity_fn` into the values it
+    /// makes, so this is the whole set a value of that layout can carry -- and
+    /// the set whose capture representations a reader must agree with.
+    fn constructions_minting(&self, callable: CallableId) -> Box<[FnId]> {
+        self.callable_boundaries
+            .iter()
+            .filter(|boundary| boundary.callable == callable)
+            .map(|boundary| boundary.identity_fn)
+            .collect()
+    }
+
     fn new(
         world: &'a mut World,
         telemetry: &'tel T,
@@ -195,9 +207,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     }
                 }
             };
+            let callable = world.callable(wrapper.callable);
+            let shape = callable.function.map(|function| CallableShape {
+                target: ClosureTarget(function.as_u32()),
+                captures: callable
+                    .capture_tys
+                    .iter()
+                    .map(|ty| world.types().runtime_type_predicate(ty))
+                    .collect(),
+            });
             callable_boundaries.push(NativeCallableBoundary {
                 id: NativeCallableBoundaryId(index as u32),
                 identity_fn,
+                callable: wrapper.callable,
+                shape,
                 wrapper_fn,
                 captures: wrapper.captures.clone(),
                 capture_reprs: native_construction_capture_reprs(wrapper),
@@ -1137,14 +1160,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     function: _,
                     construction,
                 } => {
+                    // A reference the transport plan settled to `Nothing` never
+                    // reaches here: backend lowering already omits it
+                    // (`construction_step_or_omitted`), so every surviving
+                    // `FunctionRef` carries lanes.
                     let shape = value_shape(executable, *value);
-                    if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
-                        // The transport plan settled this reference to Nothing: it is
-                        // never demanded as a runtime callable (passed only to an
-                        // ignoring boundary or discarded), so it carries no lanes.
-                        // Honor that proof and construct nothing.
-                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
-                    } else if let Some(identity) = construction {
+                    if let Some(identity) = construction {
                         let boundary = self.native_callable_boundary_for_construction(*identity)?;
                         let var = self.emit_callable_construction(ctx, boundary, Vec::new());
                         self.bind_runtime_value(ctx, executable, env, *value, var);
@@ -1168,14 +1189,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     captures,
                     construction,
                 } => {
+                    // As with `FunctionRef`, a settled-`Nothing` closure is omitted
+                    // by backend lowering, so every surviving `Lambda` really is
+                    // constructed and its captures really are demanded.
                     let shape = value_shape(executable, *value);
-                    if matches!(self.world.shape(shape), ShapeDescr::Nothing) {
-                        // A settled-Nothing constructed callable is never demanded at
-                        // runtime, so its captures carry nothing. Honor the transport
-                        // plan's proof and construct nothing.
-                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
-                        continue;
-                    }
                     let callable_boundary = construction
                         .map(|identity| self.native_callable_boundary_for_construction(identity))
                         .transpose()?;
@@ -3832,7 +3849,43 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     return Ok(());
                 }
                 if let NativeBoundValue::Runtime(var) = value {
-                    lanes.push(*var);
+                    // A whole closure standing where a callable's captures are
+                    // wanted as lanes. The callee grounded the callable from
+                    // its own key and asks for the parts; the caller reached it
+                    // through a dispatch that proved the identity but carries
+                    // the value boxed, so the parts come back out of the box
+                    // here (fz-kdt.125). Zero capture lanes is the elided case
+                    // and never reaches this encoder.
+                    let Some(function) = descr.function else {
+                        return Err(incomplete_native_program(
+                            self.telemetry,
+                            self.root_id,
+                            format!(
+                                "native cannot project captures out of a callable that names no function in {:?}",
+                                ctx.origin
+                            ),
+                        ));
+                    };
+                    let constructions = self.constructions_minting(callable);
+                    if constructions.is_empty() {
+                        return Err(incomplete_native_program(
+                            self.telemetry,
+                            self.root_id,
+                            format!(
+                                "native cannot project captures out of callable {callable:?} for function {}: no construction mints it in {:?}",
+                                function.as_u32(),
+                                ctx.origin,
+                            ),
+                        ));
+                    }
+                    for index in 0..descr.capture_lanes.len() {
+                        let (capture, _) = ctx.emit_let(Prim::ClosureCapture {
+                            closure: *var,
+                            constructions: constructions.clone(),
+                            index: index as u32,
+                        });
+                        lanes.push(capture);
+                    }
                     return Ok(());
                 }
                 Err(incomplete_native_program(

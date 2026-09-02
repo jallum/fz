@@ -35,7 +35,7 @@ pub(crate) struct FunctionFactMap<T> {
     slots: Vec<Option<T>>,
 }
 
-/// The body-shape keying fact `Job::DeriveRecursive` publishes under
+/// The body-shape keying fact `Job::DeriveCallGraphComponent` publishes under
 /// `FactKey::Recursive`: both answers live in one value so a consumer can
 /// never observe one without the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +51,20 @@ pub(crate) struct BodyKeying {
 
 pub(crate) type BodyKeyingMap = FunctionFactMap<BodyKeying>;
 pub(crate) type DispatchMaskMap = FunctionFactMap<Vec<DispatchDemand>>;
+
+/// The call graph's edge store: the static callees `FactKey::StaticCallees`
+/// publishes for each function, ascending by function id.
+pub(crate) type StaticCalleeMap = FunctionFactMap<Vec<FunctionId>>;
+
+/// The call graph's component store: the canonical id `FactKey::CallGraphComponent`
+/// publishes for each function -- the SMALLEST `FunctionId` in that function's
+/// strong component of the static call graph.
+///
+/// The canonical member is what makes membership a comparison rather than a
+/// traversal: two functions are mutually reachable exactly when their stored
+/// ids are equal, because a strong component is a set and its minimum is a
+/// function of that set alone.
+pub(crate) type CallGraphComponentMap = FunctionFactMap<FunctionId>;
 
 impl<T> FunctionFactMap<T>
 where

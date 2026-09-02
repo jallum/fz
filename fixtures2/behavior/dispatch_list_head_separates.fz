@@ -1,0 +1,69 @@
+#---
+# purpose: "A dispatch test reads a cons cell's first element, so lists of different element types are different questions"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.107 step 3. A list test used to see empty-or-cons and nothing else,
+# so `[integer]` and `[:ok | :err]` were one and the same question and the
+# clause written first took every value: this printed `1 1 2 2`, and which
+# answer you got was which clause you wrote first. That is the same defect
+# `dispatch_annotated_tuple_tag_clauses` pins for tuple tags, one axis over.
+#
+# The test now asks a cons cell's HEAD its own question, so the two clauses
+# are two questions and both orders print the same two lines.
+#
+# ## The head is a ONE-SIDED FILTER, and the last four lines are why
+#
+# A list type is homogeneous -- one element type for the whole list -- so a
+# head OUTSIDE the question proves the value outside the surface, while a head
+# INSIDE it proves nothing about the tail no test reads. Rejection is exact;
+# acceptance is not.
+#
+# The `Enum.all?` lines settle one `List.reduce_while_cont/3` callsite with the
+# three arms that named this ticket:
+#
+#     A   [:false | :true]        Enum.all?([true, false])
+#     B   [int | :ok | :true]     Enum.all?([true, 1, :ok])
+#     C   [int]                   Enum.all?([1, 2])
+#
+# A and C have DISJOINT heads, which is a real separation. B and C OVERLAP at
+# the head (both admit an int) and differ only in a tail, so that pair is
+# erasing and the seat falls back to surface coverage: B holds everything C
+# does, so B is seated first and `[1, :ok]` -- the fourth line -- reaches the
+# body that named it instead of the one that reads every element as an int.
+# Before this (measured at f69c5ea26): the callsite settled FOUR arms and
+# fz-kdt.118's drop removed the two narrower ones -- C was not a destination,
+# so no arrival could seat it first. What DID abort was the settled order and
+# arm seeds 1/2/3/4/6: an int element read by the [:false | :true] body
+# (`fz_unbox_atom`, exit 134 on `run` and `build`). `interp` survived on its
+# dynamic tags, which is why this is a three-path-parity fixture and not a
+# stdout one.
+#
+# What no head can reach is a pair whose heads overlap and whose surfaces are
+# incomparable; `enum_predicate_search` carries the corpus's two, they keep
+# arrival order, and fz-kdt.131 owns them.
+fn kind(xs :: [integer]), do: 1
+fn kind(xs :: [:ok | :err]), do: 2
+
+fn dnik(xs :: [:ok | :err]), do: 2
+fn dnik(xs :: [integer]), do: 1
+
+fn pick(n) do
+  if n > 0 do
+    [n, n]
+  else
+    [:ok, :err]
+  end
+end
+
+fn main() do
+  dbg(kind(pick(1)))
+  dbg(kind(pick(0)))
+  dbg(dnik(pick(1)))
+  dbg(dnik(pick(0)))
+
+  dbg(Enum.all?([true, false]))
+  dbg(Enum.all?([true, 1, :ok]))
+  dbg(Enum.all?([1, 2]))
+  dbg(Enum.all?([1, :ok]))
+end

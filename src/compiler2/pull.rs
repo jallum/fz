@@ -1586,36 +1586,6 @@ impl<'s> ProductReadContext<'s> {
         self.session.memo.pending_strong_component(current, &self.dependencies)
     }
 
-    pub(crate) fn recursive_group_transport_layouts(&self, members: &[ProductKey]) -> Vec<TransportLayout> {
-        let member_set = members.iter().collect::<HashSet<_>>();
-        members
-            .iter()
-            .flat_map(|member| {
-                self.session
-                    .memo
-                    .pending_dependencies
-                    .get(member)
-                    .into_iter()
-                    .flat_map(|dependencies| dependencies.products.keys())
-            })
-            .filter(|dependency| !member_set.contains(dependency))
-            .filter_map(|dependency| match self.session.memo.get(dependency) {
-                Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub(crate) fn finish_transport_shape_group(
-        &mut self,
-        tel: &impl Telemetry,
-        current: &ProductKey,
-        members: &[ProductKey],
-        value: ProductValue,
-    ) -> bool {
-        self.finish_product_group(tel, current, members, vec![value; members.len()])
-    }
-
     pub(crate) fn recursive_group_callable_owners(&self, members: &[ProductKey]) -> Vec<CallableConstructionOwner> {
         let member_set = members.iter().collect::<HashSet<_>>();
         members
@@ -1643,6 +1613,26 @@ impl<'s> ProductReadContext<'s> {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
             _ => None,
         }
+    }
+
+    /// A group member's own `ExecutableFacts`, read without recording a
+    /// dependency -- like `callable_group_layout`, and for the same reason:
+    /// every SCC member recorded these reads before it could acquire the dep
+    /// edge that makes it a member, and `finish_group` writes EVERY member
+    /// under the UNION of all members' dependencies (products and facts),
+    /// so an ascent of any peeked key displaces the whole group and
+    /// re-derives every projection. No stale-projection window exists.
+    pub(crate) fn settled_executable_facts(&self, executable: &ExecutableKey) -> Option<Rc<ExecutableFacts>> {
+        match self.session.memo.get(&ProductKey::ExecutableFacts(executable.clone())) {
+            Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
+            _ => None,
+        }
+    }
+
+    /// A group member's own runtime demand, read on the same terms as
+    /// `settled_executable_facts`.
+    pub(crate) fn settled_runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
+        self.session.memo.runtime_demand(executable)
     }
 
     pub(crate) fn finish_callable_construction_group(
@@ -2091,6 +2081,7 @@ mod tests {
 
     use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
+    use super::super::scheduler::DerivationEffects;
     use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
     use super::*;
 
@@ -2634,16 +2625,22 @@ mod tests {
         scheduler.complete(
             &1,
             HashSet::new(),
-            HashSet::new(),
-            vec![fact.clone()],
-            vec![fact.clone()],
+            vec![DerivationEffects::sole(
+                HashSet::new(),
+                vec![fact.clone()],
+                vec![fact.clone()],
+                true,
+            )],
         );
         let blocked = scheduler.complete(
             &1,
-            HashSet::new(),
             HashSet::from([FactUse::current(missing)]),
-            vec![fact.clone()],
-            vec![fact],
+            vec![DerivationEffects::sole(
+                HashSet::new(),
+                vec![fact.clone()],
+                vec![fact],
+                false,
+            )],
         );
         driver.apply_fact_movements(&blocked.movements);
 
@@ -3949,7 +3946,6 @@ mod tests {
                     position_layouts: Vec::new(),
                     callable_boundaries: Vec::new(),
                     boundary_ids: Vec::new(),
-                    publication_boundaries: Vec::new(),
                     codegen_seam_facts: Box::default(),
                     callable_owners: Box::default(),
                     callable_facts: HashMap::new(),

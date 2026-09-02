@@ -5,7 +5,7 @@ use std::slice;
 use super::*;
 use crate::compiler2::keying::DispatchDemand;
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
 
 #[test]
 fn ty_is_an_integer_handle() {
@@ -147,29 +147,103 @@ fn runtime_type_predicate_projects_integer_kind() {
     );
 }
 
+/// Both structural axes project their contents: a tuple's positions, and a
+/// list's HEAD.
+///
+/// Both used to erase them. `{:cont, int}` and `{:halt, int}` were one "a
+/// 2-tuple" question until fz-kdt.119 gave the tuple axis one sub-predicate
+/// per position per clause; `[int]` and `[:ok]` were one "a non-empty list"
+/// question until fz-kdt.107 step 3 gave the list axis one head question per
+/// cons-admitting clause. In both cases the coarse reading the other callers
+/// want -- arities, shapes -- is still answerable beside the fine one.
+///
+/// The list half is a ONE-SIDED FILTER and this states both sides of it:
+/// `[:false | :true]` against `[int]` is a real separation, because a head
+/// outside the question proves the whole homogeneous list outside the surface;
+/// `[int]` against `[int | :ok]` is NOT, because a head inside it says nothing
+/// about the tail no test reads.
 #[test]
-fn runtime_type_predicate_projects_tuple_and_list_shapes() {
+fn runtime_type_predicate_projects_tuple_positions_and_list_heads() {
     let mut t = Types::new();
     let empty_list_ty = t.empty_list();
     let empty_list = t.runtime_type_predicate(&empty_list_ty);
     assert_eq!(
         empty_list,
         RuntimeTypePredicate {
-            lists: FiniteSet::lit(ListShape::Empty),
+            lists: ListShapes::exact(FiniteSet::lit(ListShape::Empty), Vec::new()),
             ..RuntimeTypePredicate::none()
-        }
+        },
+        "[] admits no cons cell, so it puts no head question",
     );
 
     let int = t.int();
     let atom = t.atom();
+    let int_list = t.list(int);
+    let atom_list = t.list(atom);
+    assert_ne!(
+        t.runtime_type_predicate(&int_list),
+        t.runtime_type_predicate(&atom_list),
+        "a list test reads the first element, so list(int) and list(atom) are two questions",
+    );
+
+    let false_atom = t.atom_lit("false");
+    let true_atom = t.atom_lit("true");
+    let ok_atom = t.atom_lit("ok");
+    let bools = t.union(false_atom, true_atom);
+    let bool_list = t.list(bools);
+    let bools_ask = t.runtime_type_predicate(&bool_list);
+    let ints_ask = t.runtime_type_predicate(&int_list);
+    assert!(
+        !bools_ask.overlaps_on_an_erasing_axis(&ints_ask),
+        "[:false | :true] and [int] have DISJOINT heads, and disjoint heads are the one \
+         separation a head load can claim",
+    );
+
+    assert!(
+        ints_ask.lists.is_exact() && ints_ask.lists.heads().len() == 1,
+        "one head question per cons-admitting clause, which is what keeps the clauses correlated",
+    );
+
+    let ints_oks = t.union(int, ok_atom);
+    let mixed_list = t.list(ints_oks);
+    let mixed_ask = t.runtime_type_predicate(&mixed_list);
+    assert!(
+        ints_ask.overlaps_on_an_erasing_axis(&mixed_ask),
+        "[int] and [int | :ok] OVERLAP at the head and differ only in a tail no test reads, \
+         so a seat may not claim separation there -- claiming it seats [int] first and hands \
+         [1, :ok] to a body that reads every element as an int",
+    );
+    assert!(
+        ints_ask.contained_in(&mixed_ask) && !mixed_ask.contained_in(&ints_ask),
+        "and the narrower head is still the narrower test",
+    );
+
     let tuple_ty = t.tuple(&[int, atom]);
     let tuple = t.runtime_type_predicate(&tuple_ty);
+    assert_eq!(*tuple.tuples.arities(), FiniteSet::lit(2));
+    assert!(tuple.tuples.is_exact());
     assert_eq!(
-        tuple,
-        RuntimeTypePredicate {
-            tuple_arities: FiniteSet::lit(2),
-            ..RuntimeTypePredicate::none()
-        }
+        tuple.tuples.shapes(),
+        [vec![t.runtime_type_predicate(&int), t.runtime_type_predicate(&atom)]],
+        "each position carries its own question",
+    );
+
+    let cont = t.atom_lit("cont");
+    let halt = t.atom_lit("halt");
+    let cont_int = t.tuple(&[cont, int]);
+    let halt_int = t.tuple(&[halt, int]);
+    let either = t.union(cont_int, halt_int);
+    let either_predicate = t.runtime_type_predicate(&either);
+    assert_eq!(
+        either_predicate.tuples.shapes().len(),
+        2,
+        "a two-clause union is two shapes: joining them position-wise would admit {{:cont, _}} \
+         and {{:halt, _}} crossed with each other's payloads",
+    );
+    assert!(
+        !t.runtime_type_predicate(&cont_int)
+            .overlaps(&t.runtime_type_predicate(&halt_int)),
+        "and the tags separate, which is the whole point",
     );
 }
 
@@ -223,6 +297,155 @@ fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
     assert!(
         !range_predicate.overlaps(&map_predicate),
         "protocol matching must not select the Map implementation for a Range struct value",
+    );
+}
+
+/// A clause that pins SEVERAL closure literals at once is an intersection, not
+/// one construction, so neither projection can name a capture layout for it --
+/// and the reading both must fall back to is the target-only one, which admits
+/// every capture layout of those targets.
+///
+/// The envelope used to answer this clause with its several literals over NO
+/// captures, which the predicate then read as EXACT zero-capture shapes.
+/// `CallableShape::inside` matches capture counts, so that arm refused every
+/// CAPTURING construction of its own targets -- under-admission, the one
+/// direction a runtime test may never err in.
+#[test]
+fn a_multi_literal_callable_clause_admits_every_capture_layout_of_its_targets() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let over_int = t.closure_lit(ClosureTarget(66), vec![int], 1);
+    let over_float = t.closure_lit(ClosureTarget(68), vec![float], 1);
+    let both = t.intersect(over_int, over_float);
+    let clauses = t.descr(&both).funcs.clone();
+    assert_eq!(clauses.len(), 1, "the subject here is ONE clause pinning two literals");
+    assert_eq!(clauses[0].pos.iter().filter(|sig| sig.lit.is_some()).count(), 2);
+
+    let enveloped = t.runtime_type_test_envelope(both);
+    let axis = t.runtime_type_predicate(&enveloped).callables;
+    let capturing = CallableShape {
+        target: ClosureTarget(66),
+        captures: vec![t.runtime_type_predicate(&int)],
+    };
+    assert!(
+        axis.admits(&capturing),
+        "a clause it cannot shape must admit any capture layout of the targets it names",
+    );
+}
+
+/// The predicate projection and the envelope are two roads to the same axis --
+/// the plan path goes through the envelope first and projects the result -- so
+/// they must decide a clause the same way or a value fails to match its own
+/// arm. `runtime_type_predicate_callables` is the one place that decides;
+/// `callable_identity_clauses` keeps the clause shape it decides on.
+#[test]
+fn the_envelope_and_the_predicate_agree_on_a_multi_literal_callable_clause() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let over_int = t.closure_lit(ClosureTarget(66), vec![int], 1);
+    let over_float = t.closure_lit(ClosureTarget(68), vec![float], 1);
+    let both = t.intersect(over_int, over_float);
+
+    let direct = t.runtime_type_predicate(&both).callables;
+    let enveloped = t.runtime_type_test_envelope(both);
+    let through_envelope = t.runtime_type_predicate(&enveloped).callables;
+    assert_eq!(
+        direct, through_envelope,
+        "projecting a clause and projecting its envelope must reach the same callable axis",
+    );
+}
+
+/// fz-kdt.127 -- WHY the erased forwarder key and the construction axis
+/// compose, stated from the side that actually decides it: the KEYING rule.
+///
+/// `erase_transported_closure_identities` anonymises only the slots the
+/// dispatch mask marks `Ignore` -- the ones no runtime test reads. A slot the
+/// body dispatches on keeps its brand, so it stays shapeable and a test can
+/// still name the construction, while the anonymous literal the erasure mints
+/// lives only in the activation KEY, which no test is ever asked of. Nothing
+/// in the projection has to arrange this; if it ever stops holding, the
+/// `debug_assert!` in `callable_identity_targets` is what fires.
+#[test]
+fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
+    let mut t = Types::new();
+    let int = t.int();
+    let surface = t.arrow(&[int], int);
+    let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let branded = t.intersect(branded, surface);
+    let arrow = t.arrow(&[branded, branded], int);
+
+    let erased = t.erase_transported_closure_identities(arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
+    let params = t.arrow_params(&erased);
+    assert_eq!(params.len(), 2);
+    assert_ne!(
+        params[0], branded,
+        "the ignored slot is freight: the erasure takes its brand"
+    );
+    assert!(
+        t.display(&params[0]).contains("#?"),
+        "and what it leaves there is the ANONYMOUS literal, got {}",
+        t.display(&params[0])
+    );
+    assert_eq!(
+        params[1], branded,
+        "a slot the body dispatches on is untouched -- that is why an anonymous literal never \
+         reaches a runtime test"
+    );
+
+    let capturing = CallableShape {
+        target: ClosureTarget(3),
+        captures: vec![t.runtime_type_predicate(&int)],
+    };
+    assert!(
+        t.runtime_type_predicate(&params[1]).callables.admits(&capturing),
+        "and the dispatch slot still names its construction",
+    );
+}
+
+/// fz-kdt.127 -- a closure holds exactly one value per capture slot, so a
+/// literal whose capture TYPE is empty denotes nothing at all.
+///
+/// The anonymous literal is one way to build one: it is every brand at once,
+/// so it merges with a branded literal instead of staying distinct from it,
+/// and the merged literal's capture is the two captures' intersection. Two
+/// literals of the SAME brand at different capture types are the other way,
+/// and that hole predates the anonymous literal. One law in
+/// `func_clause_empty` closes both.
+#[test]
+fn a_closure_literal_with_an_empty_capture_is_empty() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let surface = t.arrow(&[int], int);
+    let branded_int = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let branded_int = t.intersect(branded_int, surface);
+    let branded_float = t.closure_lit(ClosureTarget(4), vec![float], 1);
+    let branded_float = t.intersect(branded_float, surface);
+    let anon_int = t.erase_closure_identity(&branded_int);
+
+    let meets_its_own_brand = t.intersect(anon_int, branded_int);
+    assert_eq!(
+        meets_its_own_brand, branded_int,
+        "an anonymous literal is every brand at once, so meeting one leaves that one",
+    );
+
+    let meets_another_brand = t.intersect(anon_int, branded_float);
+    assert!(
+        t.is_empty(&meets_another_brand),
+        "a closure over an int and a closure over a float are not one value: {}",
+        t.display(&meets_another_brand)
+    );
+
+    let branded_int_at_float = t.closure_lit(ClosureTarget(3), vec![float], 1);
+    let branded_int_at_float = t.intersect(branded_int_at_float, surface);
+    let one_brand_two_captures = t.intersect(branded_int, branded_int_at_float);
+    assert!(
+        t.is_empty(&one_brand_two_captures),
+        "and the same holds for ONE brand at two capture types -- the hole the anonymous \
+         literal widened was already there: {}",
+        t.display(&one_brand_two_captures)
     );
 }
 
@@ -828,7 +1051,7 @@ macro_rules! semantic_helper_conformance_tests {
 
                 let predicate = t.runtime_type_predicate(&rejoined);
                 assert_eq!(
-                    predicate.lists,
+                    *predicate.lists.shapes(),
                     FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty])
                 );
             }
@@ -1203,19 +1426,60 @@ macro_rules! closure_helper_conformance_tests {
         mod $mod_name {
             use super::*;
 
+            /// The erasure drops the BRAND and keeps the capture types: two
+            /// lambdas closed over the same thing become one key, one lambda
+            /// closed over two things stays two, and neither result is a
+            /// singleton any consumer could call directly (fz-kdt.127).
             #[test]
-            fn erase_closure_identity_preserves_callable_surface_shape() {
+            fn erase_closure_identity_drops_the_brand_and_keeps_the_captures() {
                 let mut t = $ctor;
-                let capture = t.int_lit(10);
-                let lit = t.closure_lit(ClosureTarget(3), vec![capture], 2);
+                let ten = t.int_lit(10);
+                let lit = t.closure_lit(ClosureTarget(3), vec![ten], 2);
                 let erased = t.erase_closure_identity(&lit);
-                assert!(t.closure_lit_parts(&erased).is_none());
+                assert!(
+                    t.closure_lit_parts(&erased).is_none(),
+                    "an erased literal names no target, so nothing may call it directly"
+                );
                 let clauses = t
                     .callable_clauses(&erased)
                     .expect("erased closure should remain callable");
                 assert_eq!(clauses.len(), 1);
                 assert_eq!(clauses[0].args.len(), 2);
                 assert!(clauses[0].closure.is_none());
+
+                // Compared over ONE declared surface, the way a key is: a raw
+                // literal's own arrow is written in the minting lambda's
+                // surface vars, which the key addresses away before erasing.
+                let int = t.int();
+                let surface = t.arrow(&[int, int], int);
+                let left = t.closure_lit(ClosureTarget(3), vec![int], 2);
+                let left = t.intersect(left, surface);
+                let left = t.erase_closure_identity(&left);
+                let right = t.closure_lit(ClosureTarget(4), vec![int], 2);
+                let right = t.intersect(right, surface);
+                let right = t.erase_closure_identity(&right);
+                assert_eq!(
+                    left, right,
+                    "two lambdas closed over the same type are one key: the brand is freight"
+                );
+
+                let float = t.float();
+                let other = t.closure_lit(ClosureTarget(3), vec![float], 2);
+                let other = t.intersect(other, surface);
+                let other = t.erase_closure_identity(&other);
+                assert_ne!(
+                    other, left,
+                    "one lambda closed over two types is two keys: the captures are meaning"
+                );
+
+                let bare = t.closure_lit(ClosureTarget(3), Vec::new(), 2);
+                let bare = t.intersect(bare, surface);
+                let erased_bare = t.erase_closure_identity(&bare);
+                assert_eq!(
+                    erased_bare, surface,
+                    "a capture-free literal has nothing left to say once its brand is gone, so \
+                     it erases to the bare arrow"
+                );
             }
 
             #[test]
@@ -1986,4 +2250,138 @@ mod smoke {
     }
 
     impl_smoke_suite!(types, Types::new());
+}
+
+/// fz-kdt.80 — the interned DNF carries no exact-duplicate clause on any axis.
+///
+/// The activation key is supposed to be a join homomorphism: keying the union
+/// of two evidence rows must give the same key as keying either row, whenever
+/// the key language cannot tell them apart. `erase_closure_identity` is the
+/// step that makes two branded closures indistinguishable — and the union it
+/// erases carries one funcs clause per brand. Erasing the brands in place
+/// leaves `A ∨ A`, which interns as a DIFFERENT `Ty` than `A` unless the
+/// persistence boundary collapses it.
+mod erased_closure_dnf_hygiene {
+    use super::*;
+    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
+
+    /// Two closures over one declared surface, differing only in brand.
+    fn branded_pair(t: &mut Types) -> (Ty, Ty) {
+        let int = t.int();
+        let nil = t.nil();
+        let surface = t.arrow(&[int], nil);
+        let left = t.closure_lit(ClosureTarget(3), vec![], 1);
+        let right = t.closure_lit(ClosureTarget(4), vec![], 1);
+        let left = t.intersect(left, surface);
+        let right = t.intersect(right, surface);
+        (left, right)
+    }
+
+    #[test]
+    fn erasing_two_brands_of_one_surface_leaves_one_funcs_clause() {
+        let mut t = Types::new();
+        let (left, right) = branded_pair(&mut t);
+        let joined = t.union(left, right);
+        assert_eq!(
+            t.descr(&joined).funcs.len(),
+            2,
+            "the brands are distinguishable before erasure, so the union keeps both clauses"
+        );
+
+        let erased = t.erase_closure_identity(&joined);
+        assert_eq!(
+            t.descr(&erased).funcs.len(),
+            1,
+            "A ∨ A = A: erasing the only distinguishing field must not leave two copies, got {}",
+            t.display(&erased)
+        );
+        assert_eq!(
+            erased,
+            t.erase_closure_identity(&left),
+            "and the collapsed union must be the very same interned id as either erased arm"
+        );
+    }
+
+    #[test]
+    fn the_activation_key_of_an_erased_union_is_the_key_of_each_arm() {
+        let mut t = Types::new();
+        let (left, right) = branded_pair(&mut t);
+        let joined = t.union(left, right);
+
+        let key_of = |t: &mut Types, ty: Ty| {
+            let erased = t.erase_closure_identity(&ty);
+            ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[erased], t)
+        };
+        let left_key = key_of(&mut t, left);
+        let right_key = key_of(&mut t, right);
+        let joined_key = key_of(&mut t, joined);
+
+        assert_eq!(left_key, right_key, "same surface, erased brand: one key");
+        assert_eq!(
+            joined_key, left_key,
+            "the key must be a join homomorphism where the key language cannot see the difference"
+        );
+    }
+}
+
+/// fz-kdt.105 — a union's interned identity is its DENOTATION, not the order
+/// its clauses arrived in.
+///
+/// `dnf_union` concatenates clause lists, so `A ∨ B` and `B ∨ A` reach the
+/// interner as two different `Vec<Conj<_>>` and hash to two different `Descr`s.
+/// Two `Ty`s for one set means the ACTIVATION KEY built from them differs too,
+/// so which specializations exist becomes a function of the scheduler's arrival
+/// order rather than of the program. The shape below is the one the reduce
+/// bridge actually joins: `{:cont, list(int)} | {:halt, int}`.
+mod union_clause_order {
+    use super::*;
+    use crate::compiler2::identity::{ActivationKey, FunctionId, RootId};
+
+    fn cont_and_halt(t: &mut Types) -> (Ty, Ty) {
+        let int = t.int();
+        let ints = t.list(int);
+        let cont = t.atom_lit("cont");
+        let halt = t.atom_lit("halt");
+        let cont_arm = t.tuple(&[cont, ints]);
+        let halt_arm = t.tuple(&[halt, int]);
+        (cont_arm, halt_arm)
+    }
+
+    #[test]
+    fn a_union_interns_to_one_type_whichever_arm_arrives_first() {
+        let mut t = Types::new();
+        let (cont, halt) = cont_and_halt(&mut t);
+        let forward = t.union(cont, halt);
+        let backward = t.union(halt, cont);
+        assert_eq!(
+            forward,
+            backward,
+            "one denotation, one interned id: got {} vs {}",
+            t.display(&forward),
+            t.display(&backward)
+        );
+    }
+
+    #[test]
+    fn the_activation_key_of_a_union_does_not_depend_on_arm_order() {
+        let mut t = Types::new();
+        let (cont, halt) = cont_and_halt(&mut t);
+        let forward = t.union(cont, halt);
+        let backward = t.union(halt, cont);
+
+        // `from_inputs` addresses its inputs, and the addresser numbers a tuple
+        // union's alternatives by CLAUSE POSITION (`AddrStep::Variant`), so one
+        // key for both arms is also the assertion that the variant numbering —
+        // and every `a0_uK_…` var name derived from it — follows canonical
+        // order rather than arrival order.
+        let key_of =
+            |t: &mut Types, ty: Ty| ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[ty], t);
+        let forward_key = key_of(&mut t, forward);
+        let backward_key = key_of(&mut t, backward);
+        assert_eq!(
+            forward_key, backward_key,
+            "the specialization a callee gets must be a function of the type it is passed, \
+             not of which branch the scheduler ran first"
+        );
+    }
 }

@@ -1,0 +1,18 @@
+#---
+# purpose: "a lambda named where it is used drives Enum.each through a grounded call, not the boxed seam"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.155's control. The same `Enum.each/2` shape as
+# `mailbox_closure_each.fz`, except the callable is named right here, so the
+# each-step callsite carries an exact callee and calls the lambda's own
+# executable directly. That grounded call is the one case where the callsite
+# DOES own the callee it is narrowing: its discarded result reaches the
+# lambda's own return demand, both halves settle on zero delivered lanes, and
+# nothing crosses the boxed seam. Widening the boxed convention must leave this
+# path exactly as it is.
+fn main() do
+  double = fn (x) -> dbg(x * 2) end
+  Enum.each([1, 2, 3], double)
+  dbg(:done)
+end

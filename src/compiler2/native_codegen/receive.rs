@@ -28,9 +28,10 @@ use crate::dispatch_matrix::{
     EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
     SubjectSource,
 };
-use crate::finite_set::FiniteSet;
 use crate::fz_ir::{Module, ReceiveClause, Var};
-use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+
+use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
+use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -667,6 +668,7 @@ fn emit_region_test(
     Ok(true_values)
 }
 
+/// A receive plan's runtime type test, asked through the one shared emitter.
 fn emit_runtime_type_predicate_region_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &DispatchCtx<'_>,
@@ -675,209 +677,114 @@ fn emit_runtime_type_predicate_region_test(
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let scalar = emit_runtime_type_predicate_scalar_checks(b, ctx, value, predicate)?;
-    let heap = emit_runtime_type_predicate_heap_checks(b, ctx, value, predicate)?;
-    let struct_flag = predicate
-        .has_structs()
-        .then(|| emit_runtime_type_predicate_struct_check(b, ctx, value, predicate))
-        .transpose()?;
-    let flag = [scalar, heap, struct_flag]
-        .into_iter()
-        .flatten()
-        .reduce(|acc, next| b.ins().bor(acc, next))
-        .unwrap_or_else(|| b.ins().iconst(types::I8, 0));
+    let flag = {
+        let mut emitter = ReceiveTestEmitter { b: &mut *b, ctx };
+        emit_runtime_type_test(&mut emitter, value, predicate)?
+    };
     b.ins().brif(flag, match_b, &[], next_b, &[]);
     Ok(())
 }
 
-fn emit_runtime_type_predicate_scalar_checks(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &DispatchCtx<'_>,
-    value: ReceiveValue,
-    predicate: &RuntimeTypePredicate,
-) -> Result<Option<ir::Value>, CodegenError> {
-    let mut scalar = None;
-    let or_in = |b: &mut FunctionBuilder<'_>, flag: ir::Value, scalar: &mut Option<ir::Value>| {
-        *scalar = Some(match scalar.take() {
-            None => flag,
-            Some(prev) => b.ins().bor(prev, flag),
-        });
-    };
-    if !predicate.ints.is_none() {
-        let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::INT, |b, ctx, value| {
-            let raw = receive_value_int(b, ctx, value)?;
-            Ok(emit_receive_i64_membership(b, raw, &predicate.ints))
-        })?;
-        or_in(b, flag, &mut scalar);
-    }
-    if !predicate.floats.is_none() {
-        let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::FLOAT, |b, ctx, value| {
-            let raw = receive_value_float(b, ctx, value)?;
-            let bits = b.ins().bitcast(types::I64, MemFlags::new(), raw);
-            Ok(emit_receive_u64_membership(b, bits, &predicate.floats))
-        })?;
-        or_in(b, flag, &mut scalar);
-    }
-    if !predicate.atoms.is_none() {
-        let name_to_id: HashMap<&str, u32> = ctx
-            .fz_module
-            .atom_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| (name.as_str(), i as u32))
-            .collect();
-        let atom_ids = FiniteSet {
-            cofinite: predicate.atoms.cofinite,
-            values: predicate
-                .atoms
-                .values
-                .iter()
-                .filter_map(|name| name_to_id.get(name.as_str()).copied().map(i64::from))
-                .collect(),
-        };
-        let flag = emit_receive_kind_guarded_membership(b, ctx, value, ValueKind::ATOM, |b, ctx, value| {
-            let raw = receive_value_atom(b, ctx, value)?;
-            Ok(emit_receive_i64_membership(b, raw, &atom_ids))
-        })?;
-        or_in(b, flag, &mut scalar);
-    }
-    Ok(scalar)
+/// The receive-plan door onto the shared runtime-test emitter.
+struct ReceiveTestEmitter<'a, 'f, 'c> {
+    b: &'a mut FunctionBuilder<'f>,
+    ctx: &'a DispatchCtx<'c>,
 }
 
-fn emit_runtime_type_predicate_heap_checks(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &DispatchCtx<'_>,
-    value: ReceiveValue,
-    predicate: &RuntimeTypePredicate,
-) -> Result<Option<ir::Value>, CodegenError> {
-    let mut flag = None;
-    let mut or_in = |b: &mut FunctionBuilder<'_>, next: ir::Value| {
-        flag = Some(match flag.take() {
-            None => next,
-            Some(prev) => b.ins().bor(prev, next),
-        });
-    };
-    if let Some(list_flag) = emit_runtime_type_predicate_list_check(b, ctx, value, &predicate.lists)? {
-        or_in(b, list_flag);
-    }
-    if predicate.maps {
-        let map_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::MAP)?;
-        or_in(b, map_flag);
-    }
-    if predicate.binaries {
-        let binary_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::BITSTRING)?;
-        or_in(b, binary_flag);
-    }
-    if predicate.closures {
-        let closure_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::CLOSURE)?;
-        or_in(b, closure_flag);
-    }
-    if predicate.resources {
-        let resource_flag = emit_receive_value_kind_flag(b, ctx, value, ValueKind::RESOURCE)?;
-        or_in(b, resource_flag);
-    }
-    Ok(flag)
-}
+impl<'f> RuntimeTestEmitter<'f> for ReceiveTestEmitter<'_, 'f, '_> {
+    type Value = ReceiveValue;
 
-fn emit_runtime_type_predicate_struct_check(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &DispatchCtx<'_>,
-    value: ReceiveValue,
-    predicate: &RuntimeTypePredicate,
-) -> Result<ir::Value, CodegenError> {
-    if predicate.allow_other_structs && predicate.tuple_arities.is_any() && predicate.named_structs.is_any() {
-        return emit_receive_value_kind_flag(b, ctx, value, ValueKind::STRUCT);
+    fn builder(&mut self) -> &mut FunctionBuilder<'f> {
+        self.b
     }
 
-    let is_struct = emit_receive_value_kind_flag(b, ctx, value, ValueKind::STRUCT)?;
-    let struct_blk = b.create_block();
-    let join_blk = b.create_block();
-    b.append_block_param(join_blk, types::I8);
-    let false8 = b.ins().iconst(types::I8, 0);
-    b.ins()
-        .brif(is_struct, struct_blk, &[], join_blk, &[ir::BlockArg::Value(false8)]);
-
-    b.switch_to_block(struct_blk);
-    b.seal_block(struct_blk);
-    let Some(fref) = ctx.runtime.struct_schema_id_ref_fref else {
-        return Err(CodegenError::new("struct type-test requires fz_struct_schema_id_ref"));
-    };
-    let struct_ref = emit_receive_value_ref(b, ctx, value)?;
-    let inst = b.ins().call(fref, &[struct_ref]);
-    let schema_raw = b.inst_results(inst)[0];
-    let schema64 = b.ins().uextend(types::I64, schema_raw);
-
-    let tuple_match =
-        emit_receive_struct_tuple_membership(b, schema64, ctx.tuple_schema_ids, ctx.named_schema_ids, predicate);
-    let named_match = emit_receive_struct_named_membership(b, schema64, ctx.named_schema_ids, &predicate.named_structs);
-    let other_match = if predicate.allow_other_structs {
-        let known_tuple = emit_receive_any_schema_id_match(b, schema64, ctx.tuple_schema_ids.values().copied());
-        let known_named = emit_receive_any_schema_id_match(b, schema64, ctx.named_schema_ids.values().copied());
-        let known_struct = b.ins().bor(known_tuple, known_named);
-        b.ins().icmp_imm(IntCC::Equal, known_struct, 0)
-    } else {
-        b.ins().iconst(types::I8, 0)
-    };
-    let tuple_or_named = b.ins().bor(tuple_match, named_match);
-    let flag = b.ins().bor(tuple_or_named, other_match);
-    b.ins().jump(join_blk, &[ir::BlockArg::Value(flag)]);
-
-    b.switch_to_block(join_blk);
-    b.seal_block(join_blk);
-    Ok(b.block_params(join_blk)[0])
-}
-
-fn emit_runtime_type_predicate_list_check(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &DispatchCtx<'_>,
-    value: ReceiveValue,
-    lists: &FiniteSet<ListShape>,
-) -> Result<Option<ir::Value>, CodegenError> {
-    if lists.is_none() {
-        return Ok(None);
+    fn atom_names(&self) -> &[String] {
+        &self.ctx.fz_module.atom_names
     }
-    let allow_empty = lists.contains(&ListShape::Empty);
-    let allow_non_empty = lists.contains(&ListShape::NonEmpty);
-    Ok(match (allow_empty, allow_non_empty) {
-        (false, false) => None,
-        (true, true) => Some(emit_receive_value_kind_flag(b, ctx, value, ValueKind::LIST)?),
-        (true, false) => Some(emit_receive_is_empty_list_flag(b, ctx, value)?),
-        (false, true) => Some(emit_receive_is_list_cons_flag(b, ctx, value)?),
-    })
-}
 
-fn emit_receive_kind_guarded_membership(
-    b: &mut FunctionBuilder<'_>,
-    ctx: &DispatchCtx<'_>,
-    value: ReceiveValue,
-    kind: ValueKind,
-    build: impl FnOnce(&mut FunctionBuilder<'_>, &DispatchCtx<'_>, ReceiveValue) -> Result<ir::Value, CodegenError>,
-) -> Result<ir::Value, CodegenError> {
-    match value {
-        ReceiveValue::AnyRef(_) => {
-            let is_kind = emit_receive_value_kind_flag(b, ctx, value, kind)?;
-            let match_blk = b.create_block();
-            let join_blk = b.create_block();
-            b.append_block_param(join_blk, types::I8);
-            let false8 = b.ins().iconst(types::I8, 0);
-            b.ins()
-                .brif(is_kind, match_blk, &[], join_blk, &[ir::BlockArg::Value(false8)]);
-            b.switch_to_block(match_blk);
-            b.seal_block(match_blk);
-            let matched = build(b, ctx, value)?;
-            b.ins().jump(join_blk, &[ir::BlockArg::Value(matched)]);
-            b.switch_to_block(join_blk);
-            b.seal_block(join_blk);
-            Ok(b.block_params(join_blk)[0])
+    fn tuple_schema_ids(&self) -> &HashMap<usize, u32> {
+        self.ctx.tuple_schema_ids
+    }
+
+    fn named_schema_ids(&self) -> &HashMap<String, u32> {
+        self.ctx.named_schema_ids
+    }
+
+    fn kind_evidence(&self, value: ReceiveValue) -> KindEvidence {
+        match value {
+            ReceiveValue::AnyRef(_) => KindEvidence::Tagged,
+            ReceiveValue::Int(_) => KindEvidence::Unboxed(ValueKind::INT),
+            ReceiveValue::Float(_) => KindEvidence::Unboxed(ValueKind::FLOAT),
+            ReceiveValue::Atom(_) => KindEvidence::Unboxed(ValueKind::ATOM),
         }
-        ReceiveValue::Int(_) if kind == ValueKind::INT => build(b, ctx, value),
-        ReceiveValue::Int(_) => Ok(b.ins().iconst(types::I8, 0)),
-        ReceiveValue::Float(_) if kind == ValueKind::FLOAT => build(b, ctx, value),
-        ReceiveValue::Float(_) => Ok(b.ins().iconst(types::I8, 0)),
-        ReceiveValue::Atom(_) if kind == ValueKind::ATOM => build(b, ctx, value),
-        ReceiveValue::Atom(_) => Ok(b.ins().iconst(types::I8, 0)),
+    }
+
+    fn kind_flag(&mut self, value: ReceiveValue, kind: ValueKind) -> Result<ir::Value, CodegenError> {
+        emit_receive_value_kind_flag(self.b, self.ctx, value, kind)
+    }
+
+    fn raw_int(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        receive_value_int(self.b, self.ctx, value)
+    }
+
+    fn raw_float_bits(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        let raw = receive_value_float(self.b, self.ctx, value)?;
+        Ok(self.b.ins().bitcast(types::I64, MemFlags::new(), raw))
+    }
+
+    fn raw_atom(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        receive_value_atom(self.b, self.ctx, value)
+    }
+
+    fn empty_list_flag(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        emit_receive_is_empty_list_flag(self.b, self.ctx, value)
+    }
+
+    fn cons_flag(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        emit_receive_is_list_cons_flag(self.b, self.ctx, value)
+    }
+
+    fn schema_id(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        let Some(fref) = self.ctx.runtime.struct_schema_id_ref_fref else {
+            return Err(CodegenError::new("struct type-test requires fz_struct_schema_id_ref"));
+        };
+        let struct_ref = emit_receive_value_ref(self.b, self.ctx, value)?;
+        let inst = self.b.ins().call(fref, &[struct_ref]);
+        let raw = self.b.inst_results(inst)[0];
+        Ok(self.b.ins().uextend(types::I64, raw))
+    }
+
+    fn tuple_field(&mut self, value: ReceiveValue, index: usize) -> Result<ReceiveValue, CodegenError> {
+        emit_struct_get_field_value(self.b, self.ctx, value, index as u32)
+    }
+
+    fn list_head(&mut self, value: ReceiveValue) -> Result<ReceiveValue, CodegenError> {
+        let Some(fref) = self.ctx.runtime.list_head_fref else {
+            return Err(CodegenError::new("a list head question needs fz_list_head_ref"));
+        };
+        let list_ref = emit_receive_value_ref(self.b, self.ctx, value)?;
+        let inst = self.b.ins().call(fref, &[list_ref]);
+        let head_ref = self.b.inst_results(inst)[0];
+        Ok(receive_value_from_ref_word(self.b, head_ref))
+    }
+
+    fn closure_code(&mut self, _value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
+    }
+
+    fn callable_addresses(&mut self, _callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError> {
+        // A receive plan's questions come from message PATTERNS and from
+        // parameter annotations, and neither language can name one callable:
+        // the finest a source can say is "a function". So the callable axis
+        // arrives here as all-or-nothing, and a finite set would mean some
+        // other producer started routing on callable identity without teaching
+        // this door to read one (fz-kdt.125).
+        Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
     }
 }
+
+const RECEIVE_NAMES_NO_CALLABLE: &str =
+    "receive dispatch cannot test callable identity: no message pattern can name one callable";
 
 fn emit_receive_value_kind_flag(
     b: &mut FunctionBuilder<'_>,
@@ -888,127 +795,6 @@ fn emit_receive_value_kind_flag(
     let tag = receive_value_tag(b, ctx, value)?;
     let tag64 = b.ins().uextend(types::I64, tag);
     Ok(b.ins().icmp_imm(IntCC::Equal, tag64, kind.tag() as i64))
-}
-
-/// Receive-plan counterpart of `native_codegen::prim::emit_i64_membership`:
-/// shared by live atom membership and dormant numeric (`ints`) membership,
-/// whose sole producer (`Types::runtime_type_predicate`) always leaves
-/// `values` empty in production. Kept as the wiring point for a deferred
-/// numeric-singleton-precision restoration, not pruned.
-fn emit_receive_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<i64>) -> ir::Value {
-    if values.is_any() {
-        return b.ins().iconst(types::I8, 1);
-    }
-    let mut eq_any = b.ins().iconst(types::I8, 0);
-    for want in &values.values {
-        let next = b.ins().icmp_imm(IntCC::Equal, raw, *want);
-        eq_any = b.ins().bor(eq_any, next);
-    }
-    if values.cofinite {
-        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
-    } else {
-        eq_any
-    }
-}
-
-/// See `emit_receive_i64_membership`: the `floats` counterpart, same
-/// dormant-wiring status.
-fn emit_receive_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, values: &FiniteSet<u64>) -> ir::Value {
-    if values.is_any() {
-        return b.ins().iconst(types::I8, 1);
-    }
-    let mut eq_any = b.ins().iconst(types::I8, 0);
-    for want in &values.values {
-        let want = b.ins().iconst(types::I64, *want as i64);
-        let next = b.ins().icmp(IntCC::Equal, raw, want);
-        eq_any = b.ins().bor(eq_any, next);
-    }
-    if values.cofinite {
-        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
-    } else {
-        eq_any
-    }
-}
-
-fn emit_receive_any_schema_id_match(
-    b: &mut FunctionBuilder<'_>,
-    schema64: ir::Value,
-    ids: impl IntoIterator<Item = u32>,
-) -> ir::Value {
-    let mut matched = b.ins().iconst(types::I8, 0);
-    for id in ids {
-        let want = b.ins().iconst(types::I64, id as i64);
-        let next = b.ins().icmp(IntCC::Equal, schema64, want);
-        matched = b.ins().bor(matched, next);
-    }
-    matched
-}
-
-fn emit_receive_struct_tuple_membership(
-    b: &mut FunctionBuilder<'_>,
-    schema64: ir::Value,
-    tuple_schema_ids: &HashMap<usize, u32>,
-    named_schema_ids: &HashMap<String, u32>,
-    predicate: &RuntimeTypePredicate,
-) -> ir::Value {
-    if predicate.tuple_arities.is_none() {
-        return b.ins().iconst(types::I8, 0);
-    }
-    if predicate.tuple_arities.is_any() {
-        let known_named = emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-        return b.ins().icmp_imm(IntCC::Equal, known_named, 0);
-    }
-    if predicate.tuple_arities.cofinite {
-        let excluded = predicate
-            .tuple_arities
-            .values
-            .iter()
-            .filter_map(|arity| tuple_schema_ids.get(arity).copied())
-            .collect::<Vec<_>>();
-        let known_named = emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-        let is_named = b.ins().icmp_imm(IntCC::NotEqual, known_named, 0);
-        let excluded_match = emit_receive_any_schema_id_match(b, schema64, excluded);
-        let excluded_ok = b.ins().icmp_imm(IntCC::Equal, excluded_match, 0);
-        let not_named = b.ins().bxor_imm(is_named, 1);
-        b.ins().band(not_named, excluded_ok)
-    } else {
-        emit_receive_any_schema_id_match(
-            b,
-            schema64,
-            predicate
-                .tuple_arities
-                .values
-                .iter()
-                .filter_map(|arity| tuple_schema_ids.get(arity).copied()),
-        )
-    }
-}
-
-fn emit_receive_struct_named_membership(
-    b: &mut FunctionBuilder<'_>,
-    schema64: ir::Value,
-    named_schema_ids: &HashMap<String, u32>,
-    names: &FiniteSet<String>,
-) -> ir::Value {
-    if names.is_none() {
-        return b.ins().iconst(types::I8, 0);
-    }
-    if names.is_any() {
-        return emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-    }
-    let relevant_ids = names
-        .values
-        .iter()
-        .filter_map(|name| named_schema_ids.get(name).copied())
-        .collect::<Vec<_>>();
-    let matched = emit_receive_any_schema_id_match(b, schema64, relevant_ids);
-    if names.cofinite {
-        let any_named = emit_receive_any_schema_id_match(b, schema64, named_schema_ids.values().copied());
-        let not_excluded = b.ins().icmp_imm(IntCC::Equal, matched, 0);
-        b.ins().band(any_named, not_excluded)
-    } else {
-        matched
-    }
 }
 
 fn emit_receive_is_empty_list_flag(

@@ -162,11 +162,13 @@ pub(super) fn interp_runtime_type_predicate_schema_ids(
     module: &Module,
     predicate: &RuntimeTypePredicate,
 ) -> (HashMap<usize, u32>, HashMap<String, u32>) {
+    // Every arity the test can ask about, NESTED ONES INCLUDED: a nested tuple
+    // position is only answerable where the runtime has a schema to name, and
+    // an unregistered one leaves that position blind (fz-kdt.119).
     let tuple_schema_ids = predicate
-        .tuple_arities
-        .values
-        .iter()
-        .map(|arity| (*arity, interp_tuple_schema_id(runtime, *arity)))
+        .tuple_arities_at_every_depth()
+        .into_iter()
+        .map(|arity| (arity, interp_tuple_schema_id(runtime, arity)))
         .collect();
     let mut named_schema_ids = HashMap::new();
     for (name, fields) in &module.struct_schemas {

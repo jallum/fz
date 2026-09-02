@@ -17,6 +17,32 @@ A, B disjoint <=>  ⟦A⟧ ∩ ⟦B⟧ = ∅
 Everything reduces to deciding emptiness: `is_subtype(a, b)` asks whether
 `(a and not b)` is empty; `is_disjoint(a, b)` asks whether `(a and b)` is empty.
 
+`is_subtype` is NOT a safe "covers everything the other says" test for a
+closure-literal column. `emptiness.rs::func_clause_empty` decides `P \ N` for a
+negative arrow carrying a `ClosureLit` from `fn_id` and `captures` alone — it
+never reads `args` or `ret` — so two arrows over ONE lambda are mutually
+subtypes however far apart their signatures are. That is also why a template
+arrow and its ground instance come out equivalent: it is `func_clause_empty`'s
+capture-subset test on the shared literal that erases the difference, not a
+general absorbing property of free vars. A literal whose own capture TYPE is
+empty is empty whatever the rest of the clause says — a closure holds exactly
+one value per capture slot, so `#3closure[none]` denotes nothing. Two literals
+that can name one value MERGE at intern time rather than staying distinct, so
+that is where a `none` capture comes from: one brand met at two capture types,
+or the ANONYMOUS literal (a `ClosureLit` with no `fn_id`, fz-kdt.127, which is
+every brand at once) met with a branded one. (Vars are nominal on their own axis:
+`is_subtype(int, α)` and `is_subtype(α, int)` are both false.) The blind spot
+is structural — a lambda inside a tuple, a list, a resource payload, a map
+field or another arrow's signature is reached the same way.
+
+Callers that need containment rather than the lattice order ask
+`Types::row_column_dominates`, which adds equal `free_var_ids` and containment
+of `lit_arrow_shapes` — the `(fn_id, captures, args, ret)` evidence subtyping
+discards, collected by the same structural walk `free_var_ids` uses — on top of
+`is_subtype`. It is memoized under its own NON-symmetric
+`ComparisonKey::RowColumnDominates`; the symmetric-key helper is for relations
+whose two positions are interchangeable, and this one's are not.
+
 A type is a union across independent **axes**, one per runtime kind, held in
 disjunctive normal form (DNF). A `Descr` is that union:
 
@@ -61,12 +87,55 @@ both positively and negatively (`P ∧ ¬P = ∅`), and clauses a `MergeSig` mer
 proves empty (`PosMeet::Empty`: tuple arity mismatch, an empty tuple
 coordinate or resource payload, a non-empty list sig with no element left).
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
-The persistence boundary (`Types::intern`) canonicalizes the tuples axis of
-every descriptor entering the interner: provably-empty clauses are dropped
+
+The persistence boundary (`Types::intern`) canonicalizes every descriptor
+entering the interner, in three order-preserving passes.
+
+First, ORDER (`order.rs::ClauseOrder`): every DNF axis is sorted by a total
+order on clauses, so a descriptor's clause list is a function of its clause set
+rather than of the arrival order that built it. A DNF axis denotes a set but is
+stored as a `Vec` and every producer appends, so `A ∨ B` and `B ∨ A` used to
+reach the interner as two vectors and be handed two `Ty`s for one type — and a
+`Ty` IS the identity of a specialization, so which bodies exist was a function
+of the schedule (fz-kdt.105). The order is lexicographic over the structure,
+compared in place rather than rendered as text: two `Ty`s compare by their
+descriptors, recursively, which terminates because a descriptor can only name
+`Ty`s interned before it. It is injective — ties happen only between identical
+clauses — because the interner is keyed by `Descr`, so distinct ids have
+distinct structure; a comparator that could tie two DIFFERENT clauses would hand
+the survivor back to arrival order. Closure literals order by the owner's stable
+`Module.name/arity` label (`Types::name_callable`, filled in by `World` as it
+mints each function id) and structural address vars by their `AddrStep` path,
+never by the mint-order `FnId`/`TypeVarId` behind them. Two residuals are
+deliberate: a tie broken by two FREE type vars falls back to mint order, and
+intra-clause factor order (`Conj::pos`, grown in `dnf_intersect_with` arrival
+order) is a second dimension this pass does not touch.
+
+Then ABSORPTION, on the tuples axis: provably-empty clauses are dropped
 (`A ∨ ∅ = A`) and subsumed clauses absorbed (`A ⊆ B ⇒ A ∨ B = B`, via
-`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache), and a
-debug-build assert in `TypeInterner::intern` sweeps every intern for the
-invariant. The tuple-emptiness recursion
+`dnf.rs::tuple_clause_subsumed` over the memoized comparison cache). It has to
+run AFTER the sort: it keeps the FIRST of a mutually-subsuming pair, so without
+a canonical order the schedule would still be choosing which clause lives.
+
+Then IDEMPOTENCE, on the lists, resources, funcs and maps axes: exact-duplicate
+clauses are dropped (`A ∨ A = A`, `dedupe_exact_clauses`, first occurrence
+kept). Both later passes are order-preserving filters, so what reaches the
+interner index is still sorted — which is also why one pass suffices:
+re-interning an interned descriptor sorts a sorted list to itself, finds nothing
+left to absorb or collapse, and hits the index.
+
+What clause order canNOT reconcile is a different CARVING of one type:
+`{[int], :false} | {[int], :true}` and `{[int], :false | :true}` are one
+denotation in two decompositions and still intern apart (fz-kdt.48).
+
+Union-time hygiene is not enough, because clauses are also made
+equal AFTER a union — `erase_closure_identity` strips closure brands in place,
+turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
+otherwise intern as a different `Ty` than `funcs = [A]`. That difference is
+what the activation key is built from, so idempotence at the boundary is what
+makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
+`TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) sweeps every intern
+for both invariants. The tuple-emptiness recursion
 (`emptiness::phi_tuple`) returns early on an empty coordinate and drops
 negations disjoint from the product, so it explores only inhabited splits
 instead of fanning out `arity^|negs|` branches.

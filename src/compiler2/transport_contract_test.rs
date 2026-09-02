@@ -1840,11 +1840,17 @@ end
                 (resolution.clone(), demand)
             })
             .collect::<Vec<_>>();
+        // The direct surface above and this boundary are two ways to reach one
+        // lambda, and only the direct one carries the discard. A boundary is
+        // the boxed apply seam: its wrapper's public return form comes from
+        // these members, and no callsite past the seam names them, so the
+        // discard on the direct side must not narrow them (fz-kdt.155).
         assert!(
             target_demands
                 .iter()
-                .all(|(_, demand)| demand.as_ref().is_some_and(RuntimeDemand::is_ignore)),
-            "an ignored direct call must retain its direct surface without inventing target return demand: {target_demands:?}",
+                .all(|(_, demand)| demand.as_ref().is_some_and(|demand| !demand.is_ignore())),
+            "a member behind a first-class boundary carries the seam's return lane even while a direct \
+             sibling callsite discards its result: {target_demands:?}",
         );
     }
 }
@@ -2360,12 +2366,47 @@ end
     );
 }
 
+/// fz-kdt.155 — INTENT: what a discarded closure call narrows its callee to
+/// depends on whether a boxed apply seam reaches that callee, and on nothing
+/// else. Both programs below discard `f.(1)` through a callsite that names its
+/// target. They differ in one line: the first hands `f` back out of `main`, so
+/// a construction wrapper is built for it and the members behind that wrapper
+/// are the seam's authority for what crosses it — no consumer past the seam can
+/// narrow them, so nothing may. The second keeps `f` to itself, no wrapper
+/// exists, and the discard reaches the lambda's own return exactly as it always
+/// did.
+///
+/// This is the axis fz-kdt.155 turns on. Getting it wrong in either direction
+/// is a `fz_closure_get_capture_atom` abort (narrow a boxed member and the
+/// wrapper hands back a lane the caller never reserved) or dead work (widen a
+/// callable nobody boxes).
 #[test]
-fn compiler2_runtime_demand_does_not_invent_target_return_demand_for_ignored_first_class_result() {
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    world.submit_code(
-        Some("ignored_first_class_callable_result.fz".to_string()),
+fn compiler2_a_discarded_closure_call_narrows_its_callee_only_when_no_seam_boxes_it() {
+    fn returned_lambda_return_demand(source: &str) -> RuntimeDemand {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(Some("discarded_closure_call.fz".to_string()), source.to_string());
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+        let _ = &plan;
+        let session = driver.session();
+        let demands = runtime_demands_for_frontier(session);
+        // The callable-flow fact names the function it constructs; that is the
+        // lambda whose own return the discarded call may or may not reach.
+        let lambda_function = demands
+            .values()
+            .flat_map(|demand| demand.callable_flows.values())
+            .map(|flow| flow.function)
+            .next()
+            .expect("`f` is a locally constructed callable and publishes a callable-flow fact");
+        demands
+            .iter()
+            .find(|(executable, _)| executable.activation.function == lambda_function)
+            .map(|(_, demand)| demand.return_demand.clone())
+            .expect("the adder lambda should be part of the settled demand closure")
+    }
+
+    let boxed = returned_lambda_return_demand(
         r#"
 fn make_adder(a), do: fn (x) -> x + a end
 fn main() do
@@ -2373,28 +2414,28 @@ fn main() do
   f.(1)
   f
 end
-"#
-        .to_string(),
+"#,
     );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let _ = &plan;
-    let session = driver.session();
-
-    let demands = runtime_demands_for_frontier(session);
-    let target = demands
-        .values()
-        .flat_map(|demand| demand.callable_flows.values())
-        .flat_map(|flow| flow.first_class_edges.iter())
-        .map(|edge| edge.resolution.clone())
-        .next()
-        .expect("escaped callable should publish a first-class executable target");
-    let target_demand = session.memo().runtime_demand(&target).unwrap_or_else(|| {
-        panic!("first-class callable target should be part of the settled demand closure: {target:?}")
-    });
     assert!(
-        target_demand.return_demand.is_ignore(),
-        "an ignored call result must not be reconstructed from the escaped callable's semantic return type: {target:?} -> {target_demand:?}",
+        !boxed.is_ignore(),
+        "a lambda handed out through a construction wrapper carries the seam's return lane however \
+         little its own callsites want it: {boxed:?}",
+    );
+
+    let never_boxed = returned_lambda_return_demand(
+        r#"
+fn make_adder(a), do: fn (x) -> x + a end
+fn main() do
+  f = make_adder(10)
+  f.(1)
+  0
+end
+"#,
+    );
+    assert!(
+        never_boxed.is_ignore(),
+        "no seam boxes this lambda, so the discarded call reaches its own return and narrows it to \
+         nothing: {never_boxed:?}",
     );
 }
 
@@ -2733,7 +2774,7 @@ fn main(), do: make_pairer()
     assert!(
         lambda_return_predicates
             .iter()
-            .any(|predicate| predicate.tuple_arities.contains(&2)),
+            .any(|predicate| predicate.tuples.arities().contains(&2)),
         "the control must retain a tuple semantic return type while runtime demand remains ignored"
     );
 }
@@ -3904,6 +3945,334 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
     assert!(checked > 0, "the fixture should package a callable capture");
 }
 
+/// A published whole-value lane is a CONTRACT, so it may only ever be wider
+/// than the value it carries: every runtime value of the position's analyzed
+/// type has to fit through it. A position that ships one lane whose type is
+/// strictly below its own analyzed type is therefore an anomaly, not a
+/// narrowing -- some of its values simply have no lane to travel in.
+///
+/// Decomposed positions (one lane per field) and elided ones (no lanes at all,
+/// the zero a discarded result's boundary derives) are legitimately not
+/// whole-value contracts and are out of scope here: the invariant binds
+/// exactly where a position ships ONE lane for a whole value.
+///
+/// Executable returns and local values are both covered. Call arguments,
+/// return payloads and resume payloads are not reachable from a published
+/// `BackendExecutable`, so this gate does not see them -- reaching them needs
+/// the `MaterializedTransportPlan`, which the backend product does not retain
+/// on the executables themselves.
+#[test]
+fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
+    let source = include_str!("../../fixtures2/behavior/enum_predicate_search.fz");
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("return_lane_contract.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (program, driver) =
+        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
+            .expect("panic-based ProductDriveError never returns Err");
+    driver.finish_session();
+
+    let mut whole_value_lanes = 0;
+    let mut sunk = Vec::new();
+    for executable in &program.executables {
+        let name = &world.function_ref(executable.key.activation.function).name;
+        let mut check = |what: String, layout: &super::artifact::BackendValueLayout, ty: Ty, world: &World| {
+            let ShapeDescr::Lane(_) = shape_descr(world, layout.structural) else {
+                return 0;
+            };
+            let [lane_ty] = layout.tys.as_ref() else {
+                return 0;
+            };
+            if !world.types().is_subtype(&ty, lane_ty) {
+                sunk.push(format!(
+                    "{what} lane {} under analyzed {}",
+                    world.types().display(lane_ty),
+                    world.types().display(&ty),
+                ));
+            }
+            1
+        };
+        whole_value_lanes += check(
+            format!("{name}/{} return", executable.key.activation.function.as_u32()),
+            &executable.return_layout.layout,
+            executable.return_ty,
+            &world,
+        );
+        for (value, layout) in &executable.value_layouts {
+            let Some(value_ty) = executable.value_types.get(value).copied() else {
+                continue;
+            };
+            whole_value_lanes += check(
+                format!(
+                    "{name}/{} v{}",
+                    executable.key.activation.function.as_u32(),
+                    value.as_u32()
+                ),
+                layout,
+                value_ty,
+                &world,
+            );
+        }
+    }
+    assert!(
+        whole_value_lanes > 0,
+        "the fixture should publish whole-value lanes for this invariant to bind",
+    );
+    sunk.sort();
+    assert_eq!(
+        sunk,
+        Vec::<String>::new(),
+        "every whole-value return lane must carry its position's whole analyzed type",
+    );
+}
+
+/// A transport position named the way a reader can act on it: which function
+/// specialization, and which position within it.
+fn owner_position_label(world: &World, position: &TransportPosition) -> String {
+    let activation = &position.executable().activation;
+    let name = &world.function_ref(activation.function).name;
+    let what = match position {
+        TransportPosition::ExecutableInput { semantic_index, .. } => format!("input#{semantic_index}"),
+        TransportPosition::ExecutableReturn { .. } => "return".to_string(),
+        TransportPosition::ResumePayload { entry, .. } => format!("resume#{}", entry.as_u32()),
+        TransportPosition::ReturnPayload { callsite, .. } => format!("payload#{}", callsite.as_u32()),
+        TransportPosition::CallArg {
+            callsite,
+            semantic_index,
+            ..
+        } => format!("arg#{semantic_index}@{}", callsite.as_u32()),
+        TransportPosition::EntryCapture {
+            entry, capture_index, ..
+        } => format!("capture#{capture_index}@{}", entry.as_u32()),
+        TransportPosition::Value { value, .. } => format!("v{}", value.as_u32()),
+    };
+    format!(
+        "{name}/{}[{}] {what}",
+        activation.function.as_u32(),
+        world.types().display(&activation.arrow)
+    )
+}
+
+/// A boundary publication names the transport position a first-class callable
+/// is published AT: this value, here, is where that boundary enters the
+/// artifact. It is a fact about ONE position, so an owner may only ever
+/// publish its own.
+///
+/// The recursion knot used to contradict that. A cycle of callable-construction
+/// products settles as one group, and the group resolution projected a single
+/// fact set -- built from whichever member's job happened to close the cycle --
+/// and cloned it onto every member, publications included. Every member then
+/// claimed to publish at every group-mate's position, and WHICH positions those
+/// were came from `pending_strong_component`: transient scheduler state, so the
+/// answer was a lottery the schedule drew (fz-kdt.96). The root artifact unions
+/// every owner's boundary facts, which is why the surplus never showed up in a
+/// canonical dump -- it showed up here, in what each owner claims about itself.
+///
+/// Per-member projection makes the invariant exact, and the whole surface is
+/// covered by construction: every producer of a callable owner records its
+/// publications against the position it is producing, and nothing merges one
+/// owner's finished facts into another's.
+///
+/// Order-invariance itself is not a production path -- perturbing the schedule
+/// is a source edit -- so the manual recipe stays here as the sibling gate
+/// (precedent: fz-kdt.93). Flip `Agenda::pop` in `src/compiler2/agenda.rs` from
+/// `pop_front` to `pop_back` for a full-LIFO drive, or reverse `pending` in
+/// `collect_return_origins` (`src/compiler2/jobs/runtime_demand.rs`), rebuild,
+/// and diff `fz2 interp --dump backend=...` against the unperturbed dump.
+/// Known gap: this gate asserts publications exist globally and that no
+/// owner publishes at a foreign position; it does not assert that every
+/// owner with first-class boundaries publishes its OWN position, so a
+/// member-level self-publication drop would pass here and be caught only
+/// by seam/canon consequences downstream.
+#[test]
+fn compiler2_callable_owners_publish_only_their_own_position() {
+    let source = include_str!("../../fixtures2/00420_enum_take_drop_split.fz");
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("owner_publications.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    let mut published = 0;
+    let mut foreign = Vec::new();
+    for positioned in root_backend_answer_for_test(driver.session())
+        .transport
+        .callable_owners
+        .iter()
+    {
+        for facts in positioned.owner.boundary_facts.values() {
+            for publication in facts.publications.iter() {
+                published += 1;
+                if publication != &positioned.position {
+                    foreign.push(format!(
+                        "{} publishes at {}",
+                        owner_position_label(&world, &positioned.position),
+                        owner_position_label(&world, publication),
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        published > 0,
+        "the fixture should publish first-class callable boundaries for this invariant to bind",
+    );
+    foreign.sort();
+    foreign.dedup();
+    assert_eq!(
+        foreign,
+        Vec::<String>::new(),
+        "a callable owner may only publish the boundary at its own position",
+    );
+}
+
+/// One recursion component publishes ONE return contract.
+///
+/// Two functions that call each other in return position are two views of one
+/// calling convention: each returns the other's result, so their published
+/// returns and the payloads read for those calls all describe the same value.
+/// When they agree the artifact makes the call a TAIL call; when they disagree
+/// the caller re-materializes the result on every step of the recursion, which
+/// on a 30,000-element split cost about a quarter of the runtime (fz-kdt.97).
+///
+/// They can only disagree by deriving their forms independently, and the
+/// recursion cut is what invites it: the cut member sees only the arms beside
+/// the cut, while the member whose edge survived joins that form with its own
+/// other arms and, finding no agreement, invents a whole-value one. Neither is
+/// wrong on its own; the two together are.
+///
+/// The invariant binds exactly where it is decidable from the artifact: a call
+/// in return position whose callee can call back to the caller, and whose
+/// callee publishes the caller's own return type. Same type, same convention,
+/// one contract.
+///
+/// Assumed and so far unconstructible: equal return DEMAND across the bound
+/// pair. Two component members with equal type but different demand (possible
+/// only when every caller of one member is strictly partial, since
+/// `ShapeDemand::join` collapses Whole with anything to Whole) would derive
+/// two legitimately different contracts; if such a fixture ever exists, this
+/// assertion needs a demand-equality filter, not a weakening.
+#[test]
+fn compiler2_one_recursion_component_publishes_one_return_contract() {
+    let source = include_str!("../../fixtures2/00420_enum_take_drop_split.fz");
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("one_return_contract.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (program, driver) =
+        super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
+            .expect("panic-based ProductDriveError never returns Err");
+    driver.finish_session();
+
+    let reaches = direct_call_reachability(&program);
+    let mut checked = 0;
+    let mut demoted = Vec::new();
+    for (caller, executable) in program.executables.iter().enumerate() {
+        let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let super::artifact::BackendTail::DirectCall {
+                target, dest, callsite, ..
+            } = &entry.tail
+            else {
+                continue;
+            };
+            let super::body::ControlDestination::Return = dest else {
+                continue;
+            };
+            for (callee, return_flow) in return_flow_arms(target) {
+                if !reaches[callee].contains(&caller) {
+                    continue;
+                }
+                if program.executables[callee].return_ty != executable.return_ty {
+                    continue;
+                }
+                checked += 1;
+                let super::artifact::BackendReturnFlow::Continue { .. } = return_flow else {
+                    continue;
+                };
+                demoted.push(format!(
+                    "{}#{} {:?} -> {}#{}",
+                    world.function_ref(executable.key.activation.function).name,
+                    caller,
+                    callsite,
+                    world
+                        .function_ref(program.executables[callee].key.activation.function)
+                        .name,
+                    callee,
+                ));
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "the fixture should return through mutually recursive direct calls for this invariant to bind",
+    );
+    demoted.sort();
+    assert_eq!(
+        demoted,
+        Vec::<String>::new(),
+        "a call returning into its own recursion component must be a tail call: \
+         every member of the component derives the same return contract",
+    );
+}
+
+/// Which executables each executable can reach through packaged call edges --
+/// the artifact's own call graph, read back off the program it published.
+fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BTreeSet<usize>> {
+    let mut edges = vec![BTreeSet::new(); program.executables.len()];
+    for (caller, executable) in program.executables.iter().enumerate() {
+        let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let target = match &entry.tail {
+                super::artifact::BackendTail::DirectCall { target, .. } => target,
+                _ => continue,
+            };
+            edges[caller].extend(target.local_callees().into_iter().copied());
+        }
+    }
+    let mut reaches = edges.clone();
+    let mut growing = true;
+    while growing {
+        growing = false;
+        for caller in 0..reaches.len() {
+            let reached = reaches[caller]
+                .iter()
+                .flat_map(|callee| reaches[*callee].iter().copied())
+                .collect::<Vec<_>>();
+            for callee in reached {
+                growing |= reaches[caller].insert(callee);
+            }
+        }
+    }
+    reaches
+}
+
+/// The callee and return flow of every arm one packaged call edge can take.
+fn return_flow_arms(
+    target: &super::artifact::CallEdge<usize, super::artifact::BackendReturnFlow>,
+) -> Vec<(usize, &super::artifact::BackendReturnFlow)> {
+    match target {
+        super::artifact::CallEdge::Direct(direct) => direct
+            .callee
+            .copied_local()
+            .map(|callee| (callee, &direct.return_flow))
+            .into_iter()
+            .collect(),
+        super::artifact::CallEdge::Dispatch(dispatch) => dispatch
+            .arms
+            .iter()
+            .filter_map(|arm| Some((arm.callee.copied_local()?, &arm.return_flow)))
+            .collect(),
+        super::artifact::CallEdge::Indirect(_) => Vec::new(),
+    }
+}
+
 #[test]
 fn compiler2_unused_capture_layout_reaches_backend_wrapper() {
     let source = r#"
@@ -5017,9 +5386,9 @@ fn shape_matches_surface_input_ty(world: &mut World, shape: ShapeId, ty: Ty) -> 
 
 fn exact_tuple_field_tys_for_surface(world: &mut World, ty: Ty, arity: usize) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
-    if predicate.tuple_arities.cofinite
-        || predicate.tuple_arities.values.len() != 1
-        || !predicate.tuple_arities.values.contains(&arity)
+    if predicate.tuples.arities().cofinite
+        || predicate.tuples.arities().values.len() != 1
+        || !predicate.tuples.arities().values.contains(&arity)
     {
         return None;
     }
@@ -5318,4 +5687,116 @@ fn all_contract_strings() -> Vec<&'static str> {
     );
     out.extend(SEAM_FACTS.iter().flat_map(|(seam, facts)| [*seam, *facts]));
     out
+}
+
+/// The construction wrappers a root publishes are NUMBERED by the order of the
+/// callable-owner positions they hang off, and the canonical dump prints those
+/// numbers as `construction=w<N>`. Two owners belonging to sibling
+/// specializations of one function agree on everything but their INPUT TYPES,
+/// so the input vector is the whole of their tiebreak — and keyed on raw `Ty`
+/// interner ids that tiebreak is interning order, which the agenda decides.
+///
+/// Measured red on `enum_take_drop_split` (fz-kdt.101): flip `Agenda::pop` to
+/// `pop_back` (src/compiler2/agenda.rs:36 — build, dump, revert) and two
+/// byte-identical `Enum.reduce/3#lambda@439-517/2` wrappers trade indices,
+/// `w10` <-> `w11`, moving four lines of a dump whose content did not change.
+///
+/// The invariant: owner positions sort on fz-kdt.105's canonical, id-free
+/// structural order, so the wrapper numbering says what the owners say.
+#[test]
+fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
+        include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let types = world.types();
+    let descents = plan
+        .callable_owners
+        .windows(2)
+        .filter(|pair| {
+            let left = pair[0].position.executable();
+            let right = pair[1].position.executable();
+            left.activation.function == right.activation.function
+        })
+        .filter(|pair| {
+            types
+                .cmp_tys(
+                    &pair[0].position.executable().activation.input,
+                    &pair[1].position.executable().activation.input,
+                )
+                .is_gt()
+        })
+        .count();
+    assert_eq!(
+        descents, 0,
+        "callable-owner positions sit in interning order rather than canonical order, so \
+         `construction=w<N>` numbering follows the schedule",
+    );
+}
+
+/// fz-kdt.152. `Enum.reduce/3` hands its reducer down to `List.reduce_cont/3`,
+/// which specializes on the accumulator: the first step is reached at the
+/// literal accumulator's type and every later step at the reducer's widened
+/// return. So ONE callable input reaches TWO activations of one lambda.
+///
+/// A transport layout is pure physics, and both activations describe the same
+/// captures, so the input carries those captures — which activation a callsite
+/// reaches is decided there, from the argument types it holds. Reading "more
+/// than one target" as "no exact layout at all" left this input carrying
+/// NOTHING while the callsite still ground a direct call to one of the two,
+/// and the reducer's own capture had no lane to travel in.
+///
+/// The reducer arrives through the mailbox so that it is opaque: a reducer the
+/// compiler can name has no surviving capture lane, and the missing lane is
+/// then accidentally the right answer.
+#[test]
+fn compiler2_transport_plan_carries_captures_when_one_layout_covers_several_activations() {
+    let source = r#"
+fn main() do
+  send(self(), fn (x, acc) -> acc + x end)
+  reducer = receive do f -> f end
+  Enum.reduce([1, 2, 3], 0, reducer)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("transport_multi_activation.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+
+    let reducer_inputs = plan
+        .position_layouts
+        .iter()
+        .filter(|(position, _)| {
+            matches!(
+                position,
+                TransportPosition::ExecutableInput {
+                    executable,
+                    semantic_index: 2,
+                } if world.function_ref(executable.activation.function).name == "reduce_cont"
+            )
+        })
+        .map(|(position, layout)| (position.clone(), *layout))
+        .collect::<Vec<_>>();
+    assert!(
+        reducer_inputs.len() > 1,
+        "the accumulator split should reach several List.reduce_cont/3 activations, got {reducer_inputs:?}"
+    );
+    for (position, layout) in &reducer_inputs {
+        let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {
+            panic!("a reducer input must stay callable-shaped: {position:?} {layout:?}")
+        };
+        let descr = world.callable(*callable);
+        assert_eq!(
+            descr.capture_lanes.len(),
+            1,
+            "every activation reached by this reducer captures the mailbox callable, so the \
+             input must carry its one lane: {position:?} {descr:?}"
+        );
+    }
 }

@@ -8,7 +8,7 @@ pub struct CallableClause<T> {
     pub closure: Option<ClosureLitInfo<T>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CallableValueKind {
     FnRef,
     Closure,
@@ -51,9 +51,12 @@ pub trait ClosureTypes: Types {
     /// broad to drive closure-return narrowing.
     fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>>;
 
-    /// Erase concrete closure-literal identity (`fn_id` + captures) while
-    /// preserving the callable surface shape. Used for higher-order fixed-point
-    /// key slots whose behavior matters, but whose specific closure value
-    /// should not fork specialization.
+    /// Erase a closure literal's BRAND -- which lambda the value was minted
+    /// from -- at every depth, keeping its capture TYPES and the callable
+    /// surface shape. Used for higher-order fixed-point key slots that only
+    /// transport a closure: which lambda arrived must not fork specialization,
+    /// while what it closed over must, because a body keyed at one capture type
+    /// grounds its callees' capture lanes to that type. A capture-free literal
+    /// has nothing left to say once its brand is gone and erases to its arrow.
     fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty;
 }

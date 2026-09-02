@@ -18,14 +18,15 @@ use super::super::body::{
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
-use super::super::drive::{FactKey, JobEffects, current_uses};
+use super::super::drive::{FactKey, Job, JobEffects, current_uses};
 use super::super::identity::{
     ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
 };
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallSiteTargets, CallTargetSummary, SelectedCallee,
+    ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
+    SelectedCallee,
 };
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
@@ -33,14 +34,20 @@ use super::super::world::World;
 type SemanticValues = HashMap<ValueId, Ty>;
 type ValueTypes = HashMap<ValueId, Ty>;
 type RefinedCallSurface = (Vec<Ty>, Option<Ty>);
-/// One resolved call: its summary (when a single emission applies), the
-/// activation demand it contributes, and its return evidence.
-type ResolvedCall = (Option<CallSiteSummary>, Vec<ActivationContribution>, Option<Ty>);
+/// One reached call: what it resolved to, the activation demand it
+/// contributes, and its return evidence.
+type ResolvedCall = (
+    CallSiteResolution<CallSiteSummary>,
+    Vec<ActivationContribution>,
+    Option<Ty>,
+);
 
+/// A call the walk REACHED. It exists for every live call on a reached path;
+/// a call proven dead never happens and so has no emission at all.
 #[derive(Debug, Clone)]
 struct CallEmission {
     key: CallSiteKey,
-    summary: Option<CallSiteSummary>,
+    resolution: CallSiteResolution<CallSiteSummary>,
     activations: Vec<ActivationContribution>,
     latent_executables: Vec<super::super::identity::ExecutableKey>,
 }
@@ -69,13 +76,28 @@ pub(super) fn analyze_activation(
 ) -> Result<JobEffects, FatalError> {
     let activation_fact = FactKey::Activation(activation.clone());
     if !world.has_fact(&activation_fact) {
-        // Mirrors the `ActivationInputs` gate just below: absence of the seed
-        // fact is a genuine block on `Job::SeedActivation`, not a conclusion.
-        // Returning an empty `JobEffects` here would be a silent
-        // conclude-by-omission with no subscription to re-wake it; a bare
-        // wait lets the ordinary blocked-waiter expansion
-        // (`demand_blocked_wait_producers`) carry it instead.
-        return Ok(JobEffects::wait_on_current(activation_fact));
+        // Nothing claims this activation -- no caller has reached it yet, or
+        // every caller has withdrawn it. That is an answer, not a block: a
+        // wait here would have no producer (`World::seed_activation_producer`
+        // refuses a key whose inputs anything else supplies), and a wedged
+        // waiter stalls retraction-heavy drives. The conclusion re-lists the
+        // job's standing claims AND the reads standing behind them: claims
+        // keep the subscriptions that derived them, so the parked cone stays
+        // exactly as final as its ground -- never settled from amnesia (the
+        // one-absent-read conclusion was measured to do exactly that). The
+        // `Activation` read wakes this job on a first or later claim; the
+        // full cone retires in fz-kdt.69's decommission conclusion, with its
+        // `ActivationSlot` reset.
+        let (outputs, standing_reads) = world.standing_claims_and_reads(&Job::AnalyzeActivation(activation.clone()));
+        // Order is immaterial: JobEffects.reads lands in the ledger's read
+        // SET; nothing observes this Vec's sequence.
+        let mut reads: Vec<_> = standing_reads.into_iter().collect();
+        reads.extend(current_uses([activation_fact]));
+        return Ok(JobEffects {
+            reads,
+            outputs,
+            ..JobEffects::default()
+        });
     }
     let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
     let Some(alternatives) = world.activation_input_alternatives(activation) else {
@@ -119,7 +141,8 @@ pub(super) fn analyze_activation(
     // Each correlated row is dispatched and analyzed on its own
     // (fz-9i4.7.10.2): a row's columns arrived together and only ever bind a
     // clause together. Only post-analysis results merge — reachable clauses
-    // by set union, failure by OR, return evidence by join, call emissions by
+    // by set union (`EntryReachability::new` performs the union and orders it
+    // by source), failure by OR, return evidence by join, call emissions by
     // coalescing. No column of one row ever meets a column of another.
     let mut reachable_clauses = Vec::new();
     let mut fail_reachable = false;
@@ -133,11 +156,7 @@ pub(super) fn analyze_activation(
             .cloned()
             .filter_map(|(outcome, inputs)| entry_dispatch.outcome(outcome).map(|outcome| (outcome.body_id, inputs)))
             .collect::<Vec<_>>();
-        for (clause, _) in &clause_inputs {
-            if !reachable_clauses.contains(clause) {
-                reachable_clauses.push(*clause);
-            }
-        }
+        reachable_clauses.extend(clause_inputs.iter().map(|(clause, _)| *clause));
         row_clause_inputs.push(clause_inputs);
     }
     let entry_reachability = super::super::semantic::EntryReachability::new(reachable_clauses, fail_reachable);
@@ -218,21 +237,22 @@ pub(super) fn analyze_activation(
     let mut emitted_executables = HashSet::new();
     let mut activation_input_contributions = Vec::new();
     for call in &analysis_calls {
-        if let Some(summary) = &call.summary {
-            let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
-            let callsite_changed = super::super::drive::ExecutionContext::new(world, tel)
-                .define_callsite_summary(call.key.clone(), summary.clone());
-            outputs.push(callsite_fact.clone());
-            if callsite_changed {
-                changed.push(callsite_fact);
-            }
-            let targets_fact = FactKey::CallSiteTargets(call.key.clone());
-            let targets_changed =
-                world.define_callsite_targets(call.key.clone(), CallSiteTargets::from_summary(summary));
-            outputs.push(targets_fact.clone());
-            if targets_changed {
-                changed.push(targets_fact);
-            }
+        // EVERY reached callsite publishes its edge, resolved or not: the
+        // unresolved answer is a value, so the analysis's silence about a
+        // callsite means the walk no longer reaches it and nothing here needs
+        // preserving (fz-kdt.69.2).
+        let callsite_fact = FactKey::CallSiteSummary(call.key.clone());
+        let callsite_changed = super::super::drive::ExecutionContext::new(world, tel)
+            .define_callsite_summary(call.key.clone(), call.resolution.clone());
+        outputs.push(callsite_fact.clone());
+        if callsite_changed {
+            changed.push(callsite_fact);
+        }
+        let targets_fact = FactKey::CallSiteTargets(call.key.clone());
+        let targets_changed = world.define_callsite_targets(call.key.clone(), CallSiteTargets::of(&call.resolution));
+        outputs.push(targets_fact.clone());
+        if targets_changed {
+            changed.push(targets_fact);
         }
         for callee_activation in &call.activations {
             if emitted_activations.insert(callee_activation.key.clone()) {
@@ -255,6 +275,16 @@ pub(super) fn analyze_activation(
         }
     }
 
+    // Revision-0 precondition (fz-kdt.84): a cumulative fact's STORE must be
+    // empty whenever its fact is absent, or a re-claim after retraction would
+    // mint revision 0 while carrying real reader-visible content -- a silent
+    // missed movement. Holds today (nothing retracts ReturnType); the
+    // fz-kdt.69 decommission must clear the ActivationSlot to keep it.
+    debug_assert!(
+        world.has_fact(&FactKey::ReturnType(activation.clone()))
+            || world.activation_return_evidence(activation).is_none(),
+        "a ReturnType claim is absent while its store holds content -- revision-0 minting would lie"
+    );
     let return_changed =
         super::super::drive::ExecutionContext::new(world, tel).define_activation_return(activation, return_evidence);
     let return_fact = FactKey::ReturnType(activation.clone());
@@ -272,9 +302,13 @@ pub(super) fn analyze_activation(
                 entries.sort_by_key(|entry| entry.as_u32());
                 entries
             },
+            // The callsites this analysis RESOLVED. An unresolved edge names
+            // no targets, so the products keyed off this list -- materialized
+            // call edges, runtime demand, the canonical call-edge snapshot --
+            // see exactly what they always saw.
             callsites: analysis_calls
                 .iter()
-                .filter_map(|call| call.summary.as_ref().map(|_| call.key.callsite))
+                .filter_map(|call| call.resolution.resolved().map(|_| call.key.callsite))
                 .collect(),
             latent_executables: analysis_calls
                 .iter()
@@ -295,6 +329,7 @@ pub(super) fn analyze_activation(
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
+        ..JobEffects::default()
     })
 }
 
@@ -660,6 +695,7 @@ fn analyze_tail(
                 .map(|arg| value_ty(values, arg.value))
                 .collect::<Option<Vec<_>>>()
             else {
+                calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
             let (emission, return_ty) =
@@ -701,6 +737,7 @@ fn analyze_tail(
                     .map(|arg| value_ty(values, arg.value))
                     .collect::<Option<Vec<_>>>(),
             ) else {
+                calls.push(reached_but_unresolved(activation, *callsite));
                 return Ok(None);
             };
             let (emission, return_ty) =
@@ -949,6 +986,21 @@ fn entry_scope(
     scope
 }
 
+/// The walk reached this callsite and could not even build its call: an
+/// operand on the path has no evidence yet. The edge still publishes — that
+/// is the law that lets an omitted edge mean "no longer reached".
+fn reached_but_unresolved(activation: &ActivationKey, callsite: CallSiteId) -> CallEmission {
+    CallEmission {
+        key: CallSiteKey {
+            activation: activation.clone(),
+            callsite,
+        },
+        resolution: CallSiteResolution::Unresolved,
+        activations: Vec::new(),
+        latent_executables: Vec::new(),
+    }
+}
+
 fn resolve_direct_call(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -961,20 +1013,22 @@ fn resolve_direct_call(
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
     // A proven-empty argument type is a real fact: no value can reach this
     // call, the path is dead. (Absence cannot arrive here — an unresolved
-    // upstream call already short-circuited the path.)
+    // upstream call already short-circuited the path.) A call that never
+    // happens is no edge, so it publishes nothing: that is the one thing the
+    // fact's absence still says (fz-kdt.69.2).
     if arg_types.iter().any(|arg| world.types().is_empty(arg)) {
         return Ok((None, Some(none_ty(world))));
     }
 
-    let (summary, activations, return_ty) =
+    let (resolution, activations, return_ty) =
         resolve_function_call(world, tel, caller, function, arg_types, callsite.span(), reads, waits)?;
     Ok((
-        summary.map(|summary| CallEmission {
+        Some(CallEmission {
             key: CallSiteKey {
                 activation: caller.clone(),
                 callsite,
             },
-            summary: Some(summary),
+            resolution,
             latent_executables: Vec::new(),
             activations,
         }),
@@ -1048,18 +1102,23 @@ fn coalesce_call_emissions(
     Ok(coalesced)
 }
 
+/// One callsite reached down several rows or arms is ONE edge. The
+/// resolutions join on the same lattice the store uses: `Unresolved` is
+/// bottom, so an arm that resolved nothing never erases an arm that did.
 fn merge_call_emission(
     world: &mut World,
     current: &mut CallEmission,
     observed: CallEmission,
 ) -> Result<(), FatalError> {
-    match (&mut current.summary, observed.summary) {
-        (Some(current_summary), Some(observed_summary)) => {
+    match (&mut current.resolution, observed.resolution) {
+        (CallSiteResolution::Resolved(current_summary), CallSiteResolution::Resolved(observed_summary)) => {
             merge_call_targets(world, &mut current_summary.targets, observed_summary.targets)?;
             current_summary.return_ty = join_evidence(world, current_summary.return_ty, observed_summary.return_ty);
         }
-        (None, None) => {}
-        (Some(_), None) | (None, Some(_)) => return Err(FatalError),
+        (CallSiteResolution::Unresolved, observed @ CallSiteResolution::Resolved(_)) => {
+            current.resolution = observed;
+        }
+        (_, CallSiteResolution::Unresolved) => {}
     }
     current.activations.extend(observed.activations);
     current.latent_executables.extend(observed.latent_executables);
@@ -1074,7 +1133,7 @@ fn rebuild_coalesced_call_emission(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<CallEmission, FatalError> {
-    let Some(summary) = &call.summary else {
+    let CallSiteResolution::Resolved(summary) = &call.resolution else {
         return Ok(call);
     };
     let mut rebuilt_targets = Vec::new();
@@ -1120,10 +1179,22 @@ fn rebuild_coalesced_call_emission(
                 else {
                     return Ok(call);
                 };
-                let Some(rebuilt_summary) = rebuilt.summary else {
+                let CallSiteResolution::Resolved(rebuilt_summary) = rebuilt.resolution else {
                     return Ok(call);
                 };
                 for mut rebuilt_target in rebuilt_summary.targets {
+                    // The re-mint may only re-derive the SAME callee identity.
+                    // The walked targets that coalesced into this one all keyed
+                    // the same activation, so re-keying their joined inputs must
+                    // land on it again -- that is the activation key being a
+                    // join homomorphism over its own equivalence class, which
+                    // intern-time `A ∨ A = A` restores (fz-kdt.80). If this
+                    // fires, the published edge is about to name a callee no
+                    // walk ever read a `ReturnType` from.
+                    debug_assert_eq!(
+                        rebuilt_target.activation, target.activation,
+                        "the coalesced re-mint must re-derive the walked activation key"
+                    );
                     if captures_len > 0 {
                         rebuilt_target.surface_inputs.drain(..captures_len);
                     }
@@ -1144,7 +1215,7 @@ fn rebuild_coalesced_call_emission(
     rebuilt_latent.extend(call.latent_executables);
     Ok(CallEmission {
         key: call.key,
-        summary: Some(CallSiteSummary {
+        resolution: CallSiteResolution::Resolved(CallSiteSummary {
             targets: rebuilt_targets,
             return_ty: rebuilt_return,
         }),
@@ -1163,17 +1234,17 @@ fn call_emission_for_function(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<CallEmission>, FatalError> {
-    let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, tel, function, input_types, key.callsite.span(), reads, waits)?
-    else {
+    let Some(shape) = require_direct_call_prerequisites(world, function, reads, waits) else {
         return Ok(None);
     };
-    if world.function_is_provider_boundary(function) {
+    let (input_types, contract_return_ty) =
+        refine_function_call_surface(world, tel, function, input_types, key.callsite.span())?;
+    if shape == CalleeShape::Boundary {
         // The earned dynamic edge: a boundary with no contract is `any`.
         let return_ty = Some(contract_return_ty.unwrap_or_else(|| any_ty(world)));
         return Ok(Some(CallEmission {
             key,
-            summary: Some(CallSiteSummary {
+            resolution: CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![CallTargetSummary {
                     callee: SelectedCallee::ProviderBoundary(function),
                     surface_inputs: input_types,
@@ -1187,10 +1258,7 @@ fn call_emission_for_function(
             latent_executables: Vec::new(),
         }));
     }
-    let Some((activation, return_ty)) = prepare_function_call(world, caller, function, &input_types, reads, waits)
-    else {
-        return Ok(None);
-    };
+    let (activation, return_ty) = prepare_function_call(world, caller, function, &input_types, reads);
     let return_ty = refine_call_return(world, return_ty, contract_return_ty);
     let activations = vec![ActivationContribution {
         key: activation.clone(),
@@ -1198,7 +1266,7 @@ fn call_emission_for_function(
     }];
     Ok(Some(CallEmission {
         key,
-        summary: Some(CallSiteSummary {
+        resolution: CallSiteResolution::Resolved(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
                 surface_inputs: input_types.clone(),
@@ -1237,19 +1305,18 @@ fn resolve_function_call(
         );
     }
     if wait_for_unresolved_function_module(world, function, waits) {
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
-    let Some((input_types, contract_return_ty)) =
-        refine_function_call_surface(world, tel, function, input_types, call_span, reads, waits)?
-    else {
-        return Ok((None, Vec::new(), None));
+    let Some(shape) = require_direct_call_prerequisites(world, function, reads, waits) else {
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     };
-    if world.function_is_provider_boundary(function) {
+    let (input_types, contract_return_ty) = refine_function_call_surface(world, tel, function, input_types, call_span)?;
+    if shape == CalleeShape::Boundary {
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
         let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
         return Ok((
-            Some(CallSiteSummary {
+            CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![call_target_summary(
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
@@ -1263,14 +1330,10 @@ fn resolve_function_call(
             Some(return_ty),
         ));
     }
-    let Some((activation, return_evidence)) =
-        prepare_function_call(world, caller, function, &input_types, reads, waits)
-    else {
-        return Ok((None, Vec::new(), None));
-    };
+    let (activation, return_evidence) = prepare_function_call(world, caller, function, &input_types, reads);
     let return_ty = refine_call_return(world, return_evidence, contract_return_ty);
     Ok((
-        Some(CallSiteSummary {
+        CallSiteResolution::Resolved(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 callee: SelectedCallee::Function(function),
                 surface_inputs: input_types.clone(),
@@ -1307,7 +1370,7 @@ fn resolve_protocol_call(
     let protocol_fact = FactKey::ModuleDefined(protocol);
     if world.module_defined_revision(protocol).is_none() {
         wait_for_protocol_module(world, tel, protocol, waits);
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
     reads.push(protocol_fact);
     let dispatch_fact = FactKey::ProtocolDispatch(protocol);
@@ -1323,7 +1386,7 @@ fn resolve_protocol_call(
         // (unreachable in practice) rather than provably dead by construction,
         // so it stays a bare wait instead of an assert/panic.
         waits.insert(dispatch_fact);
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
     reads.push(dispatch_fact);
 
@@ -1368,7 +1431,7 @@ fn resolve_protocol_call(
                 waits.insert(FactKey::ModuleDefined(provider));
             }
         }
-        return Ok((None, Vec::new(), None));
+        return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
     }
 
     let matches = merge_protocol_matches_by_function(world, matches);
@@ -1383,20 +1446,17 @@ fn resolve_protocol_call(
         // call does not require. Gate per FUNCTION, exactly as the
         // direct-call path does.
         if wait_for_unresolved_function_module(world, selected.function, waits) {
-            return Ok((None, Vec::new(), None));
+            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
         }
 
+        if !require_callee_prerequisites(world, selected.function, reads, waits) {
+            return Ok((CallSiteResolution::Unresolved, Vec::new(), None));
+        }
         let refined_inputs = refine_protocol_target_inputs(world, &input_types, receiver_ty, overlap);
-        let Some((refined_inputs, contract_return_ty)) =
-            refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span, reads, waits)?
-        else {
-            return Ok((None, Vec::new(), None));
-        };
-        let Some((activation, observed_return)) =
-            prepare_function_call(world, caller, selected.function, &refined_inputs, reads, waits)
-        else {
-            return Ok((None, Vec::new(), None));
-        };
+        let (refined_inputs, contract_return_ty) =
+            refine_function_call_surface(world, tel, selected.function, refined_inputs, call_span)?;
+        let (activation, observed_return) =
+            prepare_function_call(world, caller, selected.function, &refined_inputs, reads);
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
         return_ty = join_evidence(world, return_ty, target_return);
         targets.push(call_target_summary(
@@ -1411,7 +1471,11 @@ fn resolve_protocol_call(
             inputs: refined_inputs.clone(),
         });
     }
-    Ok((Some(CallSiteSummary { targets, return_ty }), activations, return_ty))
+    Ok((
+        CallSiteResolution::Resolved(CallSiteSummary { targets, return_ty }),
+        activations,
+        return_ty,
+    ))
 }
 
 fn protocol_receiver_target_overlaps(world: &mut World, receiver_ty: Ty, target_ty: Ty) -> bool {
@@ -1485,17 +1549,34 @@ fn resolve_closure_call(
     reads: &mut Vec<FactKey>,
     waits: &mut HashSet<FactKey>,
 ) -> Result<(Option<CallEmission>, Option<Ty>), FatalError> {
+    let key = CallSiteKey {
+        activation: caller.clone(),
+        callsite,
+    };
     if callee_has_no_inhabitants(world.types(), callee_ty) || arg_types.iter().any(|arg| world.types().is_empty(arg)) {
         // Uninhabitable callee or proven-empty argument: the call site is dead.
         // This is evidence (the empty type), not absence — absence
-        // short-circuits upstream before any argument reaches a call.
+        // short-circuits upstream before any argument reaches a call. A call
+        // that never happens is no edge, so it publishes nothing: that is the
+        // one thing the fact's absence still says (fz-kdt.69.2).
         return Ok((None, Some(none_ty(world))));
     }
+    let unresolved = |return_ty| {
+        Ok((
+            Some(CallEmission {
+                key: key.clone(),
+                resolution: CallSiteResolution::Unresolved,
+                latent_executables: Vec::new(),
+                activations: Vec::new(),
+            }),
+            return_ty,
+        ))
+    };
     let Some(clauses) = world.types_mut().callable_value_clauses(&callee_ty) else {
         if !callee_is_a_dynamic_edge(world, callee_ty) {
-            return Ok((None, None));
+            return unresolved(None);
         }
-        return Ok((None, Some(any_ty(world))));
+        return unresolved(Some(any_ty(world)));
     };
     let mut selected_targets = Vec::new();
     let mut activations = Vec::new();
@@ -1518,19 +1599,33 @@ fn resolve_closure_call(
         named_concrete_target = true;
         let function = function_id_of_closure_target(closure.target);
 
-        let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
+        // The ARGUMENT the callsite sends decides the target, and nothing
+        // narrows it here (fz-kdt.132). A closure clause's arrow parameters are
+        // EVIDENCE -- the surface this lambda has already been analyzed at --
+        // not a contract the caller is checked against, so intersecting the
+        // observed argument with them is not a refinement but a loss: it names
+        // a specialization whose domain does not contain the value. A reducer
+        // minted beside a `{[], []}` accumulator keeps that arrow while the
+        // fold's accumulator ascends, and every later call was clamped back
+        // onto the initial specialization -- so the ascent stopped one rung
+        // short, the grown accumulator got no specialization at all, and the
+        // construction wrapper's members did not cover the value the fold
+        // actually produced. `refine_observed_return` already refuses the
+        // mirror of this narrowing on the return side; the argument side owes
+        // the same. Declared `@spec` contracts still refine, in
+        // `apply_function_contract`, where the surface is enforced.
         let mut inputs = closure.captures;
-        inputs.extend(refined_args.clone());
-        let (summary, clause_activations, observed_return) =
+        inputs.extend(arg_types.iter().copied());
+        let (resolution, clause_activations, observed_return) =
             resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
 
-        if let Some(summary) = summary {
+        if let CallSiteResolution::Resolved(summary) = resolution {
             for target in summary.targets {
                 let target_return = refine_call_return(world, target.return_ty, Some(clause.ret));
                 return_ty = join_evidence(world, return_ty, target_return);
                 let rebuilt_target = call_target_summary(
                     target.callee,
-                    refined_args.clone(),
+                    arg_types.clone(),
                     target.activation,
                     target.activation_inputs,
                     target_return,
@@ -1554,17 +1649,14 @@ fn resolve_closure_call(
         // registered above re-wake this call; only a genuine dynamic edge
         // earns `any`.
         if named_concrete_target || !callee_is_a_dynamic_edge(world, callee_ty) {
-            return Ok((None, return_ty));
+            return unresolved(return_ty);
         }
-        return Ok((None, Some(any_ty(world))));
+        return unresolved(Some(any_ty(world)));
     };
     Ok((
         Some(CallEmission {
-            key: CallSiteKey {
-                activation: caller.clone(),
-                callsite,
-            },
-            summary: Some(CallSiteSummary {
+            key,
+            resolution: CallSiteResolution::Resolved(CallSiteSummary {
                 targets: selected_targets,
                 return_ty,
             }),
@@ -1575,36 +1667,86 @@ fn resolve_closure_call(
     ))
 }
 
+/// The contract half of a callee's prerequisites: a function that declares
+/// one cannot have its call surface refined until `FunctionContract` is
+/// present. A function that declares none asks for nothing — no wait, no
+/// read, and nothing ever demands its contract.
+fn require_function_contract(
+    world: &mut World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> bool {
+    if !world.function_declares_contract(function) {
+        return true;
+    }
+    let contract_fact = FactKey::FunctionContract(function);
+    if world.function_contract_revision(function).is_none() {
+        waits.insert(contract_fact);
+        return false;
+    }
+    reads.push(contract_fact);
+    true
+}
+
+/// Everything a callee must already have before this caller can resolve the
+/// call: its contract, and the facts that key its activation. Both halves
+/// register in ONE pass — waits are AND-satisfied, so a caller missing all
+/// three sleeps once instead of learning the next rung only after the first
+/// one lands.
+fn require_callee_prerequisites(
+    world: &mut World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> bool {
+    let contract_ready = require_function_contract(world, function, reads, waits);
+    let keying_ready = world.require_activation_key_facts(function, reads, waits);
+    contract_ready && keying_ready
+}
+
+/// Which call a named callee becomes once its prerequisites are in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CalleeShape {
+    /// The public dynamic edge: a boundary names no compiler2 activation.
+    Boundary,
+    /// An ordinary function, whose activation this caller keys.
+    Activation,
+}
+
+/// Registers what a direct call consumes and names the shape it will take, or
+/// `None` while a prerequisite is still missing. The boundary test is
+/// contract-independent, so it precedes the ask: a boundary asks for the
+/// contract alone, because the keying facts are readiness it never consumes.
+fn require_direct_call_prerequisites(
+    world: &mut World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+) -> Option<CalleeShape> {
+    if world.function_is_provider_boundary(function) {
+        return require_function_contract(world, function, reads, waits).then_some(CalleeShape::Boundary);
+    }
+    require_callee_prerequisites(world, function, reads, waits).then_some(CalleeShape::Activation)
+}
+
+/// Pure contract APPLICATION. Readiness was asked for and proven by
+/// `require_function_contract`, so nothing here waits or reads.
 fn refine_function_call_surface(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
     input_types: Vec<Ty>,
     violation_span: Span,
-    reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Result<Option<RefinedCallSurface>, FatalError> {
+) -> Result<RefinedCallSurface, FatalError> {
     if !world.function_declares_contract(function) {
-        return Ok(Some((input_types, None)));
+        return Ok((input_types, None));
     }
-    let contract_fact = FactKey::FunctionContract(function);
-    let Some(_) = world.function_contract_revision(function) else {
-        waits.insert(contract_fact);
-        return Ok(None);
-    };
-    reads.push(contract_fact);
     let contract = world
         .function_contract(function)
         .cloned()
-        .expect("function contract fact should resolve to a stored contract");
-    Ok(Some(apply_function_contract(
-        world,
-        tel,
-        function,
-        &contract,
-        input_types,
-        violation_span,
-    )?))
+        .expect("a declared contract must be proven present before the call surface is refined");
+    apply_function_contract(world, tel, function, &contract, input_types, violation_span)
 }
 
 fn apply_function_contract(
@@ -1663,11 +1805,11 @@ fn activation_contract_return(
     waits: &mut HashSet<FactKey>,
 ) -> Result<Option<Ty>, FatalError> {
     let violation_span = world.function_surface(function).span;
-    let Some((_, contract_return_ty)) =
-        refine_function_call_surface(world, tel, function, input_types.to_vec(), violation_span, reads, waits)?
-    else {
+    if !require_function_contract(world, function, reads, waits) {
         return Ok(None);
-    };
+    }
+    let (_, contract_return_ty) =
+        refine_function_call_surface(world, tel, function, input_types.to_vec(), violation_span)?;
     Ok(contract_return_ty)
 }
 
@@ -1765,18 +1907,16 @@ fn refine_observed_return(world: &mut World, observed: Ty, contract: Option<Ty>)
     }
 }
 
+/// Keys the callee's activation and reads its return evidence. The facts the
+/// key is built from were asked for and proven by
+/// `require_callee_prerequisites`, so this cannot block.
 fn prepare_function_call(
     world: &mut World,
     caller: &ActivationKey,
     function: FunctionId,
     arg_types: &[Ty],
     reads: &mut Vec<FactKey>,
-    waits: &mut HashSet<FactKey>,
-) -> Option<(ActivationKey, Option<Ty>)> {
-    if !world.require_activation_key_facts(function, reads, waits) {
-        return None;
-    }
-
+) -> (ActivationKey, Option<Ty>) {
     let activation = world.activation_key(caller.root, function, arg_types);
     // The read is the subscription that re-wakes this caller when the
     // callee's return evidence rises — chaotic iteration needs no wait here,
@@ -1784,7 +1924,7 @@ fn prepare_function_call(
     // is the ascent's bottom, never the type `none`.
     reads.push(FactKey::ReturnType(activation.clone()));
     let return_evidence = world.activation_return(&activation);
-    Some((activation, return_evidence))
+    (activation, return_evidence)
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. A runtime module's defimpls

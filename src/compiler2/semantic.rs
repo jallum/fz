@@ -11,10 +11,45 @@ use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, Types};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallSiteKey {
     pub activation: ActivationKey,
     pub callsite: CallSiteId,
+}
+
+/// What one callsite the semantic walk REACHED knows about its targets.
+///
+/// Three answers, three representations. The fact's ABSENCE says the call
+/// never happens: the walk never reached the callsite, or it proved the call
+/// dead (an uninhabited callee, a proven-empty argument). Presence says the
+/// walk reached a live call, and the two variants separate the pair that
+/// absence used to carry together -- `Unresolved` is "no target is nameable
+/// yet", which is NOT a provider boundary (a RESOLVED edge whose
+/// [`CallTargetEdge::activation`] is `None`) and NOT an empty target list.
+///
+/// `Unresolved` is the lattice BOTTOM. [`CallSiteMap`] and
+/// [`CallSiteTargetsMap`] never let it overwrite a resolved answer, so
+/// re-emitting it moves no revision and an analysis round that stopped
+/// resolving narrows nothing. That is exactly what
+/// `World::preserved_analysis_claims` used to do for these two kinds, stated
+/// in the value instead of in the ledger (fz-kdt.69.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallSiteResolution<T> {
+    Unresolved,
+    Resolved(T),
+}
+
+impl<T> CallSiteResolution<T> {
+    pub fn resolved(&self) -> Option<&T> {
+        match self {
+            Self::Unresolved => None,
+            Self::Resolved(value) => Some(value),
+        }
+    }
+
+    pub fn is_unresolved(&self) -> bool {
+        matches!(self, Self::Unresolved)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -140,6 +175,16 @@ impl CallSiteSummary {
 }
 
 impl CallSiteTargets {
+    /// The membership projection, resolution and all: an unresolved callsite
+    /// names no members either, and saying so is what keeps the two facts two
+    /// answers of one derivation.
+    pub fn of(summary: &CallSiteResolution<CallSiteSummary>) -> CallSiteResolution<Self> {
+        match summary {
+            CallSiteResolution::Unresolved => CallSiteResolution::Unresolved,
+            CallSiteResolution::Resolved(summary) => CallSiteResolution::Resolved(Self::from_summary(summary)),
+        }
+    }
+
     pub fn from_summary(summary: &CallSiteSummary) -> Self {
         let mut targets = Vec::new();
         for target in &summary.targets {
@@ -566,7 +611,16 @@ pub struct EntryReachability {
 }
 
 impl EntryReachability {
-    pub fn new(clauses: Vec<u32>, fail_reachable: bool) -> Self {
+    /// Reachability is a SET: clauses union across the correlated input rows
+    /// an activation collects, so which row arrived first is schedule, not
+    /// meaning. The stored order is therefore the clauses' own identity —
+    /// `body_id`, minted in source order by `jobs::dispatch::entry_source_patterns`
+    /// and required to ascend with source priority by the dispatch planner —
+    /// which leaves the fact, and every artifact materialized from it,
+    /// schedule-independent (fz-kdt.91).
+    pub fn new(mut clauses: Vec<u32>, fail_reachable: bool) -> Self {
+        clauses.sort_unstable();
+        clauses.dedup();
         Self {
             clauses,
             fail_reachable,
@@ -792,12 +846,58 @@ impl ActivationInputAlternatives {
         self.rebuild(types);
     }
 
-    /// Insert one row, keeping the set canonical. The only permitted
-    /// compression is whole-row EQUIVALENCE — every column of the dropped row
-    /// equivalent to the corresponding column of the survivor. Deliberately
-    /// NOT template subsumption (`key_list_subsumes`): a polymorphic template
-    /// row would absorb its exact ground siblings, erasing the very
-    /// correlation this type preserves. Callers rebuild afterwards.
+    /// Insert one row, keeping the set an antichain. Callers rebuild
+    /// afterwards.
+    ///
+    /// Two compressions fire here, and they are DIFFERENT judgements about a
+    /// pair of rows:
+    ///
+    /// 1. Whole-row EQUIVALENCE (`Vec<Ty>::equivalent`, pointwise mutual
+    ///    `is_subtype`): the incoming row says exactly what a standing row
+    ///    says, so it is not an alternative.
+    /// 2. DOMINANCE (`Types::row_dominates`, fz-kdt.106): a row every column
+    ///    of which is covered by the row beside it, under a relation narrower
+    ///    than subtyping. A dominated incoming row is not inserted; standing
+    ///    rows dominated by the incoming one leave with its landing. This is
+    ///    what stops a caller's ascent LADDER -- one row per superseded
+    ///    conclusion, preserved by `conclude_preserving_frontier` -- from
+    ///    accumulating until it crosses `ACTIVATION_INPUT_ROW_BUDGET` and
+    ///    collapses the whole set columnwise.
+    ///
+    /// Neither judgement is the other. Dominance deliberately REFUSES pairs
+    /// equivalence accepts: `is_subtype` decides a closure-literal arrow from
+    /// its `fn_id` and captures alone (`types::emptiness::func_clause_empty`),
+    /// so it calls a template arrow and a ground arrow over one lambda
+    /// equivalent, and absorbing on that judgement drops a template row whose
+    /// element families were keyed through it. Dominance therefore asks for
+    /// equal free-var sets and containment of the literal ARROW SHAPES, and
+    /// dominance is the authority on which rows absorb.
+    ///
+    /// That leaves the equivalence skip judging exactly the pairs dominance
+    /// rejects, with ARRIVAL ORDER deciding the outcome -- and fz-kdt.106
+    /// ENLARGES what arrival order decides. Before it, the skip chose WHICH of
+    /// a template/ground pair survived, and the surviving COUNT was the same
+    /// either way. Now the skip returns EARLY, before dominance is consulted,
+    /// so an incoming row that is equivalent to some standing row never gets
+    /// to absorb the standing rows it dominates. Measured, on the three rows
+    /// `A = [:a|:b, template]`, `B = [:a, ground]`, `C = [:a|:b, ground]`
+    /// (`C` dominates `B`; `A` and `C` are equivalent but neither dominates
+    /// the other): arrival order A,B,C settles at 2 rows and C,B,A at 1. At
+    /// base both orders settled at 2. Row count feeds
+    /// `ACTIVATION_INPUT_ROW_BUDGET` and the width of what gets specialized,
+    /// so this is a real widening of an order dependence, not a relabelling of
+    /// one. It is not reachable from any corpus fixture today: the lenses'
+    /// row and executable counts are schedule-identical (the one FIFO/LIFO
+    /// byte difference on `enum_predicate_search` is dispatch ARM order,
+    /// fz-kdt.129 -- not a row-set difference), which is why it is recorded
+    /// rather than fixed here.
+    /// fz-0za owns the decision: fold the two judgements into one relation, or
+    /// state why two contradictory verdicts about one pair coexist.
+    ///
+    /// Absorption is what template subsumption (`key_list_subsumes`) must
+    /// never be: a polymorphic template row absorbing its exact ground
+    /// siblings would erase the very correlation this type preserves, which is
+    /// why the free-var-set conjunct is not negotiable.
     fn insert_row(&mut self, types: &Types, row: ActivationInputRow) {
         if !self.rows.is_empty() {
             assert_eq!(
@@ -813,6 +913,15 @@ impl ActivationInputAlternatives {
         {
             return;
         }
+        if self
+            .rows
+            .iter()
+            .any(|standing| types.row_dominates(&row.columns, &standing.columns))
+        {
+            return;
+        }
+        self.rows
+            .retain(|standing| !types.row_dominates(&standing.columns, &row.columns));
         self.rows.push(row);
     }
 
@@ -829,6 +938,9 @@ impl ActivationInputAlternatives {
         }
         self.joined = joined;
         if self.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
+            // The count goes to the type store because the type store is the
+            // only thing this join holds: see `Types::activation_input_collapses`.
+            types.note_activation_input_collapse();
             self.rows = vec![ActivationInputRow::new(self.joined.clone())];
         }
     }
@@ -845,7 +957,8 @@ impl JoinContribution for ActivationInputAlternatives {
     }
 
     /// Antichain union. Rows never cross-pollinate columns; the join is row
-    /// insertion under whole-row subsumption, then one canonical rebuild.
+    /// insertion under `insert_row`'s equivalence and dominance judgements,
+    /// then one canonical rebuild.
     fn join_assign(&mut self, other: &Self, types: &mut Types) {
         if self.rows.is_empty() {
             self.clone_from(other);
@@ -875,12 +988,12 @@ enum SlotEntry<V> {
 
 #[derive(Debug, Default)]
 pub struct CallSiteMap {
-    slots: HashMap<CallSiteKey, CallSiteSummary>,
+    slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteSummary>>,
 }
 
 #[derive(Debug, Default)]
 pub struct CallSiteTargetsMap {
-    slots: HashMap<CallSiteKey, CallSiteTargets>,
+    slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteTargets>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1173,25 +1286,42 @@ impl CallSiteMap {
         Self::default()
     }
 
-    pub fn define(&mut self, types: &mut Types, key: CallSiteKey, mut summary: CallSiteSummary) -> bool {
-        summary.coalesce_targets(types);
-        let Some(current) = self.slots.get_mut(&key) else {
-            self.slots.insert(key, summary);
-            return true;
+    /// `Unresolved` is bottom: it publishes only where nothing stands yet, so
+    /// a round that stopped resolving a callsite reports `changed = false` and
+    /// leaves the resolved answer at its own revision.
+    pub fn define(
+        &mut self,
+        types: &mut Types,
+        key: CallSiteKey,
+        observed: CallSiteResolution<CallSiteSummary>,
+    ) -> bool {
+        let CallSiteResolution::Resolved(mut summary) = observed else {
+            return self.define_unresolved(key);
         };
-        let before = current.clone();
-        current.replace_targets_join_returns(types, summary);
-        before != *current
+        summary.coalesce_targets(types);
+        if let Some(CallSiteResolution::Resolved(current)) = self.slots.get_mut(&key) {
+            let before = current.clone();
+            current.replace_targets_join_returns(types, summary);
+            return before != *current;
+        }
+        self.slots.insert(key, CallSiteResolution::Resolved(summary));
+        true
     }
 
-    pub fn define_replace(&mut self, key: CallSiteKey, summary: CallSiteSummary) -> bool {
-        let changed = self.slots.get(&key) != Some(&summary);
-        self.slots.insert(key, summary);
-        changed
+    fn define_unresolved(&mut self, key: CallSiteKey) -> bool {
+        if self.slots.contains_key(&key) {
+            return false;
+        }
+        self.slots.insert(key, CallSiteResolution::Unresolved);
+        true
     }
 
-    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
+    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteSummary>> {
         self.slots.get(key)
+    }
+
+    pub fn resolved(&self, key: &CallSiteKey) -> Option<&CallSiteSummary> {
+        self.get(key).and_then(CallSiteResolution::resolved)
     }
 }
 
@@ -1200,14 +1330,27 @@ impl CallSiteTargetsMap {
         Self::default()
     }
 
-    pub fn define(&mut self, key: CallSiteKey, targets: CallSiteTargets) -> bool {
-        let changed = self.slots.get(&key) != Some(&targets);
-        self.slots.insert(key, targets);
+    /// See [`CallSiteMap::define`]: same lattice, and a resolved membership set
+    /// replaces rather than joins, exactly as it always did.
+    pub fn define(&mut self, key: CallSiteKey, observed: CallSiteResolution<CallSiteTargets>) -> bool {
+        if observed.is_unresolved() {
+            if self.slots.contains_key(&key) {
+                return false;
+            }
+            self.slots.insert(key, observed);
+            return true;
+        }
+        let changed = self.slots.get(&key) != Some(&observed);
+        self.slots.insert(key, observed);
         changed
     }
 
-    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+    pub fn get(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteTargets>> {
         self.slots.get(key)
+    }
+
+    pub fn resolved(&self, key: &CallSiteKey) -> Option<&CallSiteTargets> {
+        self.get(key).and_then(CallSiteResolution::resolved)
     }
 }
 
@@ -1342,6 +1485,7 @@ mod tests {
     use super::*;
     use crate::compiler2::{ExecutableNeed, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
+    use crate::types::{ClosureTarget, Sigma};
 
     fn test_key(world: &mut World, _tel: &ConfiguredTelemetry) -> ActivationKey {
         let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
@@ -1407,7 +1551,6 @@ mod tests {
         let callee = world.submit_root(None, "callee".to_string(), 1, ExecutableNeed::Value);
         let callee = world.root_function(callee);
         let int = world.types_mut().int();
-        let none = world.types_mut().none();
         let caller_activation = ActivationKey::from_inputs(root, caller, &[], world.types_mut());
         let callee_activation = ActivationKey::from_inputs(root, callee, &[int], world.types_mut());
         let key = CallSiteKey {
@@ -1436,26 +1579,22 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), ready));
+        assert!(map.define(world.types_mut(), key.clone(), CallSiteResolution::Resolved(ready)));
         assert!(
-            !map.define(world.types_mut(), key.clone(), pending),
+            !map.define(world.types_mut(), key.clone(), CallSiteResolution::Resolved(pending)),
             "a pending later snapshot must not erase concrete return evidence"
         );
-        let stored = map.get(&key).expect("joined callsite summary");
+        let stored = map.resolved(&key).expect("joined callsite summary");
         assert_eq!(stored.return_ty, Some(int));
         assert_eq!(stored.targets[0].return_ty, Some(int));
 
-        assert!(map.define_replace(
-            key.clone(),
-            CallSiteSummary {
-                targets: Vec::new(),
-                return_ty: Some(none),
-            },
-        ));
+        assert!(
+            !map.define(world.types_mut(), key.clone(), CallSiteResolution::Unresolved),
+            "an unresolved re-emission is the lattice bottom: it moves nothing"
+        );
         assert_eq!(
-            map.get(&key).expect("rebased replacement").return_ty,
-            Some(none),
-            "rebases still replace stale callsite evidence"
+            map.resolved(&key).expect("the resolved answer stands").return_ty,
+            Some(int),
         );
     }
 
@@ -1488,14 +1627,18 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), summary_for(int_activation.clone(), int)));
         assert!(map.define(
             world.types_mut(),
             key.clone(),
-            summary_for(float_activation.clone(), float)
+            CallSiteResolution::Resolved(summary_for(int_activation.clone(), int))
+        ));
+        assert!(map.define(
+            world.types_mut(),
+            key.clone(),
+            CallSiteResolution::Resolved(summary_for(float_activation.clone(), float))
         ));
 
-        let stored = map.get(&key).expect("joined callsite summary");
+        let stored = map.resolved(&key).expect("joined callsite summary");
         assert_eq!(stored.targets.len(), 1);
         assert!(
             !stored
@@ -1550,9 +1693,9 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), summary));
+        assert!(map.define(world.types_mut(), key.clone(), CallSiteResolution::Resolved(summary)));
 
-        let stored = map.get(&key).expect("stored callsite summary");
+        let stored = map.resolved(&key).expect("stored callsite summary");
         assert_eq!(stored.targets.len(), 2);
         assert!(
             stored
@@ -1603,9 +1746,13 @@ mod tests {
         };
         let mut map = CallSiteMap::new();
 
-        assert!(map.define(world.types_mut(), key.clone(), summary(joined)));
+        assert!(map.define(
+            world.types_mut(),
+            key.clone(),
+            CallSiteResolution::Resolved(summary(joined))
+        ));
         assert!(
-            !map.define(world.types_mut(), key, summary(rejoined)),
+            !map.define(world.types_mut(), key, CallSiteResolution::Resolved(summary(rejoined))),
             "equivalent joined callsite evidence should not churn the semantic fact"
         );
     }
@@ -1983,5 +2130,282 @@ mod tests {
             }
         }
         panic!("the widening operator must terminate a strictly-deepening ascent");
+    }
+
+    /// The ground instance of a closure literal at one signature: the same
+    /// `fn_id` and captures, with the surface vars `closure_lit` mints for its
+    /// parameters and return replaced by concrete types.
+    fn ground_instance(world: &mut World, lambda: Ty, args: &[Ty], ret: Ty) -> Ty {
+        let shape = world.types_mut().arrow(args, ret);
+        let mut sigma = Sigma::new();
+        world
+            .types_mut()
+            .collect_instantiation_subst(&lambda, &shape, &mut sigma);
+        world.types_mut().instantiate(&lambda, &sigma)
+    }
+
+    /// Push rows into one antichain the way a publisher does, and read back the
+    /// column vectors that survived.
+    fn settled_rows(world: &mut World, rows: &[Vec<Ty>]) -> Vec<Vec<Ty>> {
+        let mut alternatives = ActivationInputAlternatives::from_row(rows[0].clone());
+        for row in &rows[1..] {
+            alternatives.push_row(world.types_mut(), row.clone());
+        }
+        alternatives.rows().iter().map(|row| row.columns().to_vec()).collect()
+    }
+
+    /// fz-kdt.106: an ascent LADDER is one caller's history, not four
+    /// alternatives.
+    ///
+    /// Every superseded conclusion of one callsite joins its row into the
+    /// antichain and never leaves (`conclude_preserving_frontier`), so a
+    /// column that widens over an epoch deposits one row per rung. The rungs
+    /// are totally ordered -- each covers the one below -- so only the
+    /// maximum carries evidence; the rest are the schedule's record of how it
+    /// got there, and eight of them cross `ACTIVATION_INPUT_ROW_BUDGET` and
+    /// collapse the whole set columnwise.
+    #[test]
+    fn activation_input_rows_keep_only_the_maximum_of_an_ascending_ladder() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let a = world.types_mut().atom_lit("a");
+        let b = world.types_mut().atom_lit("b");
+        let c = world.types_mut().atom_lit("c");
+        let ab = world.types_mut().union(a, b);
+        let abc = world.types_mut().union(ab, c);
+
+        let rows = settled_rows(&mut world, &[vec![int, a], vec![int, ab], vec![int, abc]]);
+
+        assert_eq!(
+            rows,
+            vec![vec![int, abc]],
+            "an ascending ladder covers itself: only its maximum is an alternative",
+        );
+    }
+
+    /// fz-kdt.106: absorption may not swallow a template row.
+    ///
+    /// A value-template row and its ground sibling are two DIFFERENT
+    /// activations of one body -- the template mints the erased shared
+    /// specialization, the ground row its representable instance -- and
+    /// `is_subtype` treats a free var as absorbing, so bare subtyping would
+    /// let the template eat its own instances and misroute the element
+    /// families that depended on them (the `Enum.with_index` shape;
+    /// `compiler2_jit_preserves_correlated_with_index_mapper_rows` is the
+    /// artifact-level gate). Equal free-var SETS per column is what refuses
+    /// it.
+    #[test]
+    fn activation_input_rows_keep_a_template_row_beside_its_ground_sibling() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let template = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+        let ground = ground_instance(&mut world, template, &[int], int);
+
+        assert!(
+            world.types().is_subtype(&template, &ground) && world.types().is_subtype(&ground, &template),
+            "the hazard this test guards must actually exist: func_clause_empty judges a \
+             var-carrying template arrow and its ground instance over one lambda equivalent",
+        );
+
+        assert_ne!(
+            world.types().free_var_ids(&template),
+            world.types().free_var_ids(&ground),
+            "the template's surface vars are what tells the two apart",
+        );
+
+        let rows = settled_rows(&mut world, &[vec![int, template], vec![int_or_nil, ground]]);
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "a template row and its ground sibling are two activations, not one: {rows:?}",
+        );
+    }
+
+    /// fz-kdt.106: `is_subtype` cannot decide a closure-literal column, so
+    /// dominance may not be "simplified" back to it.
+    ///
+    /// `types::emptiness::func_clause_empty` decides `P \ N` for a negative
+    /// arrow carrying a `ClosureLit` from `fn_id` and `captures` ALONE -- it
+    /// never reads `args` or `ret` -- so two arrows over ONE lambda are judged
+    /// mutually subtypes however far apart their signatures are. Absorbing on
+    /// that judgement drops a row whose reducer really is a different
+    /// specialization. `Types::row_column_dominates` therefore requires the
+    /// dominated column's closure-literal arrow shapes to appear verbatim in
+    /// the dominator's, which is the part subtyping refuses to look at.
+    #[test]
+    fn activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+        let narrow = ground_instance(&mut world, lambda, &[int], int);
+        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
+
+        assert_ne!(narrow, wide, "the two reducer arrows must be distinct types");
+        assert!(
+            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
+            "the hazard this test guards must actually exist: func_clause_empty judges two \
+             signatures over one lambda equivalent",
+        );
+
+        assert_eq!(
+            world.types().free_var_ids(&narrow),
+            world.types().free_var_ids(&wide),
+            "both arrows are ground, so free-var parity cannot be what keeps them apart -- the \
+             literal SHAPE has to",
+        );
+
+        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "two specializations of one lambda are two rows: subtyping is blind to the only \
+             thing that tells them apart: {rows:?}",
+        );
+    }
+
+    /// fz-kdt.106: the blind spot is STRUCTURAL, so the evidence has to be
+    /// collected structurally.
+    ///
+    /// `func_clause_empty` reaches a lambda wrapped in a tuple exactly as it
+    /// reaches a bare one, so `{:tag, fn}` columns over one lambda that differ
+    /// only in the nested arrow's signature are mutually subtypes too. A
+    /// `lit_arrow_shapes` that walked only the column's own funcs axis would
+    /// report no shapes on either side, containment would hold vacuously both
+    /// ways, and the pair would absorb -- the depth-0 sibling above, one tuple
+    /// deep. Nothing in the corpus builds this row today; the walk is
+    /// structural so that nothing has to.
+    #[test]
+    fn activation_input_rows_keep_nested_arrows_that_differ_only_where_subtyping_is_blind() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let nil = world.types_mut().nil();
+        let int_or_nil = world.types_mut().union(int, nil);
+        let tag = world.types_mut().atom_lit("tag");
+        let lambda = world.types_mut().closure_lit(ClosureTarget(7), Vec::new(), 1);
+        let narrow = ground_instance(&mut world, lambda, &[int], int);
+        let wide = ground_instance(&mut world, lambda, &[int_or_nil], int);
+        let narrow = world.types_mut().tuple(&[tag, narrow]);
+        let wide = world.types_mut().tuple(&[tag, wide]);
+
+        assert_ne!(narrow, wide, "the two wrapped reducer arrows must be distinct types");
+        assert!(
+            world.types().is_subtype(&narrow, &wide) && world.types().is_subtype(&wide, &narrow),
+            "the hazard this test guards must actually exist: subtyping is blind to the nested \
+             signature exactly as it is blind to a bare one",
+        );
+        assert_eq!(
+            world.types().free_var_ids(&narrow),
+            world.types().free_var_ids(&wide),
+            "both wrapped arrows are ground, so free-var parity cannot be what keeps them apart",
+        );
+        assert!(
+            !world.types().lit_arrow_shapes(&narrow).is_empty(),
+            "the shapes have to be found THROUGH the tuple, or containment holds vacuously",
+        );
+
+        let rows = settled_rows(&mut world, &[vec![int, narrow], vec![int_or_nil, wide]]);
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "a nested specialization is still a specialization: {rows:?}",
+        );
+    }
+}
+
+#[cfg(test)]
+mod callsite_resolution_tests {
+    use super::*;
+    use crate::compiler2::identity::{FunctionId, RootId};
+
+    fn key(callsite: u32, types: &mut Types) -> CallSiteKey {
+        CallSiteKey {
+            activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(1), &[], types),
+            callsite: crate::compiler2::body::CallSiteId::from_u32(callsite),
+        }
+    }
+
+    fn boundary_edge() -> CallSiteTargets {
+        CallSiteTargets {
+            targets: vec![CallTargetEdge {
+                callee: SelectedCallee::ProviderBoundary(FunctionId::for_test(7)),
+                activation: None,
+            }],
+        }
+    }
+
+    /// fz-kdt.69.2: a reached callsite can give three answers, and they are
+    /// three distinct values. A provider boundary is a RESOLVED edge that
+    /// names no compiler2 activation; an unresolved callsite names no target
+    /// at all; a callsite the walk never reached has no slot. Absence used to
+    /// carry the last two together, so this state had no representation.
+    #[test]
+    fn an_unresolved_edge_is_neither_a_provider_boundary_nor_an_absent_one() {
+        let mut types = Types::new();
+        let boundary = CallSiteResolution::Resolved(boundary_edge());
+        let unresolved: CallSiteResolution<CallSiteTargets> = CallSiteResolution::Unresolved;
+
+        assert_ne!(boundary, unresolved);
+        assert!(unresolved.is_unresolved());
+        assert!(unresolved.resolved().is_none());
+        assert!(
+            boundary
+                .resolved()
+                .is_some_and(|targets| targets.targets[0].activation.is_none()),
+            "a provider boundary is a named edge whose activation is None"
+        );
+
+        let mut map = CallSiteTargetsMap::new();
+        let reached = key(0, &mut types);
+        assert!(map.define(reached.clone(), CallSiteResolution::Unresolved));
+        assert_eq!(map.get(&reached), Some(&CallSiteResolution::Unresolved));
+        assert_eq!(
+            map.get(&key(1, &mut types)),
+            None,
+            "a callsite the walk never reached has no slot at all"
+        );
+        assert_eq!(map.resolved(&reached), None, "an unresolved edge names no targets");
+    }
+
+    /// `Unresolved` is the lattice BOTTOM: re-emitting it moves nothing, and
+    /// it never erases the resolved answer a previous round reached. That is
+    /// what lets `preserved_analysis_claims` stop carrying these two kinds.
+    #[test]
+    fn an_unresolved_re_emission_is_quiet_and_resolving_one_is_a_content_change() {
+        let mut types = Types::new();
+        let mut map = CallSiteTargetsMap::new();
+        let key = key(0, &mut types);
+
+        assert!(
+            map.define(key.clone(), CallSiteResolution::Unresolved),
+            "the first appearance of a reached callsite is a content change"
+        );
+        assert!(
+            !map.define(key.clone(), CallSiteResolution::Unresolved),
+            "re-emitting the same unresolved answer must not bump the revision"
+        );
+        assert!(
+            map.define(key.clone(), CallSiteResolution::Resolved(boundary_edge())),
+            "unresolved -> resolved IS a content change, and must wake the readers"
+        );
+        assert!(
+            !map.define(key.clone(), CallSiteResolution::Unresolved),
+            "a later round that resolved nothing must not descend"
+        );
+        assert_eq!(
+            map.resolved(&key),
+            Some(&boundary_edge()),
+            "the resolved answer stands at its own revision"
+        );
     }
 }

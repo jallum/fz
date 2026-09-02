@@ -1,0 +1,38 @@
+#---
+# purpose: "Clauses annotated with different tuple tags dispatch on the tag, not on the arity"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.119. Two clauses annotated `{:cont, integer}` and `{:halt, integer}`,
+# reached with a value the compiler cannot fold away. The PLAN is right --
+# one clause tests `{:cont, integer}` and the other `{:halt, integer}` -- but
+# the runtime projection of those types used to be "a 2-tuple" for both, so
+# the first clause took every value and this printed `1 1`, on `interp` and on
+# `run` alike. Swap the clauses (`gat` below) and it printed `2 2`: which
+# answer you got was which clause you wrote first.
+#
+# The tuple test now carries one sub-predicate per position per clause, and an
+# atom position is one a value passes only by BEING that atom, so the tag is
+# what routes the call. Both clause orders print the same two lines, which is
+# the whole claim: annotation-based dispatch on tagged tuples means what it
+# says.
+fn tag(x :: {:cont, integer}), do: 1
+fn tag(x :: {:halt, integer}), do: 2
+
+fn gat(x :: {:halt, integer}), do: 2
+fn gat(x :: {:cont, integer}), do: 1
+
+fn pick(n) do
+  if n > 0 do
+    {:cont, n}
+  else
+    {:halt, n}
+  end
+end
+
+fn main() do
+  dbg(tag(pick(1)))
+  dbg(tag(pick(0)))
+  dbg(gat(pick(1)))
+  dbg(gat(pick(0)))
+end

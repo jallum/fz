@@ -22,6 +22,7 @@ use crate::fz_ir::{
     ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
 use crate::ground_value::GroundValue;
+use crate::runtime_type_predicate::CallableShape;
 use crate::source::Span;
 
 pub use super::body::ReusableConsCapture;
@@ -67,7 +68,6 @@ pub struct MaterializedTransportPlan {
     /// construction products.
     pub callable_boundaries: Vec<(CallableId, Box<[BoundaryId]>)>,
     pub boundary_ids: Vec<BoundaryId>,
-    pub publication_boundaries: Vec<(TransportPosition, BoundaryId)>,
     pub codegen_seam_facts: Box<[CodegenSeamFact]>,
     pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
     pub callable_facts: HashMap<CallableId, CallableFacts>,
@@ -366,6 +366,18 @@ pub(crate) struct NativeBody {
 pub(crate) struct NativeCallableBoundary {
     pub id: NativeCallableBoundaryId,
     pub identity_fn: FnId,
+    /// The callable LAYOUT this boundary mints: function, capture types and
+    /// physical capture lanes. Several boundaries can mint one layout -- one
+    /// per construction position -- and each stamps its own `identity_fn`.
+    pub callable: CallableId,
+    /// The CONSTRUCTION this boundary mints, as a runtime test names it: the
+    /// function the lattice's closure literal names, plus the projected
+    /// capture types the callable closed over. The runtime word a minted value
+    /// carries is `identity_fn`, which is this backend's own numbering; a
+    /// dispatch that asks WHICH construction a value is asks in the lattice's
+    /// terms, and this is the translation (fz-kdt.125, fz-kdt.127). `None`
+    /// where the callable names no function, which no finite test can list.
+    pub shape: Option<CallableShape>,
     pub wrapper_fn: FnId,
     pub captures: Box<[BackendConstructionCapture]>,
     pub capture_reprs: Box<[AbiValueRepr]>,

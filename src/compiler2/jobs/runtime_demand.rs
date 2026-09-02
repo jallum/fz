@@ -6,6 +6,7 @@ use super::super::body::{
     LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
     delivered_value_joins,
 };
+use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
@@ -752,6 +753,26 @@ fn settle_demand_cone<T: Telemetry>(
             }
         }
         if moved.is_empty() {
+            // A member standing behind a construction wrapper is reached
+            // through the boxed apply seam, and the callsite that reaches it
+            // there names none of the wrapper's members -- a mailbox callable
+            // names no target at all. So the contributions this cone CAN see
+            // are, exactly like an unnamed member's, not the whole story: a
+            // grounded sibling callsite's discarded result must not be allowed
+            // to settle the member at zero lanes while the wrapper it also
+            // sits behind still hands a value back (fz-kdt.155).
+            //
+            // Only the bottom is at stake. A visible contributor asking for
+            // anything at all already keeps the member's return non-empty,
+            // which is all the wrapper needs -- its adapter boxes however many
+            // lanes the member returns into the one public word -- so a
+            // destination-passing member keeps its field lanes.
+            let seam_members: HashSet<&ExecutableKey> = reads
+                .values()
+                .flat_map(|demand| demand.callable_flows.values())
+                .flat_map(|flow| &flow.first_class_edges)
+                .map(|edge| &edge.resolution)
+                .collect();
             // At the fixpoint the round's inverted join names exactly the
             // members some contributor names in the settled contribution
             // store.
@@ -759,8 +780,9 @@ fn settle_demand_cone<T: Telemetry>(
                 .iter()
                 .filter(|member| {
                     !bootstrapped.contains(*member)
-                        && !joined_contributions.contains_key(*member)
                         && !external_return_demands.contains_key(*member)
+                        && joined_contributions.get(*member).is_none_or(RuntimeDemand::is_ignore)
+                        && (!joined_contributions.contains_key(*member) || seam_members.contains(*member))
                 })
                 .cloned()
                 .collect();
@@ -779,11 +801,14 @@ fn settle_demand_cone<T: Telemetry>(
                     contributions,
                 });
             }
-            // No contributor names these members: they are reached outside the
-            // contribution graph (the entry, delivery-reached continuations,
-            // escaped closure bodies). Absence is a distinct settled cell — the
-            // whole-by-need bootstrap applies AT the fixpoint, and sticks: it
-            // only ever raises, so the ascent stays monotone.
+            // Nothing this cone can see asks these members for anything, and
+            // something outside it reaches them: the entry, delivery-reached
+            // continuations, escaped closure bodies, or a construction
+            // wrapper. A settled bottom is a distinct cell from a settled
+            // narrowing — the whole-by-need bootstrap applies AT the fixpoint,
+            // where every contribution has arrived so the decision cannot
+            // depend on the schedule, and sticks: it only ever raises, so the
+            // ascent stays monotone.
             bootstrapped.extend(unnamed);
         }
         // A hard budget in every build: the ascent is monotone over a
@@ -1152,15 +1177,21 @@ fn derive_callable_flow_facts_for_executable_product(
             &callable_flows.first_class_surfaces(value),
             &ground_source,
         );
-        let first_class_edges = callable_flow_resolution_edges_product(
-            world,
-            context,
-            executable,
-            facts,
-            producer,
-            &first_class_surfaces,
-            waits,
-        );
+        // The one ordering authority for this callable's construction wrapper:
+        // members, selection rows, boundary resolutions and the resolution list
+        // below all derive from these edges, and fz-kdt.108 welded a selection
+        // row's `body_id` to its member's index. Perturbing here keeps the weld
+        // (fz-kdt.141).
+        let first_class_edges =
+            dispatch_stress::perturbed_construction_members(callable_flow_resolution_edges_product(
+                world,
+                context,
+                executable,
+                facts,
+                producer,
+                &first_class_surfaces,
+                waits,
+            ));
         let mut resolutions = Vec::new();
         extend_unique(
             &mut resolutions,
@@ -1208,7 +1239,7 @@ fn callable_flow_edges_for_targets(
         return Vec::new();
     };
     let captures_len = capture_tys.len();
-    targets
+    let mut edges = targets
         .iter()
         .filter(|target| {
             target.activation.root == executable.activation.root && target.activation.function == producer.function
@@ -1230,7 +1261,15 @@ fn callable_flow_edges_for_targets(
             capture_semantic_inputs: (0..captures_len).collect(),
             surface_semantic_inputs: (captures_len..captures_len + target.surface.inputs.len()).collect(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // `targets` is a `BTreeSet<CallableTarget>` ordered by interned-`Ty` id, so
+    // walking it leaks the interner's mint order (the agenda's) into this
+    // executable's stored `direct_edges` and every artifact rendered from them.
+    // Order by what each surface SAYS, the same `cmp_tys` key the first-class
+    // edges use, so the direct half is canonical for the same reason and by the
+    // same authority (fz-kdt.108).
+    edges.sort_by(|a, b| world.types().cmp_tys(&a.surface.inputs, &b.surface.inputs));
+    edges
 }
 
 fn informative_boundary_demand(world: &mut World, ty: Ty) -> Option<RuntimeDemand> {
@@ -1445,11 +1484,82 @@ fn derive_executable_runtime_demand(
     }
 
     join_previous_input_demands(&mut out.input_demands, previous_input_demands.as_deref());
+    widen_boxed_closure_call_results(facts, &mut out, &mut call_return_demands);
 
     DerivedExecutableDemand {
         demand: out,
         call_return_demands,
         callable_flows,
+    }
+}
+
+/// The consumer half of the boxed apply seam's one return convention
+/// (fz-kdt.155). Its producer half is the seam clause of the whole-by-need
+/// bootstrap in [`settle_demand_cone`], which keeps a wrapper's members from
+/// settling at zero lanes; here every callsite that reaches a wrapper is made
+/// to expect the lane the wrapper hands back.
+///
+/// The question "does this call go through the seam?" is a property of the
+/// CALLEE VALUE, not of the callsite: `materialize_closure_call_edge` lowers a
+/// direct edge to a named target only while the callee travels in its exact
+/// carrier, and that carrier is `ValueRef` the moment the value's own joined
+/// demand is first-class -- which a use somewhere else in this body can decide
+/// on its own. A callsite that names an exact target is still a boxed call if
+/// the lambda it calls is also handed out of the function two lines later. So
+/// this runs once the whole body is walked and asks the joined value demand,
+/// the same authority transport asks.
+///
+/// A callsite past the seam names none of the members behind the wrapper -- a
+/// mailbox callable names none at all -- so its `ignore` never reaches them and
+/// the value arrives whatever the caller wanted. Publishing zero lanes for it
+/// left the two halves of one calling convention on different lane counts: the
+/// wrapper wrote the delivered value into the continuation's first slot, which
+/// the continuation reads as its own closure pointer, and the run aborted in
+/// `fz_closure_get_capture_atom`. Every RICHER demand already crosses the seam
+/// as that one boxed lane, so only the zero widens.
+///
+/// A callee that stays in its exact carrier is untouched: its result aliases
+/// the named target executable's own return fact
+/// (`TransportRecipe::ClosureCallReturn`'s grounded arm), so caller and callee
+/// read one shape whatever it settles to -- zero when no seam boxes the
+/// callable (fz-f98.14.11), non-empty when a seam does and the bootstrap kept
+/// the member off the bottom.
+fn widen_boxed_closure_call_results(
+    facts: &ExecutableFacts,
+    out: &mut ExecutableRuntimeDemand,
+    call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
+) {
+    let LoweredBody::Clauses { entries, .. } = &facts.body else {
+        return;
+    };
+    for entry in entries {
+        let LoweredTail::ClosureCall {
+            value,
+            callsite,
+            callee,
+            ..
+        } = &entry.tail
+        else {
+            continue;
+        };
+        if !out
+            .value_demands
+            .get(callee)
+            .is_some_and(|demand| demand.callable.is_first_class())
+        {
+            continue;
+        }
+        // Only the ZERO widens, and it widens on BOTH halves together: the
+        // delivered value's own demand (which the payload layout is derived
+        // from) and the callsite's contribution to whatever targets it does
+        // name. A richer demand already crosses the seam as at least one lane,
+        // and coarsening it here would cost a member its destination-passing
+        // return for nothing.
+        if !out.value_demands.get(value).is_none_or(RuntimeDemand::is_ignore) {
+            continue;
+        }
+        join_map_demand(&mut out.value_demands, *value, RuntimeDemand::whole());
+        record_call_return_demand(call_return_demands, *callsite, RuntimeDemand::whole());
     }
 }
 
@@ -2879,10 +2989,10 @@ fn runtime_demand_for_type(world: &mut World, ty: Ty, escape: bool) -> RuntimeDe
 
 fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
     let predicate = world.types().runtime_type_predicate(&ty);
-    if predicate.tuple_arities.cofinite || predicate.tuple_arities.values.len() != 1 {
+    if predicate.tuples.arities().cofinite || predicate.tuples.arities().values.len() != 1 {
         return None;
     }
-    let arity = *predicate.tuple_arities.values.iter().next()?;
+    let arity = *predicate.tuples.arities().values.iter().next()?;
     Some(tuple_field_tys(world, ty, arity))
 }
 
@@ -3078,8 +3188,24 @@ fn callable_flow_resolution_edges_product(
         return Vec::new();
     };
     let root = executable.activation.root;
-    surfaces
-        .iter()
+    // The one ordering authority for this callable's construction wrapper.
+    // `surfaces` is a `BTreeSet<CallableSurface>` ordered by interned-`Ty` id,
+    // which is the type interner's mint order and therefore the agenda's: walk
+    // it as-is and the schedule leaks into everything that derives from these
+    // edges -- the parallel members list, the selection plan whose `body_id` is
+    // welded to a member index, the boundary resolutions and the flow's
+    // resolution list -- and into the `activation_key` `Ty`s minted below.
+    // Ordering by what each surface SAYS (`cmp_tys`, the kdt.101/129 key)
+    // BEFORE the mint makes one canonical order flow to all of them and to the
+    // mint, removing that degree of freedom (fz-kdt.108). The single residual
+    // is free-var ties, which fall back to mint order per `types::order` and do
+    // not move within one compile. The kdt.141 wrapper perturbation still wraps
+    // this result downstream, so it permutes the canonical order and its gate
+    // stays honest.
+    let mut ordered = surfaces.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| world.types().cmp_tys(&a.inputs, &b.inputs));
+    ordered
+        .into_iter()
         .map(|surface| {
             let surface_inputs = surface.inputs.clone();
             let mut inputs = capture_tys.clone();

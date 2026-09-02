@@ -96,13 +96,19 @@ fn format_arrow_clause(cx: TyCtx<'_>, c: &Conj<ArrowSig>) -> String {
 /// `kind = FnRef` clauses always carry empty `captures` (a `ClosureLit`
 /// invariant), so the plain `#{fn_id}` suffix stays as it was — this keeps
 /// the overwhelmingly common case (a bare function reference) readable and
-/// unchanged. `kind = Closure` clauses additionally render their captures
+/// unchanged. It is also why a `FnRef` literal is never ANONYMOUS: the erasure
+/// drops a capture-free literal whole instead of anonymising it, so the `#?` an
+/// erased brand renders as only ever appears in front of a `closure[...]`
+/// tail. `kind = Closure` clauses additionally render their captures
 /// structurally (never as raw interner ids) behind a `closure[...]` tag, so a
 /// `Closure` lit can never collide with a `FnRef` lit on the same `fn_id`,
 /// and two `Closure` lits on the same `fn_id` collide only if their captures
 /// also render identically.
 fn format_closure_lit_suffix(cx: TyCtx<'_>, base: &str, lit: &super::sigs::ClosureLit) -> String {
-    let head = format!("{}#{}", base, lit.fn_id.0);
+    let head = match lit.fn_id {
+        Some(fn_id) => format!("{}#{}", base, fn_id.0),
+        None => format!("{base}#?"),
+    };
     match lit.kind {
         CallableValueKind::FnRef => head,
         CallableValueKind::Closure => {

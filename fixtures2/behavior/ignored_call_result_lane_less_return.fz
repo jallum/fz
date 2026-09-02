@@ -1,0 +1,9 @@
+#---
+# purpose: "a call whose result is discarded returns through a lane-less contract: the callee's value tail must read nothing, not fault -- fz-kdt.111"
+#---
+fn id(n), do: n
+
+fn main() do
+  _ = id(42)
+  dbg(1)
+end

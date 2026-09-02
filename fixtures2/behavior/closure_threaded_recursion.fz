@@ -1,0 +1,26 @@
+#---
+# purpose: "a closure created outside a recursion and threaded back through it compiles and runs on all three paths"
+#---
+# The recursion here is invisible to the static call graph. `step` reaches the
+# lambda only through its own parameter `k`, so no edge from `step` to the
+# lambda exists in any body; the only static edge runs the other way, from the
+# lambda to `step`. Caller and callee therefore sit in DIFFERENT strong
+# components while their transport-shape products form a genuine cycle
+# (fz-kdt.93): `ExecutableReturn(step)` names `ExecutableReturn(lambda)`
+# through the grounded closure call, and `ExecutableReturn(lambda)` names
+# `ExecutableReturn(step)` through the direct one.
+#
+# Self-application (`k.(k, ...)`) is the smallest program with that shape;
+# caller-supplied continuations and threaded callbacks have it too.
+
+fn step(k, n) do
+  if n == 0 do
+    0
+  else
+    k.(k, n - 1)
+  end
+end
+
+fn main() do
+  dbg(step(fn(kk, m) -> step(kk, m) end, 5))
+end

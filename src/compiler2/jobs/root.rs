@@ -75,10 +75,11 @@ pub(super) fn seed_root(
     // LowerFunction/PlanEntryDispatch are not re-emitted here: reaching this
     // point means `require_activation_key_facts` above already observed both
     // `Recursive(function)` and `DispatchMask(function)` settled, and their
-    // producers (`derive_recursive`, `derive_dispatch_mask`) only conclude
-    // after `LoweredBody`/`EntryDispatch` exist -- so those jobs have already
-    // run. First-run demand for them lives in DeriveRecursive/DeriveDispatchMask;
-    // later change waves reach them via the normal wake mechanism.
+    // producers (`derive_call_graph_component`, `derive_dispatch_mask`) only
+    // conclude after `LoweredBody`/`EntryDispatch` exist -- so those jobs have
+    // already run. First-run demand for them lives in
+    // DeriveCallGraphComponent/DeriveDispatchMask; later change waves reach
+    // them via the normal wake mechanism.
     //
     // `AnalyzeActivation` is not pushed either: the root itself is the
     // standing demand for its entry's analysis. When the agenda drains,
@@ -98,6 +99,13 @@ pub(super) fn seed_root(
 /// only through the runtime-demand frontier (an escaped or opaque callable, like
 /// a reducer captured by a returned suspend continuation), never through a
 /// direct call edge that an `analyze_activation` would publish.
+///
+/// The input row is RECONSTRUCTED from the key's own arrow, which is the truth
+/// only for such a key: nothing else ever described it. That is why
+/// `World::seed_activation_producer` routes a demand here only while
+/// `ActivationInputs` has no publisher — for an activation some caller
+/// discovered, this reconstruction would fabricate that caller's evidence and
+/// undo the caller's own withdrawal of the key (fz-kdt.69.1).
 ///
 /// This concludes (no waits), so `Activation` and `ActivationInputs` settle and
 /// any consumer walking the runtime-demand frontier reaches the executable as an

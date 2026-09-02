@@ -1,0 +1,34 @@
+#---
+# purpose: "one lambda closed over an int and over a float are two constructions, and the forwarder routes each to the body its captures were stored for"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.127. `P.run/2` forwards its callable, and the forwarder erasure drops
+# the closure literal, so both calls share ONE `run` body and the choice of
+# `twice` specialization is left to a runtime test. The two values differ only
+# in what they captured -- `#lambda(int)` and `#lambda(float)` -- so the test
+# has to name the CONSTRUCTION each value was minted from, not merely the
+# lambda: a closure's heap word at `+8` is the construction wrapper's address,
+# and a wrapper is one function at one capture layout.
+#
+# `Q` is `P` mirrored: the float call first. Arrival order must not decide the
+# answer, and each module has its own forwarder so each order gets its own
+# callsite.
+defmodule P do
+  fn twice(f, x), do: f.(f.(x))
+  fn run(f, x), do: twice(f, x)
+  fn mk(c), do: fn (n) -> n + c end
+end
+
+defmodule Q do
+  fn twice(f, x), do: f.(f.(x))
+  fn run(f, x), do: twice(f, x)
+  fn mk(c), do: fn (n) -> n + c end
+end
+
+fn main() do
+  dbg(P.run(P.mk(1), 10))
+  dbg(P.run(P.mk(0.5), 10))
+  dbg(Q.run(Q.mk(0.5), 10))
+  dbg(Q.run(Q.mk(1), 10))
+end

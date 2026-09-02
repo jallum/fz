@@ -32,6 +32,7 @@ mod function;
 mod prim;
 mod receive;
 pub(crate) mod repr;
+mod runtime_test;
 mod support;
 pub(crate) mod surface;
 mod terminator;

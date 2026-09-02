@@ -118,6 +118,12 @@ fn parse_global_args(raw_args: Vec<String>) -> (Option<String>, bool, Vec<String
 }
 
 fn dispatch(tel: ConfiguredTelemetry, args: Vec<String>, diagnostic_status: &DiagnosticStatus) -> Result<(), CliError> {
+    // Stress settings fail eagerly, on every run: the lazy thread-local
+    // parse fires only when a perturbation site is reached, and a typo'd
+    // sweep reading green on the fixtures that never get there is exactly
+    // the silent-inert failure the grammar's panic exists to rule out
+    // (fz-kdt.141 refutation: 421/584 fixtures completed under a typo).
+    super::callsite_dispatch::dispatch_stress::validate_env().map_err(CliError::usage)?;
     match args.first().map(String::as_str) {
         Some("help" | "--help" | "-h") => {
             print_help();

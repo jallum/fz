@@ -8,7 +8,9 @@ use crate::compiler2::artifact::{
     NativeConstructionMember, NativeEntryAbi, NativeProgram,
 };
 use crate::compiler2::pull::TransportCarrier;
-use crate::compiler2::transport::{BoundaryId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore};
+use crate::compiler2::transport::{
+    BoundaryId, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportClass, TransportStore,
+};
 use crate::compiler2::types::Ty;
 use crate::fz_ir::{
     Block, BlockId, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Term, Var,
@@ -153,6 +155,8 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
             identity_fn,
+            callable: CallableId::for_test(0),
+            shape: None,
             wrapper_fn,
             captures: Box::default(),
             capture_reprs: Box::default(),
@@ -323,6 +327,8 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         callable_boundaries: vec![NativeCallableBoundary {
             id: NativeCallableBoundaryId(0),
             identity_fn,
+            callable: CallableId::for_test(0),
+            shape: None,
             wrapper_fn,
             captures: Box::default(),
             capture_reprs: Box::default(),

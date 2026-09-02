@@ -304,16 +304,24 @@ fn main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 #[test]
 fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // Budgets re-pinned for the fz-kdt.34 causality stream (fz-kdt.52), then
-    // again for its self-describing definition lines (fz-kdt.34.6): the public
-    // trace deliberately carries one `work_graph.applied` per applied job (the
-    // completion seam) plus product settlement/cache/displacement events, so
-    // events and bytes scale with work done, and one `fz.compiler2.canon.*`
-    // line per DISTINCT raw id so the log is a self-contained dictionary.
-    // Measured (interp, debug): 00181 = 1,445 events (203 of them canon
-    // definitions) / 917,027 bytes; 00009 = 199 events (10 canon) / 102,196
-    // bytes. Pins keep tight headroom so creep without cause still trips them.
+    // again for its self-describing definition lines (fz-kdt.34.6), and again
+    // for fz-kdt.56: the public trace deliberately carries one
+    // `work_graph.applied` per applied job (the completion seam) plus product
+    // settlement/cache/displacement events, so events and bytes scale with work
+    // done, and one `fz.compiler2.canon.*` line per DISTINCT raw id so the log
+    // is a self-contained dictionary. fz-kdt.56 split the call graph's edge
+    // extraction out of `DeriveRecursive` into its own `DeriveStaticCallees`
+    // job, so the stream gained that job's completions: +100 events / +53,539
+    // bytes on 00181, +6 events on 00009. fz-kdt.44 then made settledness
+    // transitive, which moved the stream in BOTH directions: it added the drain
+    // arbiter's `work_graph.quiesced` steps (+37 on 00181, none on 00009) while
+    // shrinking every `changed` array, because a fact that is transitively
+    // unfinal no longer flips its settled bit on each local dirty/clean cycle.
+    // Net on 00181: 1,545 -> 1,563 events, 970,146 -> 921,532 bytes; 00009 is
+    // 205 events either way, 105,699 -> 105,683 bytes. Pins keep tight headroom
+    // so creep without cause still trips them.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_520, 960 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_620, 1024 * 1024),
         ("fixtures2/00009_no_runtime.fz", 300, 128 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
@@ -1010,4 +1018,123 @@ end
     let _ = remove_file(&source_path);
     let _ = remove_file(&out_bin);
     let _ = remove_file(out_bin.with_extension("bin.o"));
+}
+
+/// fz-kdt.44: the drain arbiter's readiness step is on the public stream.
+///
+/// Settledness is transitive — a fact is final only when its whole upstream
+/// cone is quiescent — and counting can never finalize a cycle, so at a drain
+/// the arbiter discharges the standing settled questions and publishes the
+/// resulting settled-bit flips as `work_graph.quiesced`. That event is the
+/// only graph movement with no job completion behind it. Without it the stream
+/// would show a fact's `settled` bit changing between two `movements`
+/// renderings with nothing on the log to explain it, and any evaluation woken
+/// by such a flip would classify as uncaused.
+///
+/// Measured today: the arbiter answers PRODUCT fact waits (`jobs::artifact`,
+/// `jobs::backend`, `jobs::transport`, `jobs::runtime_demand` all wait on
+/// `Settled(..)` through the pull driver, which polls the fact rather than
+/// registering a scheduler waiter), so it moves facts and wakes no job. The
+/// zero is asserted, not assumed: the day a scheduler waiter does stand on one
+/// of these facts, this test says so and the causal replay's readiness arm
+/// (fz-kdt.59) comes alive with the movement already on the log to name.
+#[test]
+fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation() {
+    let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
+    let telemetry_path = unique_temp_path("fz2_quiesced", ".jsonl");
+    let out = run_fz2(&[
+        OsStr::new("--log-telemetry"),
+        telemetry_path.as_os_str(),
+        OsStr::new("interp"),
+        OsStr::new(fixture),
+    ]);
+    assert_successful_stdout(&out, &fixture_expected_stdout(fixture), fixture);
+
+    let log = std::fs::read(&telemetry_path).expect("read public telemetry log");
+    let events = parse_public_trace(&log);
+    let quiesced: Vec<_> = events
+        .iter()
+        .filter(|ev| {
+            ev.name
+                .iter()
+                .map(String::as_str)
+                .eq(["fz", "compiler2", "work_graph", "quiesced"])
+        })
+        .collect();
+    assert!(
+        !quiesced.is_empty(),
+        "{fixture} drives product fact waits that only the drain arbiter can answer; \
+         if this is empty the arbiter stopped running or stopped being observed"
+    );
+
+    let mut wakes = 0;
+    for event in &quiesced {
+        let step = event.metadata.get("step").expect("a quiesced event carries its step");
+        for change in step.get("changed").and_then(|c| c.as_array()).into_iter().flatten() {
+            assert_eq!(
+                change.get("old_revision"),
+                change.get("new_revision"),
+                "the arbiter moves readiness only; no cell value changes"
+            );
+            assert_ne!(
+                change.get("old_settled"),
+                change.get("new_settled"),
+                "every entry in a quiesced step's changed array must be a settled-bit flip; \
+                 the array carries only the arbiter's own flips by construction (subscriber \
+                 dirtying travels via movements), so this pins the flip shape"
+            );
+        }
+        wakes += step.get("wakes").and_then(|w| w.as_array()).map_or(0, Vec::len);
+    }
+    assert_eq!(
+        wakes, 0,
+        "the settled waits the arbiter answers today are product waits, polled by the pull \
+         driver rather than registered as scheduler waiters; a non-zero count here means a \
+         scheduler waiter now stands on one, and the readiness cause class is live"
+    );
+
+    let report = CausalReport::derive(&events);
+    assert!(
+        report.uncaused.is_empty(),
+        "every evaluation must still name a moved input; first unattributed: {:?}",
+        report.uncaused.first()
+    );
+    assert!(
+        report.readiness_without_settled_wake.is_empty(),
+        "a readiness cause is only claimable where a Settled/SettledPresence wake carried it"
+    );
+    let _ = remove_file(&telemetry_path);
+}
+
+/// A stalled compile's error message is the same text on every run (fz-kdt.109).
+///
+/// A program that cannot settle reports its standing waits, and that list used
+/// to come out of a `HashMap` in iteration order — a per-process `RandomState`
+/// artifact, so one binary printed a different message run to run (five runs of
+/// this fixture produced four distinct stderr renderings, and 90 of the 577
+/// fixtures stall). That makes the message unreadable as a comparand: a sweep
+/// cannot tell a real diagnostic movement from reshuffled text. Separate
+/// processes are the honest probe — each gets its own hash seed.
+#[test]
+fn fz2_stall_diagnostic_is_byte_identical_across_runs() {
+    let fixture = OsStr::new("fixtures2/00050_empty.fz");
+    let args = [OsStr::new("interp"), fixture];
+    let renderings = (0..3)
+        .map(|_| {
+            let output = run_fz2_without_color(&args);
+            String::from_utf8(output.stderr).expect("fz2 stderr is utf-8")
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        renderings[0].contains("no ready producer; unresolved="),
+        "the fixture must still reach the stall diagnostic for this pin to mean anything, got: {}",
+        renderings[0]
+    );
+    for (run, rendering) in renderings.iter().enumerate().skip(1) {
+        assert_eq!(
+            rendering, &renderings[0],
+            "run {run} rendered the same stall differently than run 0"
+        );
+    }
 }

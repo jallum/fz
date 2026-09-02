@@ -271,8 +271,24 @@ impl<'a> TyCanon<'a> {
         }
     }
 
+    /// `fnref[label]` for a bare function reference, `closure[label](caps)`
+    /// for an env-carrying closure. The label is `?` for an ANONYMOUS literal
+    /// -- a closure of some function over exactly these capture types, which
+    /// is what a forwarder key leaves of a literal whose brand it erased.
+    /// `closure[?](int)` and `closure[?](float)` are two forms because the
+    /// capture types are two, and `closure[?](int)` and `closure[L](int)` are
+    /// two because the anonymous one names every brand and `L` names one.
+    ///
+    /// `closure[?]` is the only anonymous form. `fnref[?]` is not a form at
+    /// all: a `FnRef` literal carries no captures (`Types::fn_ref_lit` is its
+    /// only constructor), and the erasure drops a capture-free literal whole
+    /// rather than anonymising it -- there is nothing left to say once the
+    /// brand is gone -- so a `FnRef` literal always keeps its label.
     fn closure_lit(&mut self, cx: TyCtx<'_>, lit: &ClosureLit) -> String {
-        let label = (self.labels)(lit.fn_id);
+        let label = match lit.fn_id {
+            Some(fn_id) => (self.labels)(fn_id),
+            None => "?".into(),
+        };
         match lit.kind {
             CallableValueKind::FnRef => format!("fnref[{label}]"),
             CallableValueKind::Closure => {

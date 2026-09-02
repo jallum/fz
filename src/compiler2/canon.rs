@@ -243,12 +243,17 @@ impl<'a> ProgramCanon<'a> {
 
     /// Canonical position to old position for the executable vector.
     ///
-    /// The published order is settled on `Ty`-valued keys
-    /// (`jobs::backend::compare_executable_keys`), so it moves with the arena.
     /// The canonical order is the id-free key an executable already has — its
     /// function, its input types, and what is demanded of it — with an equally
     /// id-free shallow signature behind it so the order stays total if the
     /// interner ever hands one activation two identities (fz-kdt.48).
+    ///
+    /// Two executables that render the SAME key tie, and `sort` breaks a tie on
+    /// published position — so this rendering is only as id-free as the
+    /// published order behind it. That order is
+    /// `jobs::backend::compare_executable_keys`, which since fz-kdt.101
+    /// compares its type components through `Types::cmp_ty` rather than as raw
+    /// interner ids, so the fallback no longer smuggles interning order in.
     fn executable_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
             .executables
@@ -269,6 +274,13 @@ impl<'a> ProgramCanon<'a> {
         keys.into_iter().map(|(_, index)| index).collect()
     }
 
+    /// Canonical position to old position for the construction-wrapper vector.
+    ///
+    /// Wrappers tie far more readily than executables — two specializations of
+    /// one callable publish wrappers that render byte-identically — so the
+    /// published-order fallback is load-bearing here rather than theoretical.
+    /// It is `jobs::artifact::compare_transport_positions` over the owner
+    /// positions the wrappers are enumerated from, canonical since fz-kdt.101.
     fn wrapper_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
             .construction_wrappers

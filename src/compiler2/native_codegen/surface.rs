@@ -12,15 +12,20 @@ use crate::compiler2::NativeBody;
 use crate::compiler2::artifact::NativeCallableBoundaryId;
 use crate::diag::Diagnostics;
 use crate::fz_ir::{FnId, FnIr, Module};
+use crate::runtime_type_predicate::{CallableShape, CallableShapes};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeCallableBoundarySurface {
     pub boundary_id: NativeCallableBoundaryId,
     pub identity_fn: FnId,
+    /// The construction this boundary mints, as a runtime test names it: the
+    /// function, and the projected capture types it closed over. `None` for a
+    /// boundary over a callable that names no function, which no finite test
+    /// can list.
+    pub shape: Option<CallableShape>,
     pub target_fn: FnId,
     pub capture_count: usize,
-    pub capture_key: Vec<crate::types::KeySlot<crate::compiler2::Ty>>,
     pub capture_reprs: Vec<ArgRepr>,
     pub arg_reprs: Vec<ArgRepr>,
     pub task_halt_repr: Option<ArgRepr>,
@@ -78,5 +83,19 @@ impl<'a> NativeCodegenSurface<'a> {
         self.callable_boundaries
             .values()
             .find(|boundary| boundary.identity_fn == identity_fn)
+    }
+
+    /// Every boundary whose construction a test ENUMERATES: the same function,
+    /// closed over a capture layout inside the one the test names
+    /// (fz-kdt.127). A test for "is this value one of these constructions"
+    /// compares the value's code word against exactly these addresses, and
+    /// never loads a capture.
+    pub(crate) fn callable_boundaries_enumerated_by<'s>(
+        &'s self,
+        callables: &'s CallableShapes,
+    ) -> impl Iterator<Item = &'s NativeCallableBoundarySurface> + 's {
+        self.callable_boundaries
+            .values()
+            .filter(move |boundary| boundary.shape.as_ref().is_some_and(|shape| callables.enumerates(shape)))
     }
 }

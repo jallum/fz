@@ -1,0 +1,24 @@
+#---
+# purpose: "a threaded recursion whose closure calls RETURN closures is cut on reachability, not on result kind"
+#---
+# The third shape in the `closure_threaded_recursion` family (fz-kdt.93). Here
+# the recursive closure call yields a CALLABLE, so the cut cannot be decided by
+# "is this result data or a function": an exact-carrier closure call whose
+# result is callable is exactly where caller and callee must read one shape
+# (fz-9i4.4.5), and cutting all of those breaks currying. The cut asks the
+# returning question instead -- can the grounded target reach this function
+# through the static call graph -- which is true here (the lambda calls `step`)
+# and false for an ordinary `apply`-style callee.
+
+fn step(k, n) do
+  if n == 0 do
+    fn(z) -> z + 1 end
+  else
+    k.(k, n - 1)
+  end
+end
+
+fn main() do
+  f = step(fn(kk, m) -> step(kk, m) end, 3)
+  dbg(f.(41))
+end

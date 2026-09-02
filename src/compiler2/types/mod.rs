@@ -13,13 +13,18 @@ mod descr;
 mod dnf;
 mod emptiness;
 mod format;
+mod order;
 mod sigs;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+use crate::fz_ir::FnId;
+use crate::runtime_type_predicate::{
+    CallableShape, CallableShapes, ListShape, ListShapes, RuntimeTypePredicate, TupleShapes,
+};
 
 use super::keying::DispatchDemand;
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
@@ -47,6 +52,10 @@ use conj::Conj;
 use descr::Descr;
 use dnf::{dnf_intersect_with, tuple_clause_subsumed};
 use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, ResourceSig, TupleSig};
+
+/// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
+/// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
+pub(crate) type LitArrowShape = (Option<FnId>, Vec<Ty>, Vec<Ty>, Ty);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -78,6 +87,28 @@ pub struct Types {
     /// by the id's dense slot (its tag bit masked off). Lets display render an
     /// address structurally (`a1_0`, `r0`) instead of as a bare `αN`.
     address_paths: Vec<Vec<addressed::AddrStep>>,
+    /// The stable label of every callable a closure literal can name. A raw
+    /// `FnId` is a mint-order index, so it cannot decide canonical clause order
+    /// (`order`); the owner names each callable as it mints the id.
+    callable_labels: order::CallableLabels,
+    /// Correlated-input row sets widened to their column-wise join since the
+    /// last drain, because they crossed `ACTIVATION_INPUT_ROW_BUDGET`
+    /// (fz-0xp). `World::take_activation_input_collapses` is the drain and
+    /// `ExecutionContext::complete_job` the reporter.
+    ///
+    /// The tally lives on the type store because that is the only handle the
+    /// collapse site has: it fires inside
+    /// `ActivationInputAlternatives`' monotone join, whose
+    /// `JoinContribution::Ctx` is `Types` — an associated TYPE that no
+    /// borrowed sink can ride without a GAT on every implementor — and
+    /// measurement says the join is where every collapse in the corpus
+    /// actually happens (`push_row`, the one path that could return a count to
+    /// its caller, produced none of the 28/30 the lenses recorded before
+    /// fz-kdt.106). Owning it here makes the ledger per-`World` by
+    /// construction, so an undrained collapse dies with the `World` that
+    /// produced it instead of leaking into the next reader. Threading a
+    /// first-class sink through the join stays fz-0xp's.
+    activation_input_collapses: u64,
 }
 
 #[derive(Default)]
@@ -99,6 +130,9 @@ enum ComparisonKey {
     Subtype(Ty, Ty),
     Disjoint(Ty, Ty),
     Equivalent(Ty, Ty),
+    /// `Types::row_column_dominates`. NOT symmetric: the two positions mean
+    /// different things, so this key is never built through `symmetric_key`.
+    RowColumnDominates(Ty, Ty),
 }
 
 #[cfg(test)]
@@ -141,7 +175,7 @@ impl TypeInterner {
             return *ty;
         }
         #[cfg(debug_assertions)]
-        self.debug_assert_tuple_axis_hygienic(&d);
+        self.debug_assert_dnf_axes_hygienic(&d);
         let raw = self.arena.len();
         assert!(u32::try_from(raw).is_ok(), "type interner exhausted ids");
         let ty = Ty(raw as u32);
@@ -161,13 +195,14 @@ impl TypeInterner {
         self.ctx().descr(t)
     }
 
-    /// The interned-tuple-DNF invariant: a descriptor entering the
-    /// arena never carries a duplicate, provably-empty, or subsumed tuple
-    /// clause. `Types::intern` establishes it by canonicalizing the axis; this
-    /// sweep verifies it for every intern in debug builds, so any construction
-    /// route leaking garbage clauses fails loudly instead of accumulating.
+    /// The interned-DNF invariant: a descriptor entering the arena never
+    /// carries a duplicate clause on any axis, nor a provably-empty or
+    /// subsumed tuple clause. `Types::intern` establishes it by canonicalizing
+    /// the axes; this sweep verifies it for every intern in debug builds, so
+    /// any construction route leaking garbage clauses fails loudly instead of
+    /// accumulating.
     #[cfg(debug_assertions)]
-    fn debug_assert_tuple_axis_hygienic(&self, d: &Descr) {
+    fn debug_assert_dnf_axes_hygienic(&self, d: &Descr) {
         let cx = self.ctx();
         for (i, c) in d.tuples.iter().enumerate() {
             let mut memo = emptiness::Memo::default();
@@ -182,12 +217,72 @@ impl TypeInterner {
                 );
             }
         }
+        debug_assert_no_exact_duplicates(&d.lists, "lists");
+        debug_assert_no_exact_duplicates(&d.resources, "resources");
+        debug_assert_no_exact_duplicates(&d.funcs, "funcs");
+        debug_assert_no_exact_duplicates(&d.maps, "maps");
+    }
+}
+
+/// `A ∨ A = A` on the four axes that carry no absorption pass of their own.
+///
+/// The tuples axis gets the stronger emptiness+subsumption treatment; the rest
+/// get idempotence, which is the rule the ACTIVATION KEY depends on. A key is
+/// built by erasing what the key language cannot address — closure brands
+/// above all — and erasure runs IN PLACE, so a union that legitimately kept one
+/// clause per brand becomes `A ∨ A` the moment the brands go. Without this
+/// collapse `funcs = [A, A]` interns as a different `Ty` than `funcs = [A]`,
+/// the key stops being a join homomorphism, and a callsite reached down two
+/// rows publishes an edge naming neither activation its walk actually read
+/// (fz-kdt.80).
+///
+/// First occurrence wins, so the canonical order the `order` pass just imposed
+/// survives this filter — which is the whole reason the two compose. The
+/// comparator here stays `PartialEq`, deliberately: it is the very equality the
+/// interner index is keyed on, so collapsing exactly these pairs is what makes
+/// `A ∨ A` and `A` reach one `Ty`. Anything coarser would fold clauses the index
+/// still tells apart.
+fn dedupe_exact_clauses<T: PartialEq>(clauses: &mut Vec<Conj<T>>) {
+    if clauses.len() < 2 {
+        return;
+    }
+    let mut kept = 0;
+    for i in 0..clauses.len() {
+        if clauses[..kept].contains(&clauses[i]) {
+            continue;
+        }
+        clauses.swap(kept, i);
+        kept += 1;
+    }
+    clauses.truncate(kept);
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_no_exact_duplicates<T: PartialEq>(clauses: &[Conj<T>], axis: &str) {
+    for (i, c) in clauses.iter().enumerate() {
+        debug_assert!(
+            !clauses[..i].contains(c),
+            "interned descr carries a duplicate clause on the {axis} axis"
+        );
     }
 }
 
 impl Types {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record one correlated-input row set widened past
+    /// `ACTIVATION_INPUT_ROW_BUDGET`. See `activation_input_collapses`.
+    pub(crate) fn note_activation_input_collapse(&mut self) {
+        self.activation_input_collapses += 1;
+    }
+
+    /// Take the collapses recorded since the last drain. Ask
+    /// [`World::take_activation_input_collapses`] — the drain is the `World`'s
+    /// to offer, and this is where the count is kept.
+    pub(crate) fn take_activation_input_collapses(&mut self) -> u64 {
+        std::mem::take(&mut self.activation_input_collapses)
     }
 
     pub fn repeat(&mut self, ty: Ty, n: usize) -> Vec<Ty> {
@@ -223,9 +318,60 @@ impl Types {
             .or_else(|| self.as_atom_singleton(a).map(MapKey::Atom))
     }
 
+    /// The persistence boundary, in three passes that each leave the next one's
+    /// precondition intact.
+    ///
+    /// ORDER first (fz-kdt.105): every axis goes into canonical clause order, so
+    /// a descriptor's clause list is a function of its clause set rather than of
+    /// the arrival order that built it. It has to lead, because the absorption
+    /// below picks the survivor of a mutually-subsuming pair by ARRIVAL — sort
+    /// afterwards and the schedule would still be choosing which clause lives.
+    ///
+    /// ABSORPTION and IDEMPOTENCE follow, and both are order-preserving filters
+    /// (`canonicalize_tuple_axis` keeps survivors in input order;
+    /// `dedupe_exact_clauses` keeps the first occurrence), so what reaches the
+    /// interner index is still sorted.
+    ///
+    /// One pass suffices because the composition is idempotent: re-interning an
+    /// already-interned descriptor sorts an already-sorted list to itself, finds
+    /// no empty or subsumed tuple clause left to drop and no exact duplicate
+    /// left to collapse, and so hashes to the descriptor already in the index.
     fn intern(&mut self, mut d: Descr) -> Ty {
+        self.order_clauses(&mut d);
         self.canonicalize_tuple_axis(&mut d);
+        dedupe_exact_clauses(&mut d.lists);
+        dedupe_exact_clauses(&mut d.resources);
+        dedupe_exact_clauses(&mut d.funcs);
+        dedupe_exact_clauses(&mut d.maps);
         self.interner.intern(d)
+    }
+
+    fn order_clauses(&self, d: &mut Descr) {
+        self.clause_order().sort_axes(d);
+    }
+
+    fn clause_order(&self) -> order::ClauseOrder<'_> {
+        order::ClauseOrder::new(self.ctx(), &self.callable_labels)
+    }
+
+    /// The canonical order on interned types, read from OUTSIDE the persistence
+    /// boundary (fz-kdt.101). It is the same comparator that puts a
+    /// descriptor's DNF clauses in canonical order at `intern` — structural,
+    /// id-free in effect, injective — so a packaging sort keyed on it names
+    /// what a type SAYS rather than when it happened to be interned.
+    ///
+    /// Raw `Ty` ordering is interning order, which the agenda decides: sort an
+    /// artifact inventory by it and a re-ordered pull renumbers entries that
+    /// are otherwise identical. Sorting by this instead removes the degree of
+    /// freedom, up to the two residuals `super::order` documents (free-var ties
+    /// and lambda byte-span labels), neither of which moves within one compile.
+    pub(crate) fn cmp_ty(&self, a: Ty, b: Ty) -> std::cmp::Ordering {
+        self.clause_order().cmp_ty(a, b)
+    }
+
+    /// Elementwise [`Types::cmp_ty`], shorter slice first.
+    pub(crate) fn cmp_tys(&self, a: &[Ty], b: &[Ty]) -> std::cmp::Ordering {
+        self.clause_order().cmp_tys(a, b)
     }
 
     /// The persistence boundary keeps the tuples axis of every
@@ -714,12 +860,14 @@ impl Types {
         self.arrow(&collapsed, ret)
     }
 
-    /// The transported-callable key collapse (fz-6gb): erase closure LITERALS
-    /// from the arrow's non-dispatch slots, leaving everything else -- data
-    /// types, callable surfaces, dispatch-relevant slots -- exactly as the
-    /// evidence stated it. Two closures with the same surface then key one
-    /// activation of a function that only carries them, while a slot the
-    /// function dispatches on keeps brand identity. Unlike
+    /// The transported-callable key collapse (fz-6gb, fz-kdt.127): erase
+    /// closure BRANDS from the arrow's non-dispatch slots, leaving everything
+    /// else -- data types, callable surfaces, CAPTURE TYPES, dispatch-relevant
+    /// slots -- exactly as the evidence stated it. Two closures of the same
+    /// shape then key one activation of a function that only carries them,
+    /// while a slot the function dispatches on keeps brand identity, and two
+    /// capture types through one slot stay two keys because the body a key
+    /// names grounds its callees' capture lanes. Unlike
     /// [`convergence_collapse`], no slot becomes an address var: this erasure
     /// is value-language throughout, so nothing key-shaped can leak into
     /// evidence.
@@ -1189,15 +1337,130 @@ impl Types {
                 FiniteSet::none()
             },
             atoms: descr.atoms.clone(),
-            lists: runtime_type_predicate_list_shapes(descr),
-            tuple_arities: runtime_type_predicate_tuple_arities(descr),
+            lists: self.runtime_type_predicate_lists(descr),
+            tuples: self.runtime_type_predicate_tuples(descr),
             named_structs: named_structs.clone(),
             allow_other_structs: false,
             maps: !descr.maps.is_empty() && named_structs.is_none(),
             binaries: descr.basic.contains_all(BasicBits::BINARY),
-            closures: !descr.funcs.is_empty(),
+            callables: self.runtime_type_predicate_callables(descr),
             resources: !descr.resources.is_empty(),
         }
+    }
+
+    /// The list axis a runtime test can put to a value.
+    ///
+    /// One head question per list CLAUSE that admits a cons cell, because a
+    /// clause is the unit the lattice keeps correlated -- the same reason
+    /// [`Self::runtime_type_predicate_tuples`] keeps one shape per clause.
+    ///
+    /// A clause is head-projectable only when it is exactly one positive
+    /// signature with nothing subtracted, and that signature names an element
+    /// type. Several positive signatures are an INTERSECTION of list types and
+    /// negations are a DIFFERENCE; neither is one element type, and inventing
+    /// one would claim a precision the emitted test could not honour. Those
+    /// degrade the whole axis to the shape-only reading, which is what every
+    /// clause answered before fz-kdt.107 step 3.
+    ///
+    /// A shape set with no `NonEmpty` puts no head question at all: `[]` is a
+    /// single value and there is no cons cell to read.
+    fn runtime_type_predicate_lists(&self, descr: &Descr) -> ListShapes {
+        let shapes = runtime_type_predicate_list_shapes(descr);
+        if !shapes.contains(&ListShape::NonEmpty) {
+            return ListShapes::exact(shapes, Vec::new());
+        }
+        let mut heads = Vec::with_capacity(descr.lists.len());
+        for clause in &descr.lists {
+            if clause.pos.len() != 1 || !clause.neg.is_empty() {
+                return ListShapes::shape_only(shapes);
+            }
+            let Some(elem) = clause.pos[0].elem else {
+                // `[]` exactly: the clause admits no cons cell, so it puts no
+                // head question and the other clauses' heads still stand.
+                continue;
+            };
+            heads.push(self.runtime_type_predicate(&elem));
+        }
+        if heads.is_empty() {
+            // Every clause admits a cons cell that no element type describes,
+            // so there is nothing to ask it. "Any cons cell" is the shape-only
+            // reading, and calling it exact would let it claim to CONTAIN
+            // sharper axes it does not.
+            return ListShapes::shape_only(shapes);
+        }
+        ListShapes::exact(shapes, heads)
+    }
+
+    /// The tuple axis a runtime test can put to a value.
+    ///
+    /// One shape per tuple CLAUSE, each carrying its positions' own
+    /// predicates, because a clause is the unit the lattice keeps correlated:
+    /// `{:cont, int} | {:halt, atom}` is two clauses, and joining them
+    /// position-wise would admit `{:cont, atom}`, which neither names
+    /// (fz-kdt.126).
+    ///
+    /// A clause is shapeable only when it is exactly one positive signature
+    /// with nothing subtracted. Several positive signatures are an
+    /// INTERSECTION of tuple types and negations are a DIFFERENCE; neither is
+    /// a list of positions, and inventing one would claim a precision the
+    /// emitted test could not honour. Those degrade the whole axis to the
+    /// arity-only reading, which is what every clause answered before
+    /// fz-kdt.119.
+    fn runtime_type_predicate_tuples(&self, descr: &Descr) -> TupleShapes {
+        let mut shapes = Vec::with_capacity(descr.tuples.len());
+        for clause in &descr.tuples {
+            if clause.pos.len() != 1 || !clause.neg.is_empty() {
+                return TupleShapes::arity_only(runtime_type_predicate_tuple_arities(descr));
+            }
+            shapes.push(
+                clause.pos[0]
+                    .elems
+                    .iter()
+                    .map(|elem| self.runtime_type_predicate(elem))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        TupleShapes::exact(shapes)
+    }
+
+    /// The callable axis a runtime test can put to a value.
+    ///
+    /// One shape per closure-literal CLAUSE, each carrying its captures' own
+    /// predicates, because a clause is the unit the lattice keeps correlated
+    /// -- the same reason [`Self::runtime_type_predicate_tuples`] keeps one
+    /// shape per clause. A construction wrapper stamps exactly one such shape
+    /// onto every value it mints (fz-kdt.127), which is what makes the capture
+    /// positions answerable without ever loading a capture.
+    ///
+    /// A clause is shapeable only when it pins exactly one literal. Several
+    /// literals at once are an INTERSECTION, which is not one shape; that
+    /// degrades the whole axis to the target-only reading, which is what every
+    /// clause answered before fz-kdt.127 and is a sound over-approximation of
+    /// it. `callable_identity_targets` has already refused the clauses that
+    /// name no literal, subtract one, or name an ANONYMOUS one.
+    fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
+        let Some(targets) = callable_identity_targets(&descr.funcs) else {
+            return CallableShapes::any();
+        };
+        let mut shapes = Vec::with_capacity(descr.funcs.len());
+        for clause in &descr.funcs {
+            let mut lits = clause.pos.iter().filter_map(|sig| sig.lit.as_ref());
+            let (Some(lit), None) = (lits.next(), lits.next()) else {
+                return CallableShapes::target_only(FiniteSet::finite(targets.into_iter().map(ClosureTarget::from)));
+            };
+            shapes.push(CallableShape {
+                target: ClosureTarget::from(
+                    lit.fn_id
+                        .expect("callable_identity_targets refused every anonymous literal"),
+                ),
+                captures: lit
+                    .captures
+                    .iter()
+                    .map(|capture| self.runtime_type_predicate(capture))
+                    .collect(),
+            });
+        }
+        CallableShapes::exact(shapes)
     }
 
     pub(crate) fn atom_literals(&self, a: &Ty) -> Vec<String> {
@@ -1247,16 +1510,157 @@ impl Types {
         has_vars(self.ctx(), self.descr(a))
     }
 
+    /// Every free type-var id reachable from `a`, structural children
+    /// included. The identity of the vars, not merely their presence: two
+    /// types that mention DIFFERENT vars describe different families however
+    /// their denotations compare.
+    pub fn free_var_ids(&self, a: &Ty) -> BTreeSet<TypeVarId> {
+        let mut ids = BTreeSet::new();
+        collect_free_vars(self.ctx(), self.descr(a), &mut ids);
+        ids
+    }
+
+    /// Every closure-literal arrow reachable from `a`, as
+    /// `(fn_id, captures, args, ret)`, sorted and deduped. The brand is `None`
+    /// for an anonymous literal, which is one shape like any other: two rows
+    /// whose literals differ only in brand are NOT the same shape.
+    ///
+    /// `args` and `ret` are in here because subtyping leaves them out:
+    /// `emptiness::func_clause_empty` decides a negative closure-literal
+    /// arrow's `P \ N` from `fn_id` and `captures` alone. This is the
+    /// signature evidence that judgement discards.
+    ///
+    /// The walk is STRUCTURAL, mirroring [`free_var_ids`](Self::free_var_ids):
+    /// the same blind spot reaches a lambda wrapped in a tuple, a list, a
+    /// resource payload, a map field or another arrow's signature exactly as it
+    /// reaches a bare one, so the evidence has to be collected from the same
+    /// places. A top-level-only walk would let `{:tag, fn}` rows that differ
+    /// only in the nested arrow's signature absorb each other.
+    pub fn lit_arrow_shapes(&self, a: &Ty) -> Vec<LitArrowShape> {
+        let mut shapes = Vec::new();
+        let mut seen = HashSet::new();
+        collect_lit_arrow_shapes(self.ctx(), a, &mut seen, &mut shapes);
+        shapes.sort();
+        shapes.dedup();
+        shapes
+    }
+
+    /// Does `dom` cover everything `sub` says, at one column of a correlated
+    /// input row? (fz-kdt.106)
+    ///
+    /// A row set is an ANTICHAIN of alternatives, but a caller's ascent
+    /// deposits a CHAIN: `conclude_preserving_frontier` joins every superseded
+    /// conclusion's row in and nothing takes it out again, so the row set
+    /// accumulates the history of one widening column. A covered rung carries
+    /// no evidence its dominator does not, and eight of them cross
+    /// `ACTIVATION_INPUT_ROW_BUDGET` and collapse the whole set columnwise --
+    /// which is how the schedule ends up deciding what gets specialized.
+    ///
+    /// The relation is deliberately NARROWER than `is_subtype`, on two counts
+    /// that are each load-bearing:
+    ///
+    /// - **Equal free-var sets.** A free var is absorbing under subtyping, so
+    ///   a value-TEMPLATE column would swallow its own ground instances. Those
+    ///   are two different activations of one body -- the erased shared
+    ///   specialization and its representable sibling -- and dropping the
+    ///   template misroutes every element family that was keyed through it.
+    /// - **Closure-literal shape containment.** `func_clause_empty` (see
+    ///   `emptiness.rs`) decides `P \ N` for a negative arrow carrying a
+    ///   `ClosureLit` from `fn_id` and `captures` alone -- `args` and `ret`
+    ///   are never read -- so subtyping calls a ground reducer arrow and a
+    ///   var-carrying template arrow over ONE lambda equivalent. Requiring
+    ///   `sub`'s literal shapes to appear verbatim among `dom`'s puts the
+    ///   signature back into the judgement. Containment, not equality: a
+    ///   ladder's closure column grows by ADDING literals, and those rungs
+    ///   must still absorb.
+    ///
+    /// WHAT IS BY CONSTRUCTION, AND WHAT IS ONLY MEASURED. Two properties
+    /// matter to the antichain that uses this, and they have different
+    /// standing:
+    ///
+    /// - TRANSITIVITY is by construction. The relation is a conjunction of
+    ///   three transitive relations (set equality on free-var ids, containment
+    ///   on literal shapes, `is_subtype`) plus a reflexive `sub == dom`
+    ///   short-circuit, and a conjunction of transitive relations is
+    ///   transitive.
+    /// - ANTISYMMETRY -- and so the confluence of absorption, which is what
+    ///   makes the surviving set independent of insertion order -- is
+    ///   EMPIRICAL. Nothing here forbids a mutually-dominating pair of
+    ///   DISTINCT types: `is_subtype` is not antisymmetric on closure-literal
+    ///   columns, and equal free-var sets plus equal shape sets do not force
+    ///   equal types. What is known is that the corpus contains no such pair
+    ///   (measured count 0 over 577 fixtures), which is a fact about today's
+    ///   inputs, not a theorem.
+    ///
+    /// TERMINATION has the same empirical standing. Absorption is inflationary
+    /// in denotation -- a dominated row adds nothing to the union, and a
+    /// dominator that lands only grows it -- which is the fixpoint argument,
+    /// but that argument leans on the relation implying denotational
+    /// containment, and `is_subtype` is not denotational on closure-literal
+    /// columns. Every fixture in the corpus settles;
+    /// `ACTIVATION_INPUT_ROW_BUDGET` remains the backstop that makes
+    /// termination a theorem regardless.
+    ///
+    /// Memoized on its own NON-symmetric key: `sub` and `dom` are not
+    /// interchangeable, so this may never route through `symmetric_key`.
+    pub fn row_column_dominates(&self, sub: &Ty, dom: &Ty) -> bool {
+        if sub == dom {
+            return true;
+        }
+        self.cached_comparison(ComparisonKey::RowColumnDominates(*sub, *dom), |types| {
+            if types.free_var_ids(sub) != types.free_var_ids(dom) {
+                return false;
+            }
+            let dom_shapes = types.lit_arrow_shapes(dom);
+            if !types
+                .lit_arrow_shapes(sub)
+                .iter()
+                .all(|shape| dom_shapes.contains(shape))
+            {
+                return false;
+            }
+            types.is_subtype(sub, dom)
+        })
+    }
+
+    /// The row-level lift of [`Types::row_column_dominates`]: same arity, and
+    /// every column of `sub` dominated by the column beside it in `dom`.
+    ///
+    /// Not memoized -- the columns underneath it are, and a row pair is a
+    /// larger, sparser key than the column pairs it decomposes into.
+    pub fn row_dominates(&self, sub: &[Ty], dom: &[Ty]) -> bool {
+        sub.len() == dom.len()
+            && sub
+                .iter()
+                .zip(dom)
+                .all(|(sub, dom)| self.row_column_dominates(sub, dom))
+    }
+
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
-        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
+        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive, CallableReading::AsTyped);
         self.intern(descr)
     }
 
+    /// What a runtime test can see of `ty`.
+    ///
+    /// On the callable axis that is the value's CONSTRUCTION: a closure
+    /// value's heap word at `+8` names the construction it was minted from,
+    /// and a construction is a function together with the capture types it
+    /// closed over, because a construction wrapper is one function at one
+    /// capture layout. So the literal `fn_id`s and their captures survive
+    /// here, each capture enveloped by this same reading, and the arrow the
+    /// literal was typed at is erased -- no value carries it (fz-kdt.125,
+    /// fz-kdt.127).
+    ///
+    /// AT EVERY DEPTH (fz-kdt.119). A tuple position holding a closure is read
+    /// by the same one comparison as a top-level one, so `{:tag, #66(int)}`
+    /// and `{:tag, #66(float)}` are two observables here exactly as `#66(int)`
+    /// and `#66(float)` are, and `{:tag, #66}` and `{:tag, #68}` are two.
+    /// Widening a nested callable to `fun_top` instead would reproduce
+    /// fz-kdt.125's defect one tuple deep, and leave a depth-0/depth-1 seam
+    /// nothing in the runtime justifies.
     pub(crate) fn runtime_type_test_envelope(&mut self, ty: Ty) -> Ty {
-        let mut descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive);
-        if !descr.funcs.is_empty() {
-            descr.funcs = Descr::fun_top().funcs;
-        }
+        let descr = runtime_envelope(self, ty, RuntimeEnvelopePolarity::Positive, CallableReading::Identity);
         self.intern(descr)
     }
 
@@ -1279,6 +1683,34 @@ impl Types {
 }
 
 impl Types {
+    /// Record the stable, version-independent name of one callable.
+    ///
+    /// A closure literal carries an `FnId`, which is a mint-order index: it
+    /// shifts whenever the source gains or loses a function, so it cannot be
+    /// what decides canonical clause order (see `order`). The owner knows the
+    /// `Module.name/arity` behind the id and names it here as the id is minted,
+    /// which is before any literal can reference it.
+    pub(crate) fn name_callable(&mut self, target: ClosureTarget, label: impl Into<Arc<str>>) {
+        self.callable_labels.insert(target.into(), label.into());
+    }
+
+    /// Every callable a closure literal in the arena names, that the owner
+    /// never named. Empty in production — the gate that says so is
+    /// `canon_test`'s `every_closure_literal_names_a_labelled_callable`.
+    #[cfg(test)]
+    pub(crate) fn unnamed_callables(&self) -> BTreeSet<u32> {
+        self.interner
+            .arena
+            .iter()
+            .flat_map(|d| d.funcs.iter())
+            .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
+            .filter_map(|sig| sig.lit.as_ref())
+            .filter_map(|lit| lit.fn_id)
+            .filter(|fn_id| !self.callable_labels.contains_key(fn_id))
+            .map(|fn_id| fn_id.0)
+            .collect()
+    }
+
     pub fn fn_ref_lit(&mut self, target: ClosureTarget, n_args: usize) -> Ty {
         let fn_id = target.into();
         let args: Vec<Ty> = (0..n_args)
@@ -1291,7 +1723,7 @@ impl Types {
                 ret,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::FnRef,
-                    fn_id,
+                    fn_id: Some(fn_id),
                     captures: Vec::new(),
                 }),
             })],
@@ -1311,7 +1743,7 @@ impl Types {
                 ret,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::Closure,
-                    fn_id,
+                    fn_id: Some(fn_id),
                     captures,
                 }),
             })],
@@ -1322,7 +1754,7 @@ impl Types {
     pub fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
         let lit = self.descr(a).as_closure_lit()?;
         Some(ClosureLitInfo {
-            target: lit.fn_id.into(),
+            target: lit.fn_id?.into(),
             captures: lit.captures.clone(),
             kind: lit.kind,
         })
@@ -1950,10 +2382,12 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
             .map(|arrow| CallableClause {
                 args: arrow.args.clone(),
                 ret: arrow.ret,
-                closure: arrow.lit.as_ref().map(|lit| ClosureLitInfo {
-                    target: lit.fn_id.into(),
-                    captures: lit.captures.clone(),
-                    kind: lit.kind,
+                closure: arrow.lit.as_ref().and_then(|lit| {
+                    lit.fn_id.map(|fn_id| ClosureLitInfo {
+                        target: fn_id.into(),
+                        captures: lit.captures.clone(),
+                        kind: lit.kind,
+                    })
                 }),
             })
             .filter(|clause| clause.args.iter().all(|arg| !cx.descr(arg).is_empty(cx)))
@@ -2016,6 +2450,55 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
     out
 }
 
+/// Every callable a function axis admits, named the way the runtime tells them
+/// apart: by the code each was minted from. `None` when the axis admits
+/// callables this side cannot enumerate.
+///
+/// A clause that pins no closure literal admits any callable at all, and one
+/// such clause makes the whole union unrestricted; so does a clause that
+/// SUBTRACTS a literal, whose remainder is not enumerable from this side. A
+/// clause that pins several literals at once is an intersection, which every
+/// one of them contains, so naming them all over-approximates it — and
+/// over-approximation is the direction a dispatch test must err in, exactly as
+/// the list-shape and tuple-arity axes do.
+///
+/// An ANONYMOUS literal (fz-kdt.127) names no code at all, so it is that same
+/// unrestricted answer -- and this is the ONE place that decides it, for the
+/// predicate projection and for the envelope alike. It never actually arrives.
+/// An anonymous literal is minted in exactly one place,
+/// [`Types::erase_transported_closure_identities`], which puts it in the
+/// `arrow` of the ACTIVATION KEY of a non-recursive body that consumes no
+/// callable identity, and only in the slots the dispatch mask marks
+/// `DispatchDemand::Ignore`; a runtime test is asked of a VALUE's type -- a
+/// callsite's `CallTargetSummary::surface_inputs`, a lane's carrier -- never of
+/// a key. THAT is what makes an erased forwarder key and the construction axis
+/// compose: the keying rule holds the two apart, not any projection here. The
+/// `debug_assert!` is the gate on the rule; the `?` behind it keeps the sound
+/// unrestricted answer if the rule is ever broken.
+fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
+    let mut targets = BTreeSet::new();
+    for clause in funcs {
+        let lits = clause
+            .pos
+            .iter()
+            .filter_map(|sig| sig.lit.as_ref())
+            .map(|lit| {
+                debug_assert!(
+                    lit.fn_id.is_some(),
+                    "an anonymous literal reached a runtime test: it can only have come from an \
+                     activation key, and a key is never what a test is asked of (fz-kdt.127)"
+                );
+                lit.fn_id
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if lits.is_empty() || !clause.neg.is_empty() {
+            return None;
+        }
+        targets.extend(lits);
+    }
+    Some(targets)
+}
+
 fn runtime_type_predicate_named_structs(descr: &Descr) -> FiniteSet<String> {
     const STRUCT_PREFIX: &str = "impl-target::";
     FiniteSet::finite(
@@ -2057,6 +2540,106 @@ fn specialize_callable_clause(
     }
 }
 
+/// Collect every free type-var id `d` mentions, mirroring `has_vars`'
+/// recursion: the same axes, the same structural children, plus a closure
+/// literal's captures, which `has_vars` reaches through the arrow's own args.
+fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
+    ids.extend(d.vars.values.iter().copied());
+    for c in &d.tuples {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for t in &sig.elems {
+                collect_free_vars(cx, cx.descr(t), ids);
+            }
+        }
+    }
+    for c in &d.lists {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            if let Some(t) = sig.elem {
+                collect_free_vars(cx, cx.descr(&t), ids);
+            }
+        }
+    }
+    for c in &d.resources {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            collect_free_vars(cx, cx.descr(&sig.payload), ids);
+        }
+    }
+    for c in &d.funcs {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for t in &sig.args {
+                collect_free_vars(cx, cx.descr(t), ids);
+            }
+            collect_free_vars(cx, cx.descr(&sig.ret), ids);
+            if let Some(lit) = sig.lit.as_ref() {
+                for t in &lit.captures {
+                    collect_free_vars(cx, cx.descr(t), ids);
+                }
+            }
+        }
+    }
+    for c in &d.maps {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for t in sig.fields.values() {
+                collect_free_vars(cx, cx.descr(t), ids);
+            }
+        }
+    }
+}
+
+/// Collect every closure-literal arrow reachable from `t`, mirroring
+/// `collect_free_vars`' recursion: the same axes, the same structural
+/// children, plus a literal's own captures.
+///
+/// `seen` is a cycle guard, not a memo -- an interned type may be its own
+/// descendant (a recursive list element, a closure captured in its own
+/// capture vector), and revisiting one adds nothing the first visit did not.
+fn collect_lit_arrow_shapes(cx: TyCtx<'_>, t: &Ty, seen: &mut HashSet<Ty>, shapes: &mut Vec<LitArrowShape>) {
+    if !seen.insert(*t) {
+        return;
+    }
+    let d = cx.descr(t);
+    for c in &d.tuples {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for e in &sig.elems {
+                collect_lit_arrow_shapes(cx, e, seen, shapes);
+            }
+        }
+    }
+    for c in &d.lists {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            if let Some(e) = sig.elem {
+                collect_lit_arrow_shapes(cx, &e, seen, shapes);
+            }
+        }
+    }
+    for c in &d.resources {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            collect_lit_arrow_shapes(cx, &sig.payload, seen, shapes);
+        }
+    }
+    for c in &d.funcs {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            if let Some(lit) = sig.lit.as_ref() {
+                shapes.push((lit.fn_id, lit.captures.clone(), sig.args.clone(), sig.ret));
+                for capture in &lit.captures {
+                    collect_lit_arrow_shapes(cx, capture, seen, shapes);
+                }
+            }
+            for arg in &sig.args {
+                collect_lit_arrow_shapes(cx, arg, seen, shapes);
+            }
+            collect_lit_arrow_shapes(cx, &sig.ret, seen, shapes);
+        }
+    }
+    for c in &d.maps {
+        for sig in c.pos.iter().chain(c.neg.iter()) {
+            for field in sig.fields.values() {
+                collect_lit_arrow_shapes(cx, field, seen, shapes);
+            }
+        }
+    }
+}
+
 fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
     if !d.vars.values.is_empty() {
         return true;
@@ -2089,7 +2672,7 @@ fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RuntimeEnvelopePolarity {
     Positive,
     Negative,
@@ -2104,7 +2687,19 @@ impl RuntimeEnvelopePolarity {
     }
 }
 
-fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity) -> Descr {
+/// Whether the envelope keeps a callable's typing or reduces it to the one
+/// thing a runtime value tells about itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallableReading {
+    /// Leave the function axis as the lattice typed it.
+    AsTyped,
+    /// Reduce it to the CONSTRUCTION -- the literal's identity together with
+    /// its capture types, each capture reduced by this same reading -- and drop
+    /// the arrow, at every depth.
+    Identity,
+}
+
+fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity, callables: CallableReading) -> Descr {
     let mut descr = types.descr(&ty).clone();
     if !descr.vars.values.is_empty() {
         match (polarity, descr.vars.cofinite) {
@@ -2113,31 +2708,98 @@ fn runtime_envelope(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity
             (RuntimeEnvelopePolarity::Negative, false) => descr.vars = FiniteSet::none(),
         }
     }
+    // Only in a positive position: a construction clause drops the arrow and
+    // widens each capture by this same reading, so it names at least the
+    // callables the clause it replaces named -- the direction a test must err
+    // in, and the opposite of the direction a subtracted region may.
+    if callables == CallableReading::Identity
+        && polarity == RuntimeEnvelopePolarity::Positive
+        && !descr.funcs.is_empty()
+    {
+        descr.funcs = callable_identity_clauses(types, &descr.funcs);
+    }
     descr.tuples = descr
         .tuples
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_tuple_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_tuple_sig))
         .collect();
     descr.lists = descr
         .lists
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_list_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_list_sig))
         .collect();
     descr.resources = descr
         .resources
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_resource_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_resource_sig))
         .collect();
     descr.maps = descr
         .maps
         .into_iter()
-        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, runtime_map_sig))
+        .filter_map(|conj| runtime_structural_conj(types, conj, polarity, callables, runtime_map_sig))
         .collect();
     descr
 }
 
-fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity) -> Ty {
-    let descr = runtime_envelope(types, ty, polarity);
+/// The function axis reduced to the one question the runtime can ask of a
+/// callable value: which CONSTRUCTION is it?
+///
+/// One literal per literal and one clause per clause, carrying the identity
+/// and the captures -- each capture itself reduced to what a test can see of
+/// it, at every depth -- and nothing else: the arrow the literal was typed at
+/// is gone, because no value carries it. Where it can name no literal at all
+/// the axis widens to `fun_top` rather than claim a precision the test could
+/// not honour.
+///
+/// The CLAUSE SHAPE survives untouched, and that is the point: how a clause
+/// projects is decided in exactly one place,
+/// [`Types::runtime_type_predicate_callables`], and this function hands it the
+/// same clause it would have seen unenveloped. A clause pinning several
+/// literals at once is an intersection and is not one construction, so that
+/// one place degrades it to the target-only reading -- every capture layout of
+/// those targets -- on both roads. Splitting it here into several literals over
+/// NO captures would instead reach that place as EXACT zero-capture shapes,
+/// which `CallableShape::inside` refuses every capturing construction of, on a
+/// capture-count mismatch: under-admission, the one direction a runtime test
+/// may never err in.
+fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
+    if callable_identity_targets(funcs).is_none() {
+        return Descr::fun_top().funcs;
+    }
+    let ret = types.any();
+    let mut clauses = Vec::with_capacity(funcs.len());
+    for clause in funcs {
+        let mut pos = Vec::with_capacity(clause.pos.len());
+        for lit in clause.pos.iter().filter_map(|sig| sig.lit.as_ref()) {
+            let captures = lit
+                .captures
+                .iter()
+                .map(|capture| {
+                    runtime_envelope_ty(
+                        types,
+                        *capture,
+                        RuntimeEnvelopePolarity::Positive,
+                        CallableReading::Identity,
+                    )
+                })
+                .collect();
+            pos.push(ArrowSig {
+                args: Vec::new(),
+                ret,
+                lit: Some(ClosureLit {
+                    kind: CallableValueKind::Closure,
+                    fn_id: lit.fn_id,
+                    captures,
+                }),
+            });
+        }
+        clauses.push(Conj { pos, neg: Vec::new() });
+    }
+    clauses
+}
+
+fn runtime_envelope_ty(types: &mut Types, ty: Ty, polarity: RuntimeEnvelopePolarity, callables: CallableReading) -> Ty {
+    let descr = runtime_envelope(types, ty, polarity, callables);
     types.intern(descr)
 }
 
@@ -2145,31 +2807,42 @@ fn runtime_structural_conj<T>(
     types: &mut Types,
     conj: Conj<T>,
     polarity: RuntimeEnvelopePolarity,
-    transform: fn(&mut Types, T, RuntimeEnvelopePolarity) -> Option<T>,
+    callables: CallableReading,
+    transform: fn(&mut Types, T, RuntimeEnvelopePolarity, CallableReading) -> Option<T>,
 ) -> Option<Conj<T>> {
     let mut pos = Vec::with_capacity(conj.pos.len());
     for sig in conj.pos {
-        pos.push(transform(types, sig, polarity)?);
+        pos.push(transform(types, sig, polarity, callables)?);
     }
     let neg = conj
         .neg
         .into_iter()
-        .filter_map(|sig| transform(types, sig, polarity.flipped()))
+        .filter_map(|sig| transform(types, sig, polarity.flipped(), callables))
         .collect();
     Some(Conj { pos, neg })
 }
 
-fn runtime_tuple_sig(types: &mut Types, sig: TupleSig, polarity: RuntimeEnvelopePolarity) -> Option<TupleSig> {
+fn runtime_tuple_sig(
+    types: &mut Types,
+    sig: TupleSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<TupleSig> {
     let elems = sig
         .elems
         .into_iter()
-        .map(|ty| runtime_envelope_ty(types, ty, polarity))
+        .map(|ty| runtime_envelope_ty(types, ty, polarity, callables))
         .collect::<Vec<_>>();
     (!elems.iter().any(|ty| types.is_empty(ty))).then_some(TupleSig { elems })
 }
 
-fn runtime_list_sig(types: &mut Types, sig: ListSig, polarity: RuntimeEnvelopePolarity) -> Option<ListSig> {
-    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity));
+fn runtime_list_sig(
+    types: &mut Types,
+    sig: ListSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<ListSig> {
+    let elem = sig.elem.map(|ty| runtime_envelope_ty(types, ty, polarity, callables));
     match elem {
         Some(elem) if types.is_empty(&elem) && !sig.empty => None,
         Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
@@ -2177,16 +2850,26 @@ fn runtime_list_sig(types: &mut Types, sig: ListSig, polarity: RuntimeEnvelopePo
     }
 }
 
-fn runtime_resource_sig(types: &mut Types, sig: ResourceSig, polarity: RuntimeEnvelopePolarity) -> Option<ResourceSig> {
-    let payload = runtime_envelope_ty(types, sig.payload, polarity);
+fn runtime_resource_sig(
+    types: &mut Types,
+    sig: ResourceSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<ResourceSig> {
+    let payload = runtime_envelope_ty(types, sig.payload, polarity, callables);
     (!types.is_empty(&payload)).then_some(ResourceSig { payload })
 }
 
-fn runtime_map_sig(types: &mut Types, sig: sigs::MapSig, polarity: RuntimeEnvelopePolarity) -> Option<sigs::MapSig> {
+fn runtime_map_sig(
+    types: &mut Types,
+    sig: sigs::MapSig,
+    polarity: RuntimeEnvelopePolarity,
+    callables: CallableReading,
+) -> Option<sigs::MapSig> {
     let fields = sig
         .fields
         .into_iter()
-        .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity)))
+        .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, callables)))
         .collect::<BTreeMap<_, _>>();
     (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { fields })
 }
@@ -2225,9 +2908,48 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
+/// Erase every closure literal's BRAND and keep its capture TYPES, at every
+/// depth (fz-6gb, fz-kdt.127).
+///
+/// A forwarder key must not fork on WHICH lambda travelled through it -- that
+/// is freight, and forking on it drags a private copy of every library
+/// function the lambda reaches. It must fork on what that lambda CLOSED OVER:
+/// a body keyed at one capture type grounds its callees' capture lanes to that
+/// type, so two capture types arriving through one key leave a choice no
+/// static key can pin and only a runtime test could answer. Keeping the
+/// capture types answers it by the key instead.
+///
+/// The captures are erased by this same rule, so brands nested inside a
+/// captured closure go too and same-typed literals still share one body. A
+/// literal with no captures has nothing left to say once its brand is gone, so
+/// it erases to the bare arrow it always did.
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
-    map_recursive_inputs(t, base, erase_closure_identity).without_closure_lits()
+    let mut erased = map_recursive_inputs(t, base, erase_closure_identity);
+    for conj in &mut erased.funcs {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            let Some(lit) = sig.lit.take() else {
+                continue;
+            };
+            if lit.captures.is_empty() {
+                continue;
+            }
+            let captures = lit
+                .captures
+                .iter()
+                .map(|capture| {
+                    let capture = erase_closure_identity(t, *capture);
+                    t.intern(capture)
+                })
+                .collect();
+            sig.lit = Some(ClosureLit {
+                kind: lit.kind,
+                fn_id: None,
+                captures,
+            });
+        }
+    }
+    erased
 }
 
 /// Returns an interned `Ty`: every result is canonically interned in `Types`,

@@ -211,6 +211,13 @@ tests that care about "did this semantic thing actually change?" should key on
 the reported revision or the published fact/output, not on the mere existence
 of a repeated event. This matters most for joined facts like
 `FactValue::Inputs(Vec<Ty>)`, callsite summaries, and product artifacts.
+Revision **0** is a real, renderable value: it means a cumulative fact
+(`ReturnType`, `ActivationInputs`) is present at the bottom of its join, which a
+`Current` reader cannot tell from absence, so `null -> 0` on the stream is a
+publisher appearing and not a change (`.agent/docs/fact-engine.md`, *Absence is
+bottom*). Reading a stream for content movement means comparing
+`old_revision.unwrap_or(0)` against `new_revision.unwrap_or(0)`, not comparing
+the two optionals.
 
 **Local type ids are world-owned facts.** Compiler2 `Ty` values are interned
 `u32` handles owned by `World.types`. They are valid only inside that one
@@ -251,6 +258,29 @@ on `AppliedStep` and `JobCompletion` render each waited-on `FactKey` as its
 own identity object, sorted as rendered strings (a presentation-boundary
 sort) rather than as bare kind strings.
 
+`[fz, compiler2, activation_inputs, budget_collapsed]` is public (fz-0xp,
+allowlisted in `is_public_compiler2_trace_event`). It fires from
+`ExecutionContext::complete_job` only when that completion widened at least one
+correlated-input row set past `ACTIVATION_INPUT_ROW_BUDGET`, carrying
+`measurements.collapses` — how many row sets the completion collapsed. A
+collapse discards the correlation its publishers kept, so one wide activation
+key stands where several narrow ones would have; since fz-kdt.106 nothing in
+`fixtures2` produces one, which is what makes a single event worth reading.
+The count reaches the emitter by the same producer/drain split
+`flush_reported_warnings` and `take_quiescence_steps` use: the producer tallies
+into an owned field, and `ExecutionContext` drains it with
+`World::take_activation_input_collapses`, which is what lets a fact produced
+inside a `World` method be reported by a `World` that holds no telemetry
+handle. The field itself is `Types::activation_input_collapses` rather than a
+`World` field, because the collapse fires inside
+`ActivationInputAlternatives`' monotone join, whose `JoinContribution::Ctx` is
+`Types` — an associated type no borrowed sink can ride without a GAT on every
+implementor — and the join is measurably where every collapse happens (the one
+path that could return a count to its caller, `push_row`, produced none of the
+28/30 the lenses recorded before fz-kdt.106). Keeping the tally in the type
+store makes it per-`World` by construction, so an undrained collapse dies with
+the `World` that produced it instead of leaking into the next reader.
+
 `[fz, compiler2, work_graph, applied]` is public (fz-kdt.34.3). It fires
 unconditionally on every job completion — all five `ExecutionContext::
 complete_job` call sites (`compiler.rs`, `drive.rs`, `product_drive.rs`,
@@ -274,6 +304,35 @@ completed job's current `deps.reads`, read directly off
 rendered as presentation-sorted strings, because their source in both cases
 is a `HashSet` with no meaningful iteration order — the same
 presentation-boundary sort the blocked-wait lists already used.
+
+`old_settled`/`new_settled` and `movements[].settled` render TRANSITIVE
+finality (fz-kdt.44): `true` means the fact's whole upstream cone is
+quiescent, not merely that its own publishers are clean
+(`.agent/docs/fact-engine.md`, *Content, cleanliness and finality are three
+questions*). Two consequences for anyone reading the stream. First, `changed`
+arrays got SMALLER — a fact that is transitively unfinal stops flipping its
+settled bit on each local dirty/clean cycle, worth -5% of the log on 00181 and
+-30% on `enum_take_drop_split`. Second, the settled bit can now move with no
+job completion behind it, so it gets its own event.
+
+`[fz, compiler2, work_graph, quiesced]` is public. It carries a bare
+`AppliedStep` under `metadata.step`, rendered by the same
+`write_applied_step_body`, and fires when the drain arbiter
+(`Scheduler::settle_quiescent`) discharges the settled questions standing at an
+empty agenda. `outputs` and `blocked` are always empty and every `changed`
+entry is readiness-only: `old_revision == new_revision`, `old_settled !=
+new_settled`. Without this event a fact's `settled` bit would change between
+two `movements` renderings with nothing on the log to explain it, and any
+evaluation woken by such a flip would classify as `Cause::Uncaused`.
+
+Measured today the arbiter wakes NOTHING: the settled waits it answers belong
+to the product pull (`jobs::artifact`, `jobs::backend`, `jobs::transport`,
+`jobs::runtime_demand`, `jobs::root`), and the pull driver polls the fact
+rather than registering a scheduler waiter. So `Cause::Readiness` remains
+unobserved (fz-kdt.59) — but now for a stated reason, with the movement
+already on the log the day a scheduler waiter does stand on one of these
+facts. `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
+(`tests/fz2_cli.rs`) asserts the zero rather than assuming it.
 
 The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
 is a position in one `World`, so a log that carries only ids means nothing to a
@@ -312,8 +371,11 @@ that carries no world — 99 by a `pull.product.settled`, 29 by a `job`
 public log into a `CausalReport`: per canonical formula identity, evaluations
 classified `Initial`/`Content`/`Readiness`/`Uncaused` plus changed outputs,
 wakes and blocked completions; per canonical `ProductKey`, settlements,
-generations, the changed split, cache hits and displacements; and the summed
-session tallies. Causality is DERIVED, never stored: for evaluation `e` of
+generations, the changed split, cache hits and displacements; the summed
+session tallies; per FACT KIND a `FactLifecycle` (distinct facts, first
+appearances, retractions — `first_appearances > distinct` is the
+retract-and-remint signature); and a `ShiftWork` count of shift-classified
+wakes and rebased completions. Causality is DERIVED, never stored: for evaluation `e` of
 formula `F` at stream position `t`, the moved inputs are `(F's reads UNION F's
 blocked-set from its previous completion)` for which a movement appears in
 `[F's previous conclusion, t)`. Both boundaries are load-bearing and both are

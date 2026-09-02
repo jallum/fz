@@ -35,10 +35,35 @@ ActivationInputs(key) # correlated caller evidence (cumulative; per-publisher
 
 Each publication is one `ActivationInputRow`: columns that arrived together
 from one call analysis and may only be read together. Rows join by set
-insertion with whole-row equivalence dedup — never by column-wise union, which
-would invent Cartesian input combinations (fz-9i4.7.10.2). Past
-`ACTIVATION_INPUT_ROW_BUDGET` rows the set widens to its single column-wise
-joined row, so termination stays a theorem.
+insertion — never by column-wise union, which would invent Cartesian input
+combinations (fz-9i4.7.10.2). Two compressions run at the insertion point
+(`ActivationInputAlternatives::insert_row`), and they are different
+judgements:
+
+- whole-row EQUIVALENCE (pointwise `Types::is_equivalent`): the incoming row
+  says exactly what a standing row says;
+- whole-row DOMINANCE (`Types::row_dominates`, fz-kdt.106): a dominated
+  incoming row is not inserted, and standing rows dominated by the incoming
+  one leave with its landing.
+
+Dominance exists because a caller's ascent is a CHAIN, not a set of
+alternatives: `conclude_preserving_frontier` joins every superseded conclusion
+in and nothing takes it out, so a widening column deposits one row per rung.
+`Types::row_column_dominates` is deliberately narrower than `is_subtype` — it
+also requires equal free-var sets and containment of the closure-literal arrow
+SHAPES, because `types::emptiness::func_clause_empty` decides a closure-literal
+arrow from `fn_id` and captures alone and would otherwise let a template row
+absorb its own ground instances. The relation's own doc records that its
+termination argument is empirical, not proven.
+
+Past `ACTIVATION_INPUT_ROW_BUDGET` rows the set still widens to its single
+column-wise joined row, so termination stays a theorem. A fire now means
+genuine correlation width, and `ExecutionContext::complete_job` reports each
+one as `fz.compiler2.activation_inputs.budget_collapsed` carrying the count.
+`correlated_input_rows_never_reach_the_widening_budget_on_the_lenses` GATES
+four fixtures at zero collapses; a sweep of all 577 `fixtures2` fixtures at
+fz-kdt.106 also found zero, but that number is a point-in-time measurement, not
+something the suite holds.
 
 `world.activation_input_alternatives(key)` reads the rows once the fact is
 live; `world.activation_inputs_joined(key)` reads the column-wise joined
@@ -99,18 +124,111 @@ GROUNDNESS. Collapsing any pair of them is a known defect class.
   really could be anything. `callee_is_a_dynamic_edge` is the predicate, and it
   is `!has_vars`.
 
+The ARGUMENT decides which specialization a closure call reaches, and nothing
+narrows it. A closure clause's arrow parameters are EVIDENCE — the surface that
+lambda has already been analyzed at — not a contract the caller is checked
+against, so intersecting the observed argument with them is not a refinement
+but a loss: it names a specialization whose domain does not contain the value.
+A fold's reducer is minted beside the initial accumulator and keeps that arrow,
+so the intersection clamped every later call back onto the initial
+specialization: the accumulator's ascent stopped one rung short, the grown
+accumulator got no specialization and no construction member, and the values on
+that rung reached a body that never named them (fz-kdt.132 — the whole
+268-escape surface-membership census). `refine_observed_return` refuses the
+kindred narrowing on the return side only where the arrow's type is a strict
+subtype of the observed; the argument-side rule here is UNCONDITIONAL -- the
+arrow's parameters never refine an observed argument -- which is the stronger
+form the evidence-not-contract law implies, not a mirror of the return rule.
+Declared `@spec` contracts still refine the surface, in
+`apply_function_contract`, where the surface is also enforced; a declared
+arrow's DOMAIN on a higher-order parameter no longer narrows a closure call's
+argument (only the enclosing spec's own inputs do) -- measured
+behaviour-neutral corpus-wide.
+
 The absent/earned line matters because `ReturnType` and the value-type join are
 cumulative: a stale `any` unioned in early never retracts once the slot grounds,
 and the callsite ends up holding two disagreeing facts — a precisely-resolved
 `CallSiteSummary` and an `any` value type. The fz-f98.14.11 artifact guard is
 the detector that makes that disagreement fatal instead of silent.
 
-A dead callsite publishes no summary at all, and materialization reads that
-absence with the same Kleene rule `CallTargetSummary::settled_return` uses:
-behind the settled gate `materialize_closure_call_edge` lowers a summary-less
-closure call as `CallReturnFlow::NoReturn` over the empty type, because every
-`ClosureCall` tail needs a return flow and a call that never happens never
-returns. Published outputs:
+A call to a named function needs two things about the CALLEE before it can
+resolve: the `FunctionContract` that refines the surface (only for a function
+that declares one — `World::function_declares_contract`) and the facts its
+activation key is built from (`Recursive`, `DispatchMask`, via
+`World::require_activation_key_facts`). `require_callee_prerequisites`
+registers both in one pass at each of the three resolve sites, before either
+is consumed, so a caller that holds neither blocks once rather than a rung at
+a time ([`fact-engine`](fact-engine.md), *One block per prerequisite set*).
+`refine_function_call_surface` is then pure contract APPLICATION and
+`prepare_function_call` pure keying: neither can block. A provider boundary
+names no compiler2 activation, so it asks for the contract alone; the
+boundary test is contract-independent and runs before the ask.
+
+Every callsite the walk REACHES publishes its edge, resolved or not
+(`CallSiteResolution`, semantic.rs). Three answers, three representations:
+
+- **no fact** — the call never happens. The walk never reached the callsite,
+  or it proved the call dead (an uninhabited callee, a proven-empty argument).
+- **`Unresolved`** — the walk reached a live call and can name no target yet.
+  This is NOT a provider boundary and NOT an empty target list; it is the
+  lattice bottom, so `CallSiteMap`/`CallSiteTargetsMap` never let it overwrite
+  a resolved answer and re-emitting it moves no revision. A
+  permanently-`Unresolved` edge on a COMPILING program is a standing state
+  since fz-kdt.130: a mailbox-delivered callable's callsite settles with no
+  summary at all (measured: five such callsites across the two mailbox
+  fixtures, behind the settled gate, all three doors correct) — and the
+  carrier rule below is exactly what lowers that population as live indirect
+  calls instead of misreading the absent evidence as a dead call.
+- **`Resolved`** — the targets. A provider-boundary target is a resolved edge
+  whose `CallTargetEdge::activation` is `None`, because a boundary names no
+  compiler2 activation.
+
+Because the walk publishes unconditionally, the analysis's SILENCE about a
+callsite is knowledge — the walk no longer reaches it — and its edge
+withdraws. `World::preserved_analysis_claims` therefore carries no callsite
+kind; only `Activation` still rides preservation (fz-kdt.69.2).
+
+`World::callsite_summary`/`callsite_targets` answer the one question lowering
+and demand ask — did this callsite NAME targets? — so they read `None` for an
+absent edge and for an unresolved one alike; `World::callsite_resolution`/
+`callsite_target_resolution` hand back the published answer itself.
+Naming no targets is not the same claim as never running. For a closure call
+the two are told apart by the callee's transport CARRIER, not by its target
+evidence: `materialize_closure_call_edge` lowers any callee whose layout
+carries a `TransportCarrier::ValueRef` as a live public indirect call, because
+a runtime callable value reaches that callsite and the boxed-apply wrapper can
+call it. A callable that arrived from outside the analysed world — a mailbox
+message — is exactly this shape: no target is named and none ever will be, so
+"no targets" there reads UNKNOWN. Only a callsite with neither a callable
+carrier nor any evidence is the dead call, and it alone lowers as
+`CallReturnFlow::NoReturn` over the empty type — every `ClosureCall` tail
+needs a return flow, and a call that never happens never returns. The
+distinction is load-bearing at the native door, where `NoReturn` emits a tail
+call: lowering a live call that way returns the callee's result straight to the
+caller's caller and silently drops everything the call was supposed to return
+to (fz-kdt.130).
+
+The other half of the same idea decides what a callable position PHYSICALLY
+carries. `exact_direct_callable_layout` (`jobs/transport.rs`) asks how many
+distinct callable LAYOUTS a position's settled target set names, not how many
+targets: a layout is pure physics, so several activations of one function —
+specializations reached at different argument types, describing the same
+captures — name one layout, and the value travels as those captures with no
+runtime identity at all (`TransportCarrier::Absent`). Which activation a
+callsite reaches is decided at the callsite from the argument types it holds
+(fz-kdt.132), so that choice never has to travel with the value. Only where
+the targets disagree about the callable they describe (full CallableDescr
+equality: function, arity, capture types, shapes and lanes -- two different
+functions with identical captures also disagree, and must) does no exact
+layout exist, and the
+position falls back to the generic joined layout. Counting targets instead of
+layouts made a many-target position carry NOTHING while the callsite still
+ground a direct call to one of them — the shape a mailbox-delivered reducer
+takes through `Enum.reduce/3`, where the accumulator specialization splits one
+callable input across two activations of one lambda and the reducer's own
+capture then had no lane to travel in (fz-kdt.152).
+
+Published outputs:
 
 ```text
 ActivationAnalyzed(a)
@@ -136,9 +254,17 @@ the only thing that ignites a callee's first analysis pass.
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
 entries. Source/root publishers still use ordinary replacement so real external
-changes can withdraw stale contributions. This keeps fixpoint evidence from
-descending just because an intermediate clause-reachability approximation
-changed. The row set is compared by per-column type equivalence, not raw `Ty`
+changes can withdraw stale contributions. The `Activation` CLAIM rides a
+stricter rule than the inputs do: a non-rebased conclusion keeps every
+`Activation` it did not re-emit, and only a rebased one — whose ground actually
+shifted — withdraws. The
+`ActivationInputs` contributions themselves never withdraw, rebase or not
+(`preserve_frontier` is unconditional for `AnalyzeActivation`, so after a
+rebased withdrawal of a claim the input evidence that fed it stays published
+and joined — see fz-kdt.64 for the recorded asymmetry) (`World::preserved_analysis_claims`;
+[`fact-engine`](fact-engine.md), *Absence is bottom; rebasing is the narrowing
+path*). This keeps fixpoint evidence from descending just because an
+intermediate clause-reachability approximation changed. The row set is compared by per-column type equivalence, not raw `Ty`
 handle equality, so representative-only changes do not dirty the scheduler.
 `ReturnType(a)` is a CUMULATIVE claim: the store
 (`ActivationMap::define_return`) joins each round's evidence by union (which
@@ -241,12 +367,77 @@ This is the important line in the current design: type values are not used to
 encode readiness. `any` and `none` are semantic values. Fact readiness lives in
 the scheduler.
 
+The `ReturnType(a)` fact separates three statements, and each one is read by
+somebody:
+
+```text
+the CLAIM      someone is deriving a's return -- the question is live
+the REVISION   the derived answer moved; 0 means it is still at bottom
+Settled + no
+stored return  the Kleene answer IS bottom: a never returns
+```
+
+`analyze_activation` claims the key unconditionally, so the claim appears as
+soon as the activation is analysed at all, before any evidence exists. That
+first claim is presence, not content, so it is minted at revision 0 and wakes no
+`Current` reader ([fact-engine](fact-engine.md), *Absence is bottom*): a
+`Current` reader of the empty join sees exactly what a reader of the absent key
+sees.
+
+The third line is a real answer with four consumers, and it is why the empty
+claim cannot simply be withheld until evidence arrives: `Settled(ReturnType(a))`
+with no stored return is how a non-returning function is reported.
+`produce_materialized_executable_product` (`jobs/artifact.rs`) waits on the
+settled fact and unwraps the missing return to `none`; the transport pull reads
+the same settled fact at three positions and, finding no return, takes the
+bottom layout (`jobs/transport.rs`: `ExecutableReturn`/`ReturnPayload` in the
+callable-owner path treat it as unreachable, the two `bottom_transport_shape`
+arms take it as the shape). An absent fact could never carry that: nothing
+claims it, so it can never settle.
+
 ## How recursive convergence works right now
 
 `canonical_activation_key(function, raw_inputs)` still decides activation
 identity. For recursive functions it collapses non-dispatch inputs by
 `convergence_class`, using the `Recursive(fn)` and `DispatchMask(fn)` facts to
 decide which slots may balloon.
+
+A NON-recursive body is keyed by precise evidence, with one erasure. A body
+that never consumes callable identity -- never calls through a callable, never
+constructs a lambda, and is not itself a capture-holding lambda
+(`BodyKeying::consumes_callable_identity`) -- only TRANSPORTS the closures that
+reach it, so `Types::erase_transported_closure_identities` erases their BRANDS
+from every non-dispatch slot: every same-shape lambda that travels through a
+forwarder shares one activation of it, instead of dragging a private copy of
+the whole library chain behind it (fz-6gb). What the value CLOSED OVER survives
+the erasure, at every depth, brands inside captured closures erased by the same
+rule (`closure[?](int)`, `closure[?](closure[?]((a1_p0) -> a1_r))`). That is
+the whole difference between freight and meaning here: a body keyed at one
+capture type grounds its callees' capture lanes to that type, so one key
+holding two capture types would leave a choice only a runtime test could
+answer, and a forwarder handed one lambda at an int capture and at a float
+capture is a program that knows statically which is which (fz-kdt.127).
+
+So a forwarder SHARES across lambda identity and SPLITS on capture tuple. In
+this tree, over the 597 corpus fixtures and the 469 that reach a backend dump,
+58 dumps differ from what the whole-literal erasure produced: 45 differ in key
+TEXT only, 13 fixtures settle more executables and none settles fewer, five
+lose dispatch nodes -- the key answers what a runtime test used to -- and four
+gain ten between them. The gains are `enum_take_drop_split` and its `00420_`
+twin, whose recursive core asks two real questions (the accumulator tag
+`{:cont, _}` vs `{:cont | :halt, _}`, and which construction the reducer is),
+the dynamic same-lambda witness, whose closure comes out of a `case` no key can
+pin, and `callable_union_capture_containment`, rehomed on that same dynamic
+shape because the key answered its old static body outright (fz-kdt.171).
+Stdout is byte-identical on all three doors on every one of them.
+
+The split is by capture TUPLE, so it separates two lambdas with different
+capture tuples as readily as one lambda at two capture types --
+`spawn/1` keys `closure[?](pid)` apart from `closure[?](pid, int)`, and the
+capture-free `Enum.all?/1` wrapper apart from the capturing `all?/2` one. Six
+of the thirteen fixtures whose inventory moves are the same-lambda shape this
+erasure exists for; the other seven are that different-lambda population.
+
 List-family convergence is intentionally coarse at the key: `[]`, `[t]`, and
 the joined `[] | [t]` shape share one recursive identity, and a
 `ListShape(elem_demand)` dispatch slot keeps demanded element information while
@@ -271,10 +462,27 @@ the basis for the remaining type-system tickets.
 
 - `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
   `Executable` demand facts.
+- `SeedActivation(a)` owns `Activation(a)`/`ActivationInputs(a)` for the
+  activations nothing else describes: a root's own entry, or one the
+  runtime-demand frontier minted from a callable surface which no analysis
+  walked and no caller claimed. (A root entry thus has two possible minters
+  today, `SeedRoot` and `SeedActivation`, whose reconstructions agree -- the
+  measured 4 lib-suite cases -- see the fz-kdt ticket on collapsing that to
+  one producer.) It reconstructs the
+  input row from the key's own arrow, so `World::demand_fact_producer` routes
+  a demand to it only while `ActivationInputs(a)` has no publisher
+  (`World::seed_activation_producer`). A key a caller discovered is the
+  caller's to publish and to withdraw.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,
   `CallSiteTargets(...)`, `CallSiteSummary(...)`, and any callee demand facts it
-  publishes. It schedules no follow-up job of its own: publishing
-  `Activation(callee_key)` is what feeds `World`'s activation frontier.
+  publishes; it publishes an edge for every callsite it reaches, so an omitted
+  edge is withdrawn by any conclusion, while an omitted `Activation` is
+  withdrawn only by a rebased one. It
+  schedules no follow-up job of its own: publishing `Activation(callee_key)` is
+  what feeds `World`'s activation frontier. When its OWN `Activation(a)` is
+  absent -- nothing claims `a` -- it concludes on the recorded read and
+  re-lists its standing claims, rather than waiting on a producer that no
+  longer exists for it.
 - `World` owns the `activation_frontier` standing-demand set alongside the
   scheduler it wraps. `World::complete_job` is its sole maintenance site
   (insert on an `Activation(key)` publish, retire once `ActivationAnalyzed(key)`

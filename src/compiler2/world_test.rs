@@ -1036,7 +1036,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     world.demand(Job::DefineFunction(function));
     world.demand(Job::LowerFunction(function));
     world.demand(Job::PlanEntryDispatch(function));
-    world.demand(Job::DeriveRecursive(function));
+    world.demand(Job::DeriveCallGraphComponent(function));
     world.demand(Job::DeriveDispatchMask(function));
     assert_eq!(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
@@ -1086,6 +1086,103 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     );
 }
 
+/// The other half of the arm above (fz-kdt.69.1): a callee's `Activation` is
+/// its CALLER's claim, and `Job::SeedActivation` is not its producer.
+///
+/// When the caller's ground shifts and its re-derivation no longer reaches the
+/// callee, that withdrawal is knowledge. Answering the now-orphaned key with a
+/// seed — rows reconstructed from the key's own arrow — would resurrect exactly
+/// what the caller just let go, and no retraction could ever stick.
+#[test]
+fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    // The root's own seed is taken out of the agenda: this test isolates the
+    // producer map, so nothing but the manipulation below drives the world.
+    assert_eq!(world.work_graph.pop(), Some(Job::SeedRoot(root)));
+    world.submit_code(
+        Some("callee.fz".to_string()),
+        "fn echoval(a), do: a\n\nfn ask(a), do: echoval(a)\n".to_string(),
+    );
+    let echoval = world.reference_function(ModuleId::GLOBAL, "echoval", 1);
+    let ask = world.reference_function(ModuleId::GLOBAL, "ask", 1);
+    for function in [echoval, ask] {
+        world.demand(Job::DefineFunction(function));
+        world.demand(Job::LowerFunction(function));
+        world.demand(Job::PlanEntryDispatch(function));
+        world.demand(Job::DeriveCallGraphComponent(function));
+        world.demand(Job::DeriveDispatchMask(function));
+    }
+    assert_eq!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved,
+        "both bodies' own facts should settle before the producer-map setup",
+    );
+    let input = world.types_mut().atom_lit("a");
+    let caller = world.activation_key(root, ask, &[input]);
+    let callee = world.activation_key(root, echoval, &[input]);
+
+    // The caller's analysis stands on a ground fact and claims the callee it
+    // reached — `Activation`, `ActivationInputs`, and the input evidence.
+    let ground = TypeName {
+        module: ModuleId::GLOBAL,
+        name: "Ground".to_string(),
+        arity: 0,
+    };
+    world.complete_job(
+        Job::DeriveTypeDef(ground.clone()),
+        JobEffects {
+            outputs: vec![FactKey::TypeDefined(ground.clone())],
+            ..JobEffects::default()
+        },
+    );
+    world.complete_job(
+        Job::AnalyzeActivation(caller.clone()),
+        JobEffects {
+            reads: vec![FactUse::current(FactKey::TypeDefined(ground.clone()))],
+            outputs: vec![
+                FactKey::Activation(callee.clone()),
+                FactKey::ActivationInputs(callee.clone()),
+            ],
+            activation_input_contributions: vec![(callee.clone(), vec![input])],
+            ..JobEffects::default()
+        },
+    );
+    assert!(
+        world.has_fact(&FactKey::Activation(callee.clone())),
+        "the caller's analysis is the callee activation's publisher",
+    );
+
+    // The ground shifts. The caller rebases, re-derives, and no longer reaches
+    // the callee, so its claim on the key is withdrawn.
+    world.complete_job(Job::DeriveTypeDef(ground), JobEffects::default());
+    assert_eq!(
+        world.work_graph.pop(),
+        Some(Job::AnalyzeActivation(caller.clone())),
+        "retracting the read fact rebases the caller and re-enqueues it",
+    );
+    world.complete_job(Job::AnalyzeActivation(caller), JobEffects::default());
+    assert!(
+        !world.has_fact(&FactKey::Activation(callee.clone())),
+        "a rebased conclusion that omits the callee withdraws the caller's claim",
+    );
+
+    assert_eq!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved,
+        "the orphaned key must not stall the drive",
+    );
+    assert!(
+        !world.work_graph.has_run(&Job::SeedActivation(callee.clone())),
+        "SeedActivation is not a caller-discovered activation's producer",
+    );
+    assert!(
+        !world.has_fact(&FactKey::Activation(callee)),
+        "the withdrawn activation stays absent",
+    );
+}
+
 /// A blocked fact with no fact->producer arm is the genuine stall: the drive
 /// must report it unresolved, never spin the demand-on-stall pass on it.
 #[test]
@@ -1094,7 +1191,7 @@ fn compiler2_drive_reports_unmapped_blocked_facts_as_unresolved() {
     let mut world = World::new();
     let function = world.reference_function(ModuleId::GLOBAL, "main", 0);
     world.complete_job(
-        Job::DeriveRecursive(function),
+        Job::DeriveCallGraphComponent(function),
         JobEffects {
             waits: vec![FactUse::current(FactKey::GuardDispatch(function))],
             ..JobEffects::default()
@@ -1273,5 +1370,305 @@ fn compiler2_publish_function_source_wakes_when_a_pending_global_home_indexes() 
     assert!(
         world.has_fact(&FactKey::FunctionSource(function)),
         "the woken job must publish the function's source once its home is indexed and scoped"
+    );
+}
+
+/// fz-kdt.62: a producer that is BLOCKED is wake-reachable through its own
+/// standing waits, and the drain's fact->producer expansion must leave it
+/// alone -- even when it is also REBASED.
+///
+/// The rebase flag is cleared only by a CONCLUDING run
+/// (`Scheduler::complete`), so a job that pauses on the same unsatisfied wait
+/// every time it runs stays flagged for the rest of the drive. With the
+/// rebased test ordered ahead of the blocked test, every drain that reaches
+/// this producer re-enqueues it, and it re-runs straight back into the wait it
+/// could not satisfy a moment ago -- work with no moved input behind it.
+///
+/// Re-demanding buys nothing that the graph does not already provide:
+/// `Scheduler::enqueue_dependents` never marks a job rebased without
+/// enqueueing it in the same step, so the shifted ground has already been
+/// offered to this job once, and what it did with the offer was block.
+///
+/// The scenario is assembled from synthetic completions rather than a real
+/// compile because the defect is about the DEMAND POLICY, not about any
+/// particular job: `LowerFunction`/`LoweredBody` is used only because it is an
+/// ordinary sole-producer arm of `World::demand_fact_producer`.
+#[test]
+fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
+    let mut world = World::new();
+    let function = world.reference_function(ModuleId::GLOBAL, "paused", 1);
+    let lowered = FactKey::LoweredBody(function);
+    let producer = Job::LowerFunction(function);
+
+    // The producer runs, reads a replacing fact, and pauses on a wait nothing
+    // will satisfy. It claims no output yet, so the fact it is mapped to
+    // produce is genuinely still missing.
+    let pause = || JobEffects {
+        reads: vec![FactUse::current(FactKey::FunctionDefined(function))],
+        waits: vec![FactUse::current(FactKey::FunctionContract(function))],
+        ..JobEffects::default()
+    };
+    world.complete_job(
+        Job::DefineFunction(function),
+        publish(FactKey::FunctionDefined(function)),
+    );
+    world.complete_job(producer.clone(), pause());
+
+    // Ground shifts under it: `FunctionDefined` is a replacing fact, so a
+    // second publication is a shift, which rebases the producer and enqueues
+    // it in the same step.
+    world.complete_job(
+        Job::DefineFunction(function),
+        publish(FactKey::FunctionDefined(function)),
+    );
+    assert_eq!(
+        world.work_graph.pop(),
+        Some(producer.clone()),
+        "the shift must have offered the producer its own re-run",
+    );
+    // It takes the offer and pauses on the same wait again.
+    world.complete_job(producer.clone(), pause());
+    assert!(
+        world.work_graph.rebased(&producer) && world.work_graph.blocked(&producer),
+        "the scenario needs a producer that is blocked AND still flagged rebased",
+    );
+    assert_eq!(
+        world.work_graph.pending_jobs(),
+        0,
+        "nothing may be ready before the drain"
+    );
+
+    // A standing demand for the fact this producer is mapped to: exactly what
+    // a blocked waiter presents to the drain.
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    world.complete_job(
+        Job::SeedRoot(root),
+        JobEffects {
+            waits: vec![FactUse::current(lowered)],
+            ..JobEffects::default()
+        },
+    );
+    while world.work_graph.pop().is_some() {}
+
+    let pokes = world.demand_blocked_wait_producers();
+
+    let mut started = Vec::new();
+    while let Some(job) = world.work_graph.pop() {
+        started.push(job);
+    }
+    assert!(
+        !started.contains(&producer),
+        "a blocked producer's standing waits ARE its wake source; the drain re-enqueued it \
+         anyway, so every drain re-runs it into the wait it just failed. Started: {started:?}",
+    );
+    assert!(
+        started.contains(&Job::DeriveFunctionContract(function)),
+        "the expansion must still poke the producer of the fact the paused job is waiting ON; \
+         that is the chain that can actually make progress. Started: {started:?}",
+    );
+    assert_eq!(
+        pokes,
+        started.len() as u64,
+        "every poke the expansion counted must be a job it actually started",
+    );
+}
+
+/// One job's conclusion publishing `fact` with real content movement.
+fn publish(fact: FactKey) -> JobEffects {
+    JobEffects {
+        outputs: vec![fact.clone()],
+        changed: vec![fact],
+        ..JobEffects::default()
+    }
+}
+
+/// fz-kdt.63 / fz-kdt.69.2: what an `AnalyzeActivation` conclusion's SILENCE
+/// means now depends on the fact, because the two facts know different things.
+///
+/// A callee's `Activation` is claimed only from evidence that arrived, so
+/// silence about it is MISSING EVIDENCE, not proof the call is gone: it
+/// survives a conclusion that omits it, and only a REBASED conclusion —
+/// re-derived from ground that genuinely narrowed — may withdraw it.
+///
+/// A callsite's `CallSiteSummary`/`CallSiteTargets` is published for every
+/// callsite the walk REACHES, unresolved and all, so silence about one IS
+/// knowledge: the walk no longer reaches it, and any conclusion withdraws it.
+/// Nothing about those two kinds is preservable any more.
+#[test]
+fn an_omitted_callsite_edge_is_withdrawn_while_an_omitted_activation_stands() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 0);
+    let callee = world.reference_function(ModuleId::GLOBAL, "callee", 0);
+    let caller_key = super::identity::ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+    let callee_key = super::identity::ActivationKey::from_inputs(root, callee, &[], world.types_mut());
+    let callsite = super::semantic::CallSiteKey {
+        activation: caller_key.clone(),
+        callsite: super::body::CallSiteId::from_u32(0),
+    };
+    let analyze = Job::AnalyzeActivation(caller_key);
+    let ground = FactKey::LoweredBody(caller);
+    let activation_claim = FactKey::Activation(callee_key);
+    let edge_claims = [
+        FactKey::CallSiteSummary(callsite.clone()),
+        FactKey::CallSiteTargets(callsite),
+    ];
+
+    let lower = |world: &mut World| {
+        world.complete_job(
+            Job::LowerFunction(caller),
+            JobEffects {
+                outputs: vec![FactKey::LoweredBody(caller)],
+                changed: vec![FactKey::LoweredBody(caller)],
+                ..JobEffects::default()
+            },
+        );
+    };
+    let analyze_publishing = |world: &mut World, outputs: Vec<FactKey>, changed: Vec<FactKey>| {
+        world.complete_job(
+            analyze.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(ground.clone())],
+                outputs,
+                changed,
+                ..JobEffects::default()
+            },
+        )
+    };
+
+    lower(&mut world);
+    let mut first = vec![activation_claim.clone()];
+    first.extend(edge_claims.iter().cloned());
+    analyze_publishing(&mut world, first.clone(), first);
+    let published = world.fact_revision(&activation_claim);
+    assert!(
+        published.is_some() && edge_claims.iter().all(|fact| world.has_fact(fact)),
+        "the first conclusion should publish every claim",
+    );
+
+    // A rerun that still reaches the callee but no longer reaches the
+    // callsite. Nothing about the ground moved.
+    let paused = analyze_publishing(&mut world, vec![activation_claim.clone()], Vec::new());
+    assert_eq!(
+        world.fact_revision(&activation_claim),
+        published,
+        "a non-rebased conclusion that omits its Activation claim must leave it standing at its \
+         own revision",
+    );
+    assert!(
+        !paused.step.changed.iter().any(|change| change.key == activation_claim),
+        "preserving a claim must move nothing: {:?}",
+        paused.step.changed,
+    );
+    assert!(
+        !paused.step.wakes.iter().any(|wake| wake.shift),
+        "a preserved claim must rebase nobody: {:?}",
+        paused.step.wakes,
+    );
+    for fact in &edge_claims {
+        assert!(
+            !world.has_fact(fact),
+            "every reached callsite publishes an edge, so omitting {fact:?} is knowledge and \
+             withdraws it",
+        );
+    }
+
+    // Now the ground actually shifts: the body is re-lowered, which is a
+    // replacing fact's content change and so a ground shift for its readers.
+    lower(&mut world);
+    assert!(
+        world.work_graph.rebased(&analyze),
+        "re-lowering the analyzed body must rebase the analysis",
+    );
+
+    let withdrawn = analyze_publishing(&mut world, Vec::new(), Vec::new());
+    assert!(
+        !world.has_fact(&activation_claim),
+        "a rebased conclusion re-derives from the shifted ground, so omitting the Activation \
+         claim withdraws it",
+    );
+    assert_eq!(
+        withdrawn
+            .step
+            .changed
+            .iter()
+            .filter(|change| change.key == activation_claim && change.new_revision.is_none())
+            .count(),
+        1,
+        "the withdrawn claim must be reported as a retraction: {:?}",
+        withdrawn.step.changed,
+    );
+}
+
+/// fz-kdt.69.2: the third state moves the way a fact must. Re-emitting
+/// `Unresolved` is quiet — no revision, no wake, so the extra publication a
+/// total-emission walk makes costs the schedule nothing — while
+/// unresolved -> resolved is a real content change that reaches every reader
+/// subscribed to the edge.
+#[test]
+fn resolving_a_published_unresolved_edge_wakes_its_readers() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+    let caller = world.reference_function(ModuleId::GLOBAL, "caller", 0);
+    let callee = world.reference_function(ModuleId::GLOBAL, "callee", 0);
+    let caller_key = super::identity::ActivationKey::from_inputs(root, caller, &[], world.types_mut());
+    let reader_key = super::identity::ActivationKey::from_inputs(root, callee, &[], world.types_mut());
+    let callsite = super::semantic::CallSiteKey {
+        activation: caller_key.clone(),
+        callsite: super::body::CallSiteId::from_u32(0),
+    };
+    let edge = FactKey::CallSiteSummary(callsite.clone());
+    let analyze = Job::AnalyzeActivation(caller_key);
+    let reader = Job::AnalyzeActivation(reader_key);
+
+    let publish = |world: &mut World, resolution: super::semantic::CallSiteResolution<super::CallSiteSummary>| {
+        let changed = world.define_callsite_summary(callsite.clone(), resolution);
+        let completion = world.complete_job(
+            analyze.clone(),
+            JobEffects {
+                outputs: vec![edge.clone()],
+                changed: changed.then(|| edge.clone()).into_iter().collect(),
+                ..JobEffects::default()
+            },
+        );
+        (changed, completion)
+    };
+
+    let (first, _) = publish(&mut world, super::semantic::CallSiteResolution::Unresolved);
+    assert!(first, "a reached callsite's first edge is a content change");
+    world.complete_job(
+        reader.clone(),
+        JobEffects {
+            reads: vec![FactUse::current(edge.clone())],
+            ..JobEffects::default()
+        },
+    );
+
+    let (repeat, quiet) = publish(&mut world, super::semantic::CallSiteResolution::Unresolved);
+    assert!(!repeat, "re-emitting the same unresolved edge must move no revision");
+    assert!(
+        !quiet.step.wakes.iter().any(|wake| wake.job == reader),
+        "and must wake nobody: {:?}",
+        quiet.step.wakes,
+    );
+
+    let resolved = super::semantic::CallSiteResolution::Resolved(super::CallSiteSummary {
+        targets: vec![super::CallTargetSummary {
+            callee: super::SelectedCallee::ProviderBoundary(callee),
+            surface_inputs: Vec::new(),
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        }],
+        return_ty: None,
+    });
+    let (grew, wake) = publish(&mut world, resolved);
+    assert!(grew, "unresolved -> resolved is a content change");
+    assert!(
+        wake.step.wakes.iter().any(|wake| wake.job == reader),
+        "and it must reach the readers subscribed to the edge: {:?}",
+        wake.step.wakes,
     );
 }
