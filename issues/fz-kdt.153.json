@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T10:12:00Z",
+  "description": "From the fz-kdt.130 refutation: the retained summary-absent + carrier-Absent cell (fz-f98.18's dead-call NoReturn reading) has ZERO corpus witnesses -- even 00420 (f98.18's fixture) never reaches the absent-summary door today (44x summary=true measured). The pin test is synthetic. Find the live shape for a carrier-less dead closure call, or delete the branch per the rip-out law (with f98.18's record updated).",
+  "id": "fz-kdt.153",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The dead-call NoReturn branch has zero corpus witnesses",
+  "type": "task",
+  "updated_at": "2026-09-02T10:12:00Z"
+}
