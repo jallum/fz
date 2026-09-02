@@ -21,9 +21,7 @@ use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::ValueKind;
 
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{
-    ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate, lowering_tests_position,
-};
+use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate};
 use crate::types::ClosureTarget;
 
 use super::CodegenError;
@@ -389,9 +387,6 @@ fn emit_shapes_of_arity<'f, E: RuntimeTestEmitter<'f>>(
     for shape in predicate.tuples.shapes().iter().filter(|shape| shape.len() == arity) {
         let mut matched: Option<ir::Value> = None;
         for (index, position) in shape.iter().enumerate() {
-            if !lowering_tests_position(position) {
-                continue;
-            }
             let field = match fields[index] {
                 Some(field) => field,
                 None => {
@@ -406,8 +401,8 @@ fn emit_shapes_of_arity<'f, E: RuntimeTestEmitter<'f>>(
                 Some(prev) => e.builder().ins().band(prev, flag),
             });
         }
-        // A shape every position of which is blind is the arity question and
-        // nothing more, which the guard above already answered.
+        // Only an arity-0 shape emits no position test; its question is the
+        // arity check the guard above already answered.
         let matched = matched.unwrap_or_else(|| e.builder().ins().iconst(types::I8, 1));
         hit = e.builder().ins().bor(hit, matched);
     }

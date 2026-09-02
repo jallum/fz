@@ -324,17 +324,26 @@ native code. That growth is **fz-kdt.143**'s. And a pair whose heads overlap
 while neither surface contains the other is not reachable by any seat —
 `enum_predicate_search`'s two, which **fz-kdt.131** owns.
 
-**The Scope-A carve-out.** A position that can hold a LIST is not tested at all
-(`lowering_tests_position`), by the lattice and by all three lowerings alike.
-Testing only such a position's non-list axes would make the test STRICTER than
-the type — a position's question is a disjunction and dropping a disjunct
-rejects values the arm's surface names — so the choice is to decide the list
-axis there or to be blind, and deciding it separates `{[], int}` from
-`{[int], int}`, which wakes the dead-and-broken accumulator specialization
-**fz-kdt.132** owns. Blind is the over-approximation, and it is what this layer
-said everywhere before per-position shapes existed. A blind position therefore
-counts as overlapping AND as erasing: what a lowering declines to ask, a seat
-may not claim as separation. **fz-kdt.138** is Scope B, which retires it.
+**Every position is asked, at every depth.** A tuple position carries a full
+predicate, so it is decided by the same lattice and the same three lowerings as
+a top-level test, whatever axes it spans — a list-bearing position asks the list
+axis, and a position holding a tuple recurses. There is no position a test
+declines to ask, so there is no position a seat has to treat as overlapping and
+erasing on principle.
+
+It read differently until **fz-kdt.138**: a position that could hold a LIST was
+excluded from the lattice and from all three lowerings alike, because deciding
+it separates `{[], int}` from `{[int], int}` and that separation reached a fold
+accumulator specialization that did not exist yet (**fz-kdt.132**, which minted
+it). What the exclusion cost is `dispatch_nested_list_position_separates`: the
+first clause took every value, so `{:a, [integer]}` against `{:a, [:ok | :err]}`
+answered by clause order rather than by the value, on `interp`, `run` and
+`build` alike — the tag defect `dispatch_annotated_tuple_tag_clauses` pins and
+the element defect `dispatch_list_head_separates` pins, one nesting level in.
+A blind position only ever ACCEPTS, so the defect showed only where the
+list-bearing clause was written first, and a literal argument hid it entirely:
+the argument's own type settles the clause at compile time, so a
+literal-argument probe reports no defect at all.
 
 ## Seating
 
@@ -393,8 +402,9 @@ where the tests cannot both admit a value the projection would blur.
 ### The rule
 
 - arms are seated by their QUESTION GROUP, and a group's members keep arrival
-  order. The carve-out is the safety story — no test the plan emits separates a
-  group's members, so their order decides which body their shared values run,
+  order. Keeping arrival order inside a group is the safety story — no test the
+  plan emits separates a group's members, so their order decides which body
+  their shared values run,
   and fz-kdt.107 prototyped canonically ordering them and got `{:done, 3}` where
   `{:halted, 3}` was due.
 - groups start in arrival order, and group `x` is moved ahead of group `y` when
@@ -463,12 +473,11 @@ entry is a new latent miscompile and wants a ticket, not a re-blessed constant.
 The static census reasons about pairs of arms on hand-picked fixtures.
 `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` measures the real thing instead, on the
 production path, over whatever the corpus actually runs (fz-kdt.135): the
-interpreter answers each dispatch type test as the lowerings do — under
-`PositionScope::Lowered`, blind where they are blind — and then re-asks the
-tuple axis under `PositionScope::Full`, which looks at the positions they skip.
-The LIST axis is not re-asked; that reading becomes possible now that a head
-carries a predicate of its own, and it is **fz-kdt.144**, deliberately left out
-so the 268-escape baseline stays one population's comparand.
+interpreter answers each dispatch type test under `PositionScope::Lowered` and
+re-asks the tuple axis under `PositionScope::Full`. Since fz-kdt.138 deleted
+the list-position carve-out the two readings are THE SAME FUNCTION — no
+position is skipped — so the tripwire is inert by construction until
+fz-kdt.144's list-tail re-ask gives `Full` content again.
 A value admitted by the first reading and refused by the second passed a test no
 shape of the arm's surface names, which is precisely a blind routing. Unset, it
 is off and costs nothing; set to `abort` each finding is fatal, which is how a
@@ -478,9 +487,18 @@ finding is reported on stderr, and a corpus census is
     FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp <fixture> 2>&1 >/dev/null \
       | grep -c 'surface-membership escape'
 
-**The census reads ZERO, corpus-wide, under every legal order** (fz-kdt.132).
-It did not always: fz-kdt.119 measured SEVEN fixtures and 268 occurrences, and
-they were all one defect.
+**The census reads ZERO, corpus-wide, under every legal order** (fz-kdt.132),
+and since fz-kdt.138 it reads zero BY CONSTRUCTION: the skipped positions the
+`Full` reading was built to look at were the list-bearing ones, they are asked
+now, and the two readings are the same function. So this instrument is inert
+until `Full` is given content the lowerings do not have — the list TAIL, which
+is **fz-kdt.144**'s re-ask (a head is exact on rejection and erasing on
+acceptance, so the residue a full walk would find is real and unmeasured). What
+follows is the population it did report, kept because it is what the tuple half
+was worth.
+
+fz-kdt.119 measured SEVEN fixtures and 268 occurrences, and they were all one
+defect.
 
 | fixture | at fz-kdt.119 | now |
 | --- | --- | --- |

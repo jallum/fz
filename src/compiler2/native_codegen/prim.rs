@@ -7,7 +7,7 @@ use crate::fz_ir::{
     BinOp, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternTy, FnId, Prim, UnOp,
     Var,
 };
-use crate::runtime_type_predicate::{RuntimeTypePredicate, lowering_tests_position};
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use crate::types::ClosureTarget;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
@@ -1252,9 +1252,6 @@ fn emit_delivered_tuple_test<M: cranelift_module::Module>(
     {
         let mut matched: Option<ir::Value> = None;
         for (field, position) in fields.iter().zip(shape) {
-            if !lowering_tests_position(position) {
-                continue;
-            }
             let flag = emit_runtime_type_test(&mut emitter, *field, position)?;
             matched = Some(match matched {
                 None => flag,

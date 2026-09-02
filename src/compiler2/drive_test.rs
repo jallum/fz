@@ -9551,10 +9551,12 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
 /// A dispatch test is a PROJECTION of the surface an arm was compiled for, so
 /// passing the test is not the same as belonging to the surface. Where the two
 /// part company, a body typed for one domain runs on a value from another --
-/// today by luck, because the emitted tuple test is blind at a list position
-/// (the fz-kdt.119 Scope-A carve-out) and hands every value to whichever member
-/// comes first. Make that test exact (fz-kdt.138) and the same population has
-/// nowhere to go: `backend callable construction N matched no member`.
+/// today by luck: BEFORE fz-kdt.138 the emitted tuple test was blind at a
+/// list position (the fz-kdt.119 Scope-A carve-out, since deleted) and handed
+/// every value to whichever member came first; making the test exact would
+/// have left that population nowhere to go (`backend callable construction N
+/// matched no member`) -- which is why fz-kdt.132 (the covering rung) had to
+/// land first, and did.
 ///
 /// The escapes were never a dispatch defect. They were a MISSING
 /// SPECIALIZATION: a fold's reducer is minted beside its initial accumulator
@@ -9612,11 +9614,11 @@ const SURFACE_MEMBERSHIP_CENSUS: [&str; 7] = [
 /// permuted wrapper order -- and an identical one under no setting, which is
 /// the inertness claim on the same comparand.
 ///
-/// `enum_take_drop_split` is the subject because its wrappers carry the
-/// members the blind tuple test cannot separate: several keyed on accumulator
-/// tuples that differ only at a list position, so whichever the mint order
-/// puts first takes every value. Which one that is, is what this perturbation
-/// moves. (fz-kdt.132 made every one of those members cover the values that
+/// `enum_take_drop_split` is the subject because its wrappers carry members
+/// keyed on accumulator tuples that differ only at a list position -- pairs
+/// the tuple test COULD not separate before fz-kdt.138 (whichever the mint
+/// order put first took every value) and now separates by shape and head.
+/// Which member the mint order lists first is what this perturbation moves. (fz-kdt.132 made every one of those members cover the values that
 /// reach it, so the choice is no longer a hazard -- but it is still a choice
 /// nothing but the interner makes, which is what this gate holds to one
 /// answer.)

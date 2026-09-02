@@ -1,0 +1,140 @@
+#---
+# purpose: "A tuple position that holds a list is a question too, so nested list shapes route the call"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.138. The tuple test carries one sub-predicate per position
+# (fz-kdt.119) and a list test asks a cons cell its head (fz-kdt.107 step 3),
+# but a position that could hold a LIST was excluded from both lowerings and
+# from the lattice: `lowering_tests_position` answered "no" for it, so the
+# position was blind, counted as overlapping and counted as erasing. The
+# clause written first therefore took every value, exactly as the tag defect
+# `dispatch_annotated_tuple_tag_clauses` pins and the element defect
+# `dispatch_list_head_separates` pins, one nesting level in.
+#
+# Measured at 81ec3f25d, on `interp`, `run` and `build` alike: `kind` printed
+# `1 1`, `dnik` printed `2 2`, `axis` printed `1 1`, `size` printed `1 1`,
+# `deep` printed `1 1` and `peed` printed `2 2` -- six of the seven two-clause
+# functions answered by clause order rather than by the value. `sixa` was
+# right by accident: a blind position only ever ACCEPTS, so the clause whose
+# list-free position still asks something (`{:a, integer}`) filters correctly
+# when it is written first, and only the list-first order shows the defect.
+# That is why each disjoint pair is written both ways round here.
+#
+# The position is asked now, so each pair below is two questions.
+#
+# ## The five shapes a nested list position has to separate
+#
+#     kind/dnik   disjoint HEADS       {:a, [integer]} vs {:a, [:ok | :err]}
+#     axis/sixa   list vs NON-list     {:a, [integer]} vs {:a, integer}
+#     size        the EMPTY shape      {:a, []}        vs {:a, [integer]}
+#     deep/peed   through a TUPLE      {:a, {:b, [integer]}} vs {:a, {:b, [:ok | :err]}}
+#     twin/niwt   TWO list positions   {[integer], [:ok | :err]} vs {[:ok | :err], [integer]}
+#
+# The `pick_*` helpers are what make each one a RUNTIME question. Called with
+# a literal instead, the argument's own type settles the clause at compile
+# time and every shape above answers correctly even blind -- measured at
+# 81ec3f25d, `1 2 1 2 1 2` for the same three pairs -- which is why a
+# literal-argument probe reports no defect at all. The value has to be one the
+# compiler cannot fold.
+#
+# ## Why `size` is written in one order and the others in two
+#
+# A list type is `[]` joined with the lists over its element type, so
+# `{:a, []}` is CONTAINED IN `{:a, [integer]}` -- the pair is nested, not
+# disjoint, and seating the wide one first legitimately answers `2` for both
+# values (Elixir answers the same for the same clause order). Only the
+# narrow-first order asks a question the blind position could get wrong, and
+# that is the order written here. The other three pairs are disjoint, so both
+# their orders print the same two lines, which is the claim those twins carry.
+fn kind(x :: {:a, [integer]}), do: 1
+fn kind(x :: {:a, [:ok | :err]}), do: 2
+
+fn dnik(x :: {:a, [:ok | :err]}), do: 2
+fn dnik(x :: {:a, [integer]}), do: 1
+
+fn axis(x :: {:a, [integer]}), do: 1
+fn axis(x :: {:a, integer}), do: 2
+
+fn sixa(x :: {:a, integer}), do: 2
+fn sixa(x :: {:a, [integer]}), do: 1
+
+fn size(x :: {:a, []}), do: 1
+fn size(x :: {:a, [integer]}), do: 2
+
+fn deep(x :: {:a, {:b, [integer]}}), do: 1
+fn deep(x :: {:a, {:b, [:ok | :err]}}), do: 2
+
+fn peed(x :: {:a, {:b, [:ok | :err]}}), do: 2
+fn peed(x :: {:a, {:b, [integer]}}), do: 1
+
+fn twin(x :: {[integer], [:ok | :err]}), do: 1
+fn twin(x :: {[:ok | :err], [integer]}), do: 2
+
+fn niwt(x :: {[:ok | :err], [integer]}), do: 2
+fn niwt(x :: {[integer], [:ok | :err]}), do: 1
+
+fn pick_head(n) do
+  if n > 0 do
+    {:a, [n, n]}
+  else
+    {:a, [:ok, :err]}
+  end
+end
+
+fn pick_axis(n) do
+  if n > 0 do
+    {:a, [n, n]}
+  else
+    {:a, n}
+  end
+end
+
+fn pick_size(n) do
+  if n > 0 do
+    {:a, []}
+  else
+    {:a, [n]}
+  end
+end
+
+fn pick_deep(n) do
+  if n > 0 do
+    {:a, {:b, [n, n]}}
+  else
+    {:a, {:b, [:ok, :err]}}
+  end
+end
+
+fn pick_twin(n) do
+  if n > 0 do
+    {[n, n], [:ok, :err]}
+  else
+    {[:ok, :err], [n, n]}
+  end
+end
+
+fn main() do
+  dbg(kind(pick_head(1)))
+  dbg(kind(pick_head(0)))
+  dbg(dnik(pick_head(1)))
+  dbg(dnik(pick_head(0)))
+
+  dbg(axis(pick_axis(1)))
+  dbg(axis(pick_axis(0)))
+  dbg(sixa(pick_axis(1)))
+  dbg(sixa(pick_axis(0)))
+
+  dbg(size(pick_size(1)))
+  dbg(size(pick_size(0)))
+
+  dbg(deep(pick_deep(1)))
+  dbg(deep(pick_deep(0)))
+  dbg(peed(pick_deep(1)))
+  dbg(peed(pick_deep(0)))
+
+  dbg(twin(pick_twin(1)))
+  dbg(twin(pick_twin(0)))
+  dbg(niwt(pick_twin(1)))
+  dbg(niwt(pick_twin(0)))
+end

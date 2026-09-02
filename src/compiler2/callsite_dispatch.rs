@@ -707,12 +707,14 @@ pub(crate) mod dispatch_stress {
     /// called from `jobs/runtime_demand.rs`, where the edges are built.
     ///
     /// WHAT IT CATCHES, measured rather than hoped for (fz-kdt.141). It does
-    /// NOT produce fz-kdt.132's `matched no member`, and no ordering can:
-    /// reordering makes the dead member live INSTEAD of its sibling, never
-    /// alongside it, because the blind tuple test hands every value to
-    /// whichever comes first -- and a member that takes everything marshals its
-    /// own return form consistently. That break needs the two members reached
-    /// by DIFFERENT values, which is fz-kdt.138's exact test, not an order.
+    /// NOT produce fz-kdt.132's `matched no member`, and no ordering can --
+    /// today for a better reason than when this gate was written: fz-kdt.132
+    /// minted the covering rung, so every value that arrives has a member
+    /// whose key names it, whatever the order. (The original argument leaned
+    /// on the pre-fz-kdt.138 blind tuple test handing everything to the
+    /// first member; that test is exact now, and the 392-run stress matrix
+    /// across all three permutation families re-verified the conclusion
+    /// against the new mechanism.)
     ///
     /// It used to decide the whole 268-escape
     /// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` baseline (268 settled, 68 at
@@ -933,9 +935,11 @@ mod tests {
     /// destination the runtime CAN route to.
     ///
     /// So the callsite compiles to an honest two-armed dispatch, and the seat
-    /// is the wide arm first: the two overlap at the payload position, whose
-    /// own test is blind to a nested list, and only the wide arm's surface
-    /// names everything the narrow one's holds there. The old assertion and
+    /// is the wide arm first: the two arms carry the SAME payload type, so
+    /// they erasing-overlap through the head test's unread tail (the
+    /// one-sided-filter law -- heads equal, tails erased), and only the wide
+    /// arm's surface names everything the narrow one's holds there. The old
+    /// assertion and
     /// this one are the same law -- never let arm order decide meaning -- read
     /// against two different runtimes.
     #[test]
@@ -971,7 +975,7 @@ mod tests {
         assert_eq!(
             dispatch.targets,
             vec![target(command), target(cont)],
-            "both arms survive, and the arm whose surface covers its sibling's blind payload \
+            "both arms survive, and the arm whose surface covers its sibling's tail-erased payload \
              position is tested first",
         );
         let questions = runtime_questions(world.types_mut(), &dispatch.targets);

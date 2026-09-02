@@ -503,8 +503,8 @@ impl ListShapes {
     }
 
     /// Which shapes the test admits. Always answerable, and the only thing this
-    /// axis said before fz-kdt.107 step 3 -- the coarse callers
-    /// (`jobs::transport`, `lowering_tests_position`) still read it alone.
+    /// axis said before fz-kdt.107 step 3 -- `jobs::transport` still reads it
+    /// alone.
     pub(crate) fn shapes(&self) -> &FiniteSet<ListShape> {
         &self.shapes
     }
@@ -636,57 +636,35 @@ pub(crate) struct TupleShapes {
 }
 
 /// Which positions of a tuple shape a reading looks at.
+///
+/// The two readings are the SAME FUNCTION today: every position a shape
+/// carries is one all three lowerings decide, so nothing is left for `Full` to
+/// look at that `Lowered` skipped. That is fz-kdt.138 -- the list-bearing
+/// positions were the whole gap, and the surface-membership tripwire that
+/// subtracts one reading from the other therefore reads zero by construction.
+/// The scope stays threaded because the gap is due to re-open on the list
+/// axis: a head is exact on rejection and erasing on acceptance, so a `Full`
+/// reading that walked the TAIL would find residue the emitted test cannot
+/// (fz-kdt.144).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PositionScope {
-    /// The positions all three lowerings decide.
+    /// The positions all three lowerings decide, which is all of them.
     Lowered,
-    /// Every position, including the ones the lowerings are blind to. This is
-    /// what the surface-membership tripwire compares against: the gap between
-    /// the two readings IS the population of values a test admits into a body
-    /// that never named them.
+    /// Every position the shape carries. What the surface-membership tripwire
+    /// compares `Lowered` against: the gap between the two readings IS the
+    /// population of values a test admits into a body that never named them.
     Full,
 }
 
-/// Whether the lowerings emit a test for a position whose question is `sub`.
+/// Whether one shape's positions could all be satisfied by one tuple.
 ///
-/// SCOPE A CARVE-OUT (fz-kdt.119; Scope B is fz-kdt.138): a position that can
-/// hold a LIST is not tested at all. Testing only the position's non-list axes
-/// would make the test STRICTER than the type -- the position's question is a
-/// disjunction, and dropping a disjunct rejects values the arm's surface names
-/// -- so the choice is to decide the list axis there or to be blind. Blind is
-/// the over-approximation, and it is the one this layer already made everywhere
-/// before per-position shapes existed.
-///
-/// Deciding the axis separates `{[], int}` from `{[int], int}`, which used to
-/// leave a fold's grown accumulator with no member to reach ("backend callable
-/// construction N matched no member"). That was fz-kdt.132's missing
-/// specialization, not a dispatch defect, and it is fixed: the census this
-/// scope is measured against reads zero. Lifting the carve-out is fz-kdt.138.
-///
-/// The lattice reads this too, so a blind position counts as overlapping and
-/// as erasing: what the lowering declines to ask, the seat may not claim as
-/// separation.
-pub(crate) fn lowering_tests_position(sub: &RuntimeTypePredicate) -> bool {
-    sub.lists.shapes().is_none()
-}
-
-fn position_overlaps(left: &RuntimeTypePredicate, right: &RuntimeTypePredicate) -> bool {
-    !lowering_tests_position(left) || !lowering_tests_position(right) || left.overlaps(right)
-}
-
-fn position_erases(left: &RuntimeTypePredicate, right: &RuntimeTypePredicate) -> bool {
-    !lowering_tests_position(left) || !lowering_tests_position(right) || left.overlaps_on_an_erasing_axis(right)
-}
-
-fn position_contains(outer: &RuntimeTypePredicate, inner: &RuntimeTypePredicate) -> bool {
-    if !lowering_tests_position(outer) {
-        return true;
-    }
-    lowering_tests_position(inner) && inner.contained_in(outer)
-}
-
+/// A position is a full predicate, so this is the ordinary overlap question
+/// asked position-wise. Every position is asked: a tuple position that holds
+/// a LIST used to be excluded here and from all three lowerings alike, which
+/// made it count as overlapping whatever it met (fz-kdt.119's Scope-A
+/// carve-out, retired by fz-kdt.138).
 fn shapes_overlap(left: &[RuntimeTypePredicate], right: &[RuntimeTypePredicate]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).all(|(l, r)| position_overlaps(l, r))
+    left.len() == right.len() && left.iter().zip(right).all(|(l, r)| l.overlaps(r))
 }
 
 impl TupleShapes {
@@ -752,11 +730,7 @@ impl TupleShapes {
         }
         other.shapes.iter().all(|theirs| {
             self.shapes.iter().any(|ours| {
-                ours.len() == theirs.len()
-                    && ours
-                        .iter()
-                        .zip(theirs)
-                        .all(|(ours, theirs)| position_contains(ours, theirs))
+                ours.len() == theirs.len() && ours.iter().zip(theirs).all(|(ours, theirs)| theirs.contained_in(ours))
             })
         })
     }
@@ -786,10 +760,9 @@ impl TupleShapes {
             return true;
         }
         self.shapes.iter().any(|left| {
-            other
-                .shapes
-                .iter()
-                .any(|right| shapes_overlap(left, right) && left.iter().zip(right).any(|(l, r)| position_erases(l, r)))
+            other.shapes.iter().any(|right| {
+                shapes_overlap(left, right) && left.iter().zip(right).any(|(l, r)| l.overlaps_on_an_erasing_axis(r))
+            })
         })
     }
 }
@@ -1027,9 +1000,6 @@ fn matches_tuple_shape(
     };
     predicate.tuples.of_arity(arity).any(|shape| {
         shape.iter().enumerate().all(|(index, position)| {
-            if scope == PositionScope::Lowered && !lowering_tests_position(position) {
-                return true;
-            }
             (reader.fields)(value, index).is_some_and(|field| {
                 RuntimeTestAxis::of_value(field)
                     .iter()
@@ -1125,21 +1095,25 @@ fn matches_other_struct_axis(
 ///
 /// What it can see cheaply is the tuple axis: the test is answered under
 /// [`PositionScope::Lowered`], and the tripwire re-asks it under
-/// [`PositionScope::Full`], which looks at the positions the lowerings are
-/// blind to as well. A value admitted by the first reading and refused by the
-/// second passed a test no shape of the arm's surface names -- exactly the
-/// blind routing this class of defect is made of.
+/// [`PositionScope::Full`]. A value admitted by the first reading and refused
+/// by the second passed a test no shape of the arm's surface names -- exactly
+/// the blind routing this class of defect is made of. Since fz-kdt.138
+/// deleted the list-position carve-out the two scopes are THE SAME FUNCTION
+/// and the re-ask can refuse nothing; the instrument is inert by construction
+/// until fz-kdt.144's list-tail re-ask gives `Full` content again.
 ///
-/// The LIST axis is not re-asked, and it is the natural next reading now that
-/// a cons cell's head carries a predicate of its own: the head is exact on
-/// rejection and erasing on acceptance, so a full re-ask would walk the tail
-/// the emitted test never reads. That is fz-kdt.144, deliberately not folded
-/// in here -- what this reports is the tuple population, and mixing a second
-/// population into it would lose the comparand.
+/// The LIST axis is not re-asked, and it is the reading that gives `Full`
+/// content again: the head is exact on rejection and erasing on acceptance, so
+/// a full re-ask would walk the tail the emitted test never reads. That is
+/// fz-kdt.144.
 ///
-/// The tuple population is now EMPTY corpus-wide (fz-kdt.132: the escapes were
-/// a fold accumulator rung with no specialization, not a blind seat), pinned by
-/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it`.
+/// The tuple population is EMPTY corpus-wide (fz-kdt.132: the escapes were a
+/// fold accumulator rung with no specialization, not a blind seat), pinned by
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it`, and
+/// since fz-kdt.138 it is empty BY CONSTRUCTION: the positions `Full` was
+/// built to look at were the list-bearing ones, they are lowered now, and the
+/// two readings coincide. This instrument is inert until fz-kdt.144's list
+/// re-ask gives `Full` content again.
 ///
 /// It is off unless `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` is set; `abort`
 /// makes each finding fatal, anything else counts them and reports each on
@@ -1528,24 +1502,41 @@ mod tests {
         );
     }
 
-    /// The Scope-A carve-out, stated as a property: a LIST position is blind,
-    /// so two shapes that differ only there stay one question however
-    /// different their types (fz-kdt.138 is what changes this).
+    /// fz-kdt.138 in lattice terms: a LIST position is decided like any other,
+    /// so it separates exactly as far as the list axis itself does -- by shape,
+    /// and by disjoint heads -- and no further.
+    ///
+    /// This is `dispatch_nested_list_position_separates`' claim one layer down.
+    /// Every pair here used to be ONE question, because the position was
+    /// excluded from the lattice and from all three lowerings alike.
     #[test]
-    fn a_nested_list_position_stays_erasing() {
+    fn a_nested_list_position_is_a_question_like_any_other() {
         let mut empty_list = RuntimeTypePredicate::none();
         empty_list.lists = ListShapes::exact(FiniteSet::lit(ListShape::Empty), Vec::new());
-        let mut cons = RuntimeTypePredicate::none();
-        cons.lists = ListShapes::exact(FiniteSet::lit(ListShape::NonEmpty), vec![ints()]);
         let initial = tuple(vec![vec![empty_list, ints()]]);
-        let grown = tuple(vec![vec![cons, ints()]]);
+        let grown = tuple(vec![vec![cons_of(vec![ints()]), ints()]]);
         assert!(
-            initial.overlaps(&grown),
-            "the lowerings do not test a list position, so both tests admit the same tuples",
+            !initial.overlaps(&grown),
+            "the shapes disagree about the position's SHAPE, so no tuple passes both tests",
         );
         assert!(
-            initial.overlaps_on_an_erasing_axis(&grown),
-            "a position no lowering decides may never be claimed as separation",
+            !initial.overlaps_on_an_erasing_axis(&grown),
+            "a position the lowerings decide is separation a seat may claim",
+        );
+
+        let of_atoms = tuple(vec![vec![cons_of(vec![atom("ok")]), ints()]]);
+        assert!(
+            !grown.overlaps(&of_atoms),
+            "and disjoint HEADS separate the position too, one nesting level in",
+        );
+
+        let mut int_or_atom = ints();
+        int_or_atom.atoms = FiniteSet::lit("ok".to_string());
+        let of_either = tuple(vec![vec![cons_of(vec![int_or_atom]), ints()]]);
+        assert!(
+            grown.overlaps(&of_either) && grown.overlaps_on_an_erasing_axis(&of_either),
+            "the one-sided-filter law holds inside a position: heads that OVERLAP still \
+             erase, because the tail behind them is what neither test reads",
         );
     }
 
@@ -1554,10 +1545,10 @@ mod tests {
     #[test]
     fn two_tuple_clauses_stay_two_shapes() {
         let mixed = tuple(vec![vec![atom("cont"), ints()], vec![atom("halt"), atom("ok")]]);
-        let blind_cross = tuple(vec![vec![atom("cont"), list_of_anything()]]);
+        let list_payload = tuple(vec![vec![atom("cont"), list_of_anything()]]);
         assert!(
-            mixed.overlaps(&blind_cross),
-            "a blind list position makes {{:cont, [..]}} indistinguishable from {{:cont, int}}",
+            !mixed.overlaps(&list_payload),
+            "a list position is a question, so {{:cont, [..]}} and {{:cont, int}} are two of them",
         );
         let cross_of_exact_positions = tuple(vec![vec![atom("cont"), atom("ok")]]);
         assert!(
