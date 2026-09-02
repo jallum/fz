@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T01:44:25Z",
+  "description": "From the fz-kdt.119 cold review (2026-09-01), PRE-EXISTING at\nb32d645ac (probes rev119/refnest.fz, refnest2.fz): a closure nested\nin a tuple ({:tag, fn}) threaded through one forwarding hop fails\nnative lowering ('native executable lowering failed for index 13',\ninterp correct); the pattern-destructured variant fails ALL THREE\ndoors ('backend value 0 is unbound' / lowering failed). fz-kdt.127's\ncompiles-on-no-path shape at depth 1. Consequence: fz-kdt.119(2)'s\nREFNEST acceptance probe is UNCONSTRUCTIBLE until this is fixed --\n119's nested-callable separation can only be gated by unit tests at\nthe dispatch layer until then. Related: fz-kdt.127 (owns the same\nshape at depth 0), fz-kdt.117 (closure-carrier parity family).",
+  "id": "fz-kdt.137",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "P1: a closure nested in a tuple through a forwarding hop compiles on no path",
+  "type": "task",
+  "updated_at": "2026-09-02T01:44:25Z"
+}
