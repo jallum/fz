@@ -26,11 +26,15 @@
     {
       "text": "UNBLOCKED at fz-kdt.132 (c31b309d0). Verified by probe, not by inference: the one-line flip of runtime_type_predicate::lowering_tests_position to `true` was applied at HEAD and both target fixtures were run on all three doors.\n\nBEFORE (base + flip, at 8002889ff): 00420 and behavior/enum_take_drop_split both fail -- interp 'backend callable construction 27 matched no member', JIT and AOT 'function_clause: ... halted through a fault trap'.\nAFTER (fix + flip): both fixtures print the expected output byte-for-byte on interp, JIT and AOT.\n\nThe probe was then REVERTED; this ticket still owns the flip and its consequences. Also yours on landing, and now free: the surface-membership tripwire baseline is already 0 corpus-wide at HEAD (fz-kdt.132 emptied it -- the 212 take_drop occurrences and the other 56 were all one missing accumulator rung), so 'the baseline drops by the 212' is spent. The measurement that says Scope B worked is now the F2 reproducer from the fz-kdt.119 refutation: fn f(x :: {:a, [integer]}) / fn f(x :: {:a, integer}) must print 1 2, not 1 1. Re-run the 119 census instruments on lift as planned.",
       "timestamp": "2026-09-02T07:46:05Z"
+    },
+    {
+      "text": "RE-SCOPED by the fz-kdt.132 refutation (2026-09-02): BOTH acceptance signals are spent -- the tripwire baseline is 0 (132 emptied it) and the F2 reproducer prints 1 2 at head AND base, both clause orders (closed at or before fz-kdt.107's landing; the earlier 1 1 record was measured against the step-3 PROTOTYPE base). The flip itself is now measured ZERO-MOVER corpus-wide (585 fixtures, census 0, behaviour identical, take_drop three doors green). THE HONEST RE-SCOPE: if nothing observable changes under the flip, the carve-out no longer protects anything -- this ticket becomes a RIP-OUT (delete lowering_tests_position's list-blinding and whatever exists only to serve it) with acceptance = zero movement everywhere + the deleted code, NOT a defect fix. Before building: find ANY program the flip changes (the 132 refuter could not); if none exists, land as the deletion; if one exists, it is the new red-first gate.",
+      "timestamp": "2026-09-02T08:22:59Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Scope B of the tuple-shape predicate: nested LIST positions stop erasing",
   "type": "task",
-  "updated_at": "2026-09-02T07:46:05Z"
+  "updated_at": "2026-09-02T08:22:59Z"
 }
