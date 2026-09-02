@@ -9147,7 +9147,7 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
 ///
 /// These are latent MISCOMPILES, not untidiness. `enum_map_family`'s three
 /// entries are the ones that already abort natively under a reversed arm order
-/// (`compiler2_dispatch_answers_the_same_under_a_reversed_arm_order` names the
+/// (`compiler2_dispatch_answers_the_same_under_a_permuted_arm_order` names the
 /// reproduction), and `dispatch_seat_element_blind`'s is the one whose fixture
 /// only prints the right answers because arrival happens to seat the atom arm
 /// first. Nothing here is safe by proof; it is safe by arrival.
@@ -9338,6 +9338,14 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// fz-kdt.118 added for the group it dissolves, the two fz-kdt.125 added for
 /// the callable-identity shape, and the one fz-kdt.129 added for the seat a
 /// blind list-shape test would otherwise take.
+///
+/// DELIBERATE SUBSET (fz-kdt.141 refutation): the arm perturbation moves 27
+/// fixtures' artifacts; the 13 not listed here (protocol-dispatch, bsx guard,
+/// pipe and receive shapes) move plan content but carry no known
+/// indistinguishable groups -- their coverage is the doc'd sweep recipe with
+/// the canon comparand, not this in-process gate, which exists to hold the
+/// census population's SEATS specifically. Widen it if any of the 13 ever
+/// gains an indistinguishable group.
 const ARM_ORDER_CENSUS: [&str; 14] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
@@ -9355,51 +9363,205 @@ const ARM_ORDER_CENSUS: [&str; 14] = [
     "fixtures2/behavior/closure_identity_captures.fz",
 ];
 
-/// fz-kdt.118 / fz-kdt.107: arm order is the scheduler's, so no answer may
-/// depend on it.
+/// The fixtures whose CONSTRUCTION-WRAPPER member order is free: compiling each
+/// under a permuted wrapper order moves its `BackendProgram` canon, and
+/// compiling it under the settled one does not.
 ///
-/// Reversing each runtime-indistinguishable group is a permutation of the
-/// callsite's targets, which is all arrival order ever is -- so every order
-/// this produces is one the fixpoint could legally have delivered on its own,
-/// and an answer that moves under it is an answer arm order decides. This is
-/// the only gate that catches the class: the arms ask ONE question, so the
-/// corpus's own schedules never disagree about them (FIFO and LIFO are stdout-
-/// identical on all 579 fixtures) and the miscompiling orders stay legal but
+/// A callable value's construction wrapper carries one member per first-class
+/// surface it can be invoked at, and the selection plan that picks between them
+/// is built from the same list (`dispatch_from_callable_flow_edges` and the
+/// members beside it, `jobs/transport.rs`). That list is a `BTreeSet` walked in
+/// interned-surface order -- the type interner's mint order, which is the
+/// agenda's -- so its order is the scheduler's, exactly like a callsite's
+/// arrival order, and exactly as free to move.
+///
+/// This is the census the retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` never
+/// touched at all (fz-kdt.136). Measured at this commit by sweeping the corpus
+/// under `wrappers:` seeds and diffing the backend dump; five of the nineteen
+/// are named by the arm census too.
+const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
+    "fixtures2/00183_enum_take_list_range.fz",
+    "fixtures2/00197_poly_capture_ref.fz",
+    "fixtures2/00230_enum_take_chained.fz",
+    "fixtures2/00276_enum_to_list_and_map.fz",
+    "fixtures2/00277_enum_tier0_fixture.fz",
+    "fixtures2/00391_poly_capture_ref.fz",
+    "fixtures2/00418_enum_count_range.fz",
+    "fixtures2/00419_enum_take_mixed.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/behavior/dispatch_seat_element_blind.fz",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+    "fixtures2/behavior/enum_map_family.fz",
+    "fixtures2/behavior/enum_predicate_search.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures2/behavior/list_literal_trailing_call.fz",
+    "fixtures2/behavior/map_enumerable.fz",
+    "fixtures2/behavior/opaque_fn_mixed_return.fz",
+    "fixtures2/behavior/unused_range_binding.fz",
+];
+
+/// The arrival-order settings the in-process gate drives.
+///
+/// `arms:reverse` is the retired knob's exact permutation, kept because the
+/// fixtures and the prose around it were measured under it. The seeds are why
+/// this gate has teeth the reversal did not: at this commit `arms:reverse`
+/// moves 8 fixtures' artifacts and a seed moves 27, and the two seeds here are
+/// the ones whose native movers differ (seed 1 aborts `00277` and
+/// `dispatch_seat_element_blind`; seed 6 aborts `enum_map_family` and
+/// `enum_predicate_search`).
+const ARM_ORDER_STRESSES: [&str; 3] = ["arms:reverse", "arms:1", "arms:6"];
+
+/// The construction-member settings the in-process gate drives. Two seeds,
+/// because most wrappers carry exactly two members and one seed is one of the
+/// two orders they can be in.
+const WRAPPER_MEMBER_STRESSES: [&str; 2] = ["wrappers:1", "wrappers:6"];
+
+/// fz-kdt.118 / fz-kdt.107 / fz-kdt.141: the two orders that decide which body
+/// a value reaches are the scheduler's, so no answer may depend on either.
+///
+/// A callsite's ARRIVAL order is the settled targets' order, which is the
+/// semantic fixpoint's, which is the agenda's. A callable's CONSTRUCTION-
+/// WRAPPER member order is a `BTreeSet<CallableSurface>` walked in interned-id
+/// order, which is the type interner's mint order, which is the agenda's again.
+/// Any permutation of either is an order the fixpoint could legally have
+/// delivered, so an answer that moves under one is an answer a schedule
+/// decides. This is the only gate that catches the class: the corpus's own two
+/// schedules never disagree about these orders (FIFO and LIFO are stdout-
+/// identical on all 584 fixtures), so the miscompiling orders stay legal but
 /// unproduced until something perturbs them.
 ///
-/// RED at 788c0c21f on `enum_reduce_halt_arm_order`, which returns
-/// `{:done, 3}` for `{:halted, 3}` when the narrow `{:cont, int}` arm is
-/// listed first -- the fz-kdt.104 defect verbatim, still constructible because
-/// that rule judged containment on semantic surfaces and the two arms differ
-/// by a closure literal `runtime_type_test_envelope` has already erased.
+/// WHY THIS GATE IS NOT THE REVERSAL GATE IT REPLACES (fz-kdt.141). The
+/// retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` mirrored the members of each
+/// runtime-indistinguishable GROUP, and nothing else. That reaches one
+/// permutation of exactly the pairs the plan cannot separate -- so as
+/// fz-kdt.119 taught the predicate to separate more of them the same knob got
+/// weaker, and on a callsite whose groups are all singletons it is the
+/// IDENTITY. Measured at this commit: reversal moves 8 fixtures' artifacts, a
+/// seeded permutation moves 27, and reversal moves ZERO construction wrappers
+/// where a seed moves 19. Of the four fixtures that abort natively under a
+/// legal arm order, the reversal reaches ONE.
 ///
-/// This gate drives the interpreter, which is where every fixture's answer is
-/// defined. Natively `enum_map_family` still moves under reversal -- it aborts
-/// in `fz_list_head_int_ref` -- and that is a DIFFERENT class this ticket does
-/// not touch: three list arms over `[:false | :true]`, `[int | :ok | :true]`
-/// and `[int]` whose bodies use incompatible element accessors, no one of
-/// which covers another (fz-kdt.107 step 3). Reproduce it outside the harness,
-/// where an abort cannot take the suite down with it:
+/// RED AT 788c0c21f on `enum_reduce_halt_arm_order`, which returned
+/// `{:done, 3}` for `{:halted, 3}` when the narrow `{:cont, int}` arm was
+/// listed first (fz-kdt.118 fixed it).
 ///
-///     FZ_STRESS_REVERSE_DISPATCH_ARMS=1 \
-///       cargo run --bin fz2 -- run fixtures2/behavior/enum_map_family.fz
+/// This gate drives the INTERPRETER, which is where every fixture's answer is
+/// defined and where a mis-seated value survives on its dynamic tag. Natively
+/// four fixtures abort under a legal order, all in one class -- three list arms
+/// whose bodies use incompatible element accessors, no one of which covers
+/// another, so `fz_list_head_int_ref` reads non-int elements as ints
+/// (atoms on two census fixtures, bitstrings and structs on the others)
+/// (fz-kdt.107 step 3). They are `enum_map_family` (`arms:reverse`, `6`),
+/// `00277_enum_tier0_fixture` (seeds 1-5), `dispatch_seat_element_blind`
+/// (every seed) and `enum_predicate_search` (`6`). Reproduce one outside the
+/// harness, where an abort cannot take the suite down with it:
+///
+///     FZ_STRESS_PERMUTE_DISPATCH=arms:1 \
+///       cargo run --bin fz2 -- run fixtures2/behavior/dispatch_seat_element_blind.fz
+///
+/// The full recipe -- every fixture, every door, N seeds -- is in
+/// `.agent/docs/dispatch-matrix.md`.
 #[test]
-fn compiler2_dispatch_answers_the_same_under_a_reversed_arm_order() {
-    for fixture in ARM_ORDER_CENSUS {
+fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
+    assert_no_answer_moves(&ARM_ORDER_CENSUS, &ARM_ORDER_STRESSES);
+}
+
+/// The same law on the other free order: which construction-wrapper member a
+/// callable value's invocation reaches is decided by the mint order the members
+/// were derived in, and nothing else.
+///
+/// This half is what fz-kdt.136 found missing. It is green on stdout at this
+/// commit, on every door -- but not vacuously so: the surface-membership
+/// tripwire (`FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1`) reports 268 escapes over
+/// the corpus at the settled order and 68 under `wrappers:1`, 20 under
+/// `wrappers:6`, with five fixtures going to zero. Every one of those escapes
+/// is a value reaching a member whose surface never named it, and which member
+/// that is, is decided here. See fz-kdt.132.
+#[test]
+fn compiler2_dispatch_answers_the_same_under_a_permuted_wrapper_order() {
+    assert_no_answer_moves(&WRAPPER_MEMBER_CENSUS, &WRAPPER_MEMBER_STRESSES);
+}
+
+/// Each fixture's answer, under the settled order and under every setting.
+fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
+    for fixture in fixtures {
         let settled = settled_arm_order_answer(fixture);
-        let reversed = {
-            let _stress = crate::compiler2::callsite_dispatch::arm_order_stress::ReversedArmOrder::install();
-            interpreted_answer(fixture)
-        };
-        assert_eq!(
-            reversed, settled,
-            "{fixture}: reversing the arms no runtime test can separate is a legal arrival order, \
-             so it must not change a single answer",
-        );
+        for stress in stresses {
+            let permuted = {
+                let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+                    crate::compiler2::callsite_dispatch::dispatch_stress::setting(stress),
+                );
+                interpreted_answer(fixture)
+            };
+            assert_eq!(
+                permuted, settled,
+                "{fixture} under FZ_STRESS_PERMUTE_DISPATCH={stress}: permuting an order the \
+                 fixpoint chose is a legal arrival, so it must not change a single answer",
+            );
+        }
     }
 }
 
-/// The answer to hold a reversed arm order to: the blessed golden where the
+/// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
+///
+/// A gate that asserts invariance is worth exactly what its perturbation
+/// reaches, and the instrument this replaces reached the construction wrappers
+/// not at all. So assert the perturbation lands: the same fixture, compiled to
+/// the same stage, renders a DIFFERENT canonical backend program under a
+/// permuted wrapper order -- and an identical one under no setting, which is
+/// the inertness claim on the same comparand.
+///
+/// `enum_take_drop_split` is the subject because fz-kdt.132 names its wrapper:
+/// two members keyed on `{empty_list(), int}` and `{list(int), int}`, which the
+/// blind tuple test cannot separate, so whichever the mint order puts first
+/// takes every value and the other is dead. Which one that is, is what this
+/// perturbation moves.
+#[test]
+fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
+    use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
+
+    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
+    let settled = backend_canon(fixture);
+    assert_eq!(
+        backend_canon(fixture),
+        settled,
+        "the same fixture compiled twice with no setting must render the same artifact, or this \
+         gate's comparand is noise",
+    );
+    let permuted = {
+        let _stress = DispatchStressed::install(setting("wrappers:1"));
+        backend_canon(fixture)
+    };
+    assert_ne!(
+        permuted, settled,
+        "a permuted wrapper order must reseat the construction members it was built to perturb; \
+         a stress that cannot move them proves nothing about the order they arrived in",
+    );
+}
+
+/// One fixture's canonical `BackendProgram` -- the comparand the `--dump
+/// backend` path renders.
+fn backend_canon(fixture: &str) -> String {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
+    let world = compiler.world();
+    crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root))
+}
+
+/// The answer to hold a permuted order to: the blessed golden where the
 /// fixture matrix owns one, and otherwise this tree's own settled-order run.
 fn settled_arm_order_answer(fixture: &str) -> Vec<String> {
     let golden = fixture.strip_suffix(".fz").map(|stem| format!("{stem}.expected.txt"));
@@ -9488,16 +9650,24 @@ end
     );
 }
 
-/// fz-kdt.118, the three-path half: `:halt` halts on the native path too,
-/// under either arm order.
+/// fz-kdt.118 / fz-kdt.141, the three-path half: `:halt` halts on the native
+/// path too, under every legal order of this callsite's arms.
 ///
 /// The interpreter carries a dynamic tag on every value, so it can survive
 /// routing a value into a body that was not specialized for it. Native code
 /// cannot, and this fixture's answer is a plan-level fact -- it must read the
 /// same whichever way the arms arrived.
+///
+/// The corpus gates above drive the interpreter, because a mis-seated list
+/// element aborts the process natively and an abort takes the whole suite with
+/// it. This fixture is the one that can be held to the native door in process:
+/// its arms differ by a closure literal the callable axis separates exactly, so
+/// no order of them can route a value into a body that never named it -- and
+/// the settings below are the ones the corpus sweep measured as leaving it
+/// alone on every door.
 #[test]
-fn compiler2_jit_halts_a_reduce_under_either_arm_order() {
-    for reversed in [false, true] {
+fn compiler2_jit_halts_a_reduce_under_every_arm_order() {
+    for stress in ["", "arms:reverse", "arms:1", "arms:6"] {
         let tel = ConfiguredTelemetry::new();
         let dbg = DbgCapture::new();
         let mut compiler = Compiler2::new(tel);
@@ -9512,14 +9682,16 @@ fn compiler2_jit_halts_a_reduce_under_either_arm_order() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        let _stress = reversed.then(crate::compiler2::callsite_dispatch::arm_order_stress::ReversedArmOrder::install);
+        let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+            crate::compiler2::callsite_dispatch::dispatch_stress::setting(stress),
+        );
         compiler
             .run_root_jit(root_id)
-            .unwrap_or_else(|error| panic!("the halt fixture should run on the JIT (reversed={reversed}): {error}"));
+            .unwrap_or_else(|error| panic!("the halt fixture should run on the JIT ({stress:?}): {error}"));
         assert_eq!(
             dbg.lines().as_slice(),
             ["{:halted, 3}", "{:done, 1500}"],
-            "reversed={reversed}: `:halt` must halt whichever arm the plan lists first, \
+            "{stress:?}: `:halt` must halt whichever arm the plan lists first, \
              and the reducer the value carried is the one that must run",
         );
     }

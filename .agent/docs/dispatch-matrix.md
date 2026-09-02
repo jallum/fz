@@ -132,12 +132,103 @@ to it (`exact_direct_callable_layout` → `TransportCarrier::Absent` →
 runs. Keeping the dead arm does not prevent that — the plan has no question to
 separate them either way. See fz-kdt.107 and fz-kdt.125.
 
-Arm order is the scheduler's, so any permutation of a callsite's targets is an
-order the fixpoint could have delivered. `arm_order_stress` makes that testable:
-`FZ_STRESS_REVERSE_DISPATCH_ARMS` (or `ReversedArmOrder::install()` in-process)
-reverses each runtime-indistinguishable group, and
-`compiler2_dispatch_answers_the_same_under_a_reversed_arm_order` holds the
-fixtures that carry such groups to one answer under both orders.
+### The two free orders, and the stress that moves them
+
+Two orders decide which body a value reaches, and neither is the language's.
+
+A callsite's **arrival order** is the settled targets' order, which is the
+semantic fixpoint's, which is the agenda's. A callable value's
+**construction-wrapper member order** is a `BTreeSet<CallableSurface>` walked in
+interned-id order — the type interner's mint order, which is the agenda's again;
+`jobs/transport.rs` derives the wrapper's members AND its selection plan from
+that one list, and fz-kdt.108 welded a selection row's `body_id` to its member's
+index, so the list itself is the only place either can be reordered. It is
+reordered where it is built, in `jobs/runtime_demand.rs`, before members,
+selection, boundary resolutions or the flow's resolution list derive from it.
+
+Any permutation of either order is one the fixpoint could have delivered, so an
+answer that moves under one is an answer a schedule decides. `dispatch_stress`
+(in `callsite_dispatch.rs`) makes that testable through
+`FZ_STRESS_PERMUTE_DISPATCH`, a comma-separated list of clauses:
+
+| setting | what it perturbs |
+| --- | --- |
+| unset, `""`, `0` | nothing — production borrows the settled order |
+| `7` | seed 7 on both surfaces |
+| `arms:7` | a callsite's arrival order only |
+| `wrappers:7` | a construction wrapper's member order only |
+| `reverse` | both surfaces reversed |
+| `arms:reverse` | each runtime-indistinguishable GROUP mirrored — what the retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` did |
+| `arms:3,wrappers:9` | a different seed per surface |
+
+A seed names a permutation of the whole order and NEVER the settled one: most
+free orders in the corpus are two items long, a fair shuffle of two comes out
+settled half the time, and a seed that leaves the order it was asked to perturb
+is a green reading with nothing behind it. A setting the grammar does not
+recognize panics rather than sweeping inertly, for the same reason.
+
+**Why the group reversal was not enough** (fz-kdt.141). It reaches ONE
+permutation, of exactly the pairs the plan cannot separate — so every time the
+predicate learned to separate more of them (fz-kdt.119) the same knob got
+weaker, and on a callsite whose groups are all singletons it is the identity.
+And it never touched the wrapper order at all (fz-kdt.136). Measured over the
+584-fixture corpus at the fz-kdt.141 landing, by backend-dump hash:
+
+| perturbation | fixtures whose artifact moves |
+| --- | --- |
+| `arms:reverse` | 8 |
+| `arms:<seed>` | 27 |
+| `wrappers:<seed>` | 19 |
+| unset vs `""` vs `0` | 0 — the knob is inert when off, on the same comparand |
+
+**The gates.** `compiler2_dispatch_answers_the_same_under_a_permuted_arm_order`
+and `..._under_a_permuted_wrapper_order` hold each census to one answer through
+the interpreter, in process, under `arms:reverse` + two arm seeds and two
+wrapper seeds respectively.
+`compiler2_a_permuted_wrapper_order_reseats_the_construction_members` asserts
+the wrapper perturbation LANDS (a moved canon), because a gate is worth exactly
+what its perturbation reaches. `compiler2_jit_halts_a_reduce_under_every_arm_order`
+holds the one fixture that can face the native door in process.
+
+**The sweep recipe.** The in-process gates are bounded; the whole corpus by
+every door is a shell sweep, and it is what a dispatch-order change should be
+re-measured with:
+
+    for setting in arms:reverse arms:1 arms:6 wrappers:1 wrappers:6 1 6; do
+      for fixture in fixtures2/*.fz fixtures2/behavior/*.fz; do
+        base=$(fz2 interp "$fixture" 2>/dev/null); base_rc=$?
+        stressed=$(FZ_STRESS_PERMUTE_DISPATCH=$setting fz2 interp "$fixture" 2>/dev/null); rc=$?
+        [ "$base" = "$stressed" ] && [ "$base_rc" = "$rc" ] || echo "MOVER $setting $fixture"
+      done
+    done
+
+Swap `interp` for `run` (JIT) and for `build -o /tmp/x && /tmp/x` (AOT). Stdout
+and the exit status are the behaviour comparand — stderr carries thread ids.
+This recipe measures BEHAVIOUR movers (the zero column). The artifact-mover
+table above is measured with the canon comparand instead: add
+`--dump backend=<path>` to both invocations and compare the dump hashes -- a
+fixture whose stdout is invariant can still move its plan content, which is
+what the 8/27/19 numbers count.
+
+**What the sweep reports at this commit.** The interpreter is invariant under
+every setting: 0 movers over 584 fixtures × 19 settings. Natively FOUR fixtures
+abort — the JIT sweep is whole-corpus, the AOT sweep covers the two censuses and
+agrees with it fixture for fixture — all with the same signature —
+`fz_list_head_int_ref` — a list whose elements are not ints (atoms on two
+fixtures, bitstrings on `enum_map_family`, structs on `00277`) read through the
+int accessor — and all in the
+fz-kdt.107 step-3 class of list arms whose bodies use incompatible element
+accessors and none of which covers another:
+
+| fixture | settings that abort it |
+| --- | --- |
+| `enum_map_family` | `arms:reverse`, `arms:6` |
+| `00277_enum_tier0_fixture` | `arms:1` … `arms:5` |
+| `dispatch_seat_element_blind` | every arm seed |
+| `enum_predicate_search` | `arms:6` |
+
+Only the first aborts under the group reversal. The other three are what this
+instrument bought, and they are all the same standing defect, not new ones.
 
 ### What a test can see
 
@@ -287,9 +378,10 @@ What the seat does NOT guarantee is that no blind escape remains.
 survivors: 19 positions over 12 arm pairs, every one of them a list-shape test
 that cannot see its elements, and every one of them arrival order's before any
 seating rule existed. Three of `enum_map_family`'s are the ones that already
-abort natively under a reversed arm order; `dispatch_seat_element_blind`'s one
-is why that fixture prints the right answers only because arrival seats the atom
-arm first. The census is a RATCHET pointing at fz-kdt.131, not a target: a new
+abort natively under a reversed arm order, and `dispatch_seat_element_blind`'s
+one is why that fixture prints the right answers only because arrival seats the
+atom arm first — which a seeded arm permutation now demonstrates, natively, on
+both fixtures. The census is a RATCHET pointing at fz-kdt.131, not a target: a new
 entry is a new latent miscompile and wants a ticket, not a re-blessed constant.
 fz-kdt.119 retires NONE of the 19: every one is a list subject, and only
 fz-kdt.107 step 3 can move that number.
@@ -329,6 +421,18 @@ Every one is a nested LIST position — the Scope-A carve-out, blind on purpose 
 and the two at 106 are the same program reached twice and are what fz-kdt.132
 owns. These are LATENT SITES, not regressions: like the 19-escape census this is
 a ratchet, and a new entry wants a ticket rather than a re-blessed constant.
+
+**All 268 are decided by the construction-wrapper member order** (fz-kdt.141).
+Re-running the census under `FZ_STRESS_PERMUTE_DISPATCH`: `arms:` seeds move it
+by ZERO — the whole population lives on the wrapper surface, not the callsite
+one — while `wrappers:1` takes it to 68 and `wrappers:6` to 20, with five of the
+seven fixtures going to zero and `enum_take_drop_split` going 106 → 34 → 10, on
+identical stdout everywhere. So the number is not a fact about the program: it
+is a fact about which member the interner's mint order happened to put first,
+and the settled order is the WORST of the orders measured. That is the same
+blindness read from the other side — nothing separates the members, so whichever
+comes first takes every value, and the escapes are the values whose surface that
+member does not name.
 
 Arm order was the settled targets' order and nothing else before fz-kdt.129 —
 the fixpoint's, which is the agenda's — and `enum_predicate_search` seated one

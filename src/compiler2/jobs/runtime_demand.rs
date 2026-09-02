@@ -6,6 +6,7 @@ use super::super::body::{
     LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
     delivered_value_joins,
 };
+use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::FactKey;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
@@ -1152,15 +1153,21 @@ fn derive_callable_flow_facts_for_executable_product(
             &callable_flows.first_class_surfaces(value),
             &ground_source,
         );
-        let first_class_edges = callable_flow_resolution_edges_product(
-            world,
-            context,
-            executable,
-            facts,
-            producer,
-            &first_class_surfaces,
-            waits,
-        );
+        // The one ordering authority for this callable's construction wrapper:
+        // members, selection rows, boundary resolutions and the resolution list
+        // below all derive from these edges, and fz-kdt.108 welded a selection
+        // row's `body_id` to its member's index. Perturbing here keeps the weld
+        // (fz-kdt.141).
+        let first_class_edges =
+            dispatch_stress::perturbed_construction_members(callable_flow_resolution_edges_product(
+                world,
+                context,
+                executable,
+                facts,
+                producer,
+                &first_class_surfaces,
+                waits,
+            ));
         let mut resolutions = Vec::new();
         extend_unique(
             &mut resolutions,

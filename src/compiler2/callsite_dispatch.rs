@@ -466,70 +466,213 @@ fn unroutable_alternatives(
 /// Arm order is the scheduler's, never the language's: any permutation of a
 /// callsite's targets is an order the semantic fixpoint could legally have
 /// produced. Production reads the settled order and borrows it; the stress
-/// gate reverses each runtime-indistinguishable group, which is the one
-/// permutation that flips which member of a group the plan's identical rows
-/// resolve to. A behavior that moves under it is a behavior arm order decides.
+/// gate hands [`specificity_order`] a different one and asks whether the
+/// answer moved.
 ///
 /// What arrives is not always what the plan tests: [`specificity_order`]
-/// corrects arrival wherever the arms justify a correction. Arrival stands
-/// inside a question group, where it is the one thing standing between the
-/// corpus and a wrong answer, and between two groups neither of which covers
-/// the other, where no seat is any safer than the one it came with.
+/// corrects arrival wherever the arms justify a correction, and it does so
+/// deterministically -- a covers-proven inversion is a fact about the arms,
+/// not about when they turned up. So permuting arrival does not perturb the
+/// seat's own decisions at all; what it perturbs is exactly the RESIDUE the
+/// seat declines to decide: the members of one question group, where arrival
+/// is the one thing standing between the corpus and a wrong answer
+/// (fz-kdt.107), and every pair where neither group covers the other, where no
+/// seat is any safer than the one it came with (fz-kdt.131).
 fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow<'a, [CallTargetSummary]> {
-    if !arm_order_stress::reversing() {
-        return Cow::Borrowed(targets);
+    match dispatch_stress::arms() {
+        dispatch_stress::Perturbation::Settled => Cow::Borrowed(targets),
+        dispatch_stress::Perturbation::Reversed => {
+            Cow::Owned(dispatch_stress::reverse_indistinguishable_groups(types, targets))
+        }
+        dispatch_stress::Perturbation::Seeded(seed) => Cow::Owned(permuted(
+            targets.to_vec(),
+            &dispatch_stress::seeded_order(seed, targets.len()),
+        )),
     }
-    Cow::Owned(arm_order_stress::reverse_indistinguishable_groups(types, targets))
 }
 
-/// The schedule-legal perturbation the arm-order stress gate drives with.
+/// The schedule-legal perturbations the dispatch-order stress drives with.
 ///
-/// Reversing a runtime-indistinguishable group permutes only arms no runtime
-/// test can separate, so every order it produces is one the fixpoint could
-/// have delivered on its own.
+/// TWO orders decide which body a value reaches, and neither is the language's:
 ///
-/// The setting is per-thread. A process-wide default comes from
-/// `REVERSE_ARM_ORDER_ENV`, which is how a fixture gets swept through the real
-/// `fz2` binary; in-process drivers install [`ReversedArmOrder`] instead, and
-/// because each `cargo test` case owns its thread the perturbation never leaks
-/// into a neighbour running beside it.
-pub(crate) mod arm_order_stress {
+/// - a callsite's ARRIVAL order, which is the settled targets' order, which is
+///   the semantic fixpoint's, which is the agenda's ([`arrival_order`]);
+/// - a callable value's CONSTRUCTION-WRAPPER member order, which is a
+///   `BTreeSet<CallableSurface>` walked in interned-id order, which is the type
+///   interner's mint order, which is the agenda's again
+///   ([`dispatch_from_callable_flow_edges`] and the members beside it).
+///
+/// Any permutation of either is an order the fixpoint could have delivered, so
+/// an answer that moves under one is an answer a schedule decides.
+///
+/// # Why reversing the indistinguishable groups is not enough
+///
+/// The retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` mirrored each
+/// runtime-indistinguishable GROUP and nothing else. That reaches exactly one
+/// permutation, of exactly the pairs the plan cannot separate -- and as
+/// fz-kdt.119 taught the predicate to separate more of them, the same knob got
+/// weaker: on a callsite whose groups are all singletons it is the IDENTITY, a
+/// gate that cannot move a single arm. And it never touched the wrapper order
+/// at all (fz-kdt.136).
+///
+/// A seeded permutation of the WHOLE order has neither limit: it varies every
+/// ordering the seat leaves free, on both surfaces, and it is a deterministic
+/// function of (seed, length) so a finding replays. Measured over the corpus at
+/// the fz-kdt.141 landing: the reversal moves 8 fixtures' artifacts, an arm
+/// seed moves 27, a wrapper seed moves 19, and of the four fixtures that abort
+/// natively under a legal arm order the reversal reaches ONE.
+///
+/// # The setting
+///
+/// `FZ_STRESS_PERMUTE_DISPATCH` names a comma-separated list of clauses, each
+/// `<surface>:<perturbation>` or a bare `<perturbation>` meaning both surfaces:
+///
+/// ```text
+///     (unset) | "" | "0"   the settled order, and no code that reads it
+///     7                    seed 7 on arms and on wrappers
+///     arms:7               seed 7 on arrival order only
+///     wrappers:7           seed 7 on construction members only
+///     reverse              reverse both surfaces
+///     arms:reverse         exactly what the retired knob did
+///     arms:3,wrappers:9    a different seed per surface
+/// ```
+///
+/// Seed `0` is off, not a seed -- `""`/`"0"`/unset are one thing (fz-kdt.118),
+/// and a setting the grammar does not recognize PANICS rather than sweeping
+/// inertly, because a stress that silently measures nothing reads as green.
+///
+/// The setting is per-thread. A process-wide default comes from the
+/// environment, which is how a fixture gets swept through the real `fz2`
+/// binary; in-process drivers install [`DispatchStressed`] instead, and because
+/// each `cargo test` case owns its thread the perturbation never leaks into a
+/// neighbour running beside it.
+pub(crate) mod dispatch_stress {
     use std::cell::Cell;
 
-    use super::{CallTargetSummary, Types, question_groups};
+    use super::{CallTargetSummary, CallableFlowEdge, Types, permuted, question_groups};
 
-    /// Names the environment variable that turns the perturbation on for a
-    /// whole process, so a fixture can be swept through the real `fz2` binary
-    /// as well as driven in-process.
-    pub(crate) const REVERSE_ARM_ORDER_ENV: &str = "FZ_STRESS_REVERSE_DISPATCH_ARMS";
+    /// Names the environment variable that turns a perturbation on for a whole
+    /// process, so a fixture can be swept through the real `fz2` binary as well
+    /// as driven in-process.
+    pub(crate) const PERMUTE_DISPATCH_ENV: &str = "FZ_STRESS_PERMUTE_DISPATCH";
+
+    /// What one surface's order is replaced by.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) enum Perturbation {
+        /// The order the fixpoint settled on. Production's, and provably inert:
+        /// nothing is cloned, compared or reordered.
+        #[default]
+        Settled,
+        /// Arms: each runtime-indistinguishable group mirrored across the slots
+        /// it already occupies -- the retired knob's exact permutation, kept
+        /// because the fixtures and prose that measured it name it. Wrappers:
+        /// the member list reversed.
+        Reversed,
+        /// A permutation of the whole order, a pure function of the seed and
+        /// the number of items.
+        Seeded(u64),
+    }
+
+    /// What each surface's order is replaced by.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct DispatchStress {
+        pub(crate) arms: Perturbation,
+        pub(crate) wrappers: Perturbation,
+    }
+
+    impl DispatchStress {
+        /// The same perturbation on both surfaces.
+        pub(crate) fn both(perturbation: Perturbation) -> Self {
+            Self {
+                arms: perturbation,
+                wrappers: perturbation,
+            }
+        }
+    }
 
     thread_local! {
-        static REVERSING: Cell<bool> = Cell::new(matches!(
-            std::env::var(REVERSE_ARM_ORDER_ENV).as_deref(),
-            Ok(value) if !value.is_empty() && value != "0"
+        static STRESS: Cell<DispatchStress> = Cell::new(setting(
+            std::env::var(PERMUTE_DISPATCH_ENV).unwrap_or_default().as_str(),
         ));
     }
 
-    pub(crate) fn reversing() -> bool {
-        REVERSING.with(Cell::get)
+    /// The perturbation this thread applies to callsite arrival order.
+    pub(crate) fn arms() -> Perturbation {
+        STRESS.with(Cell::get).arms
     }
 
-    /// Reverses each runtime-indistinguishable arm group for as long as it
-    /// lives, then puts the previous setting back.
+    /// The perturbation this thread applies to construction-wrapper members.
+    pub(crate) fn wrappers() -> Perturbation {
+        STRESS.with(Cell::get).wrappers
+    }
+
+    /// What a setting asks for. Panics on an unrecognized setting -- but a
+    /// lazy panic fires only when a perturbation site is reached, which the
+    /// fz-kdt.141 refutation measured letting a typo'd sweep read green on
+    /// 72% of the corpus. `validate_env` is the eager front door: the CLI
+    /// calls it before dispatching any command, so a typo fails EVERY run
+    /// with a usage diagnostic instead of only the runs that dispatch.
+    pub(crate) fn setting(value: &str) -> DispatchStress {
+        try_setting(value).unwrap_or_else(|message| panic!("{message}"))
+    }
+
+    /// Eager validation of the environment setting for the CLI front door.
+    pub(crate) fn validate_env() -> Result<(), String> {
+        try_setting(std::env::var(PERMUTE_DISPATCH_ENV).unwrap_or_default().as_str()).map(|_| ())
+    }
+
+    fn try_setting(value: &str) -> Result<DispatchStress, String> {
+        let mut stress = DispatchStress::default();
+        for clause in value
+            .split(',')
+            .map(str::trim)
+            .filter(|clause| !clause.is_empty() && *clause != "0")
+        {
+            let (surface, how) = clause.split_once(':').unwrap_or(("", clause));
+            let perturbation = perturbation(how).ok_or_else(|| {
+                format!("{PERMUTE_DISPATCH_ENV}: {clause:?} names no perturbation -- want `reverse` or a seed above 0")
+            })?;
+            match surface {
+                "" => stress = DispatchStress::both(perturbation),
+                "arms" => stress.arms = perturbation,
+                "wrappers" => stress.wrappers = perturbation,
+                _ => {
+                    return Err(format!(
+                        "{PERMUTE_DISPATCH_ENV}: {clause:?} names no surface -- want `arms` or `wrappers`"
+                    ));
+                }
+            }
+        }
+        Ok(stress)
+    }
+
+    fn perturbation(how: &str) -> Option<Perturbation> {
+        match how {
+            "reverse" => Some(Perturbation::Reversed),
+            seed => seed
+                .parse::<u64>()
+                .ok()
+                .filter(|seed| *seed != 0)
+                .map(Perturbation::Seeded),
+        }
+    }
+
+    /// Drives both surfaces the way the setting says for as long as it lives,
+    /// then puts the previous setting back.
     #[cfg(test)]
-    pub(crate) struct ReversedArmOrder(bool);
+    pub(crate) struct DispatchStressed(DispatchStress);
 
     #[cfg(test)]
-    impl ReversedArmOrder {
-        pub(crate) fn install() -> Self {
-            Self(REVERSING.with(|reversing| reversing.replace(true)))
+    impl DispatchStressed {
+        pub(crate) fn install(stress: DispatchStress) -> Self {
+            Self(STRESS.with(|current| current.replace(stress)))
         }
     }
 
     #[cfg(test)]
-    impl Drop for ReversedArmOrder {
+    impl Drop for DispatchStressed {
         fn drop(&mut self) {
-            REVERSING.with(|reversing| reversing.set(self.0));
+            STRESS.with(|current| current.set(self.0));
         }
     }
 
@@ -546,6 +689,75 @@ pub(crate) mod arm_order_stress {
             }
         }
         reversed
+    }
+
+    /// The construction-wrapper members and the selection plan's rows, in the
+    /// order this thread's setting asks for.
+    ///
+    /// This is the ONE authority: fz-kdt.108 established that a selection row's
+    /// `body_id` indexes the parallel member list and must increase
+    /// monotonically, so the two are welded and no permutation downstream of
+    /// the weld is representable. Permuting the edges themselves, before either
+    /// derives, keeps the weld and lets members, selection, boundary
+    /// resolutions and the flow's resolution list all inherit one order. It is
+    /// called from `jobs/runtime_demand.rs`, where the edges are built.
+    ///
+    /// WHAT IT CATCHES, measured rather than hoped for (fz-kdt.141). It does
+    /// NOT produce fz-kdt.132's `matched no member`, and no ordering can:
+    /// reordering makes the dead member live INSTEAD of its sibling, never
+    /// alongside it, because the blind tuple test hands every value to
+    /// whichever comes first -- and a member that takes everything marshals its
+    /// own return form consistently. That break needs the two members reached
+    /// by DIFFERENT values, which is fz-kdt.138's exact test, not an order.
+    /// What it does catch is fz-kdt.147: the whole 268-escape
+    /// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` baseline is decided here (268
+    /// settled, 68 at `wrappers:1`, 20 at `wrappers:6`, five of seven fixtures
+    /// to zero), and arm seeds move it by zero.
+    pub(crate) fn perturbed_construction_members(edges: Vec<CallableFlowEdge>) -> Vec<CallableFlowEdge> {
+        match wrappers() {
+            Perturbation::Settled => edges,
+            Perturbation::Reversed => edges.into_iter().rev().collect(),
+            Perturbation::Seeded(seed) => {
+                let order = seeded_order(seed, edges.len());
+                permuted(edges, &order)
+            }
+        }
+    }
+
+    /// A permutation of `len` slots, a pure function of the seed and the
+    /// length, and never the settled order.
+    ///
+    /// Purity is what makes a finding replayable and what keeps a perturbed
+    /// fact stable across the recomputations the fixpoint asks for: the same
+    /// edges always come back in the same order, so nothing oscillates.
+    ///
+    /// NEVER SETTLED is the other half, and it is measured rather than
+    /// cosmetic: most of the corpus's free orders are two items long, a fair
+    /// shuffle of two items comes out settled about half the time, and a seed
+    /// that leaves the order it was asked to perturb is a green reading with
+    /// nothing behind it -- the fz-kdt.118 lesson one rung further in. So a
+    /// draw that lands on the settled order is moved off it by one
+    /// transposition, and every seed moves every order of two or more.
+    pub(crate) fn seeded_order(seed: u64, len: usize) -> Vec<usize> {
+        let mut order = (0..len).collect::<Vec<_>>();
+        let mut state = seed ^ (len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        for slot in (1..len).rev() {
+            let pick = (next(&mut state) % (slot as u64 + 1)) as usize;
+            order.swap(slot, pick);
+        }
+        if len > 1 && order.iter().copied().eq(0..len) {
+            order.swap(0, 1);
+        }
+        order
+    }
+
+    /// SplitMix64: a full-period mixer, so a seed of 1 is as good as any other.
+    fn next(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut mixed = *state;
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        mixed ^ (mixed >> 31)
     }
 }
 
@@ -1475,5 +1687,200 @@ mod tests {
             vec![1],
             "the member keyed on the callable that arrived is the one that runs",
         );
+    }
+
+    /// fz-kdt.141, the instrument gate: a stress that cannot move an order
+    /// proves nothing about it.
+    ///
+    /// Three arms on three DISTINCT questions, so `question_groups` gives three
+    /// groups of one and the retired knob's within-group mirror is the
+    /// IDENTITY -- and the questions are exact atoms that neither contain each
+    /// other nor overlap on an erasing axis, so [`specificity_order`] declines
+    /// to have an opinion and arrival order stands all the way through to the
+    /// plan. That is the shape fz-kdt.131 owns and fz-kdt.107 step 3 leaves
+    /// behind: entirely arrival-decided, and entirely invisible to a knob that
+    /// only reverses groups.
+    ///
+    /// A seed moves it. That is the whole difference this ticket buys, and it
+    /// is measured here rather than argued.
+    #[test]
+    fn a_seed_moves_an_arrival_order_the_group_reversal_cannot() {
+        use dispatch_stress::{DispatchStressed, setting};
+
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let alpha = world.types_mut().atom_lit("alpha");
+        let beta = world.types_mut().atom_lit("beta");
+        let gamma = world.types_mut().atom_lit("gamma");
+        let tag = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "tag_impl", 1);
+        let target = |atom| CallTargetSummary {
+            callee: SelectedCallee::Function(tag),
+            surface_inputs: vec![atom],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let arrived = vec![target(alpha), target(beta), target(gamma)];
+        let summary = CallSiteSummary {
+            targets: arrived.clone(),
+            return_ty: None,
+        };
+        let seated = |world: &mut World| {
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three arms the atom tests separate are three destinations");
+            };
+            dispatch.targets
+        };
+
+        assert_eq!(
+            seated(&mut world),
+            arrived,
+            "the settled order is what production seats"
+        );
+
+        let reversed = {
+            let _stress = DispatchStressed::install(setting("arms:reverse"));
+            seated(&mut world)
+        };
+        assert_eq!(
+            reversed, arrived,
+            "the retired knob mirrors within a question group, and three arms asking three \
+             questions are three groups of one -- so it cannot move this callsite at all",
+        );
+
+        let permuted = {
+            let _stress = DispatchStressed::install(setting("arms:1"));
+            seated(&mut world)
+        };
+        assert_ne!(
+            permuted, arrived,
+            "a seeded permutation must reach the arrival-decided residue the group mirror leaves \
+             untouched, or the corpus is green by construction rather than by safety",
+        );
+        assert_eq!(
+            {
+                let mut sorted = permuted
+                    .iter()
+                    .map(|target| target.surface_inputs[0])
+                    .collect::<Vec<_>>();
+                sorted.sort();
+                sorted
+            },
+            {
+                let mut sorted = arrived
+                    .iter()
+                    .map(|target| target.surface_inputs[0])
+                    .collect::<Vec<_>>();
+                sorted.sort();
+                sorted
+            },
+            "a perturbation permutes the arms; it never invents or loses one",
+        );
+    }
+
+    /// fz-kdt.141 / fz-kdt.118: off is off, and provably so.
+    ///
+    /// `""` and `"0"` are the unset setting, and under it `arrival_order`
+    /// BORROWS -- production allocates nothing, compares nothing and reorders
+    /// nothing, which is the inertness claim stated where the compiler can
+    /// check it rather than in prose.
+    #[test]
+    fn no_setting_asks_for_anything_but_the_settled_order() {
+        use dispatch_stress::{DispatchStress, DispatchStressed, setting};
+
+        let settled = DispatchStress::default();
+        for off in ["", "0", "  ", ",", "0,0"] {
+            assert_eq!(setting(off), settled, "{off:?} must be the settled order");
+        }
+
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom_lit("ok");
+        let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "impl", 1);
+        let target = |ty| CallTargetSummary {
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: vec![ty],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let targets = vec![target(int), target(atom)];
+
+        assert!(
+            matches!(arrival_order(world.types_mut(), &targets), Cow::Borrowed(_)),
+            "with no setting the arms are borrowed, not permuted",
+        );
+        let _stress = DispatchStressed::install(setting("arms:1"));
+        assert!(
+            matches!(arrival_order(world.types_mut(), &targets), Cow::Owned(_)),
+            "a seed is what makes production build a different order at all",
+        );
+    }
+
+    /// fz-kdt.141: every seed names a permutation, and never the settled one.
+    ///
+    /// The second half is the measured one. Most of the corpus's free orders
+    /// are two items long -- 19 of the 27 arm-perturbable fixtures and every
+    /// wrapper-bearing one but three -- and a fair shuffle of two items comes
+    /// out settled about half the time, so a knob without this property reads
+    /// green on half its seeds for the reason it was built to rule out.
+    #[test]
+    fn every_seed_names_a_permutation_and_never_the_settled_one() {
+        for len in 0..12usize {
+            for seed in 1..40u64 {
+                let order = dispatch_stress::seeded_order(seed, len);
+                let mut seen = order.clone();
+                seen.sort_unstable();
+                assert_eq!(
+                    seen,
+                    (0..len).collect::<Vec<_>>(),
+                    "seed {seed} at length {len} must name each slot exactly once",
+                );
+                assert!(
+                    len < 2 || order != (0..len).collect::<Vec<_>>(),
+                    "seed {seed} at length {len} left the order it was asked to perturb",
+                );
+            }
+        }
+    }
+
+    /// fz-kdt.141: a setting names a surface and a perturbation, and anything
+    /// else is a sweep that measures nothing.
+    #[test]
+    fn a_setting_names_a_surface_and_a_perturbation() {
+        use dispatch_stress::{DispatchStress, Perturbation, setting};
+
+        assert_eq!(setting("7"), DispatchStress::both(Perturbation::Seeded(7)));
+        assert_eq!(setting("reverse"), DispatchStress::both(Perturbation::Reversed));
+        assert_eq!(
+            setting("arms:reverse"),
+            DispatchStress {
+                arms: Perturbation::Reversed,
+                wrappers: Perturbation::Settled,
+            },
+        );
+        assert_eq!(
+            setting("wrappers:3"),
+            DispatchStress {
+                arms: Perturbation::Settled,
+                wrappers: Perturbation::Seeded(3),
+            },
+        );
+        assert_eq!(
+            setting("arms:3,wrappers:9"),
+            DispatchStress {
+                arms: Perturbation::Seeded(3),
+                wrappers: Perturbation::Seeded(9),
+            },
+        );
+        for nonsense in ["arms", "wrappers:", "arms:0", "elsewhere:3", "arms:backwards"] {
+            assert!(
+                std::panic::catch_unwind(|| setting(nonsense)).is_err(),
+                "{nonsense:?} must fail loudly: a stress that sweeps inertly reads as green",
+            );
+        }
     }
 }
