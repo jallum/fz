@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T18:16:06Z",
+  "description": "Found by the fz-kdt.127 research (2026-09-02, HEAD 172ab21f1, r3/report.md Q4).\ncallable_flow_resolution_edges_product (jobs/runtime_demand.rs:3166) mints\nactivation_key(root, lambda, capture_tys ++ surface.inputs) (:3218) per\nfirst-class SURFACE demanded at a callable position. At an erased forwarder\n(fz-6gb: `run` keyed `(a0_p0) -\u003e a0_r`) the demand of ALL callers is joined\n(arg_demands_for_summary :2746) and flows back to EVERY mint site\n(record_first_class_boundary_demand :3064/:3093), so each mint is credited\nwith every other mint's arg surfaces: the correlation between a capture and\nthe args it is actually called with is lost at the forwarder join.\n\nMeasured: samelambda3 (scratchpad sl3.fz) mints P.mk/1#lambda at 4\n(capture x arg) keys, 3 reachable, `[int capture, float arg]` DEAD --\nanalyzed, lowered, shipped as wrapper member x11. 00277\n`Enum.reverse/1#lambda[int, list(int | :tail)]` dead (that accumulator\narises only from reverse/2's own lambda and reaches reverse/1's lambda\nthrough the shared erased Range.reduce_cont/6 slot 5). Corpus: 110 of 354\nconstruction wrappers have \u003e= 2 members.\n\nThis is excess work (proportional compilation), not a correctness break:\nthe wrapper's runtime selection never routes a value to a dead member.\nCharacterize the reachable set per mint (capture x the args that mint's\nvalue actually flows to), measure the dead fraction corpus-wide, and\ndecide whether the product should be correlated per mint site or pruned\nby reachability. Independent of fz-kdt.127's read-side fix (which does\nnot change this product -- verify after it lands).",
+  "id": "fz-kdt.162",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The callable-flow product mints dead (capture x arg) activations from demand joined at an erased forwarder",
+  "type": "task",
+  "updated_at": "2026-09-02T18:16:06Z"
+}
