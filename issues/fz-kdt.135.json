@@ -15,11 +15,15 @@
     {
       "text": "Scope correction from the fz-kdt.119 refutation: the landed tripwire's Full re-ask un-blinds WHICH positions are asked, not what the LIST axis can see -- it cannot detect list-ELEMENT escapes (measured: a program misrouting [:p,:q] into a [integer] body reports 0). The earlier 'sees the real thing corpus-wide' claim is over-broad: it sees the TUPLE axis corpus-wide. The 19-escape static census remains the only list-element instrument until fz-kdt.107 step 3 gives lists element discrimination.",
       "timestamp": "2026-09-02T03:14:50Z"
+    },
+    {
+      "text": "TRIPWIRE IS INERT AS OF fz-kdt.138 (ce6768af4) -- see fz-kdt.144.\n\n138 retired the Scope-A carve-out, so the list-bearing tuple positions the\n`Full` reading existed to look at are now decided by every lowering. Lowered\nand Full are the same function; `escaped()` is `X \u0026\u0026 !X`. The 0 this ticket's\ncensus reports is now true by construction, not by measurement, and a new\nentry cannot appear.\n\nThe env knob, the modes, the RAII census and the doc'd recipe are all\nuntouched and still correct -- what changed is that the reading they compare\nhas no gap left in it. fz-kdt.144's list-TAIL re-ask is what re-arms this.\nThe corpus-sweep integration and triage this ticket still owns should be\nre-based on that reading rather than the tuple one, which is now closed.",
+      "timestamp": "2026-09-02T08:46:51Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A dynamic surface-membership tripwire: the instrument the dispatch class has been missing",
   "type": "task",
-  "updated_at": "2026-09-02T03:14:50Z"
+  "updated_at": "2026-09-02T08:46:51Z"
 }
