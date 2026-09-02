@@ -22,11 +22,15 @@
     {
       "text": "fz-kdt.107 step-3 review (2026-09-01, answers this ticket's own check-question): 138 does NOT collapse into 107 step 3 -- measured with the full step-3 prototype built, F2 still prints 1 1; the carve-out is still sub.lists-based and this one-line flip remains F2's SOLE cure. Orthogonal to 107.3 (either lands first); still blocked by fz-kdt.132 (the flip immediately breaks take_drop/00420, reproduced). ALSO yours on landing: the tripwire baseline drops by the 212 take_drop occurrences.",
       "timestamp": "2026-09-02T03:53:53Z"
+    },
+    {
+      "text": "UNBLOCKED at fz-kdt.132 (c31b309d0). Verified by probe, not by inference: the one-line flip of runtime_type_predicate::lowering_tests_position to `true` was applied at HEAD and both target fixtures were run on all three doors.\n\nBEFORE (base + flip, at 8002889ff): 00420 and behavior/enum_take_drop_split both fail -- interp 'backend callable construction 27 matched no member', JIT and AOT 'function_clause: ... halted through a fault trap'.\nAFTER (fix + flip): both fixtures print the expected output byte-for-byte on interp, JIT and AOT.\n\nThe probe was then REVERTED; this ticket still owns the flip and its consequences. Also yours on landing, and now free: the surface-membership tripwire baseline is already 0 corpus-wide at HEAD (fz-kdt.132 emptied it -- the 212 take_drop occurrences and the other 56 were all one missing accumulator rung), so 'the baseline drops by the 212' is spent. The measurement that says Scope B worked is now the F2 reproducer from the fz-kdt.119 refutation: fn f(x :: {:a, [integer]}) / fn f(x :: {:a, integer}) must print 1 2, not 1 1. Re-run the 119 census instruments on lift as planned.",
+      "timestamp": "2026-09-02T07:46:05Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Scope B of the tuple-shape predicate: nested LIST positions stop erasing",
   "type": "task",
-  "updated_at": "2026-09-02T03:53:53Z"
+  "updated_at": "2026-09-02T07:46:05Z"
 }
