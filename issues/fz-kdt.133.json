@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-02T01:44:23Z",
-  "description": "From the fz-kdt.119 cold review (2026-09-01):\nnative_codegen/prim.rs:~1176, lower_runtime_type_predicate's fast\npath under destination-passing (fz-qwf TupleFields) answers the WHOLE\ntype test with iconst(tuple_arities.contains(delivered_arity)) --\nderived from how many field params exist, never touching a value.\nSound only while the predicate is arity-only; the instant it is\npayload-aware (fz-kdt.119) this is wrong and silent on exactly the\nlanes destination-passing optimized. Delete, or re-emit against the\nfield params -- which are precisely the values the per-field test\nneeds, so the repair is an opportunity (test the fields directly, no\nre-boxing). fz-kdt.119's spec item 5 lands this in-story; this ticket\ntracks it independently in case 119 is staged.",
+  "description": "CLOSED as absorbed by fz-kdt.119's landing (dd97b2df2, 2026-09-01): the constant-answer fast path was repaired to emit_delivered_tuple_test (native_codegen/prim.rs:1188/1232), which tests the field params directly instead of answering the whole type test from lane arity. Probed unreachable on today's corpus (0/1783 lowered type tests reach the delivered path) so it is correct-by-construction rather than corpus-witnessed; kept rather than deleted because deleting leaves an expect() to crash the day it IS reached. Verified present in the tree at fz-kdt.108's HEAD.",
   "id": "fz-kdt.133",
   "labels": [],
   "parent": "fz-kdt",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "P1: delivered_tuple_field_arity answers a runtime type test with a compile-time constant",
   "type": "task",
-  "updated_at": "2026-09-02T02:35:58Z"
+  "updated_at": "2026-09-02T15:41:24Z"
 }
