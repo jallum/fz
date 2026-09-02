@@ -9,9 +9,15 @@
   "id": "fz-kdt.168",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "MEASURED at the fz-kdt.127.1 landing (f34c2aaa3). The one-sided-hazard\nfacet now has a live corpus instance and a name.\n\n`a_mixed`'s callsite carries two arms over one lambda:\n  wide  `closure[Enum.reduce/3#L](closure[Enum.each/2#L](any))`\n  exact `closure[Enum.reduce/3#L](closure[Enum.each/2#L](closure[main/0#L]()))`\nThe wide arm's capture position is `any`, so `erasing_overlap` reports\nthe pair erasing, `covers` demands surface coverage, and the seat puts\nthe WIDE arm first. Sound -- its surface contains the narrow one, output\nis byte-identical on all three doors, and the corpus behaviour sweep\nmoves nothing -- but the exact specialization x23 is still emitted and is\nnow unreachable. Executable count is unchanged at 28, so the cost is a\ndead body, not a lost one.\n\nThis is the exact shape this ticket describes: `erasing_overlap` is\nsymmetric while the hazard (a value passing the NARROW test escaping the\nnarrow surface) is one-sided. A one-sided relation would seat the exact\narm first here and keep the specialization live. Reproducer:\n`fixtures2/behavior/a_mixed.fz`, backend dump, the arm order at the\n`Enum.reduce/3` callsite.",
+      "timestamp": "2026-09-02T20:24:17Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "erasing_overlap is symmetric while the fz-kdt.131 hazard is one-sided: exact-vs-inexact arm pairs lose the exact specialization",
   "type": "task",
-  "updated_at": "2026-09-02T18:53:11Z"
+  "updated_at": "2026-09-02T20:24:17Z"
 }
