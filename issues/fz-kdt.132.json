@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T01:44:23Z",
+  "description": "From the fz-kdt.119 cold review (2026-09-01, at b32d645ac). The\ncallable demand for enum_take_drop_split's step carries two\nresolutions -- (int, {empty_list(), int}) and (int, {list(int), int})\n-- the accumulator specialized on both its INITIAL {[], 0} and its\ngrown form. Base's arity-only tuple test cannot separate them, so one\nmember takes every value (FZ_DEBUG_TUPLE_SHAPE: 54 occurrences of\n{cons,int} passing a {[],int} test in this one fixture) and the other\nis DEAD -- and BROKEN: its return form is shape{lane,lane} where its\nsibling's is a packed lane({:cont|:halt, list(int)}); reached (by\nmaking the test exact), the caller mis-marshals and a tuple arrives\nwhere a list is expected ('backend callable construction 27 matched\nno member'). The corpus contains dead specializations that are not\ncorrectly built, kept harmless only by the blindness fz-kdt.119\nremoves. FZ_STRESS_REVERSE_DISPATCH_ARMS does NOT catch it (reversal\ndoes not perturb construction-wrapper selection -- see the instrument\nticket). BLOCKS fz-kdt.119 Scope B (nested list positions). Fix\ndirection: either the initial-form specialization should not be\nminted separately (it is subsumed by the grown form -- cross-key\nsubsumption smell, fz-kdt.124's neighborhood) or its return contract\nmust agree with its siblings (fz-kdt.97's one-return-contract law for\nconstruction members).",
+  "id": "fz-kdt.132",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "P1: a dead-because-blind accumulator specialization does not work when reached",
+  "type": "task",
+  "updated_at": "2026-09-02T01:44:23Z"
+}
