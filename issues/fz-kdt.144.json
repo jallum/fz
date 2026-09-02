@@ -9,9 +9,15 @@
   "id": "fz-kdt.144",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "NOW LOAD-BEARING, not just an enhancement (fz-kdt.138, ce6768af4).\n\nfz-kdt.138 retired the Scope-A carve-out, so every tuple position -- the\nlist-bearing ones included -- is decided by all three lowerings. Those\npositions were the ENTIRE gap between PositionScope::Lowered and\nPositionScope::Full, so the two readings are now the same function and\n`surface_membership::escaped()` is literally `X \u0026\u0026 !X`.\n\nCONSEQUENCE: fz-kdt.135's tripwire still reads 0 corpus-wide, but it reads 0\nBY CONSTRUCTION rather than by measurement. It cannot fire on anything until\nthis ticket gives `Full` content the lowerings do not have -- the list TAIL.\nThe head is exact on rejection and erasing on acceptance, so a full re-ask\nthat walked the tail would find residue no emitted test can see (fz-kdt.131\nfacet 3's two pairs, plus analysis-excluded heterogeneous traffic).\n\nThe PositionScope plumbing was KEPT rather than deleted, precisely so this\nticket has its seat; runtime_type_predicate.rs's PositionScope doc and\n.agent/docs/dispatch-matrix.md's \"The dynamic tripwire\" both now say the\ninstrument is inert until this lands. That is the honest present-tense fact,\nand it is also the argument for doing this one sooner rather than later: the\ndispatch class currently has NO live dynamic instrument.",
+      "timestamp": "2026-09-02T08:46:51Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A list-element surface-membership tripwire becomes possible once heads carry predicates",
   "type": "task",
-  "updated_at": "2026-09-02T03:54:33Z"
+  "updated_at": "2026-09-02T08:46:51Z"
 }
