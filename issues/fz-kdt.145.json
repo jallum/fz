@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-02T06:58:10Z",
   "created": "2026-09-02T03:54:24Z",
   "description": "CLOSED as landed in-story with fz-kdt.107 step 3 (8002889ff): sub_predicates_on is one exhaustive match over the axis table (a nested axis that forgets its arities fails to COMPILE), gated by every_arity_a_sub_predicate_can_reach_is_reported_for_registration; the refuter red-verified the load-bearing recursion (removing it = exactly 3 interp-only parity regressions).",
   "id": "fz-kdt.145",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Every arity any sub-predicate can reach must be schema-registered: a constructive invariant",
   "type": "task",
-  "updated_at": "2026-09-02T06:58:09Z"
+  "updated_at": "2026-09-02T06:58:10Z"
 }
