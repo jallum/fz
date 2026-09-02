@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.127.1"
+  ],
   "blocks": [],
   "created": "2026-09-02T18:52:39Z",
   "description": "From the fz-kdt.127 cold review (2026-09-02, F4; pre-existing law,\nobserved under the (B) prototype on a_mixed). With the callable axis\nPerPosition and recursing into captures, the covering seat reorders\na_mixed's arms wide-first (sound: output identical) and the grounded\nspecialization x23 becomes DEAD -- because `erasing_overlap` is\nsymmetric: an exact arm and an inexact (any-capture) arm are treated as\nmutually erasing, so the exact arm can never be seated ahead even though\nthe hazard (routing a value into a body whose surface never named it)\nonly runs one way: wide-body-receives-narrow-value is safe, narrow-body-\nreceives-wide-value is not. A one-sided relation would keep exact\nspecializations live where the exact test is sufficient. fz-kdt.131\nfacet; characterize corpus-wide after fz-kdt.127 (B) lands (count exact\nspecializations made dead by symmetric erasing-overlap).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "erasing_overlap is symmetric while the fz-kdt.131 hazard is one-sided: exact-vs-inexact arm pairs lose the exact specialization",
   "type": "task",
-  "updated_at": "2026-09-02T18:52:39Z"
+  "updated_at": "2026-09-02T18:53:11Z"
 }
