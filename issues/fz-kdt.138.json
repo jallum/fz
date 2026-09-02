@@ -14,11 +14,15 @@
     {
       "text": "UNBLOCKED-BY-DESIGN by fz-kdt.119 (4ca1dc7e7): Scope B is now a ONE-LINE change plus its consequences.\n\nruntime_type_predicate::lowering_tests_position is the single place the carve-out lives -- `sub.lists.is_none()` -- and everything else already reads it: position_overlaps, position_erases and position_contains in the lattice, emit_shapes_of_arity in the shared native emitter, matches_tuple_shape in the interpreter, and emit_delivered_tuple_test on the destination-passing path. Making it `true` turns the list axis on at every one of them at once.\n\nWhat lands with the flip: the list positions stop being erasing, so seats gain separation there; the fz-kdt.132 specialization becomes reachable and must be correct first (that is the block); and the tripwire baseline should drop by the 212 occurrences the two enum_take_drop_split paths hold today (see fz-kdt.135's baseline), which is the measurement that says Scope B worked.",
       "timestamp": "2026-09-02T02:36:49Z"
+    },
+    {
+      "text": "Acceptance reproducer from the fz-kdt.119 refutation (F2, pre-existing at base, all three doors): fn f(x :: {:a, [integer]}), do: 1 / fn f(x :: {:a, integer}), do: 2 -- prints 1 1 (Elixir: 1 2); swap the clauses and the sibling shape prints 2 2. The fixed P1's verbatim twin at any list-bearing position. The fz-kdt.135 tripwire fires on it exactly once (good acceptance signal). This ticket's framing grows: not just the internal accumulator cost -- user-visible clause dispatch is wrong at list positions until this lands.",
+      "timestamp": "2026-09-02T03:14:49Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Scope B of the tuple-shape predicate: nested LIST positions stop erasing",
   "type": "task",
-  "updated_at": "2026-09-02T02:36:49Z"
+  "updated_at": "2026-09-02T03:14:49Z"
 }
