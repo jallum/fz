@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T23:04:50Z",
+  "description": "FOUND while re-measuring the corpus for the fz-kdt.127.2 fold (F3).\n\nWHAT WAS SEEN. Two full base-vs-head sweeps ran the SAME base binary\n(built at 8c3d5ce90, kept at\nscratchpad/refute127.2/base-target/release/fz2) over the SAME input\n`fixtures2/00277_enum_tier0_fixture.fz` with `interp --dump backend=`, in two\ndifferent sessions and two different worktrees of the same commit. They\nproduced two different backend programs:\n\n  refuter's sweep   md5 cafaf7f634cd1428c3b4c5cd1e6c5e50   3 dispatch nodes, 180 executables\n  this sweep        md5 dc9a2fc736688054199696ab555d1164   2 dispatch nodes, 181 executables\n\n571 diff lines: a shifted entry id (x180 vs x179), two `construction=w6`/`w7`\nswaps on `Enum.reduce/3#lambda`, a `whole` vs `fields(whole, whole)` transport\ndemand on two returns, and a callable-resolution set that carries an extra\n`Enum.reverse/2#lambda` target per row in the refuter's run.\n\nThe HEAD side of both sweeps is byte-identical (a01cd349f960b1346c2a0313e3da4602),\nso whatever this is, it did not move with fz-kdt.127.2.\n\nNOT REPRODUCIBLE HERE. The base binary was re-run on the same file 5x\nsequentially and 12x in parallel (deliberate contention): all 17 runs produced\ndc9a2fc7..., 2 dispatch nodes, 181 executables. The head binary is equally\nstable across 17 runs.\n\nWHY IT MATTERS. It is the only thing separating \"seven fixtures lose a\ndispatch node\" (the refuter's count, and what\n.agent/docs/semantic-fixpoint.md said before the fold) from \"five\" (this\nsweep's count): 00277 was one of the seven, and in this tree its counts do not\nmove at all. It is also one of exactly two fixtures whose dump moves when the\nagenda is flipped FIFO/LIFO at BOTH base and head (the other is\n`dead_closure_capture_empty_list`), and `enum_tier0` is one of the three\nknown-red `fixture_matrix` lanes. So this fixture is already the corpus's\norder-sensitivity hot spot.\n\nWORK: settle whether the discrepancy is (a) real nondeterminism in the\ncompiler reachable only under some condition not reproduced here, (b) a stale\nor dirty tree in the refuter's worktree during its sweep (that worktree has\nsince been deleted, so it cannot be inspected), or (c) an input difference.\nStart by making `00277_enum_tier0_fixture`'s canon a determinism gate under\nthe same stress lens fz-kdt.127.2 used, and by looking for a non-monotone join\nin the transport demand that flips `whole` vs `fields(whole, whole)`.",
+  "id": "fz-kdt.174",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "00277_enum_tier0_fixture compiled to two different backend programs from one binary on one input: cross-session discrepancy, not reproducible in 17 same-session runs",
+  "type": "bug",
+  "updated_at": "2026-09-02T23:04:50Z"
+}
