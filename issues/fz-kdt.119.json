@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.132"
+  ],
   "blocks": [
     "fz-kdt.107",
     "fz-kdt.131"
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "P1: the tuple axis becomes per-position sub-predicate shapes; the envelope erases identity-preserving at every depth (Scope A; nested lists stay erasing pending the take_drop blocker)",
   "type": "task",
-  "updated_at": "2026-09-02T01:43:49Z"
+  "updated_at": "2026-09-02T01:44:44Z"
 }
