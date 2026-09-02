@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T15:39:18Z",
+  "description": "Isolated during the fz-kdt.108 landing (2026-09-02, coordinator's own\nclean FIFO/LIFO measurement, distinct-md5 binaries): 00277_enum_tier0_fixture\nstays schedule-visible at 562 backend-canon lines base AND head (fz-kdt.108\nclosed enum_map_family 1170-\u003e0 but not this). Root: fz-kdt.108's canonical\nconstruction-wrapper order keys on Types::cmp_tys(surface.inputs), and\ncmp_tys' free-var tiebreak (types/order.rs::cmp_var) falls back to raw\nTypeVarId mint order (a.0.cmp(\u0026b.0)) -- which is schedule-sensitive. 00277's\n(int, list(int | :tail)) surfaces tie structurally, so their order (and the\nactivation-key Tys minted from it) follows a schedule-unstable key. This is\nthe ONE documented residual of the whole cmp_ty canonical instrument\n(kdt.101/105/129 all noted it and were unaffected because their inputs had no\nfree-var ties). BEHAVIOR-NEUTRAL (00277 stdout identical 3 doors both\nschedules; the 562 lines are exec-count 180 vs 181 + return-field marshaling,\nnever output). Also entangled with fz-kdt.107 (00277's 3-arm dispatch-twin\nclause-order class) -- the review recorded 00277 as BOTH; determine which\ncomponent the free-var key closes vs which is 107's. FIX DIRECTION: give\ncmp_var a schedule-stable free-var key -- a content-derived / address-path\nkey, not raw TypeVarId (the same lesson as StableSortKey for activation\narrows, fz-k22.21). Sequence: measure 00277's residual again after fz-kdt.107\nlands, then close whatever free-var-tie component remains.",
+  "id": "fz-kdt.161",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "00277's confluence needs a schedule-stable free-var tiebreak: cmp_tys falls back to TypeVarId mint order",
+  "type": "task",
+  "updated_at": "2026-09-02T15:39:18Z"
+}
