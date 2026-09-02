@@ -7,9 +7,15 @@
   "id": "fz-kdt.171",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "FOLDED INTO fz-kdt.127.2 (the commit that killed the question rehomes the\nwitness in the same motion) and closed.\n\nTHE TICKET'S OWN REPRODUCER IS NOT A WITNESS. It was measured at\nfz-kdt.127.2's head: mailbox `any` capture in one arm, literal `int` in the\nother, chosen by a `case`. It does route through a real containment dispatch\n(3 dispatch nodes, arms `type(closure[P.mk/1#lambda](any))` vs\n`...(int)`) -- but under the fz-kdt.167 regression it claims to catch (the\noverlap swap: `CallableShapes::enumerates`'s `shape.inside(ours)` -\u003e\n`shape.overlaps(ours)`) it still prints 12 on interp, JIT and AOT. With no\nfloat arm the mis-route stores an int where an int is read, so nothing is\nobservable. Recording the corrected reproducer here so it is not tried again.\n\nWHAT LANDED. `fixtures2/behavior/callable_union_capture_containment.fz` is\nrewritten on the shape that IS a witness -- one arm mints `mk/1` over the\nmailbox value (capture typed `any`, stored BOXED), the other over a `float`\nliteral (stored raw), and the `case` scrutinee comes out of the mailbox so no\nkey can pin which:\n\n  defmodule P do\n    fn twice(f, x), do: f.(f.(x))\n    fn run(f, x), do: twice(f, x)\n    fn mk(c), do: fn (n) -\u003e n + c end\n  end\n  fn main() do\n    send(self(), 1)\n    a = receive do v -\u003e v end\n    f = case a \u003e 0 do\n      true -\u003e P.mk(a)\n      _ -\u003e P.mk(0.5)\n    end\n    dbg(P.run(f, 10))\n  end\n\nMEASURED (marker DOORS-1788389883, release binary, this tree):\n  containment (as landed)  interp 12 / JIT 12 / AOT 12  = the Elixir oracle\n  3 dispatch nodes; arms `type(fp[F] closure[P.mk/1#lambda@1604-1623/1](float))`\n  vs `...(any)`.\n\nRED-FIRST (marker REDOVERLAP-1788389914, overlap swap applied, rebuilt, then\nreverted and rebuilt clean):\n  interp 12.0                                        WRONG\n  JIT    panic, `fz_closure_get_capture_f64 expected float, got Int(1)`\n  AOT    panic, same message\n\nThat is fz-kdt.167's exact signature on all three doors, so the containment\nlaw is gated end-to-end again.\n\nCorpus effect of the rehome, measured base 8c3d5ce90 vs head over the SAME\n(new) corpus text: this fixture goes 1 -\u003e 3 dispatch nodes and 24 -\u003e 32\nexecutables, and it is no longer the corpus's only fixture that LOSES\nexecutables under the type-preserving key (nothing loses now). `.expected.txt`\nis `12`; `.oracle.exs` matches; the header comment states what the fixture\nwitnesses and why its previous four-static-call body stopped witnessing it.\n\nNothing remains for this ticket.",
+      "timestamp": "2026-09-02T23:06:05Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "callable_union_capture_containment stops asking its question under the type-preserving forwarder key: fz-kdt.167's end-to-end witness is now answered statically",
   "type": "task",
-  "updated_at": "2026-09-02T22:04:25Z"
+  "updated_at": "2026-09-02T23:06:05Z"
 }
