@@ -9,9 +9,15 @@
   "id": "fz-kdt.167",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "The red-first fixture this ticket asks for SHIPS IN fz-kdt.127.1, as\nfixtures2/behavior/callable_union_capture_containment.fz (+ .oracle.exs,\n.expected.txt). Written by the 127.1 adversarial refutation as probe\nF_mailbox_union_capture and folded in on review.\n\nIt DISTINGUISHES the two relations, which is what was missing: a value\ntaken out of the mailbox is typed `any`, so `P.mk(a)` mints a construction\nwhose capture is a UNION and whose wrapper stores a BOXED word, beside the\n`int` and `float` constructions of the same lambda; one forwarder `P.run/2`\ncarries all four.\n\nMEASURED at 127.1's head (marker FIX3-1788383222 / REDOVERLAP-1788383233):\n\n  containment (as landed)   interp 12 11.0 12 11.0\n                            JIT    12 11.0 12 11.0\n                            AOT    12 11.0 12 11.0   = Elixir oracle\n\n  CallableShapes::enumerates swapped to shape.overlaps(ours)\n                            interp 12.0 11.0 12 11.0  WRONG\n                            JIT    abort, fz_closure_get_capture_f64\n                                   expected float, got Int(1)\n\nSo containment-not-overlap is now gated by a corpus fixture on all three\ndoors, not by the single unit test\n`a_union_capture_construction_is_admitted_only_by_a_test_that_contains_it`.\nThe interp/native agreement pin this ticket also asks for is covered by the\nthree-door lanes of that fixture.\n\nNOT CLOSING -- the coordinator decides whether this ticket collapses into\n127.1 or keeps its remaining scope.",
+      "timestamp": "2026-09-02T21:08:59Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A construction whose capture type is a union must be admitted by CONTAINMENT, never overlap: red-first fixture wanted",
   "type": "bug",
-  "updated_at": "2026-09-02T18:53:11Z"
+  "updated_at": "2026-09-02T21:08:59Z"
 }
