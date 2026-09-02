@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T22:04:25Z",
+  "description": "FOUND by the fz-kdt.127.2 build (type-preserving forwarder erasure), measured\nbase 8c3d5ce90 vs head.\n\nfixtures2/behavior/callable_union_capture_containment.fz was written as\nfz-kdt.167's WITNESS: mk/1 minted at a mailbox-typed `any` capture and at\n`int`/`float` literals, all four forwarded through P.run/2, so one shared run\nbody had to choose by a runtime test on the construction -- and the union\nconstruction OVERLAPS both narrow arms while being INSIDE neither. Admitting on\noverlap answered 12.0 for 12 on interp and aborted in fz_closure_get_capture_f64\non the native door.\n\nUnder the brand-only forwarder erasure the program is STATIC: P.run/2 keys three\nactivations (`closure[?](any)`, `closure[?](int)`, `closure[?](float)`),\nevery callsite has one target, and the canon goes 52 questions -\u003e 16, 1 dispatch\nnode -\u003e 0, 37 executables -\u003e 35. Output is unchanged (12 11.0 12 11.0 on all\nthree doors) and the CONTAINMENT LAW is still pinned at the unit level\n(runtime_type_predicate.rs: contained_in / CallableShape::inside tests, and\ntypes_test.rs). What is gone is the end-to-end witness: nothing in the corpus\nnow routes a union-capture construction through a real dispatch arm, so a\nregression from containment back to overlap would show in no fixture.\n\nREPRODUCER that restores it (measured at head, correct: prints 12 on interp and\nJIT, 3 dispatch nodes, arms `type(closure[P.mk/1#lambda](any))` vs\n`type(closure[P.mk/1#lambda](int))`) -- the closure itself must come from a\nruntime branch, exactly as same_lambda_two_capture_types_dynamic does:\n\n  defmodule P do\n    fn twice(f, x), do: f.(f.(x))\n    fn run(f, x), do: twice(f, x)\n    fn mk(c), do: fn (n) -\u003e n + c end\n  end\n  fn main() do\n    send(self(), 1)\n    a = receive do v -\u003e v end\n    f = case a \u003e 0 do\n      true -\u003e P.mk(a)\n      _ -\u003e P.mk(1)\n    end\n    dbg(P.run(f, 10))\n  end\n\nWORK: re-home the containment witness on that dynamic shape (a _dynamic twin\nbeside the existing fixture, or rewrite the existing one), keep the Elixir\noracle, and re-run the fz-kdt.167 overlap-swap experiment against it to confirm\nthe swap is still caught (interp 12.0 / JIT abort). Then decide whether the\nstatic fixture still earns its place -- it now pins 'this program asks nothing',\nwhich is fz-kdt.127's law, not fz-kdt.167's.",
+  "id": "fz-kdt.171",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "callable_union_capture_containment stops asking its question under the type-preserving forwarder key: fz-kdt.167's end-to-end witness is now answered statically",
+  "type": "task",
+  "updated_at": "2026-09-02T22:04:25Z"
+}
