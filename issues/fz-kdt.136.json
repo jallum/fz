@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T01:44:25Z",
+  "description": "From the fz-kdt.119 cold review (2026-09-01):\nFZ_STRESS_REVERSE_DISPATCH_ARMS permutes callsite-dispatch\nalternatives (call_destinations) but construction-wrapper SELECTION\nplans (the member-matching at backend callable constructions) are\nbuilt elsewhere and never perturbed -- which is why the take_drop\ndead-and-broken member was invisible to the stress (base stays green\nunder reversal while carrying a member that fails when reached).\nExtend the knob (or add a sibling) to permute wrapper member order;\nexpected immediate catch: the take_drop blocker. Also fz-kdt.131\nneeds a CROSS-GROUP permutation stress (the knob only permutes within\nquestion groups) -- one design for both gaps.",
+  "id": "fz-kdt.136",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The arm-reversal stress does not perturb construction-wrapper selection plans",
+  "type": "task",
+  "updated_at": "2026-09-02T01:44:25Z"
+}
