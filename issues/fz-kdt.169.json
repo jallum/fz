@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T18:52:40Z",
+  "description": "From the fz-kdt.127 cold review (2026-09-02, F7; prototype (A) measured\nover 466 fixtures: 55 canon movers, 0 behaviour movers). Keeping capture\ntypes in the forwarder key splits not only same-lambda/different-type\nliterals (the 127 shape) but ANY forwarder that receives closures with\ndifferent capture tuples from DIFFERENT lambdas: spawn/1 -\u003e closure[?](pid)\nvs closure[?](pid, int) (actor_ring 22-\u003e24 executables); enum_take_drop_\nsplit 196-\u003e204 and 0-\u003e2 dispatch nodes (real atom+identity questions in\nthe recursive core); mailbox_closure_each 29-\u003e31; mailbox_closure_reduce\n39-\u003e41; enum_predicate_search 204-\u003e206; enum_map_family 151-\u003e152; 00275\n25-\u003e26; 00277 180-\u003e181; a_mixed 28-\u003e29; repr_seam 21-\u003e22. R3's \"3 splits\"\nundercounted (it counted same-lambda slots only). Proportional-compilation\nfollow-up to fz-kdt.127 stage (A): is capture ARITY/shape (not type) the\nright forwarder grain for different-lambda slots, or should the erasure\nkeep types only where a downstream consumer is specialized on them?\nMeasure against the inventory pins (204-\u003e206 re-pinned with cause).",
+  "id": "fz-kdt.169",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Type-preserving forwarder keys split forwarders by capture TUPLE across different lambdas (spawn/1: closure[?](pid) vs (pid,int)): 55 canon movers, 11 fixtures gain executables",
+  "type": "task",
+  "updated_at": "2026-09-02T18:52:40Z"
+}
