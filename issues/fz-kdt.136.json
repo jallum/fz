@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-02T05:11:58Z",
   "created": "2026-09-02T01:44:25Z",
   "description": "CLOSED as folded into fz-kdt.141 (f69c5ea26): the wrapper-member permutation landed at the sound upstream point, and this ticket's expected catch (fz-kdt.132's broken member) was REFUTED BY MEASUREMENT -- reordering makes the dead member live INSTEAD of its sibling, never alongside, so no order produces matched-no-member (0 hits over 584 fixtures x 7 settings x 2 doors); the break needs different VALUES reaching different members, which is exactly fz-kdt.138's exact-test change. The stress gap this ticket named is closed; the catch it predicted was wrong.",
   "id": "fz-kdt.136",
@@ -18,7 +19,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The arm-reversal stress does not perturb construction-wrapper selection plans",
   "type": "task",
   "updated_at": "2026-09-02T05:11:58Z"
