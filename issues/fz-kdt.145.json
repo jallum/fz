@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T03:54:24Z",
+  "description": "From the fz-kdt.107 step-3 review (2026-09-01): the prototype's first\nsweep showed 3 interp-only regressions (matched-no-member /\nmissed-exhaustive-dispatch) because tuple_arities_at_every_depth did\nnot recurse through LIST HEADS -- a tuple arity appearing only inside\na head was unregistered and the head's tuple test rejected while JIT\nstayed green (three-path parity break, one line to fix). File the\nCONSTRUCTIVE gate: every arity reachable through any sub-predicate\n(tuple positions AND list heads AND whatever the next nested axis\nadds) is registered -- so the next axis extension cannot repeat the\nbreak. Lands with or immediately after 107.3.",
+  "id": "fz-kdt.145",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Every arity any sub-predicate can reach must be schema-registered: a constructive invariant",
+  "type": "task",
+  "updated_at": "2026-09-02T03:54:24Z"
+}
