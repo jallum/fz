@@ -23,7 +23,7 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-kdt.127 stage B: the callable axis names the construction, not the function -- CallableShapes, containment admission, PerPosition, construction-keyed capture unpack, on all three doors",
   "type": "bug",
   "updated_at": "2026-09-02T21:24:00Z"
