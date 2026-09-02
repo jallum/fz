@@ -5,6 +5,7 @@
     "fz-kdt.132"
   ],
   "blocks": [],
+  "closed_at": "2026-09-02T09:17:16Z",
   "created": "2026-09-02T01:45:01Z",
   "description": "LANDED c2041041e (2026-09-02; refuter FIX-THEN-MERGE, fixes folded:\nseven surviving present-tense carve-out descriptions rewritten to\npast-tense/corrected-mechanism fact per the rip-out law, and the\nmeasured p8 twin/niwt shape restored to the gate. Gate lib 1571/0/5,\ncli 24/0, matrix 452/0/9).\n\nTHE RE-SCOPE'S PREMISE WAS WRONG -- both negative measurements that\nsuggested a rip-out were PROBE ARTIFACTS, and the builder proved\nexactly why: (1) the F2 reproducer used LITERAL arguments, which\nsettle the clause at compile time so no runtime dispatch is reached\n(the refuter's single-program proof: literal call right, produced\ncall wrong, side by side at base -- 1 2 1 1); (2) 'zero-mover\ncorpus-wide' was true because NO corpus fixture writes a list-bearing\ntuple position with clauses needing separation -- the population was\nempty, the defect was not.\n\nTHE DEFECT (live at base, user-visible, all three doors): a tuple\nposition that could hold a list was excluded from the lattice AND all\nlowerings (lowering_tests_position, fz-kdt.119's Scope-A carve-out) --\nblind positions only ever ACCEPT, so the clause written first took\nevery value. FIVE red shapes (all pick-routed): disjoint heads in a\ntuple, empty-vs-nonempty, list-vs-scalar, two-tuples-deep, and TWO\nlist positions (p8, restored by the refuter's F2 finding). All red at\n81ec3f25d on interp/JIT/AOT; all green after, byte-identical to the\nElixir oracle, invariant under 12 stress settings x 3 doors.\n\nTHE FIX IS A DELETION: lowering_tests_position + its three lattice\nwrappers + two continue branches in the shared emitter and the\ndestination-passing path -- the lattice asks positions directly; NO\nposition any lowering declines to ask remains. Movement: 3 receive\ncanon movers, behaviour-identical, same bodies/arms/question\nmultiset, seat rotated one (the fully-constrained {:unknown x3} arm\nfinally seats first -- refuter machine-checked covering safety with\nthe debug seat-invariant over all 586 fixtures, 0 hits, and drove the\nnewly-live narrow specialization correct on three doors).\n\nCONSEQUENCE (flagged, ticketed): PositionScope::Lowered == Full now\n-- fz-kdt.135's tripwire is inert BY CONSTRUCTION (X \u0026\u0026 !X) until\nfz-kdt.144's list-tail re-ask re-arms it; plumbing KEPT under the\nrip-out law's ticket-owns-its-future exception, docs state it\nplainly. The refuter proved the blindness 144 owns is REAL: a\n[integer]/[integer|:ok] program routes {:a,[0,:ok]} into the\n[integer] body today (the one-sided-filter acceptance residue) and\nthe tripwire reads 0 on it. The dispatch class has NO live dynamic\ninstrument until 144 lands.\n\nWith this, the dispatch-blindness program is COMPLETE: tuple\npositions (119), closure identity (125), list heads (107.3), nested\nlist positions (138). What the runtime cannot separate is exactly:\nsame-fn-id/different-captures (127's six groups, policy), overlapping\nlist heads' tails (131's two pairs + 144's instrument), and [] ties.",
   "id": "fz-kdt.138",
@@ -37,8 +38,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A tuple position that holds a list is a question too: the last blindness deleted, and it was hiding a live miscompile",
   "type": "task",
-  "updated_at": "2026-09-02T09:17:15Z"
+  "updated_at": "2026-09-02T09:17:16Z"
 }
