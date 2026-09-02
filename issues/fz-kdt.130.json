@@ -20,11 +20,15 @@
     {
       "text": "LANDED 36c8b1688 (2026-09-02; refuter FIX-THEN-MERGE, the one required\nfix folded: semantic-fixpoint.md's stale 'permanently-Unresolved\nmeasures zero today' observation was falsified by this commit's own\nfixtures -- 5 such callsites now stand on compiling programs, stated\nfrom both ends so the carrier rule reads stronger). Refuter\nverification highlights: the changed cell is ONE of a four-cell\ntable (summary-absent x carrier=ValueRef), corpus census exactly 2\nfixtures/5 callsites in that cell and ZERO in the retained dead-call\ncell; a genuinely-dead ValueRef call lowers live-but-unreachable\n(benign, probed); 20+ adversarial shapes green on all doors incl.\nclosure-returning-closure-through-mailbox, triple application,\nspawn+send children, two-mailbox forwarding; tail-position calls were\ncorrect at base BECAUSE NoReturn-\u003eTailCall is right there -- the\nmechanism confirmed from the other side; goldens-not-assertions\njudged SOUND (a dropped continuation exits 0; only a rendered-output\ncomparand sees it). Canon 458/460 byte-identical (the 2 movers are\nthe new fixtures). Bycatch -\u003e fz-kdt.152/153/154.",
       "timestamp": "2026-09-02T10:11:59Z"
+    },
+    {
+      "text": "Landing sha corrected: 62b5b09fe (author identity reset to the noreply address for GitHub email-privacy; content identical to 36c8b1688).",
+      "timestamp": "2026-09-02T10:12:48Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "P1: closures through the mailbox break on JIT/AOT -- invoked once where source says twice; direct invoke prints nothing",
   "type": "task",
-  "updated_at": "2026-09-02T10:11:59Z"
+  "updated_at": "2026-09-02T10:12:48Z"
 }
