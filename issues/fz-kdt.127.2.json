@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.127.1"
+  ],
   "blocks": [],
   "created": "2026-09-02T18:52:41Z",
   "description": "SPEC (from the accepted cold review; prototype review/protoA.diff, 7\nfiles +107/-32, clippy clean). SEQUENCE AFTER STAGE B: measured, stage A\nalone REGRESSES the dynamic witness (closure chosen by a runtime case\nthen run(f,10)): correct at base on all doors, under A alone interp\nprints 12 then \"extern integer arg must be Int\", JIT/AOT refuse --\nbecause A splits run into two keys and main's callsite becomes a\n2-target dispatch in 127's shape that only B can answer.\n\nTypes::erase_transported_closure_identities / erase_closure_identity\nerase the BRAND and keep capture types recursively (brands inside\ncaptures erased too); a closure type form without a brand but with\ncaptures (ClosureLit.fn_id optional or a lit-less-with-captures form;\nsites: sigs.rs:89, emptiness.rs:177-217, canon.rs:274 prints\n`closure[?](...)`, callable_clauses, callable_identity_targets -\u003e\nCallableShapes::any() for the anonymous literal (the one guard that makes\nA and B compose), lit_arrow_shapes, refine_widen, resolve_closure_call).\n\nACCEPTANCE: sl3 canon has 0 dispatch nodes and two run keys\n`P.run/2[closure[?](float), int]` / `[closure[?](int), int]`, one twice\ntarget each; the dynamic fixture stays green; probeB1/B2/pin6gb/00411\nunchanged; fz-6gb's intent test and keeps_distinct_direct_callable_\nexecutables green. MEASURED COST (classify, do not hide): 55 canon\nmovers, 11 fixtures gain executables (actor_ring 22-\u003e24 via spawn/1\nclosure[?](pid) vs (pid,int); enum_take_drop_split 196-\u003e204 with 0-\u003e2\nreal dispatch nodes; mailbox_closure_each 29-\u003e31; mailbox_closure_reduce\n39-\u003e41; enum_predicate_search 204-\u003e206 -- inventory pin re-pinned with\ncause; enum_map_family 151-\u003e152; 00275; 00277; a_mixed; repr_seam), 0\nbehaviour movers over 466 fixtures; residue pin already 0 from stage B.\nFollow-up owned by fz-kdt.169 (different-lambda capture-tuple splits).\nDocs: semantic-fixpoint.md keying paragraph (forwarder erasure = brand\nonly), canon `closure[?](...)` form.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-kdt.127 stage A: the forwarder erasure erases the brand and keeps capture types -- samelambda3 with zero dispatch nodes",
   "type": "bug",
-  "updated_at": "2026-09-02T18:52:42Z"
+  "updated_at": "2026-09-02T18:53:10Z"
 }
