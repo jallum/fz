@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T09:40:43Z",
+  "description": "Found while writing fz-kdt.130's fixtures. Not specific to `receive` -- every\n`-\u003e` arm body has it, so it is a parser fact, not a mailbox one.\n\n    fn main() do\n      x = 1\n      case x do\n        1 -\u003e\n          a = 10\n          dbg(a)\n        _ -\u003e dbg(0)\n      end\n    end\n\n  error[parse/expected-token]: expected `-\u003e`, got Newline\n\nThe arm body is parsed as a single expression, so the newline after the first\nstatement is read as the end of the arm and the parser then demands the next\narm's `-\u003e`. Elixir accepts a statement sequence in an arm body. The workaround\nin every fixture today is to bind the arm's value out and continue after the\n`case`/`receive`, which is why the corpus never exercised it.\n\nConsequence for testing: a claim whose shape is \"several things happen inside\none arm\" cannot be written directly. fz-kdt.130's fixture had to be restructured\naround it.",
+  "id": "fz-kdt.151",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "P3: a case/receive arm body parses as one expression, so a multi-statement arm is a parse error",
+  "type": "bug",
+  "updated_at": "2026-09-02T09:40:43Z"
+}
