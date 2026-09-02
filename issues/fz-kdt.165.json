@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T18:16:08Z",
+  "description": "Found by the fz-kdt.127 research (2026-09-02, r3/report.md surprise 3).\nbody_consumes_callable_identity (jobs/keying.rs:257) is true when the body\nhas capture params, ANY ClosureCall tail, or ANY Lambda step -- whole-body\nsyntax, no flow, no per-slot view. List.reduce/3 keys precisely per\nreducer only because its :suspend clause builds a thunk (list.fz:22-24);\nits running :cont path only forwards the reducer. So the fz-6gb sharing\nrule is decided by clauses that may never run, and a per-slot / per-clause\nconsumption fact would share more (proportional compilation) without\nchanging what direct dispatch buys. Characterize: how many precisely-keyed\nbodies in the corpus are precise only through a non-running clause;\nwhether DispatchMask (jobs/keying.rs:451) already carries enough to make\nconsumption per slot. Sequence after fz-kdt.127.",
+  "id": "fz-kdt.165",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "consumes_callable_identity is syntactic: a body keys precisely for a clause it never runs",
+  "type": "task",
+  "updated_at": "2026-09-02T18:16:08Z"
+}
