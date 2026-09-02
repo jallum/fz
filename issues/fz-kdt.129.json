@@ -12,11 +12,15 @@
     {
       "text": "fz-kdt.119 review correction (2026-09-01): this ticket's close record says the 19-escape census ratchet is 'retired by fz-kdt.119/107' -- over-credits 119: ALL 19 escapes are list subjects, and 119 retires ZERO (verified against the prototype). Only fz-kdt.107 step 3 can move that number.",
       "timestamp": "2026-09-02T01:44:45Z"
+    },
+    {
+      "text": "fz-kdt.119 (4ca1dc7e7) moves this ticket's headline result and confirms its census note.\n\nTHE SEAT ON THE PREDICATE LENS FLIPPED, soundly. This ticket seated enum_predicate_search's List.reduce_while_step/3 pair WIDE-first, because coverage demanded it: the arms' {:halt, :false} and {:cont, :true} | {:halt, :false} states were one question, so only the wide arm's surface named both. Both positions of that state are ATOMS, the test now asks them, a {:cont, :true} fails the narrow arm's first question outright -- so the pair overlaps nowhere erasing, covers holds both ways, and the second conjunct (precision) seats the NARROW arm first. That is the 28-line canon move 119 reports, and it is sound only because 119 lands the three lowerings with the refinement; the predicate change alone would have reseated it on a test the runtime does not emit.\n\nThe rule itself is untouched. What changed is what 'the tests differ' may mean at a tuple position.\n\nRE-MEASURED AT 119'S HEAD, all still holding:\n- all four schedule lenses byte-identical under FIFO and LIFO (Agenda::pop flipped by hand, per this ticket's recipe);\n- corpus dump census still exactly THREE schedule-movers -- 00277_enum_tier0_fixture, dead_closure_capture_empty_list, enum_map_family -- and the 584-fixture interp stdout is identical between the two schedules;\n- the 19-escape census unmoved, entry for entry.\n\nTHE CENSUS NOTE IS CONFIRMED: this ticket's close record over-credited 119. It retires ZERO of the 19; all 19 are list subjects and only fz-kdt.107 step 3 moves that number. .agent/docs/dispatch-matrix.md now says so in the census paragraph itself.\n\nThree of this ticket's gates were rewritten by 119 with their reasoning inverted where 119 inverts it (a_narrower_twin_... , distinguishable_arms_... , runtime_indistinguishable_arms_keep_arrival); both arrival orders are still driven in each.",
+      "timestamp": "2026-09-02T02:37:17Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "A seat is arrival order corrected only where an arm covers what its test cannot see",
   "type": "bug",
-  "updated_at": "2026-09-02T01:44:45Z"
+  "updated_at": "2026-09-02T02:37:17Z"
 }
