@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-02T10:48:02Z",
-  "description": "Found by the fz-kdt.152 build (2026-09-02). PRE-EXISTING and NOT mailbox-related: identical at 62b5b09fe and after fz-kdt.152's fix, and identical with a STATIC lambda, so neither the mailbox nor the callable layout is involved.\n\n  fn main() do\n    dbg(Enum.reduce([1, 2, 3], {0, 0}, fn (x, acc) -\u003e {elem(acc, 0) + x, elem(acc, 1) + 1} end))\n  end\n\nAll three doors: error[lower/unbound] -- 'compiler2 lowering found unresolved\ndirect runtime ...'. Elixir answers {6, 3}.\n\nAn int accumulator and a LIST accumulator both work on all three doors\n(pinned in fixtures2/behavior/mailbox_closure_reduce.fz), so it is the TUPLE\naccumulator that breaks: the tuple threaded through List.reduce_cont/3's\n{:cont, acc} / {:done, acc} carrier meeting elem/2 on the way back out.\nLikely the same family as the tuple-position readings in fz-kdt.138.",
+  "description": "RE-SCOPED by the fz-kdt.152 refutation (2026-09-02) -- the original diagnosis (tuple accumulator through Enum.reduce) was WRONG: tuple accumulators are green on all three doors at base and head, and green through the mailbox after 152. The actual defect: dbg(elem({1,2}, 0)) ALONE -- no Enum, no reduce, no lambda -- fails error[lower/unbound]: 'compiler2 lowering found unresolved direct runtime callee elem/2', every door. elem/2 is missing from the lowerable runtime-callee surface entirely. The original probe's failure was real but its blast-radius claim badly overstated. Fix: add elem/2 to the runtime callee surface (find where Kernel builtins register; tuple field access machinery exists -- fz-qwf TupleFields); trivial-looking but verify arity/bounds semantics against Elixir (elem/2 raises on out-of-range).",
   "id": "fz-kdt.156",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
   "status": "open",
-  "title": "Enum.reduce with a tuple accumulator compiles on no path -- lower/unbound",
+  "title": "elem/2 is an unresolved direct runtime callee in ANY context",
   "type": "bug",
-  "updated_at": "2026-09-02T10:48:02Z"
+  "updated_at": "2026-09-02T11:26:50Z"
 }
