@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T04:30:11Z",
+  "description": "From fz-kdt.141 (2026-09-02, at 949dfce65 + the permutation stress).\n\nTHE MEASUREMENT. FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP's whole 268-escape\nbaseline -- 7 fixtures, the table in .agent/docs/dispatch-matrix.md --\nis decided by ONE order: the construction-wrapper member order\n(flow.first_class_edges, a BTreeSet\u003cCallableSurface\u003e walked in\ninterned-id order = the type interner's mint order = the agenda's).\nSweeping the corpus under FZ_STRESS_PERMUTE_DISPATCH:\n\n  settled          268   (00183 16, 00230 16, 00418 4, 00419 16,\n                          00420 106, enum_take_drop_split 106,\n                          unused_range_binding 4)\n  wrappers:1        68   (five fixtures to ZERO; both take_drop 106-\u003e34)\n  wrappers:6        20   (both take_drop 106-\u003e10)\n  arms:reverse     268   0 fixtures move\n  arms:\u003cany seed\u003e  268   0 fixtures move\n\nTwo facts fall out.\n\n(1) NONE of the escape population is callsite-arrival-decided. Every\none of the 268 lives on the construction-wrapper surface. The census\nis therefore not a fact about the program at all -- it is a fact about\nwhich member the interner happened to mint first.\n\n(2) THE SETTLED ORDER IS THE WORST MEASURED. Every permutation tried\nlowers the count and none raises it; five of the seven fixtures have a\nlegal order with zero escapes. stdout and exit are identical\neverywhere, on interp, JIT and AOT -- so the escapes are latent, but\nthe compiler is currently choosing the most exposed of the orders\navailable to it, by accident.\n\nWHY IT IS NOT A SEATING RULE'S JOB TODAY. The members a wrapper cannot\nseparate are the fz-kdt.132 pair shape: two surfaces whose tuple test\nis blind at a list position (the Scope-A carve-out), so whichever comes\nfirst takes every value and the escapes are the values whose surface\nthat member does not name. A seat cannot fix what the test cannot see;\nwhat CAN be decided is which member is first, and nothing decides it\ntoday.\n\nDIRECTIONS (not costed): (a) fz-kdt.138 makes the position testable and\nthe question dissolves -- check whether it takes all 268 with it before\nbuilding anything here; (b) failing that, order the members so the\nWIDEST surface is first (the escape count is then bounded by what no\nmember names, not by mint order) -- note this is the fz-kdt.129 seat\nquestion one layer over, and the same covers-vs-precision analysis has\nto be done for it rather than assumed; (c) at minimum, the mint order\nmust stop being the decider, because it is the agenda's.\n\nINSTRUMENT: the sweep is the recipe in .agent/docs/dispatch-matrix.md\n(section 'The two free orders'). Sequence after fz-kdt.132 / fz-kdt.138.",
+  "id": "fz-kdt.147",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The settled construction-wrapper member order is the worst of the legal orders for surface-membership escapes",
+  "type": "bug",
+  "updated_at": "2026-09-02T04:30:11Z"
+}
