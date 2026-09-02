@@ -478,36 +478,45 @@ finding is reported on stderr, and a corpus census is
     FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp <fixture> 2>&1 >/dev/null \
       | grep -c 'surface-membership escape'
 
-The instrument has no reading before fz-kdt.119 — without per-position shapes
-there is no record of what an arm's surface named — so its baseline is the
-landing's own measurement: SEVEN fixtures, 268 occurrences.
+**The census reads ZERO, corpus-wide, under every legal order** (fz-kdt.132).
+It did not always: fz-kdt.119 measured SEVEN fixtures and 268 occurrences, and
+they were all one defect.
 
-| fixture | occurrences |
-| --- | --- |
-| `00183_enum_take_list_range` | 16 |
-| `00230_enum_take_chained` | 16 |
-| `00418_enum_count_range` | 4 |
-| `00419_enum_take_mixed` | 16 |
-| `00420_enum_take_drop_split` | 106 |
-| `enum_take_drop_split` | 106 |
-| `unused_range_binding` | 4 |
+| fixture | at fz-kdt.119 | now |
+| --- | --- | --- |
+| `00183_enum_take_list_range` | 16 | 0 |
+| `00230_enum_take_chained` | 16 | 0 |
+| `00418_enum_count_range` | 4 | 0 |
+| `00419_enum_take_mixed` | 16 | 0 |
+| `00420_enum_take_drop_split` | 106 | 0 |
+| `enum_take_drop_split` | 106 | 0 |
+| `unused_range_binding` | 4 | 0 |
 
-Every one is a nested LIST position — the Scope-A carve-out, blind on purpose —
-and the two at 106 are the same program reached twice and are what fz-kdt.132
-owns. These are LATENT SITES, not regressions: like the 19-escape census this is
-a ratchet, and a new entry wants a ticket rather than a re-blessed constant.
+Every escape was a nested LIST position inside a fold's accumulator, and every
+one was a MISSING SPECIALIZATION rather than a blind dispatch. A reducer is
+minted beside the fold's initial accumulator and carries that arrow;
+`resolve_closure_call` used to intersect every later argument with it, so each
+call was clamped back onto the initial specialization, the accumulator's ascent
+stopped one rung short, and the accumulator the fold actually produces got no
+specialization and no construction member at all. The escaping values were
+exactly that missing rung — values with no member to belong to, kept harmless
+only because the blind tuple test handed them to whichever member came first.
+Unclamped, `enum_take_drop_split`'s reducers collapse three partial rungs into
+the one grown accumulator (215 → 196 executables) and the census empties.
 
-**All 268 are decided by the construction-wrapper member order** (fz-kdt.141).
-Re-running the census under `FZ_STRESS_PERMUTE_DISPATCH`: `arms:` seeds move it
-by ZERO — the whole population lives on the wrapper surface, not the callsite
-one — while `wrappers:1` takes it to 68 and `wrappers:6` to 20, with five of the
-seven fixtures going to zero and `enum_take_drop_split` going 106 → 34 → 10, on
-identical stdout everywhere. So the number is not a fact about the program: it
-is a fact about which member the interner's mint order happened to put first,
-and the settled order is the WORST of the orders measured. That is the same
-blindness read from the other side — nothing separates the members, so whichever
-comes first takes every value, and the escapes are the values whose surface that
-member does not name.
+fz-kdt.141 had measured the population as wrapper-order-decided (268 settled,
+68 at `wrappers:1`, 20 at `wrappers:6`, `arms:` seeds moving it by zero) and
+filed fz-kdt.147 on the settled order being the worst of them. That reading was
+true and the conclusion was one layer too low: the order decided which of the
+uncovering members took the values, not whether a covering member existed.
+With the rung minted there is nothing to reorder — the census is 0 at the
+settled order and 0 under `wrappers:1`, `wrappers:6`, `arms:reverse`, `arms:1`,
+`arms:6` and both seeds on both surfaces.
+
+The census stays a RATCHET: it is now pinned at zero by
+`compiler2_no_value_reaches_a_construction_member_that_never_named_it`, which
+drives the seven fixtures in process, and a new entry is a new latent
+miscompile that wants a ticket rather than a re-blessed constant.
 
 Arm order was the settled targets' order and nothing else before fz-kdt.129 —
 the fixpoint's, which is the agenda's — and `enum_predicate_search` seated one

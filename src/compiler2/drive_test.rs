@@ -9512,12 +9512,15 @@ fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
 /// were derived in, and nothing else.
 ///
 /// This half is what fz-kdt.136 found missing. It is green on stdout at this
-/// commit, on every door -- but not vacuously so: the surface-membership
-/// tripwire (`FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1`) reports 268 escapes over
-/// the corpus at the settled order and 68 under `wrappers:1`, 20 under
-/// `wrappers:6`, with five fixtures going to zero. Every one of those escapes
-/// is a value reaching a member whose surface never named it, and which member
-/// that is, is decided here. See fz-kdt.132.
+/// commit, on every door. It used to be green over a live hazard: the
+/// surface-membership tripwire reported 268 escapes at the settled order, 68
+/// under `wrappers:1` and 20 under `wrappers:6` -- values reaching a member
+/// whose surface never named them, with the order deciding which. fz-kdt.132
+/// removed the population rather than the ordering (the escapes were a fold
+/// accumulator rung that had no member at all), so the tripwire now reads 0
+/// under every setting and this gate holds the law on its own:
+/// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members` is
+/// what proves the perturbation still lands.
 #[test]
 fn compiler2_dispatch_answers_the_same_under_a_permuted_wrapper_order() {
     assert_no_answer_moves(&WRAPPER_MEMBER_CENSUS, &WRAPPER_MEMBER_STRESSES);
@@ -9543,6 +9546,63 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
     }
 }
 
+/// fz-kdt.132: a value never reaches a body whose surface never named it.
+///
+/// A dispatch test is a PROJECTION of the surface an arm was compiled for, so
+/// passing the test is not the same as belonging to the surface. Where the two
+/// part company, a body typed for one domain runs on a value from another --
+/// today by luck, because the emitted tuple test is blind at a list position
+/// (the fz-kdt.119 Scope-A carve-out) and hands every value to whichever member
+/// comes first. Make that test exact (fz-kdt.138) and the same population has
+/// nowhere to go: `backend callable construction N matched no member`.
+///
+/// The escapes were never a dispatch defect. They were a MISSING
+/// SPECIALIZATION: a fold's reducer is minted beside its initial accumulator
+/// and keeps that arrow, and `resolve_closure_call` used to intersect every
+/// later argument with it -- so each call was clamped back onto the initial
+/// specialization, the accumulator's ascent stopped one rung short, and the
+/// grown accumulator the fold actually produces got no specialization and no
+/// construction member at all. The values with nowhere to belong are exactly
+/// that rung.
+///
+/// This is the dynamic census the shell recipe in `.agent/docs/dispatch-matrix.md`
+/// reads off stderr, driven in process. The seven fixtures are the whole of the
+/// corpus that ever reported an escape; RED at 8002889ff with 268 of them
+/// (00183 16, 00230 16, 00418 4, 00419 16, 00420 106, enum_take_drop_split 106,
+/// unused_range_binding 4), and the corpus total is 0 either way outside this
+/// list.
+#[test]
+fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
+    let mut escaping = Vec::new();
+    for fixture in SURFACE_MEMBERSHIP_CENSUS {
+        let census = crate::runtime_type_predicate::surface_membership::SurfaceMembershipCensus::install();
+        interpreted_answer(fixture);
+        let escapes = census.escapes();
+        if escapes != 0 {
+            escaping.push(format!("{fixture}: {escapes}"));
+        }
+    }
+    assert!(
+        escaping.is_empty(),
+        "a value that passes an arm's test but lies outside the surface that arm was compiled for is \
+         running a body that never named it -- the arm is missing, not the test: {}",
+        escaping.join(", "),
+    );
+}
+
+/// Every fixture in the corpus that has ever reported a surface-membership
+/// escape. The whole corpus is the shell sweep in
+/// `.agent/docs/dispatch-matrix.md`; these seven are what it found.
+const SURFACE_MEMBERSHIP_CENSUS: [&str; 7] = [
+    "fixtures2/00183_enum_take_list_range.fz",
+    "fixtures2/00230_enum_take_chained.fz",
+    "fixtures2/00418_enum_count_range.fz",
+    "fixtures2/00419_enum_take_mixed.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/unused_range_binding.fz",
+];
+
 /// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
 ///
 /// A gate that asserts invariance is worth exactly what its perturbation
@@ -9552,11 +9612,14 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
 /// permuted wrapper order -- and an identical one under no setting, which is
 /// the inertness claim on the same comparand.
 ///
-/// `enum_take_drop_split` is the subject because fz-kdt.132 names its wrapper:
-/// two members keyed on `{empty_list(), int}` and `{list(int), int}`, which the
-/// blind tuple test cannot separate, so whichever the mint order puts first
-/// takes every value and the other is dead. Which one that is, is what this
-/// perturbation moves.
+/// `enum_take_drop_split` is the subject because its wrappers carry the
+/// members the blind tuple test cannot separate: several keyed on accumulator
+/// tuples that differ only at a list position, so whichever the mint order
+/// puts first takes every value. Which one that is, is what this perturbation
+/// moves. (fz-kdt.132 made every one of those members cover the values that
+/// reach it, so the choice is no longer a hazard -- but it is still a choice
+/// nothing but the interner makes, which is what this gate holds to one
+/// answer.)
 #[test]
 fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
     use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};

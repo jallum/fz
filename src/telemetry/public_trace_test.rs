@@ -1263,7 +1263,16 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
         // fz-kdt.106: 219 -> 211. Eight keys minted from a budget-collapsed
         // row set are never minted, because the row sets no longer collapse.
-        activations: lifecycle(211, 211, 0),
+        // fz-kdt.132: 211 -> 250. A RISE, and it is the ascent this fixture
+        // was never finishing. A fold's reducer used to be clamped onto the
+        // specialization it was minted beside, so its accumulator stopped one
+        // rung short of the value the fold produces; unclamped, each fold
+        // climbs its last rung and every activation on that rung is new. The
+        // rise is bounded by the ladder's height (+39 on 211, no retractions,
+        // no uncaused work) and it BUYS the executables it costs: the emitted
+        // inventory falls 215 -> 196 in the same motion, because the three
+        // partial rungs per reducer collapse into the one grown accumulator.
+        activations: lifecycle(250, 250, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -1272,7 +1281,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // one retraction with them (12 -> 11): the eight vanished activations
         // take their edges, and the callsite whose evidence withdrew for a
         // round while a widened key was in flight no longer does.
-        callsites: lifecycle(369, 380, 11),
+        // fz-kdt.132: 369 -> 425 distinct, 380 -> 441 first appearances,
+        // 11 -> 16 retractions -- the 39 new activations bring their call
+        // edges, and a callsite that names a climbing accumulator withdraws
+        // its edge for the round the previous rung is displaced in.
+        callsites: lifecycle(425, 441, 16),
         shifts: shifts(6, 10),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
@@ -1286,9 +1299,14 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.106: 805 -> 742, zero-change 13 -> 9, total 2300 -> 2237. The
         // rise fz-kdt.105 booked is repaid: an accumulating row set re-ran its
         // activation once per rung, and the rungs are gone.
-        analyze_evaluations: 742,
+        // fz-kdt.132: 742 -> 880, total 2237 -> 2375, zero-change FLAT at 9.
+        // The last rung of every fold's accumulator now gets analyzed, which
+        // is work that was never done rather than work repeated -- flat
+        // zero-change is the evidence: not one of the 138 added runs
+        // reproduces an answer it already had.
+        analyze_evaluations: 880,
         analyze_zero_change: 9,
-        total_evaluations: 2237,
+        total_evaluations: 2375,
     },
 ];
 

@@ -713,10 +713,16 @@ pub(crate) mod dispatch_stress {
     /// whichever comes first -- and a member that takes everything marshals its
     /// own return form consistently. That break needs the two members reached
     /// by DIFFERENT values, which is fz-kdt.138's exact test, not an order.
-    /// What it does catch is fz-kdt.147: the whole 268-escape
-    /// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` baseline is decided here (268
-    /// settled, 68 at `wrappers:1`, 20 at `wrappers:6`, five of seven fixtures
-    /// to zero), and arm seeds move it by zero.
+    ///
+    /// It used to decide the whole 268-escape
+    /// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` baseline (268 settled, 68 at
+    /// `wrappers:1`, 20 at `wrappers:6`) where arm seeds moved it by zero.
+    /// fz-kdt.132 emptied that census by minting the accumulator rung whose
+    /// values had no member at all, so the order now decides nothing there:
+    /// every setting reads 0. What this perturbation still holds is the law --
+    /// which member a value reaches must not change an answer -- and
+    /// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members`
+    /// proves it still lands on a moved artifact.
     pub(crate) fn perturbed_construction_members(edges: Vec<CallableFlowEdge>) -> Vec<CallableFlowEdge> {
         match wrappers() {
             Perturbation::Settled => edges,

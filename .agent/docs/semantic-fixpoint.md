@@ -124,6 +124,27 @@ GROUNDNESS. Collapsing any pair of them is a known defect class.
   really could be anything. `callee_is_a_dynamic_edge` is the predicate, and it
   is `!has_vars`.
 
+The ARGUMENT decides which specialization a closure call reaches, and nothing
+narrows it. A closure clause's arrow parameters are EVIDENCE — the surface that
+lambda has already been analyzed at — not a contract the caller is checked
+against, so intersecting the observed argument with them is not a refinement
+but a loss: it names a specialization whose domain does not contain the value.
+A fold's reducer is minted beside the initial accumulator and keeps that arrow,
+so the intersection clamped every later call back onto the initial
+specialization: the accumulator's ascent stopped one rung short, the grown
+accumulator got no specialization and no construction member, and the values on
+that rung reached a body that never named them (fz-kdt.132 — the whole
+268-escape surface-membership census). `refine_observed_return` refuses the
+kindred narrowing on the return side only where the arrow's type is a strict
+subtype of the observed; the argument-side rule here is UNCONDITIONAL -- the
+arrow's parameters never refine an observed argument -- which is the stronger
+form the evidence-not-contract law implies, not a mirror of the return rule.
+Declared `@spec` contracts still refine the surface, in
+`apply_function_contract`, where the surface is also enforced; a declared
+arrow's DOMAIN on a higher-order parameter no longer narrows a closure call's
+argument (only the enclosing spec's own inputs do) -- measured
+behaviour-neutral corpus-wide.
+
 The absent/earned line matters because `ReturnType` and the value-type join are
 cumulative: a stale `any` unioned in early never retracts once the slot grounds,
 and the callsite ends up holding two disagreeing facts — a precisely-resolved

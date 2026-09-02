@@ -1599,9 +1599,23 @@ fn resolve_closure_call(
         named_concrete_target = true;
         let function = function_id_of_closure_target(closure.target);
 
-        let refined_args = refine_contract_inputs(world, arg_types.clone(), std::iter::once(clause.args.as_slice()));
+        // The ARGUMENT the callsite sends decides the target, and nothing
+        // narrows it here (fz-kdt.132). A closure clause's arrow parameters are
+        // EVIDENCE -- the surface this lambda has already been analyzed at --
+        // not a contract the caller is checked against, so intersecting the
+        // observed argument with them is not a refinement but a loss: it names
+        // a specialization whose domain does not contain the value. A reducer
+        // minted beside a `{[], []}` accumulator keeps that arrow while the
+        // fold's accumulator ascends, and every later call was clamped back
+        // onto the initial specialization -- so the ascent stopped one rung
+        // short, the grown accumulator got no specialization at all, and the
+        // construction wrapper's members did not cover the value the fold
+        // actually produced. `refine_observed_return` already refuses the
+        // mirror of this narrowing on the return side; the argument side owes
+        // the same. Declared `@spec` contracts still refine, in
+        // `apply_function_contract`, where the surface is enforced.
         let mut inputs = closure.captures;
-        inputs.extend(refined_args.clone());
+        inputs.extend(arg_types.iter().copied());
         let (resolution, clause_activations, observed_return) =
             resolve_function_call(world, tel, caller, function, inputs, callsite.span(), reads, waits)?;
 
@@ -1611,7 +1625,7 @@ fn resolve_closure_call(
                 return_ty = join_evidence(world, return_ty, target_return);
                 let rebuilt_target = call_target_summary(
                     target.callee,
-                    refined_args.clone(),
+                    arg_types.clone(),
                     target.activation,
                     target.activation_inputs,
                     target_return,

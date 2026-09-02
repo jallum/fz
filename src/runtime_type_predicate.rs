@@ -653,11 +653,15 @@ pub(crate) enum PositionScope {
 /// hold a LIST is not tested at all. Testing only the position's non-list axes
 /// would make the test STRICTER than the type -- the position's question is a
 /// disjunction, and dropping a disjunct rejects values the arm's surface names
-/// -- so the choice is to decide the list axis there or to be blind, and
-/// deciding it separates `{[], int}` from `{[int], int}`, which wakes the
-/// dead-and-broken accumulator specialization fz-kdt.132 owns. Blind is the
-/// over-approximation, and it is the one this layer already made everywhere
+/// -- so the choice is to decide the list axis there or to be blind. Blind is
+/// the over-approximation, and it is the one this layer already made everywhere
 /// before per-position shapes existed.
+///
+/// Deciding the axis separates `{[], int}` from `{[int], int}`, which used to
+/// leave a fold's grown accumulator with no member to reach ("backend callable
+/// construction N matched no member"). That was fz-kdt.132's missing
+/// specialization, not a dispatch defect, and it is fixed: the census this
+/// scope is measured against reads zero. Lifting the carve-out is fz-kdt.138.
 ///
 /// The lattice reads this too, so a blind position counts as overlapping and
 /// as erasing: what the lowering declines to ask, the seat may not claim as
@@ -1130,8 +1134,12 @@ fn matches_other_struct_axis(
 /// a cons cell's head carries a predicate of its own: the head is exact on
 /// rejection and erasing on acceptance, so a full re-ask would walk the tail
 /// the emitted test never reads. That is fz-kdt.144, deliberately not folded
-/// in here -- the 268-escape baseline this reports is the tuple population,
-/// and mixing a second population into it would lose the comparand.
+/// in here -- what this reports is the tuple population, and mixing a second
+/// population into it would lose the comparand.
+///
+/// The tuple population is now EMPTY corpus-wide (fz-kdt.132: the escapes were
+/// a fold accumulator rung with no specialization, not a blind seat), pinned by
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it`.
 ///
 /// It is off unless `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` is set; `abort`
 /// makes each finding fatal, anything else counts them and reports each on
@@ -1139,12 +1147,15 @@ fn matches_other_struct_axis(
 pub(crate) mod surface_membership {
     use super::{PositionScope, RuntimeTestAxis, RuntimeTypePredicate, RuntimeValueReader, axis_admits};
     use fz_runtime::any_value::AnyValue as RuntimeAnyValue;
-    use std::sync::OnceLock;
+    use std::cell::Cell;
 
     pub(crate) const ASSERT_SURFACE_MEMBERSHIP_ENV: &str = "FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum Mode {
+        /// The environment has not been read on this thread yet. Never
+        /// observed by `observe`: `mode` resolves it on first ask.
+        Unread,
         /// Not installed: nothing is checked and nothing is paid.
         Off,
         /// Report every finding on stderr and carry on. A corpus census is
@@ -1156,13 +1167,37 @@ pub(crate) mod surface_membership {
         Abort,
     }
 
+    thread_local! {
+        static MODE: Cell<Mode> = const { Cell::new(Mode::Unread) };
+        static ESCAPES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// What this thread does with a finding. A process-wide default comes from
+    /// the environment, which is how a fixture is swept through the real `fz2`
+    /// binary; an in-process driver installs [`SurfaceMembershipCensus`]
+    /// instead. What keeps one census from counting a neighbour's escapes is
+    /// NOT thread ownership -- under `--test-threads=1` libtest runs every
+    /// case serially on the main thread, so the thread-local persists between
+    /// cases -- it is [`SurfaceMembershipCensus`]'s RAII save/restore: install
+    /// saves both cells and `Drop` restores them (the `dispatch_stress`
+    /// shape, for the same reason).
     pub(crate) fn mode() -> Mode {
-        static MODE: OnceLock<Mode> = OnceLock::new();
-        *MODE.get_or_init(|| match std::env::var(ASSERT_SURFACE_MEMBERSHIP_ENV) {
+        MODE.with(|mode| match mode.get() {
+            Mode::Unread => {
+                let read = mode_from_env();
+                mode.set(read);
+                read
+            }
+            settled => settled,
+        })
+    }
+
+    fn mode_from_env() -> Mode {
+        match std::env::var(ASSERT_SURFACE_MEMBERSHIP_ENV) {
             Err(_) => Mode::Off,
             Ok(value) if value == "abort" => Mode::Abort,
             Ok(_) => Mode::Report,
-        })
+        }
     }
 
     /// Check one admitted value against the surface the test was projected
@@ -1177,9 +1212,40 @@ pub(crate) mod surface_membership {
              (value kind {:?}, test {predicate})",
             value.kind(),
         );
+        ESCAPES.with(|escapes| escapes.set(escapes.get() + 1));
         match mode {
             Mode::Abort => panic!("{report}"),
             _ => eprintln!("{report}"),
+        }
+    }
+
+    /// Reports every finding on this thread and counts them, for as long as it
+    /// lives, then puts the previous setting and tally back.
+    ///
+    /// The census the shell recipe reads off stderr, available to an
+    /// in-process driver as a number.
+    #[cfg(test)]
+    pub(crate) struct SurfaceMembershipCensus(Mode, usize);
+
+    #[cfg(test)]
+    impl SurfaceMembershipCensus {
+        pub(crate) fn install() -> Self {
+            let previous = MODE.with(|mode| mode.replace(Mode::Report));
+            Self(previous, ESCAPES.with(|escapes| escapes.replace(0)))
+        }
+
+        /// How many values have reached a body whose surface never named them
+        /// since this census was installed.
+        pub(crate) fn escapes(&self) -> usize {
+            ESCAPES.with(Cell::get)
+        }
+    }
+
+    #[cfg(test)]
+    impl Drop for SurfaceMembershipCensus {
+        fn drop(&mut self) {
+            MODE.with(|mode| mode.set(self.0));
+            ESCAPES.with(|escapes| escapes.set(self.1));
         }
     }
 

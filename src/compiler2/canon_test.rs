@@ -358,7 +358,18 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// fz-kdt.123's resolution, measured: arms BECOME LIVE. Nothing else moved --
 /// no key, demand, or transport fact on any lens changed text, and the
 /// fixture corpus is stdout byte-identical through interp, JIT and AOT.
-/// `enum_take_drop_split` carries no such pair and holds at 215.
+///
+/// Re-pinned DOWNWARD by fz-kdt.132: `enum_take_drop_split` 215 -> 196. A
+/// fold's reducer was clamped onto the specialization it was minted beside, so
+/// its accumulator climbed in partial rungs -- `{[], []}`, then
+/// `{[], [int]}`, then `{[], [int]} | {[int], []}` -- and stopped one short of
+/// the `{[int], [int]}` the fold actually produces. Unclamped, the ladder is
+/// one rung: three `split_while`/`split_with` reducer specializations per
+/// captured lambda become one, and `split_pair_finish` is keyed on the pair it
+/// really receives instead of a union that never named it. Nineteen
+/// executables leave; the analysis that finds the one true rung costs 39 more
+/// activations, ratcheted in `analysis_claims_survive_a_run_that_could_not_re_derive_them`.
+/// The other two lenses hold, and stdout is byte-identical on all three doors.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -375,7 +386,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
             include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
-            215,
+            196,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);
