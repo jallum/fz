@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T23:04:19Z",
+  "description": "FOUND by the fz-kdt.127.2 adversarial refutation (F7).\n\nWHAT. `callable_clauses` (src/compiler2/types/mod.rs) reports an ANONYMOUS\nliteral -- fz-kdt.127.2's `ClosureLit` with `fn_id: None` -- as\n`closure: None`, which is the same thing it reports for a bare SURFACE clause\nthat pins no literal at all. `callable_value_clauses` then reads that as a\nsurface: it collects every `closure.is_none()` clause as a specializer and\n`continue`s past it in the result loop:\n\n    if clause.closure.is_none() { continue; }\n\nSo a union holding one anonymous literal beside one or more branded ones would\nresolve, at `resolve_closure_call`, to the BRANDED targets only -- the \"some\nother brand, these capture types\" member silently dropped, and the anonymous\nclause additionally used to specialize the survivors' args/ret.\n\nWHY IT IS NOT LIVE. An anonymous literal is minted in exactly one place,\n`Types::erase_transported_closure_identities`, which puts it in the `arrow` of\nthe ACTIVATION KEY of a non-recursive body that consumes no callable identity,\nand only in slots the dispatch mask marks `DispatchDemand::Ignore`; call\nresolution reads a VALUE's type, never a key. The refuter instrumented the\nanonymous arm of `callable_clauses` and measured 0 hits over 597 corpus\nfixtures (with and without `--dump backend=`) and 1 hit over the whole\n`cargo test --lib` -- that one being the conformance unit test that constructs\nan erased literal directly.\n\nWHAT IS MISSING is that nothing STATES or ENFORCES it at this site.\nfz-kdt.127.2 put the statement and a `debug_assert!` gate on the dispatch-test\nroad (`callable_identity_targets`); the call-resolution road has neither, and\n`closure: None` conflating \"no literal\" with \"a literal with no brand\" is the\nkind of lookalike the fold-concordant-ideas rule warns about.\n\nWORK: decide whether `CallableClause::closure` should distinguish the two\n(an anonymous literal is NOT a surface -- it pins captures), or whether one\nloud refusal in `callable_value_clauses` is the right shape; either way pin it\nwith a unit test that builds `erase(L3(int)) | L5(float)` and asserts the\nresult is not the branded clause alone. Note a plain `debug_assert!` in\n`callable_clauses` is NOT cheap: the fz-kdt.127.2 conformance test\n`erase_closure_identity_drops_the_brand_and_keeps_the_captures` calls it on an\nerased literal on purpose.",
+  "id": "fz-kdt.173",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "An anonymous closure literal sharing a callable union with a branded one would be dropped by callable_value_clauses: unreachable today, unstated and unenforced",
+  "type": "task",
+  "updated_at": "2026-09-02T23:04:19Z"
+}
