@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T14:04:42Z",
+  "description": "From the fz-kdt.155 re-refutation (2026-09-02): fn use_and_hand_back(f) do f.(1); f end fails on INTERP ('backend continuation delivery ... backend value was absent and cannot be materialized') while JIT and AOT are correct -- the inverse door split from the usual. Identical at e132fe768, 011897620 and d4734942d (pre-existing, unowned). Family: fz-kdt.99/117 (closure-carrier interp crashes) and fz-kdt.154 (the interp reads dest not return_flow -- possibly the same field-authority question from the other side).",
+  "id": "fz-kdt.160",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "f.(x); f -- use a closure then hand it back: interp-only failure, JIT/AOT correct",
+  "type": "task",
+  "updated_at": "2026-09-02T14:04:42Z"
+}
