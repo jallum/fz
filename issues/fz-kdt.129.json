@@ -8,9 +8,15 @@
   "id": "fz-kdt.129",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.119 review correction (2026-09-01): this ticket's close record says the 19-escape census ratchet is 'retired by fz-kdt.119/107' -- over-credits 119: ALL 19 escapes are list subjects, and 119 retires ZERO (verified against the prototype). Only fz-kdt.107 step 3 can move that number.",
+      "timestamp": "2026-09-02T01:44:45Z"
+    }
+  ],
   "priority": 2,
   "status": "closed",
   "title": "A seat is arrival order corrected only where an arm covers what its test cannot see",
   "type": "bug",
-  "updated_at": "2026-09-02T01:10:34Z"
+  "updated_at": "2026-09-02T01:44:45Z"
 }
