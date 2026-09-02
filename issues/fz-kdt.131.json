@@ -9,9 +9,15 @@
   "id": "fz-kdt.131",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.119 review correction (2026-09-01): overlaps_on_an_erasing_axis's doc calls ints/floats exact ('a value passes only by being in the tested set, which the arm's surface names') -- but runtime_type_predicate stores ints/floats as PRESENCE BITS only and ignores descr.brands unless cofinite, so two arms with surfaces 'brand X of int' / 'brand Y of int' have EQUAL tests and incomparable surfaces, and covers declares the position non-erasing and seats freely. Benign today (brands are runtime-erased by design, reprs identical -- fz-bsx) but the doc claim is false as written and becomes a live hole if numeric singletons return (the predicate's own comment says they are recoverable from history). Correct the doc claim when this ticket or 119 next touches the file. ALSO: 119 partially unblocks this ticket (tuple pairs gain separation and leave the neither-covers population; LIST pairs do not -- the queue does not empty).",
+      "timestamp": "2026-09-02T01:44:45Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A seat must carry surface coverage: any arm ordering not covering-safe is unsound wherever the test is blind to what the body relies on",
   "type": "task",
-  "updated_at": "2026-09-01T23:52:59Z"
+  "updated_at": "2026-09-02T01:44:45Z"
 }
