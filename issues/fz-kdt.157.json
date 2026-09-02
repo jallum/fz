@@ -7,9 +7,15 @@
   "id": "fz-kdt.157",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CLOSED by fz-kdt.127.1/.2 (2026-09-02): the refusing half now has a reachable witness. lower_closure_capture reads the repr from the constructions that minted the grounded layout; loosening constructions_minting to function-identity-only turns compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout RED and makes the native door refuse same_lambda_two_capture_types_dynamic.fz (proven red-first by the 127.1 build, RED-157 marker, and re-homed onto the dynamic twin in 127.2 where the unpack actually occurs). The exact_direct_callable_layout agreement rule (152) is exercised by the same fixture (two boundaries disagreeing RawInt/RawF64 on slot 0).",
+      "timestamp": "2026-09-02T23:59:10Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The layout-agreement check's refusing half has zero coverage: loosening it to function-identity-only ships green through every gate",
   "type": "task",
-  "updated_at": "2026-09-02T11:26:51Z"
+  "updated_at": "2026-09-02T23:59:10Z"
 }
