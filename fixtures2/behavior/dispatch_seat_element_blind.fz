@@ -9,19 +9,28 @@
 #     arm A   list(:ok)  x  {Enum.all?/1 lambda, Enum.empty?/1 lambda}
 #     arm B   list(int)  x  {Enum.all?/1 lambda}
 #
-# Arm B's runtime test is strictly INSIDE arm A's -- same list-shape question,
-# same `:true` question, and a callable set of one against a set of two. Seat
-# the smaller test first and `Enum.all?([:ok, :ok])` satisfies every question
-# arm B asks, because a list-shape test cannot see elements, and lands in the
-# body compiled for `list(int)`: `fz_list_head_int_ref` reads an atom as an int
-# and aborts on `run` and `build`. `interp` prints the right answers anyway --
-# its values carry their own tags -- so only the two compiled doors show it.
+# Arm B's runtime test used to be strictly INSIDE arm A's -- the same
+# "a list" question, the same `:true` question, and a callable set of one
+# against a set of two. Seat the smaller test first and `Enum.all?([:ok, :ok])`
+# satisfied every question arm B asks, because a list test could not see
+# elements, and landed in the body compiled for `list(int)`:
+# `fz_list_head_int_ref` reads an atom as an int and aborts on `run` and
+# `build`. `interp` printed the right answers anyway -- its values carry their
+# own tags -- so only the two compiled doors showed it.
 #
-# Neither arm's surface covers the other's at the list position, so no seat is
-# escape-free here and the seating rule declines to move the pair: it keeps
-# arrival order, which is what these three lines pin. The standing cure is a
-# runtime test that can see a list's elements (fz-kdt.107) rather than an
-# ordering rule; fz-kdt.131 owns the population.
+# Neither arm's surface covers the other's at the list position, so no seat was
+# escape-free here and the seating rule declined to move the pair: it kept
+# arrival order, which is what these three lines pin. The standing cure named
+# then was a runtime test that can see a list's elements, and fz-kdt.107 step 3
+# built it: the two arms ask `[:ok]` and `[int]` of a cons cell's HEAD, which
+# are disjoint questions, so neither can take the other's values however the
+# pair is seated. The lines below print the same answers -- what changed is
+# that they are no longer safe by arrival. Measured at that landing: this
+# fixture aborted on `run` and `build` under EVERY arm seed the fz-kdt.141
+# stress produces, and now exits 0 under all of them.
+#
+# fz-kdt.131 still owns the population one rung wider: a pair whose heads
+# OVERLAP while neither surface contains the other, which no seat can reach.
 fn main() do
   dbg(Enum.all?([:ok, :ok]))
   dbg(Enum.empty?([:ok, :ok]))

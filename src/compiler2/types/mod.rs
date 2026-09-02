@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
-use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate, TupleShapes};
+use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTypePredicate, TupleShapes};
 
 use super::keying::DispatchDemand;
 use super::protocol::{ProtocolDomainObligation, is_protocol_domain_tag};
@@ -1329,7 +1329,7 @@ impl Types {
                 FiniteSet::none()
             },
             atoms: descr.atoms.clone(),
-            lists: runtime_type_predicate_list_shapes(descr),
+            lists: self.runtime_type_predicate_lists(descr),
             tuples: self.runtime_type_predicate_tuples(descr),
             named_structs: named_structs.clone(),
             allow_other_structs: false,
@@ -1338,6 +1338,49 @@ impl Types {
             callables: runtime_type_predicate_callables(descr),
             resources: !descr.resources.is_empty(),
         }
+    }
+
+    /// The list axis a runtime test can put to a value.
+    ///
+    /// One head question per list CLAUSE that admits a cons cell, because a
+    /// clause is the unit the lattice keeps correlated -- the same reason
+    /// [`Self::runtime_type_predicate_tuples`] keeps one shape per clause.
+    ///
+    /// A clause is head-projectable only when it is exactly one positive
+    /// signature with nothing subtracted, and that signature names an element
+    /// type. Several positive signatures are an INTERSECTION of list types and
+    /// negations are a DIFFERENCE; neither is one element type, and inventing
+    /// one would claim a precision the emitted test could not honour. Those
+    /// degrade the whole axis to the shape-only reading, which is what every
+    /// clause answered before fz-kdt.107 step 3.
+    ///
+    /// A shape set with no `NonEmpty` puts no head question at all: `[]` is a
+    /// single value and there is no cons cell to read.
+    fn runtime_type_predicate_lists(&self, descr: &Descr) -> ListShapes {
+        let shapes = runtime_type_predicate_list_shapes(descr);
+        if !shapes.contains(&ListShape::NonEmpty) {
+            return ListShapes::exact(shapes, Vec::new());
+        }
+        let mut heads = Vec::with_capacity(descr.lists.len());
+        for clause in &descr.lists {
+            if clause.pos.len() != 1 || !clause.neg.is_empty() {
+                return ListShapes::shape_only(shapes);
+            }
+            let Some(elem) = clause.pos[0].elem else {
+                // `[]` exactly: the clause admits no cons cell, so it puts no
+                // head question and the other clauses' heads still stand.
+                continue;
+            };
+            heads.push(self.runtime_type_predicate(&elem));
+        }
+        if heads.is_empty() {
+            // Every clause admits a cons cell that no element type describes,
+            // so there is nothing to ask it. "Any cons cell" is the shape-only
+            // reading, and calling it exact would let it claim to CONTAIN
+            // sharper axes it does not.
+            return ListShapes::shape_only(shapes);
+        }
+        ListShapes::exact(shapes, heads)
     }
 
     /// The tuple axis a runtime test can put to a value.

@@ -5,7 +5,7 @@ use std::slice;
 use super::*;
 use crate::compiler2::keying::DispatchDemand;
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{ListShape, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{ListShape, ListShapes, RuntimeTypePredicate};
 
 #[test]
 fn ty_is_an_integer_handle() {
@@ -147,37 +147,75 @@ fn runtime_type_predicate_projects_integer_kind() {
     );
 }
 
-/// The list axis erases its elements and the tuple axis does not.
+/// Both structural axes project their contents: a tuple's positions, and a
+/// list's HEAD.
 ///
-/// It used to erase them too -- both projected to a bare shape, and
-/// `{:cont, int}` and `{:halt, int}` were the same question (fz-kdt.119). The
-/// tuple axis now carries one sub-predicate per position per clause, so the
-/// projection of a tuple type is a projection of each of its elements, and the
-/// arity reading the coarse callers want is derived from the shapes rather
-/// than stated beside them. The LIST axis is unchanged: `[int]` and `[:ok]`
-/// still project to one and the same "a non-empty list" (fz-kdt.107 step 3
-/// owns that half).
+/// Both used to erase them. `{:cont, int}` and `{:halt, int}` were one "a
+/// 2-tuple" question until fz-kdt.119 gave the tuple axis one sub-predicate
+/// per position per clause; `[int]` and `[:ok]` were one "a non-empty list"
+/// question until fz-kdt.107 step 3 gave the list axis one head question per
+/// cons-admitting clause. In both cases the coarse reading the other callers
+/// want -- arities, shapes -- is still answerable beside the fine one.
+///
+/// The list half is a ONE-SIDED FILTER and this states both sides of it:
+/// `[:false | :true]` against `[int]` is a real separation, because a head
+/// outside the question proves the whole homogeneous list outside the surface;
+/// `[int]` against `[int | :ok]` is NOT, because a head inside it says nothing
+/// about the tail no test reads.
 #[test]
-fn runtime_type_predicate_projects_tuple_positions_and_bare_list_shapes() {
+fn runtime_type_predicate_projects_tuple_positions_and_list_heads() {
     let mut t = Types::new();
     let empty_list_ty = t.empty_list();
     let empty_list = t.runtime_type_predicate(&empty_list_ty);
     assert_eq!(
         empty_list,
         RuntimeTypePredicate {
-            lists: FiniteSet::lit(ListShape::Empty),
+            lists: ListShapes::exact(FiniteSet::lit(ListShape::Empty), Vec::new()),
             ..RuntimeTypePredicate::none()
-        }
+        },
+        "[] admits no cons cell, so it puts no head question",
     );
 
     let int = t.int();
     let atom = t.atom();
     let int_list = t.list(int);
     let atom_list = t.list(atom);
-    assert_eq!(
+    assert_ne!(
         t.runtime_type_predicate(&int_list),
         t.runtime_type_predicate(&atom_list),
-        "a list test sees empty-or-cons and nothing of the elements",
+        "a list test reads the first element, so list(int) and list(atom) are two questions",
+    );
+
+    let false_atom = t.atom_lit("false");
+    let true_atom = t.atom_lit("true");
+    let ok_atom = t.atom_lit("ok");
+    let bools = t.union(false_atom, true_atom);
+    let bool_list = t.list(bools);
+    let bools_ask = t.runtime_type_predicate(&bool_list);
+    let ints_ask = t.runtime_type_predicate(&int_list);
+    assert!(
+        !bools_ask.overlaps_on_an_erasing_axis(&ints_ask),
+        "[:false | :true] and [int] have DISJOINT heads, and disjoint heads are the one \
+         separation a head load can claim",
+    );
+
+    assert!(
+        ints_ask.lists.is_exact() && ints_ask.lists.heads().len() == 1,
+        "one head question per cons-admitting clause, which is what keeps the clauses correlated",
+    );
+
+    let ints_oks = t.union(int, ok_atom);
+    let mixed_list = t.list(ints_oks);
+    let mixed_ask = t.runtime_type_predicate(&mixed_list);
+    assert!(
+        ints_ask.overlaps_on_an_erasing_axis(&mixed_ask),
+        "[int] and [int | :ok] OVERLAP at the head and differ only in a tail no test reads, \
+         so a seat may not claim separation there -- claiming it seats [int] first and hands \
+         [1, :ok] to a body that reads every element as an int",
+    );
+    assert!(
+        ints_ask.contained_in(&mixed_ask) && !mixed_ask.contained_in(&ints_ask),
+        "and the narrower head is still the narrower test",
     );
 
     let tuple_ty = t.tuple(&[int, atom]);
@@ -864,7 +902,7 @@ macro_rules! semantic_helper_conformance_tests {
 
                 let predicate = t.runtime_type_predicate(&rejoined);
                 assert_eq!(
-                    predicate.lists,
+                    *predicate.lists.shapes(),
                     FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty])
                 );
             }

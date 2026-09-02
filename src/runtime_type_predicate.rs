@@ -73,7 +73,10 @@ pub(crate) enum AxisPrecision {
     /// Separating exactly as far as the per-position sub-tests separate. A
     /// tuple test carries one sub-predicate per position per shape, so it
     /// separates `{:cont, int}` from `{:halt, int}` and erases the payload of
-    /// `{:cont, [int]}` against `{:cont, [:ok]}` (fz-kdt.119).
+    /// `{:cont, [int]}` against `{:cont, [:ok]}` (fz-kdt.119). A list test
+    /// carries one sub-predicate per cons-admitting clause -- its HEAD -- so
+    /// it separates `[:ok]` from `[int]` and erases `[int]` against
+    /// `[int | :ok]` (fz-kdt.107 step 3).
     PerPosition,
 }
 
@@ -121,10 +124,18 @@ impl RuntimeTestAxis {
             // the lattice would populate `ints.values`/`floats.values` and
             // this row would have to be re-derived with them (fz-kdt.131).
             Self::Ints | Self::Floats => AxisPrecision::Separating,
-            // A list-shape test sees empty-or-cons and nothing about the
-            // elements, so `[:ok, :ok]` passes a `list(int)` arm's test and
-            // reaches a body that reads heads as ints (fz-kdt.107 step 3).
-            Self::Lists => AxisPrecision::Erasing,
+            // A list test decides empty-or-cons and, where the projection
+            // could name the element type, the first element's own question.
+            // A list type is HOMOGENEOUS by construction (`ListSig` carries
+            // one element type for the whole list), so a head OUTSIDE the
+            // element question proves the value outside the surface -- exact
+            // on rejection -- while a head INSIDE it proves nothing about the
+            // tail the test never reads. So the axis separates exactly where
+            // two head questions are DISJOINT and erases wherever they are
+            // not: `[:ok]` against `[int]` is a real separation, `[int]`
+            // against `[int | :ok]` is one and the same question about a
+            // value's first element (fz-kdt.107 step 3).
+            Self::Lists => AxisPrecision::PerPosition,
             Self::Tuples => AxisPrecision::PerPosition,
             // A schema id names the struct, never its fields; a map test is a
             // kind check; a binary and a resource test likewise.
@@ -165,7 +176,10 @@ pub(crate) struct RuntimeTypePredicate {
     pub(crate) ints: FiniteSet<i64>,
     pub(crate) floats: FiniteSet<u64>,
     pub(crate) atoms: FiniteSet<String>,
-    pub(crate) lists: FiniteSet<ListShape>,
+    /// The whole list axis: which shapes, and -- where the projection could
+    /// name the element type -- what a cons cell's HEAD asks. See
+    /// [`ListShapes`].
+    pub(crate) lists: ListShapes,
     /// The whole tuple axis: which arities, and -- where the projection could
     /// shape them -- what each position of each shape asks. See
     /// [`TupleShapes`].
@@ -188,7 +202,7 @@ impl RuntimeTypePredicate {
             ints: FiniteSet::none(),
             floats: FiniteSet::none(),
             atoms: FiniteSet::none(),
-            lists: FiniteSet::none(),
+            lists: ListShapes::none(),
             tuples: TupleShapes::exact(Vec::new()),
             named_structs: FiniteSet::none(),
             allow_other_structs: false,
@@ -204,7 +218,7 @@ impl RuntimeTypePredicate {
             ints: FiniteSet::any(),
             floats: FiniteSet::any(),
             atoms: FiniteSet::any(),
-            lists: FiniteSet::any(),
+            lists: ListShapes::any(),
             tuples: TupleShapes::any(),
             named_structs: FiniteSet::any(),
             allow_other_structs: true,
@@ -248,10 +262,45 @@ impl RuntimeTypePredicate {
 
     fn collect_tuple_arities(&self, out: &mut BTreeSet<usize>) {
         out.extend(self.tuples.arities().values.iter().copied());
-        for shape in self.tuples.shapes() {
-            for position in shape {
-                position.collect_tuple_arities(out);
-            }
+        for sub in self.sub_predicates() {
+            sub.collect_tuple_arities(out);
+        }
+    }
+
+    /// Every question this test puts to something INSIDE the value: a tuple
+    /// position, a cons cell's head, and whatever the next nested axis adds.
+    ///
+    /// One walk, gathered through the ONE axis table, because the walk is what
+    /// [`Self::tuple_arities_at_every_depth`] reports and an arity a walk
+    /// misses is an arity no lowering registers a schema for -- which leaves
+    /// that sub-test blind in the interpreter while the native doors, which
+    /// register from the same walk, still ask it. That is a three-path parity
+    /// break, and it is exactly what a head-blind walk produced while
+    /// fz-kdt.107 step 3 was in prototype. The match below is exhaustive over
+    /// the axis table, so an axis that grows a sub-predicate cannot join the
+    /// lattice without answering here (fz-kdt.145).
+    fn sub_predicates(&self) -> impl Iterator<Item = &Self> {
+        RuntimeTestAxis::ALL
+            .into_iter()
+            .flat_map(|axis| self.sub_predicates_on(axis))
+    }
+
+    fn sub_predicates_on(&self, axis: RuntimeTestAxis) -> Vec<&Self> {
+        match axis {
+            RuntimeTestAxis::Tuples => self.tuples.shapes().iter().flatten().collect(),
+            RuntimeTestAxis::Lists => self.lists.heads().iter().collect(),
+            // A scalar axis decides a value outright, and a struct, map,
+            // binary, resource or callable test reads a schema id, a kind or a
+            // code word -- never anything the value CONTAINS.
+            RuntimeTestAxis::Ints
+            | RuntimeTestAxis::Floats
+            | RuntimeTestAxis::Atoms
+            | RuntimeTestAxis::NamedStructs
+            | RuntimeTestAxis::OtherStructs
+            | RuntimeTestAxis::Maps
+            | RuntimeTestAxis::Binaries
+            | RuntimeTestAxis::Callables
+            | RuntimeTestAxis::Resources => Vec::new(),
         }
     }
 
@@ -261,7 +310,7 @@ impl RuntimeTypePredicate {
             RuntimeTestAxis::Ints => self.ints.is_none(),
             RuntimeTestAxis::Floats => self.floats.is_none(),
             RuntimeTestAxis::Atoms => self.atoms.is_none(),
-            RuntimeTestAxis::Lists => self.lists.is_none(),
+            RuntimeTestAxis::Lists => self.lists.shapes().is_none(),
             RuntimeTestAxis::Tuples => self.tuples.arities().is_none(),
             RuntimeTestAxis::NamedStructs => self.named_structs.is_none(),
             RuntimeTestAxis::OtherStructs => !self.allow_other_structs,
@@ -323,7 +372,8 @@ impl RuntimeTypePredicate {
             AxisPrecision::Erasing => self.axis_overlaps(other, axis),
             AxisPrecision::PerPosition => match axis {
                 RuntimeTestAxis::Tuples => self.tuples.erasing_overlap(&other.tuples),
-                // A second per-position axis must name its own store here --
+                RuntimeTestAxis::Lists => self.lists.erasing_overlap(&other.lists),
+                // A further per-position axis must name its own store here --
                 // answering about tuples for it would silently break the seat.
                 _ => unreachable!("per-position precision with no per-position store: {axis:?}"),
             },
@@ -337,13 +387,13 @@ impl RuntimeTypePredicate {
     /// admits more, full stop. This is CONTAINMENT OF TESTS, not of the
     /// semantic types the tests were projected from -- `{:halt, :false}` and
     /// `{:cont, :true} | {:halt, :false}` are two types and (on the atom
-    /// position) two tests, while `{:halt, [int]}` and `{:halt, [:ok]}` are
-    /// two types and one test.
+    /// position) two tests, while `{:halt, [int]}` and `{:halt, [int | :ok]}`
+    /// are two types and one test.
     ///
     /// It is what the runtime ASKS, and that is exactly why it does not settle
     /// a dispatch's arm order on its own. A test is a projection and it drops
-    /// what the body reads: list shape erases the elements, and a tuple
-    /// position erases whatever its own sub-test erases. So a value can
+    /// what the body reads: a list head says nothing about the tail, and a
+    /// tuple position erases whatever its own sub-test erases. So a value can
     /// satisfy every question an arm asks and still lie outside the surface
     /// that arm's body was compiled for, and seating on this relation alone
     /// hands it to a body that never named it (fz-kdt.131).
@@ -359,18 +409,26 @@ impl RuntimeTypePredicate {
     /// projection ERASES something a body reads.
     ///
     /// On such an axis "the tests differ" is not separation -- tuple arities
-    /// {2} and {2,3} both admit a 2-tuple, list shapes {NonEmpty} and {Empty,
-    /// NonEmpty} both admit a cons cell -- so a dispatch seat may not skip the
-    /// surface-coverage check there. [`RuntimeTestAxis::precision`] is the
-    /// table that says which axes those are, and it is the same table the
-    /// three lowerings are written against: an axis may only be called
+    /// {2} and {2,3} both admit a 2-tuple, and `[int]` and `[int | :ok]` both
+    /// admit a cons cell whose head is an int -- so a dispatch seat may not
+    /// skip the surface-coverage check there. [`RuntimeTestAxis::precision`]
+    /// is the table that says which axes those are, and it is the same table
+    /// the three lowerings are written against: an axis may only be called
     /// separating here because all three actually decide it.
     ///
-    /// The tuple axis is neither wholly one nor the other. It carries one
-    /// sub-predicate per position per shape, so two shapes that overlap are
-    /// erasing only where some position they overlap at is itself erasing:
-    /// `{:cont, int}` and `{:halt, int}` separate on an atom, while
-    /// `{:ok, [int]}` and `{:ok, [:ok]}` are one and the same question.
+    /// NEITHER STRUCTURAL AXIS is wholly one or the other; each is as
+    /// separating as the questions it puts to what the value contains.
+    ///
+    /// The tuple axis carries one sub-predicate per position per shape, so two
+    /// shapes that overlap are erasing only where some position they overlap
+    /// at is itself erasing: `{:cont, int}` and `{:halt, int}` separate on an
+    /// atom, while `{:ok, [int]}` and `{:ok, [int | :ok]}` are one and the
+    /// same question.
+    ///
+    /// The list axis carries one head question per cons-admitting clause, and
+    /// its law is one-sided: rejection is exact and acceptance is not, so
+    /// DISJOINT heads separate and any overlap at all erases. See
+    /// [`ListShapes::erasing_overlap`], which states it in full.
     pub(crate) fn overlaps_on_an_erasing_axis(&self, other: &Self) -> bool {
         RuntimeTestAxis::ALL
             .into_iter()
@@ -381,6 +439,172 @@ impl RuntimeTypePredicate {
         RuntimeTestAxis::ALL
             .into_iter()
             .any(|axis| self.axis_overlaps(other, axis))
+    }
+}
+
+/// The list shapes a test admits, plus the question a cons cell's HEAD is put.
+///
+/// This is the list axis' answer to [`TupleShapes`], and its shape follows what
+/// the type lattice actually says about a list: `ListSig` carries ONE element
+/// type for the whole list, so a list type is HOMOGENEOUS by construction. That
+/// is what makes a single head load worth reading.
+///
+/// `heads` holds one entry per list CLAUSE that admits a cons cell, which is
+/// what keeps the clauses correlated -- the same reason [`TupleShapes`] keeps
+/// one shape per clause. `exact` records whether every such clause could be
+/// projected; an inexact axis is the shape-only reading this layer had before
+/// fz-kdt.107 step 3, and is a sound over-approximation of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ListShapes {
+    shapes: FiniteSet<ListShape>,
+    heads: Vec<RuntimeTypePredicate>,
+    exact: bool,
+}
+
+impl ListShapes {
+    pub(crate) fn none() -> Self {
+        Self {
+            shapes: FiniteSet::none(),
+            heads: Vec::new(),
+            exact: true,
+        }
+    }
+
+    /// The coarse reading: these shapes, and nothing about the elements.
+    pub(crate) fn shape_only(shapes: FiniteSet<ListShape>) -> Self {
+        Self {
+            shapes,
+            heads: Vec::new(),
+            exact: false,
+        }
+    }
+
+    /// These shapes, with one head question per cons-admitting clause.
+    ///
+    /// INVARIANT: an axis that admits `NonEmpty` carries at least one head.
+    /// A cons-admitting axis with nothing to ask is the shape-only reading and
+    /// must be built as one, or it would claim to CONTAIN sharper axes while
+    /// asking strictly less than they do.
+    pub(crate) fn exact(shapes: FiniteSet<ListShape>, heads: Vec<RuntimeTypePredicate>) -> Self {
+        debug_assert!(
+            !shapes.contains(&ListShape::NonEmpty) || !heads.is_empty(),
+            "an exact list axis that admits a cons cell must ask its head something",
+        );
+        Self {
+            shapes,
+            heads,
+            exact: true,
+        }
+    }
+
+    /// Every list, of every element type.
+    pub(crate) fn any() -> Self {
+        Self::shape_only(FiniteSet::any())
+    }
+
+    /// Which shapes the test admits. Always answerable, and the only thing this
+    /// axis said before fz-kdt.107 step 3 -- the coarse callers
+    /// (`jobs::transport`, `lowering_tests_position`) still read it alone.
+    pub(crate) fn shapes(&self) -> &FiniteSet<ListShape> {
+        &self.shapes
+    }
+
+    pub(crate) fn heads(&self) -> &[RuntimeTypePredicate] {
+        &self.heads
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_exact(&self) -> bool {
+        self.exact
+    }
+
+    /// Whether the test asks a cons cell's head anything at all.
+    ///
+    /// The three lowerings read this, so a head-blind axis emits and answers
+    /// exactly what it did before this axis learned to look. By [`Self::exact`]'s
+    /// invariant this is `exact && admits a cons cell`; the head check is
+    /// stated anyway because the answer must not depend on the invariant
+    /// holding.
+    pub(crate) fn asks_the_head(&self) -> bool {
+        self.exact && !self.heads.is_empty() && self.shapes.contains(&ListShape::NonEmpty)
+    }
+
+    /// Whether one cons cell could pass both head questions.
+    ///
+    /// An axis that asks the head nothing admits every head, so it overlaps
+    /// with anything: what a test declines to ask is never a separation.
+    fn heads_overlap(&self, other: &Self) -> bool {
+        if !self.asks_the_head() || !other.asks_the_head() {
+            return true;
+        }
+        self.heads
+            .iter()
+            .any(|left| other.heads.iter().any(|right| left.overlaps(right)))
+    }
+
+    /// Whether every list `other` admits, this axis admits too.
+    ///
+    /// An inexact axis is the shape-only reading, which admits every element,
+    /// so it contains anything; and nothing exact contains it.
+    fn contains_all(&self, other: &Self) -> bool {
+        if !self.shapes.contains_all(&other.shapes) {
+            return false;
+        }
+        if !self.exact {
+            return true;
+        }
+        if !other.exact {
+            return false;
+        }
+        other
+            .heads
+            .iter()
+            .all(|theirs| self.heads.iter().any(|ours| theirs.contained_in(ours)))
+    }
+
+    /// Whether one list could pass both tests.
+    ///
+    /// `[]` is a shape, not a head: two tests that both admit the empty list
+    /// overlap there whatever their heads say.
+    fn overlaps(&self, other: &Self) -> bool {
+        if !self.shapes.overlaps(&other.shapes) {
+            return false;
+        }
+        if self.shapes.contains(&ListShape::Empty) && other.shapes.contains(&ListShape::Empty) {
+            return true;
+        }
+        self.heads_overlap(other)
+    }
+
+    /// Whether one list could pass both tests through what NEITHER test reads.
+    ///
+    /// THE ONE-SIDED-FILTER LAW (fz-kdt.107 step 3; the rule this replaced was
+    /// refuted by measurement, so read this one as written). A head load is
+    ///
+    /// - EXACT ON REJECTION: a list type is homogeneous, so a head outside the
+    ///   element question proves the whole value lies outside the surface;
+    /// - ERASING ON ACCEPTANCE: a head inside it proves nothing about the tail,
+    ///   which no test reads.
+    ///
+    /// So DISJOINT heads are the only claimable separation. Two `NonEmpty`
+    /// tests whose heads overlap AT ALL erase -- `[int]` and `[int | :ok]`
+    /// disagree only about a tail, and seating the narrow one first hands
+    /// `[1, :ok]` to a body that reads every element as an int. Claiming
+    /// otherwise is precisely what re-created the abort this axis exists to
+    /// kill.
+    ///
+    /// THE `[]` EXCEPTION: two tests meeting only at the empty list do not
+    /// erase. `[]` is a single value carrying nothing, so no body admitted
+    /// through it can misread what arrives -- the same reason the atom axis
+    /// separates.
+    ///
+    /// An inexact axis, or one that asks no head, erases wherever it admits a
+    /// cons cell: what the projection could not name, the seat may not claim.
+    fn erasing_overlap(&self, other: &Self) -> bool {
+        if !self.shapes.contains(&ListShape::NonEmpty) || !other.shapes.contains(&ListShape::NonEmpty) {
+            return false;
+        }
+        self.heads_overlap(other)
     }
 }
 
@@ -439,7 +663,7 @@ pub(crate) enum PositionScope {
 /// as erasing: what the lowering declines to ask, the seat may not claim as
 /// separation.
 pub(crate) fn lowering_tests_position(sub: &RuntimeTypePredicate) -> bool {
-    sub.lists.is_none()
+    sub.lists.shapes().is_none()
 }
 
 fn position_overlaps(left: &RuntimeTypePredicate, right: &RuntimeTypePredicate) -> bool {
@@ -594,6 +818,13 @@ pub(crate) type CallableIdentities<'a> = dyn Fn(u64) -> Option<ClosureTarget> + 
 /// sub-predicate can be asked about.
 pub(crate) type TupleFieldReader<'a> = dyn Fn(RuntimeAnyValue, usize) -> Option<RuntimeAnyValue> + 'a;
 
+/// Read the first element out of a cons cell.
+///
+/// Mirrors [`TupleFieldReader`]: the side that owns the representation
+/// answers. `None` is a head the reader could not produce, which no head
+/// question can be asked about.
+pub(crate) type ListHeadReader<'a> = dyn Fn(RuntimeAnyValue) -> Option<RuntimeAnyValue> + 'a;
+
 /// Everything the interpreter's matcher needs to read a value back.
 ///
 /// The schema maps are the runtime's own numbering, so they are handed in
@@ -605,6 +836,7 @@ pub(crate) struct RuntimeValueReader<'a> {
     pub(crate) named_schema_ids: &'a HashMap<String, u32>,
     pub(crate) callables: &'a CallableIdentities<'a>,
     pub(crate) fields: &'a TupleFieldReader<'a>,
+    pub(crate) list_head: &'a ListHeadReader<'a>,
 }
 
 impl RuntimeValueReader<'_> {
@@ -663,9 +895,10 @@ fn axis_admits(
             _ => false,
         },
         RuntimeTestAxis::Lists => match value {
-            RuntimeAnyValue::EmptyList => predicate.lists.contains(&ListShape::Empty),
+            RuntimeAnyValue::EmptyList => predicate.lists.shapes().contains(&ListShape::Empty),
             RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag() == ValueKind::LIST => {
-                predicate.lists.contains(&ListShape::NonEmpty)
+                predicate.lists.shapes().contains(&ListShape::NonEmpty)
+                    && matches_list_head(&predicate.lists, reader, value, scope)
             }
             _ => false,
         },
@@ -802,6 +1035,34 @@ fn matches_tuple_shape(
     })
 }
 
+/// Whether some clause's head question admits this cons cell's first element.
+///
+/// The shape half above has already decided that a cons cell is admitted at
+/// all; this is the element half, and it is skipped where the axis asks the
+/// head nothing, which is the shape-only reading this layer had before
+/// fz-kdt.107 step 3. The emitted native test is the same disjunction under
+/// the same cons guard, so this function and the compiled code answer alike.
+fn matches_list_head(
+    lists: &ListShapes,
+    reader: &RuntimeValueReader<'_>,
+    value: RuntimeAnyValue,
+    scope: PositionScope,
+) -> bool {
+    if !lists.asks_the_head() {
+        return true;
+    }
+    let Some(head) = (reader.list_head)(value) else {
+        // A head the representation's owner could not produce is a head no
+        // question can be asked about, so the shape half stands alone.
+        return true;
+    };
+    lists.heads().iter().any(|question| {
+        RuntimeTestAxis::of_value(head)
+            .iter()
+            .any(|axis| axis_admits(question, reader, head, *axis, scope))
+    })
+}
+
 fn matches_named_struct_axis(
     predicate: &RuntimeTypePredicate,
     reader: &RuntimeValueReader<'_>,
@@ -864,6 +1125,13 @@ fn matches_other_struct_axis(
 /// blind to as well. A value admitted by the first reading and refused by the
 /// second passed a test no shape of the arm's surface names -- exactly the
 /// blind routing this class of defect is made of.
+///
+/// The LIST axis is not re-asked, and it is the natural next reading now that
+/// a cons cell's head carries a predicate of its own: the head is exact on
+/// rejection and erasing on acceptance, so a full re-ask would walk the tail
+/// the emitted test never reads. That is fz-kdt.144, deliberately not folded
+/// in here -- the 268-escape baseline this reports is the tuple population,
+/// and mixing a second population into it would lose the comparand.
 ///
 /// It is off unless `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` is set; `abort`
 /// makes each finding fatal, anything else counts them and reports each on
@@ -942,7 +1210,7 @@ mod tests {
             RuntimeTestAxis::Ints => predicate.ints = FiniteSet::any(),
             RuntimeTestAxis::Floats => predicate.floats = FiniteSet::any(),
             RuntimeTestAxis::Atoms => predicate.atoms = FiniteSet::any(),
-            RuntimeTestAxis::Lists => predicate.lists = FiniteSet::any(),
+            RuntimeTestAxis::Lists => predicate.lists = ListShapes::any(),
             RuntimeTestAxis::Tuples => predicate.tuples = TupleShapes::any(),
             RuntimeTestAxis::NamedStructs => predicate.named_structs = FiniteSet::any(),
             RuntimeTestAxis::OtherStructs => predicate.allow_other_structs = true,
@@ -1027,9 +1295,10 @@ mod tests {
             let erases = saturated.overlaps_on_an_erasing_axis(&saturated);
             match axis.precision() {
                 AxisPrecision::Separating => assert!(!erases, "{axis:?} is classified separating but reports erasing"),
-                // An arity-only tuple axis is the coarse reading, so a
-                // saturated tuple axis erases; per-position shapes are what
-                // make it separate, and that is the next test's business.
+                // A saturated per-position axis is its own coarse reading --
+                // every arity, every element -- so it erases. The per-position
+                // shapes and the head questions are what make it separate, and
+                // those are the neighbouring tests' business.
                 AxisPrecision::Erasing | AxisPrecision::PerPosition => {
                     assert!(erases, "{axis:?} is classified erasing but reports separating")
                 }
@@ -1057,8 +1326,126 @@ mod tests {
 
     fn list_of_anything() -> RuntimeTypePredicate {
         let mut predicate = RuntimeTypePredicate::none();
-        predicate.lists = FiniteSet::any();
+        predicate.lists = ListShapes::any();
         predicate
+    }
+
+    /// A cons-only test whose head asks `heads`.
+    fn cons_of(heads: Vec<RuntimeTypePredicate>) -> RuntimeTypePredicate {
+        let mut predicate = RuntimeTypePredicate::none();
+        predicate.lists = ListShapes::exact(FiniteSet::lit(ListShape::NonEmpty), heads);
+        predicate
+    }
+
+    /// THE ONE-SIDED-FILTER LAW, stated as a property (fz-kdt.107 step 3).
+    ///
+    /// A head load rejects exactly and accepts erasingly, so DISJOINT heads
+    /// are the only claimable separation and any overlap at all erases. The
+    /// second half is the one that was refuted by measurement: reading
+    /// "the heads differ" as separation seats `[int]` ahead of `[int | :ok]`,
+    /// and `[1, :ok]` then reaches a body that reads every element as an int.
+    #[test]
+    fn list_heads_separate_only_where_they_are_disjoint() {
+        let ints_list = cons_of(vec![ints()]);
+        let atoms_list = cons_of(vec![atom("ok")]);
+        let mixed_list = cons_of(vec![{
+            let mut mixed = ints();
+            mixed.atoms = FiniteSet::lit("ok".to_string());
+            mixed
+        }]);
+
+        assert!(
+            !ints_list.overlaps(&atoms_list),
+            "disjoint heads are disjoint tests: no list has a first element that is both",
+        );
+        assert!(
+            !ints_list.overlaps_on_an_erasing_axis(&atoms_list),
+            "disjoint heads are the one separation a head load can claim",
+        );
+
+        assert!(
+            ints_list.overlaps(&mixed_list),
+            "[1, ..] passes both a [int] head test and a [int | :ok] one",
+        );
+        assert!(
+            ints_list.overlaps_on_an_erasing_axis(&mixed_list),
+            "heads that overlap at all erase: the head says nothing about the tail, so a seat \
+             must fall back to surface coverage",
+        );
+        assert!(
+            ints_list.contained_in(&mixed_list) && !mixed_list.contained_in(&ints_list),
+            "and the narrower head is still the narrower test",
+        );
+    }
+
+    /// THE `[]` EXCEPTION: two tests meeting only at the empty list do not
+    /// erase, because `[]` is one value carrying nothing for a body to
+    /// misread -- the same reason the atom axis separates.
+    #[test]
+    fn two_tests_meeting_only_at_the_empty_list_do_not_erase() {
+        let mut empty_or_ints = RuntimeTypePredicate::none();
+        empty_or_ints.lists =
+            ListShapes::exact(FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty]), vec![ints()]);
+        let mut empty_or_atoms = RuntimeTypePredicate::none();
+        empty_or_atoms.lists = ListShapes::exact(
+            FiniteSet::finite([ListShape::Empty, ListShape::NonEmpty]),
+            vec![atom("ok")],
+        );
+        assert!(
+            empty_or_ints.overlaps(&empty_or_atoms),
+            "both admit [], so one value passes both tests",
+        );
+        assert!(
+            !empty_or_ints.overlaps_on_an_erasing_axis(&empty_or_atoms),
+            "meeting at [] is not a blind meeting: the value carries nothing either body reads",
+        );
+    }
+
+    /// A head the projection could not name is a head the seat may not read as
+    /// separation: the shape-only reading erases against everything that
+    /// admits a cons cell.
+    #[test]
+    fn a_head_blind_list_axis_erases_against_every_cons_test() {
+        let blind = list_of_anything();
+        let ints_list = cons_of(vec![ints()]);
+        assert!(
+            blind.overlaps_on_an_erasing_axis(&ints_list),
+            "what the projection declines to ask, a seat may not claim as separation",
+        );
+        assert!(
+            ints_list.contained_in(&blind) && !blind.contained_in(&ints_list),
+            "the shape-only reading is the over-approximation, so it contains the exact one",
+        );
+    }
+
+    /// fz-kdt.145, the constructive invariant: every arity ANY sub-predicate
+    /// can reach is reported, so every lowering registers a schema for it.
+    ///
+    /// The prototype of the list axis reported tuple arities through tuple
+    /// positions only. An arity reachable solely through a list HEAD went
+    /// unregistered, the interpreter's head test rejected the tuple it could
+    /// not name, and the JIT -- which registers from the same walk but reads
+    /// schema ids the native driver had already minted -- said yes: three
+    /// interpreter-only parity breaks from one missing recursion. The walk is
+    /// now one exhaustive match over the axis table
+    /// (`RuntimeTypePredicate::sub_predicates_on`), so the next nested axis
+    /// cannot repeat it without failing to compile.
+    #[test]
+    fn every_arity_a_sub_predicate_can_reach_is_reported_for_registration() {
+        let triple = tuple(vec![vec![ints(), ints(), ints()]]);
+        let through_a_head = cons_of(vec![triple]);
+        assert_eq!(
+            through_a_head.tuple_arities_at_every_depth(),
+            BTreeSet::from([3]),
+            "an arity reachable only through a list head is still an arity the test asks about",
+        );
+
+        let pair_over_a_list = tuple(vec![vec![atom("ok"), through_a_head]]);
+        assert_eq!(
+            pair_over_a_list.tuple_arities_at_every_depth(),
+            BTreeSet::from([2, 3]),
+            "and the walk composes: a head inside a position inside a tuple reports every rung",
+        );
     }
 
     /// The P1 claim in lattice terms: two annotated tagged tuples are two
@@ -1081,9 +1468,9 @@ mod tests {
     #[test]
     fn a_nested_list_position_stays_erasing() {
         let mut empty_list = RuntimeTypePredicate::none();
-        empty_list.lists = FiniteSet::lit(ListShape::Empty);
+        empty_list.lists = ListShapes::exact(FiniteSet::lit(ListShape::Empty), Vec::new());
         let mut cons = RuntimeTypePredicate::none();
-        cons.lists = FiniteSet::lit(ListShape::NonEmpty);
+        cons.lists = ListShapes::exact(FiniteSet::lit(ListShape::NonEmpty), vec![ints()]);
         let initial = tuple(vec![vec![empty_list, ints()]]);
         let grown = tuple(vec![vec![cons, ints()]]);
         assert!(

@@ -46,8 +46,12 @@ body ids assigned to the destinations in order.
 
 A settled target is not automatically a destination. An arm asks its question
 through `RuntimeTypePredicate`, which is coarser than the type it is projected
-from: `[int]` and `[:ok]` both project to "a non-empty list", because a list
-test reads the cons cell and nothing inside it.
+from: `[int]` and `[int | :ok]` project to overlapping questions -- the head
+test separates only DISJOINT element families (the one-sided-filter law), and
+a same-fn-id pair differing only in captures projects to one question
+entirely. (Before fz-kdt.107 step 3, ANY two list types were one question --
+a list test read the cons cell and nothing inside it; `[int]` vs `[:ok]` now
+separate by head.)
 Two targets that project to ONE question are not two alternatives — nothing but
 their order would decide which body runs, and that order is the scheduler's. A
 target is therefore dropped when a sibling both (a) is runtime-indistinguishable
@@ -210,25 +214,26 @@ table above is measured with the canon comparand instead: add
 fixture whose stdout is invariant can still move its plan content, which is
 what the 8/27/19 numbers count.
 
-**What the sweep reports at this commit.** The interpreter is invariant under
-every setting: 0 movers over 584 fixtures × 19 settings. Natively FOUR fixtures
-abort — the JIT sweep is whole-corpus, the AOT sweep covers the two censuses and
-agrees with it fixture for fixture — all with the same signature —
-`fz_list_head_int_ref` — a list whose elements are not ints (atoms on two
+**What the sweep reported at fz-kdt.141, and what it reports now.** The
+interpreter was invariant under every setting then and is now: 0 movers over the
+corpus × 19 settings. Natively FOUR fixtures aborted, all with one signature —
+`fz_list_head_int_ref`, a list whose elements are not ints (atoms on two
 fixtures, bitstrings on `enum_map_family`, structs on `00277`) read through the
-int accessor — and all in the
-fz-kdt.107 step-3 class of list arms whose bodies use incompatible element
-accessors and none of which covers another:
+int accessor — and all in the fz-kdt.107 step-3 class of list arms whose bodies
+use incompatible element accessors and none of which covers another:
 
-| fixture | settings that abort it |
-| --- | --- |
-| `enum_map_family` | `arms:reverse`, `arms:6` |
-| `00277_enum_tier0_fixture` | `arms:1` … `arms:5` |
-| `dispatch_seat_element_blind` | every arm seed |
-| `enum_predicate_search` | `arms:6` |
+| fixture | settings that aborted it | at fz-kdt.107 step 3 |
+| --- | --- | --- |
+| `enum_map_family` | `arms:reverse`, `arms:6` | rc 0 |
+| `00277_enum_tier0_fixture` | `arms:1` … `arms:5` | rc 0 |
+| `dispatch_seat_element_blind` | every arm seed | rc 0 |
+| `enum_predicate_search` | `arms:6` | rc 0 |
 
-Only the first aborts under the group reversal. The other three are what this
-instrument bought, and they are all the same standing defect, not new ones.
+All four are dead. Re-measured at the step-3 landing over `arms:reverse` and
+`arms:1` … `arms:6` on the JIT, and over `arms:reverse`/`1`/`6` on the AOT door:
+every run exits 0 and prints what the settled order prints. The head question is
+what killed them — the three arms of each group are three questions now, and
+where two of them still meet at the head the covering one is seated first.
 
 ### What a test can see
 
@@ -251,7 +256,7 @@ deciding it:
 | atoms | separating | passing is BEING one of the named values |
 | callables | separating | passing is being MINTED FROM a named function -- identity, not captures; honest only while the same-fn-id/different-capture shape compiles on no path (fz-kdt.127) |
 | ints, floats | separating | presence bits: one representation, so no admitted body can misread what arrives — brands are runtime-erased by construction (fz-bsx), and restoring numeric singletons to the lattice would re-open this row |
-| lists | erasing | empty-or-cons, nothing of the elements |
+| lists | per position | empty-or-cons, plus the first element's own question — as separating as two head questions are DISJOINT |
 | named/other structs, maps, binaries, resources | erasing | a schema id or a kind, never the contents |
 | tuples | per position | as separating as the positions' own sub-tests |
 
@@ -266,6 +271,58 @@ intersection and one with negations is a difference; neither is a list of
 positions, so either degrades the whole axis to the arity-only reading, which is
 what every clause answered before fz-kdt.119 and is a sound over-approximation
 of what it says now.
+
+The list axis is `ListShapes`: which shapes the test admits, plus one HEAD
+question per list clause that admits a cons cell — the same one-per-clause rule,
+for the same correlation reason. A clause with several positive signatures or
+with negations is not one element type, so either degrades the whole axis to the
+shape-only reading, which is what every clause answered before fz-kdt.107 step 3.
+An `[]`-only clause puts no head question: there is no cons cell to read.
+
+**The one-sided-filter law.** A list type is HOMOGENEOUS by construction —
+`ListSig` carries one element type for the whole list — so one head load is a
+one-sided test:
+
+- EXACT ON REJECTION. A head outside the element question proves the whole value
+  lies outside the surface. That is a real proof, and it is what makes disjoint
+  heads a real separation: `[:false | :true]` against `[int]` can never both
+  admit a value, so no seat between them owes a surface check.
+- ERASING ON ACCEPTANCE. A head inside the question proves nothing about the
+  tail, which no test reads. So two `NonEmpty` tests whose heads overlap AT ALL
+  erase, however exactly the heads themselves are decided: `[int]` and
+  `[int | :ok]` put the same question to a first element and disagree only about
+  what may follow it.
+
+Disjoint heads are therefore the ONLY claimable separation, and this direction is
+load-bearing rather than conservative. The rule that shipped in the step-3
+proposal read "the heads differ" as separation; the prototype measured it seating
+`[int]` ahead of `[int | :ok]` on the precision preference, at which point
+`[1, :ok]` passes the narrow head test and lands in the body that reads every
+element as an int — the very abort the axis exists to kill, re-created by it.
+`an_arm_whose_head_overlaps_a_wider_one_is_seated_after_it` is the gate that
+catches it.
+
+**The `[]` exception.** Two tests meeting ONLY at the empty list do not erase.
+`[]` is a single value carrying nothing for a body to misread, which is the same
+reason the atom axis separates. Meeting through a cons cell is the erasing case,
+because the tail behind it is what neither test looked at.
+
+Both the interpreter and the two native doors read the head through the
+representation's own owner — `matches_list_head` through a `ListHeadReader`,
+`emit_list_axis` through `RuntimeTestEmitter::list_head` — and the head question
+is asked INSIDE the cons branch and nowhere else, so a head-blind or `[]`-only
+test emits and answers exactly what it did before. The nested question is a full
+`RuntimeTypePredicate`, so an arity reachable only through a head is an arity
+every lowering must register a schema for; `RuntimeTypePredicate::sub_predicates`
+is the ONE walk that reports them, matched exhaustively over the axis table so
+the next nested axis cannot forget to answer (**fz-kdt.145**).
+
+**What the head does not buy.** Group-splitting costs fz-kdt.118's drop: `[int]`
+and `[int | :ok]` used to be one question, so the narrower was dropped as
+unroutable; they are two questions now, both survive, and the extra body is real
+native code. That growth is **fz-kdt.143**'s. And a pair whose heads overlap
+while neither surface contains the other is not reachable by any seat —
+`enum_predicate_search`'s two, which **fz-kdt.131** owns.
 
 **The Scope-A carve-out.** A position that can hold a LIST is not tested at all
 (`lowering_tests_position`), by the lattice and by all three lowerings alike.
@@ -288,8 +345,8 @@ themselves say it is wrong.
 ### What a seat can get wrong
 
 An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
-compiled for: list shape erases the elements, and a tuple position erases
-whatever its own sub-test erases.
+compiled for: a list head says nothing about the tail, and a tuple position
+erases whatever its own sub-test erases.
 So a value can satisfy every question an arm asks and still lie outside that
 arm's surface, and seating that arm first routes the value into a body whose
 representation never named it — `fz_list_head_int_ref` reads a list of atoms as
@@ -298,33 +355,37 @@ dynamic tags hide it.
 
 Call that a BLIND ESCAPE: `early` is seated before `late`, and at some position
 the two tests both admit some value on an axis whose projection erases what the
-bodies read, while `late`'s surface holds values `early`'s does not. Two orderings were built on containment alone and BOTH
-create blind escapes, in opposite directions:
+bodies read, while `late`'s surface holds values `early`'s does not. Two
+orderings were built on containment alone and BOTH create blind escapes, in
+opposite directions (both were measured when a list test still saw empty-or-cons
+and nothing else, which is why both examples turn on lists):
 
 - seating the narrower SURFACE first puts `list(int) × {all?/1, all?/2, empty?}`
-  ahead of `list(:ok) × {empty?}`. `list(int)` is a subtype of its sibling and
-  the very same test — every list is "a non-empty list" to a predicate that
-  records list shape and nothing else — so the surface rule seats an arm whose
+  ahead of `list(:ok) × {empty?}`. `list(int)` was a subtype of its sibling and
+  the very same test — every list was "a non-empty list" to a predicate that
+  recorded list shape and nothing else — so the surface rule seats an arm whose
   CALLABLE test admits three lambdas in front of one admitting a single lambda,
   where it swallows that sibling's values.
 - seating the narrower TEST first puts `list(int) × {all?/1}` ahead of
   `list(:ok) × {all?/1, empty?}`, because a callable set of one is strictly
   inside a set of two. Then `Enum.all?([:ok, :ok])` carrying the shared lambda
-  satisfies BOTH of its questions — list shape is element-blind — and reaches
-  the int-reading body. `dispatch_seat_element_blind` is that program.
+  satisfied BOTH of its questions and reached the int-reading body.
+  `dispatch_seat_element_blind` is that program; fz-kdt.107 step 3 gave those
+  two arms disjoint head questions, so the pair no longer meets on an erasing
+  axis at all.
 
 Neither containment is the criterion on its own. SURFACE COVERAGE is: `covers`
 holds of `(early, late)` when, at every position where their tests could both
 admit a value on an ERASING axis (`overlaps_on_an_erasing_axis`, which reads the
 `AxisPrecision` table above), `early`'s surface already contains `late`'s. "The
-tests differ" is not separation on an erasing axis: list shapes {NonEmpty} and
-{Empty, NonEmpty} both admit a cons cell, and an arity-only tuple test at {2}
+tests differ" is not separation on an erasing axis: `[int]` and `[int | :ok]`
+both admit a cons cell whose head is an int, and an arity-only tuple test at {2}
 and one at {2,3} both admit a 2-tuple. A separating axis excuses the surface
 check, because a value passing it is pinned down far enough that no admitted
 body can misread it. A tuple pair is judged position by position: it is erasing
 only where two shapes that could both admit a value overlap at a position that
 is itself erasing — so `{:cont, int}` against `{:halt, int}` separates on an
-atom and needs no surface check, while `{:ok, [int]}` against `{:ok, [:ok]}` is
+atom and needs no surface check, while `{:ok, [int]}` against `{:ok, [int | :ok]}` is
 one and the same question. Under that definition, seating a covering arm first
 cannot escape anything, by construction -- the surface check is skipped only
 where the tests cannot both admit a value the projection would blur.
@@ -375,16 +436,27 @@ property back off the landed artifact across the arm-order census.
 
 What the seat does NOT guarantee is that no blind escape remains.
 `compiler2_dispatch_blind_escape_census_is_the_known_population` counts the
-survivors: 19 positions over 12 arm pairs, every one of them a list-shape test
-that cannot see its elements, and every one of them arrival order's before any
-seating rule existed. Three of `enum_map_family`'s are the ones that already
-abort natively under a reversed arm order, and `dispatch_seat_element_blind`'s
-one is why that fixture prints the right answers only because arrival seats the
-atom arm first — which a seeded arm permutation now demonstrates, natively, on
-both fixtures. The census is a RATCHET pointing at fz-kdt.131, not a target: a new
+survivors. At fz-kdt.129's landing there were 19, over 12 arm pairs, every one a
+list subject a shape-only test could not see the elements of; fz-kdt.119 retired
+none of them, exactly because they were all lists.
+
+fz-kdt.107 step 3 retires SEVENTEEN. A pair whose heads are disjoint never meets
+on an erasing axis at all, and that is most of the population — including all
+three of `enum_map_family`'s, which is why its arm-reversal abort dies, and
+`dispatch_seat_element_blind`'s one, which is why that fixture stops aborting
+under every arm seed.
+
+TWO survive, both in `enum_predicate_search`: `[:false | :nil]` seated before
+`[int | :nil]`, and `[:false | :true]` before `[int | :ok | :true]`. Their heads
+genuinely OVERLAP — on `:nil` and on `:true` — and neither surface contains the
+other, so no seat is escape-free and arrival stands. That is **fz-kdt.131**'s
+facet 3, not a head the axis failed to read, and its cure is a repr-level or
+minting-level decision rather than an ordering rule. The reproducer fixture
+`dispatch_list_head_separates` carries the same pair on purpose, so the census
+reads three.
+
+The census is a RATCHET pointing at fz-kdt.131, not a target: any other new
 entry is a new latent miscompile and wants a ticket, not a re-blessed constant.
-fz-kdt.119 retires NONE of the 19: every one is a list subject, and only
-fz-kdt.107 step 3 can move that number.
 
 ### The dynamic tripwire
 
@@ -394,6 +466,9 @@ production path, over whatever the corpus actually runs (fz-kdt.135): the
 interpreter answers each dispatch type test as the lowerings do — under
 `PositionScope::Lowered`, blind where they are blind — and then re-asks the
 tuple axis under `PositionScope::Full`, which looks at the positions they skip.
+The LIST axis is not re-asked; that reading becomes possible now that a head
+carries a predicate of its own, and it is **fz-kdt.144**, deliberately left out
+so the 268-escape baseline stays one population's comparand.
 A value admitted by the first reading and refused by the second passed a test no
 shape of the arm's surface names, which is precisely a blind routing. Unset, it
 is off and costs nothing; set to `abort` each finding is fatal, which is how a
@@ -448,6 +523,8 @@ narrow arm first. Measured at the landing: all four schedule lenses stay
 byte-identical under FIFO and LIFO, and the corpus dump census stays at the same
 three schedule-movers (`00277_enum_tier0_fixture`, `enum_map_family`,
 `dead_closure_capture_empty_list`), which carry arms no seat can separate.
+Re-measured at fz-kdt.107 step 3: the four lenses are byte-identical still, and
+the census is unchanged at three.
 
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`

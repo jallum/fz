@@ -21,7 +21,9 @@ use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::ValueKind;
 
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{ListShape, RuntimeTestAxis, RuntimeTypePredicate, lowering_tests_position};
+use crate::runtime_type_predicate::{
+    ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate, lowering_tests_position,
+};
 use crate::types::ClosureTarget;
 
 use super::CodegenError;
@@ -69,6 +71,10 @@ pub(super) trait RuntimeTestEmitter<'f> {
     /// Field `index` of a struct value. Only asked under a guard that has
     /// established the value's arity, so the read is in bounds.
     fn tuple_field(&mut self, value: Self::Value, index: usize) -> Result<Self::Value, CodegenError>;
+
+    /// The first element of a cons cell. Only asked under a guard that has
+    /// established the value IS a cons cell, so the read is in bounds.
+    fn list_head(&mut self, value: Self::Value) -> Result<Self::Value, CodegenError>;
 
     /// The code word a closure value carries. Only asked under a CLOSURE
     /// guard.
@@ -217,17 +223,55 @@ fn atom_id_membership<'f, E: RuntimeTestEmitter<'f>>(e: &E, atoms: &FiniteSet<St
     }
 }
 
+/// The list axis: a shape question, and -- where the projection could name the
+/// element type -- the first element's own question, asked INSIDE the cons
+/// branch and nowhere else.
+///
+/// The head costs one load and one nested test, and a head-blind or `[]`-only
+/// axis emits exactly the code it emitted before fz-kdt.107 step 3. The
+/// disjunction over `heads` mirrors the interpreter's `matches_list_head`: one
+/// head question per cons-admitting clause, and a cons cell is admitted when
+/// any of them says so.
 fn emit_list_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
-    lists: &FiniteSet<ListShape>,
+    lists: &ListShapes,
 ) -> Result<ir::Value, CodegenError> {
-    match (lists.contains(&ListShape::Empty), lists.contains(&ListShape::NonEmpty)) {
-        (true, true) => e.kind_flag(value, ValueKind::LIST),
-        (true, false) => e.empty_list_flag(value),
-        (false, true) => e.cons_flag(value),
-        (false, false) => Ok(e.builder().ins().iconst(types::I8, 0)),
+    let shapes = lists.shapes();
+    let (empty, non_empty) = (
+        shapes.contains(&ListShape::Empty),
+        shapes.contains(&ListShape::NonEmpty),
+    );
+    if !non_empty {
+        return if empty {
+            e.empty_list_flag(value)
+        } else {
+            Ok(e.builder().ins().iconst(types::I8, 0))
+        };
     }
+    if !lists.asks_the_head() {
+        return if empty {
+            e.kind_flag(value, ValueKind::LIST)
+        } else {
+            e.cons_flag(value)
+        };
+    }
+    let heads = lists.heads().to_vec();
+    let is_cons = e.cons_flag(value)?;
+    let admitted = guarded(e, is_cons, move |e| {
+        let head = e.list_head(value)?;
+        let mut flag = e.builder().ins().iconst(types::I8, 0);
+        for question in &heads {
+            let next = emit_runtime_type_test(e, head, question)?;
+            flag = e.builder().ins().bor(flag, next);
+        }
+        Ok(flag)
+    })?;
+    if !empty {
+        return Ok(admitted);
+    }
+    let is_empty = e.empty_list_flag(value)?;
+    Ok(e.builder().ins().bor(is_empty, admitted))
 }
 
 /// "Is this value one of THESE callables?"

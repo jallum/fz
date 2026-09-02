@@ -8942,8 +8942,13 @@ end
 ///
 /// `closure_identity_tag_split` and `closure_identity_captures` are the two
 /// programs that named the defect and are shadow-free by the same cure.
-/// `repr_seam_enum_count_after_reduce2` and the other four census fixtures are
-/// NOT here: what survives on them is the residue, pinned next door.
+///
+/// fz-kdt.107 step 3 supplied the second such predicate -- what a cons cell's
+/// first element is -- and `enum_map_family` is the fixture it clears: its
+/// three `[:a | :b]` / `[binary]` / `[int]` arms were one question, they are
+/// three now, and its arm-reversal abort dies with them. The remaining census
+/// fixtures are NOT here: what survives on them is the residue, pinned next
+/// door, and every entry of it is fz-kdt.127's.
 #[test]
 fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     for fixture in [
@@ -8954,6 +8959,7 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
         "fixtures2/behavior/range_enumerable.fz",
         "fixtures2/behavior/closure_identity_tag_split.fz",
         "fixtures2/behavior/closure_identity_captures.fz",
+        "fixtures2/behavior/enum_map_family.fz",
     ] {
         let twins = indistinguishable_dispatch_arms(fixture);
         assert!(
@@ -8964,41 +8970,58 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     }
 }
 
-/// What the callable axis does NOT reach, measured and owned.
+/// What no runtime question reaches, measured and owned -- and after
+/// fz-kdt.107 step 3 it is ONE shape, not two.
 ///
-/// fz-kdt.125 gave the runtime predicate the one question a closure value can
-/// answer about itself: which callable it is. Two shapes are left over, and
-/// neither is a callable-identity question:
+/// fz-kdt.125 gave the predicate the question a closure value can answer about
+/// itself (which callable it is) and fz-kdt.107 step 3 gave it the question a
+/// cons cell can (what its first element is). What the two together leave is:
 ///
 /// - SAME callable, different captures. `Enum.reduce/3#lambda@439-517/2` closed
 ///   over `add_a/2` and the same lambda closed over `add_b/2` are one code
-///   pointer; the capture record differs and the identity does not. Six such
-///   groups across five fixtures, and fz-kdt.127 owns them.
-/// - Different list ELEMENT types. `[int]`, `[int | :ok | :true]` and
-///   `[:false | :true]` are all "a non-empty list" to a runtime that records
-///   list shape and nothing else. fz-kdt.107 step 3 owns them.
+///   pointer; the capture record differs and the identity does not. Every
+///   surviving group is this shape, and fz-kdt.127 owns all of them.
 ///
-/// This pins the population so neither can grow unnoticed, and so the day
-/// either is cured the number falls here and says which.
+/// The list-ELEMENT half of this ticket's census is GONE: `[int]`,
+/// `[int | :ok | :true]` and `[:false | :true]` used to be one and the same
+/// "a non-empty list", and are now three questions -- `00277` sheds three
+/// groups and `enum_map_family` all three of its. What that leaves is not a
+/// list problem, and the residue is 12 -> 6.
+///
+/// This pins the population per fixture so it cannot grow unnoticed, and so
+/// the day fz-kdt.127 cures the shape the number falls here.
 #[test]
 fn compiler2_runtime_indistinguishable_arm_residue_stays_pinned() {
-    for (fixture, expected) in [
-        ("fixtures2/00231_joined_fn_refs_enum_reduce.fz", 1),
-        ("fixtures2/00277_enum_tier0_fixture.fz", 5),
-        ("fixtures2/00281_opaque_reducer_closure.fz", 1),
-        ("fixtures2/behavior/enum_map_family.fz", 3),
-        ("fixtures2/behavior/opaque_fn_value_join.fz", 1),
-        ("fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz", 1),
-    ] {
-        let twins = indistinguishable_dispatch_arms(fixture);
-        assert_eq!(
-            twins.len(),
-            expected,
-            "{fixture}: the arm pairs one runtime question cannot separate moved off their pin; \
-             re-measure, name which residue moved, and re-pin: {twins:#?}",
-        );
-    }
+    let measured = INDISTINGUISHABLE_ARM_RESIDUE
+        .iter()
+        .map(|(fixture, _)| (*fixture, indistinguishable_dispatch_arms(fixture)))
+        .collect::<Vec<_>>();
+    let counted = measured
+        .iter()
+        .map(|(fixture, twins)| (*fixture, twins.len()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        counted,
+        INDISTINGUISHABLE_ARM_RESIDUE.to_vec(),
+        "the arm pairs one runtime question cannot separate moved off their pin; re-measure, \
+         name which residue moved, and re-pin: {measured:#?}",
+    );
+    assert_eq!(
+        counted.iter().map(|(_, count)| count).sum::<usize>(),
+        6,
+        "six groups, all fz-kdt.127's same-fn-id/different-capture shape",
+    );
 }
+
+/// The groups no runtime question separates, per fixture. All six are
+/// fz-kdt.127's: one lambda, two capture types, one code pointer.
+const INDISTINGUISHABLE_ARM_RESIDUE: [(&str, usize); 5] = [
+    ("fixtures2/00231_joined_fn_refs_enum_reduce.fz", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", 2),
+    ("fixtures2/00281_opaque_reducer_closure.fz", 1),
+    ("fixtures2/behavior/opaque_fn_value_join.fz", 1),
+    ("fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz", 1),
+];
 
 /// Drives one fixture to its backend product and names every dispatch call
 /// edge arm pair that asks one and the same runtime question.
@@ -9069,16 +9092,17 @@ fn dispatch_call_edges(program: &BackendProgram) -> Vec<(u32, &DispatchCallEdge<
 /// fz-kdt.129 / fz-kdt.131: a seat must carry surface coverage.
 ///
 /// An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
-/// compiled for -- list shape erases the elements, tuple arity erases the
-/// payloads -- so a value can satisfy every question an arm asks and still lie
-/// outside the surface that arm's body was compiled for. Call that a BLIND
-/// ESCAPE: the earlier arm and the later arm ask the runtime the SAME question
-/// at some position, and the later arm's surface holds values the earlier
-/// arm's does not.
+/// compiled for -- a list head says nothing about the tail, a tuple position
+/// erases whatever its own sub-test erases -- so a value can satisfy every
+/// question an arm asks and still lie outside the surface that arm's body was
+/// compiled for. Call that a BLIND ESCAPE: at some position the earlier and
+/// later arms put a question that cannot separate them, and the later arm's
+/// surface holds values the earlier arm's does not.
 ///
 /// Two orderings were built on containment alone and BOTH miscompile, in
 /// opposite directions. Seating the narrower SURFACE first put
-/// `list(int) x {all?/1, all?/2, empty?}` ahead of `list(:ok) x {empty?}`.
+/// `list(int) x {all?/1, all?/2, empty?}` ahead of `list(:ok) x {empty?}`
+/// (both measured when a list test still saw empty-or-cons and nothing else).
 /// Seating the narrower TEST first -- fz-kdt.129's first build, which this
 /// gate used to assert -- put `list(int) x {all?/1}` ahead of
 /// `list(:ok) x {all?/1, empty?}`, because a callable set of one is inside a
@@ -9156,6 +9180,12 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
 /// see what the bodies rely on -- fz-kdt.119's per-position tuple tags and
 /// fz-kdt.107 step 3's list elements -- and not before. A new entry is a new
 /// latent miscompile and wants a ticket, not a re-blessed constant.
+///
+/// SCOPE: measured at the SETTLED arrival only. An escape that only a legal
+/// permutation exposes does not move this constant -- the fz-kdt.107 step-3
+/// refutation measured 5 under `arms:3` where this pins 3, the two extras
+/// being un-dropped narrow arms a split question group re-arms (fz-kdt.143
+/// owns that cure; fz-kdt.141's stress is the instrument that sees them).
 #[test]
 fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
     let mut escapes = Vec::new();
@@ -9187,36 +9217,42 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
 }
 
 /// Every position in the census where the arm seated first does not name what
-/// the arm seated second holds -- 19 of them, over 12 arm pairs, measured at
-/// fz-kdt.129's landing.
+/// the arm seated second holds -- TWO of them on the fixtures that carried the
+/// 19 over 12 arm pairs at fz-kdt.129's landing, plus one this ticket's own
+/// reproducer contributes by design.
 ///
 /// Each line reads: at this subject the two arms put ONE question to the
 /// runtime, and the arm seated second holds values the arm seated first does
-/// not name. Every subject here holds a LIST, and every entry is therefore
-/// fz-kdt.107 step 3's: a list-shape test cannot see elements. All but
-/// `dispatch_seat_element_blind`'s predate any seating rule -- they are
-/// arrival order's, and the rule leaves them where it found them because no
-/// order it could pick would be better.
+/// not name. Every subject here holds a LIST, and every one of the 19 was
+/// fz-kdt.107 step 3's, because a list-shape test could not see elements.
+///
+/// The list axis can see them now, and the census reads it: seventeen entries
+/// leave outright (disjoint heads are a real separation, so those pairs never
+/// meet on an erasing axis at all), and the two that remain are the pairs
+/// whose heads OVERLAP without either surface containing the other --
+/// `[:false | :nil]` against `[int | :nil]` on `:nil`, and `[:false | :true]`
+/// against `[int | :ok | :true]` on `:true`. That is fz-kdt.131's facet 3
+/// exactly: overlap without containment, where no seat is escape-free and
+/// arrival stands. Neither is a head the axis failed to read; both are heads
+/// that genuinely meet, with a tail no test reads behind them.
+///
+/// They are ARRIVAL-KEPT AND PINNED, not fixed. Both are benign today only
+/// because the two arms are specializations of one source function with boxed
+/// element access -- argued, never proven -- and the cure is a repr-level or
+/// minting-level decision, not an ordering rule.
+///
+/// The third entry is `dispatch_list_head_separates`, the fixture fz-kdt.107
+/// step 3 added, and it is here ON PURPOSE: the same A/B pair, written down as
+/// source, so the population fz-kdt.131 owns has a reproducer of its own
+/// beside the pairs this ticket cured. It is not a regression and it is not a
+/// new class.
+///
+/// The list is a RATCHET: any OTHER new entry is a new latent miscompile and
+/// wants a ticket, not a re-blessed constant.
 const BLIND_ESCAPE_POPULATION: &[&str] = &[
-    "fixtures2/00277_enum_tier0_fixture.fz subject 0: [:tail] is seated before [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz subject 0: [:tail] is seated before [{any, any}]",
-    "fixtures2/00277_enum_tier0_fixture.fz subject 0: [int] is seated before [{any, any}]",
-    "fixtures2/00277_enum_tier0_fixture.fz subject 1: [:tail] is seated before [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz subject 1: [:tail] is seated before [{any, any}]",
-    "fixtures2/00277_enum_tier0_fixture.fz subject 1: [int] is seated before [{any, any}]",
-    "fixtures2/behavior/dispatch_seat_element_blind.fz subject 0: [:ok] is seated before [int]",
-    "fixtures2/behavior/enum_map_family.fz subject 0: [:a | :b] is seated before [binary]",
-    "fixtures2/behavior/enum_map_family.fz subject 0: [:a | :b] is seated before [int]",
-    "fixtures2/behavior/enum_map_family.fz subject 0: [binary] is seated before [int]",
-    "fixtures2/behavior/enum_map_family.fz subject 1: [:a | :b] is seated before [binary]",
-    "fixtures2/behavior/enum_map_family.fz subject 1: [:a | :b] is seated before [int]",
-    "fixtures2/behavior/enum_map_family.fz subject 1: [binary] is seated before [int]",
+    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
     "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int]",
     "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int]",
-    "fixtures2/behavior/fz_f98_range_map_converges.fz subject 0: [int] is seated before [{any, any}]",
-    "fixtures2/behavior/fz_f98_range_map_converges.fz subject 1: [int] is seated before [{any, any}]",
 ];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
@@ -9337,7 +9373,10 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// question cannot separate -- 17 groups across 10 fixtures -- plus the one
 /// fz-kdt.118 added for the group it dissolves, the two fz-kdt.125 added for
 /// the callable-identity shape, and the one fz-kdt.129 added for the seat a
-/// blind list-shape test would otherwise take.
+/// blind list test would otherwise take.
+///
+/// fz-kdt.107 step 3 adds `dispatch_list_head_separates`, whose three arms are
+/// the trio a head question separates.
 ///
 /// DELIBERATE SUBSET (fz-kdt.141 refutation): the arm perturbation moves 27
 /// fixtures' artifacts; the 13 not listed here (protocol-dispatch, bsx guard,
@@ -9346,8 +9385,9 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// the canon comparand, not this in-process gate, which exists to hold the
 /// census population's SEATS specifically. Widen it if any of the 13 ever
 /// gains an indistinguishable group.
-const ARM_ORDER_CENSUS: [&str; 14] = [
+const ARM_ORDER_CENSUS: [&str; 15] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
+    "fixtures2/behavior/dispatch_list_head_separates.fz",
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
     "fixtures2/00275_enum_count_member_reduce.fz",
     "fixtures2/00277_enum_tier0_fixture.fz",

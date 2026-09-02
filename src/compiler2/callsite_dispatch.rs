@@ -113,17 +113,19 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
 /// # What a seat can get wrong
 ///
 /// An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
-/// compiled for: list shape erases the elements, tuple arity erases the
-/// payloads. So a value can satisfy every question an arm asks and still lie
-/// outside that arm's surface. Seat such an arm first and the value lands in a
-/// body whose representation never named it -- `fz_list_head_int_ref` reads a
-/// list of atoms as a list of ints and aborts on the JIT and native doors,
-/// while the interpreter's dynamic tags hide it.
+/// compiled for: a list head says nothing about the tail, and a tuple position
+/// erases whatever its own sub-test erases. So a value can satisfy every
+/// question an arm asks and still lie outside that arm's surface. Seat such an
+/// arm first and the value lands in a body whose representation never named it
+/// -- `fz_list_head_int_ref` reads a list of atoms as a list of ints and aborts
+/// on the JIT and native doors, while the interpreter's dynamic tags hide it.
 ///
 /// Call that a BLIND ESCAPE: `early` is seated before `late`, and at some
-/// position the two ask the runtime the SAME question while `late`'s surface
-/// holds values `early`'s does not. Both of the orderings tried before this
-/// one create blind escapes, in opposite directions:
+/// position the two ask the runtime a question that cannot separate them,
+/// while `late`'s surface holds values `early`'s does not. Both of the
+/// orderings tried before this one create blind escapes, in opposite
+/// directions (the examples below are as they were measured, when a list test
+/// still saw empty-or-cons and nothing else):
 ///
 /// - seating the narrower SURFACE first (fz-kdt.129's first candidate, refuted
 ///   by measurement) puts `list(int) x {all?/1, all?/2, empty?}` ahead of
@@ -133,13 +135,15 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
 ///   `dispatch_seat_element_blind` and this file's unit gates) puts
 ///   `list(int) x {all?/1}` ahead of `list(:ok) x {all?/1, empty?}` because
 ///   its callable SET is strictly smaller -- and `[:ok, :ok]` carrying
-///   `all?/1` satisfies BOTH its questions, because list shape is
-///   element-blind, and reaches the int-reading body.
+///   `all?/1` satisfied BOTH its questions and reached the int-reading body.
+///   fz-kdt.107 step 3 gave those two arms disjoint HEAD questions, so that
+///   particular pair no longer meets on an erasing axis; the law the pair
+///   taught stands unchanged.
 ///
 /// Neither containment is the criterion on its own. SURFACE COVERAGE is:
 /// [`covers`] holds of `(early, late)` when, at every position where their
 /// tests could both admit a value on an ERASING axis
-/// (`overlaps_on_an_erasing_axis` -- list elements, tuple payloads, struct/
+/// (`overlaps_on_an_erasing_axis` -- list tails, tuple payloads, struct/
 /// map/binary/resource contents), `early`'s surface already contains
 /// `late`'s. "The tests differ" is NOT separation on those axes -- arities
 /// {2} and {2,3} both admit a 2-tuple -- so difference alone never excuses
@@ -368,10 +372,10 @@ pub(crate) fn question_groups(types: &mut Types, targets: &[CallTargetSummary]) 
 /// per input, projected from the observable surface.
 ///
 /// This is what the plan's emitted tests actually ask. It is coarser than the
-/// observable surface it is projected from -- `{:halt, :false}` and
-/// `{:cont, :true} | {:halt, :false}` are one 2-tuple test, and every list is
-/// one list-shape test whatever its elements -- which is why it, and not the
-/// surface, is what a routing may be reasoned from.
+/// observable surface it is projected from -- `[int]` and `[int | :ok]` put
+/// one and the same question to a cons cell's first element, and disagree only
+/// about a tail no test reads -- which is why it, and not the surface, is what
+/// a routing may be reasoned from.
 fn runtime_questions(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<RuntimeTypePredicate>> {
     targets
         .iter()
@@ -1409,25 +1413,30 @@ mod tests {
         );
     }
 
-    /// fz-kdt.131's law, at the shape that refuted seating the narrower TEST
-    /// first: a value can satisfy every question an arm asks and still lie
-    /// outside the surface that arm's body was compiled for.
+    /// fz-kdt.131's law at the shape that refuted seating the narrower TEST
+    /// first -- and the shape fz-kdt.107 step 3 takes off the table.
     ///
-    /// `dispatch_seat_element_blind`'s two arms. The int arm's test is
+    /// `dispatch_seat_element_blind`'s two arms. The int arm's test used to be
     /// strictly INSIDE the atom arm's -- the same "a list" question, the same
     /// `:true` question, and a callable set of one against a set of two -- so
-    /// every containment rule seats it first. Then `Enum.all?([:ok, :ok])`
-    /// carrying the shared `all?/1` lambda satisfies all three of its
-    /// questions, because a list-shape test cannot see elements, and reaches
-    /// the body that reads heads as ints: `fz_list_head_int_ref` aborts on the
-    /// JIT and native doors.
+    /// every containment rule seated it first. Then `Enum.all?([:ok, :ok])`
+    /// carrying the shared `all?/1` lambda satisfied all three of its
+    /// questions, because a list test could not see elements, and reached the
+    /// body that reads heads as ints: `fz_list_head_int_ref` aborted on the
+    /// JIT and native doors. Coverage was the only thing holding the pair,
+    /// because neither surface covers the other at the list position.
     ///
-    /// Neither surface covers the other at the list position, so no seat here
-    /// is escape-free and the rule declines to move the pair. Arrival order
-    /// stands -- unchanged, in both directions -- and that is the honest answer
-    /// until a runtime test can see a list's elements (fz-kdt.107 step 3).
+    /// The list questions have DISJOINT heads now -- one admits an atom head,
+    /// the other an int head -- so the only value that passes both is `[]`,
+    /// which carries nothing for either body to misread, and coverage has
+    /// nothing left to protect. Both halves are asserted here: the tests no
+    /// longer meet on an erasing axis, and the seat still leaves the pair as
+    /// it arrived,
+    /// because neither test is inside the other and there is nothing to
+    /// prefer. The fixture that names this shape stops aborting under every
+    /// arm seed the fz-kdt.141 stress produces.
     #[test]
-    fn a_strictly_smaller_test_is_not_seated_first_over_elements_it_cannot_see() {
+    fn arms_over_disjoint_element_types_cannot_take_each_others_values() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
@@ -1449,6 +1458,13 @@ mod tests {
         let atoms_arm = target(atom_list, either);
         let ints_arm = target(int_list, all_one);
 
+        let questions = runtime_questions(world.types_mut(), &[atoms_arm.clone(), ints_arm.clone()]);
+        assert!(
+            !questions[0][0].overlaps_on_an_erasing_axis(&questions[1][0]),
+            "a list of atoms and a list of ints ask disjoint heads, so the only value that passes \
+             both is `[]` -- one value carrying nothing either body can misread",
+        );
+
         for order in [[&atoms_arm, &ints_arm], [&ints_arm, &atoms_arm]] {
             let arrival = order.into_iter().cloned().collect::<Vec<_>>();
             let summary = CallSiteSummary {
@@ -1462,8 +1478,184 @@ mod tests {
             };
             assert_eq!(
                 dispatch.targets, arrival,
-                "no seat may move an arm ahead of a sibling holding elements its own surface does not \
-                 name, however much smaller its test",
+                "neither test is inside the other, so the seat has nothing to prefer and arrival \
+                 stands -- harmlessly now, because the two questions are disjoint",
+            );
+        }
+    }
+
+    /// fz-kdt.107 step 3's trio, every arrival order: the head question seats
+    /// the covering arm and leaves the rest exactly as they arrived.
+    ///
+    /// These are `enum_predicate_search`'s three `List.reduce_while_cont/3`
+    /// arms, and they are the population whose native abort named this ticket:
+    ///
+    /// ```text
+    ///     A   [:false | :true]
+    ///     B   [int | :ok | :true]
+    ///     C   [int]
+    /// ```
+    ///
+    /// Before the head question all three were "a non-empty list", one group,
+    /// arrival-decided -- and a legal arrival that put C first handed
+    /// `[:false, :true]` to a body reading heads as ints
+    /// (`fz_list_head_int_ref`, exit 134 on both compiled doors).
+    ///
+    /// What the head buys is exactly one of the three pairs, and the law says
+    /// which. B AND C OVERLAP AT THE HEAD (both admit an int) and differ only
+    /// in a tail no test reads, so that pair is erasing and the seat must fall
+    /// back to surface coverage -- which B has and C does not, so the seat
+    /// moves B ahead of C. A against C is DISJOINT heads, a real separation,
+    /// so no coverage is owed either way and neither arm is moved. A against B
+    /// overlaps at `:true` and neither surface contains the other: no seat is
+    /// escape-free, and arrival stands.
+    ///
+    /// The A/B pair is PINNED, not fixed. It is one of the two survivors of
+    /// this ticket's escape census and it is fz-kdt.131's facet 3 -- overlap
+    /// without containment -- whose cure is a repr-level or minting-level
+    /// decision, not a seat.
+    ///
+    /// AND IT COSTS ONE SEAT, which is why all six orders are pinned rather
+    /// than one law asserted. The correction is an insertion pass that stops
+    /// at the first group it may not pass, because passing a group means
+    /// passing everything between it and the destination. So on the ONE
+    /// arrival that puts A between C and B -- `[C, A, B]` -- moving B ahead of
+    /// C would also move it ahead of A, which is the pair the rule refuses to
+    /// decide, and B stays where it arrived. That is not a gap in the head
+    /// question: it is fz-kdt.131's residue standing in the way of this
+    /// ticket's cure, measured rather than argued.
+    #[test]
+    fn a_list_head_seats_the_covering_arm_and_leaves_the_inseparable_pair_as_it_arrived() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok_atom = world.types_mut().atom_lit("ok");
+        let true_atom = world.types_mut().atom_lit("true");
+        let false_atom = world.types_mut().atom_lit("false");
+        let bools = world.types_mut().union(false_atom, true_atom);
+        let ints_oks = world.types_mut().union(int, ok_atom);
+        let mixed = world.types_mut().union(ints_oks, true_atom);
+        let bool_list = world.types_mut().list(bools);
+        let mixed_list = world.types_mut().list(mixed);
+        let int_list = world.types_mut().list(int);
+        let reducer = world.types_mut().closure_lit(ClosureTarget(1), Vec::new(), 2);
+        let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_cont", 3);
+        let target = |list| CallTargetSummary {
+            callee: SelectedCallee::Function(step),
+            surface_inputs: vec![list, true_atom, reducer],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let arms = [target(bool_list), target(mixed_list), target(int_list)];
+        let name = |target: &CallTargetSummary| {
+            if target.surface_inputs[0] == bool_list {
+                "A"
+            } else if target.surface_inputs[0] == mixed_list {
+                "B"
+            } else {
+                "C"
+            }
+        };
+
+        // Arrival, and the seat it earns. Five of the six put B ahead of C,
+        // which is the abort dying; the sixth is A standing between them.
+        let expected = [
+            (["A", "B", "C"], ["A", "B", "C"]),
+            (["A", "C", "B"], ["A", "B", "C"]),
+            (["B", "A", "C"], ["B", "A", "C"]),
+            (["B", "C", "A"], ["B", "C", "A"]),
+            (["C", "A", "B"], ["C", "A", "B"]),
+            (["C", "B", "A"], ["B", "C", "A"]),
+        ];
+        let slot = |which: &str| match which {
+            "A" => 0,
+            "B" => 1,
+            _ => 2,
+        };
+        for (arrived, wanted) in expected {
+            let summary = CallSiteSummary {
+                targets: arrived.iter().map(|which| arms[slot(which)].clone()).collect(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three arms over three element types are three destinations, arrived {arrived:?}");
+            };
+            let seated = dispatch.targets.iter().map(name).collect::<Vec<_>>();
+            assert_eq!(
+                seated, wanted,
+                "the trio's seat moved on arrival {arrived:?}: B ahead of C wherever the pass can \
+                 reach it, A and B exactly as they arrived, and no arm dropped",
+            );
+            let rank = |which: &str, order: &[&str]| order.iter().position(|arm| *arm == which);
+            assert_eq!(
+                rank("A", &seated) < rank("B", &seated),
+                rank("A", &arrived) < rank("B", &arrived),
+                "A and B overlap at `:true` and neither surface contains the other, so no seat is \
+                 escape-free and arrival must stand (fz-kdt.131 facet 3) -- arrived {arrived:?}, \
+                 seated {seated:?}",
+            );
+        }
+    }
+
+    /// The tail the head test cannot see, and the seat that answers for it.
+    ///
+    /// Two arms of ONE function, `[int]` and `[int | :ok]`, identical
+    /// everywhere else. Their head questions OVERLAP -- both admit an int --
+    /// and where they differ is the TAIL, which no test reads. So this pair is
+    /// erasing however precisely the heads themselves are decided, and the
+    /// only escape-free seat is the covering one: `[int | :ok]` first.
+    ///
+    /// THIS IS THE GATE THAT WOULD HAVE CAUGHT THE REFUTED RULE. Reading "the
+    /// heads differ" as separation makes this pair separating, and the
+    /// precision preference then seats the strictly-narrower `[int]` test
+    /// first -- at which point `[1, :ok]` passes its head question and lands in
+    /// the body that reads every element as an int. That is the abort this
+    /// axis exists to kill, re-created by the axis meant to kill it.
+    ///
+    /// Both arms survive: a head question is what puts them in two groups, and
+    /// `unroutable_alternatives` only drops within one. That is fz-kdt.118's
+    /// drop lost, deliberately, and the native code it costs is fz-kdt.143's.
+    #[test]
+    fn an_arm_whose_head_overlaps_a_wider_one_is_seated_after_it() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok_atom = world.types_mut().atom_lit("ok");
+        let true_atom = world.types_mut().atom_lit("true");
+        let ints_oks = world.types_mut().union(int, ok_atom);
+        let int_list = world.types_mut().list(int);
+        let int_ok_list = world.types_mut().list(ints_oks);
+        let reducer = world.types_mut().closure_lit(ClosureTarget(1), Vec::new(), 2);
+        let step = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reduce_while_step", 3);
+        let target = |list| CallTargetSummary {
+            callee: SelectedCallee::Function(step),
+            surface_inputs: vec![list, true_atom, reducer],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let narrow = target(int_list);
+        let wide = target(int_ok_list);
+
+        for order in [[&narrow, &wide], [&wide, &narrow]] {
+            let arrival = order.into_iter().cloned().collect::<Vec<_>>();
+            let summary = CallSiteSummary {
+                targets: arrival.clone(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("two head questions are two destinations, and neither arm is dropped");
+            };
+            assert_eq!(
+                dispatch.targets,
+                vec![wide.clone(), narrow.clone()],
+                "[int] and [int | :ok] agree at the head and disagree only in a tail no test \
+                 reads, so the covering arm is seated first whichever way they arrived",
             );
         }
     }
@@ -1471,40 +1663,43 @@ mod tests {
     /// The carve-out fz-kdt.107 refuted a canonical order without: arms one
     /// runtime question cannot separate keep the order they arrived in.
     ///
-    /// Two DIFFERENT functions over list domains that project to one question.
-    /// A list test sees empty-or-cons and nothing of the elements, so
-    /// `list(int)` and `list(:ok)` are the same thing to the runtime however
-    /// far apart the lattice holds them; nothing the plan emits tells the arms
-    /// apart, and whichever is listed first receives every value the pair can
-    /// see. Re-deciding that is not a reordering, it is a rerouting -- fz-kdt.107
-    /// prototyped exactly this and got `{:done, 3}` where `{:halted, 3}` was
-    /// due -- so the order is keyed on the GROUP: a key constant across a
-    /// group cannot move a member of one.
+    /// Two DIFFERENT functions taking the SAME lambda over different CAPTURES.
+    /// A callable test reads the heap word at `+8`, which names the code a
+    /// value was minted from and nothing about the environment beside it, so
+    /// `#66 closed over an int` and `#66 closed over a float` are one and the
+    /// same question. Nothing the plan emits tells the arms apart, and
+    /// whichever is listed first receives every value the pair can see.
+    /// Re-deciding that is not a reordering, it is a rerouting -- fz-kdt.107
+    /// prototyped a canonical order over this class and got `{:done, 3}` where
+    /// `{:halted, 3}` was due -- so the order is keyed on the GROUP: a key
+    /// constant across a group cannot move a member of one.
     ///
-    /// This pair used to be a tagged-tuple one. fz-kdt.119 gave tuples a
-    /// per-position test, which separates tags, so the tuple example stopped
-    /// being inseparable and stopped gating the carve-out. List elements are
-    /// the population that is still blind, and fz-kdt.107 step 3 is what
-    /// retires this shape.
+    /// THE SHAPE HAS MOVED TWICE, and each move is a population leaving.
+    /// It was two tagged tuples until fz-kdt.119 gave tuples a per-position
+    /// test, which separates tags. It was `list(int)` against `list(:ok)`
+    /// until fz-kdt.107 step 3 gave the list axis a head question, which
+    /// separates disjoint element types. Same fn id, different captures, is
+    /// what is left: fz-kdt.127's shape, the only genuinely inseparable
+    /// population in the corpus, and the one this carve-out now exists for.
     #[test]
     fn runtime_indistinguishable_arms_keep_the_order_they_arrived_in() {
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let int = world.types_mut().int();
-        let ok_atom = world.types_mut().atom_lit("ok");
-        let int_list = world.types_mut().list(int);
-        let ok_list = world.types_mut().list(ok_atom);
+        let float = world.types_mut().float();
+        let over_int = world.types_mut().closure_lit(ClosureTarget(66), vec![int], 1);
+        let over_float = world.types_mut().closure_lit(ClosureTarget(66), vec![float], 1);
         let first_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "int_impl", 1);
-        let second_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "atom_impl", 1);
-        let target = |function, elements| CallTargetSummary {
+        let second_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "float_impl", 1);
+        let target = |function, reducer| CallTargetSummary {
             callee: SelectedCallee::Function(function),
-            surface_inputs: vec![elements],
+            surface_inputs: vec![reducer],
             activation: None,
             activation_inputs: None,
             return_ty: None,
         };
-        let ints = target(first_fn, int_list);
-        let atoms = target(second_fn, ok_list);
+        let ints = target(first_fn, over_int);
+        let atoms = target(second_fn, over_float);
 
         let questions = runtime_questions(world.types_mut(), &[ints.clone(), atoms.clone()]);
         assert_eq!(

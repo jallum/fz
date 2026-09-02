@@ -2163,7 +2163,7 @@ fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
             && predicate.ints.is_none()
             && predicate.floats.is_none()
             && predicate.atoms.is_none()
-            && predicate.lists.is_none()
+            && predicate.lists.shapes().is_none()
             && predicate.named_structs.is_none()
             && !predicate.allow_other_structs
             && !predicate.maps

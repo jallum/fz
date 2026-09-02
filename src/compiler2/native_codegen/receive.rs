@@ -760,6 +760,16 @@ impl<'f> RuntimeTestEmitter<'f> for ReceiveTestEmitter<'_, 'f, '_> {
         emit_struct_get_field_value(self.b, self.ctx, value, index as u32)
     }
 
+    fn list_head(&mut self, value: ReceiveValue) -> Result<ReceiveValue, CodegenError> {
+        let Some(fref) = self.ctx.runtime.list_head_fref else {
+            return Err(CodegenError::new("a list head question needs fz_list_head_ref"));
+        };
+        let list_ref = emit_receive_value_ref(self.b, self.ctx, value)?;
+        let inst = self.b.ins().call(fref, &[list_ref]);
+        let head_ref = self.b.inst_results(inst)[0];
+        Ok(receive_value_from_ref_word(self.b, head_ref))
+    }
+
     fn closure_code(&mut self, _value: ReceiveValue) -> Result<ir::Value, CodegenError> {
         Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
     }

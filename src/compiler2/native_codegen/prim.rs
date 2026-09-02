@@ -1360,6 +1360,11 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         Ok(CodegenValue::AnyRef(self.body.b.inst_results(inst)[0]))
     }
 
+    fn list_head(&mut self, value: CodegenValue) -> Result<CodegenValue, CodegenError> {
+        let list_ref = self.body.value_as_any_ref(value);
+        Ok(CodegenValue::AnyRef(self.body.list_head(list_ref)))
+    }
+
     fn closure_code(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let closure_ref = self.body.value_as_any_ref(value);
         Ok(self.body.closure_code_ref(closure_ref))
