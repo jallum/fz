@@ -13,8 +13,8 @@ use super::super::pull::{
     TransportShapeFact,
 };
 use super::super::semantic::{
-    CallableDemand, CallableFlowFact, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee,
-    ShapeDemand,
+    CallableDemand, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand,
+    SelectedCallee, ShapeDemand,
 };
 use super::super::transport::{
     ActivationSymbol, BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
@@ -898,6 +898,17 @@ fn evaluate_transport_recipe(
     }
 }
 
+/// The one physical callable layout this position's settled target set names,
+/// if the set names exactly one. A transport layout is pure physics, so the
+/// question is never "how many targets" but "how many LAYOUTS": several
+/// activations of one function — specializations reached at different argument
+/// types — describe the same captures, and a value that must reach any of them
+/// travels as those captures. Which activation a callsite reaches is decided
+/// there, from the argument types it holds (fz-kdt.132), so that choice never
+/// has to travel with the value.
+///
+/// `None` means no single layout covers the set — the position falls back to
+/// the generic joined layout, which boxes whenever anything needs the identity.
 fn exact_direct_callable_layout(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -907,14 +918,59 @@ fn exact_direct_callable_layout(
     position: &TransportPosition,
 ) -> Option<RecipeLayout> {
     let targets = demand.callable.targets.clone();
-    if demand.callable.is_first_class() || targets.len() != 1 {
+    if demand.callable.is_first_class() || targets.is_empty() {
         return None;
     }
-    let target = targets.iter().next().expect("singleton callable target");
-    let capture_count = target
-        .activation_inputs
-        .len()
-        .checked_sub(target.surface.inputs.len())?;
+    let mut settled: Option<CallableDescr> = None;
+    for target in &targets {
+        match direct_callable_descr(world, tel, context, ty, demand, position, target) {
+            DirectCallableDescr::Descr(descr) => match &settled {
+                Some(first) if *first != descr => return None,
+                Some(_) => {}
+                None => settled = Some(descr),
+            },
+            // A cut or a not-yet-readable capture answers for the whole
+            // position: the Cut LAYOUT is target-independent (built from
+            // position/ty/demand alone); a Waiting KEY is that target's own
+            // capture position, but waiting on any unread key converges, so
+            // which target raised it is behaviorally moot. Where a position
+            // could hold BOTH a cycle and a disagreement, BTreeSet order
+            // deterministically reaches one first; Cut(ValueRef) is the
+            // safer of the two answers.
+            DirectCallableDescr::Position(layout) => return Some(layout),
+            DirectCallableDescr::Unavailable => return None,
+        }
+    }
+    let callable = world.intern_callable(settled?);
+    Some(RecipeLayout::Exact(TransportLayout {
+        structural: world.intern_shape(ShapeDescr::Callable(callable)),
+        carrier: TransportCarrier::Absent,
+    }))
+}
+
+/// What one target contributes to [`exact_direct_callable_layout`].
+enum DirectCallableDescr {
+    /// The callable layout this target names.
+    Descr(CallableDescr),
+    /// An answer for the whole position, reached before any layout could be
+    /// named: a capture cycle's cut, or a capture layout not yet readable.
+    Position(RecipeLayout),
+    /// This target names no exact layout at all.
+    Unavailable,
+}
+
+fn direct_callable_descr(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    context: &mut ProductReadContext<'_>,
+    ty: Ty,
+    demand: &RuntimeDemand,
+    position: &TransportPosition,
+    target: &CallableTarget,
+) -> DirectCallableDescr {
+    let Some(capture_count) = target.activation_inputs.len().checked_sub(target.surface.inputs.len()) else {
+        return DirectCallableDescr::Unavailable;
+    };
     let executable = ExecutableKey {
         activation: target.activation.clone(),
         need: target.need,
@@ -936,13 +992,13 @@ fn exact_direct_callable_layout(
             // them can reach back to it.
             let mut layout = joined_transport_layout(world, ty, demand, position, &[]);
             layout.carrier = TransportCarrier::ValueRef;
-            return Some(RecipeLayout::Cut(vec![layout]));
+            return DirectCallableDescr::Position(RecipeLayout::Cut(vec![layout]));
         }
         let key = ProductKey::TransportShape(capture);
         match context.read_product(tel, key.clone()) {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => capture_layouts.push(*layout),
             Some(value) => panic!("transport shape produced unexpected value {value:?}"),
-            None => return Some(RecipeLayout::Waiting(key)),
+            None => return DirectCallableDescr::Position(RecipeLayout::Waiting(key)),
         }
     }
     let capture_tys = &target.activation_inputs[..capture_count];
@@ -955,7 +1011,7 @@ fn exact_direct_callable_layout(
         .zip(capture_tys.iter().copied())
         .flat_map(|(layout, ty)| capture_lanes_for_layout(world, *layout, ty))
         .collect::<Vec<_>>();
-    let callable = world.intern_callable(CallableDescr {
+    DirectCallableDescr::Descr(CallableDescr {
         function: Some(target.activation.function),
         // The activation's inputs are the environment followed by the call
         // arguments, so what the environment does not supply is the arity.
@@ -963,11 +1019,7 @@ fn exact_direct_callable_layout(
         capture_tys: capture_tys.to_vec().into_boxed_slice(),
         capture_shapes: capture_shapes.into_boxed_slice(),
         capture_lanes: capture_lanes.into_boxed_slice(),
-    });
-    Some(RecipeLayout::Exact(TransportLayout {
-        structural: world.intern_shape(ShapeDescr::Callable(callable)),
-        carrier: TransportCarrier::Absent,
-    }))
+    })
 }
 
 /// The one callable row a closure callsite could ground its return against:

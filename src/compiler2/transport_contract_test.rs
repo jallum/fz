@@ -5696,3 +5696,66 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
          `construction=w<N>` numbering follows the schedule",
     );
 }
+
+/// fz-kdt.152. `Enum.reduce/3` hands its reducer down to `List.reduce_cont/3`,
+/// which specializes on the accumulator: the first step is reached at the
+/// literal accumulator's type and every later step at the reducer's widened
+/// return. So ONE callable input reaches TWO activations of one lambda.
+///
+/// A transport layout is pure physics, and both activations describe the same
+/// captures, so the input carries those captures — which activation a callsite
+/// reaches is decided there, from the argument types it holds. Reading "more
+/// than one target" as "no exact layout at all" left this input carrying
+/// NOTHING while the callsite still ground a direct call to one of the two,
+/// and the reducer's own capture had no lane to travel in.
+///
+/// The reducer arrives through the mailbox so that it is opaque: a reducer the
+/// compiler can name has no surviving capture lane, and the missing lane is
+/// then accidentally the right answer.
+#[test]
+fn compiler2_transport_plan_carries_captures_when_one_layout_covers_several_activations() {
+    let source = r#"
+fn main() do
+  send(self(), fn (x, acc) -> acc + x end)
+  reducer = receive do f -> f end
+  Enum.reduce([1, 2, 3], 0, reducer)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("transport_multi_activation.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+
+    let reducer_inputs = plan
+        .position_layouts
+        .iter()
+        .filter(|(position, _)| {
+            matches!(
+                position,
+                TransportPosition::ExecutableInput {
+                    executable,
+                    semantic_index: 2,
+                } if world.function_ref(executable.activation.function).name == "reduce_cont"
+            )
+        })
+        .map(|(position, layout)| (position.clone(), *layout))
+        .collect::<Vec<_>>();
+    assert!(
+        reducer_inputs.len() > 1,
+        "the accumulator split should reach several List.reduce_cont/3 activations, got {reducer_inputs:?}"
+    );
+    for (position, layout) in &reducer_inputs {
+        let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {
+            panic!("a reducer input must stay callable-shaped: {position:?} {layout:?}")
+        };
+        let descr = world.callable(*callable);
+        assert_eq!(
+            descr.capture_lanes.len(),
+            1,
+            "every activation reached by this reducer captures the mailbox callable, so the \
+             input must carry its one lane: {position:?} {descr:?}"
+        );
+    }
+}
