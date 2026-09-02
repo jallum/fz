@@ -8,9 +8,15 @@
   "id": "fz-kdt.155",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "LANDED 910a023f2 (2026-09-02). A ROUND OF THREE: first fix BLOCKED by\nits refuter (the widen predicted one side of a two-sided fact -- a\ngrounded sibling callsite still pulled the member to zero and the\nmismatch MIRRORED: a_mixed green at base, abort at the first fix);\nrebuild landed the two-sided law with TWO evidence-forced corrections\nto the refuter's own spec (the seam gate is the callee value's\nCARRIER not the callsite's demand -- the builder's own tripwire caught\nadd1.(1);add1 under the spec'd gating; the bootstrap is\nNON-EMPTY-not-whole -- whole coarsened destination-passing across 29\nfixtures); re-refutation FIX-THEN-MERGE, three fixes folded (the\ntripwire's refusing half now has a unit witness -- neutering it had\nshipped green through every gate, the fz-kdt.157 pattern's second\ninstance; pipeline.md's over-strong 'demands every member whole' and\ndead Absent example corrected to the bottom-only bootstrap + the\n354/354 census + the residual family).\n\nTHE LAW: the boxed apply seam has ONE return convention, applied from\nboth sides -- producer: a seam member bootstraps to whole exactly at\nBOTTOM (shape axis only); consumer: a callsite whose callee VALUE\ntravels in the boxed carrier demands its result whole; grounded\ncallees alias the target's own fact; packaging tripwire\nverify_boxed_apply_seam_return_convention refuses any lane\ndisagreement (proven two-sided by reverting each half -- the original\nabort class is now a NAMED COMPILE ERROR forever).\n\nSCOREBOARD: fixes the original each abort + BOTH mixed-provenance\nwitnesses + h_cost (a base abort the refuter's own probe carried\nunnoticed) + five more pre-existing aborts (r1_selfapply,\nr8_two_arity1_wrappers, fp2, fp3, k_userstep); JIT alloc parity with\ninterp restored (the old 'free' path was free by miscompiling);\ni_cost_grounded 8→8 (never-boxed stays free); 2 pre-existing canon\nmovers (spawned server/0 wrappers → one raw atom lane, ZERO measured\nalloc cost, refuter-verified better than claimed); no new schedule\ndependence; convergence clean incl. the naive-variant's casualty.\nResidual family (zero-lane-callable seam member → wrapper stays\nAbsent → tripwire refuses, pre-existing aborts at base) = fz-kdt.159;\ninterp-only d1_call_and_return failure = fz-kdt.160.",
+      "timestamp": "2026-09-02T14:04:41Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "P1: a mailbox closure passed to Enum.each aborts on JIT and AOT",
   "type": "bug",
-  "updated_at": "2026-09-02T12:06:34Z"
+  "updated_at": "2026-09-02T14:04:41Z"
 }
