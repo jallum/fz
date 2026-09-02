@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T21:08:46Z",
+  "description": "Found by the fz-kdt.127.1 adversarial refutation (2026-09-02, probe K2).\nPRE-EXISTING, not a regression: identical at base 172ab21f1 and at\nfz-kdt.127.1's head.\n\nREPRODUCER (verbatim; kept at\n\u003cscratch\u003e/7a73b83f.../scratchpad/fold127.1/K2_map_capture.fz + .exs):\n\n  defmodule P do\n    fn twice(f, x), do: f.(f.(x))\n    fn run(f, x), do: twice(f, x)\n    fn mk(m) do\n      fn (n) -\u003e\n        case m do\n          %{a: v} -\u003e n + v\n          _ -\u003e n\n        end\n      end\n    end\n  end\n\n  fn main() do\n    dbg(P.run(P.mk(%{a: 1}), 10))\n    dbg(P.run(P.mk(%{a: 0.5}), 10))\n  end\n\nElixir oracle: 12 / 11.0.\n\nMEASURED:\n\n  base 172ab21f1   interp: 12.0 11.0 (WRONG first line)\n                   JIT:    abort, fz_unbox_float\n                   AOT:    build failure\n  head (127.1)     interp: 12.0 11.0 (WRONG first line)\n                   JIT:    abort, fz_ref_load_float ExpectedTag\n                           { expected: ValueKind(14), found: ValueKind(13) }\n                   AOT:    same abort\n\nWHY IT IS NOT 127.1's. fz-kdt.127.1 made the callable axis name the\nCONSTRUCTION -- a function plus one sub-predicate per capture, each capture\nprojected through the ordinary runtime-type projection. It therefore\nseparates two capture layouts exactly as far as the capture's own axis\nseparates them, and no further. Here the capture is a MAP, and the map axis\nis an ERASING axis (fz-kdt.131's residue): its runtime test is a KIND check,\nnever the contents, so %{a: int} and %{a: float} project to ONE test. The\ntwo constructions are indistinguishable to any test the callable axis can\nbuild out of them, and the value minted over %{a: 1} reaches the body\ngrounded for %{a: float}.\n\nThe cure is UPSTREAM in the map axis, not in the callable axis: the same\nresidue reaches through every position a map can sit in, and the capture\nposition is only where this probe found it. The kinds whose test is a kind\ncheck and whose contents are therefore invisible are maps, binaries,\nresources and unnamed structs (127.1's re-homed unit test names exactly that\nset). Either those contents become answerable, or a body may not be\nspecialized on them.\n\nRELATION: sibling of fz-kdt.131 (the surface-coverage law -- an arm's test\nis COARSER than the surface its body was compiled for); reached through the\ncapture position opened up by fz-kdt.127.1. 127.1 is correct to be out of\nscope here; this ticket owns the source-level reproducer so it is not lost.",
+  "id": "fz-kdt.170",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "A map-typed CAPTURE at two value types answers 12.0 for 12 on interp and aborts on both native doors",
+  "type": "bug",
+  "updated_at": "2026-09-02T21:08:46Z"
+}
