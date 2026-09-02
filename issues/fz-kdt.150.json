@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T09:40:24Z",
+  "description": "Found while triaging fz-kdt.130's crash trio; SEPARATE root from .130 and\nstill live after .130's fix. Interp door only -- JIT and AOT are correct.\n\nWitness:\n\n    fn main() do\n      send(self(), {:job, fn (n) -\u003e n + 1 end})\n      receive do\n        {:job, f} -\u003e dbg(f.(41))\n      end\n    end\n\n  fz2 interp -\u003e panic \"RefCell already borrowed\" at runtime/src/heap/imp.rs:200\n  fz2 run    -\u003e 42 (correct)\n  fz2 build  -\u003e 42 (correct)\n\nBacktrace (the whole mechanism):\n\n    \u003cfz_runtime::heap::Heap\u003e::alloc_closure_slots        \u003c- schemas.borrow_mut()\n    deep_copy::deep_copy_strict_closure\n    deep_copy::deep_copy_any_value\n    deep_copy::deep_copy_strict_struct                   \u003c- holds schemas.borrow()\n    deep_copy::deep_copy_any_value\n    deep_copy::deep_copy_tagged_bits\n    deep_copy::deep_copy_any_value_ref\n    \u003cfz::ir_interp::IrInterpRuntime\u003e::send_opaque\n\n`deep_copy_strict_struct` reads the struct's schema through\n`Heap::schemas.borrow()` and keeps that borrow live while it recurses into the\nstruct's fields. A closure field then needs `Heap::closure_schema_id`, which\ntakes `schemas.borrow_mut()` on the same `RefCell` -- re-entrant borrow, panic.\n\nNot a closure/mailbox-typing problem: it is the copy walk holding a registry\nborrow across recursion. A closure inside a LIST message copies fine (cons\ncells, no schema read), which is why the corpus never hit it.\n\nFix shape: the schema read and the recursion must not overlap -- take what the\nwalk needs from the registry, drop the borrow, then recurse. Worth checking\nevery deep_copy_strict_* arm for the same overlap, not just the struct one.",
+  "id": "fz-kdt.150",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "P1: interp send deep-copy re-enters the schema registry when a closure sits inside a struct message",
+  "type": "bug",
+  "updated_at": "2026-09-02T09:40:24Z"
+}
