@@ -11,11 +11,15 @@
     {
       "text": "STILL RED at fz-kdt.119's head (4ca1dc7e7), as expected -- 119 did not touch it and this ticket still owns it. One symptom MOVED, so the reproducer's error text in this ticket is now stale:\n\n  refnest.fz  (the {tag, f} = box destructure through a forwarding hop)\n    base  b32d645ac: 'native executable lowering failed for index 13'\n    head  4ca1dc7e7: 'native cannot project captures out of a callable that\n                      names no function in Executable(... FunctionId(66) ...)'\n  refnest2.fz: unchanged, still fails all three doors.\n\nSame failure, one layer earlier: the callable-identity envelope now reaches the nested position (that is 119's item 3), so the nested callable is named where it used to be widened, and the lowering refuses at capture projection rather than at the end. Neither compiles, so 119's REFNEST acceptance probe stayed unconstructible exactly as this ticket said.\n\nCONSEQUENCE HONOURED: 119's nested-callable separation is gated by UNIT tests at the dispatch layer instead --\n  callsite_dispatch::tests::a_closure_nested_in_a_tuple_is_named_by_the_test\n  callsite_dispatch::tests::a_nested_callables_captures_are_not_a_question\n-- which pin both halves of the law (two callables one tuple deep are two disjoint questions; one callable at two capture layouts is ONE question, joining fz-kdt.127's population). When this ticket lands, those claims want the three-door fixture the probes were meant to be.",
       "timestamp": "2026-09-02T02:36:33Z"
+    },
+    {
+      "text": "RE-TESTED at 29b07acfa (after fz-kdt.127.1 + .2, 2026-09-02): STILL RED, unchanged in kind. refnest.fz: interp correct ({:a, 11} {:a, 30}); native refuses 'native cannot project captures out of a callable that names no function in Executable(... FunctionId(66) ...)' then 'native executable lowering failed for index 13'. refnest2.fz (pattern-destructured): interp 'backend executable 11 function 65 clause 0 failed before entry 0: backend value 0 is unbound'; native same refusal. Neither stage of 127 touched the nested-in-tuple capture projection; the closures here capture nothing, so the forwarder key still erases them to the bare arrow inside the tuple (capture-free literals erase whole), and the refusal is the transport/projection of a callable position INSIDE a tuple through an erased hop. Still this ticket's. Note for whoever picks it up: 127.2's anonymous literal closure[?](caps) also 'names no function' -- a capture-BEARING closure nested in a tuple through a forwarder would meet the same refusal one form later; add that variant to the reproducers.",
+      "timestamp": "2026-09-02T23:59:33Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "P1: a closure nested in a tuple through a forwarding hop compiles on no path",
   "type": "task",
-  "updated_at": "2026-09-02T02:36:33Z"
+  "updated_at": "2026-09-02T23:59:33Z"
 }
