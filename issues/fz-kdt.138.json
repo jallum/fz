@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T01:45:01Z",
+  "description": "The authorized fz-kdt.119 Scope-A carve-out, made a ticket per the\nscaffolding law: under Scope A, nested list positions inside tuple\nshapes report ERASING in overlaps_on_an_erasing_axis and their\nsub-predicates stay shape-only -- because making them exact REACHES\nthe dead-and-broken accumulator specialization (fz-kdt.132, the\nblocker: 'backend callable construction 27 matched no member' on\nenum_take_drop_split -- P1\u003c-\u003eP3 prototype delta proved the boundary is\nexactly nested lists). When 132 lands, lift the carve-out: nested\nlist sub-predicates become as exact as the list axis itself supports\n(which is still shape-only until fz-kdt.107 step 3 gives lists\nelement discrimination -- so this ticket may collapse into 107 step 3\nif that lands first; check before building). Re-run the 119 census\ninstruments and the surface-membership tripwire on lift.",
+  "id": "fz-kdt.138",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "Scope B of the tuple-shape predicate: nested LIST positions stop erasing",
+  "type": "task",
+  "updated_at": "2026-09-02T01:45:01Z"
+}
