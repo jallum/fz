@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-kdt.127",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-kdt.127 stage B: the callable axis names the construction (CallableShapes, containment admission, PerPosition), construction-keyed capture unpack, on all three doors",
   "type": "bug",
-  "updated_at": "2026-09-02T18:53:11Z"
+  "updated_at": "2026-09-02T19:04:05Z"
 }
