@@ -2128,7 +2128,15 @@ fn surface_shapes(
     surfaces: &BTreeSet<CallableSurface>,
     facts: &mut TransportFactsBuilder,
 ) -> Vec<Box<[ShapeId]>> {
-    let mut rendered = surfaces
+    // One shape row per surface, in the SAME order the surfaces are walked:
+    // `publish_boundaries_for_callable` zips this result positionally with the
+    // same `surfaces` set, so a boundary's `surface_arg_shapes` must be the
+    // shapes of the surface it is published for. Sorting the rows here by
+    // `ShapeId` (a mint-order index, the agenda's) broke that correspondence,
+    // handing a surface the shapes of whichever surface happened to intern a
+    // lower shape id -- a schedule-dependent boundary content, visible as the
+    // members/boundary desync fz-kdt.108 closes.
+    surfaces
         .iter()
         .map(|surface| {
             surface
@@ -2142,9 +2150,7 @@ fn surface_shapes(
                 .collect::<Vec<_>>()
                 .into_boxed_slice()
         })
-        .collect::<Vec<_>>();
-    rendered.sort_by_cached_key(|surface| surface.iter().map(|shape| shape.as_u32()).collect::<Vec<_>>());
-    rendered
+        .collect()
 }
 
 fn callable_direct_edges(

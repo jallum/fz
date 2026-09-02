@@ -569,11 +569,16 @@ const LENSES: [(&str, &str); 4] = [
 /// (`callsite_dispatch::specificity_order`). Its executable COUNT is
 /// schedule-independent too (204 under both), which is what this gate pins.
 ///
-/// Three corpus fixtures still move between the schedules and are not this
-/// gate's business: `00277_enum_tier0_fixture`, `enum_map_family` and
-/// `dead_closure_capture_empty_list`, by exactly the line counts they moved by
-/// at base. They carry arms no seat can separate -- fz-kdt.107's class and
-/// fz-kdt.131's -- so no ordering rule closes them.
+/// `enum_map_family` used to move between the schedules by 1170 backend-canon
+/// lines; fz-kdt.108 closes it (0 either way) by giving the callable-flow
+/// construction wrapper one canonical `cmp_tys` edge order. TWO corpus
+/// fixtures still move and are not this gate's business:
+/// `00277_enum_tier0_fixture` (562 lines -- fz-kdt.107's dispatch-twin class
+/// plus a `cmp_tys` free-var tie whose fallback to `TypeVarId` mint order is
+/// itself schedule-visible, fz-kdt.161) and `dead_closure_capture_empty_list`
+/// (2 lines -- fz-kdt.120's return-precision residue). Measured base-vs-head
+/// on 2026-09-02: enum_map_family 1170 -> 0, the other two unchanged at
+/// 562/2.
 ///
 /// The budget itself STAYS — it is what makes termination a theorem rather
 /// than a property of lucky inputs. A collapse after this change would be

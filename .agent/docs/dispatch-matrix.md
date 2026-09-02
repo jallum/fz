@@ -142,13 +142,26 @@ Two orders decide which body a value reaches, and neither is the language's.
 
 A callsite's **arrival order** is the settled targets' order, which is the
 semantic fixpoint's, which is the agenda's. A callable value's
-**construction-wrapper member order** is a `BTreeSet<CallableSurface>` walked in
-interned-id order — the type interner's mint order, which is the agenda's again;
-`jobs/transport.rs` derives the wrapper's members AND its selection plan from
-that one list, and fz-kdt.108 welded a selection row's `body_id` to its member's
-index, so the list itself is the only place either can be reordered. It is
-reordered where it is built, in `jobs/runtime_demand.rs`, before members,
-selection, boundary resolutions or the flow's resolution list derive from it.
+**construction-wrapper member order** used to be the same: a
+`BTreeSet<CallableSurface>` walked in interned-id order — the type interner's
+mint order, which is the agenda's again. `jobs/transport.rs` derives the
+wrapper's members AND its selection plan from that one list, and a selection
+row's `body_id` is welded to its member's index, so the list itself is the only
+place either can be reordered. **fz-kdt.108** made the SETTLED order canonical
+there: `callable_flow_resolution_edges_product` (`jobs/runtime_demand.rs`) now
+sorts the edges by `Types::cmp_tys` over each surface's inputs BEFORE the members,
+the selection plan, the boundary resolutions, the flow's resolution list AND the
+`activation_key` `Ty`s all derive from them — one ordering authority, inherited
+by everything downstream, so a re-ordered pull produces the same artifact. The
+direct half (`callable_flow_edges_for_targets`, a `BTreeSet<CallableTarget>`) is
+ordered by the same key for the same reason. `cmp_tys` is total up to the two
+residuals `types::order` documents (free-var ties, lambda byte-span labels);
+those fall back to mint order and are the only construction-order gap left across
+schedules (`00277_enum_tier0_fixture`'s `(int, list(int | :tail))` surfaces are
+one). The stress knob still owns the order for testing: `wrappers:<seed>`
+permutes the canonical list AFTER it is sorted (the perturbation wraps
+`callable_flow_resolution_edges_product`'s result), so the fz-kdt.141 gate that
+proves the perturbation reseats the members stays honest.
 
 Any permutation of either order is one the fixpoint could have delivered, so an
 answer that moves under one is an answer a schedule decides. `dispatch_stress`

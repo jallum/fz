@@ -1239,7 +1239,7 @@ fn callable_flow_edges_for_targets(
         return Vec::new();
     };
     let captures_len = capture_tys.len();
-    targets
+    let mut edges = targets
         .iter()
         .filter(|target| {
             target.activation.root == executable.activation.root && target.activation.function == producer.function
@@ -1261,7 +1261,15 @@ fn callable_flow_edges_for_targets(
             capture_semantic_inputs: (0..captures_len).collect(),
             surface_semantic_inputs: (captures_len..captures_len + target.surface.inputs.len()).collect(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // `targets` is a `BTreeSet<CallableTarget>` ordered by interned-`Ty` id, so
+    // walking it leaks the interner's mint order (the agenda's) into this
+    // executable's stored `direct_edges` and every artifact rendered from them.
+    // Order by what each surface SAYS, the same `cmp_tys` key the first-class
+    // edges use, so the direct half is canonical for the same reason and by the
+    // same authority (fz-kdt.108).
+    edges.sort_by(|a, b| world.types().cmp_tys(&a.surface.inputs, &b.surface.inputs));
+    edges
 }
 
 fn informative_boundary_demand(world: &mut World, ty: Ty) -> Option<RuntimeDemand> {
@@ -3180,8 +3188,24 @@ fn callable_flow_resolution_edges_product(
         return Vec::new();
     };
     let root = executable.activation.root;
-    surfaces
-        .iter()
+    // The one ordering authority for this callable's construction wrapper.
+    // `surfaces` is a `BTreeSet<CallableSurface>` ordered by interned-`Ty` id,
+    // which is the type interner's mint order and therefore the agenda's: walk
+    // it as-is and the schedule leaks into everything that derives from these
+    // edges -- the parallel members list, the selection plan whose `body_id` is
+    // welded to a member index, the boundary resolutions and the flow's
+    // resolution list -- and into the `activation_key` `Ty`s minted below.
+    // Ordering by what each surface SAYS (`cmp_tys`, the kdt.101/129 key)
+    // BEFORE the mint makes one canonical order flow to all of them and to the
+    // mint, removing that degree of freedom (fz-kdt.108). The single residual
+    // is free-var ties, which fall back to mint order per `types::order` and do
+    // not move within one compile. The kdt.141 wrapper perturbation still wraps
+    // this result downstream, so it permutes the canonical order and its gate
+    // stays honest.
+    let mut ordered = surfaces.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| world.types().cmp_tys(&a.inputs, &b.inputs));
+    ordered
+        .into_iter()
         .map(|surface| {
             let surface_inputs = surface.inputs.clone();
             let mut inputs = capture_tys.clone();

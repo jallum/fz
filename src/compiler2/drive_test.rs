@@ -9670,6 +9670,66 @@ fn backend_canon(fixture: &str) -> String {
     crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root))
 }
 
+/// fz-kdt.108: the construction wrapper's members carry ONE canonical order --
+/// `Types::cmp_tys` over each member's surface inputs -- so the settled artifact
+/// stops depending on the type interner's mint order (which is the agenda's).
+/// The members and the selection plan's rows both derive positionally from the
+/// same `first_class_edges` list, and that list is ordered by `cmp_tys` where it
+/// is built (`callable_flow_resolution_edges_product`), before either derives;
+/// so a monotone member list is the whole construction authority being monotone.
+///
+/// `enum_map_family` is the subject: its reducer flows to three element families
+/// (atoms, binaries, ints), each crossed with the empty and the grown
+/// accumulator, so its wrapper carries a genuinely multi-surface member list --
+/// the shape whose FIFO/LIFO backend-canon gap (1170 lines) this ticket closes.
+/// The order is non-strict: two members whose surfaces are `cmp_tys`-equal (the
+/// same element with the empty vs the grown accumulator can tie) are `Equal`,
+/// never `Greater`.
+#[test]
+fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
+    use std::cmp::Ordering;
+
+    let fixture = "fixtures2/behavior/enum_map_family.fz";
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some(fixture.to_string()),
+        text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+        .unwrap_or_else(|error| panic!("{fixture} should reach a backend program: {error}"));
+    let world = compiler.world();
+    let program = world.backend_program(root);
+
+    let mut multi_member_wrappers = 0;
+    for wrapper in &program.construction_wrappers {
+        if wrapper.members.len() > 1 {
+            multi_member_wrappers += 1;
+        }
+        for pair in wrapper.members.windows(2) {
+            assert_ne!(
+                world.types().cmp_tys(&pair[0].surface_inputs, &pair[1].surface_inputs),
+                Ordering::Greater,
+                "construction members must be non-decreasing under cmp_tys, so the settled artifact \
+                 no longer inherits the interner's mint order: {:?} came before {:?}",
+                pair[0].surface_inputs,
+                pair[1].surface_inputs,
+            );
+        }
+    }
+    assert!(
+        multi_member_wrappers > 0,
+        "{fixture} must exercise at least one multi-surface construction wrapper for this gate to \
+         mean anything",
+    );
+}
+
 /// The answer to hold a permuted order to: the blessed golden where the
 /// fixture matrix owns one, and otherwise this tree's own settled-order run.
 fn settled_arm_order_answer(fixture: &str) -> Vec<String> {
