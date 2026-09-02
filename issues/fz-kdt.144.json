@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.107"
+  ],
   "blocks": [],
   "created": "2026-09-02T03:54:24Z",
   "description": "From the fz-kdt.107 step-3 review (2026-09-01): fz-kdt.135's landed\ntripwire re-asks only the TUPLE axis (scope-corrected there). With\n107.3's head predicates, a list re-ask becomes possible: compare\n'head admitted' against 'value inside the surface' -- the instrument\nthat would measure the tail-blind residue (fz-kdt.131 facet 3's 2\npairs) and analysis-excluded heterogeneous traffic on the production\npath. Extend the tripwire in 107.3's wake; baseline expected small.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A list-element surface-membership tripwire becomes possible once heads carry predicates",
   "type": "task",
-  "updated_at": "2026-09-02T03:54:24Z"
+  "updated_at": "2026-09-02T03:54:33Z"
 }
