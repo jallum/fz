@@ -17,11 +17,15 @@
     {
       "text": "fz-kdt.119 review confirmation (2026-09-01): the +42 executable delta on three receive_* fixtures (dbg specs 1-\u003e8 per function, the 2^arity per-position product) is this ticket's arms-become-LIVE at scale, now measured. The specialization-count pressure is handed to fz-3bb with the mechanism recorded in fz-kdt.119's body.",
       "timestamp": "2026-09-02T01:44:46Z"
+    },
+    {
+      "text": "CLOSED by fz-kdt.127.1 (2026-09-02): the no-question dispatch population is ZERO. The six same-fn-id/different-capture survivors (00231, 00277 x2, 00281, opaque_fn_value_join, repr_seam_enum_count_after_reduce2) gained construction-shape questions when the callable axis started naming captures; the INDISTINGUISHABLE_ARM_RESIDUE table was deleted and its fixtures promoted into the zero gate (compiler2_dispatch_offers_no_runtime_indistinguishable_arm). Arms became live, as this ticket predicted; then fz-kdt.127.2 removed most of those dispatches entirely by answering them at the key (net -52 runtime questions corpus-wide).",
+      "timestamp": "2026-09-02T23:59:11Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "12 no-question dispatch groups: the resolution is arms that BECOME LIVE, not arms never minted",
   "type": "task",
-  "updated_at": "2026-09-02T01:44:46Z"
+  "updated_at": "2026-09-02T23:59:11Z"
 }
