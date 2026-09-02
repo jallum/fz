@@ -53,6 +53,10 @@ use descr::Descr;
 use dnf::{dnf_intersect_with, tuple_clause_subsumed};
 use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, ResourceSig, TupleSig};
 
+/// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
+/// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
+pub(crate) type LitArrowShape = (Option<FnId>, Vec<Ty>, Vec<Ty>, Ty);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Ty(u32);
@@ -856,12 +860,14 @@ impl Types {
         self.arrow(&collapsed, ret)
     }
 
-    /// The transported-callable key collapse (fz-6gb): erase closure LITERALS
-    /// from the arrow's non-dispatch slots, leaving everything else -- data
-    /// types, callable surfaces, dispatch-relevant slots -- exactly as the
-    /// evidence stated it. Two closures with the same surface then key one
-    /// activation of a function that only carries them, while a slot the
-    /// function dispatches on keeps brand identity. Unlike
+    /// The transported-callable key collapse (fz-6gb, fz-kdt.127): erase
+    /// closure BRANDS from the arrow's non-dispatch slots, leaving everything
+    /// else -- data types, callable surfaces, CAPTURE TYPES, dispatch-relevant
+    /// slots -- exactly as the evidence stated it. Two closures of the same
+    /// shape then key one activation of a function that only carries them,
+    /// while a slot the function dispatches on keeps brand identity, and two
+    /// capture types through one slot stay two keys because the body a key
+    /// names grounds its callees' capture lanes. Unlike
     /// [`convergence_collapse`], no slot becomes an address var: this erasure
     /// is value-language throughout, so nothing key-shaped can leak into
     /// evidence.
@@ -1431,7 +1437,7 @@ impl Types {
     /// degrades the whole axis to the target-only reading, which is what every
     /// clause answered before fz-kdt.127 and is a sound over-approximation of
     /// it. `callable_identity_targets` has already refused the clauses that
-    /// name no literal or subtract one.
+    /// name no literal, subtract one, or name an ANONYMOUS one.
     fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
         let Some(targets) = callable_identity_targets(&descr.funcs) else {
             return CallableShapes::any();
@@ -1443,7 +1449,10 @@ impl Types {
                 return CallableShapes::target_only(FiniteSet::finite(targets.into_iter().map(ClosureTarget::from)));
             };
             shapes.push(CallableShape {
-                target: ClosureTarget::from(lit.fn_id),
+                target: ClosureTarget::from(
+                    lit.fn_id
+                        .expect("callable_identity_targets refused every anonymous literal"),
+                ),
                 captures: lit
                     .captures
                     .iter()
@@ -1512,7 +1521,9 @@ impl Types {
     }
 
     /// Every closure-literal arrow reachable from `a`, as
-    /// `(fn_id, captures, args, ret)`, sorted and deduped.
+    /// `(fn_id, captures, args, ret)`, sorted and deduped. The brand is `None`
+    /// for an anonymous literal, which is one shape like any other: two rows
+    /// whose literals differ only in brand are NOT the same shape.
     ///
     /// `args` and `ret` are in here because subtyping leaves them out:
     /// `emptiness::func_clause_empty` decides a negative closure-literal
@@ -1525,7 +1536,7 @@ impl Types {
     /// reaches a bare one, so the evidence has to be collected from the same
     /// places. A top-level-only walk would let `{:tag, fn}` rows that differ
     /// only in the nested arrow's signature absorb each other.
-    pub fn lit_arrow_shapes(&self, a: &Ty) -> Vec<(FnId, Vec<Ty>, Vec<Ty>, Ty)> {
+    pub fn lit_arrow_shapes(&self, a: &Ty) -> Vec<LitArrowShape> {
         let mut shapes = Vec::new();
         let mut seen = HashSet::new();
         collect_lit_arrow_shapes(self.ctx(), a, &mut seen, &mut shapes);
@@ -1694,7 +1705,7 @@ impl Types {
             .flat_map(|d| d.funcs.iter())
             .flat_map(|c| c.pos.iter().chain(c.neg.iter()))
             .filter_map(|sig| sig.lit.as_ref())
-            .map(|lit| lit.fn_id)
+            .filter_map(|lit| lit.fn_id)
             .filter(|fn_id| !self.callable_labels.contains_key(fn_id))
             .map(|fn_id| fn_id.0)
             .collect()
@@ -1712,7 +1723,7 @@ impl Types {
                 ret,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::FnRef,
-                    fn_id,
+                    fn_id: Some(fn_id),
                     captures: Vec::new(),
                 }),
             })],
@@ -1732,7 +1743,7 @@ impl Types {
                 ret,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::Closure,
-                    fn_id,
+                    fn_id: Some(fn_id),
                     captures,
                 }),
             })],
@@ -1743,7 +1754,7 @@ impl Types {
     pub fn closure_lit_parts(&self, a: &Ty) -> Option<ClosureLitInfo<Ty>> {
         let lit = self.descr(a).as_closure_lit()?;
         Some(ClosureLitInfo {
-            target: lit.fn_id.into(),
+            target: lit.fn_id?.into(),
             captures: lit.captures.clone(),
             kind: lit.kind,
         })
@@ -2371,10 +2382,12 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
             .map(|arrow| CallableClause {
                 args: arrow.args.clone(),
                 ret: arrow.ret,
-                closure: arrow.lit.as_ref().map(|lit| ClosureLitInfo {
-                    target: lit.fn_id.into(),
-                    captures: lit.captures.clone(),
-                    kind: lit.kind,
+                closure: arrow.lit.as_ref().and_then(|lit| {
+                    lit.fn_id.map(|fn_id| ClosureLitInfo {
+                        target: fn_id.into(),
+                        captures: lit.captures.clone(),
+                        kind: lit.kind,
+                    })
                 }),
             })
             .filter(|clause| clause.args.iter().all(|arg| !cx.descr(arg).is_empty(cx)))
@@ -2448,6 +2461,20 @@ fn runtime_type_predicate_tuple_arities(descr: &Descr) -> FiniteSet<usize> {
 /// one of them contains, so naming them all over-approximates it — and
 /// over-approximation is the direction a dispatch test must err in, exactly as
 /// the list-shape and tuple-arity axes do.
+///
+/// An ANONYMOUS literal (fz-kdt.127) names no code at all, so it is that same
+/// unrestricted answer -- and this is the ONE place that decides it, for the
+/// predicate projection and for the envelope alike. It never actually arrives.
+/// An anonymous literal is minted in exactly one place,
+/// [`Types::erase_transported_closure_identities`], which puts it in the
+/// `arrow` of the ACTIVATION KEY of a non-recursive body that consumes no
+/// callable identity, and only in the slots the dispatch mask marks
+/// `DispatchDemand::Ignore`; a runtime test is asked of a VALUE's type -- a
+/// callsite's `CallTargetSummary::surface_inputs`, a lane's carrier -- never of
+/// a key. THAT is what makes an erased forwarder key and the construction axis
+/// compose: the keying rule holds the two apart, not any projection here. The
+/// `debug_assert!` is the gate on the rule; the `?` behind it keeps the sound
+/// unrestricted answer if the rule is ever broken.
 fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>> {
     let mut targets = BTreeSet::new();
     for clause in funcs {
@@ -2455,8 +2482,15 @@ fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>>
             .pos
             .iter()
             .filter_map(|sig| sig.lit.as_ref())
-            .map(|lit| lit.fn_id)
-            .collect::<Vec<_>>();
+            .map(|lit| {
+                debug_assert!(
+                    lit.fn_id.is_some(),
+                    "an anonymous literal reached a runtime test: it can only have come from an \
+                     activation key, and a key is never what a test is asked of (fz-kdt.127)"
+                );
+                lit.fn_id
+            })
+            .collect::<Option<Vec<_>>>()?;
         if lits.is_empty() || !clause.neg.is_empty() {
             return None;
         }
@@ -2559,12 +2593,7 @@ fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
 /// `seen` is a cycle guard, not a memo -- an interned type may be its own
 /// descendant (a recursive list element, a closure captured in its own
 /// capture vector), and revisiting one adds nothing the first visit did not.
-fn collect_lit_arrow_shapes(
-    cx: TyCtx<'_>,
-    t: &Ty,
-    seen: &mut HashSet<Ty>,
-    shapes: &mut Vec<(FnId, Vec<Ty>, Vec<Ty>, Ty)>,
-) {
+fn collect_lit_arrow_shapes(cx: TyCtx<'_>, t: &Ty, seen: &mut HashSet<Ty>, shapes: &mut Vec<LitArrowShape>) {
     if !seen.insert(*t) {
         return;
     }
@@ -2879,9 +2908,48 @@ fn is_literal(cx: TyCtx<'_>, a: &Ty) -> bool {
 
 // More recursive transforms live in this module so they can thread the owning
 // interner explicitly without exposing the private descriptor representation.
+/// Erase every closure literal's BRAND and keep its capture TYPES, at every
+/// depth (fz-6gb, fz-kdt.127).
+///
+/// A forwarder key must not fork on WHICH lambda travelled through it -- that
+/// is freight, and forking on it drags a private copy of every library
+/// function the lambda reaches. It must fork on what that lambda CLOSED OVER:
+/// a body keyed at one capture type grounds its callees' capture lanes to that
+/// type, so two capture types arriving through one key leave a choice no
+/// static key can pin and only a runtime test could answer. Keeping the
+/// capture types answers it by the key instead.
+///
+/// The captures are erased by this same rule, so brands nested inside a
+/// captured closure go too and same-typed literals still share one body. A
+/// literal with no captures has nothing left to say once its brand is gone, so
+/// it erases to the bare arrow it always did.
 fn erase_closure_identity(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
-    map_recursive_inputs(t, base, erase_closure_identity).without_closure_lits()
+    let mut erased = map_recursive_inputs(t, base, erase_closure_identity);
+    for conj in &mut erased.funcs {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            let Some(lit) = sig.lit.take() else {
+                continue;
+            };
+            if lit.captures.is_empty() {
+                continue;
+            }
+            let captures = lit
+                .captures
+                .iter()
+                .map(|capture| {
+                    let capture = erase_closure_identity(t, *capture);
+                    t.intern(capture)
+                })
+                .collect();
+            sig.lit = Some(ClosureLit {
+                kind: lit.kind,
+                fn_id: None,
+                captures,
+            });
+        }
+    }
+    erased
 }
 
 /// Returns an interned `Ty`: every result is canonically interned in `Types`,

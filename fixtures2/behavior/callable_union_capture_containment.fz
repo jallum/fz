@@ -3,19 +3,27 @@
 # oracle: oracle.exs
 #---
 #
-# fz-kdt.167, the witness. `mk/1` is called three ways: twice with a value that
-# came out of the mailbox, so the capture is typed `any` and the wrapper stores
-# a BOXED word, and twice with a literal, so the capture is typed `int` or
-# `float` and the wrapper stores a raw one. `P.run/2` forwards all four, so one
-# shared body is chosen by a runtime test on the construction.
+# fz-kdt.167, the witness. `f` is chosen by a `case` on a value that came out
+# of the mailbox, so no key can pin which closure it is: one arm mints `mk/1`
+# over that mailbox value, whose capture is typed `any` and stored as a BOXED
+# word, and the other mints it over a `float` literal, stored raw. `P.run/2`
+# takes the union of the two, and a runtime test on the construction is the
+# only thing that can separate them.
 #
-# The union construction OVERLAPS both narrow arms -- an `any` capture could be
-# holding an int, or a float -- but it is INSIDE neither, because the layout a
-# capture was stored in belongs to the construction and not to the value that
-# happens to sit there. Admitting on overlap therefore hands a boxed capture to
-# a body whose capture lane is a raw int: on the interpreter the first line
-# answers 12.0 instead of 12, and the native door aborts in
-# `fz_closure_get_capture_f64`. Admission is containment.
+# The `any` construction OVERLAPS the float arm -- an `any` capture could be
+# holding a float -- but it is INSIDE neither arm, because the layout a capture
+# was stored in belongs to the construction and not to the value that happens
+# to sit there. Admitting on overlap therefore hands a boxed capture to a body
+# whose capture lane is a raw f64: the interpreter answers 12.0 instead of 12,
+# and the native doors abort in `fz_closure_get_capture_f64`. Admission is
+# containment.
+#
+# This fixture used to witness the same law with four STATIC forwarded calls.
+# fz-kdt.127's type-preserving forwarder key answers that shape statically --
+# `P.run/2` keys one activation per capture type, every callsite has one
+# target, and the program lost its dispatch node entirely (52 questions -> 16,
+# 1 dispatch node -> 0). The closure has to come out of a runtime branch for
+# the question to survive the key (fz-kdt.171).
 defmodule P do
   fn twice(f, x), do: f.(f.(x))
   fn run(f, x), do: twice(f, x)
@@ -24,11 +32,10 @@ end
 
 fn main() do
   send(self(), 1)
-  send(self(), 0.5)
   a = receive do v -> v end
-  b = receive do v -> v end
-  dbg(P.run(P.mk(a), 10))
-  dbg(P.run(P.mk(b), 10))
-  dbg(P.run(P.mk(1), 10))
-  dbg(P.run(P.mk(0.5), 10))
+  f = case a > 0 do
+    true -> P.mk(a)
+    _ -> P.mk(0.5)
+  end
+  dbg(P.run(f, 10))
 end

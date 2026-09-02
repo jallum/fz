@@ -401,6 +401,43 @@ claims it, so it can never settle.
 identity. For recursive functions it collapses non-dispatch inputs by
 `convergence_class`, using the `Recursive(fn)` and `DispatchMask(fn)` facts to
 decide which slots may balloon.
+
+A NON-recursive body is keyed by precise evidence, with one erasure. A body
+that never consumes callable identity -- never calls through a callable, never
+constructs a lambda, and is not itself a capture-holding lambda
+(`BodyKeying::consumes_callable_identity`) -- only TRANSPORTS the closures that
+reach it, so `Types::erase_transported_closure_identities` erases their BRANDS
+from every non-dispatch slot: every same-shape lambda that travels through a
+forwarder shares one activation of it, instead of dragging a private copy of
+the whole library chain behind it (fz-6gb). What the value CLOSED OVER survives
+the erasure, at every depth, brands inside captured closures erased by the same
+rule (`closure[?](int)`, `closure[?](closure[?]((a1_p0) -> a1_r))`). That is
+the whole difference between freight and meaning here: a body keyed at one
+capture type grounds its callees' capture lanes to that type, so one key
+holding two capture types would leave a choice only a runtime test could
+answer, and a forwarder handed one lambda at an int capture and at a float
+capture is a program that knows statically which is which (fz-kdt.127).
+
+So a forwarder SHARES across lambda identity and SPLITS on capture tuple. In
+this tree, over the 597 corpus fixtures and the 469 that reach a backend dump,
+58 dumps differ from what the whole-literal erasure produced: 45 differ in key
+TEXT only, 13 fixtures settle more executables and none settles fewer, five
+lose dispatch nodes -- the key answers what a runtime test used to -- and four
+gain ten between them. The gains are `enum_take_drop_split` and its `00420_`
+twin, whose recursive core asks two real questions (the accumulator tag
+`{:cont, _}` vs `{:cont | :halt, _}`, and which construction the reducer is),
+the dynamic same-lambda witness, whose closure comes out of a `case` no key can
+pin, and `callable_union_capture_containment`, rehomed on that same dynamic
+shape because the key answered its old static body outright (fz-kdt.171).
+Stdout is byte-identical on all three doors on every one of them.
+
+The split is by capture TUPLE, so it separates two lambdas with different
+capture tuples as readily as one lambda at two capture types --
+`spawn/1` keys `closure[?](pid)` apart from `closure[?](pid, int)`, and the
+capture-free `Enum.all?/1` wrapper apart from the capturing `all?/2` one. Six
+of the thirteen fixtures whose inventory moves are the same-lambda shape this
+erasure exists for; the other seven are that different-lambda population.
+
 List-family convergence is intentionally coarse at the key: `[]`, `[t]`, and
 the joined `[] | [t]` shape share one recursive identity, and a
 `ListShape(elem_demand)` dispatch slot keeps demanded element information while

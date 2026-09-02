@@ -370,6 +370,31 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// executables leave; the analysis that finds the one true rung costs 39 more
 /// activations, ratcheted in `analysis_claims_survive_a_run_that_could_not_re_derive_them`.
 /// The other two lenses hold, and stdout is byte-identical on all three doors.
+///
+/// Re-pinned UPWARD by fz-kdt.127, which made the forwarder erasure keep
+/// capture TYPES and drop only the brand: `enum_predicate_search` 204 -> 206,
+/// `enum_take_drop_split` 196 -> 204. Both arrivals are the SAME cause and it
+/// is not this fixture's own shape -- a forwarder that takes closures from
+/// DIFFERENT lambdas whose capture tuples differ now keys one activation per
+/// tuple. In `enum_predicate_search` the `reduce_while/3` chain splits the
+/// capture-free `Enum.all?/1`/`any?/1` wrappers from the capture-bearing
+/// `all?/2`/`any?/2` ones; in `enum_take_drop_split` the same chain splits
+/// capture-free `take_positive`/`drop_positive` from `take_every`/`drop_every`,
+/// which close over the step. `enum_take_drop_split` also gains two new
+/// dispatch nodes, and they ask real questions -- the accumulator tag
+/// `{:cont, _}` vs `{:cont | :halt, _}` and which construction the reducer
+/// is -- in the recursive core. Corpus-wide (597 fixtures, 469 backend dumps)
+/// the same erasure REMOVES dispatch nodes from five fixtures --
+/// `00275_enum_count_member_reduce`, `a_mixed`, `enum_predicate_search`,
+/// `repr_seam_enum_count_after_reduce2`, `same_lambda_two_capture_types` --
+/// and ADDS ten to four: two here, two to this fixture's `00420_` twin, four
+/// to `same_lambda_two_capture_types_dynamic`, and two to
+/// `callable_union_capture_containment`, which this same commit rehomes on
+/// that dynamic shape so fz-kdt.167's containment law keeps an end-to-end
+/// witness (fz-kdt.171). Whether capture arity, rather than
+/// capture type, is the right grain for forwarders fed by different lambdas is
+/// fz-kdt.169's measurement; stdout is byte-identical on all three doors over
+/// 597 fixtures.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (name, text, executables) in [
@@ -381,12 +406,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            204,
+            206,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
             include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
-            196,
+            204,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);

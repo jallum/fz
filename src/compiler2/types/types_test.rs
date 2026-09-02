@@ -357,6 +357,98 @@ fn the_envelope_and_the_predicate_agree_on_a_multi_literal_callable_clause() {
     );
 }
 
+/// fz-kdt.127 -- WHY the erased forwarder key and the construction axis
+/// compose, stated from the side that actually decides it: the KEYING rule.
+///
+/// `erase_transported_closure_identities` anonymises only the slots the
+/// dispatch mask marks `Ignore` -- the ones no runtime test reads. A slot the
+/// body dispatches on keeps its brand, so it stays shapeable and a test can
+/// still name the construction, while the anonymous literal the erasure mints
+/// lives only in the activation KEY, which no test is ever asked of. Nothing
+/// in the projection has to arrange this; if it ever stops holding, the
+/// `debug_assert!` in `callable_identity_targets` is what fires.
+#[test]
+fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
+    let mut t = Types::new();
+    let int = t.int();
+    let surface = t.arrow(&[int], int);
+    let branded = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let branded = t.intersect(branded, surface);
+    let arrow = t.arrow(&[branded, branded], int);
+
+    let erased = t.erase_transported_closure_identities(arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
+    let params = t.arrow_params(&erased);
+    assert_eq!(params.len(), 2);
+    assert_ne!(
+        params[0], branded,
+        "the ignored slot is freight: the erasure takes its brand"
+    );
+    assert!(
+        t.display(&params[0]).contains("#?"),
+        "and what it leaves there is the ANONYMOUS literal, got {}",
+        t.display(&params[0])
+    );
+    assert_eq!(
+        params[1], branded,
+        "a slot the body dispatches on is untouched -- that is why an anonymous literal never \
+         reaches a runtime test"
+    );
+
+    let capturing = CallableShape {
+        target: ClosureTarget(3),
+        captures: vec![t.runtime_type_predicate(&int)],
+    };
+    assert!(
+        t.runtime_type_predicate(&params[1]).callables.admits(&capturing),
+        "and the dispatch slot still names its construction",
+    );
+}
+
+/// fz-kdt.127 -- a closure holds exactly one value per capture slot, so a
+/// literal whose capture TYPE is empty denotes nothing at all.
+///
+/// The anonymous literal is one way to build one: it is every brand at once,
+/// so it merges with a branded literal instead of staying distinct from it,
+/// and the merged literal's capture is the two captures' intersection. Two
+/// literals of the SAME brand at different capture types are the other way,
+/// and that hole predates the anonymous literal. One law in
+/// `func_clause_empty` closes both.
+#[test]
+fn a_closure_literal_with_an_empty_capture_is_empty() {
+    let mut t = Types::new();
+    let int = t.int();
+    let float = t.float();
+    let surface = t.arrow(&[int], int);
+    let branded_int = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let branded_int = t.intersect(branded_int, surface);
+    let branded_float = t.closure_lit(ClosureTarget(4), vec![float], 1);
+    let branded_float = t.intersect(branded_float, surface);
+    let anon_int = t.erase_closure_identity(&branded_int);
+
+    let meets_its_own_brand = t.intersect(anon_int, branded_int);
+    assert_eq!(
+        meets_its_own_brand, branded_int,
+        "an anonymous literal is every brand at once, so meeting one leaves that one",
+    );
+
+    let meets_another_brand = t.intersect(anon_int, branded_float);
+    assert!(
+        t.is_empty(&meets_another_brand),
+        "a closure over an int and a closure over a float are not one value: {}",
+        t.display(&meets_another_brand)
+    );
+
+    let branded_int_at_float = t.closure_lit(ClosureTarget(3), vec![float], 1);
+    let branded_int_at_float = t.intersect(branded_int_at_float, surface);
+    let one_brand_two_captures = t.intersect(branded_int, branded_int_at_float);
+    assert!(
+        t.is_empty(&one_brand_two_captures),
+        "and the same holds for ONE brand at two capture types -- the hole the anonymous \
+         literal widened was already there: {}",
+        t.display(&one_brand_two_captures)
+    );
+}
+
 #[test]
 fn symmetric_comparisons_share_one_cache_entry() {
     let mut t = Types::new();
@@ -1334,19 +1426,60 @@ macro_rules! closure_helper_conformance_tests {
         mod $mod_name {
             use super::*;
 
+            /// The erasure drops the BRAND and keeps the capture types: two
+            /// lambdas closed over the same thing become one key, one lambda
+            /// closed over two things stays two, and neither result is a
+            /// singleton any consumer could call directly (fz-kdt.127).
             #[test]
-            fn erase_closure_identity_preserves_callable_surface_shape() {
+            fn erase_closure_identity_drops_the_brand_and_keeps_the_captures() {
                 let mut t = $ctor;
-                let capture = t.int_lit(10);
-                let lit = t.closure_lit(ClosureTarget(3), vec![capture], 2);
+                let ten = t.int_lit(10);
+                let lit = t.closure_lit(ClosureTarget(3), vec![ten], 2);
                 let erased = t.erase_closure_identity(&lit);
-                assert!(t.closure_lit_parts(&erased).is_none());
+                assert!(
+                    t.closure_lit_parts(&erased).is_none(),
+                    "an erased literal names no target, so nothing may call it directly"
+                );
                 let clauses = t
                     .callable_clauses(&erased)
                     .expect("erased closure should remain callable");
                 assert_eq!(clauses.len(), 1);
                 assert_eq!(clauses[0].args.len(), 2);
                 assert!(clauses[0].closure.is_none());
+
+                // Compared over ONE declared surface, the way a key is: a raw
+                // literal's own arrow is written in the minting lambda's
+                // surface vars, which the key addresses away before erasing.
+                let int = t.int();
+                let surface = t.arrow(&[int, int], int);
+                let left = t.closure_lit(ClosureTarget(3), vec![int], 2);
+                let left = t.intersect(left, surface);
+                let left = t.erase_closure_identity(&left);
+                let right = t.closure_lit(ClosureTarget(4), vec![int], 2);
+                let right = t.intersect(right, surface);
+                let right = t.erase_closure_identity(&right);
+                assert_eq!(
+                    left, right,
+                    "two lambdas closed over the same type are one key: the brand is freight"
+                );
+
+                let float = t.float();
+                let other = t.closure_lit(ClosureTarget(3), vec![float], 2);
+                let other = t.intersect(other, surface);
+                let other = t.erase_closure_identity(&other);
+                assert_ne!(
+                    other, left,
+                    "one lambda closed over two types is two keys: the captures are meaning"
+                );
+
+                let bare = t.closure_lit(ClosureTarget(3), Vec::new(), 2);
+                let bare = t.intersect(bare, surface);
+                let erased_bare = t.erase_closure_identity(&bare);
+                assert_eq!(
+                    erased_bare, surface,
+                    "a capture-free literal has nothing left to say once its brand is gone, so \
+                     it erases to the bare arrow"
+                );
             }
 
             #[test]

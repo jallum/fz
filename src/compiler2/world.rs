@@ -1863,12 +1863,14 @@ impl World {
         let key = super::identity::ActivationKey::from_inputs(root, function, inputs, &mut self.types);
         if !keying.recursive {
             // A non-recursive body that never consumes callable identity only
-            // TRANSPORTS the closures that reach it, so closure identity is
-            // freight, not meaning: erase the literals from non-dispatch
-            // slots and every same-surface brand shares one activation
-            // (fz-6gb). A consuming body keeps the precise key -- its
-            // specializations buy direct dispatch. Evidence is precise
-            // either way.
+            // TRANSPORTS the closures that reach it, so WHICH lambda arrived
+            // is freight: erase the brands from non-dispatch slots and every
+            // same-shape lambda shares one activation (fz-6gb). What it closed
+            // over is NOT freight -- the capture types survive the erasure, so
+            // a forwarder handed one lambda at two capture types keys one body
+            // per type and its callees stay grounded (fz-kdt.127). A consuming
+            // body keeps the precise key -- its specializations buy direct
+            // dispatch. Evidence is precise either way.
             if keying.consumes_callable_identity {
                 return key;
             }

@@ -4,10 +4,11 @@ defmodule P do
   def mk(c), do: fn n -> n + c end
 end
 
-a = 1
-b = 0.5
+send(self(), 1)
+a = receive do v -> v end
 
-IO.inspect(P.run(P.mk(a), 10))
-IO.inspect(P.run(P.mk(b), 10))
-IO.inspect(P.run(P.mk(1), 10))
-IO.inspect(P.run(P.mk(0.5), 10))
+f = case a > 0 do
+  true -> P.mk(a)
+  _ -> P.mk(0.5)
+end
+IO.inspect(P.run(f, 10))

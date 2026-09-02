@@ -88,7 +88,15 @@ impl ListSig {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ClosureLit {
     pub kind: CallableValueKind,
-    pub fn_id: FnId,
+    /// The function the value was minted from, or `None` for an ANONYMOUS
+    /// literal: a closure of SOME function closed over exactly these capture
+    /// types, which is what a forwarder key leaves of a literal whose brand it
+    /// erased (fz-6gb, fz-kdt.127). An anonymous literal contains every
+    /// branded literal whose captures are inside its own, so it is never a
+    /// singleton and never names a call target. A literal with nothing left to
+    /// say — anonymous and capture-free — is not a literal at all: the erasure
+    /// drops it and leaves the bare arrow.
+    pub fn_id: Option<FnId>,
     pub captures: Vec<Ty>,
 }
 
@@ -194,7 +202,15 @@ impl MergeSig for ArrowSig {
         }
         match (&a.lit, &b.lit) {
             (Some(la), Some(lb)) => {
-                if la.fn_id != lb.fn_id || la.kind != lb.kind || la.captures.len() != lb.captures.len() {
+                // An anonymous literal is every brand at once, so meeting it
+                // with a branded one keeps the brand; two brands that differ
+                // name disjoint values and stay Distinct.
+                let fn_id = match (la.fn_id, lb.fn_id) {
+                    (Some(a), Some(b)) if a != b => return PosMeet::Distinct,
+                    (Some(a), _) => Some(a),
+                    (None, b) => b,
+                };
+                if la.kind != lb.kind || la.captures.len() != lb.captures.len() {
                     return PosMeet::Distinct;
                 }
                 PosMeet::Merged(ArrowSig {
@@ -207,7 +223,7 @@ impl MergeSig for ArrowSig {
                     ret: types.intersect(a.ret, b.ret),
                     lit: Some(ClosureLit {
                         kind: la.kind,
-                        fn_id: la.fn_id,
+                        fn_id,
                         captures: la
                             .captures
                             .iter()

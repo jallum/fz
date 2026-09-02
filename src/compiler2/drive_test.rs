@@ -8989,23 +8989,25 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
 
 /// The question that clears the last of them, in the program that names it.
 ///
-/// `same_lambda_two_capture_types` forwards ONE lambda -- closed over an int at
-/// one callsite and over a float at another -- through `P.run/2`, whose
-/// erasure drops the closure literal, so both calls share one `run` body and
-/// which `twice` specialization runs is left to a runtime test. Until
-/// fz-kdt.127 that test could only name the FUNCTION, the two arms asked one
-/// and the same question, and arm 0 took every value: the fixture answered
-/// `12.0` for `12` on the interpreter and refused to compile on the native
-/// door.
+/// `same_lambda_two_capture_types_dynamic` picks its closure with a `case` on
+/// a value that came back out of the mailbox, so no key can pin which lambda
+/// reaches `P.run/2`: it arrives as the union of a construction over an int
+/// and a construction over a float, and only the word the mint stamped can
+/// separate them. Until fz-kdt.127 the test that reads that word could name
+/// only the FUNCTION, the two arms asked one and the same question, and arm 0
+/// took every value.
 ///
 /// The word a value carries is the address of the construction WRAPPER that
 /// minted it, and a wrapper is one function at one capture layout. So the two
 /// arms ask about the same function and their capture questions are disjoint,
 /// which is what this asserts: the pair separates on the callable axis alone,
 /// and no value can pass both tests.
+///
+/// The static twin `same_lambda_two_capture_types` asks nothing at all --
+/// `compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key` pins that.
 #[test]
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
-    let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz";
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut separated = Vec::new();
@@ -9045,8 +9047,62 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
     }
     assert!(
         !separated.is_empty(),
-        "{fixture} forwards one lambda at two capture layouts, so some dispatch must separate \
-         them by construction; none did, which is fz-kdt.127's defect back again",
+        "{fixture} delivers one lambda at two capture layouts through a value no key can pin, \
+         so some dispatch must separate them by construction; none did, which is fz-kdt.127's \
+         defect back again",
+    );
+}
+
+/// The static twin asks NOTHING: the forwarder key carries the capture types,
+/// so each callsite has one callee and the program has no dispatch at all
+/// (fz-kdt.127 stage A).
+///
+/// `same_lambda_two_capture_types` forwards ONE lambda -- closed over an int at
+/// one callsite and over a float at another -- through `P.run/2`. Every call
+/// site in `main` knows which closure it passes, so the only thing that ever
+/// made this a runtime question was the forwarder erasure dropping the closure
+/// literal WHOLE: one `run` body for two callers whose `twice` consumers were
+/// never going to be shared. Erasing the BRAND and keeping the capture TYPES
+/// gives `run` one body per capture type, each with a single grounded callee,
+/// and the runtime test disappears. Static knowledge flows by KEY.
+#[test]
+fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
+    let (compiler, program) = driven_backend_program(fixture);
+    let dispatches = dispatch_call_edges(&program);
+    assert!(
+        dispatches.is_empty(),
+        "{fixture} passes a known closure at every call site, so nothing may be left for a \
+         runtime test; {} callsites still dispatch",
+        dispatches.len(),
+    );
+
+    let types = compiler.world().types();
+    let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<String>> = BTreeMap::new();
+    for executable in &program.executables {
+        let activation = &executable.key.activation;
+        let Some(first) = activation.inputs(types).first().copied() else {
+            continue;
+        };
+        keys_by_function
+            .entry(activation.function)
+            .or_default()
+            .insert(types.display(&first));
+    }
+    let forwarders_split_by_capture_type = keys_by_function
+        .values()
+        .filter(|slots| {
+            slots.len() > 1 && slots.iter().all(|slot| slot.contains("closure")) && {
+                let ints = slots.iter().filter(|slot| slot.contains("int")).count();
+                let floats = slots.iter().filter(|slot| slot.contains("float")).count();
+                ints > 0 && floats > 0
+            }
+        })
+        .count();
+    assert_eq!(
+        forwarders_split_by_capture_type, 4,
+        "`P.run/2`, `P.twice/2` and their `Q` mirrors each take the lambda at an int capture \
+         and at a float capture, and the key -- not a test -- is what separates them: {keys_by_function:#?}",
     );
 }
 
@@ -14468,12 +14524,17 @@ fn backend_direct_call_in_entry<'a>(
 /// The capture unpack is keyed on the CONSTRUCTIONS that mint the layout the
 /// callee grounded on, not on the callee's function (fz-kdt.127, fz-kdt.157).
 ///
-/// `same_lambda_two_capture_types` mints ONE lambda through boundaries that
-/// disagree about slot 0 -- a raw int in one, a raw float in the other -- and
-/// that disagreement is the whole point of the fixture. A prim keyed on the
-/// function would ask both boundaries how slot 0 was stored, get two answers,
-/// and refuse to compile: that is the abort this fixture had at base. So the
-/// two halves below are the invariant and its witness in one program.
+/// `same_lambda_two_capture_types_dynamic` mints ONE lambda through boundaries
+/// that disagree about slot 0 -- a raw int in one, a raw float in the other --
+/// and hands the value to `P.run/2` through a `case` no key can pin, so the
+/// whole closure really does travel to a callee that wants its captures as
+/// lanes. A prim keyed on the function would ask both boundaries how slot 0
+/// was stored, get two answers, and refuse to compile. So the two halves below
+/// are the invariant and its witness in one program.
+///
+/// The static twin carries the capture type in its forwarder KEY, so it lowers
+/// no unpack at all and cannot witness this; that is
+/// `compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key`.
 ///
 /// This is also fz-kdt.157's missing coverage. Its refusing half had no
 /// program that could reach it, because a function minted at two capture
@@ -14487,7 +14548,7 @@ fn compiler2_a_capture_unpack_reads_the_constructions_that_minted_its_layout() {
     let native = NativeProgramCapture::new();
     native.install(&tel);
     let mut compiler = Compiler2::new(tel);
-    let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
+    let fixture = "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz";
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.to_string()),
         text: std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read {fixture}: {error}")),

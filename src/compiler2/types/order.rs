@@ -189,10 +189,14 @@ impl<'a> ClauseOrder<'a> {
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Less,
             (Some(_), None) => Ordering::Greater,
-            (Some(x), Some(y)) => self
-                .cmp_callable(x.fn_id, y.fn_id)
-                .then_with(|| x.kind.cmp(&y.kind))
-                .then_with(|| self.cmp_tys(&x.captures, &y.captures)),
+            (Some(x), Some(y)) => match (x.fn_id, y.fn_id) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Less,
+                (Some(_), None) => Ordering::Greater,
+                (Some(a), Some(b)) => self.cmp_callable(a, b),
+            }
+            .then_with(|| x.kind.cmp(&y.kind))
+            .then_with(|| self.cmp_tys(&x.captures, &y.captures)),
         }
     }
 

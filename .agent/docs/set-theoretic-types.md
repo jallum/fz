@@ -24,7 +24,13 @@ never reads `args` or `ret` — so two arrows over ONE lambda are mutually
 subtypes however far apart their signatures are. That is also why a template
 arrow and its ground instance come out equivalent: it is `func_clause_empty`'s
 capture-subset test on the shared literal that erases the difference, not a
-general absorbing property of free vars. (Vars are nominal on their own axis:
+general absorbing property of free vars. A literal whose own capture TYPE is
+empty is empty whatever the rest of the clause says — a closure holds exactly
+one value per capture slot, so `#3closure[none]` denotes nothing. Two literals
+that can name one value MERGE at intern time rather than staying distinct, so
+that is where a `none` capture comes from: one brand met at two capture types,
+or the ANONYMOUS literal (a `ClosureLit` with no `fn_id`, fz-kdt.127, which is
+every brand at once) met with a branded one. (Vars are nominal on their own axis:
 `is_subtype(int, α)` and `is_subtype(α, int)` are both false.) The blind spot
 is structural — a lambda inside a tuple, a list, a resource payload, a map
 field or another arrow's signature is reached the same way.
