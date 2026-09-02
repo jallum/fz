@@ -9231,7 +9231,17 @@ fn blind_escapes(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap
         .iter()
         .filter(|(subject, early)| {
             late.get(subject).is_some_and(|late| {
-                types.runtime_type_predicate(early) == types.runtime_type_predicate(late)
+                // Trigger on the relation production's `covers` actually
+                // consults -- erasing overlap -- not on predicate EQUALITY.
+                // At the fz-kdt.129 baseline both triggers count the same 19
+                // escapes (equal predicates overlap on their erasing axes),
+                // so this correction is verifiable in place; under a REFINED
+                // axis (fz-kdt.119 tuples, fz-kdt.107 step 3 lists) equality
+                // under-triggers exactly when the census number becomes the
+                // headline (fz-kdt.142).
+                types
+                    .runtime_type_predicate(early)
+                    .overlaps_on_an_erasing_axis(&types.runtime_type_predicate(late))
                     && !types.is_subtype(late, early)
             })
         })
