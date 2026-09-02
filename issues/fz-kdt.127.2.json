@@ -11,9 +11,15 @@
   "id": "fz-kdt.127.2",
   "labels": [],
   "parent": "fz-kdt.127",
+  "comments": [
+    {
+      "text": "PREMISE CORRECTED by the fz-kdt.127.1 build (commit f34c2aaa3, base\n172ab21f1). The cold review's probe table says sl3dyn under (B) alone\ngets \"run's callsite, shape test\". MEASURED FALSE, both dynamic variants,\nhead canon byte-identical to base's:\n\n  fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz (mailbox\n    scrutinee)  -- `diff` of the backend dumps: no difference at all.\n  review/probes/sl3dyn.fz (Process.heap_alloc_stats scrutinee) -- same.\n\nThere is no headB/sl3dyn.canon among the review's artifacts (only headA\nand headAB), so the row was inferred from A+B rather than measured on B.\n\nWHY it is right that nothing moved, and what it means here. `P.run/2` and\n`P.twice/2` are each ONE body over the union\n`closure[mk#L](int) | closure[mk#L](float)`, and `twice` calls `f`\nINDIRECTLY -- `closure_call ... target=-`. The value's own word selects\nthe construction wrapper and the wrapper's member selection answers for\nthe capture layout. No callsite has two targets, so no callsite asks. The\nprogram is correct at base for exactly that reason, and stage (B) has\nnothing to add to it.\n\nSo this fixture's role in this epic is precisely and only the one the\nreview's finding F2 gave it: it is the GUARD for THIS ticket. Stage (A)\nsplits `run` by capture type, main's callsite becomes a 2-target dispatch\nin fz-kdt.127's shape, and that is the first moment the dynamic witness\nneeds the construction axis. This ticket's acceptance should therefore\nread: the dynamic fixture stays green AND main's callsite gains a\nconstruction-shape question (`s0 type(closure[P.mk/1#lambda](int))` or\nits float twin) -- which is a NEW canon mover for stage (A), not a fact\nalready true.\n\nEverything else this ticket depends on is in place: an anonymous closure\nliteral projects to `CallableShapes::any()` (the compose guard), the\ncapture unpack is keyed on the minting constructions rather than the\nfunction, and the callable axis is PerPosition with containment\nadmission.",
+      "timestamp": "2026-09-02T20:24:16Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-kdt.127 stage A: the forwarder erasure erases the brand and keeps capture types -- samelambda3 with zero dispatch nodes",
   "type": "bug",
-  "updated_at": "2026-09-02T18:53:12Z"
+  "updated_at": "2026-09-02T20:24:16Z"
 }
