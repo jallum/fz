@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T14:04:42Z",
+  "description": "From the fz-kdt.155 re-refutation (2026-09-02, reproducers fp1/fp5/r5 in the refuter's report): RuntimeDemand::is_ignore() requires callable.is_empty(), so a member contribution that is shape-ignore with a NON-EMPTY exact callable axis is non-bottom and blocks the whole-by-need bootstrap -- while a zero-capture callable reserves no lane, so 'asking for something' and 'reserving a lane' come apart: the wrapper publishes Absent, a boxed callsite delivers 1, and verify_boxed_apply_seam_return_convention REFUSES the program at compile time (an improvement -- at base these ABORTED on JIT in fz_closure_get_capture_ref / failed interp with 'no construction wrapper or direct target'). Population: a first-class callable whose member RETURNS a zero-capture fn/lambda (fp4's capturing variant is fine -- the capture gives it a lane). THE NAIVE REPAIR DOES NOT WORK (refuter-tested: bootstrap on shape.is_ignore() \u0026\u0026 !callable.is_first_class() -- whole on an exact fnref is still zero lanes); the producer half raises the SHAPE axis where this family needs the CALLABLE axis raised to first-class so the return travels boxed. Real design question; sequence with fz-kdt.127's policy neighborhood.",
+  "id": "fz-kdt.159",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A seam member whose return is a zero-lane callable keeps its wrapper at Absent: the tripwire refuses the program",
+  "type": "task",
+  "updated_at": "2026-09-02T14:04:42Z"
+}
