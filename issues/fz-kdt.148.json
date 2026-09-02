@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-02T07:47:28Z",
+  "description": "From the fz-kdt.132 build (2026-09-02, at c31b309d0): the take_while\nconstruction wrapper's members 0/1 publish shape{lane,lane} while\nmember 2 publishes a packed lane -- a genuine return-form disagreement\nwithin one construction. Harmless today (the covering member takes\neverything that matters and marshals its own form consistently) and\nNOT what broke the fz-kdt.138 flip (that was the coverage defect\nfz-kdt.132 fixed), but it is a real instance of the class fz-kdt.132's\nticket originally hypothesized: fz-kdt.97's law -- one recursion\ncomponent publishes one return contract -- extended to construction\nmembers (every member of one CallableConstruction publishes the same\nreturn form, derived from the construction's joined type/demand).\nDirection: check contract_transport_layout's reach; the fz-kdt.96\nper-member projection machinery is where member layouts diverge.\nLatent until something routes values to members 0/1 specifically\n(fz-kdt.138's exactness is the candidate trigger -- re-measure this\nwrapper under the flip when 138 lands).",
+  "id": "fz-kdt.148",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "take_while's construction members disagree on return form: the fz-kdt.97 one-return-contract law extended to construction members",
+  "type": "task",
+  "updated_at": "2026-09-02T07:47:28Z"
+}
