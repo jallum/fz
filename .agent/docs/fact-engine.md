@@ -708,10 +708,12 @@ AnalyzeActivation(a) re-runs against the new body.
   store mutation or invariants.
 
 `AppliedStep<J, F>` is `Scheduler::complete`'s report of one completion's
-effect on the graph: `outputs` (this job's published keys), `changed` (the
-`FactChange`s that resulted), `movements` (the full post-wave state of every
-fact this completion or its cascade touched), `wakes`, and `blocked` (the
-waits, if any, this completion left standing). `wakes: Vec<Wake<J, F>>` is
+effect on the graph: `changed` (the `FactChange`s that resulted), `movements`
+(the full post-wave state of every fact this completion or its cascade
+touched), `wakes`, and `blocked` (the waits, if any, this completion left
+standing). Published keys remain authoritative in the scheduler's per-job
+claim ledger; completion does not rebuild them for observation.
+`wakes: Vec<Wake<J, F>>` is
 every wake this completion caused, in wake order; each `Wake` attributes one
 `job` to the `cause: FactUse<F>` that moved it, carries `disposition`
 (`Enqueued` — the job's real work start — or `Coalesced` — the job was

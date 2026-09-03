@@ -116,7 +116,6 @@ pub struct Wake<J, F> {
 
 #[derive(Debug, Clone)]
 pub struct AppliedStep<J, F> {
-    pub outputs: OrderedSet<F>,
     pub changed: Vec<FactChange<F>>,
     pub movements: Vec<FactMovement<F>>,
     /// Every wake this completion caused, in wake order, each carrying its
@@ -407,11 +406,9 @@ where
         self.deps.register_derivations(job, &reported);
 
         let mut pending_changes = Vec::new();
-        let mut outputs = OrderedSet::default();
         let mut changed = Vec::new();
         for derivation in derivations {
             let replaced = self.apply_derivation(job, derivation, &mut pending_changes);
-            outputs.extend(replaced.output_keys.iter().cloned());
             changed.extend(replaced.changed);
         }
         if !waiting {
@@ -420,7 +417,6 @@ where
 
         let (wakes, movements) = self.dispatch_changes(pending_changes, was_rebased);
         AppliedStep {
-            outputs,
             changed,
             movements,
             wakes,
@@ -636,7 +632,6 @@ where
         }
         let (wakes, movements) = self.dispatch_changes(changes.clone(), false);
         AppliedStep {
-            outputs: OrderedSet::default(),
             changed: changes,
             movements,
             wakes,
