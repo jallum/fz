@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.183"
+    "fz-kdt.183",
+    "fz-kdt.199"
   ],
   "blocks": [],
   "created": "2026-09-03T18:54:14Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The returned axis reuses forwarded_inputs, which ignores a DirectCall dest and does not see reconstructed or projected arguments",
   "type": "task",
-  "updated_at": "2026-09-03T18:54:37Z"
+  "updated_at": "2026-09-03T18:54:39Z"
 }
