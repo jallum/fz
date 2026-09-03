@@ -15,11 +15,15 @@
     {
       "text": "fz-kdt.125 refutation observations for this ticket (2026-09-01): O1 -- lower_closure_capture's disagreeing-layouts refusal is UNEXERCISED: samelambda3 fails EARLIER at the pre-existing absent-physical-identity check with byte-identical messages base vs head, and the refuter could not construct a program reaching the new guard; it needs a red-first test or an honest unreachable-today note. O2 -- Prim::ClosureCapture rests on a three-table index correspondence (transport capture_lanes[i] / boundary capture_reprs[i] / physical slot i) with only repr-agreement checked; a debug_assert on lane-count vs repr-count makes it correct by construction. Both land naturally with this ticket's remaining work.",
       "timestamp": "2026-09-01T22:51:01Z"
+    },
+    {
+      "text": "CLOSED as superseded (2026-09-02). The violating arm class is gone by construction, not by an assert: fz-kdt.127.1's containment admission means a dispatch arm admits only values whose construction shape is contained in the arm's shape, so the callee's capture ABI is satisfiable for every value the arm can receive; the caller-side unpack (Prim::ClosureCapture) is keyed by the minting constructions and keeps a narrowed agreement tripwire; encode_runtime_value is total (125). The refusing half now has a reachable red witness (fz-kdt.157, closed). The declarative arm-time assert was priced and rejected in the 125 build because reprs are decided in codegen; nothing remains here.",
+      "timestamp": "2026-09-03T00:02:13Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A dispatch arm must not name a callee whose ABI the caller cannot satisfy",
   "type": "task",
-  "updated_at": "2026-09-01T22:51:01Z"
+  "updated_at": "2026-09-03T00:02:13Z"
 }
