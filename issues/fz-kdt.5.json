@@ -24,11 +24,15 @@
     {
       "text": "fz-tfn.25 found one pre-existing enum_predicate_search causal gap on c521: DeriveExecutableFacts for Enum.any?/2#lambda@4599-4650/2 over main lambda@3054-3113 re-evaluates after settled ActivationAnalyzed/CallSiteSummary movement, changes nothing, then blocks on ActivationAnalyzed. The triggering AnalyzeActivation completion carries the target poststates only in movements, not changed before/after, so replay classifies no cause. Exact command: target/debug/fz2 --log-telemetry TRACE interp fixtures2/behavior/enum_predicate_search.fz. The current fz-kdt.46 exact-wait candidate eliminates this gap; its three-target reads+blocked causal regression is green. Recheck and remove any temporary exception when fz-kdt.46 is integrated before closing kdt.5.",
       "timestamp": "2026-09-03T14:17:37Z"
+    },
+    {
+      "text": "Cross-process isolation found identical 2,978 scheduler completion/movement/wake/read records; the first divergence is intra-completion canonical-definition emission order from DeriveCallGraphComponent, which reorders recursive-group settlements and downstream TransportShape/CallableConstruction causality. This belongs to fz-tfn.26 typed completion ordering, not a telemetry exception. Added fz-tfn.26 as a prerequisite; re-run the exact per-key causal gate after its typed comparator lands.",
+      "timestamp": "2026-09-03T16:39:50Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Establish cold and incremental product-work causality before optimization",
   "type": "bug",
-  "updated_at": "2026-09-03T16:39:49Z"
+  "updated_at": "2026-09-03T16:39:50Z"
 }
