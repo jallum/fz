@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.67"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete the retired recursive-spec-key widening hook",
   "type": "task",
-  "updated_at": "2026-09-03T03:07:47Z"
+  "updated_at": "2026-09-03T03:07:48Z"
 }
