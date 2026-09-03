@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 3,
-  "status": "closed",
+  "status": "open",
   "title": "Delete unreachable partial-key arrow merge branches",
   "type": "task",
-  "updated_at": "2026-09-03T02:45:18Z"
+  "updated_at": "2026-09-03T04:04:51Z"
 }
