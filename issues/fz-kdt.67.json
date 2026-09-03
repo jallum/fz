@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-kdt.73"
   ],
-  "blocks": [
-    "fz-qon.3"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-03T02:59:24Z",
   "close_reason": "Implemented by commit ab0b87185 and PR #115 in GitHub stack #112. Deleted the always-empty latent-executable channel, unreachable publication loop, empty dump/JSONL surface, and orphaned dump helpers. Proof: focused activation/executable tests passed; JSONL 18 passed; library 1586 passed with 5 ignored; CLI 24 passed; matrix rerun 485 passed with 9 ignored; workspace checks, strict clippy, formatting, diff, and residue scans passed. Initial matrix contention was reproduced and is already tracked by fz-kdt.175.",
   "created": "2026-08-30T15:23:04Z",
@@ -17,5 +15,5 @@
   "status": "closed",
   "title": "Delete the always-empty latent-executable channel from activation analysis",
   "type": "task",
-  "updated_at": "2026-09-03T02:59:24Z"
+  "updated_at": "2026-09-03T03:07:46Z"
 }
