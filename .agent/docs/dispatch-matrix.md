@@ -63,12 +63,13 @@ ahead of W:
 ```
 
 `seats_before` is the seating relation under *Seating* below, factored into one
-free function that both the seat and the drop call. For a stand-in pair
-`covers(W, N)` holds unconditionally, so the condition reduces to *keep N iff
-`covers(N, W)` and N's test is strictly inside W's*: a redundant arm survives
-exactly where the seat would place it ahead of the arm that stands in for it,
-and nowhere else. A callsite left with one destination is a `Direct` call
-rather than a one-armed dispatch.
+free function that both the seat and the drop call. For a stand-in pair that is
+a routing question at all, `seating(W, N)` is `Covering` unconditionally, so the
+condition reduces to
+*keep N iff `covering(N, W)` and N's test is strictly inside W's*: a redundant
+arm survives exactly where the seat would place it ahead of the arm that stands
+in for it, and nowhere else. A callsite left with one destination is a `Direct`
+call rather than a one-armed dispatch.
 
 All three conjuncts of `stands_in_for` are load-bearing. The same-callee one:
 a multi-target summary normally names one target per selected callee, which is
@@ -133,13 +134,13 @@ produced.
 
 WHERE THAT STOPS: THE DROP CAN DISSOLVE A GROUP. Every step above assumes the
 survivors group the same way with the dropped arm and without it. The seat
-moves whole question groups and `covers` quantifies over the product, so a
+moves whole question groups and coverage quantifies over the product, so a
 group is harder to cover than any one member — an arm sharing its question with
 a SURVIVOR is part of what pins that survivor behind a wider arm. Drop it, the
 group dissolves, the survivor is judged alone, and the seat can promote it past
 the arm that used to swallow its values: those values then reach the survivor's
 body, where every arrival of the un-dropped arms sent them to the wider arm. It
-is not a blind escape — `seats_before` demands `covers` before it moves
+is not a blind escape — `seats_before` demands `Covering` before it moves
 anything, so the promoted arm's surface names what it now receives, and the
 escape census does not move — it is a routing the drop decides that arm order
 used to.
@@ -163,18 +164,18 @@ The population beyond fz-kdt.118's is named exactly. Where the two arms ask ONE
 question their tests are equal, `strictly_inside` is false, and N is dropped —
 118's rule, decided identically, which is why the generalization is the
 identity on 118's population. Everything the quantifier adds is
-`{N : some W stands in for N and ¬covers(N, W)}`, and `¬covers(N, W)` is by
+`{N : some W stands in for N and ¬covering(N, W)}`, and `¬covering(N, W)` is by
 definition "seating N ahead of W is a blind escape". So nothing the seat would
 have put first is ever dropped, and what leaves is exactly the arms that were
 either dead behind their stand-in or a blind-escape seat waiting for a legal
 arrival to produce it.
 
 The check's shape carries two facts. The drop asks `seats_before` of two single
-arms while the seat asks it of two question GROUPS; `covers` quantifies over
+arms while the seat asks it of two question GROUPS; coverage quantifies over
 the product of the groups, so a group reading can only be falser than the
 singleton one. That mismatch cannot drop an arm the seat would have put ahead
-of its stand-in: reading it group-wise could only turn `covers(W, N)` false,
-which reduces `seats_before(N, W)` to plain `covers(N, W)`, and for the
+of its stand-in: reading it group-wise could only turn `covering(W, N)` false,
+which reduces `seats_before(N, W)` to plain `covering(N, W)`, and for the
 singleton check to have refused while that holds the two tests must be equal —
 which puts N and W in ONE group, where no seat separates them at all. What it
 does not cover is the grouping the drop CHANGES, above. And no
@@ -204,7 +205,7 @@ fz-kdt.107's subject one rung wider than the arms asking ONE question.
 (fz-kdt.129 corrects the "order costs precision, not meaning" phrasing this
 paragraph inherited; the measurement is under *Seating*.) A `:timeout` arm
 beside an `any` arm is the benign case — the atom test is exact, so nothing but
-a `:timeout` passes it, `covers` runs both ways, and the narrower TEST is
+a `:timeout` passes it, coverage runs both ways, and the narrower TEST is
 seated first rather than dropped.
 
 Arms with no stand-in between them survive and stay order-decided: neither
@@ -448,7 +449,7 @@ the next nested axis cannot forget to answer (**fz-kdt.145**).
 drop any more, and `[int]` beside `[int | :ok]` is why: they are two questions
 now, so fz-kdt.118's group-local drop no longer reaches the pair, but the arm
 rule under *Protocol call dispatch* is quantified over every arm and drops
-`[int]` anyway — their heads overlap, so `covers([int], [int | :ok])` is false,
+`[int]` anyway — their heads overlap, so `covering([int], [int | :ok])` is false,
 the seat would never place `[int]` first, and an arm the seat would never place
 first is no destination (**fz-kdt.143**). What the head DOES leave behind is a
 pair whose heads overlap while neither surface contains the other: no seat is
@@ -524,11 +525,38 @@ and nothing else, which is why both examples turn on lists):
   two arms disjoint head questions, so the pair no longer meets on an erasing
   axis at all.
 
-Neither containment is the criterion on its own. SURFACE COVERAGE is: `covers`
-holds of `(early, late)` when, at every position where their tests could both
-admit a value on an ERASING axis (`overlaps_on_an_erasing_axis`, which reads the
-`AxisPrecision` table above), `early`'s surface already contains `late`'s. "The
-tests differ" is not separation on an erasing axis: `[int]` and `[int | :ok]`
+Neither containment is the criterion on its own, and neither applies at all
+until the pair is a routing question. `seating(early, late)` answers one of
+three things:
+
+- SEPARATED — no value satisfies both arms' tests. A plan row is a conjunction
+  over its subjects, so the two arms admit a common call only where EVERY
+  subject admits a common value (`RuntimeTypePredicate::overlaps`, position by
+  position). Where one subject refuses, the plan's own test keeps the arms
+  apart whichever way round they sit; the seat has nothing to decide and the
+  pair keeps arrival order (**fz-kdt.186**). Before 186 the coverage check ran
+  position by position under an `all`, so a pair disjoint at subject 0 passed
+  that subject on the separation arm and was then judged blind at subject 1 —
+  a routing that routes nothing, reported as a seat obligation.
+  A subject the two arms ask IDENTICALLY is skipped: it admits the same set to
+  both, whatever that set is, and where every arm asks it `discriminating_inputs`
+  drops it and the plan emits no test there at all. That is stated rather than
+  inferred, because not every projected test is realizable — a tuple clause with
+  a subtracted signature loses its whole arity in
+  `runtime_type_predicate_tuple_arities`, so `{any, any} & not({int, int})`
+  projects to a test that admits nothing and does not overlap itself, and
+  reading a subject like that as a separation collapsed a two-arm callsite to a
+  `Direct` call on the arm the seat had put SECOND
+  (`an_untested_position_is_not_a_separation`). So a separated pair always
+  differs at the separating subject, which makes that subject discriminating and
+  the emitted test the thing that keeps the arms apart.
+- COVERING — some value satisfies both, and SURFACE COVERAGE holds: at every
+  position where their tests could both admit a value on an ERASING axis
+  (`overlaps_on_an_erasing_axis`, which reads the `AxisPrecision` table above),
+  `early`'s surface already contains `late`'s.
+- ESCAPING — some value satisfies both and that coverage fails somewhere.
+
+"The tests differ" is not separation on an erasing axis: `[int]` and `[int | :ok]`
 both admit a cons cell whose head is an int, and an arity-only tuple test at {2}
 and one at {2,3} both admit a 2-tuple. A separating axis excuses the surface
 check, because a value passing it is pinned down far enough that no admitted
@@ -550,19 +578,32 @@ where the tests cannot both admit a value the projection would blur.
   `{:halted, 3}` was due.
 - groups start in arrival order, and group `x` is moved ahead of group `y` when
 
-      covers(x, y) and ( not covers(y, x) or test(x) strictly inside test(y) )
+      covering(x, y) and ( not covering(y, x) or test(x) strictly inside test(y) )
 
   The first disjunct is the OBLIGATION — only one direction is escape-free, so
   take it. The second is the PRECISION preference — both directions are
   escape-free, so hand a value both tests admit to the arm that named it most
   precisely. The relation is antisymmetric: if both directions held, both would
-  need `covers` both ways, so both would rest on strict mutual containment of
-  the tests, which makes the tests equal and the two groups one.
+  need `Covering` both ways, so both would rest on strict mutual containment of
+  the tests, which makes the tests equal and the two groups one. A SEPARATED
+  pair is false both ways for free.
 - where NEITHER group covers the other, no seat is escape-free and the rule
   declines to have an opinion: the pair keeps arrival order. That is fz-kdt.107's
   inseparable class one rung wider, and **fz-kdt.131** owns it. The cure is a
   runtime test that can see what the body relies on — fz-kdt.119's per-position
   tuple tags, fz-kdt.107 step 3's list elements — not a cleverer sort.
+- where the pair is SEPARATED, arrival stands too, and that residue is the one
+  a canonical tie-break could remove: no value satisfies both conjunctions, so
+  neither order routes anything anywhere and changing it changes no
+  destination. **fz-kdt.194** owns it. Measured at fz-kdt.186's landing: under
+  `arms:3` the canonical form differs from the settled build's on 25 of the 597
+  corpus fixtures where it differed on 23 before, the two extras being
+  `00420_enum_take_drop_split` and `enum_take_drop_split`, whose call-edge plan
+  the old reading had been pinning to a seat.
+
+So the three residues are one apiece: an inseparable GROUP (fz-kdt.107), an
+overlap WITHOUT containment (fz-kdt.131), and a SEPARATED pair (fz-kdt.194).
+The first two carry a routing the order decides; the third carries none.
 
 The correction is one backward insertion pass: each group walks left past
 already-seated groups for as long as the relation holds of the pair, and stops
@@ -570,7 +611,7 @@ at the first group it may not pass. A permutation comes out, so the seat is
 TOTAL by construction and needs no tie-break to fall through to, and it is a
 deterministic function of the arms and their arrival order. Stopping at the
 first refusal is a requirement, not a compromise: passing a group means passing
-everything between. `covers` is not transitive — two groups can be blind at
+everything between. `Covering` is not transitive — two groups can be blind at
 different positions — so no rank or comparator linearizes it, which is why the
 pass is an explicit insertion rather than a sort.
 
@@ -586,7 +627,7 @@ either, and must not: their order is the source clause order, which is the
 language's meaning.
 
 Of call-edge dispatch, then: every pair whose seat differs from arrival order
-was individually checked and moved only under `covers`, which admits no blind
+was individually checked and moved only under `Covering`, which admits no blind
 escape; every other pair sits exactly as arrival left it. So **the seat's blind
 escapes are a SUBSET of arrival order's** — this rule can only ever remove one,
 never add one. A `debug_assert` in `specificity_order` holds every callsite of
@@ -653,16 +694,16 @@ The population, on the 22 census fixtures at the settled arrival:
 | entry | 144 | 137 | 0 | excluded | 0 |
 | case | 3 | 3 | 0 | excluded | 0 |
 | receive | 2 | 0 | 0 | excluded | 0 |
-| wrapper selection | 107 | 0 | 73 | 73 | — |
+| wrapper selection | 107 | 0 | 45 | 45 | — |
 
-The 73 selection readings split 45 REACHABLE (fz-kdt.179's: 34 on 00277's ten
-escaping wrappers, 3 on `enum_hof_three_distinct_closures`, and four apiece on
-`00420_enum_take_drop_split` and `enum_take_drop_split`) and 28
-UNREACHABLE-PAIR (**fz-kdt.186**'s: `covers` judges each subject with an `all`,
-so a pair whose tests are DISJOINT at subject 0 is still called blind at
-subject 1, and no value can reach either arm through the other). The seat
-findings split the same 28 / 45. The one-question groups are counted on their
-own thirteen-fixture list by
+All 45 selection readings are REACHABLE and all are fz-kdt.179's: 34 on 00277's
+ten escaping wrappers, 3 on `enum_hof_three_distinct_closures`, and four apiece
+on `00420_enum_take_drop_split` and `enum_take_drop_split`. A further 28 stood
+here until **fz-kdt.186** — four apiece on `w13`-`w19`, where subject 0 asks a
+`:tail` head against an `int` head — and they were never readings at all: the
+pair is SEPARATED, the walk does not open it, and neither production nor the
+census asks a seat question about it. The one-question groups are counted on
+their own thirteen-fixture list by
 `compiler2_dispatch_offers_no_runtime_indistinguishable_arm`: 105 groups, all
 of them wrapper selections (00277 47, `enum_map_family` 46, `00420` 12), owned
 by fz-kdt.179 and fz-kdt.107.

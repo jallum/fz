@@ -9512,7 +9512,10 @@ fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
 ///
 /// -- either the earlier arm's surface already names everything the blind
 /// positions would hand it, or the reverse seat is no safer and the pair is
-/// the fz-kdt.107 inseparable class one rung wider, which fz-kdt.131 owns.
+/// the fz-kdt.107 inseparable class one rung wider, which fz-kdt.131 owns. A
+/// SEPARATED pair answers false both ways and is neither: no value satisfies
+/// both arms, so the condition holds of it for the reason that there is
+/// nothing to route (fz-kdt.186).
 /// What this forbids is the one seat that is strictly wrong: taking the
 /// escaping direction when the covering direction was available.
 ///
@@ -9554,12 +9557,8 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
                         *measured.entry((fixture, entry.site.to_string())).or_default() += 1;
                         displaced.push(format!(
                             "{fixture} {}: arm {late} covers arm {early}'s surface where their tests are \
-                             blind, and arm {early} is seated first anyway{}",
+                             blind, and arm {early} is seated first anyway",
                             entry.site,
-                            match separated_somewhere(types, &seated[early], &seated[late]) {
-                                true => " -- UNREACHABLE-PAIR, fz-kdt.186's",
-                                false => "",
-                            },
                         ));
                     }
                 }
@@ -9593,25 +9592,24 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
 /// selection at all. Every row here is a member whose covering sibling exists
 /// and is seated second.
 ///
-/// Part of each count is fz-kdt.186's rather than fz-kdt.179's: a pair whose
-/// tests are DISJOINT at some other subject can route nothing either way, and
-/// `covers` judges each subject with an `all` and reports it anyway. The
-/// failure text marks those `UNREACHABLE-PAIR`, and
-/// [`BLIND_ESCAPE_UNREACHABLE_PAIRS`] counts the same class in the census next
-/// door.
+/// Every row here routes a value. Twenty-eight further readings stood here
+/// until fz-kdt.186 -- four apiece on `w13`-`w19`, where subject 0 asks a
+/// `:tail` head against an `int` head that no value answers both ways -- and
+/// they were never seat findings at all: a pair the plan's own test separates
+/// outright is `Seating::Separated` and the walk does not open it.
 ///
 /// A ratchet: a new row is a new latent miscompile and wants a ticket, and a
 /// row that stops reading is a cure and wants deleting.
 const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 2),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 2),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 8),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 8),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 8),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 8),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 8),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 8),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 4),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 2),
     (
         "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
@@ -9656,12 +9654,15 @@ const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
 /// `00277_enum_tier0_fixture` since fz-kdt.144 while no static gate could see
 /// them, which is what fz-kdt.178 came to fix.
 ///
-/// FOUR POPULATIONS, ONE WALK, because a reading only means something once it
+/// THREE POPULATIONS, ONE WALK, because a reading only means something once it
 /// says which of them it belongs to: the REACHABLE escapes, which are latent
-/// miscompiles; the UNREACHABLE-PAIR readings, which are `covers`'s fiction
-/// (fz-kdt.186); the SOURCE-ORDER escapes -- a function's clauses, a `case`'s,
+/// miscompiles; the SOURCE-ORDER escapes -- a function's clauses, a `case`'s,
 /// a `receive`'s -- whose order is the programmer's; and the plans the walk
 /// could not read at all, counted so that class's zero is honest.
+///
+/// A pair no value can reach is in none of them. [`seating`] answers
+/// `Separated` for it, in this reader and in production alike, and the walk
+/// never opens it (fz-kdt.186).
 ///
 /// The reachable ones are latent MISCOMPILES, not untidiness. Nothing there is
 /// safe by proof; it is safe by arrival.
@@ -9685,10 +9686,9 @@ const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
 /// The lists are a RATCHET, not a target. The call-edge ones go to zero when
 /// the runtime can see what the bodies rely on -- fz-kdt.119's per-position
 /// tuple tags and fz-kdt.107 step 3's list elements -- and not before; the
-/// selection ones go when fz-kdt.179 makes member selection run the seat, and
-/// the unreachable-pair ones when fz-kdt.186 stops `covers` reporting a
-/// routing that cannot happen. A new entry under ANY setting is a new latent
-/// miscompile and wants a ticket, not a re-blessed constant.
+/// selection ones go when fz-kdt.179 makes member selection run the seat. A
+/// new entry under ANY setting is a new latent miscompile and wants a ticket,
+/// not a re-blessed constant.
 #[test]
 fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
     let settled = blind_escape_census();
@@ -9709,13 +9709,6 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
         "the blind-escape population moved at the settled arrival: every entry is a seat where a value the \
          plan admits reaches a body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 / \
          fz-kdt.179 can retire one",
-    );
-    assert_eq!(
-        seated_escapes(&settled, EscapeClass::UnreachablePair),
-        BLIND_ESCAPE_UNREACHABLE_PAIRS,
-        "the unreachable-pair population moved: every entry is a pair `covers` calls blind at one subject \
-         while the plan's own test already separates it at another, which is fz-kdt.186's imprecision and \
-         nobody else's",
     );
     assert_eq!(
         seated_escapes(&settled, EscapeClass::SourceOrder),
@@ -9745,18 +9738,15 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
 
 /// Which population a blind pair belongs to.
 ///
-/// One reading, three owners, because the cure differs: a seat can move the
-/// first, only a repr or a sharper test can help the third, and the second is
-/// not a routing anything can be cured of.
+/// One reading, two owners, because the cure differs: a seat can move the
+/// first, and only a repr or a sharper test can help the second. A pair no
+/// value can reach is in neither -- [`seating`] answers `Separated` for it and
+/// the walk never opens it (fz-kdt.186).
 #[derive(Clone, Copy, PartialEq)]
 enum EscapeClass {
     /// A call-edge or wrapper-selection pair some value can satisfy both
     /// halves of, so the seat between them decides which body it reaches.
     Reachable,
-    /// A pair whose tests are DISJOINT at some other subject: no value
-    /// satisfies both arms, so no seat between them routes anything. `covers`
-    /// judges each subject with an `all` and reports it anyway -- fz-kdt.186.
-    UnreachablePair,
     /// A function's own clause dispatch, a body's `case`, or a `receive`:
     /// sites where the order is the programmer's and the cure is never a seat.
     SourceOrder,
@@ -9836,13 +9826,12 @@ fn blind_escape_census() -> BlindEscapeCensus {
             let seated = seated_arm_surfaces(entry.plan, &entry.bodies);
             for early in 0..seated.len() {
                 for late in early + 1..seated.len() {
-                    let class = match (
-                        entry.site.is_source_order(),
-                        separated_somewhere(types, &seated[early], &seated[late]),
-                    ) {
-                        (true, _) => EscapeClass::SourceOrder,
-                        (false, true) => EscapeClass::UnreachablePair,
-                        (false, false) => EscapeClass::Reachable,
+                    if seating(types, &seated[early], &seated[late]) == Seating::Separated {
+                        continue;
+                    }
+                    let class = match entry.site.is_source_order() {
+                        true => EscapeClass::SourceOrder,
+                        false => EscapeClass::Reachable,
                     };
                     for subject in blind_escapes(types, &seated[early], &seated[late]) {
                         census.escapes.push(BlindEscape {
@@ -9874,8 +9863,9 @@ fn seated_escapes(census: &BlindEscapeCensus, class: EscapeClass) -> Vec<String>
 
 /// The census as PAIRS: which two surfaces meet blind, with the seat
 /// forgotten, so an arrival that flips an arrival-kept pair reads the same.
-/// Every class is here, each carrying its own name, because a permuted
-/// arrival can move a pair between classes and that would be a finding.
+/// Both classes are here, and the SITE says which: whether an order is the
+/// programmer's is a fact about the site, so no arrival can move a pair
+/// between them.
 fn escaping_pairs(census: &BlindEscapeCensus) -> Vec<String> {
     let mut pairs = census
         .escapes
@@ -9885,11 +9875,7 @@ fn escaping_pairs(census: &BlindEscapeCensus) -> Vec<String> {
                 true => (&escape.early, &escape.late),
                 false => (&escape.late, &escape.early),
             };
-            let marker = match escape.class {
-                EscapeClass::Reachable | EscapeClass::SourceOrder => "",
-                EscapeClass::UnreachablePair => "UNREACHABLE-PAIR ",
-            };
-            format!("{marker}{}: {first} with {second}", escape.site)
+            format!("{}: {first} with {second}", escape.site)
         })
         .collect::<Vec<_>>();
     pairs.sort();
@@ -10004,62 +9990,6 @@ const BLIND_ESCAPE_POPULATION: &[&str] = &[
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
 ];
 
-/// The pairs `covers` calls blind that no value can reach: at some OTHER
-/// subject the two arms' predicates are disjoint, so the plan's own test
-/// already keeps them apart and the seat between them routes nothing.
-///
-/// This is not a miscompile and it is not a seat question. It is
-/// `covers`'s position-wise `all` reporting a routing that cannot happen, in
-/// production and in this file's mirror of it alike, and **fz-kdt.186** owns
-/// it. All twenty-eight are 00277's seven eleven-member wrappers `w13`-`w19`,
-/// four apiece: subject 0 asks a `:tail` head against an `int` head, which no
-/// value answers both ways, while subject 1 is the list behind it, which no
-/// test reads at all.
-///
-/// It only became visible when the census stopped walking call edges alone
-/// (fz-kdt.178), and that is a fact about these fixtures rather than about
-/// call edges: the class needs a pair blind at one subject and disjoint at
-/// another, and at the settled arrival only the wrapper selections carry one.
-/// A call edge can carry it and does -- under `arms:6`
-/// `enum_predicate_search`'s `[int | :nil]` and `[int]` arms are blind at
-/// subject 0 and separated at subject 2, where their callable questions name
-/// disjoint closure sets, and
-/// [`BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX`] marks that reading too.
-///
-/// The same twenty-eight sit inside [`SELECTION_SEAT_ALLOWANCE`]'s
-/// seventy-three, where the failure text marks them, so fz-kdt.186 lands
-/// before fz-kdt.179 and leaves 179 the forty-five that route something.
-const BLIND_ESCAPE_UNREACHABLE_PAIRS: &[&str] = &[
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
-];
-
 /// The blind escapes at the SOURCE-ORDER sites: a function's own clause
 /// dispatch, a body's `case`, a `receive`'s clauses.
 ///
@@ -10087,44 +10017,14 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
     &[("case", 3, 3), ("entry", 144, 137), ("receive", 2, 0)];
 
-/// The same seventy-six readings -- forty-eight reachable and twenty-eight
-/// unreachable-pair, the latter marked -- with the seat forgotten. Five of the
-/// six seeds read exactly this, which is what driving the census under seeds
-/// is for: the pairs a legal permutation reaches are the pairs production
-/// ships.
+/// The same forty-eight readings with the seat forgotten. Five of the six
+/// seeds read exactly this, which is what driving the census under seeds is
+/// for: the pairs a legal permutation reaches are the pairs production ships.
 ///
 /// An arm seed cannot move a wrapper's members, so every selection reading is
 /// the same under all six; what a seed can move is a callsite's arms, and
 /// `arms:6` is the one that does.
 const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [] | [int] | [int | :tail] with [int]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [] | [int] | [int | :tail] with [int]",
@@ -10175,54 +10075,25 @@ const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
 ];
 
-/// `arms:6` adds two, and they are fz-kdt.131 FACET 3, not a redundant arm the
+/// `arms:6` adds ONE, and it is fz-kdt.131 FACET 3, not a redundant arm the
 /// drop failed to reach.
 ///
-/// Both are `enum_predicate_search`'s `[int]` arm meeting a sibling. That arm
-/// is not dropped for either sibling, and the reason is the SURFACE conjunct
-/// of `stands_in_for`: its callable subject holds more lambdas than the
+/// It is `enum_predicate_search`'s `[int]` arm meeting a sibling. That arm is
+/// not dropped for it, and the reason is the SURFACE conjunct of
+/// `stands_in_for`: its callable subject holds more lambdas than the
 /// sibling's, so containment runs one way at subject 0 and the other way at
 /// subject 2, and neither arm's surface is inside the other's. There is no
 /// stand-in, so there is nothing to drop, and the pair is exactly the
 /// overlap-without-containment class fz-kdt.131 owns -- reachable here only
 /// because seed 6 is the arrival that puts these members that way round.
 ///
-/// One of the two carries the `UNREACHABLE-PAIR` mark and one does not, which
-/// is a measurement rather than a claim about the ticket: `[int | :nil]`
-/// against `[int]` at executable 201 is separated outright at another subject,
-/// and `[int | :ok | :true]` against `[int]` at executable 203 is not. Only
-/// the second is a pair a value can be routed through, so fz-kdt.131's facet-3
-/// reproducer under this seed is that one.
+/// ONE, where the seed used to add two: `[int | :nil]` against `[int]` at
+/// executable 201 is separated outright at another subject -- their callable
+/// questions name disjoint closure sets -- so no value is routed through that
+/// pair and it is not a reading at all (fz-kdt.186). `[int | :ok | :true]`
+/// against `[int]` at executable 203 is the one a value can reach, and it is
+/// fz-kdt.131's facet-3 reproducer under this seed.
 const BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX: &[&str] = &[
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
-    "UNREACHABLE-PAIR fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [int | :nil] with [int]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [] | [int] | [int | :tail] with [int]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [] | [int] | [int | :tail] with [int]",
@@ -10316,36 +10187,57 @@ fn blind_escapes(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap
         .collect()
 }
 
-/// Whether seating `early` before `late` can route a value into a body that
-/// never named it: at every position, either their tests differ -- and the
-/// plan's own test keeps `late`'s values out -- or the test is blind there and
-/// `early`'s surface already contains `late`'s.
+/// What one seated pair asks of a seat, read back off the LANDED artifact.
 ///
-/// This mirrors `callsite_dispatch::covers`, read back off the LANDED
-/// artifact, which is the only place the whole materialization path can be
-/// held to it.
-fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
-    early.len() == late.len() && blind_escapes(types, early, late).is_empty()
+/// ONE RELATION, TWO READERS: this mirrors `callsite_dispatch::Seating`
+/// exactly, and this file is the only place the whole materialization path can
+/// be held to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seating {
+    /// The plan's own tests keep the two arms apart outright: at some subject
+    /// their predicates are DISJOINT, so no value satisfies both and no seat
+    /// between them routes anything. Not a blind escape, not a seat finding,
+    /// and not a population -- there is nothing there (fz-kdt.186).
+    Separated,
+    /// Some value reaches both, and wherever the tests cannot separate it
+    /// `early`'s surface already names everything `late` holds.
+    Covering,
+    /// Some value reaches both, and at some subject the test is blind while
+    /// `late` holds values `early` does not name.
+    Escaping,
 }
 
-/// Whether the plan's own tests already keep these two arms apart: at some
-/// subject their predicates are DISJOINT, so no value satisfies both and no
-/// seat between them routes anything anywhere.
+/// How the plan's own tests relate these two arms.
 ///
-/// `covers` asks its question subject by subject with an `all` and never
-/// consults this, so it calls such a pair blind wherever one other subject
-/// happens to be erasing. That reading is a fiction about a routing that
-/// cannot happen, and it is production's reading as much as this file's --
-/// fz-kdt.186 owns the relation, and both readers change together. Until then
-/// the census names the class rather than hiding it inside the real one.
-fn separated_somewhere(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
-    early.iter().any(|(subject, early)| {
-        late.get(subject).is_some_and(|late| {
-            !types
-                .runtime_type_predicate(early)
-                .overlaps(&types.runtime_type_predicate(late))
-        })
-    })
+/// A row is a CONJUNCTION over its subjects, so the two arms admit a common
+/// call only where EVERY subject admits a common value; where one does not,
+/// the pair is separated and neither half of the coverage question applies.
+///
+/// A subject the two arms ask IDENTICALLY separates nothing -- it admits the
+/// same set to both, whatever that set is -- and saying so is what keeps an
+/// unrealizable projected test from deciding a reading, exactly as production's
+/// `callsite_dispatch::seating` does.
+fn seating(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> Seating {
+    let reaches_both = early.len() == late.len()
+        && early.iter().all(|(subject, early)| {
+            late.get(subject).is_some_and(|late| {
+                let (early, late) = (types.runtime_type_predicate(early), types.runtime_type_predicate(late));
+                early == late || early.overlaps(&late)
+            })
+        });
+    if !reaches_both {
+        return Seating::Separated;
+    }
+    match blind_escapes(types, early, late).is_empty() {
+        true => Seating::Covering,
+        false => Seating::Escaping,
+    }
+}
+
+/// Whether seating `early` before `late` can route a value into a body that
+/// never named it.
+fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
+    matches!(seating(types, early, late), Seating::Covering)
 }
 
 /// Why the census cannot read a plan's surfaces, if it cannot: the first
@@ -10477,8 +10369,8 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// `00420_enum_take_drop_split` and `enum_take_drop_split` are the last two
 /// the corpus walk found, and they are here because MEASUREMENT says they cost
 /// what any other fixture costs: four wrapper-selection seat findings apiece,
-/// on `w21`-`w24`, identical under all six arm seeds, and not one
-/// unreachable-pair reading between them. Leaving them out would have left
+/// on `w21`-`w24`, identical under all six arm seeds. Leaving them out would
+/// have left
 /// eight reachable escapes -- latent miscompiles, fz-kdt.179's -- pinned by no
 /// gate at all.
 const ARM_ORDER_CENSUS: [&str; 22] = [

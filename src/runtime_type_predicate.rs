@@ -405,8 +405,8 @@ impl RuntimeTypePredicate {
     /// satisfy every question an arm asks and still lie outside the surface
     /// that arm's body was compiled for, and seating on this relation alone
     /// hands it to a body that never named it (fz-kdt.131).
-    /// `callsite_dispatch::covers` is the conjunct that makes a seat sound;
-    /// this is one half of it.
+    /// `callsite_dispatch::seating` is the relation that makes a seat sound;
+    /// this is one half of its coverage answer.
     pub(crate) fn contained_in(&self, other: &Self) -> bool {
         RuntimeTestAxis::ALL
             .into_iter()
@@ -443,6 +443,36 @@ impl RuntimeTypePredicate {
             .any(|axis| self.axis_erases(other, axis))
     }
 
+    /// Whether ONE value could pass both tests.
+    ///
+    /// Axis by axis, because a value reaches exactly the axes its kind names:
+    /// two tests can both admit a value only where some axis admits one to
+    /// both. It is the SEPARATION question `callsite_dispatch::seating` asks
+    /// first of a pair of arms, one subject at a time -- a plan row is a
+    /// conjunction over its subjects, so one subject that admits nothing to
+    /// both keeps the two arms apart outright, whatever the others say
+    /// (fz-kdt.186).
+    ///
+    /// It OVER-ESTIMATES, axis by axis, and that is the direction a seat needs:
+    /// every axis answers yes wherever it cannot rule a shared value out -- two
+    /// cofinite sets, a head neither side asks, an inexact tuple or callable
+    /// store -- so a `false` here is a claim no value passes both tests, and
+    /// never merely that this layer could not tell.
+    ///
+    /// The bridge from SURFACES to tests is the other half, and it holds
+    /// wherever the projection is a coarsening of the surface it came from:
+    /// two surfaces that share a value then project to two tests that overlap.
+    /// `callsite_dispatch::tests::a_separated_pair_of_tests_is_a_disjoint_pair_of_surfaces`
+    /// holds every axis of a wide battery to it. It is not universal, and the
+    /// gap is a projection defect rather than a fact about this relation: a
+    /// tuple clause with a SUBTRACTED signature loses that whole arity in
+    /// `runtime_type_predicate_tuple_arities`, so `{any, any} & not({int,
+    /// int})` -- a surface holding every pair that is not two ints -- projects
+    /// to a test that admits nothing and does not overlap ITSELF. No seat and
+    /// no drop may turn on that: `callsite_dispatch::seating` treats a position
+    /// where the two arms ask the IDENTICAL question as no separation at all,
+    /// so an unrealizable test can only ever describe an arm the plan's own
+    /// emitted test already refuses.
     pub(crate) fn overlaps(&self, other: &Self) -> bool {
         RuntimeTestAxis::ALL
             .into_iter()
