@@ -7,9 +7,15 @@
   "id": "fz-kdt.99",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RE-TESTED at main a3a9761d1 (2026-09-02, after the mailbox family 130/152/155 and fz-kdt.127): STILL RED, unchanged -- pingpong_cap.fz interp 'backend executable 16 function 66 entry 1 tail failed: compiler2_unreachable_control', JIT prints 10. Still this ticket's.",
+      "timestamp": "2026-09-03T00:02:36Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Interp lane crashes compiler2_unreachable_control on threaded-closure recursion with captures; JIT runs fine -- pre-existing three-path-parity defect",
   "type": "task",
-  "updated_at": "2026-08-31T16:18:06Z"
+  "updated_at": "2026-09-03T00:02:36Z"
 }
