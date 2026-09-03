@@ -6,10 +6,10 @@
   "description": "## Goal\n\nDelete the complete SemanticClosure data model left behind after semantic sealing was removed. No compatibility type or historical re-export remains.\n\n## Proof at a3a9761d1\n\n- `SemanticClosure`, `SemanticClosureSlot`, and `SemanticClosureMap` are defined only in `src/compiler2/semantic.rs`.\n- The only external mention is their public re-export from `src/compiler2/mod.rs`.\n- No World field stores them, no constructor creates them, and no job or product reads or writes them.\n- SealSemanticClosure, SemanticClosed, SemanticReady, MaterializeRoot, and the old closure-definition path are absent from the source tree.\n\nThe public re-export suppresses the dead-code signal and makes a removed phase appear architecturally live.\n\n## Change\n\n- Delete all three types and every impl belonging to them.\n- Delete their re-exports.\n- Remove documentation that names semantic closure sealing or the deleted data model as current behavior.\n\n## TDD and checks\n\n- `rg SemanticClosure src tests .agent northstar.html` returns no live implementation or current-model reference.\n- Existing semantic, artifact, and product tests remain green without replacement scaffolding.\n- Full library, single-threaded fixture matrix, and clippy with warnings denied pass.\n\nNo new abstraction replaces these types; their absence is the result.",
   "id": "fz-kdt.15",
   "labels": [],
-  "parent": "fz-tfn",
+  "parent": "fz-qon",
   "priority": 4,
   "status": "open",
   "title": "Delete the orphaned SemanticClosure data model",
   "type": "task",
-  "updated_at": "2026-09-03T00:36:59Z"
+  "updated_at": "2026-09-03T02:26:44Z"
 }
