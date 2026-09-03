@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.198"
+  ],
   "blocks": [
     "fz-kdt.184"
   ],
@@ -19,5 +21,5 @@
   "status": "open",
   "title": "overlapping_witnesses returns pattern-derived witnesses, not observations: an unbound pattern variable is written back into the witness and contravariant content is erased, so two tickets each needed a second walk over the raw arguments",
   "type": "task",
-  "updated_at": "2026-09-03T07:13:38Z"
+  "updated_at": "2026-09-03T09:16:55Z"
 }
