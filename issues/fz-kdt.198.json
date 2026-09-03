@@ -16,11 +16,15 @@
     {
       "text": "RESEARCH DONE, PROTOTYPED (2026-09-03, proto198.diff, being cold-reviewed). THE ENCODING: brands is a conjunctive REFINEMENT FACTOR over all kind axes -- a Descr denotes S x B with `unbranded` an element every cofinite FiniteSet contains and no finite one names (finite_set.rs unchanged); unbranded int = brands any(), mint_brand = brands {Meters}; Descr::none() keeps brands none() (the union identity), NEW Descr::unbranded() is every value constructor's base (13 constructors re-based; six sites built from none() had silently become the empty type -- two in canon.rs saturate/absorb saturated every DNF axis to top); intersect pointwise (Meters ∧ Feet = ∅: ONE BRAND PER VALUE), diff factor-wise and exact for the three brand shapes, negation two rectangles (Descr::neg now test-only), erase_nominal = brands any() (cofinite branch deleted), display renders a refinement: utf8(binary), not(Meters)(int). Deleted: brand_of at three layers. MEASURED: 13 unit pins red at HEAD / green; lib 1626/0/5; matrix HEAD 485/6/9 (six new brand trials) -\u003e 491/0/9; corpus interp/run/canon 0 movers, executables 5297; the live defect: M.echo(binary) with a utf8 value -\u003e spec/violation at HEAD, \"hi\" fixed; Utf8.to_bytes(utf8) with a bare binary -\u003e accepted at HEAD, spec/violation fixed (two new three-door fixtures). RESIDUE: a union of brands over DIFFERENT inners loses the pairing (needs a union of rectangles; unreachable: no program has two brands). OWNER QUESTIONS: (1) is one brand per value the model? (2) `int` = \"int, branded or not\" -- a bare int is not writable in source. (3) THERE IS NO USER-LEVEL WAY TO MINT A BRANDED VALUE: `@type Meters :: refines integer` declares the type but every body producing one returns a bare int, which the argument gate then rejects at any Meters position; utf8 works only because an extern returns any and the return side is unchecked (fz-kdt.201). A minting form (Meters.new/1, an `as` cast, or `refines` publishing a constructor) is a prerequisite for user brands to be usable at all.",
       "timestamp": "2026-09-03T10:28:04Z"
+    },
+    {
+      "text": "Commit rewritten 4c3fa4c63 -\u003e cad78d87f (2026-09-03): CI ran `cargo test --workspace --doc` and the derive_input_demand doc comment in jobs/keying.rs carried an indented formula rustdoc treated as a doctest. It is a ```text block now, folded into fz-kdt.183; fz-kdt.198 replayed on top unchanged (tree diff between the two heads is that one doc line). The coordinator gate now runs the doctests.",
+      "timestamp": "2026-09-03T13:38:14Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "[BUG] The brand lattice is inverted (int \u003c: Meters, Meters ⊄ int): brands become a refinement FACTOR over the kind axes so the documented law `utf8 \u003c: binary` holds by construction",
   "type": "task",
-  "updated_at": "2026-09-03T12:39:44Z"
+  "updated_at": "2026-09-03T13:38:14Z"
 }
