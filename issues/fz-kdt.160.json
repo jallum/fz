@@ -7,9 +7,15 @@
   "id": "fz-kdt.160",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RE-TESTED at main a3a9761d1 (2026-09-02): STILL RED, unchanged -- fn use_and_hand_back(f) do f.(1); f end then g.(41): interp 'backend continuation delivery executable=0 entry=1: backend value was absent and cannot be materialized', JIT 42. Reproducer: session scratchpad t160.fz.",
+      "timestamp": "2026-09-03T00:02:37Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "f.(x); f -- use a closure then hand it back: interp-only failure, JIT/AOT correct",
   "type": "task",
-  "updated_at": "2026-09-02T14:04:42Z"
+  "updated_at": "2026-09-03T00:02:37Z"
 }
