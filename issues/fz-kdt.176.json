@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T02:37:20Z",
+  "description": "From the fz-kdt.143 refutation (2026-09-02, e3e82476c). The drop rule\n(unroutable(N) \u003c=\u003e some W stands in for N and not seats_before(N, W)) is\nproven arrival-relative except for ONE shape: a dropped arm N that shares its\nruntime question with a SURVIVOR S. The seat moves whole question groups and\ncovers quantifies over the product, so N's narrow surface pins the group\n{N, S} behind a wider arm W; drop N, the group dissolves, S is judged alone,\nand precision seats S ahead of W. Values in the S/W overlap then reach S's\nbody where every arrival of the three arms sent them to W. Pinned by\na_drop_that_dissolves_a_question_group_reseats_the_survivor_it_pinned\n(callsite_dispatch.rs): N = impl_two(%{a: int}, :a), S = impl_zero(%{a: int |\nfloat}, :a), W = impl_two(%{a: int | float}, :a | :c); (%{a: 1}, :a) reaches\nimpl_zero after the drop and impl_two before it. Corpus: the precondition\noccurs on ZERO callsites over 597 fixtures (instrumented sweep at the landing);\nrandomised search over 21,726 generated callsites found it 19 times and\nnothing else (survivor set never empty, no precise live specialization lost).\nfz-kdt.118's group-local drop had the same residue (dropping a member changes\nthe group's covers product).\n\nWHY THE DISPATCH LAYER CANNOT FIX IT: the re-routed values lie in BOTH S's\nand W's surfaces. When S and W are specializations of ONE callee the change\nis meaning-neutral by construction (either body is a valid specialization for\na value its surface names) and the post-drop seat is the more precise one.\nThe change is meaning-bearing only when S and W are DIFFERENT callees --\ni.e. the semantic layer offered two callees for one value at one callsite,\nwhich is an ambiguity no seat can resolve honestly (arm order decided it\nbefore; a rule decides it now). That is a semantic-layer invariant to state\nand enforce: targets of different callees at one callsite must have DISJOINT\nobservable surfaces (protocol impls are keyed on disjoint types; measure\nwhether anything else can produce the overlap), or the overlap is a\ndiagnostic. Once that invariant holds, the residue is provably meaning-\nneutral and the dissolution paragraph in callsite_dispatch.rs /\ndispatch-matrix.md reduces to a statement about precision.\n\nACCEPTANCE: (1) a census gate over the corpus that no callsite carries two\ncallees whose observable surfaces overlap (or the diagnostic that names one);\n(2) the residue paragraph rewritten to the same-callee case only.",
+  "id": "fz-kdt.176",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "A dropped arm that shares its question with a survivor dissolves the group and can re-route an overlap between two callees: the dispatch layer cannot decide which callee a value belongs to",
+  "type": "task",
+  "updated_at": "2026-09-03T02:37:20Z"
+}
