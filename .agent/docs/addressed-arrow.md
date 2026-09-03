@@ -178,11 +178,12 @@ foo(x, y, z)  vs  foo(a, {b, c}, d):
 ```
 
 `match_arrow` checks arity and then `instantiate_match` walks `(params, args)`
-**once**, collecting a substitution `Sigma` one position at a time, cleaning
-that position, and unioning it in. A position's WITNESS is its ARGUMENT: what
+**once**, collecting a two-sided solution (`MatchBounds { lower, upper }`) one
+position at a time, cleaning that position's LOWER bindings, and merging it in —
+lowers by union, uppers by meet. A position's WITNESS is its ARGUMENT: what
 the call actually supplied there, never the pattern restated. An uninhabited
 argument is a row no call can supply and is `Invalid`; ground disjointness is
-the structural gate's job, at the end of the walk. Five behaviors live here that
+the structural gate's job, at the end of the walk. Six behaviors live here that
 the boolean subsumption surface (`key_subsumes_with`) cannot express, and are
 the reason contract matching is this calculator rather than that one:
 
@@ -192,7 +193,37 @@ the reason contract matching is this calculator rather than that one:
 3. structural-mismatch → `Invalid` for arrow arity;
 4. the same for map-key presence and tuple arity;
 5. ambiguous empty-list witnesses (`drop_ambiguous_empty_list_bindings`): `[]`
-   is a member of every list type, so a binding it pins is noise and is dropped.
+   is a member of every list type, so a binding it pins is noise and is dropped;
+6. the POLARITY of a variable's occurrences (below).
+
+## Polarity: lowers instantiate, the meet of uppers is the check
+
+Passing `W` where pattern `P` is declared asserts `W ⊆ σ(P)`. Covariant slots
+(list element, tuple field, map field, resource payload, arrow RESULT) preserve
+that direction and give a variable a LOWER bound; an arrow's PARAMETERS reverse
+it — `(w) -> r ⊆ (σp) -> σr` needs `σp ⊆ w` — and give an UPPER bound.
+`BindingSide { Unify, Lower, Upper }` carries the direction: it flips (once) at
+an arrow's parameters, `Unify` never flips and is the mode the four unifier
+callers (`collect_instantiation_subst`) use so template instantiation is
+unchanged. The INSTANTIATION is the join of the lower bounds and nothing else —
+an upper bound is not evidence about a value, so it never grounds the result,
+the parameters, or a variable. `map([a], (a) -> b)` folded against a reducer
+whose parameter is typed `any` keeps `a = int` (the list's element), not
+`a = any`; and `f(a, (a) -> nil) :: (a) -> nil` at `(int, (any) -> nil)`
+publishes `(int) -> nil` — a supertype of every legal answer — rather than the
+unsound `(any) -> nil`.
+
+The meet of the uppers is the solvability CHECK: `join(lowers) ⊆ meet(uppers)`
+is a NECESSARY condition (over the variables both bounds reached, over the
+OBSERVED lowers, before `close_bounds`) for an instantiation to exist —
+`merge_subst_meet` intersects an upper bounded by two positions, so folding
+`[int]` with a `(binary, int) -> int` reducer has `int ⊄ binary` and is
+`Invalid`. Only the LOWER side is cleaned (an `[]` under an arrow parameter is
+an upper bound, which no cleaner touches); a var-carrying argument does not arm
+the check, because an upper read from in-flight evidence could ratchet the meet
+to a false `Invalid` a later revision revokes. A variable with only upper bounds
+has no lower to publish and stays free (`Underconstrained`) — an observable loss
+on `f((a) -> nil) :: [a]`, traded for the soundness and precision wins above.
 
 A witness is an OBSERVATION. The alternative — the pattern instantiated by
 whatever the argument happened to pin — is not a smaller observation but a

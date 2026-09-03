@@ -1701,8 +1701,31 @@ impl Types {
         self.intern(d)
     }
 
+    /// UNIFY `pattern` against `witness`: the two describe the SAME thing, so
+    /// every aligned position binds and no polarity applies. This is template
+    /// instantiation (a callable clause specialized by a concrete surface), not
+    /// constraint solving -- see [`Types::collect_constraint_subst`] for that.
     pub fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
-        collect_subst_into(self, *pattern, *witness, sigma);
+        collect_subst_into(self, *pattern, *witness, BindingSide::Unify, BindingSide::Unify, sigma);
+    }
+
+    /// SOLVE the constraint `witness ⊆ σ(pattern)`, collecting the bindings on
+    /// ONE side of it. `side` is the direction of the constraint at the root
+    /// (`Lower` for a parameter matched against an argument); `target` selects
+    /// which positions record -- `Lower` for the join a variable must contain,
+    /// `Upper` for the meet it may not exceed. The direction reverses under an
+    /// arrow's PARAMETERS, so a variable reached through an odd number of
+    /// parameter descents is an upper bound and one reached through an even
+    /// number is a lower bound (fz-kdt.184).
+    pub(crate) fn collect_constraint_subst(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        target: BindingSide,
+        sigma: &mut Sigma<Ty>,
+    ) {
+        collect_subst_into(self, *pattern, *witness, side, target, sigma);
     }
 
     pub fn grounded_callable_args(&mut self, template_args: &[Ty], surface_inputs: &[Ty]) -> Vec<Ty> {
@@ -3089,12 +3112,48 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
     walked.union(t.ctx(), &substituted)
 }
 
-fn collect_subst_into(t: &mut Types, pattern: Ty, witness: Ty, sigma: &mut Sigma<Ty>) {
+/// Which side of a subtyping constraint the position being walked binds for.
+///
+/// Passing argument `W` where parameter pattern `P` is declared asserts
+/// `W ⊆ σ(P)`. Every covariant slot preserves that direction; an arrow's
+/// PARAMETERS reverse it, because `(w) -> r ⊆ (σp) -> σr` needs `σp ⊆ w`. So a
+/// variable under an arrow parameter is bounded from ABOVE, and an upper bound
+/// is not evidence about any value -- it never instantiates anything. `Unify`
+/// is the third case: the two sides describe the same thing rather than
+/// standing in a constraint, so every position binds and no flip applies
+/// (fz-kdt.184).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BindingSide {
+    Unify,
+    Lower,
+    Upper,
+}
+
+impl BindingSide {
+    pub(crate) fn flipped(self) -> Self {
+        match self {
+            Self::Unify => Self::Unify,
+            Self::Lower => Self::Upper,
+            Self::Upper => Self::Lower,
+        }
+    }
+}
+
+fn collect_subst_into(
+    t: &mut Types,
+    pattern: Ty,
+    witness: Ty,
+    side: BindingSide,
+    target: BindingSide,
+    sigma: &mut Sigma<Ty>,
+) {
     let pat = t.descr(&pattern).clone();
     let wit = t.descr(&witness).clone();
     if let Some(ids) = pure_var_ids(&pat) {
-        for id in ids {
-            sigma.entry(id).or_insert(witness);
+        if side == target {
+            for id in ids {
+                sigma.entry(id).or_insert(witness);
+            }
         }
         return;
     }
@@ -3102,29 +3161,29 @@ fn collect_subst_into(t: &mut Types, pattern: Ty, witness: Ty, sigma: &mut Sigma
         && ps.elems.len() == ws.elems.len()
     {
         for (p, w) in ps.elems.iter().zip(ws.elems.iter()) {
-            collect_subst_into(t, *p, *w, sigma);
+            collect_subst_into(t, *p, *w, side, target, sigma);
         }
     }
     if let (Some(ps), Some(ws)) = (pat.as_pure_list(t.ctx()), wit.as_pure_list(t.ctx()))
         && let (Some(p), Some(w)) = (ps.elem, ws.elem)
     {
-        collect_subst_into(t, p, w, sigma);
+        collect_subst_into(t, p, w, side, target, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_resource(), wit.pure_resource()) {
-        collect_subst_into(t, ps.payload, ws.payload, sigma);
+        collect_subst_into(t, ps.payload, ws.payload, side, target, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow())
         && ps.args.len() == ws.args.len()
     {
         for (p, w) in ps.args.iter().zip(ws.args.iter()) {
-            collect_subst_into(t, *p, *w, sigma);
+            collect_subst_into(t, *p, *w, side.flipped(), target, sigma);
         }
-        collect_subst_into(t, ps.ret, ws.ret, sigma);
+        collect_subst_into(t, ps.ret, ws.ret, side, target, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_map(), wit.pure_map()) {
         for (key, p) in &ps.fields {
             if let Some(w) = ws.fields.get(key) {
-                collect_subst_into(t, *p, *w, sigma);
+                collect_subst_into(t, *p, *w, side, target, sigma);
             }
         }
     }

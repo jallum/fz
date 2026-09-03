@@ -15,11 +15,48 @@
 //! This is the authoritative calculator behind direct-call contract
 //! application. It is the home — per "Types is the calculator" — of the
 //! substitution/witness logic that previously lived hand-rolled in
-//! `contract.rs`. Five behaviors the boolean subsumption surface
+//! `contract.rs`. Six behaviors the boolean subsumption surface
 //! (`key_subsumes_with`) cannot express live here: the Known/Underconstrained/
 //! Invalid trichotomy; union-on-rebind when one variable binds several
 //! witnesses; structural-mismatch -> Invalid for arrow arity; the same for
-//! map-key presence and tuple arity; and ambiguous empty-list witnesses.
+//! map-key presence and tuple arity; ambiguous empty-list witnesses; and the
+//! POLARITY of a variable's occurrences.
+//!
+//! POLARITY (fz-kdt.184). Passing argument `W` where pattern `P` is declared
+//! asserts `W ⊆ σ(P)`. Covariant slots (list element, tuple field, map field,
+//! resource payload, arrow RESULT) preserve that direction and give a variable
+//! a LOWER bound, joined across occurrences; an arrow's PARAMETERS reverse it —
+//! `(w) -> r ⊆ (σp) -> σr` needs `σp ⊆ w` — and give an UPPER bound, met across
+//! occurrences. `collect_arrow_match` is the one reversing node in the collector
+//! walk (and `collect_subst_into` in the unifier walk it delegates to). The
+//! INSTANTIATION is the join of the lower bounds and nothing else: an upper
+//! bound is not evidence about any value, so it never grounds the result, the
+//! parameters, or a variable. The meet of the uppers is the solvability CHECK —
+//! `join(lowers) ⊆ meet(uppers)` is a NECESSARY condition (over the variables
+//! both bounds reached, over observed lowers, before `close_bounds`) for some
+//! instantiation to exist; a lower bound outside its meet is `Invalid`. A
+//! variable with ONLY upper bounds has no lower bound to publish and stays FREE,
+//! so its verdict is `Underconstrained` — this is an OBSERVABLE regression from
+//! the old polluted union on the `f((a) -> nil) :: [a]` shape (R6, R14), traded
+//! for soundness on the contravariant-result shape (A4) and precision on the
+//! `filter`/`reject`/`take_while` shape (A13), where an `any`-typed predicate
+//! parameter no longer widens the element type. A var-carrying argument does not
+//! arm the check: its evidence is still in flight and an upper bound read from
+//! it could ratchet the meet down to a false `Invalid` a later revision revokes.
+//!
+//! This fix is LATENT on the shipped corpus — it moves no compiled program —
+//! because the frontend demand-narrows a callback's parameter type to the
+//! covariant element type at the callsite before the calculator ever sees it: a
+//! predicate declared `(integer | binary) -> :ok` handed to `filter([1, 2, 3],
+//! &pred/1)` arrives as the activation `filter/2[[int], (int) -> bool]`, never
+//! wider than the element, so the old polluting union `elem ∪ elem = elem` was
+//! idempotent and the contravariant occurrence never saw anything the covariant
+//! one did not. The defect is therefore real at the CALCULATOR layer (proven
+//! live by the A4/A5 pins, which construct the wider shape directly) but not
+//! currently reachable from source — the fz-kdt.143 category of a
+//! correct-by-construction fix on a shared surface the present frontend does not
+//! drive into the buggy region. This is why the corpus shows zero movers; it is
+//! not dead code.
 //!
 //! A WITNESS is what one parameter position OBSERVED: the argument the call
 //! supplied there, and nothing else. It is never the pattern restated. A
@@ -44,7 +81,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::descr::Descr;
-use super::{Sigma, Ty, TypeVarId, Types};
+use super::{BindingSide, Sigma, Ty, TypeVarId, Types};
 
 /// The three-way verdict of matching a signature against an argument list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +92,26 @@ pub enum ArrowMatch {
     Underconstrained { params: Vec<Ty>, result: Ty },
     /// Structural mismatch or bound violation: the signature does not apply.
     Invalid,
+}
+
+/// The two-sided solution of the constraint `witness ⊆ σ(pattern)`.
+///
+/// A covariant occurrence of a variable gives it a LOWER bound (joined across
+/// occurrences); an occurrence under an arrow's parameter reverses polarity and
+/// gives it an UPPER bound (met across occurrences). Only the lowers
+/// instantiate -- an upper bound is not evidence about a value. The meet of the
+/// uppers is the solvability CHECK: `join(lowers) ⊆ meet(uppers)` is a
+/// necessary condition for a solution to exist (fz-kdt.184).
+#[derive(Clone, Debug, Default)]
+struct MatchBounds {
+    lower: Sigma<Ty>,
+    upper: Sigma<Ty>,
+}
+
+impl MatchBounds {
+    fn is_empty(&self) -> bool {
+        self.lower.is_empty() && self.upper.is_empty()
+    }
 }
 
 /// Per-position witness outcome, merged across an argument list.
@@ -102,7 +159,7 @@ impl Types {
         bounds: &HashMap<TypeVarId, Ty>,
         args: &[Ty],
     ) -> ArrowMatch {
-        let mut sigma: Sigma<Ty> = Sigma::new();
+        let mut solution = MatchBounds::default();
         for (pattern, witness) in params.iter().zip(args.iter()) {
             // An uninhabited argument is a position no call can supply, so the
             // signature does not apply to this row. Ground disjointness is the
@@ -110,12 +167,39 @@ impl Types {
             if self.is_empty(witness) {
                 return ArrowMatch::Invalid;
             }
-            let mut position = Sigma::new();
-            if self.collect_match_subst(pattern, witness, &mut position) == MatchWitness::Invalid {
+            let mut position = MatchBounds::default();
+            if self.collect_match_subst(pattern, witness, BindingSide::Lower, &mut position) == MatchWitness::Invalid {
                 return ArrowMatch::Invalid;
             }
-            self.drop_ambiguous_empty_list_bindings(pattern, witness, &mut position);
-            self.merge_subst_union(&mut sigma, position);
+            self.drop_ambiguous_empty_list_bindings(pattern, witness, &mut position.lower);
+            self.merge_subst_union(&mut solution.lower, position.lower);
+            // A var-carrying argument's evidence is still in flight: an upper
+            // bound read from it could ratchet the meet down to a false
+            // Invalid the next revision revokes. Only a ground argument's upper
+            // bounds arm the solvability check (fz-kdt.184).
+            if !self.has_vars(witness) {
+                self.merge_subst_meet(&mut solution.upper, position.upper);
+            }
+        }
+        let sigma = solution.lower;
+
+        // The solvability CHECK. `join(lowers) ⊆ meet(uppers)` is a necessary
+        // condition for some instantiation `A` with `lower ⊆ A ⊆ upper` to
+        // exist: folding `[int]` with a `(binary, int) -> int` reducer puts
+        // `int` in and passes a callee that only accepts `binary`, so no `A`
+        // fits and the row is Invalid. Only variables both bounds reached, over
+        // OBSERVED lowers, are checked here; a declared bound is a separate
+        // obligation, settled below against the same sigma (fz-kdt.184).
+        let mut checked_vars = solution.upper.keys().copied().collect::<Vec<_>>();
+        checked_vars.sort();
+        for var in checked_vars {
+            let Some(lower) = sigma.get(&var).copied() else {
+                continue;
+            };
+            let upper = solution.upper[&var];
+            if !self.is_subtype(&lower, &upper) {
+                return ArrowMatch::Invalid;
+            }
         }
 
         let closed = self.close_bounds(bounds, &sigma);
@@ -156,30 +240,55 @@ impl Types {
         (params, result)
     }
 
-    fn collect_match_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
+    /// Collect the bindings the constraint at `side` licenses, and decide the
+    /// per-position witness outcome. `side` is the direction of the subtyping
+    /// constraint at THIS node (see [`BindingSide`]): every kind but the arrow
+    /// is covariant and passes it straight down; only `collect_arrow_match`
+    /// reverses it, and only for the arrow's parameters (fz-kdt.184).
+    fn collect_match_subst(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
         MatchWitness::Unknown
-            .merge(self.collect_var_match(pattern, witness, sigma))
-            .merge(self.collect_tuple_match(pattern, witness, sigma))
-            .merge(self.collect_list_match(pattern, witness, sigma))
-            .merge(self.collect_resource_match(pattern, witness, sigma))
-            .merge(self.collect_map_match(pattern, witness, sigma))
-            .merge(self.collect_arrow_match(pattern, witness, sigma))
+            .merge(self.collect_var_match(pattern, witness, side, bounds))
+            .merge(self.collect_tuple_match(pattern, witness, side, bounds))
+            .merge(self.collect_list_match(pattern, witness, side, bounds))
+            .merge(self.collect_resource_match(pattern, witness, side, bounds))
+            .merge(self.collect_map_match(pattern, witness, side, bounds))
+            .merge(self.collect_arrow_match(pattern, witness, side, bounds))
     }
 
-    fn collect_var_match(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
+    fn collect_var_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
         if !self.has_vars(pattern) || self.has_vars(witness) {
             return MatchWitness::Unknown;
         }
-        let mut direct = Sigma::new();
-        self.collect_instantiation_subst(pattern, witness, &mut direct);
+        let mut direct = MatchBounds::default();
+        self.collect_constraint_subst(pattern, witness, side, BindingSide::Lower, &mut direct.lower);
+        self.collect_constraint_subst(pattern, witness, side, BindingSide::Upper, &mut direct.upper);
         if direct.is_empty() {
             return MatchWitness::Unknown;
         }
-        self.merge_subst_union(sigma, direct);
+        self.merge_subst_union(&mut bounds.lower, direct.lower);
+        self.merge_subst_meet(&mut bounds.upper, direct.upper);
         MatchWitness::Known
     }
 
-    fn collect_tuple_match(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
+    fn collect_tuple_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
         let arity = self.max_tuple_arity(pattern);
         if arity == 0 {
             return MatchWitness::Unknown;
@@ -191,7 +300,7 @@ impl Types {
         {
             return MatchWitness::Unknown;
         }
-        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, sigma) {
+        if let Some(outcome) = self.collect_correlated_tuple_match(pattern, witness, side, bounds) {
             return outcome;
         }
         if self.max_tuple_arity(witness) < arity {
@@ -205,7 +314,7 @@ impl Types {
         let witness_fields = self.tuple_projections(witness, arity);
         let mut outcome = MatchWitness::Unknown;
         for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-            outcome = outcome.merge(self.collect_match_subst(pattern_field, witness_field, sigma));
+            outcome = outcome.merge(self.collect_match_subst(pattern_field, witness_field, side, bounds));
         }
         outcome
     }
@@ -214,7 +323,8 @@ impl Types {
         &mut self,
         pattern: &Ty,
         witness: &Ty,
-        sigma: &mut Sigma<Ty>,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
     ) -> Option<MatchWitness> {
         let pattern_alternatives = self.tuple_positive_alternatives(pattern)?;
         let witness_alternatives = self.tuple_positive_alternatives(witness)?;
@@ -229,16 +339,21 @@ impl Types {
                     continue;
                 }
                 matched_any = true;
-                let mut pair_sigma = Sigma::new();
+                let mut pair_bounds = MatchBounds::default();
                 let mut pair_outcome = MatchWitness::Unknown;
                 for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-                    pair_outcome =
-                        pair_outcome.merge(self.collect_match_subst(pattern_field, witness_field, &mut pair_sigma));
+                    pair_outcome = pair_outcome.merge(self.collect_match_subst(
+                        pattern_field,
+                        witness_field,
+                        side,
+                        &mut pair_bounds,
+                    ));
                 }
                 if pair_outcome == MatchWitness::Invalid {
                     continue;
                 }
-                self.merge_subst_union(sigma, pair_sigma);
+                self.merge_subst_union(&mut bounds.lower, pair_bounds.lower);
+                self.merge_subst_meet(&mut bounds.upper, pair_bounds.upper);
                 outcome = outcome.merge(pair_outcome);
             }
         }
@@ -326,7 +441,13 @@ impl Types {
                 })
     }
 
-    fn collect_list_match(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
+    fn collect_list_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
         if !self.has_list_shape(pattern) {
             return MatchWitness::Unknown;
         }
@@ -342,10 +463,16 @@ impl Types {
             };
         }
         let witness_elem = self.list_element_type(witness);
-        self.collect_match_subst(&pattern_elem, &witness_elem, sigma)
+        self.collect_match_subst(&pattern_elem, &witness_elem, side, bounds)
     }
 
-    fn collect_resource_match(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
+    fn collect_resource_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
         let Some(pattern_payload) = self.resource_payload_type(pattern) else {
             return MatchWitness::Unknown;
         };
@@ -359,10 +486,16 @@ impl Types {
                 MatchWitness::Invalid
             };
         };
-        self.collect_match_subst(&pattern_payload, &witness_payload, sigma)
+        self.collect_match_subst(&pattern_payload, &witness_payload, side, bounds)
     }
 
-    fn collect_map_match(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
+    fn collect_map_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
         let witness_keys = self.map_known_keys(witness);
         let mut outcome = MatchWitness::Unknown;
         for key in self.map_known_keys(pattern) {
@@ -379,13 +512,26 @@ impl Types {
                 continue;
             }
             if let Some(witness_field) = self.map_field_lookup(witness, &key) {
-                outcome = outcome.merge(self.collect_match_subst(&pattern_field, &witness_field, sigma));
+                outcome = outcome.merge(self.collect_match_subst(&pattern_field, &witness_field, side, bounds));
             }
         }
         outcome
     }
 
-    fn collect_arrow_match(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) -> MatchWitness {
+    /// The ONE reversing node in the collector walk. `witness ⊆ σ(pattern)` for
+    /// two arrows needs `σ(pattern_arg) ⊆ witness_arg` (contravariance) and
+    /// `witness_ret ⊆ σ(pattern_ret)` (covariance), so the parameters descend
+    /// at the FLIPPED side and the result at the enclosing one. A variable
+    /// reached through an odd number of parameter descents is bounded from
+    /// ABOVE and contributes no lower bound; two descents restore it
+    /// (fz-kdt.184).
+    fn collect_arrow_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
         let Some(pattern_clauses) = self.callable_clauses(pattern) else {
             return MatchWitness::Unknown;
         };
@@ -412,9 +558,10 @@ impl Types {
                 }
                 saw_compatible_arity = true;
                 for (pattern_arg, witness_arg) in pattern_clause.args.iter().zip(witness_clause.args.iter()) {
-                    outcome = outcome.merge(self.collect_match_subst(pattern_arg, witness_arg, sigma));
+                    outcome = outcome.merge(self.collect_match_subst(pattern_arg, witness_arg, side.flipped(), bounds));
                 }
-                outcome = outcome.merge(self.collect_match_subst(&pattern_clause.ret, &witness_clause.ret, sigma));
+                outcome =
+                    outcome.merge(self.collect_match_subst(&pattern_clause.ret, &witness_clause.ret, side, bounds));
             }
         }
         if saw_compatible_arity {
@@ -459,9 +606,14 @@ impl Types {
             // as `none`, so a second reader of the same fact disagreed with the
             // collector about what `[a]` observing `[]` pinned, and the cleaner
             // went blind on the raw argument. One reading of `[]`, one place.
-            let mut direct = Sigma::new();
-            self.collect_match_subst(pattern, witness, &mut direct);
-            ambiguous_vars.extend(direct.into_keys());
+            //
+            // Ambiguity is about the LOWER bindings the position instantiates
+            // from -- an `[]` under an arrow parameter records only an upper
+            // bound, which the cleaner never touches -- so this walk stays
+            // polarity-blind and reads the lower side (fz-kdt.184).
+            let mut direct = MatchBounds::default();
+            self.collect_match_subst(pattern, witness, BindingSide::Lower, &mut direct);
+            ambiguous_vars.extend(direct.lower.into_keys());
             return;
         }
 
@@ -565,6 +717,24 @@ impl Types {
         }
         let empty = self.empty_list();
         self.is_equivalent(witness, &empty)
+    }
+
+    /// Meet a directly-collected UPPER bound into the running one: a variable
+    /// bounded from above by two positions is bounded by their intersection --
+    /// a callee that must accept both an `(int) -> nil` and a `(binary) -> nil`
+    /// caller can only be handed values both accept (fz-kdt.184).
+    fn merge_subst_meet(&mut self, sigma: &mut Sigma<Ty>, direct: Sigma<Ty>) {
+        for (var, witness) in direct {
+            match sigma.remove(&var) {
+                Some(existing) => {
+                    let met = self.intersect(existing, witness);
+                    sigma.insert(var, met);
+                }
+                None => {
+                    sigma.insert(var, witness);
+                }
+            }
+        }
     }
 
     /// Union a directly-collected substitution into the running one: when a
@@ -1029,7 +1199,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, mapper], &list_b, &no_bounds(), &[list_int, overloaded]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int | binary], (int | binary) -> none] result=[none]",
+            "Known params=[[int], (int) -> none] result=[none]",
             "R1 overloaded"
         );
     }
@@ -1079,7 +1249,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[any], (%{:k: any}) -> :nil] result=[any]",
+            "Known params=[[int], (%{:k: int}) -> :nil] result=[int]",
             "R3 map-under-param"
         );
     }
@@ -1103,7 +1273,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[any], (resource(any)) -> :nil] result=[any]",
+            "Known params=[[int], (resource(int)) -> :nil] result=[int]",
             "R4 resource-under-param"
         );
         // And covariantly, for contrast: resource(any) at resource(a).
@@ -1160,7 +1330,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[p3], &list_a, &no_bounds(), &[w3]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[(((int) -> :nil) -> :nil) -> :nil] result=[int]",
+            "Underconstrained params=[(((a0) -> :nil) -> :nil) -> :nil] result=[a0]",
             "R6 three-deep"
         );
     }
@@ -1182,7 +1352,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[a, pat_fn], &pat_fn, &no_bounds(), &[int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[any, ({any, int}) -> :nil] result=({any, int}) -> :nil",
+            "Known params=[int, ({int, int}) -> :nil] result=({int, int}) -> :nil",
             "R7 tuple-in-contravariant-result"
         );
     }
@@ -1226,7 +1396,7 @@ mod pinned_verdicts {
         let v2 = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, any_fn]);
         assert_eq!(
             render(&t, &v2),
-            "Known params=[[any], (any) -> :nil] result=[any]",
+            "Known params=[[int], (int) -> :nil] result=[int]",
             "R9 (any)->nil argument"
         );
         // any as the covariant witness of the element itself.
@@ -1342,13 +1512,13 @@ mod pinned_verdicts {
         let v1 = t.match_arrow(&[pat_fn], &list_a, &no_bounds(), &[any_fn]);
         assert_eq!(
             render(&t, &v1),
-            "Known params=[(any) -> :nil] result=[any]",
+            "Underconstrained params=[(a0) -> :nil] result=[a0]",
             "R14 only-upper (any)"
         );
         let v2 = t.match_arrow(&[pat_fn], &list_a, &no_bounds(), &[int_fn]);
         assert_eq!(
             render(&t, &v2),
-            "Known params=[(int) -> :nil] result=[int]",
+            "Underconstrained params=[(a0) -> :nil] result=[a0]",
             "R14 only-upper (int)"
         );
     }
@@ -1391,7 +1561,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[a, pat_fn], &res, &no_bounds(), &[int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[any, (any) -> :nil] result={any, (any) -> :nil}",
+            "Known params=[int, (int) -> :nil] result={int, (int) -> :nil}",
             "R16 both polarities"
         );
     }
@@ -1539,7 +1709,11 @@ mod pinned_verdicts {
         let list_a = t.list(a);
         let wit = t.arrow(&[any], nil);
         let v = t.match_arrow(&[pat], &list_a, &no_bounds(), &[wit]);
-        assert_eq!(render(&t, &v), "Known params=[(any) -> :nil] result=[any]", "A2");
+        assert_eq!(
+            render(&t, &v),
+            "Underconstrained params=[(a0) -> :nil] result=[a0]",
+            "A2"
+        );
     }
 
     // A3. The reducer shape: `reduce([a], b, (a, b) -> b) :: b` at
@@ -1559,7 +1733,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, b, reducer], &b, &no_bounds(), &[list_int, empty, ground]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[any], [int], (any, [int]) -> [int]] result=[int]",
+            "Known params=[[int], [int], (int, [int]) -> [int]] result=[int]",
             "A3"
         );
     }
@@ -1579,7 +1753,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[a, arrow_pat], &result_pat, &no_bounds(), &[int, wit]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[any, (any) -> :nil] result=(any) -> :nil",
+            "Known params=[int, (int) -> :nil] result=(int) -> :nil",
             "A4"
         );
     }
@@ -1599,7 +1773,11 @@ mod pinned_verdicts {
         bounds.insert(v, int);
         let wit = t.arrow(&[any], nil);
         let verdict = t.match_arrow(&[a, arrow_pat], &a, &bounds, &[int, wit]);
-        assert_eq!(render(&t, &verdict), "Invalid", "A5");
+        assert_eq!(
+            render(&t, &verdict),
+            "Known params=[int, (int) -> :nil] result=int",
+            "A5"
+        );
     }
 
     // A6. A variable inside a TUPLE inside an arrow RETURN, unanalyzed then ground.
@@ -1725,7 +1903,7 @@ mod pinned_verdicts {
         let bool_t = t.bool();
         let ground_pred = t.arrow(&[any], bool_t);
         let v = t.match_arrow(&[list_a, pred_pat], &list_a, &no_bounds(), &[list_int, ground_pred]);
-        assert_eq!(render(&t, &v), "Known params=[[any], (any) -> any] result=[any]", "A13");
+        assert_eq!(render(&t, &v), "Known params=[[int], (int) -> any] result=[int]", "A13");
     }
 
     // A14. `none` at a bare variable.
@@ -1837,15 +2015,17 @@ mod pinned_verdicts {
         assert_eq!(render(&t, &v), "Invalid", "X1");
     }
 
-    // X2. PRE-EXISTING, unchanged by this ticket and unfixed: a runtime FACT
-    // claimed from an observation that is not ground (fz-kdt.197).
-    // A union-of-arrows argument one of whose members
-    // still carries a FREE variable. The ground members ground the pattern's
-    // variables; the var-carrying member contributes nothing and is not
-    // reported. The verdict is Known -- a runtime FACT claimed from an
-    // observation that is not ground.
+    // X2. A union-of-arrows argument one of whose members still carries a FREE
+    // variable. The mapper's `a` occurs ONLY under the arrow's parameter, so it
+    // is an upper bound with no lower bound, and a var-carrying argument does
+    // not arm the check besides -- so `a` stays free and the verdict is
+    // Underconstrained. Before fz-kdt.184 the parameter observation polluted the
+    // lower solution and the calculator claimed a runtime FACT (`Known`) from an
+    // observation that is not ground (fz-kdt.197); the polarity split withholds
+    // that fact instead. The result `b` is still read from one clause of the
+    // union, but it is no longer published as Known.
     #[test]
-    fn x2_var_carrying_union_member_is_ignored_and_the_verdict_is_known() {
+    fn x2_var_carrying_union_member_is_ignored_and_the_verdict_is_underconstrained() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let b = t.param_alpha(1);
@@ -1857,12 +2037,13 @@ mod pinned_verdicts {
         let pat = t.arrow(&[a], b);
         assert!(t.has_vars(&arg), "the argument is NOT ground");
         let v = t.match_arrow(&[pat], &b, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Known params=[(int) -> int] result=int", "X2");
+        assert_eq!(render(&t, &v), "Underconstrained params=[(a0) -> int] result=int", "X2");
     }
 
     // X2B. The same shape one level up: the argument's free member has a
-    // DIFFERENT domain from the ground member, so the answer the calculator
-    // grounds depends on which member it decided to read.
+    // DIFFERENT domain from the ground member. `a` is still only an upper bound
+    // from a var-carrying argument, so the verdict is Underconstrained and the
+    // which-member-did-we-read hazard never reaches a published fact.
     #[test]
     fn x2b_var_carrying_union_member_with_a_wider_domain() {
         let mut t = Types::new();
@@ -1877,7 +2058,11 @@ mod pinned_verdicts {
         let arg = t.union(ground_clause, free_clause);
         let pat = t.arrow(&[a], b);
         let v = t.match_arrow(&[pat], &b, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Known params=[(int) -> int] result=int", "X2B");
+        assert_eq!(
+            render(&t, &v),
+            "Underconstrained params=[(a0) -> int] result=int",
+            "X2B"
+        );
     }
 
     // X3. An uninhabited argument at a POLYMORPHIC pattern: `none` is a row

@@ -57,6 +57,17 @@ Compiler2 owns the active contract path:
   pattern with that kind's component cleared (`witness_escapes_kind`) — a
   cross-kind union like `:first | {:acc, a}` accepts `:first` through its
   atom member but still rejects `:third`, which no member accepts.
+- Arrow matching is polarity-aware. A `@spec` variable collects LOWER bounds
+  from its covariant occurrences (list element, tuple field, map field, resource
+  payload, arrow result) and UPPER bounds from its contravariant ones (under an
+  arrow's parameters). The instantiation is the JOIN of the lowers and nothing
+  else — an upper bound never instantiates anything, so an `any`-typed predicate
+  parameter in `filter`/`reject` does not widen the element type, and a variable
+  in a contravariant result publishes its lower bound rather than an unsound
+  `any`. The MEET of the uppers is the solvability CHECK: `join(lowers) ⊆
+  meet(uppers)` is a necessary condition (over the variables both bounds reached,
+  over observed lowers, before bound closure) for a solution to exist. A variable
+  with only upper bounds stays free (`Underconstrained`).
 - Fatal `spec/violation` diagnostics fire only at USER callsites
   (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). Library
   (bootstrap) callsites are validated for refinement but never diagnosed:
