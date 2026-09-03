@@ -11,11 +11,15 @@
     {
       "text": "CONCORDANCE (2026-09-03): this ticket's reproducer IS the defect fz-kdt.183 now names precisely -- List.reduce_step/3 keyed on free type variables shares one activation and one joined return across every Enum.reduce/3 user (its list slot is forwarded to reduce_cont/3, whose key is ground in the element, so the element decides the return and the key erased it); the phantom `+/2 (binary, int)` is the joined row reaching the user lambda. The fz-kdt.124 review's attacks a1/b1 are this program's shape; the HEAD FATAL variant (two same-driver reducers, panic at artifact.rs:154) is recorded on 183. Owned by fz-kdt.183: this program is one of its red-first gates (three doors, both source orders). Closes when 183 lands.",
       "timestamp": "2026-09-03T08:18:57Z"
+    },
+    {
+      "text": "CLOSED AS ABSORBED by fz-kdt.183 (2026-09-03, owner decision): the exact reproducer and its Elixir oracle ([12, 11] then [\"b!\", \"a!\"], both source orders, three doors) are now 183's red-first fixture gate; the mechanism (List.reduce_step/3 keyed on free type variables, one joined return for every Enum.reduce/3 user) is stated there.",
+      "timestamp": "2026-09-03T08:33:09Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Enum.reduce/3 cross-pairs reducer identity and element type across calls sharing an [] accumulator",
   "type": "task",
-  "updated_at": "2026-09-03T08:33:07Z"
+  "updated_at": "2026-09-03T08:33:09Z"
 }
