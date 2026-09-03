@@ -22,7 +22,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "P1: a mailbox-delivered closure cannot be an Enum reducer -- fails on all three doors",
   "type": "task",
   "updated_at": "2026-09-03T00:02:08Z"
