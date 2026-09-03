@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.183"
+  ],
   "blocks": [],
   "created": "2026-09-03T18:54:13Z",
   "description": "Found by the fz-kdt.199 cold review (2026-09-03, base ca23b676f), and named\nin that ticket`s build/2 gate comment as its removal ticket so a known-unbought\nsplit is not blessed as a law.\n\nfz-kdt.199 keys a position when the activation`s published return is built from\nit MINUS the positions the recursion supplies, and that subtraction is computed\nper-function (a least fixpoint over the function`s own held positions after the\nreview`s fix). It cannot see a MUTUAL cycle: when the supplying step happens in\na sibling of the recursion rather than in the function itself, the position\nreads as not-supplied and gets keyed.\n\nMEASURED at fz-kdt.199: of the executables that ticket adds on key-growing\nfunctions, 79 gain NO distinct return against 36 that do. The unbought ones are\ndominated by `List.reduce_*` minting fz-kdt.182 `empty_list()` / `list(tau)`\nascent rungs across the mutual reduce_cont/reduce_step cycle.\n\nTHE FIX DIRECTION: lift the supplied-position fixpoint from the function to the\nrecursive COMPONENT (the strong component `derive_call_graph_component` already\ncomputes), so a position supplied anywhere in the cycle counts as supplied.\n\nCONCORDANT: fz-kdt.182 (the empty_list()/list(tau) interning that makes these\nrungs distinct in the first place -- if unions normalised by subsumption, most\nof the 79 would not exist); fz-kdt.196 (the cost of a moving fact); fz-kdt.199\n(the ticket that adds them).\n\nRED-FIRST: the 79 unbought executables fall while the 36 bought ones and every\nONE_ACTIVATION_KEYING_LAWS row stay; quicksort frontier stays at 17.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The returned-axis subtraction is self-only: a mutual cycle it cannot see mints 79 executables that buy no distinct return",
   "type": "task",
-  "updated_at": "2026-09-03T18:54:13Z"
+  "updated_at": "2026-09-03T18:54:37Z"
 }

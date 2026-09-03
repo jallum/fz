@@ -3,7 +3,8 @@
   "blocked_by": [],
   "blocks": [
     "fz-kdt.120",
-    "fz-kdt.199"
+    "fz-kdt.199",
+    "fz-kdt.213"
   ],
   "closed_at": "2026-09-03T12:16:38Z",
   "created": "2026-09-03T04:45:44Z",
@@ -29,5 +30,5 @@
   "status": "closed",
   "title": "A recursive activation key keeps a list element wherever demand reaches it -- through forwarding, not everywhere -- so one Enum.reduce/3 user cannot publish another user's return",
   "type": "task",
-  "updated_at": "2026-09-03T13:38:13Z"
+  "updated_at": "2026-09-03T18:54:37Z"
 }
