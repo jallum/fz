@@ -509,7 +509,6 @@ ProductKey =
   AbiExecutable(E)
   MaterializedExecutable(E)
   ExecutableEffects(E)
-  ExecutableFacts(E)
   RuntimeDemand(E)
   CallableResolution(E, value, surface)
   OutgoingEdgeFrontier(root)
@@ -522,7 +521,12 @@ ProductKey =
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
 
-`ExecutableFacts(E)` owns runtime demand's canonical type projections.
+`ExecutableFacts(E)` is instead one direct fact. `DeriveExecutableFacts(E)`
+publishes its World-owned immutable value after settled reads of
+`ActivationAnalyzed(E.activation)`, `LoweredBody(E.function)`,
+`EntryDispatch(E.function)`, and the exact `CallSiteSummary` facts named by the
+analysis. Product producers read that settled fact through their ordinary fact
+dependencies; no product memo entry or fact-to-product bridge exists.
 `RuntimeDemand(E)` is read-only over those facts and its demand snapshot. Local
 first-class calls request `CallableResolution(E, value, surface)`; a miss waits
 and reruns, while success reads the producer's resolved edge.

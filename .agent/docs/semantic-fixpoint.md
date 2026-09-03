@@ -300,21 +300,21 @@ publications from local semantic analysis. Downstream products consume that
 already-joined boundary surface instead of rediscovering or deduplicating
 semantic targets.
 
-## Product waits replace root semantic closure
+## Artifact products wait on exact facts
 
 The product path consumes settled facts directly. For one executable `E`,
-`MaterializedExecutable(E)` waits on settled `ActivationAnalyzed(E.activation)`,
-settled `ReturnType(E.activation)`, settled callsite summaries for that local
-activation, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and the transport
-positions required by the local body. It returns `PullWait::Fact` or
-`PullWait::Product` for those exact prerequisites.
+`MaterializedExecutable(E)` waits on settled `ExecutableFacts(E)`, settled
+`ReturnType(E.activation)`, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and the
+transport positions required by the local body. The shared fact already carries
+the analysis, lowered body, entry dispatch, and exact callsite summaries, so
+materialization neither rereads nor reconstructs that projection.
 
 The root product waits on `RootEntry(root)`, `Recursive(entry)`, and
 `DispatchMask(entry)` only so it can key the entry executable, then asks for
 `BackendExecutable(entry)`. Additional executables enter the request through
 symbolic call edges and callable entries recorded by already demanded products.
-There is no `SemanticClosed(root)` prerequisite on the product path and no
-root-wide semantic scan that decides artifact membership.
+Those exact dependencies grow artifact membership; no root-wide scan decides
+it.
 
 `RuntimeDemand(E)` is a product that settles its whole demand SCC inside one
 producer, the same pattern `ExecutableEffects` uses. Demand dependencies run
@@ -334,10 +334,14 @@ retraction. Settled demand retracts when materialization resolves a call edge
 outside the settled callee inventory, which re-keys and
 re-settles the affected cone.
 
-Exact products keep retries proportional to movement without changing the
-iterates. `ExecutableFacts(E)` owns the activation analysis, lowered body,
-entry dispatch, callsite summaries, and canonical type projections; exact fact
-movement displaces that product and its readers. `RuntimeDemand(E)` cannot
+Exact dependencies keep retries proportional to movement without changing the
+iterates. `DeriveExecutableFacts(E)` owns a direct World fact containing the
+activation analysis, lowered body, entry dispatch, callsite summaries, origins,
+and canonical type projections. Movement of one recorded semantic input reruns
+that exact producer; content movement then displaces only its product readers.
+Equal reproduction retains the content revision even though a settled-readiness
+edge may wake settled readers while the producer goes dirty and quiet again.
+`RuntimeDemand(E)` cannot
 intern types or mint identities: local first-class calls instead read exact
 `CallableResolution(E, value, surface)` products. A miss waits and reruns; a
 success consumes the resolved edge. Formula order is only schedule, while

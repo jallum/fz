@@ -18,9 +18,9 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
 };
 use super::drive::FactKey;
+use super::executable_facts::ExecutableFacts;
 use super::facts::{FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, RootId};
-use super::jobs::runtime_demand::ExecutableFacts;
 use super::scheduler::WorkStartTally;
 use super::semantic::{CallableFlowEdge, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
@@ -48,7 +48,6 @@ pub enum ProductKey {
     AbiExecutable(ExecutableKey),
     MaterializedExecutable(ExecutableKey),
     ExecutableEffects(ExecutableKey),
-    ExecutableFacts(ExecutableKey),
     RuntimeDemand(ExecutableKey),
     CallableResolution(CallableResolutionKey),
     OutgoingEdgeFrontier(RootId),
@@ -67,7 +66,6 @@ impl ProductKey {
             Self::AbiExecutable(_) => "abi_executable",
             Self::MaterializedExecutable(_) => "materialized_executable",
             Self::ExecutableEffects(_) => "executable_effects",
-            Self::ExecutableFacts(_) => "executable_facts",
             Self::RuntimeDemand(_) => "runtime_demand",
             Self::CallableResolution(_) => "callable_resolution",
             Self::OutgoingEdgeFrontier(_) => "outgoing_edge_frontier",
@@ -85,7 +83,6 @@ impl ProductKey {
             | Self::AbiExecutable(executable)
             | Self::MaterializedExecutable(executable)
             | Self::ExecutableEffects(executable)
-            | Self::ExecutableFacts(executable)
             | Self::RuntimeDemand(executable)
             | Self::OutgoingInputEdges(executable) => Some(executable),
             Self::CallableResolution(key) => Some(&key.executable),
@@ -126,7 +123,6 @@ pub enum ProductValue {
     AbiExecutable(Box<AbiReadyExecutable>),
     MaterializedExecutable(Box<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
-    ExecutableFacts(Rc<ExecutableFacts>),
     RuntimeDemand(Box<ExecutableRuntimeDemand>),
     CallableResolution(CallableFlowEdge),
     OutgoingEdgeFrontier(Rc<HashSet<ExecutableKey>>),
@@ -302,6 +298,16 @@ impl ProductMemo {
         self.produced.get(key).map(|entry| &entry.dependencies.products)
     }
 
+    #[cfg(test)]
+    pub(crate) fn fact_dependencies(&self, key: &ProductKey) -> Option<&HashMap<FactUse<FactKey>, FactState>> {
+        self.produced.get(key).map(|entry| &entry.dependencies.facts)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn produced_keys(&self) -> impl Iterator<Item = &ProductKey> {
+        self.produced.keys()
+    }
+
     /// Has `key` settled -- does reading it answer now, with a value it already
     /// holds? A displaced product has not: it is waiting to be produced again.
     #[cfg(test)]
@@ -429,7 +435,6 @@ impl ProductMemo {
                 | ProductValue::AbiExecutable(_)
                 | ProductValue::MaterializedExecutable(_)
                 | ProductValue::ExecutableEffects(_)
-                | ProductValue::ExecutableFacts(_)
                 | ProductValue::CallableResolution(_)
                 | ProductValue::OutgoingEdgeFrontier(_)
                 | ProductValue::OutgoingInputEdges(_)
@@ -1466,7 +1471,6 @@ impl PullSession {
             }
             ProductKey::TransportShape(_) => {}
             ProductKey::RootBackendProduct(_)
-            | ProductKey::ExecutableFacts(_)
             | ProductKey::RuntimeDemand(_)
             | ProductKey::CallableResolution(_)
             | ProductKey::OutgoingEdgeFrontier(_)
@@ -1650,22 +1654,8 @@ impl<'s> ProductReadContext<'s> {
         }
     }
 
-    /// A group member's own `ExecutableFacts`, read without recording a
-    /// dependency -- like `callable_group_layout`, and for the same reason:
-    /// every SCC member recorded these reads before it could acquire the dep
-    /// edge that makes it a member, and `finish_group` writes EVERY member
-    /// under the UNION of all members' dependencies (products and facts),
-    /// so an ascent of any peeked key displaces the whole group and
-    /// re-derives every projection. No stale-projection window exists.
-    pub(crate) fn settled_executable_facts(&self, executable: &ExecutableKey) -> Option<Rc<ExecutableFacts>> {
-        match self.session.memo.get(&ProductKey::ExecutableFacts(executable.clone())) {
-            Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
-            _ => None,
-        }
-    }
-
-    /// A group member's own runtime demand, read on the same terms as
-    /// `settled_executable_facts`.
+    /// A group member's settled runtime demand, read without adding a second
+    /// dependency after each member already recorded its own ordinary read.
     pub(crate) fn settled_runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
         self.session.memo.runtime_demand(executable)
     }
@@ -1745,14 +1735,17 @@ impl<'s> ProductReadContext<'s> {
 
     pub(crate) fn read_executable_facts(
         &mut self,
-        tel: &impl Telemetry,
+        world: &World,
         executable: &ExecutableKey,
     ) -> Option<Rc<ExecutableFacts>> {
-        match self.read_product(tel, ProductKey::ExecutableFacts(executable.clone())) {
-            Some(ProductValue::ExecutableFacts(facts)) => Some(Rc::clone(facts)),
-            Some(other) => panic!("executable facts product produced unexpected value {other:?}"),
-            None => None,
-        }
+        let fact = FactUse::settled(FactKey::ExecutableFacts(executable.clone()));
+        self.read_fact(world, fact).then(|| {
+            Rc::clone(
+                world
+                    .executable_facts(executable)
+                    .expect("settled executable facts should have a value"),
+            )
+        })
     }
 
     pub fn read_fact(&mut self, world: &World, fact: FactUse<FactKey>) -> bool {
@@ -1820,11 +1813,6 @@ pub trait ProductProducers {
         executable: &ExecutableKey,
     ) -> PullOutcome;
     fn produce_executable_effects(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_executable_facts(
         &mut self,
         context: &mut ProductReadContext<'_>,
         executable: &ExecutableKey,
@@ -1909,14 +1897,6 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
         executable: &ExecutableKey,
     ) -> PullOutcome {
         super::jobs::artifact::produce_executable_effects_product(self.telemetry, context, executable)
-    }
-
-    fn produce_executable_facts(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_executable_facts_product(self.world, context, executable)
     }
 
     fn produce_runtime_demand(
@@ -2077,7 +2057,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 producers.produce_materialized_executable(&mut context, executable)
             }
             ProductKey::ExecutableEffects(executable) => producers.produce_executable_effects(&mut context, executable),
-            ProductKey::ExecutableFacts(executable) => producers.produce_executable_facts(&mut context, executable),
             ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(&mut context, executable),
             ProductKey::CallableResolution(key) => producers.produce_callable_resolution(&mut context, key),
             ProductKey::OutgoingEdgeFrontier(root) => producers.produce_outgoing_edge_frontier(&mut context, *root),
@@ -2302,14 +2281,6 @@ mod tests {
             executable: &ExecutableKey,
         ) -> PullOutcome {
             self.produce(ProductKey::ExecutableEffects(executable.clone()))
-        }
-
-        fn produce_executable_facts(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::ExecutableFacts(executable.clone()))
         }
 
         fn produce_runtime_demand(

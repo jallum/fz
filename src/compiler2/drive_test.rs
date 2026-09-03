@@ -8,7 +8,7 @@ use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
     FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, Namespace, QuotedSourceHeap,
-    QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, parse_quoted_program,
+    QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World, parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
@@ -41,6 +41,126 @@ type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
+
+#[test]
+fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads() {
+    let tel = ConfiguredTelemetry::new();
+    let product_lifecycle = Rc::new(RefCell::new(Vec::<(&'static str, String)>::new()));
+    let observed_products = Rc::clone(&product_lifecycle);
+    tel.attach_raw_event3::<
+        crate::compiler2::pull::ProductKey,
+        crate::compiler2::pull::ProductValue,
+        crate::compiler2::pull::ProductSettlement,
+        _,
+    >(
+        &["fz", "compiler2", "pull", "product", "settled"],
+        move |_, _, _, key, _, _| {
+            observed_products
+                .borrow_mut()
+                .push(("settled", key.kind().to_string()))
+        },
+    );
+    for leaf in ["displaced", "cache_hit", "reentered"] {
+        let observed_products = Rc::clone(&product_lifecycle);
+        tel.attach_raw_event1::<crate::compiler2::pull::ProductKey, _>(
+            &["fz", "compiler2", "pull", "product", leaf],
+            move |_, _, _, key| observed_products.borrow_mut().push((leaf, key.kind().to_string())),
+        );
+    }
+    let demanded_executables = Rc::new(RefCell::new(HashSet::<ExecutableKey>::new()));
+    let observed_demand = Rc::clone(&demanded_executables);
+    tel.attach_raw_event1::<crate::compiler2::PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed_demand
+                .borrow_mut()
+                .extend(session.demanded_executables().iter().cloned());
+        },
+    );
+    let conclusions = Rc::new(RefCell::new(Vec::<(ExecutableKey, Vec<FactKey>)>::new()));
+    let observed_conclusions = Rc::clone(&conclusions);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            let Job::DeriveExecutableFacts(executable) = &completion.job else {
+                return;
+            };
+            let outputs = world.job_outputs(&completion.job);
+            if outputs.contains(&FactKey::ExecutableFacts(executable.clone())) {
+                observed_conclusions.borrow_mut().push((executable.clone(), outputs));
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("executable_facts_direct_fact.fz".to_string()),
+        text: "fn add_one(x), do: x + 1\nfn main(), do: add_one(41)\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let executables = compiler
+        .product_executable_inventory(root)
+        .expect("the direct executable-facts fixture should compile");
+    let world = compiler.world();
+    assert!(
+        product_lifecycle
+            .borrow()
+            .iter()
+            .all(|(_, kind)| kind != "executable_facts"),
+        "ExecutableFacts must be absent from every product lifecycle leaf: {:?}",
+        product_lifecycle.borrow(),
+    );
+    assert!(!executables.is_empty());
+    let demanded = demanded_executables.borrow().clone();
+    let conclusions = conclusions.borrow();
+    assert_eq!(
+        conclusions
+            .iter()
+            .map(|(executable, _)| executable.clone())
+            .collect::<HashSet<_>>(),
+        demanded,
+        "each demanded executable identity must close through its exact DeriveExecutableFacts work-graph conclusion",
+    );
+    assert_eq!(
+        conclusions.len(),
+        demanded.len(),
+        "each demanded executable must have exactly one concluding executable-fact publication",
+    );
+    for (executable, outputs) in conclusions.iter() {
+        assert_eq!(
+            outputs,
+            &[FactKey::ExecutableFacts(executable.clone())],
+            "the correlated producer conclusion must publish only its exact executable fact",
+        );
+    }
+    for executable in executables {
+        let fact = FactKey::ExecutableFacts(executable.clone());
+        let job = Job::DeriveExecutableFacts(executable.clone());
+        let facts = world
+            .executable_facts(&executable)
+            .expect("every materialized executable should have one World-owned fact value");
+        let mut expected_reads = HashSet::from([
+            FactUse::settled(FactKey::ActivationAnalyzed(executable.activation.clone())),
+            FactUse::settled(FactKey::LoweredBody(executable.activation.function)),
+            FactUse::settled(FactKey::EntryDispatch(executable.activation.function)),
+        ]);
+        expected_reads.extend(facts.analysis().callsites.iter().map(|callsite| {
+            FactUse::settled(FactKey::CallSiteSummary(CallSiteKey {
+                activation: executable.activation.clone(),
+                callsite: *callsite,
+            }))
+        }));
+
+        assert_eq!(world.fact_revision(&fact), Some(1));
+        assert_eq!(world.job_reads(&job), expected_reads);
+        assert_eq!(world.job_outputs(&job), vec![fact]);
+    }
+}
 
 // The receive-after join is `int | :timeout`; `bump`'s atom clause diverges
 // through `panic`, so the post-receive call lowers as a two-member dispatch
@@ -10540,6 +10660,38 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
         functions_before.contains(&qsort_id) && !functions_before.contains(&foo_id),
         "the initial quicksort frontier should reach qsort and never the uncalled foo/0"
     );
+    let executable_facts_before = frontier_before
+        .iter()
+        .cloned()
+        .map(|activation| ExecutableKey {
+            activation,
+            need: ExecutableNeed::Value,
+        })
+        .collect::<Vec<_>>();
+    let mut demanded_missing_fact = false;
+    for executable in &executable_facts_before {
+        let fact = FactKey::ExecutableFacts(executable.clone());
+        if world.fact_revision(&fact).is_none() {
+            demanded_missing_fact |= world.demand(Job::DeriveExecutableFacts(executable.clone()));
+        }
+    }
+    if demanded_missing_fact {
+        assert_resolved(
+            super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            "the rooted executable-fact frontier should settle before the unrelated edit",
+        );
+    }
+    let executable_fact_revisions = executable_facts_before
+        .iter()
+        .map(|executable| {
+            (
+                executable.clone(),
+                world
+                    .fact_revision(&FactKey::ExecutableFacts(executable.clone()))
+                    .expect("the demanded rooted executable fact should be present"),
+            )
+        })
+        .collect::<HashMap<_, _>>();
 
     world.submit_code(
         Some("quicksort_plus_foo_v2.fz".to_string()),
@@ -10556,6 +10708,13 @@ fn compiler2_redefining_uncalled_foo_does_not_reopen_quicksort_root() {
         frontier_after, frontier_before,
         "uncalled foo/0 redefinition should leave the rooted reachable activation frontier unchanged"
     );
+    for (executable, revision) in executable_fact_revisions {
+        assert_eq!(
+            world.fact_revision(&FactKey::ExecutableFacts(executable)),
+            Some(revision),
+            "an uncalled function redefinition must not move any demanded executable fact in the selected root",
+        );
+    }
 }
 
 #[test]

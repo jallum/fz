@@ -250,7 +250,12 @@ to a reader in another process. This is what lets a reader of the public log
 distinguish, for example, the many separate `AnalyzeActivation` evaluations
 one real compile can produce, each a different `(root, function, arrow)`
 triple where the projection used to render only `"kind":"AnalyzeActivation"`
-for all of them alike. `ExecutableKey` and `TransportPosition`'s
+for all of them alike. `DeriveExecutableFacts(E)` and
+`FactKey::ExecutableFacts(E)` likewise render the complete executable identity;
+the value is owned by `World` and its lifecycle is visible through the normal
+`work_graph.applied` projection. There is deliberately no
+`pull.product` event whose kind is `executable_facts`.
+`ExecutableKey` and `TransportPosition`'s
 `ExecutableSymbol` render the same way nested inside a `ProductKey`
 (`BackendExecutable`, `TransportShape`, ...): activation identity plus
 `need` (`"value"` or `"tuple_fields"` with a count). The blocked-wait lists

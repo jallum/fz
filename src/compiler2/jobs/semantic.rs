@@ -13,15 +13,12 @@ use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::super::body::{
-    CallSiteId, ControlDestination, LoweredBody, LoweredClause, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail,
-    ValueId,
+    CallSiteId, ControlDestination, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::contract::FunctionContract;
 use super::super::dispatch_reachability::calculate_dispatch_reachability;
 use super::super::drive::{FactKey, Job, JobEffects, current_uses};
-use super::super::identity::{
-    ActivationKey, ExecutableNeed, FunctionId, ModuleId, TypeName, function_id_of_closure_target,
-};
+use super::super::identity::{ActivationKey, FunctionId, ModuleId, TypeName, function_id_of_closure_target};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{
@@ -2114,170 +2111,6 @@ fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
     }
 }
 
-pub(super) fn executable_callsite_needs(
-    body: &LoweredBody,
-    reachable_clauses: &[u32],
-    executable_need: ExecutableNeed,
-) -> HashMap<CallSiteId, ExecutableNeed> {
-    let mut needs = HashMap::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body else {
-        return needs;
-    };
-    for clause_id in reachable_clauses {
-        collect_clause_callsite_needs(&clauses[*clause_id as usize], entries, executable_need, &mut needs);
-    }
-    needs
-}
-
-fn collect_clause_callsite_needs(
-    clause: &LoweredClause,
-    entries: &[LoweredEntry],
-    executable_need: ExecutableNeed,
-    out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) {
-    collect_entry_callsite_needs(entries, clause.entry, executable_need, out);
-}
-
-fn collect_entry_callsite_needs(
-    entries: &[LoweredEntry],
-    entry_id: super::super::body::ControlEntryId,
-    outgoing_need: ExecutableNeed,
-    out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) -> Option<usize> {
-    let entry = &entries[entry_id.as_u32() as usize];
-    let mut tuple_demands = HashMap::new();
-    match &entry.tail {
-        LoweredTail::Value { value, dest } => {
-            if let Some(arity) = destination_need(entries, dest, outgoing_need, out) {
-                tuple_demands.insert(*value, arity);
-            }
-        }
-        LoweredTail::DirectCall {
-            value, callsite, dest, ..
-        }
-        | LoweredTail::ClosureCall {
-            value, callsite, dest, ..
-        } => {
-            let need = destination_need(entries, dest, outgoing_need, out)
-                .map(ExecutableNeed::TupleFields)
-                .unwrap_or(ExecutableNeed::Value);
-            record_callsite_need(out, *callsite, need);
-            if let ExecutableNeed::TupleFields(arity) = need {
-                tuple_demands.insert(*value, arity);
-            }
-        }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            let _ = collect_entry_callsite_needs(entries, *then_entry, outgoing_need, out);
-            let _ = collect_entry_callsite_needs(entries, *else_entry, outgoing_need, out);
-        }
-        LoweredTail::Dispatch { dispatch, .. } => {
-            for arm_entry in &dispatch.arm_entries {
-                let _ = collect_entry_callsite_needs(entries, *arm_entry, outgoing_need, out);
-            }
-            let _ = collect_entry_callsite_needs(entries, dispatch.miss_entry, outgoing_need, out);
-        }
-        LoweredTail::Receive(receive) => {
-            for clause in &receive.clauses {
-                let _ = collect_entry_callsite_needs(entries, clause.entry, outgoing_need, out);
-            }
-            if let Some(after) = &receive.after {
-                let _ = collect_entry_callsite_needs(entries, after.entry, outgoing_need, out);
-            }
-        }
-        LoweredTail::Halt { .. } => {}
-    }
-    for step in entry.steps.iter().rev() {
-        match step {
-            LoweredStep::AssertTuple { source, arity } => {
-                tuple_demands.insert(*source, *arity);
-            }
-            LoweredStep::Const { value, .. }
-            | LoweredStep::Tuple { value, .. }
-            | LoweredStep::List { value, .. }
-            | LoweredStep::Map { value, .. }
-            | LoweredStep::MapUpdate { value, .. }
-            | LoweredStep::Struct { value, .. }
-            | LoweredStep::Bitstring { value, .. }
-            | LoweredStep::FunctionRef { value, .. }
-            | LoweredStep::Lambda { value, .. }
-            | LoweredStep::BinaryOp { value, .. }
-            | LoweredStep::UnaryOp { value, .. }
-            | LoweredStep::MapIndex { value, .. }
-            | LoweredStep::FieldAccess { value, .. }
-            | LoweredStep::RequireMapValue { value, .. }
-            | LoweredStep::TupleField { value, .. } => {
-                tuple_demands.remove(value);
-            }
-            LoweredStep::SplitList { head, tail, .. } => {
-                tuple_demands.remove(head);
-                tuple_demands.remove(tail);
-            }
-            LoweredStep::BitstringInit { reader, .. } => {
-                tuple_demands.remove(reader);
-            }
-            LoweredStep::BitstringRead {
-                ok, value, next_reader, ..
-            } => {
-                tuple_demands.remove(ok);
-                tuple_demands.remove(value);
-                tuple_demands.remove(next_reader);
-            }
-            LoweredStep::AssertLiteral { .. }
-            | LoweredStep::AssertStruct { .. }
-            | LoweredStep::AssertEmptyList { .. }
-            | LoweredStep::AssertSame { .. }
-            | LoweredStep::AssertBitstringDone { .. } => {}
-        }
-    }
-    entry
-        .origin
-        .input_value()
-        .and_then(|value| tuple_demands.remove(&value))
-}
-
-fn destination_need(
-    entries: &[LoweredEntry],
-    dest: &ControlDestination,
-    outgoing_need: ExecutableNeed,
-    out: &mut HashMap<CallSiteId, ExecutableNeed>,
-) -> Option<usize> {
-    match dest {
-        ControlDestination::Return => match outgoing_need {
-            ExecutableNeed::Value => None,
-            ExecutableNeed::TupleFields(arity) => Some(arity),
-        },
-        ControlDestination::Deliver(entry_id) => collect_entry_callsite_needs(entries, *entry_id, outgoing_need, out),
-    }
-}
-
-fn record_callsite_need(out: &mut HashMap<CallSiteId, ExecutableNeed>, callsite: CallSiteId, observed: ExecutableNeed) {
-    use std::collections::hash_map::Entry;
-
-    match out.entry(callsite) {
-        Entry::Vacant(entry) => {
-            entry.insert(observed);
-        }
-        Entry::Occupied(mut entry) => match (*entry.get(), observed) {
-            (ExecutableNeed::Value, ExecutableNeed::Value)
-            | (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => {}
-            (ExecutableNeed::Value, tuple_fields @ ExecutableNeed::TupleFields(_)) => {
-                entry.insert(tuple_fields);
-            }
-            (ExecutableNeed::TupleFields(existing), ExecutableNeed::TupleFields(observed)) => {
-                assert_eq!(
-                    existing, observed,
-                    "one callsite cannot require two different tuple-field return arities"
-                );
-            }
-        },
-    }
-}
-
-/// Read one value's evidence. `None` means the path that defines it has
-/// produced no evidence this round — the reader contributes nothing and is
-/// re-run when the evidence lands. Absence never defaults to a type.
 fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
     values.get(&value).copied()
 }

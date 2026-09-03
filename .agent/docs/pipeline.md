@@ -44,6 +44,9 @@ keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveDispatchMask
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand
+          DeriveExecutableFacts(E)
+            one World-owned immutable projection of settled analysis, body,
+            entry dispatch, callsite summaries, origins, and demand type inputs
 product   RootBackendProduct(root)
             final dense interpreter package for a root
           BackendExecutable(E)
@@ -56,8 +59,8 @@ product   RootBackendProduct(root)
             transport positions
           ExecutableEffects(E)
             effect summary over the symbolic call-edge closure demanded by E
-          ExecutableFacts(E), CallableResolution(E, value, surface)
-            immutable demand inputs and exact first-class callable resolutions
+          CallableResolution(E, value, surface)
+            exact request-local first-class callable resolutions
           RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
             request-local representation demand and input-source accounting
           TransportShape(position), CallableConstruction(position)
@@ -76,6 +79,12 @@ BackendExecutable(E)
      <- TransportShape/CallableConstruction positions named by E
      <- RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
 ```
+
+`RuntimeDemand(E)`, `OutgoingInputEdges(E)`, `CallableResolution(...)`,
+`TransportShape(...)`, `CallableConstruction(...)`, and
+`MaterializedExecutable(E)` read `Settled(ExecutableFacts(E))` directly. The
+fact value lives in `World`; it is not copied into `ProductMemo`, and therefore
+has no product settlement, displacement, cache-hit, or re-entry lifecycle.
 
 `RootBackendProduct(root)` is the final assembly boundary. It keys the root
 entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
@@ -117,8 +126,7 @@ submit_root(main/0)
     pulls BackendExecutable(entry E)
       pulls AbiExecutable(E)
         pulls MaterializedExecutable(E)
-          waits on settled ActivationAnalyzed(E.activation), ReturnType(E.activation),
-          and local CallSiteSummary facts
+          waits on settled ExecutableFacts(E) and ReturnType(E.activation)
           pulls RuntimeDemand(E), OutgoingInputEdges(E), and local TransportShape products
         pulls ExecutableEffects(E)
         pulls EntryCapture, resume, input, return, and callable-boundary transport products

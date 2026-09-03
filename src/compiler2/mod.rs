@@ -12,6 +12,7 @@ mod dispatch;
 mod dispatch_reachability;
 mod drive;
 mod dump;
+mod executable_facts;
 mod facts;
 mod fixture_metadata;
 mod frontdoor;

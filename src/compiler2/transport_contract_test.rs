@@ -2182,12 +2182,12 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
             .all(|flow| flow.first_class_surfaces.is_empty() && !flow.opaque && !flow.escape),
         "operator refs used only as Enum.reduce reducers should not become first-class product demand: {plus_flows:?}"
     );
-    assert_eq!(driver.session().producer_pokes(), 0);
+    let executable_fact_pokes = assert_executable_fact_producer_pokes(&world, driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product path should emit finished produced outcomes"
     );
-    assert_eq!(*finished_producer_pokes.borrow(), Some(0));
+    assert_eq!(*finished_producer_pokes.borrow(), Some(executable_fact_pokes));
 }
 
 #[test]
@@ -3089,7 +3089,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     assert_eq!(plus_descr.function, Some(zero_capture_plus_input.2.activation.function));
     assert!(plus_descr.capture_lanes.is_empty());
     assert_eq!(plus_layout.carrier, TransportCarrier::Absent);
-    assert_eq!(driver.session().producer_pokes(), 0);
+    assert_executable_fact_producer_pokes(&world, driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product transport path should emit finished produced outcomes"
@@ -3169,7 +3169,7 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
             }
         }
     }
-    assert_eq!(driver.session().producer_pokes(), 0);
+    assert_executable_fact_producer_pokes(&world, driver.session());
 }
 
 #[test]
@@ -3219,7 +3219,7 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
         );
         assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
     }
-    assert_eq!(driver.session().producer_pokes(), 0);
+    assert_executable_fact_producer_pokes(&world, driver.session());
 }
 
 #[test]
@@ -3271,7 +3271,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         "direct operator refs should not fabricate first-class construction wrappers",
     );
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
-    assert_eq!(driver.session().producer_pokes(), 0);
+    let executable_fact_pokes = assert_executable_fact_producer_pokes(&world, driver.session());
     driver.finish_session();
     assert!(
         product_jobs.total_stops() > 0,
@@ -3281,7 +3281,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         pull_events.produced_count() > 0,
         "root backend product path should emit finished produced outcomes"
     );
-    assert_eq!(*finished_producer_pokes.borrow(), Some(0));
+    assert_eq!(*finished_producer_pokes.borrow(), Some(executable_fact_pokes));
 
     assert!(
         no_dump_job_fires > 0,
@@ -5621,6 +5621,39 @@ fn capture_finished_producer_pokes(tel: &ConfiguredTelemetry) -> Rc<RefCell<Opti
         },
     );
     observed
+}
+
+fn assert_executable_fact_producer_pokes(world: &World, session: &PullSession) -> u64 {
+    let expected = session.materialized_executables().len() as u64;
+    assert_eq!(
+        session.producer_pokes(),
+        expected,
+        "a cold product drive should expand the sole direct ExecutableFacts producer once per demanded executable",
+    );
+    let starts = session.work_starts();
+    assert!(
+        starts.blocked_waiter_expansion >= expected,
+        "each executable-fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
+    );
+    assert_eq!(
+        starts.unclassified, 0,
+        "direct fact production must not start unsanctioned work"
+    );
+    assert_eq!(starts.root_scans, 0, "direct fact production must not scan roots");
+    for executable in session.materialized_executables().keys() {
+        let fact = FactKey::ExecutableFacts(executable.clone());
+        let job = Job::DeriveExecutableFacts(executable.clone());
+        assert!(
+            world.fact_revision(&fact).is_some(),
+            "demanded executable fact must publish"
+        );
+        assert_eq!(
+            world.job_outputs(&job),
+            vec![fact],
+            "each demanded executable key must have exactly its one direct producer",
+        );
+    }
+    expected
 }
 
 fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTelemetry) {

@@ -139,6 +139,7 @@ pub struct World {
     activation_inputs: ActivationInputMap<Job>,
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
+    executable_facts: HashMap<ExecutableKey, std::rc::Rc<super::executable_facts::ExecutableFacts>>,
     backend: BackendProgramMap,
     macro_executables: MacroExecutableMap,
     native: NativeProgramMap,
@@ -257,6 +258,7 @@ impl World {
             activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
+            executable_facts: HashMap::new(),
             backend: BackendProgramMap::new(),
             macro_executables: MacroExecutableMap::new(),
             native: NativeProgramMap::new(),
@@ -757,6 +759,14 @@ impl World {
     /// See [`World::callsite_resolution`].
     pub fn callsite_target_resolution(&self, key: &CallSiteKey) -> Option<&CallSiteResolution<CallSiteTargets>> {
         self.callsite_targets.get(key)
+    }
+
+    pub(crate) fn executable_facts(
+        &self,
+        key: &ExecutableKey,
+    ) -> Option<&std::rc::Rc<super::executable_facts::ExecutableFacts>> {
+        self.fact_revision(&FactKey::ExecutableFacts(key.clone()))?;
+        self.executable_facts.get(key)
     }
 
     pub(crate) fn backend_program(&self, root: RootId) -> BackendProgram {
@@ -2588,6 +2598,18 @@ impl World {
             }
         }
         self.callsites.define(&mut self.types, key, resolution)
+    }
+
+    pub(crate) fn define_executable_facts(
+        &mut self,
+        key: ExecutableKey,
+        facts: std::rc::Rc<super::executable_facts::ExecutableFacts>,
+    ) -> bool {
+        if self.executable_facts.get(&key) == Some(&facts) {
+            return false;
+        }
+        self.executable_facts.insert(key, facts);
+        true
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {

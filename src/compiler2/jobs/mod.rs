@@ -12,6 +12,7 @@ pub(crate) mod backend;
 mod body;
 mod contract;
 mod dispatch;
+mod executable_facts;
 mod keying;
 mod macro_runtime;
 mod native;
@@ -50,6 +51,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, tel, activation),
+        Job::DeriveExecutableFacts(executable) => executable_facts::derive_executable_facts(world, executable),
         Job::BuildBackendProduct(root_id) => backend::build_backend_product(world, tel, *root_id),
         Job::LowerNativeProgram(root_id) => native::lower_native_program(world, tel, *root_id),
     }

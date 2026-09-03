@@ -63,12 +63,12 @@ use super::body::{
 #[cfg(test)]
 use super::body::{LoweredBody, LoweredStep, LoweredTail};
 #[cfg(test)]
+use super::executable_facts::ExecutableFacts;
+#[cfg(test)]
 use super::identity::ExecutableNeed;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId};
 #[cfg(test)]
-use super::jobs::runtime_demand::{
-    ExecutableFacts, RuntimeDemandFormulaSnapshot, RuntimeDemandProductInput, TargetDemandContribution,
-};
+use super::jobs::runtime_demand::{RuntimeDemandFormulaSnapshot, RuntimeDemandProductInput, TargetDemandContribution};
 use super::semantic::{
     CallableDemand, CallableFlowEdge, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand,
     RuntimeDemand, ShapeDemand,
@@ -876,10 +876,7 @@ impl ProgramCanon<'_> {
     }
 
     #[cfg(test)]
-    fn runtime_demand_formula_facts(
-        &mut self,
-        facts: &super::jobs::runtime_demand::RuntimeDemandFacts<'_>,
-    ) -> Vec<String> {
+    fn runtime_demand_formula_facts(&mut self, facts: &super::executable_facts::RuntimeDemandFacts<'_>) -> Vec<String> {
         let body = self.runtime_demand_body(facts.body);
         let mut out = vec![format!("facts body={body}")];
         out.push(format!("facts reachable_clauses={:?}", facts.reachable_clauses));
