@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 3,
-  "status": "closed",
+  "status": "open",
   "title": "Delete the always-empty latent-executable channel and correct its documented ownership",
   "type": "task",
-  "updated_at": "2026-09-03T03:59:28Z"
+  "updated_at": "2026-09-03T03:59:33Z"
 }
