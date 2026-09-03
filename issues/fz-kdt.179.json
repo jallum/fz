@@ -9,9 +9,15 @@
   "id": "fz-kdt.179",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "REPRODUCER IS LIVE AND PINNED (fz-kdt.144, 0889c0b3a): FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp fixtures2/00277_enum_tier0_fixture.fz 2\u003e\u00261 \u003e/dev/null | grep -c 'surface-membership escape' -\u003e 12. Each report names the value and the element that broke it: `value [1, :tail], element 1 = :tail is outside every clause the surface names` (4x), and the same for [3, 1, :tail] (element 2) and [5, 3, 1, :tail] (element 3). Measured invariance: 12 at the settled arrival and under arms:reverse and arms:1..6 -- the callsite arrival order does not touch it, the evidence that this is member SELECTION and not a callsite seat; 0 under wrappers:1, wrappers:6 and wrappers:reverse: the settled wrapper order is the only escaping order. Corpus-wide nothing else at the settled arrival. SURFACE_MEMBERSHIP_CENSUS pins all five rows (settled 12, arms:6 12, three wrapper settings 0), so the cure is red-first by construction: routing wrapper members through routable_alternatives must take the settled 12 to 0 without moving the wrapper rows off 0. Expect canon movers on 00277 -- classify them; 0 behaviour movers on three doors is the other half. Sequence after fz-kdt.178 (the widened static census is the second oracle).",
+      "timestamp": "2026-09-03T04:54:24Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Construction-wrapper member selection bypasses the drop and the covering seat: dispatch_from_callable_flow_edges seats members in interner order",
   "type": "task",
-  "updated_at": "2026-09-03T03:31:43Z"
+  "updated_at": "2026-09-03T04:54:24Z"
 }
