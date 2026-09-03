@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete residual legacy fixture metadata, APIs, documentation, and sidecars",
   "type": "task",
-  "updated_at": "2026-09-03T01:31:52Z"
+  "updated_at": "2026-09-03T01:32:12Z"
 }
