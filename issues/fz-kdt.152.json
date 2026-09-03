@@ -15,11 +15,15 @@
     {
       "text": "LANDED e132fe768 (2026-09-02; refuter verdict MERGE outright — first unconditional MERGE of the campaign; two doc-precision fixes folded anyway per the provable-fact law: 'disagree about the captures' → full CallableDescr equality incl. function; the Cut/Waiting comment now covers both cases + the BTreeSet-order note). Refuter highlights: agreement = full structural equality = the same equality intern_callable pools on, so a physics false-agree is INEXPRESSIBLE; 127's shape refuses by construction; the multi-target path fires on exactly 9 fixtures corpus-wide with ZERO disagreements; the grounded-direct/fallback triangle is NARROWED not closed (pre-existing, fail-loud, unreachable at head — noted); THE FIX IS BROADER THAN ITS FIXTURES: five more all-doors-red shapes go green (joined mailbox reducers, tuple accumulator via mailbox, int+float accumulators, reducer-capturing-closure, one reducer at two callsites); 2625-run three-door sweep = exactly one difference, the fix. Bycatch verdicts: fz-kdt.155 correctly scoped; fz-kdt.156 MISDIAGNOSED (re-scoped); refusal-half coverage gap → fz-kdt.157.",
       "timestamp": "2026-09-02T11:26:50Z"
+    },
+    {
+      "text": "CLOSED (2026-09-02): landed e132fe768 (refuter verdict MERGE), merged to main in PR #107 (a3a9761d1). The ticket was never marked closed after landing; nothing remains. Bycatch 155 (landed) and 156 (re-scoped) have their own tickets.",
+      "timestamp": "2026-09-03T00:02:08Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "P1: a mailbox-delivered closure cannot be an Enum reducer -- fails on all three doors",
   "type": "task",
-  "updated_at": "2026-09-02T11:26:50Z"
+  "updated_at": "2026-09-03T00:02:08Z"
 }
