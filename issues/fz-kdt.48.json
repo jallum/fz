@@ -11,9 +11,15 @@
   "id": "fz-kdt.48",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "DUPLICATE FOLDED (2026-09-03): fz-kdt.182 filed the same defect from the fz-kdt.120 research -- Types::union(empty_list(), list(int)) interns as `[] | [int]` though is_subtype(empty, list_int) holds (identical=false, is_equivalent=true, mutual subtypes), and fz-kdt.120's rule makes it visible (reduce at a ground reducer answers Known { result: [] | [int] }). Measured downstream at 0889c0b3a: activation keys carrying a `[] | [T]` union across the corpus: 1 at base (main/0#lambda@476-519/2[{any, any}, [] | [{any, any}]]), 0 under 120's prototype; render-identical duplicate executable keys 67 -\u003e 40. So 120 does not need this first, but this ticket's \"mutually-subtype types intern to one ID\" is the general cure. 182 closed.",
+      "timestamp": "2026-09-03T08:19:03Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Make Ty identity denotational: mutually-subtype types intern to one ID",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:47Z"
+  "updated_at": "2026-09-03T08:19:03Z"
 }
