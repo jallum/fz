@@ -5,8 +5,11 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
@@ -26,6 +29,71 @@ use super::semantic::{CallableFlowEdge, CallableSurface, ExecutableRuntimeDemand
 use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
 use super::world::World;
+
+static NEXT_PULL_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+const SESSION_STARTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
+const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
+const PRODUCT_REQUESTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
+const PRODUCT_EVALUATED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
+const PRODUCT_COPUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
+const RECURSIVE_GROUP_PUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
+
+fn causal_product_events_enabled(tel: &impl Telemetry) -> bool {
+    [
+        PRODUCT_REQUESTED_EVENT,
+        PRODUCT_EVALUATED_EVENT,
+        PRODUCT_COPUBLISHED_EVENT,
+        RECURSIVE_GROUP_PUBLISHED_EVENT,
+    ]
+    .into_iter()
+    .any(|event| tel.is_raw_event_enabled(event))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PullSessionId(NonZeroU64);
+
+impl PullSessionId {
+    pub(crate) fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProductRequestId(NonZeroU64);
+
+impl ProductRequestId {
+    pub(crate) fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+#[derive(Debug)]
+struct ProductRequestIds {
+    next: Option<NonZeroU64>,
+}
+
+impl ProductRequestIds {
+    fn new() -> Self {
+        Self {
+            next: NonZeroU64::new(1),
+        }
+    }
+
+    fn allocate(&mut self) -> ProductRequestId {
+        let id = self.next.expect("product request identity exhausted");
+        self.next = id.get().checked_add(1).and_then(NonZeroU64::new);
+        ProductRequestId(id)
+    }
+}
+
+fn allocate_pull_session_id(counter: &AtomicU64) -> PullSessionId {
+    let id = counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            (next != 0).then(|| next.checked_add(1).unwrap_or(0))
+        })
+        .unwrap_or_else(|_| panic!("pull session identity exhausted"));
+    PullSessionId(NonZeroU64::new(id).expect("the allocator never returns its exhausted sentinel"))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InputSlot {
@@ -655,6 +723,7 @@ impl ProductMemo {
     fn finish_completion(
         &mut self,
         tel: &impl Telemetry,
+        emit_causal: bool,
         requested: &ProductKey,
         mut completion: ProductCompletion,
         types: &super::types::Types,
@@ -690,7 +759,7 @@ impl ProductMemo {
                     self.produced.remove(requested);
                     return false;
                 }
-                self.commit_members(tel, members, None, types);
+                self.commit_members(tel, emit_causal, requested, members, None, types);
             }
             ProductCompletion::RecursiveGroup(members) => {
                 let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
@@ -732,7 +801,7 @@ impl ProductMemo {
                     .into_iter()
                     .map(|(key, value, _)| (key, value, group_dependencies.clone()))
                     .collect();
-                self.commit_members(tel, members, Some(group_id), types);
+                self.commit_members(tel, emit_causal, requested, members, Some(group_id), types);
             }
         }
         true
@@ -741,6 +810,8 @@ impl ProductMemo {
     fn commit_members(
         &mut self,
         tel: &impl Telemetry,
+        emit_causal: bool,
+        requested: &ProductKey,
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
         group: Option<u64>,
         types: &super::types::Types,
@@ -784,6 +855,11 @@ impl ProductMemo {
                     group,
                 },
             );
+            if emit_causal && group.is_some() {
+                tel.raw_event2(RECURSIVE_GROUP_PUBLISHED_EVENT, requested, key);
+            } else if emit_causal && key != requested {
+                tel.raw_event2(PRODUCT_COPUBLISHED_EVENT, requested, key);
+            }
         }
         let mutations = prepared.iter().flat_map(|(key, _, _, _, changed)| {
             self.reader_mutations(
@@ -1170,6 +1246,7 @@ type DemandContributionTransaction = (
 
 #[derive(Debug)]
 pub struct PullSession {
+    id: Option<PullSessionId>,
     root: RootId,
     memo: ProductMemo,
     outgoing_edge_request_set: HashSet<ExecutableKey>,
@@ -1242,6 +1319,7 @@ pub struct PullSession {
 impl PullSession {
     pub fn new(root: RootId) -> Self {
         Self {
+            id: None,
             root,
             memo: ProductMemo::default(),
             outgoing_edge_request_set: HashSet::new(),
@@ -1270,6 +1348,10 @@ impl PullSession {
 
     pub fn root(&self) -> RootId {
         self.root
+    }
+
+    pub fn id(&self) -> Option<PullSessionId> {
+        self.id
     }
 
     fn outgoing_edge_requests(&self) -> &HashSet<ExecutableKey> {
@@ -1336,6 +1418,7 @@ impl PullSession {
         let changed = previous.is_some_and(|previous| previous != demand);
         self.memo.finish_completion(
             tel,
+            causal_product_events_enabled(tel),
             &key,
             ProductCompletion::Batch(vec![(
                 key.clone(),
@@ -2524,6 +2607,10 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
 pub struct ProductDriver<'a, T: Telemetry> {
     tel: &'a T,
     session: PullSession,
+    emit_causal_products: bool,
+    emit_session_lifecycle: bool,
+    request_ids: ProductRequestIds,
+    finished: Cell<bool>,
 }
 
 impl<'a, T: Telemetry> ProductDriver<'a, T> {
@@ -2537,7 +2624,33 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     pub fn with_session(tel: &'a T, session: PullSession) -> Self {
-        Self { tel, session }
+        Self::with_session_id_source(tel, session, || allocate_pull_session_id(&NEXT_PULL_SESSION_ID))
+    }
+
+    fn with_session_id_source(
+        tel: &'a T,
+        mut session: PullSession,
+        allocate_session_id: impl FnOnce() -> PullSessionId,
+    ) -> Self {
+        let emit_session_lifecycle =
+            tel.is_raw_event_enabled(SESSION_STARTED_EVENT) || tel.is_raw_event_enabled(SESSION_FINISHED_EVENT);
+        if session.id.is_none() && emit_session_lifecycle {
+            session.id = Some(allocate_session_id());
+        }
+        if emit_session_lifecycle {
+            tel.raw_event1(
+                SESSION_STARTED_EVENT,
+                &session.id.expect("enabled session telemetry requires an identity"),
+            );
+        }
+        Self {
+            tel,
+            session,
+            emit_causal_products: causal_product_events_enabled(tel),
+            emit_session_lifecycle,
+            request_ids: ProductRequestIds::new(),
+            finished: Cell::new(false),
+        }
     }
 
     pub fn session(&self) -> &PullSession {
@@ -2551,7 +2664,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     pub fn finish_session(&self) {
         #[cfg(debug_assertions)]
         self.session.assert_executable_effects_fresh();
-        self.session.emit_finished(self.tel);
+        self.emit_finished_once();
     }
 
     pub(crate) fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
@@ -2559,6 +2672,14 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
+        assert!(
+            !self.session.memo.contains_in_progress(&key),
+            "safe product producers cannot recursively enter ProductDriver::pull"
+        );
+        let request = self.request_ids.allocate();
+        if self.emit_causal_products {
+            self.tel.raw_event2(PRODUCT_REQUESTED_EVENT, &key, &request);
+        }
         self.session
             .reconcile_fact_movements(self.tel, producers.product_types());
         self.session
@@ -2578,10 +2699,10 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         if self.session.memo.is_displaced(&key) {
             self.session.discard_product_side_effects(&key);
         }
-        if !self.session.memo.begin(key.clone()) {
-            self.emit("reentered", &key);
-            return PullOutcome::Waiting(vec![PullWait::Product(key)]);
-        }
+        assert!(
+            self.session.memo.begin(key.clone()),
+            "safe product producers cannot recursively enter ProductDriver::pull"
+        );
 
         let mut context = ProductReadContext::new(&mut self.session);
         let outcome = match &key {
@@ -2606,6 +2727,9 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             }
         };
         let (dependencies, mut staged, recursive_group) = context.into_completion();
+        if self.emit_causal_products {
+            self.tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
+        }
 
         match outcome {
             PullOutcome::Produced(value) => {
@@ -2619,10 +2743,13 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     staged.push((key.clone(), value.clone(), dependencies));
                     ProductCompletion::Batch(staged)
                 };
-                let settled =
-                    self.session
-                        .memo
-                        .finish_completion(self.tel, &key, completion, producers.product_types());
+                let settled = self.session.memo.finish_completion(
+                    self.tel,
+                    self.emit_causal_products,
+                    &key,
+                    completion,
+                    producers.product_types(),
+                );
                 if !settled {
                     self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
@@ -2641,15 +2768,31 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     fn emit(&self, event: &'static str, key: &ProductKey) {
         self.tel.raw_event1(&["fz", "compiler2", "pull", "product", event], key);
     }
+
+    fn emit_finished_once(&self) {
+        if self.emit_session_lifecycle && !self.finished.replace(true) {
+            self.session.emit_finished(self.tel);
+        }
+    }
+}
+
+impl<T: Telemetry> Drop for ProductDriver<'_, T> {
+    fn drop(&mut self) {
+        self.emit_finished_once();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::rc::Rc;
 
-    use crate::telemetry::ConfiguredTelemetry;
+    use crate::telemetry::causal::{
+        CausalReport, ProductEvaluationCause, ProductEvaluationTriggerKind, ProductEvaluationWait, parse_public_trace,
+    };
+    use crate::telemetry::{ConfiguredTelemetry, JsonlBackend};
 
     use super::super::drive::Job;
     use super::super::facts::FactReadiness;
@@ -2675,6 +2818,7 @@ mod tests {
     ) -> bool {
         memo.finish_completion(
             tel,
+            causal_product_events_enabled(tel),
             key,
             ProductCompletion::Batch(vec![(key.clone(), value, dependencies)]),
             types,
@@ -2688,7 +2832,13 @@ mod tests {
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
         types: &super::super::types::Types,
     ) -> bool {
-        memo.finish_completion(tel, requested, ProductCompletion::Batch(members), types)
+        memo.finish_completion(
+            tel,
+            causal_product_events_enabled(tel),
+            requested,
+            ProductCompletion::Batch(members),
+            types,
+        )
     }
 
     fn finish_test_group(
@@ -2698,7 +2848,13 @@ mod tests {
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
         types: &super::super::types::Types,
     ) -> bool {
-        memo.finish_completion(tel, requested, ProductCompletion::RecursiveGroup(members), types)
+        memo.finish_completion(
+            tel,
+            causal_product_events_enabled(tel),
+            requested,
+            ProductCompletion::RecursiveGroup(members),
+            types,
+        )
     }
 
     /// Recursive search work is a property of the pending graph, not of the
@@ -3179,13 +3335,15 @@ mod tests {
         types: super::super::Types,
         produced: HashSet<ProductKey>,
         calls: Vec<ProductKey>,
-        reenter: Option<ProductKey>,
+        self_wait: Option<ProductKey>,
         root_entry: Option<ExecutableKey>,
         root_prerequisites: Vec<ProductKey>,
+        root_recursive_prerequisite: Option<ProductKey>,
+        recursive_telemetry: Option<Rc<ConfiguredTelemetry>>,
         facts: HashMap<FactKey, FactState>,
         runtime_fact: Option<FactUse<FactKey>>,
         runtime_value: Option<ProductValue>,
-        runtime_child: Option<ProductKey>,
+        runtime_children: HashMap<ProductKey, ProductKey>,
         backend_fact: Option<FactUse<FactKey>>,
         backend_value: Option<ProductValue>,
         fact_state_reads: usize,
@@ -3202,7 +3360,7 @@ mod tests {
 
         fn produce(&mut self, key: ProductKey) -> PullOutcome {
             self.calls.push(key.clone());
-            if self.reenter.as_ref() == Some(&key) {
+            if self.self_wait.as_ref() == Some(&key) {
                 return PullOutcome::wait_on_product(key);
             }
             match key {
@@ -3240,9 +3398,10 @@ mod tests {
             let tel = ConfiguredTelemetry::new();
             let key = ProductKey::RootBackendProduct(root);
             self.calls.push(key.clone());
-            if !self.root_prerequisites.is_empty() {
-                let waits = self
-                    .root_prerequisites
+            let mut waits = if self.root_prerequisites.is_empty() {
+                Vec::new()
+            } else {
+                self.root_prerequisites
                     .iter()
                     .filter(|prerequisite| {
                         context
@@ -3251,10 +3410,22 @@ mod tests {
                     })
                     .cloned()
                     .map(PullWait::Product)
-                    .collect::<Vec<_>>();
-                if !waits.is_empty() {
-                    return PullOutcome::Waiting(waits);
+                    .collect::<Vec<_>>()
+            };
+            if let Some(prerequisite) = self.root_recursive_prerequisite.clone() {
+                let telemetry = self
+                    .recursive_telemetry
+                    .as_ref()
+                    .expect("a recursive fake producer needs its driver telemetry");
+                if matches!(
+                    context.read_recursive_product(telemetry.as_ref(), prerequisite.clone(), &key, &self.types),
+                    RecursiveProductRead::Waiting
+                ) {
+                    waits.push(PullWait::Product(prerequisite));
                 }
+            }
+            if !waits.is_empty() {
+                return PullOutcome::Waiting(waits);
             }
             let prerequisite =
                 ProductKey::RuntimeDemand(self.root_entry.clone().expect("fake root entry should be set"));
@@ -3333,7 +3504,7 @@ mod tests {
                     return PullOutcome::wait_on_fact(fact);
                 }
             }
-            if let Some(child) = self.runtime_child.clone()
+            if let Some(child) = self.runtime_children.get(&key).cloned()
                 && context
                     .read_product_entry(&ConfiguredTelemetry::new(), child.clone(), &self.types)
                     .is_none()
@@ -3417,6 +3588,169 @@ mod tests {
         assert_eq!(producers.calls.iter().filter(|key| **key == root_key).count(), 2);
         assert_eq!(capture.produced.get(), 2);
         assert_eq!(capture.cache_hits.get(), 1);
+    }
+
+    #[test]
+    fn product_driver_correlates_waiting_producer_runs_and_cache_hits() {
+        let tel = Rc::new(ConfiguredTelemetry::new());
+        let (buf, writer) = crate::telemetry::capture::vec_writer();
+        JsonlBackend::new_writer(writer).install(tel.as_ref());
+        let root = RootId::for_test(90);
+        let root_key = ProductKey::RootBackendProduct(root);
+        let dependency = ProductKey::RuntimeDemand(fake_executable_with_function(root, 901));
+        let dependency_child = ProductKey::RuntimeDemand(fake_executable_with_function(root, 902));
+        let moved = ProductKey::RuntimeDemand(fake_executable_with_function(root, 903));
+        let mut producers = FakeProducers {
+            root_entry: match &dependency {
+                ProductKey::RuntimeDemand(executable) => Some(executable.clone()),
+                _ => unreachable!(),
+            },
+            root_prerequisites: vec![moved.clone()],
+            root_recursive_prerequisite: Some(dependency.clone()),
+            recursive_telemetry: Some(Rc::clone(&tel)),
+            runtime_children: HashMap::from([(dependency.clone(), dependency_child.clone())]),
+            ..FakeProducers::default()
+        };
+        let mut driver = ProductDriver::new(tel.as_ref(), root);
+
+        assert_eq!(
+            driver.pull(&mut producers, dependency.clone()),
+            PullOutcome::wait_on_product(dependency_child.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key.clone()),
+            PullOutcome::Waiting(vec![
+                PullWait::Product(moved.clone()),
+                PullWait::Product(dependency.clone())
+            ])
+        );
+        assert_eq!(
+            driver.pull(&mut producers, moved),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key.clone()),
+            PullOutcome::wait_on_product(dependency.clone())
+        );
+        assert_eq!(
+            driver.pull(&mut producers, dependency_child),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, dependency),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            driver.pull(&mut producers, root_key),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        driver.finish_session();
+
+        let events = parse_public_trace(&buf.borrow());
+        let requested_name = ["fz", "compiler2", "pull", "product", "requested"].map(str::to_string);
+        let evaluated_name = ["fz", "compiler2", "pull", "product", "evaluated"].map(str::to_string);
+        let settled_name = ["fz", "compiler2", "pull", "product", "settled"].map(str::to_string);
+        let normalized_product = |event: &crate::telemetry::causal::PublicEvent| {
+            let mut product = event.metadata["product"].clone();
+            product
+                .as_object_mut()
+                .expect("product identity is an object")
+                .remove("opaque_type");
+            product
+        };
+        let is_root = |event: &&crate::telemetry::causal::PublicEvent| {
+            event.metadata["product"]["kind"] == "root_backend_product"
+                && event.metadata["product"]["root_id"] == u64::from(root.as_u32())
+        };
+        let all_requests = events
+            .iter()
+            .filter(|event| event.name == requested_name)
+            .map(|event| event.metadata["request_id"].as_u64().expect("request identity"))
+            .collect::<Vec<_>>();
+        let all_evaluations = events
+            .iter()
+            .filter(|event| event.name == evaluated_name)
+            .map(|event| event.metadata["request_id"].as_u64().expect("evaluation identity"))
+            .collect::<Vec<_>>();
+        assert_eq!(all_requests, (1..=8).collect::<Vec<_>>());
+        assert_eq!(all_evaluations, (1..=7).collect::<Vec<_>>());
+        let requests = events
+            .iter()
+            .filter(|event| event.name == requested_name && is_root(event))
+            .map(|event| event.metadata["request_id"].as_u64().expect("request identity"))
+            .collect::<Vec<_>>();
+        let evaluations = events
+            .iter()
+            .filter(|event| event.name == evaluated_name && is_root(event))
+            .map(|event| event.metadata["request_id"].as_u64().expect("evaluation identity"))
+            .collect::<Vec<_>>();
+        assert_eq!(requests, [2, 4, 7, 8]);
+        assert_eq!(evaluations, [2, 4, 7]);
+
+        let (moved_position, moved_event) = events
+            .iter()
+            .enumerate()
+            .find(|(_, event)| event.name == settled_name && event.metadata["product"]["function_id"] == 903)
+            .expect("the exact moved dependency settlement");
+        let moved_product = normalized_product(moved_event);
+        let dependency_product = events
+            .iter()
+            .find(|event| event.name == requested_name && event.metadata["request_id"] == 1)
+            .map(normalized_product)
+            .expect("the recursive dependency request");
+        let request_position = events
+            .iter()
+            .position(|event| event.name == requested_name && event.metadata["request_id"] == 4)
+            .expect("the moved producer request");
+
+        let report = CausalReport::derive(&events);
+        let initial_evaluation = report
+            .product_evaluations
+            .iter()
+            .find(|evaluation| evaluation.request == 2)
+            .expect("initial root producer run");
+        let moved_evaluation = report
+            .product_evaluations
+            .iter()
+            .find(|evaluation| evaluation.request == 4)
+            .expect("producer run after dependency movement");
+        assert_eq!(moved_evaluation.prior_evaluation, Some(initial_evaluation.position));
+        assert_eq!(moved_evaluation.cause, ProductEvaluationCause::ProductMovement);
+        assert_eq!(moved_evaluation.prior_waits.len(), 2);
+        assert!(matches!(
+            &moved_evaluation.prior_waits[0],
+            ProductEvaluationWait::Product(product) if product.raw == moved_product
+        ));
+        assert!(matches!(
+            &moved_evaluation.prior_waits[1],
+            ProductEvaluationWait::Product(product) if product.raw == dependency_product
+        ));
+        assert_eq!(moved_evaluation.triggers.len(), 1);
+        let trigger = &moved_evaluation.triggers[0];
+        assert_eq!(trigger.position, moved_position);
+        assert_eq!(trigger.kind, ProductEvaluationTriggerKind::ProductSettlement);
+        assert!(matches!(
+            &trigger.dependency,
+            ProductEvaluationWait::Product(product) if product.raw == moved_product
+        ));
+        let search = report
+            .recursive_searches
+            .iter()
+            .find(|search| search.request == Some(4) && search.product == moved_evaluation.product)
+            .expect("recursive search inside the moved producer run");
+        assert_eq!(search.session, moved_evaluation.session);
+        assert_eq!(search.dependency.raw, dependency_product);
+        assert_eq!(search.cause, Some(ProductEvaluationCause::ProductMovement));
+        assert!(
+            initial_evaluation.position < moved_position
+                && moved_position < request_position
+                && request_position < search.position
+                && search.position < moved_evaluation.position
+        );
     }
 
     #[test]
@@ -3740,7 +4074,7 @@ mod tests {
                 ProductKey::RuntimeDemand(executable) => Some(executable.clone()),
                 _ => unreachable!(),
             },
-            runtime_child: Some(child.clone()),
+            runtime_children: HashMap::from([(parent.clone(), child.clone())]),
             backend_fact: Some(fact.clone()),
             facts: HashMap::from([(
                 fact.fact().clone(),
@@ -3843,21 +4177,25 @@ mod tests {
     }
 
     #[test]
-    fn product_driver_turns_reentry_into_a_product_wait() {
+    fn product_driver_rejects_an_in_progress_key_before_request_telemetry() {
         let tel = ConfiguredTelemetry::new();
+        let requests = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&requests);
+        tel.attach_raw_event2::<ProductKey, ProductRequestId, _>(PRODUCT_REQUESTED_EVENT, move |_, _, _, _, _| {
+            observed.set(observed.get() + 1)
+        });
         let root = RootId::for_test(2);
         let executable = fake_executable(root);
         let key = ProductKey::ExecutableEffects(executable);
         let mut driver = ProductDriver::new(&tel, root);
-        let mut producers = FakeProducers {
-            reenter: Some(key.clone()),
-            ..FakeProducers::default()
-        };
+        let mut producers = FakeProducers::default();
 
         assert!(driver.session.memo.begin(key.clone()));
-        let outcome = driver.pull(&mut producers, key.clone());
-
-        assert_eq!(outcome, PullOutcome::wait_on_product(key));
+        assert!(catch_unwind(AssertUnwindSafe(|| driver.pull(&mut producers, key.clone()))).is_err());
+        assert_eq!(requests.get(), 0);
+        assert_eq!(driver.request_ids.next, NonZeroU64::new(1));
+        assert!(driver.session.memo.contains_in_progress(&key));
+        assert!(producers.calls.is_empty());
     }
 
     #[test]
@@ -3886,7 +4224,7 @@ mod tests {
         driver.pull(&mut fake, ProductKey::BackendExecutable(first.clone()));
         assert_eq!(driver.session().memo().generation(&frontier), first_generation);
 
-        fake.reenter = Some(ProductKey::OutgoingInputEdges(second.clone()));
+        fake.self_wait = Some(ProductKey::OutgoingInputEdges(second.clone()));
         assert_eq!(
             driver.pull(&mut fake, ProductKey::OutgoingInputEdges(second.clone())),
             PullOutcome::wait_on_product(ProductKey::OutgoingInputEdges(second.clone()))
@@ -4800,14 +5138,18 @@ mod tests {
     }
 
     #[test]
-    fn pull_session_finished_telemetry_reports_producer_pokes() {
+    fn pull_session_lifecycle_finishes_on_drop_and_reports_producer_pokes() {
         let tel = ConfiguredTelemetry::new();
         let observed = Rc::new(Cell::new(None));
         let sink = Rc::clone(&observed);
         tel.attach_raw_event1::<PullSession, _>(
             &["fz", "compiler2", "pull", "session", "finished"],
             move |_, _, _, session| {
-                sink.set(Some((session.demanded_executables.len(), session.producer_pokes)));
+                sink.set(Some((
+                    session.id().expect("emitted sessions have identities"),
+                    session.demanded_executables.len(),
+                    session.producer_pokes,
+                )));
             },
         );
         let root = RootId::for_test(5);
@@ -4820,9 +5162,91 @@ mod tests {
             PullOutcome::Produced(ProductValue::Unit)
         );
         driver.session_mut().record_producer_pokes(2);
-        driver.finish_session();
+        let session_id = driver.session().id().expect("enabled session telemetry");
+        drop(driver);
 
-        assert_eq!(observed.get(), Some((1, 2)));
+        assert_eq!(observed.get(), Some((session_id, 1, 2)));
+        let second = ProductDriver::new(&tel, RootId::for_test(6));
+        let second_id = second.session().id().expect("enabled session telemetry");
+        drop(second);
+        assert_ne!(second_id, session_id);
+    }
+
+    #[test]
+    fn pull_session_id_exhaustion_never_wraps_or_emits_a_reserved_identity() {
+        let counter = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(allocate_pull_session_id(&counter).get(), u64::MAX - 1);
+        assert_eq!(allocate_pull_session_id(&counter).get(), u64::MAX);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert!(catch_unwind(|| allocate_pull_session_id(&counter)).is_err());
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "exhaustion must be permanent");
+
+        let tel = ConfiguredTelemetry::new();
+        let starts = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&starts);
+        tel.attach_raw_event1::<PullSessionId, _>(SESSION_STARTED_EVENT, move |_, _, _, _| {
+            observed.set(observed.get() + 1);
+        });
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            ProductDriver::with_session_id_source(&tel, PullSession::new(RootId::for_test(8)), || {
+                panic!("pull session identity exhausted")
+            })
+        }));
+        assert!(result.is_err());
+        assert_eq!(starts.get(), 0, "identity exhaustion must precede session telemetry");
+    }
+
+    #[test]
+    fn product_request_id_exhaustion_precedes_telemetry_and_cannot_reuse_zero() {
+        let tel = ConfiguredTelemetry::new();
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&requests);
+        tel.attach_raw_event2::<ProductKey, ProductRequestId, _>(
+            PRODUCT_REQUESTED_EVENT,
+            move |_, _, _, _, request| observed.borrow_mut().push(*request),
+        );
+        let root = RootId::for_test(9);
+        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let mut driver = ProductDriver::new(&tel, root);
+        driver.request_ids.next = NonZeroU64::new(u64::MAX);
+        let mut producers = FakeProducers::default();
+
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::Produced(ProductValue::Unit)
+        );
+        assert_eq!(
+            requests
+                .borrow()
+                .iter()
+                .map(|request| request.get())
+                .collect::<Vec<_>>(),
+            [u64::MAX]
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| driver.pull(&mut producers, key))).is_err(),
+            "the request after the last nonzero identity must fail"
+        );
+        assert_eq!(
+            requests
+                .borrow()
+                .iter()
+                .map(|request| request.get())
+                .collect::<Vec<_>>(),
+            [u64::MAX],
+            "exhaustion must happen before a request event"
+        );
+        assert!(driver.request_ids.next.is_none(), "exhaustion must be permanent");
+    }
+
+    #[test]
+    fn disabled_telemetry_does_not_mint_a_session_identity() {
+        let driver = ProductDriver::new(&crate::telemetry::sink::NullTelemetry, RootId::for_test(5));
+        assert_eq!(driver.session().id(), None);
+
+        let configured = ConfiguredTelemetry::new();
+        let driver = ProductDriver::new(&configured, RootId::for_test(5));
+        assert_eq!(driver.session().id(), None);
     }
 
     fn fake_executable(root: RootId) -> ExecutableKey {

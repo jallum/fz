@@ -371,23 +371,109 @@ impl JsonlBackend {
                     );
                 },
             );
-        Self::install_raw_value::<crate::compiler2::pull::PullSession>(
-            telemetry,
-            &backend,
+        let session_started_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event1::<crate::compiler2::pull::PullSessionId, _>(
+            &["fz", "compiler2", "pull", "session", "started"],
+            move |name, span_id, parent_span_id, session_id| {
+                session_started_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! { session_id: session_id.get() },
+                );
+            },
+        );
+        let session_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event1::<crate::compiler2::pull::PullSession, _>(
             &["fz", "compiler2", "pull", "session", "finished"],
-            "session",
+            move |name, span_id, parent_span_id, session| {
+                session_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        session_id: session.id().expect("an emitted session has an identity").get(),
+                        session: crate::telemetry::opaque(session),
+                    },
+                );
+            },
         );
-        Self::install_raw_value::<crate::compiler2::DemandConeSettlement>(
-            telemetry,
-            &backend,
+        let demand_cone_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::DemandConeSettlement, _>(
             &["fz", "compiler2", "demand", "cone", "settled"],
-            "cone",
+            move |name, span_id, parent_span_id, product, cone| {
+                demand_cone_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        product: crate::telemetry::opaque(product),
+                        cone: crate::telemetry::opaque(cone),
+                    },
+                );
+            },
         );
+        for name in [
+            &["fz", "compiler2", "pull", "recursive_group", "published"][..],
+            &["fz", "compiler2", "pull", "product", "copublished"][..],
+        ] {
+            let publication_backend = Rc::clone(&backend);
+            telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductKey, _>(
+                name,
+                move |name, span_id, parent_span_id, publisher, peer| {
+                    publication_backend.handle_raw_event(
+                        name,
+                        span_id,
+                        parent_span_id,
+                        crate::metadata! {
+                            publisher: crate::telemetry::opaque(publisher),
+                            peer: crate::telemetry::opaque(peer),
+                        },
+                    );
+                },
+            );
+        }
         Self::install_raw_value::<crate::compiler2::pull::ProductKey>(
             telemetry,
             &backend,
             &["fz", "compiler2", "pull", "product"],
             "product",
+        );
+        let requested_product_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::pull::ProductRequestId, _>(
+            &["fz", "compiler2", "pull", "product", "requested"],
+            move |name, span_id, parent_span_id, product, request| {
+                requested_product_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        product: crate::telemetry::opaque(product),
+                        request_id: request.get(),
+                    },
+                );
+            },
+        );
+        let evaluated_product_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event3::<
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::ProductRequestId,
+            crate::compiler2::pull::PullOutcome,
+            _,
+        >(
+            &["fz", "compiler2", "pull", "product", "evaluated"],
+            move |name, span_id, parent_span_id, product, request, outcome| {
+                evaluated_product_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        product: crate::telemetry::opaque(product),
+                        request_id: request.get(),
+                        outcome: crate::telemetry::opaque(outcome),
+                    },
+                );
+            },
         );
         let product_backend = Rc::clone(&backend);
         telemetry.attach_raw_event3::<
@@ -427,6 +513,27 @@ impl JsonlBackend {
                         product: crate::telemetry::opaque(product),
                         dependency: crate::telemetry::opaque(dependency),
                         search: crate::telemetry::opaque(search),
+                    },
+                );
+            },
+        );
+        let request_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event3::<
+            crate::compiler2::World,
+            crate::compiler2::RootId,
+            crate::compiler2::BackendRequestEvent,
+            _,
+        >(
+            &["fz", "compiler2", "backend_request"],
+            move |name, span_id, parent_span_id, world, root, request| {
+                request_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        world: crate::telemetry::opaque(world),
+                        root: crate::telemetry::opaque(root),
+                        request: crate::telemetry::opaque(request),
                     },
                 );
             },
@@ -1098,8 +1205,12 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "phase", ..]
             | ["fz", "compiler2", "pull", "product", "settled"]
             | ["fz", "compiler2", "pull", "product", "cache_hit"]
-            | ["fz", "compiler2", "pull", "product", "reentered"]
             | ["fz", "compiler2", "pull", "product", "displaced"]
+            | ["fz", "compiler2", "pull", "product", "requested"]
+            | ["fz", "compiler2", "pull", "product", "evaluated"]
+            | ["fz", "compiler2", "pull", "product", "copublished"]
+            | ["fz", "compiler2", "pull", "recursive_group", "published"]
+            | ["fz", "compiler2", "backend_request", ..]
             | ["fz", "compiler2", "pull", "recursive_group", "searched"]
             | ["fz", "compiler2", "work", "started"]
             | ["fz", "compiler2", "demand", "cone", "settled"]
@@ -1494,12 +1605,33 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "changed");
         out.push(':');
         push_u64(out, effects.changed.len() as u64);
+    } else if let Some(request) = opaque.downcast_ref::<crate::compiler2::BackendRequestEvent>() {
+        use crate::compiler2::BackendRequestEvent;
+        out.push_str(",\"status\":");
+        match request {
+            BackendRequestEvent::Started => write_str_lit(out, "started"),
+            BackendRequestEvent::Succeeded {
+                executables,
+                construction_wrappers,
+            } => {
+                write_str_lit(out, "success");
+                out.push_str(",\"executables\":");
+                push_u64(out, *executables as u64);
+                out.push_str(",\"construction_wrappers\":");
+                push_u64(out, *construction_wrappers as u64);
+            }
+            BackendRequestEvent::Failed => write_str_lit(out, "failure"),
+        }
     } else if let Some(program) = opaque.downcast_ref::<crate::compiler2::BackendProgram>() {
         let (birth_count, transport_count) = reusable_cons_counts(program);
         out.push(',');
         write_str_lit(out, "executables");
         out.push(':');
         push_u64(out, program.executables.len() as u64);
+        out.push(',');
+        write_str_lit(out, "construction_wrappers");
+        out.push(':');
+        push_u64(out, program.construction_wrappers.len() as u64);
         out.push(',');
         write_str_lit(out, "birth_count");
         out.push(':');
@@ -1643,6 +1775,17 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "cycle_closed");
         out.push(':');
         out.push_str(if search.cycle_closed { "true" } else { "false" });
+    } else if let Some(crate::compiler2::pull::ProductValue::RootBackendProduct(answer)) =
+        opaque.downcast_ref::<crate::compiler2::pull::ProductValue>()
+    {
+        out.push(',');
+        write_str_lit(out, "executables");
+        out.push(':');
+        push_u64(out, answer.program.executables.len() as u64);
+        out.push(',');
+        write_str_lit(out, "construction_wrappers");
+        out.push(':');
+        push_u64(out, answer.program.construction_wrappers.len() as u64);
     } else if let Some(outcome) = opaque.downcast_ref::<crate::compiler2::pull::PullOutcome>() {
         out.push(',');
         write_str_lit(out, "status");
@@ -1678,6 +1821,29 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
                         out.push(',');
                     }
                     write_str_lit(out, kind);
+                }
+                out.push(']');
+                out.push(',');
+                write_str_lit(out, "waits");
+                out.push(':');
+                out.push('[');
+                for (index, wait) in waits.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    match wait {
+                        crate::compiler2::pull::PullWait::Product(key) => {
+                            out.push_str("{\"product\":{\"kind\":");
+                            write_str_lit(out, key.kind());
+                            write_product_key_identity(out, key);
+                            out.push_str("}}");
+                        }
+                        crate::compiler2::pull::PullWait::Fact(fact) => {
+                            out.push_str("{\"fact\":");
+                            write_fact_use_identity(out, fact);
+                            out.push('}');
+                        }
+                    }
                 }
                 out.push(']');
             }

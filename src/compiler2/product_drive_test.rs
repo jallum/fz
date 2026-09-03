@@ -1295,9 +1295,9 @@ fn the_demand_ascent_height_does_not_grow_with_the_program() {
         let tel = ConfiguredTelemetry::new();
         let tallest = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::compiler2::DemandConeSettlement>));
         let sink = std::rc::Rc::clone(&tallest);
-        tel.attach_raw_event1::<crate::compiler2::DemandConeSettlement, _>(
+        tel.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::DemandConeSettlement, _>(
             &["fz", "compiler2", "demand", "cone", "settled"],
-            move |_, _, _, cone| {
+            move |_, _, _, _, cone| {
                 let mut sink = sink.borrow_mut();
                 if sink.is_none_or(|tallest| cone.members > tallest.members) {
                     *sink = Some(*cone);

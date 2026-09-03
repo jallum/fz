@@ -488,15 +488,18 @@ are produced for the positions and boundaries named by demanded executable
 products. Tests assert ShapeId relationships from the demanded
 `MaterializedTransportPlan` when correctness depends on sharing.
 
-`ProductDriver`/`ProductMemo` (`pull.rs`) expose four
-`[fz, compiler2, pull, product, *]` leaves, all public (allowlisted in
-`jsonl.rs::is_public_compiler2_trace_event`). `cache_hit` and `reentered` carry
-the existing raw `ProductKey` and identify paths that do not run a producer.
+`ProductDriver`/`ProductMemo` (`pull.rs`) expose distinct public request,
+evaluation, settlement, cache-hit, displacement, co-publication, and recursive
+group events (allowlisted in `jsonl.rs::is_public_compiler2_trace_event`). Every
+safe caller owns `&mut ProductDriver`, and a producer receives only its
+`ProductReadContext`, so producer calls cannot overlap or invoke nested
+`ProductDriver::pull`; an in-progress duplicate asserts before request telemetry
+instead of fabricating a wait. `cache_hit` identifies a request that did not run a producer.
 `displaced` carries the raw `ProductKey` of a settled product the memo just
 displaced (rejected group member, or a reader invalidated by a changed
-dependency, stale fact, or explicit reproduction) -- Waiting outcomes do not
-claim completion, and there is no `requested`, `produced`, `waited`, or generic
-`finished` alias.
+dependency, stale fact, or explicit reproduction). Waiting evaluations retain
+their exact typed waits; no generic `produced`, `waited`, or `finished` alias
+exists.
 
 `settled` is the memo's own act of installing a value, not the driver's: it
 fires once per PRODUCT that actually settles, from inside `ProductMemo::finish`

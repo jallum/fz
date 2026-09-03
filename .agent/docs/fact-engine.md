@@ -560,6 +560,19 @@ and reruns, while success reads the producer's resolved edge.
 The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled
 `ReturnType(A)`"; it may not schedule unrelated work under another name.
+The public causal stream records these as distinct operations: `requested`
+means the stack asked for a key, `evaluated` means its producer body ran and
+names the exact waits it returned, `settled` means a memo value was published,
+`product.copublished` identifies a general publisher/peer settlement, and
+`recursive_group.published` identifies every actual member of a successfully
+settled recursive group. A repeated evaluation retains its prior exact waits
+and the positions of the fact movement, settlement/cache hit, displacement, or
+other exact event that triggered it. Each request has a checked, nonzero,
+session-local id, and the producer-running request carries that same id on
+`evaluated`. Exclusive driver ownership and the producer's context-only API
+make overlapping pulls impossible; cache requests do not invent evaluations.
+Recursive search inside a producer stays within that exact request boundary.
+Causality is never inferred from an aggregate or merely adjacent log lines.
 Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
 and `RuntimeDemand(E)` discover executable dependency groups from settled
 call-edge facts; recursive `CallableConstruction(position)` products settle
@@ -586,7 +599,12 @@ same completion owner, which validates the group and publishes every member
 atomically. This is an ordering envelope around one producer return, not a
 batch across independent product pulls or fact settlements. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
-fact-use states. Every member of a settled group retains the union of the
+fact-use states. `pull.recursive_group.searched` reports the traversal as query work; successful
+`pull.recursive_group.published` events separately report exact actual members.
+Both group-search and demand-cone measurements name their exact anchor
+`ProductKey`; cone `members`/`rounds`/`derivations` measure fixpoint ascent, not
+group discovery.
+Every member of a settled group retains the union of the
 group's external product and fact dependencies when every duplicate dependency
 state agrees; a mixed-generation or mixed-fact-state snapshot publishes nothing
 and retries from fresh reads. Internal back-edges disappear only after that
@@ -649,6 +667,22 @@ Runtime-demand products also record the other runtime-demand products they read.
 When one settles to a changed value, only those recorded dependents are
 invalidated; if a product is invalidated while in progress, the pull driver
 rejects that stale result and returns an explicit product wait for the same key.
+
+Today every backend request constructs a fresh `PullSession`; scheduler facts
+live in `Compiler2`, but product generations and dependency edges do not cross
+that request boundary. `backend_request.started` / `finished` bracket the
+external request independently of nested sessions. One lifecycle gate emits
+both boundaries with the same typed payload shape; finish records either final
+population or failure, including when only one boundary has a direct
+subscriber. Request-scoped causal replay therefore reports an unchanged or
+unreachable-edit request's first-generation products as cross-request
+recomputation rather than retained cache hits. This is the baseline the
+long-lived-session work changes; the report survives as its work-count
+regression signal. Each pull session also has a balanced
+`pull.session.started` / `finished` lifecycle carrying one exact id. Replay keys
+evaluation and movement history by that id, so a nested macro session neither
+inherits nor clears its outer session's history; the same model already permits
+one retained session to span multiple backend requests.
 
 `BackendProgram(root)` is a co-output-only fact (no arm in
 `World::demand_fact_producer`): its sole producer is this bounded product-pull

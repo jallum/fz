@@ -14,6 +14,16 @@ use super::world::World;
 use super::{ExecutableNeed, ModuleId, ModuleInterface};
 use super::{FactKey, Job};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendRequestEvent {
+    Started,
+    Succeeded {
+        executables: usize,
+        construction_wrappers: usize,
+    },
+    Failed,
+}
+
 /// Public front door for the side-by-side incremental compiler.
 ///
 /// Code enters Compiler2 as compiler-owned source text, receives stable
@@ -282,9 +292,29 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     }
 
     fn product_backend_program_for_root(&mut self, root: RootId) -> Result<BackendProgram, String> {
-        let (program, driver) = self.drive_root_backend_product(root)?;
-        driver.finish_session();
-        Ok(program)
+        const STARTED: &[&str] = &["fz", "compiler2", "backend_request", "started"];
+        const FINISHED: &[&str] = &["fz", "compiler2", "backend_request", "finished"];
+        let emit_lifecycle =
+            self.telemetry.is_raw_event_enabled(STARTED) || self.telemetry.is_raw_event_enabled(FINISHED);
+        if emit_lifecycle {
+            self.telemetry
+                .raw_event3(STARTED, &self.world, &root, &BackendRequestEvent::Started);
+        }
+        let result = self.drive_root_backend_product(root).map(|(program, driver)| {
+            driver.finish_session();
+            program
+        });
+        if emit_lifecycle {
+            let event = match &result {
+                Ok(program) => BackendRequestEvent::Succeeded {
+                    executables: program.executables.len(),
+                    construction_wrappers: program.construction_wrappers.len(),
+                },
+                Err(_) => BackendRequestEvent::Failed,
+            };
+            self.telemetry.raw_event3(FINISHED, &self.world, &root, &event);
+        }
+        result
     }
 
     /// Drives one root to its `BackendProgram` through the guarded product

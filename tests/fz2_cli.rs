@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fz::causal::{CausalReport, FormulaWork, ProductWork, parse_public_trace};
+use fz::causal::{CausalReport, FormulaWork, parse_public_trace};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -317,16 +317,13 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // arbiter's `work_graph.quiesced` steps (+37 on 00181, none on 00009) while
     // shrinking every `changed` array, because a fact that is transitively
     // unfinal no longer flips its settled bit on each local dirty/clean cycle.
-    // Net on 00181: 1,545 -> 1,563 events, 970,146 -> 921,532 bytes; 00009 is
-    // 205 events either way, 105,699 -> 105,683 bytes. Stacking onto #110
-    // replaces 24 dispatch-mask and 3 function-contract evaluations with 42
-    // input-demand evaluations and one analysis: 16 net evaluations, hence 32
-    // job-span events plus 16 applied events; one fewer canonical type makes
-    // the trace 1,613 -> 1,660 events. Pins keep tight headroom so creep
-    // without cause still trips them.
+    // fz-kdt.5's request/evaluation/wait identities make product work exactly
+    // attributable. Measured on the combined stack: 00181 emits 2,885 events /
+    // 1,570,990 bytes and 00009 emits 381 / 185,422. The bounds retain modest
+    // headroom while unrelated public-stream creep still trips.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_700, 1024 * 1024),
-        ("fixtures2/00009_no_runtime.fz", 300, 128 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_000, 1_600 * 1024),
+        ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
         let output = run_fz2(&[
@@ -359,6 +356,7 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
 /// Work counts only — no wall-clock quantity appears in the comparand.
 #[test]
 fn causal_work_multisets_agree_across_two_processes() {
+    let mut observed_callable_resolutions = 0;
     for (fixture, golden) in [
         (
             "fixtures2/00420_enum_take_drop_split.fz",
@@ -408,7 +406,20 @@ fn causal_work_multisets_agree_across_two_processes() {
                     report.uncaused.first()
                 );
             }
-            multisets.push(report.canonical_multiset());
+            let callable_resolutions = report
+                .products
+                .keys()
+                .filter(|identity| identity.kind() == Some("callable_resolution"))
+                .map(|identity| identity.canonical_identity(&report.canon))
+                .collect::<BTreeSet<_>>();
+            assert!(
+                callable_resolutions.iter().all(|identity| !identity.contains("?ty:")),
+                "the {tag} {fixture} trace must define every observed callable-resolution surface: \
+                 {callable_resolutions:?}"
+            );
+            observed_callable_resolutions += callable_resolutions.len();
+            let multiset = report.canonical_multiset();
+            multisets.push(multiset);
             let _ = remove_file(&telemetry_path);
         }
 
@@ -422,11 +433,19 @@ fn causal_work_multisets_agree_across_two_processes() {
             "expected a substantial {fixture} comparand, got {} entries",
             first.len()
         );
-        assert_eq!(
-            first, second,
-            "two processes compiling {fixture} must agree on every canonical work count"
+        let divergence = first
+            .iter()
+            .find(|(key, count)| second.get(*key) != Some(count))
+            .or_else(|| second.iter().find(|(key, _)| !first.contains_key(*key)));
+        assert!(
+            first == second,
+            "two processes compiling {fixture} must agree on every canonical work count; first divergence: {divergence:?}"
         );
     }
+    assert!(
+        observed_callable_resolutions > 0,
+        "the three demand fixtures must exercise a real callable-resolution product path"
+    );
 }
 
 /// `--dump backend` is the canonical external form, so two SEPARATE PROCESSES
@@ -476,8 +495,8 @@ fn backend_dump_is_byte_identical_across_two_processes() {
             let identities = report
                 .products
                 .keys()
-                .filter(|identity| identity.contains("\"kind\":\"callable_resolution\""))
-                .cloned()
+                .filter(|identity| identity.kind() == Some("callable_resolution"))
+                .map(|identity| identity.canonical_identity(&report.canon))
                 .collect::<BTreeSet<_>>();
             assert!(
                 identities.iter().all(|identity| !identity.contains("?ty:")),
@@ -1293,17 +1312,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         },
         "{fixture}: causal or output work moved outside the readiness reclassification"
     );
+    let products = report.product_totals();
     assert_eq!(
-        report.product_totals(),
-        ProductWork {
-            settlements: 408,
-            changed: 408,
-            unchanged: 0,
-            cache_hits: 18,
-            displacements: 0,
-            generations: BTreeSet::new(),
-        },
-        "{fixture}: product work moved while pinning direct-fact readiness"
+        (
+            products.settlements,
+            products.distinct_generations,
+            products.changed,
+            products.unchanged,
+            products.cache_hits,
+            products.displacements,
+        ),
+        (408, 408, 408, 0, 18, 0),
+        "{fixture}: established product settlement work moved while pinning direct-fact readiness"
     );
     assert!(
         report.uncaused.is_empty(),

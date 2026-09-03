@@ -18,13 +18,10 @@
 //!   for which a movement appears in [F's previous conclusion, t)
 //! ```
 //!
-//! Two boundaries in that rule are load-bearing and both were measured:
+//! Two boundaries in that rule are load-bearing:
 //!
 //! - `reads` ALONE is not enough. `reads` and `waits` are separate maps, and a
 //!   job re-run because a WAIT became satisfiable has the fact only in `waits`.
-//!   `Dependencies::Reads` keeps that variant alive so the acceptance test can
-//!   show it false-flagging real work as uncaused (37/30/19 evaluations on the
-//!   three target fixtures) where `Dependencies::ReadsAndBlocked` reports zero.
 //! - the window INCLUDES the previous conclusion's own movements. A formula
 //!   that writes a fact it also reads wakes itself, and the movement that
 //!   causes the next evaluation is carried by the previous completion.
@@ -38,8 +35,8 @@
 //! `fz.compiler2.canon.*` definition lines at REPORT time. `canonical_multiset`
 //! is the comparand two runs are compared by.
 //!
-//! Sorting happens only in that packaging step: the report's `BTreeMap`s are
-//! the presentation boundary, and replay itself never orders anything.
+//! Sorting happens only in that packaging step: `canonical_multiset` is the
+//! presentation boundary, and replay itself never orders anything.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -179,8 +176,16 @@ const QUIESCED: &[&str] = &["fz", "compiler2", "work_graph", "quiesced"];
 const PRODUCT_SETTLED: &[&str] = &["fz", "compiler2", "pull", "product", "settled"];
 const PRODUCT_CACHE_HIT: &[&str] = &["fz", "compiler2", "pull", "product", "cache_hit"];
 const PRODUCT_DISPLACED: &[&str] = &["fz", "compiler2", "pull", "product", "displaced"];
-const RECURSIVE_GROUP_SEARCHED: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "searched"];
+const PRODUCT_REQUESTED: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
+const PRODUCT_EVALUATED: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
+const PRODUCT_COPUBLISHED: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
+const SESSION_STARTED: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
 const SESSION_FINISHED: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
+const BACKEND_REQUEST_STARTED: &[&str] = &["fz", "compiler2", "backend_request", "started"];
+const BACKEND_REQUEST_FINISHED: &[&str] = &["fz", "compiler2", "backend_request", "finished"];
+const RECURSIVE_GROUP_SEARCHED: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "searched"];
+const RECURSIVE_GROUP_PUBLISHED: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
+const DEMAND_CONE_SETTLED: &[&str] = &["fz", "compiler2", "demand", "cone", "settled"];
 
 /// Fields that describe a fact's STATE rather than its identity. Stripping
 /// them is what lets a `reads` entry, a `blocked` wait, a `changed` record and
@@ -201,17 +206,6 @@ const STATE_FIELDS: &[&str] = &[
     "blocked",
 ];
 
-/// Which dependency set an evaluation may name as its cause.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dependencies {
-    /// The scheduler's `reads` alone — the derivation the stream *looks* like
-    /// it supports. Kept so the acceptance test can measure it false-flagging
-    /// wait-satisfied work as uncaused.
-    Reads,
-    /// `reads` UNION the blocked-set of the formula's previous completion.
-    ReadsAndBlocked,
-}
-
 /// How one evaluation of a formula was caused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cause {
@@ -223,7 +217,8 @@ pub enum Cause {
     /// No revision moved; a dependency's SETTLEDNESS flipped — a wait became
     /// satisfiable.
     Readiness,
-    /// Nothing in the dependency set moved. Must never happen.
+    /// Nothing in the dependency set moved. Kept explicit so a causal gap is
+    /// measured rather than silently assigned to an adjacent event.
     Uncaused,
 }
 
@@ -241,20 +236,185 @@ pub struct FormulaWork {
     pub blocked_completions: u64,
 }
 
+impl FormulaWork {
+    fn add(&mut self, work: &Self) {
+        self.evaluations += work.evaluations;
+        self.initial += work.initial;
+        self.content_caused += work.content_caused;
+        self.readiness_caused += work.readiness_caused;
+        self.uncaused += work.uncaused;
+        self.changed_outputs += work.changed_outputs;
+        self.unchanged_outputs += work.unchanged_outputs;
+        self.wakes += work.wakes;
+        self.blocked_completions += work.blocked_completions;
+    }
+}
+
 /// Work attributed to one product (one canonical `ProductKey`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProductWork {
+    pub requests: u64,
+    pub evaluations: u64,
     pub settlements: u64,
+    pub distinct_generations: u64,
     pub changed: u64,
     pub unchanged: u64,
     pub cache_hits: u64,
+    pub retained_cache_hits: u64,
     pub displacements: u64,
-    pub generations: BTreeSet<u64>,
+    pub first_productions: u64,
+    pub reproductions: u64,
+    pub equal_reproductions: u64,
+    pub cross_request_recomputations: u64,
+    pub copublications: u64,
+    pub unexplained_evaluations: u64,
+    pub recursive_members: u64,
+    pub demand_cone_settlements: u64,
+    pub demand_members: u64,
+    pub demand_external_members: u64,
+    pub demand_rounds: u64,
+    pub demand_derivations: u64,
 }
 
-/// Aggregate pending-graph query work. Publisher/member identity is not part
-/// of this current-graph signal; fz-tfn.2 owns that post-cutover comparand.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// One exact product identity as it appeared on the public stream. The raw
+/// structured value remains authoritative inside a process; canonical folding
+/// is a separate reporting operation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RawProductKey {
+    pub raw: Json,
+}
+
+impl RawProductKey {
+    fn new(raw: &Json) -> Self {
+        let mut raw = raw.clone();
+        if let Some(fields) = raw.as_object_mut() {
+            fields.remove("opaque_type");
+        }
+        Self { raw }
+    }
+
+    /// The structured product variant carried by the production event.
+    pub fn kind(&self) -> Option<&str> {
+        self.raw.get("kind").and_then(Json::as_str)
+    }
+
+    /// Reporting-only canonical presentation for cross-process comparison.
+    /// Raw structured identity remains the in-process authority.
+    pub fn canonical_identity(&self, canon: &CanonTables) -> String {
+        render_identity(&canonical_product_value(&self.raw, canon))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RawIdentity(Json);
+
+impl RawIdentity {
+    fn new(raw: &Json) -> Self {
+        Self(identity_value(raw, None))
+    }
+
+    fn canonical(&self, canon: &CanonTables) -> String {
+        render_identity(&identity_value(&self.0, Some(canon)))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductEvaluationCause {
+    Initial,
+    FactMovement,
+    ProductMovement,
+    Displacement,
+    Mixed,
+    Unexplained,
+}
+
+impl ProductEvaluationCause {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::FactMovement => "fact_movement",
+            Self::ProductMovement => "product_movement",
+            Self::Displacement => "displacement",
+            Self::Mixed => "mixed",
+            Self::Unexplained => "unexplained",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProductEvaluationWait {
+    Product(RawProductKey),
+    Fact(Json),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductEvaluationTriggerKind {
+    Fact,
+    ProductSettlement,
+    ProductCacheHit,
+    ProductDisplacement,
+    Displacement,
+}
+
+impl ProductEvaluationTriggerKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Fact => "fact_movement",
+            Self::ProductSettlement => "product_settlement",
+            Self::ProductCacheHit => "product_cache_hit",
+            Self::ProductDisplacement => "dependency_displacement",
+            Self::Displacement => "self_displacement",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductEvaluationTrigger {
+    pub position: usize,
+    pub dependency: ProductEvaluationWait,
+    pub kind: ProductEvaluationTriggerKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductEvaluationRecord {
+    pub position: usize,
+    pub prior_evaluation: Option<usize>,
+    pub session: u64,
+    pub request: u64,
+    pub product: RawProductKey,
+    pub prior_waits: Vec<ProductEvaluationWait>,
+    pub triggers: Vec<ProductEvaluationTrigger>,
+    pub cause: ProductEvaluationCause,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductPublicationKind {
+    Copublished,
+    RecursiveGroup,
+}
+
+impl ProductPublicationKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Copublished => "copublished",
+            Self::RecursiveGroup => "recursive_group",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductPublicationRecord {
+    pub position: usize,
+    pub session: u64,
+    pub publisher: RawProductKey,
+    pub peer: RawProductKey,
+    pub kind: ProductPublicationKind,
+}
+
+/// Aggregate pending-graph query work. Exact publisher/member identity lives
+/// in the sibling `ProductPublicationRecord`s rather than being folded into
+/// these traversal totals.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RecursiveSearchWork {
     pub searches: u64,
     pub candidate_inventory: u64,
@@ -262,6 +422,17 @@ pub struct RecursiveSearchWork {
     pub edge_scans: u64,
     pub closed_cycles: u64,
     pub group_members: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecursiveSearchRecord {
+    pub position: usize,
+    pub session: u64,
+    pub request: Option<u64>,
+    pub product: RawProductKey,
+    pub dependency: RawProductKey,
+    pub work: RecursiveSearchWork,
+    pub cause: Option<ProductEvaluationCause>,
 }
 
 /// One fact KIND's lifecycle over a whole compile, read from the `changed`
@@ -301,6 +472,12 @@ pub struct SessionWork {
     pub root_scans: u64,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FinalPopulation {
+    pub reachable_executables: u64,
+    pub construction_wrappers: u64,
+}
+
 /// An evaluation the replay could not attribute to a moved input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UncausedEvaluation {
@@ -318,19 +495,23 @@ pub struct UndefinedFirstUse {
 }
 
 /// Everything the public stream says about the work a compile did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CausalReport {
     pub formulas: BTreeMap<String, FormulaWork>,
-    pub products: BTreeMap<String, ProductWork>,
+    pub products: HashMap<RawProductKey, ProductWork>,
+    pub product_evaluations: Vec<ProductEvaluationRecord>,
+    pub product_publications: Vec<ProductPublicationRecord>,
     pub recursive_search: RecursiveSearchWork,
+    pub recursive_searches: Vec<RecursiveSearchRecord>,
     pub sessions: SessionWork,
+    pub final_population: FinalPopulation,
     /// Per fact-kind appearance/retraction accounting (fz-kdt.63).
     pub lifecycles: BTreeMap<String, FactLifecycle>,
     /// Ground-shift traffic (fz-kdt.63).
     pub shifts: ShiftWork,
     pub canon: CanonTables,
-    /// Evaluations with no moved input. The acceptance contract is that this
-    /// is empty under `Dependencies::ReadsAndBlocked`.
+    /// Evaluations with no moved input, retained with exact formula and
+    /// dependency identity rather than hidden in an aggregate.
     pub uncaused: Vec<UncausedEvaluation>,
     /// Readiness-caused evaluations for which no `Settled`/`SettledPresence`
     /// wake named the formula in the window — a readiness cause claimed
@@ -344,27 +525,39 @@ pub struct CausalReport {
 impl CausalReport {
     /// The derivation fz-kdt.34 specifies.
     pub fn derive(events: &[PublicEvent]) -> Self {
-        Self::derive_with(events, Dependencies::ReadsAndBlocked)
+        Replay::new(events).run(events)
     }
 
-    pub fn derive_with(events: &[PublicEvent], dependencies: Dependencies) -> Self {
-        Replay::new(events).run(events, dependencies)
+    /// Derives one report per completed pull request while retaining a
+    /// run-wide canonical dictionary. A product whose first-generation
+    /// settlement names a key already produced by an earlier request is
+    /// counted as cross-request recomputation; this is the signal that exposes
+    /// today's fresh-session repopulation and tomorrow's retained reuse.
+    pub fn derive_requests(events: &[PublicEvent]) -> Vec<Self> {
+        let mut replay = Replay::new(events);
+        let mut reports = Vec::new();
+        for (index, event) in events.iter().enumerate() {
+            replay.process(index, event);
+            if event.named(BACKEND_REQUEST_FINISHED) {
+                reports.push(replay.take_report());
+            }
+        }
+        replay.assert_complete();
+        reports
     }
 
     /// The comparand. Every counted dimension flattened onto canonical
     /// identity strings, so two runs — two PROCESSES — compare by what work
     /// they did rather than by where their arenas happened to put it.
-    ///
-    /// `lifecycles` and `shifts` stay OUT: they are aggregate tallies with no
-    /// canonical identity to key on, so a divergence in them would name no
-    /// formula and no fact. The per-fixture ratchet
-    /// (`analysis_claims_survive_a_run_that_could_not_re_derive_them`) pins
-    /// them by exact value instead.
     pub fn canonical_multiset(&self) -> BTreeMap<String, u64> {
         let mut multiset = BTreeMap::new();
+        let (product_names, fact_names, identities) = canonical_identities(self);
+        for (identity, id) in &identities {
+            put_count(&mut multiset, format!("identity\u{1}{id}\u{1}{identity}"), 1);
+        }
         for (formula, work) in &self.formulas {
-            let mut put = |dimension: &str, count: u64| {
-                multiset.insert(format!("formula\u{1}{formula}\u{1}{dimension}"), count);
+            let mut put = |dimension: &str, count| {
+                put_count(&mut multiset, format!("formula\u{1}{formula}\u{1}{dimension}"), count);
             };
             put("evaluations", work.evaluations);
             put("initial", work.initial);
@@ -377,15 +570,90 @@ impl CausalReport {
             put("blocked_completions", work.blocked_completions);
         }
         for (product, work) in &self.products {
-            let mut put = |dimension: &str, count: u64| {
-                multiset.insert(format!("product\u{1}{product}\u{1}{dimension}"), count);
+            let product = product_identity(product, &product_names, &identities);
+            let mut put = |dimension: &str, count| {
+                put_count(&mut multiset, format!("product\u{1}{product}\u{1}{dimension}"), count);
             };
             put("settlements", work.settlements);
+            put("distinct_generations", work.distinct_generations);
+            put("requests", work.requests);
+            put("evaluations", work.evaluations);
             put("changed", work.changed);
             put("unchanged", work.unchanged);
             put("cache_hits", work.cache_hits);
+            put("retained_cache_hits", work.retained_cache_hits);
             put("displacements", work.displacements);
-            put("generations", work.generations.len() as u64);
+            put("first_productions", work.first_productions);
+            put("reproductions", work.reproductions);
+            put("equal_reproductions", work.equal_reproductions);
+            put("cross_request_recomputations", work.cross_request_recomputations);
+            put("copublications", work.copublications);
+            put("unexplained_evaluations", work.unexplained_evaluations);
+            put("recursive_members", work.recursive_members);
+            put("demand_cone_settlements", work.demand_cone_settlements);
+            put("demand_members", work.demand_members);
+            put("demand_external_members", work.demand_external_members);
+            put("demand_rounds", work.demand_rounds);
+            put("demand_derivations", work.demand_derivations);
+        }
+        for evaluation in &self.product_evaluations {
+            let mut prior_waits = evaluation
+                .prior_waits
+                .iter()
+                .map(|wait| canonical_wait(wait, &product_names, &fact_names, &identities))
+                .collect::<Vec<_>>();
+            prior_waits.sort_by_cached_key(render_identity);
+            let mut triggers = evaluation
+                .triggers
+                .iter()
+                .map(|trigger| {
+                    serde_json::json!({
+                        "kind": trigger.kind.name(),
+                        "dependency": canonical_wait(&trigger.dependency, &product_names, &fact_names, &identities),
+                    })
+                })
+                .collect::<Vec<_>>();
+            triggers.sort_by_cached_key(render_identity);
+            let signature = serde_json::json!({
+                "product": product_identity(&evaluation.product, &product_names, &identities),
+                "cause": evaluation.cause.name(),
+                "prior_waits": prior_waits,
+                "triggers": triggers,
+            });
+            put_count(
+                &mut multiset,
+                format!("product_evaluation\u{1}{}", render_identity(&signature)),
+                1,
+            );
+        }
+        for publication in &self.product_publications {
+            let signature = serde_json::json!({
+                "kind": publication.kind.name(),
+                "publisher": product_identity(&publication.publisher, &product_names, &identities),
+                "peer": product_identity(&publication.peer, &product_names, &identities),
+            });
+            put_count(
+                &mut multiset,
+                format!("product_publication\u{1}{}", render_identity(&signature)),
+                1,
+            );
+        }
+        for search in &self.recursive_searches {
+            let signature = serde_json::json!({
+                "product": product_identity(&search.product, &product_names, &identities),
+                "dependency": product_identity(&search.dependency, &product_names, &identities),
+                "cause": search.cause.map(|cause| cause.name()),
+                "candidate_inventory": search.work.candidate_inventory,
+                "vertex_visits": search.work.vertex_visits,
+                "edge_scans": search.work.edge_scans,
+                "closed_cycles": search.work.closed_cycles,
+                "group_members": search.work.group_members,
+            });
+            put_count(
+                &mut multiset,
+                format!("recursive_search_record\u{1}{}", render_identity(&signature)),
+                1,
+            );
         }
         for (dimension, count) in [
             ("searches", self.recursive_search.searches),
@@ -395,7 +663,7 @@ impl CausalReport {
             ("closed_cycles", self.recursive_search.closed_cycles),
             ("group_members", self.recursive_search.group_members),
         ] {
-            multiset.insert(format!("recursive_search\u{1}{dimension}"), count);
+            put_count(&mut multiset, format!("recursive_search\u{1}{dimension}"), count);
         }
         let session = &self.sessions;
         for (dimension, count) in [
@@ -408,8 +676,37 @@ impl CausalReport {
             ("unsanctioned_work_starts", session.unsanctioned_work_starts),
             ("root_scans", session.root_scans),
         ] {
-            multiset.insert(format!("session\u{1}{dimension}"), count);
+            put_count(&mut multiset, format!("session\u{1}{dimension}"), count);
         }
+        for (kind, lifecycle) in &self.lifecycles {
+            for (dimension, count) in [
+                ("distinct", lifecycle.distinct),
+                ("first_appearances", lifecycle.first_appearances),
+                ("retractions", lifecycle.retractions),
+            ] {
+                put_count(
+                    &mut multiset,
+                    format!("fact_lifecycle\u{1}{kind}\u{1}{dimension}"),
+                    count,
+                );
+            }
+        }
+        for (dimension, count) in [
+            ("shift_wakes", self.shifts.shift_wakes),
+            ("rebased_completions", self.shifts.rebased_completions),
+        ] {
+            put_count(&mut multiset, format!("ground_shift\u{1}{dimension}"), count);
+        }
+        put_count(
+            &mut multiset,
+            "population\u{1}reachable_executables".to_string(),
+            self.final_population.reachable_executables,
+        );
+        put_count(
+            &mut multiset,
+            "population\u{1}construction_wrappers".to_string(),
+            self.final_population.construction_wrappers,
+        );
         multiset
     }
 
@@ -417,15 +714,7 @@ impl CausalReport {
     pub fn formula_totals(&self) -> FormulaWork {
         let mut totals = FormulaWork::default();
         for work in self.formulas.values() {
-            totals.evaluations += work.evaluations;
-            totals.initial += work.initial;
-            totals.content_caused += work.content_caused;
-            totals.readiness_caused += work.readiness_caused;
-            totals.uncaused += work.uncaused;
-            totals.changed_outputs += work.changed_outputs;
-            totals.unchanged_outputs += work.unchanged_outputs;
-            totals.wakes += work.wakes;
-            totals.blocked_completions += work.blocked_completions;
+            totals.add(work);
         }
         totals
     }
@@ -434,13 +723,150 @@ impl CausalReport {
     pub fn product_totals(&self) -> ProductWork {
         let mut totals = ProductWork::default();
         for work in self.products.values() {
+            totals.requests += work.requests;
+            totals.evaluations += work.evaluations;
             totals.settlements += work.settlements;
+            totals.distinct_generations += work.distinct_generations;
             totals.changed += work.changed;
             totals.unchanged += work.unchanged;
             totals.cache_hits += work.cache_hits;
+            totals.retained_cache_hits += work.retained_cache_hits;
             totals.displacements += work.displacements;
+            totals.first_productions += work.first_productions;
+            totals.reproductions += work.reproductions;
+            totals.equal_reproductions += work.equal_reproductions;
+            totals.cross_request_recomputations += work.cross_request_recomputations;
+            totals.copublications += work.copublications;
+            totals.unexplained_evaluations += work.unexplained_evaluations;
+            totals.recursive_members += work.recursive_members;
+            totals.demand_cone_settlements += work.demand_cone_settlements;
+            totals.demand_members += work.demand_members;
+            totals.demand_external_members += work.demand_external_members;
+            totals.demand_rounds += work.demand_rounds;
+            totals.demand_derivations += work.demand_derivations;
         }
         totals
+    }
+
+    pub fn distinct_demanded_products(&self) -> usize {
+        self.products.values().filter(|work| work.requests > 0).count()
+    }
+}
+
+fn put_count(multiset: &mut BTreeMap<String, u64>, key: String, count: u64) {
+    if count > 0 {
+        *multiset.entry(key).or_default() += count;
+    }
+}
+
+fn canonical_identities(
+    report: &CausalReport,
+) -> (
+    HashMap<RawProductKey, String>,
+    HashMap<RawIdentity, String>,
+    BTreeMap<String, u64>,
+) {
+    let mut products = HashMap::new();
+    let mut facts = HashMap::new();
+    let mut remember_product = |product: &RawProductKey| {
+        products
+            .entry(product.clone())
+            .or_insert_with(|| product.canonical_identity(&report.canon));
+    };
+    for product in report.products.keys() {
+        remember_product(product);
+    }
+    for evaluation in &report.product_evaluations {
+        remember_product(&evaluation.product);
+        for wait in evaluation
+            .prior_waits
+            .iter()
+            .chain(evaluation.triggers.iter().map(|trigger| &trigger.dependency))
+        {
+            match wait {
+                ProductEvaluationWait::Product(product) => remember_product(product),
+                ProductEvaluationWait::Fact(fact) => {
+                    let fact = RawIdentity::new(fact);
+                    facts
+                        .entry(fact.clone())
+                        .or_insert_with(|| fact.canonical(&report.canon));
+                }
+            }
+        }
+    }
+    for publication in &report.product_publications {
+        remember_product(&publication.publisher);
+        remember_product(&publication.peer);
+    }
+    for search in &report.recursive_searches {
+        remember_product(&search.product);
+        remember_product(&search.dependency);
+    }
+    let names = products
+        .values()
+        .chain(facts.values())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let identities = names
+        .into_iter()
+        .enumerate()
+        .map(|(id, identity)| (identity, id as u64))
+        .collect();
+    (products, facts, identities)
+}
+
+fn product_identity(
+    product: &RawProductKey,
+    products: &HashMap<RawProductKey, String>,
+    identities: &BTreeMap<String, u64>,
+) -> u64 {
+    identities[&products[product]]
+}
+
+fn canonical_wait(
+    wait: &ProductEvaluationWait,
+    products: &HashMap<RawProductKey, String>,
+    facts: &HashMap<RawIdentity, String>,
+    identities: &BTreeMap<String, u64>,
+) -> Json {
+    match wait {
+        ProductEvaluationWait::Product(product) => {
+            serde_json::json!({"product": product_identity(product, products, identities)})
+        }
+        ProductEvaluationWait::Fact(fact) => {
+            let identity = RawIdentity::new(fact);
+            serde_json::json!({
+                "fact": identities[&facts[&identity]],
+                "use": fact.get("use").cloned().unwrap_or(Json::Null),
+            })
+        }
+    }
+}
+
+fn evaluation_cause(initial: bool, triggers: &[ProductEvaluationTrigger]) -> ProductEvaluationCause {
+    if initial {
+        return ProductEvaluationCause::Initial;
+    }
+    let fact = triggers
+        .iter()
+        .any(|trigger| trigger.kind == ProductEvaluationTriggerKind::Fact);
+    let product = triggers.iter().any(|trigger| {
+        matches!(
+            trigger.kind,
+            ProductEvaluationTriggerKind::ProductSettlement
+                | ProductEvaluationTriggerKind::ProductCacheHit
+                | ProductEvaluationTriggerKind::ProductDisplacement
+        )
+    });
+    let displacement = triggers
+        .iter()
+        .any(|trigger| trigger.kind == ProductEvaluationTriggerKind::Displacement);
+    match (fact, product, displacement) {
+        (false, false, false) => ProductEvaluationCause::Unexplained,
+        (true, false, false) => ProductEvaluationCause::FactMovement,
+        (false, true, false) => ProductEvaluationCause::ProductMovement,
+        (false, false, true) => ProductEvaluationCause::Displacement,
+        _ => ProductEvaluationCause::Mixed,
     }
 }
 
@@ -451,21 +877,79 @@ struct Movement {
     readiness: bool,
 }
 
+#[derive(Debug, Clone)]
+struct WaitIdentity {
+    wait: ProductEvaluationWait,
+    lookup: WaitLookup,
+}
+
+#[derive(Debug, Clone)]
+enum WaitLookup {
+    Product(RawProductKey),
+    Fact(RawIdentity),
+}
+
+impl WaitIdentity {
+    fn from_json(wait: &Json) -> Option<Self> {
+        if let Some(product) = wait.get("product") {
+            let product = RawProductKey::new(product);
+            return Some(Self {
+                wait: ProductEvaluationWait::Product(product.clone()),
+                lookup: WaitLookup::Product(product),
+            });
+        }
+        wait.get("fact").map(|fact| Self {
+            wait: ProductEvaluationWait::Fact(fact.clone()),
+            lookup: WaitLookup::Fact(RawIdentity::new(fact)),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProductMovement {
+    position: usize,
+    kind: ProductEvaluationTriggerKind,
+}
+
+struct SessionReplay {
+    id: u64,
+    movements: HashMap<RawProductKey, Vec<ProductMovement>>,
+    requests: HashMap<u64, (RawProductKey, usize)>,
+    evaluations: HashMap<RawProductKey, (usize, Vec<WaitIdentity>)>,
+}
+
+impl SessionReplay {
+    fn new(id: u64) -> Self {
+        Self {
+            id,
+            movements: HashMap::new(),
+            requests: HashMap::new(),
+            evaluations: HashMap::new(),
+        }
+    }
+}
+
 /// What the replay remembers about a formula between its evaluations. Keyed by
 /// RAW identity: two arena-distinct activations are two formulas here even when
 /// they share a canonical form, because each has its own conclusion history.
 #[derive(Default)]
 struct FormulaHistory {
     last_conclusion: Option<usize>,
-    blocked: HashSet<String>,
+    blocked: HashSet<RawIdentity>,
 }
 
 struct Replay {
     canon: CanonTables,
-    movements: HashMap<String, Vec<Movement>>,
-    settled_wakes: HashMap<String, Vec<usize>>,
-    named_facts: HashMap<String, HashSet<String>>,
-    history: HashMap<String, FormulaHistory>,
+    movements: HashMap<RawIdentity, Vec<Movement>>,
+    settled_wakes: HashMap<RawIdentity, Vec<usize>>,
+    named_facts: HashMap<String, HashSet<RawIdentity>>,
+    history: HashMap<RawIdentity, FormulaHistory>,
+    formula_work: HashMap<RawIdentity, FormulaWork>,
+    sessions: Vec<SessionReplay>,
+    request_open: bool,
+    has_completed_request: bool,
+    prior_request_products: HashSet<RawProductKey>,
+    current_request_settlements: HashSet<RawProductKey>,
     defined_types: HashSet<u64>,
     defined_functions: HashSet<u64>,
     report: CausalReport,
@@ -479,20 +963,15 @@ impl Replay {
             settled_wakes: HashMap::new(),
             named_facts: HashMap::new(),
             history: HashMap::new(),
+            formula_work: HashMap::new(),
+            sessions: Vec::new(),
+            request_open: false,
+            has_completed_request: false,
+            prior_request_products: HashSet::new(),
+            current_request_settlements: HashSet::new(),
             defined_types: HashSet::new(),
             defined_functions: HashSet::new(),
-            report: CausalReport {
-                formulas: BTreeMap::new(),
-                products: BTreeMap::new(),
-                recursive_search: RecursiveSearchWork::default(),
-                sessions: SessionWork::default(),
-                lifecycles: BTreeMap::new(),
-                shifts: ShiftWork::default(),
-                canon: CanonTables::default(),
-                uncaused: Vec::new(),
-                readiness_without_settled_wake: Vec::new(),
-                undefined_first_uses: Vec::new(),
-            },
+            report: CausalReport::default(),
         }
     }
 
@@ -500,27 +979,96 @@ impl Replay {
     /// movements and wakes an event carries are recorded AFTER it is
     /// classified — which is also what makes the window's lower bound
     /// inclusive: a formula's own previous conclusion is already indexed.
-    fn run(mut self, events: &[PublicEvent], dependencies: Dependencies) -> CausalReport {
+    fn run(mut self, events: &[PublicEvent]) -> CausalReport {
         for (position, event) in events.iter().enumerate() {
-            self.note_definitions(position, event);
-            if event.named(APPLIED) {
-                self.apply(position, event, dependencies);
-            } else if event.named(QUIESCED) {
-                self.quiesce(position, event);
-            } else if event.named(PRODUCT_SETTLED) {
-                self.settle_product(event);
-            } else if event.named(PRODUCT_CACHE_HIT) {
-                self.product(event).cache_hits += 1;
-            } else if event.named(PRODUCT_DISPLACED) {
-                self.product(event).displacements += 1;
-            } else if event.named(RECURSIVE_GROUP_SEARCHED) {
-                self.recursive_search(event);
-            } else if event.named(SESSION_FINISHED) {
-                self.finish_session(event);
-            }
+            self.process(position, event);
         }
-        self.report.canon = self.canon;
-        self.report
+        self.assert_complete();
+        self.take_report()
+    }
+
+    fn process(&mut self, position: usize, event: &PublicEvent) {
+        self.note_definitions(position, event);
+        if event.named(BACKEND_REQUEST_STARTED) {
+            assert!(!self.request_open, "backend requests must not overlap");
+            assert_eq!(
+                event.metadata["request"]["status"].as_str(),
+                Some("started"),
+                "backend request start must carry its typed lifecycle state"
+            );
+            self.request_open = true;
+        } else if event.named(BACKEND_REQUEST_FINISHED) {
+            assert!(self.request_open, "backend request finished without a start");
+            self.request_open = false;
+            let request = &event.metadata["request"];
+            match request.get("status").and_then(Json::as_str) {
+                Some("success") => {
+                    self.report.final_population.reachable_executables =
+                        request.get("executables").and_then(Json::as_u64).unwrap_or(0);
+                    self.report.final_population.construction_wrappers =
+                        request.get("construction_wrappers").and_then(Json::as_u64).unwrap_or(0);
+                }
+                Some("failure") => {}
+                status => panic!("backend request finish carried invalid lifecycle state {status:?}"),
+            }
+            self.prior_request_products
+                .extend(self.current_request_settlements.drain());
+            self.has_completed_request = true;
+        } else if event.named(SESSION_STARTED) {
+            let session = event.metadata["session_id"].as_u64().expect("session start identity");
+            assert!(
+                !self.sessions.iter().any(|active| active.id == session),
+                "session {session} started twice"
+            );
+            self.sessions.push(SessionReplay::new(session));
+        } else if event.named(APPLIED) {
+            self.apply(position, event);
+        } else if event.named(QUIESCED) {
+            self.quiesce(position, event);
+        } else if event.named(PRODUCT_SETTLED) {
+            self.settle_product(position, event);
+        } else if event.named(PRODUCT_CACHE_HIT) {
+            self.cache_hit(position, event);
+        } else if event.named(PRODUCT_DISPLACED) {
+            self.product(event).displacements += 1;
+            self.record_product_movement(position, event, ProductEvaluationTriggerKind::ProductDisplacement);
+        } else if event.named(PRODUCT_REQUESTED) {
+            self.request_product(position, event);
+        } else if event.named(PRODUCT_EVALUATED) {
+            self.evaluate_product(position, event);
+        } else if event.named(PRODUCT_COPUBLISHED) {
+            self.record_publication(position, event, ProductPublicationKind::Copublished);
+        } else if event.named(RECURSIVE_GROUP_PUBLISHED) {
+            self.record_publication(position, event, ProductPublicationKind::RecursiveGroup);
+        } else if event.named(RECURSIVE_GROUP_SEARCHED) {
+            self.record_recursive_group(position, event);
+        } else if event.named(DEMAND_CONE_SETTLED) {
+            self.record_demand_cone(event);
+        } else if event.named(SESSION_FINISHED) {
+            self.finish_session(event);
+            let session = event.metadata["session_id"].as_u64().expect("session finish identity");
+            let active = self.sessions.pop().expect("session finished without a start");
+            assert_eq!(active.id, session, "session lifecycles must be nested");
+        }
+    }
+
+    fn assert_complete(&self) {
+        assert!(self.sessions.is_empty(), "unfinished product sessions in causal stream");
+        assert!(!self.request_open, "backend request started without finishing");
+    }
+
+    fn take_report(&mut self) -> CausalReport {
+        let mut report = std::mem::take(&mut self.report);
+        for (formula, work) in std::mem::take(&mut self.formula_work) {
+            report
+                .formulas
+                .entry(formula.canonical(&self.canon))
+                .or_default()
+                .add(&work);
+        }
+        self.named_facts.clear();
+        report.canon = self.canon.clone();
+        report
     }
 
     /// Consumes definition lines and reports any raw id used before one.
@@ -561,25 +1109,24 @@ impl Replay {
         }
     }
 
-    fn apply(&mut self, position: usize, event: &PublicEvent, dependencies: Dependencies) {
+    fn apply(&mut self, position: usize, event: &PublicEvent) {
         let Some(completion) = event.metadata.get("completion") else {
             return;
         };
-        let raw_formula = identity(completion, None);
-        let canonical_formula = identity(completion, Some(&self.canon));
+        let raw_formula = RawIdentity::new(completion);
         let reads = fact_set(event.semantic.get("reads"));
         let blocked = fact_set(completion.get("blocked"));
         let previous = self
             .history
             .get(&raw_formula)
             .and_then(|history| history.last_conclusion);
-        let deps = self.dependency_set(&raw_formula, &reads, dependencies);
+        let deps = self.dependency_set(&raw_formula, &reads);
         let cause = match previous {
             None => Cause::Initial,
             Some(previous) => self.cause(previous, position, &deps),
         };
 
-        let work = self.report.formulas.entry(canonical_formula.clone()).or_default();
+        let work = self.formula_work.entry(raw_formula.clone()).or_default();
         work.evaluations += 1;
         if array(completion.get("changed")).is_empty() {
             work.unchanged_outputs += 1;
@@ -598,21 +1145,18 @@ impl Replay {
         }
 
         if matches!(cause, Cause::Uncaused) {
-            let mut names = deps
-                .iter()
-                .map(|fact| canonicalize(fact, &self.canon))
-                .collect::<Vec<_>>();
+            let mut names = deps.iter().map(|fact| fact.canonical(&self.canon)).collect::<Vec<_>>();
             names.sort();
             self.report.uncaused.push(UncausedEvaluation {
                 position,
-                formula: canonical_formula.clone(),
+                formula: raw_formula.canonical(&self.canon),
                 dependencies: names,
             });
         }
         if matches!(cause, Cause::Readiness) && !self.woken_by_settled(&raw_formula, position) {
             self.report.readiness_without_settled_wake.push(UncausedEvaluation {
                 position,
-                formula: canonical_formula,
+                formula: raw_formula.canonical(&self.canon),
                 dependencies: Vec::new(),
             });
         }
@@ -666,7 +1210,7 @@ impl Replay {
                 .named_facts
                 .entry(kind.to_string())
                 .or_default()
-                .insert(identity(change, None))
+                .insert(RawIdentity::new(change))
             {
                 lifecycle.distinct += 1;
             }
@@ -682,22 +1226,12 @@ impl Replay {
     /// completion's read set; the blocked-set is the one the formula's PREVIOUS
     /// completion recorded, because that is the wait whose satisfaction re-ran
     /// it.
-    fn dependency_set(
-        &self,
-        raw_formula: &str,
-        reads: &HashSet<String>,
-        dependencies: Dependencies,
-    ) -> HashSet<String> {
-        match dependencies {
-            Dependencies::Reads => reads.clone(),
-            Dependencies::ReadsAndBlocked => {
-                let blocked = self.history.get(raw_formula).map(|history| &history.blocked);
-                reads.iter().chain(blocked.into_iter().flatten()).cloned().collect()
-            }
-        }
+    fn dependency_set(&self, raw_formula: &RawIdentity, reads: &HashSet<RawIdentity>) -> HashSet<RawIdentity> {
+        let blocked = self.history.get(raw_formula).map(|history| &history.blocked);
+        reads.iter().chain(blocked.into_iter().flatten()).cloned().collect()
     }
 
-    fn cause(&self, previous: usize, position: usize, deps: &HashSet<String>) -> Cause {
+    fn cause(&self, previous: usize, position: usize, deps: &HashSet<RawIdentity>) -> Cause {
         let mut content = false;
         let mut readiness = false;
         for fact in deps {
@@ -715,7 +1249,7 @@ impl Replay {
         }
     }
 
-    fn woken_by_settled(&self, raw_formula: &str, position: usize) -> bool {
+    fn woken_by_settled(&self, raw_formula: &RawIdentity, position: usize) -> bool {
         let previous = self
             .history
             .get(raw_formula)
@@ -738,11 +1272,11 @@ impl Replay {
         for change in array(completion.get("changed")) {
             let content = revision(change, "old_revision") != revision(change, "new_revision");
             let readiness = change.get("old_settled") != change.get("new_settled");
-            classified.insert(identity(change, None), (content, readiness));
+            classified.insert(RawIdentity::new(change), (content, readiness));
         }
         let mut seen = HashSet::new();
         for movement in array(completion.get("movements")) {
-            let key = identity(movement, None);
+            let key = RawIdentity::new(movement);
             let (content, readiness) = classified.get(&key).copied().unwrap_or((false, false));
             seen.insert(key.clone());
             self.movements.entry(key).or_default().push(Movement {
@@ -777,7 +1311,7 @@ impl Replay {
             }
             if let Some(job) = wake.get("job") {
                 self.settled_wakes
-                    .entry(identity(job, None))
+                    .entry(RawIdentity::new(job))
                     .or_default()
                     .push(position);
             }
@@ -785,35 +1319,70 @@ impl Replay {
     }
 
     fn product(&mut self, event: &PublicEvent) -> &mut ProductWork {
-        let key = event.metadata.get("product").map_or_else(
-            || "?product".to_string(),
-            |product| identity(product, Some(&self.canon)),
-        );
+        let key = event
+            .metadata
+            .get("product")
+            .map(RawProductKey::new)
+            .unwrap_or_else(|| RawProductKey::new(&Json::Null));
         self.report.products.entry(key).or_default()
     }
 
-    fn recursive_search(&mut self, event: &PublicEvent) {
-        let search = event.metadata.get("search");
-        let count = |field| {
-            search
-                .and_then(|search| search.get(field))
-                .and_then(Json::as_u64)
-                .unwrap_or(0)
+    fn record_publication(&mut self, position: usize, event: &PublicEvent, kind: ProductPublicationKind) {
+        let Some(publisher) = event.metadata.get("publisher") else {
+            return;
         };
-        let cycle_closed = search
-            .and_then(|search| search.get("cycle_closed"))
-            .and_then(Json::as_bool)
-            .unwrap_or(false);
-        let work = &mut self.report.recursive_search;
-        work.searches += 1;
-        work.candidate_inventory += count("candidate_inventory");
-        work.vertex_visits += count("vertex_visits");
-        work.edge_scans += count("edge_scans");
-        work.closed_cycles += u64::from(cycle_closed);
-        work.group_members += count("group_members");
+        let Some(peer) = event.metadata.get("peer") else {
+            return;
+        };
+        let publisher = RawProductKey::new(publisher);
+        let work = self.report.products.entry(publisher.clone()).or_default();
+        match kind {
+            ProductPublicationKind::Copublished => work.copublications += 1,
+            ProductPublicationKind::RecursiveGroup => work.recursive_members += 1,
+        }
+        self.report.product_publications.push(ProductPublicationRecord {
+            position,
+            session: self
+                .sessions
+                .last()
+                .map(|session| session.id)
+                .expect("product publication outside a session"),
+            publisher,
+            peer: RawProductKey::new(peer),
+            kind,
+        });
     }
 
-    fn settle_product(&mut self, event: &PublicEvent) {
+    fn cache_hit(&mut self, position: usize, event: &PublicEvent) {
+        let Some(product) = event.metadata.get("product") else {
+            return;
+        };
+        let key = RawProductKey::new(product);
+        let retained = self.has_completed_request
+            && self.prior_request_products.contains(&key)
+            && !self.current_request_settlements.contains(&key);
+        let work = self.report.products.entry(key).or_default();
+        work.cache_hits += 1;
+        work.retained_cache_hits += u64::from(retained);
+        self.record_product_movement(position, event, ProductEvaluationTriggerKind::ProductCacheHit);
+    }
+
+    fn request_product(&mut self, position: usize, event: &PublicEvent) {
+        let Some(product) = event.metadata.get("product") else {
+            return;
+        };
+        let session = self.sessions.last_mut().expect("product request outside a session");
+        let key = RawProductKey::new(product);
+        let request = event.metadata["request_id"].as_u64().expect("product request identity");
+        assert!(
+            session.requests.insert(request, (key.clone(), position)).is_none(),
+            "session {} reused product request {request}",
+            session.id
+        );
+        self.report.products.entry(key).or_default().requests += 1;
+    }
+
+    fn settle_product(&mut self, position: usize, event: &PublicEvent) {
         let generation = event
             .metadata
             .get("settlement")
@@ -825,16 +1394,213 @@ impl Replay {
             .and_then(|settlement| settlement.get("changed"))
             .and_then(Json::as_bool)
             .unwrap_or(false);
-        let work = self.product(event);
+        let Some(product) = event.metadata.get("product") else {
+            return;
+        };
+        let key = RawProductKey::new(product);
+        let cross_request = self.has_completed_request
+            && generation == Some(1)
+            && changed
+            && self.prior_request_products.contains(&key);
+        self.current_request_settlements.insert(key.clone());
+        let work = self.report.products.entry(key).or_default();
         work.settlements += 1;
         if changed {
             work.changed += 1;
+            work.distinct_generations += 1;
         } else {
             work.unchanged += 1;
         }
-        if let Some(generation) = generation {
-            work.generations.insert(generation);
+        if !changed {
+            work.equal_reproductions += 1;
+        } else if generation == Some(1) {
+            work.first_productions += 1;
+        } else {
+            work.reproductions += 1;
         }
+        work.cross_request_recomputations += u64::from(cross_request);
+        self.record_product_movement(position, event, ProductEvaluationTriggerKind::ProductSettlement);
+    }
+
+    fn record_recursive_group(&mut self, position: usize, event: &PublicEvent) {
+        let Some(search) = event.metadata.get("search") else {
+            return;
+        };
+        let Some(product) = event.metadata.get("product") else {
+            return;
+        };
+        let Some(dependency) = event.metadata.get("dependency") else {
+            return;
+        };
+        let count = |key: &str| search.get(key).and_then(Json::as_u64).unwrap_or(0);
+        let cycle_closed = search.get("cycle_closed").and_then(Json::as_bool).unwrap_or(false);
+        let work = RecursiveSearchWork {
+            searches: 1,
+            candidate_inventory: count("candidate_inventory"),
+            vertex_visits: count("vertex_visits"),
+            edge_scans: count("edge_scans"),
+            closed_cycles: u64::from(cycle_closed),
+            group_members: count("group_members"),
+        };
+        let totals = &mut self.report.recursive_search;
+        totals.searches += work.searches;
+        totals.candidate_inventory += work.candidate_inventory;
+        totals.vertex_visits += work.vertex_visits;
+        totals.edge_scans += work.edge_scans;
+        totals.closed_cycles += work.closed_cycles;
+        totals.group_members += work.group_members;
+        self.report.recursive_searches.push(RecursiveSearchRecord {
+            position,
+            session: self
+                .sessions
+                .last()
+                .map(|session| session.id)
+                .expect("recursive search outside a session"),
+            request: None,
+            product: RawProductKey::new(product),
+            dependency: RawProductKey::new(dependency),
+            work,
+            cause: None,
+        });
+    }
+
+    fn record_demand_cone(&mut self, event: &PublicEvent) {
+        let Some(cone) = event.metadata.get("cone") else {
+            return;
+        };
+        let count = |key: &str| cone.get(key).and_then(Json::as_u64).unwrap_or(0);
+        let work = self.product(event);
+        work.demand_cone_settlements += 1;
+        work.demand_members += count("members");
+        work.demand_external_members += count("external_members");
+        work.demand_rounds += count("rounds");
+        work.demand_derivations += count("derivations");
+    }
+
+    fn record_product_movement(&mut self, position: usize, event: &PublicEvent, kind: ProductEvaluationTriggerKind) {
+        let Some(product) = event.metadata.get("product") else {
+            return;
+        };
+        self.sessions
+            .last_mut()
+            .expect("product movement outside a session")
+            .movements
+            .entry(RawProductKey::new(product))
+            .or_default()
+            .push(ProductMovement { position, kind });
+    }
+
+    fn evaluate_product(&mut self, position: usize, event: &PublicEvent) {
+        let Some(product) = event.metadata.get("product") else {
+            return;
+        };
+        let session = self.sessions.last().expect("product evaluation outside a session");
+        let product = RawProductKey::new(product);
+        let request = event.metadata["request_id"]
+            .as_u64()
+            .expect("product evaluation request identity");
+        let session_id = session.id;
+        let (requested_product, started) = session.requests[&request].clone();
+        assert_eq!(
+            requested_product, product,
+            "session {session_id} request {request} evaluated a different product"
+        );
+        let prior = session.evaluations.get(&product).cloned();
+        let prior_waits = prior
+            .as_ref()
+            .map(|(_, waits)| waits.iter().map(|wait| wait.wait.clone()).collect())
+            .unwrap_or_default();
+        let mut triggers = Vec::new();
+        if let Some((previous, waits)) = &prior {
+            for wait in waits {
+                match &wait.lookup {
+                    WaitLookup::Product(dependency) => {
+                        for movement in session
+                            .movements
+                            .get(dependency)
+                            .into_iter()
+                            .flatten()
+                            .filter(|movement| movement.position >= *previous && movement.position < started)
+                        {
+                            triggers.push(ProductEvaluationTrigger {
+                                position: movement.position,
+                                dependency: wait.wait.clone(),
+                                kind: movement.kind,
+                            });
+                        }
+                    }
+                    WaitLookup::Fact(dependency) => {
+                        for movement in self
+                            .movements
+                            .get(dependency)
+                            .into_iter()
+                            .flatten()
+                            .filter(|movement| movement.position >= *previous && movement.position < started)
+                        {
+                            triggers.push(ProductEvaluationTrigger {
+                                position: movement.position,
+                                dependency: wait.wait.clone(),
+                                kind: ProductEvaluationTriggerKind::Fact,
+                            });
+                        }
+                    }
+                }
+            }
+            for movement in session
+                .movements
+                .get(&product)
+                .into_iter()
+                .flatten()
+                .filter(|movement| {
+                    movement.kind == ProductEvaluationTriggerKind::ProductDisplacement
+                        && movement.position >= *previous
+                        && movement.position < started
+                })
+            {
+                triggers.push(ProductEvaluationTrigger {
+                    position: movement.position,
+                    dependency: ProductEvaluationWait::Product(product.clone()),
+                    kind: ProductEvaluationTriggerKind::Displacement,
+                });
+            }
+        }
+        let cause = evaluation_cause(prior.is_none(), &triggers);
+        let waits = event
+            .metadata
+            .get("outcome")
+            .and_then(|outcome| outcome.get("waits"))
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(WaitIdentity::from_json)
+            .collect::<Vec<_>>();
+        self.sessions
+            .last_mut()
+            .expect("product evaluation outside a session")
+            .evaluations
+            .insert(product.clone(), (position, waits));
+        for search in self.report.recursive_searches.iter_mut().filter(|search| {
+            search.session == session_id
+                && search.product == product
+                && search.position >= started
+                && search.position < position
+        }) {
+            search.request = Some(request);
+            search.cause = Some(cause);
+        }
+        let work = self.report.products.entry(product.clone()).or_default();
+        work.evaluations += 1;
+        work.unexplained_evaluations += u64::from(cause == ProductEvaluationCause::Unexplained);
+        self.report.product_evaluations.push(ProductEvaluationRecord {
+            position,
+            prior_evaluation: prior.as_ref().map(|(position, _)| *position),
+            session: session_id,
+            request,
+            product,
+            prior_waits,
+            triggers,
+            cause,
+        });
     }
 
     fn finish_session(&mut self, event: &PublicEvent) {
@@ -901,24 +1667,50 @@ fn array(value: Option<&Json>) -> &[Json] {
     value.and_then(Json::as_array).map_or(&[], Vec::as_slice)
 }
 
-fn fact_set(value: Option<&Json>) -> HashSet<String> {
-    array(value).iter().map(|fact| identity(fact, None)).collect()
+fn fact_set(value: Option<&Json>) -> HashSet<RawIdentity> {
+    array(value).iter().map(RawIdentity::new).collect()
 }
 
-/// Re-renders a raw identity string through the canon tables, for report text.
-fn canonicalize(raw: &str, canon: &CanonTables) -> String {
-    serde_json::from_str::<Json>(raw).map_or_else(|_| raw.to_string(), |value| identity(&value, Some(canon)))
+/// Canonical reporting projection for a product key. Unlike fact identity,
+/// every product field is semantic; this substitutes stream-local ids without
+/// filtering state-shaped names that a product is allowed to own.
+fn canonical_product_value(value: &Json, canon: &CanonTables) -> Json {
+    match value {
+        Json::Object(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(key, field)| {
+                    let field = match (key.as_str(), field) {
+                        ("arrow", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
+                        ("function_id", Json::Number(id)) => {
+                            Json::String(canon.function(id.as_u64().unwrap_or_default()))
+                        }
+                        ("input" | "surface_tys", Json::Array(tys)) => Json::Array(
+                            tys.iter()
+                                .map(|ty| {
+                                    ty.as_u64().map_or_else(
+                                        || canonical_product_value(ty, canon),
+                                        |id| Json::String(canon.ty(id)),
+                                    )
+                                })
+                                .collect(),
+                        ),
+                        _ => canonical_product_value(field, canon),
+                    };
+                    (key.clone(), field)
+                })
+                .collect(),
+        ),
+        Json::Array(items) => Json::Array(items.iter().map(|item| canonical_product_value(item, canon)).collect()),
+        _ => value.clone(),
+    }
 }
 
-/// The identity of one payload object: its fields minus everything that
-/// describes state, rendered in key order.
-///
-/// `BTreeMap` rather than `serde_json::Map` and a nested object rendered as a
-/// STRING: both make the order a property of this function rather than of
-/// `serde_json`'s feature flags. Passing `canon` substitutes each raw id for
-/// its canonical form — the same shape, addressed by meaning.
-fn identity(value: &Json, canon: Option<&CanonTables>) -> String {
-    let mut fields = BTreeMap::new();
+/// The structured identity of one payload object: its fields minus everything
+/// that describes state. Canonical type/function text is substituted only
+/// while packaging a report for display or cross-process comparison.
+fn identity_value(value: &Json, canon: Option<&CanonTables>) -> Json {
+    let mut fields = serde_json::Map::new();
     if let Some(object) = value.as_object() {
         for (key, field) in object {
             if STATE_FIELDS.contains(&key.as_str()) {
@@ -927,7 +1719,7 @@ fn identity(value: &Json, canon: Option<&CanonTables>) -> String {
             fields.insert(key.clone(), identity_field(key, field, canon));
         }
     }
-    serde_json::to_string(&fields).expect("identity fields are plain JSON")
+    Json::Object(fields)
 }
 
 fn identity_field(key: &str, field: &Json, canon: Option<&CanonTables>) -> Json {
@@ -939,7 +1731,178 @@ fn identity_field(key: &str, field: &Json, canon: Option<&CanonTables>) -> Json 
                 .map(|ty| Json::String(canon.ty(ty.as_u64().unwrap_or_default())))
                 .collect(),
         ),
-        (_, _, Json::Object(_)) => Json::String(identity(field, canon)),
+        (_, _, Json::Object(_)) => identity_value(field, canon),
         _ => field.clone(),
+    }
+}
+
+fn render_identity(identity: &Json) -> String {
+    serde_json::to_string(identity).expect("identity fields are plain JSON")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_product_identity_removes_only_its_renderer_annotation() {
+        let raw = serde_json::json!({
+            "opaque_type": "fz::compiler2::pull::ProductKey",
+            "kind": "runtime_demand",
+            "use": "settled",
+            "revision": 3,
+            "old_revision": 2,
+            "new_revision": 3,
+            "settled": true,
+            "changed": false,
+            "waits": [{"use": "current", "revision": 7}],
+            "nested": {"opaque_type": "semantic nested field", "changed": true},
+        });
+        let normalized = RawProductKey::new(&raw);
+        assert_eq!(
+            normalized.raw,
+            serde_json::json!({
+                "kind": "runtime_demand",
+                "use": "settled",
+                "revision": 3,
+                "old_revision": 2,
+                "new_revision": 3,
+                "settled": true,
+                "changed": false,
+                "waits": [{"use": "current", "revision": 7}],
+                "nested": {"opaque_type": "semantic nested field", "changed": true},
+            })
+        );
+
+        let mut other_renderer = raw.clone();
+        other_renderer["opaque_type"] = Json::String("another renderer type".to_string());
+        assert_eq!(normalized, RawProductKey::new(&other_renderer));
+        for field in [
+            "use",
+            "revision",
+            "old_revision",
+            "new_revision",
+            "settled",
+            "changed",
+            "waits",
+            "nested",
+        ] {
+            let mut changed = raw.clone();
+            changed[field] = Json::Null;
+            assert_ne!(normalized, RawProductKey::new(&changed), "{field} remains semantic");
+        }
+    }
+
+    #[test]
+    fn canonical_product_identity_substitutes_ids_without_filtering_fields() {
+        let canon = CanonTables {
+            types: HashMap::from([(7, "int".to_string())]),
+            functions: HashMap::from([(11, "module.function".to_string())]),
+        };
+        let raw = serde_json::json!({
+            "opaque_type": "renderer annotation",
+            "kind": "runtime_demand",
+            "arrow": 7,
+            "function_id": 11,
+            "input": [7],
+            "use": "settled",
+            "revision": 3,
+            "settled": true,
+            "changed": false,
+            "nested": {
+                "opaque_type": "semantic nested field",
+                "changed": true,
+                "items": [{"use": "current", "revision": 9}],
+            },
+        });
+        let product = RawProductKey::new(&raw);
+        let canonical = product.canonical_identity(&canon);
+        assert_eq!(
+            serde_json::from_str::<Json>(&canonical).unwrap(),
+            serde_json::json!({
+                "kind": "runtime_demand",
+                "arrow": "int",
+                "function_id": "module.function",
+                "input": ["int"],
+                "use": "settled",
+                "revision": 3,
+                "settled": true,
+                "changed": false,
+                "nested": {
+                    "opaque_type": "semantic nested field",
+                    "changed": true,
+                    "items": [{"use": "current", "revision": 9}],
+                },
+            })
+        );
+
+        let mut renderer_variant = raw.clone();
+        renderer_variant["opaque_type"] = Json::String("other renderer".to_string());
+        assert_eq!(
+            canonical,
+            RawProductKey::new(&renderer_variant).canonical_identity(&canon)
+        );
+        for field in ["use", "revision", "settled", "changed", "nested"] {
+            let mut variant = raw.clone();
+            variant[field] = Json::Null;
+            assert_ne!(
+                canonical,
+                RawProductKey::new(&variant).canonical_identity(&canon),
+                "canonical reporting must preserve {field}"
+            );
+        }
+
+        let mut nested_opaque_variant = raw.clone();
+        nested_opaque_variant["nested"]["opaque_type"] = Json::String("other semantic nested field".to_string());
+        assert_ne!(
+            canonical,
+            RawProductKey::new(&nested_opaque_variant).canonical_identity(&canon)
+        );
+        let mut nested_array_variant = raw.clone();
+        nested_array_variant["nested"]["items"][0]["changed"] = Json::Bool(true);
+        assert_ne!(
+            canonical,
+            RawProductKey::new(&nested_array_variant).canonical_identity(&canon)
+        );
+
+        let mut report = CausalReport {
+            canon,
+            ..CausalReport::default()
+        };
+        report.products.insert(
+            product,
+            ProductWork {
+                requests: 1,
+                ..ProductWork::default()
+            },
+        );
+        for variant in [
+            {
+                let mut variant = raw;
+                variant["use"] = Json::String("current".to_string());
+                variant
+            },
+            nested_opaque_variant,
+            nested_array_variant,
+        ] {
+            report.products.insert(
+                RawProductKey::new(&variant),
+                ProductWork {
+                    requests: 1,
+                    ..ProductWork::default()
+                },
+            );
+        }
+        let requests = report
+            .canonical_multiset()
+            .into_iter()
+            .filter(|(key, _)| key.starts_with("product\u{1}") && key.ends_with("\u{1}requests"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requests.len(),
+            4,
+            "canonical multiset must retain top-level, nested-object, and nested-array product state"
+        );
+        assert!(requests.iter().all(|(_, count)| *count == 1));
     }
 }

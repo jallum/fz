@@ -97,9 +97,21 @@ fn legacy_handlers_do_not_enable_raw_events() {
     t.attach(&["fz", "raw"], cap.handler());
     let value = 41_u64;
 
+    assert!(!t.is_raw_event_enabled(&["fz", "raw", "event"]));
     t.raw_event1(&["fz", "raw", "event"], &value);
 
     assert!(cap.events().is_empty());
+}
+
+#[test]
+fn raw_subscribers_do_not_enable_legacy_dispatch() {
+    let raw_event = ConfiguredTelemetry::new();
+    raw_event.attach_raw_event1::<u64, _>(&["fz", "raw"], |_, _, _, _| {});
+    assert!(!raw_event.is_enabled(&["fz", "raw", "event"]));
+
+    let raw_lifecycle = ConfiguredTelemetry::new();
+    raw_lifecycle.attach_raw_lifecycle(&["fz", "raw"], |_, _, _, _, _| {});
+    assert!(!raw_lifecycle.is_enabled(&["fz", "raw", "event"]));
 }
 
 #[test]
@@ -113,6 +125,7 @@ fn raw_event_registration_filters_type_prefix_and_detach() {
     let value = 1_u64;
     let wrong = 1_u32;
 
+    assert!(t.is_raw_event_enabled(&["fz", "raw", "event"]));
     t.raw_event1(&["other"], &value);
     t.raw_event1(&["fz", "raw"], &wrong);
     t.raw_event1(&["fz", "raw"], &value);

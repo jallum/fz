@@ -526,6 +526,18 @@ impl Telemetry for ConfiguredTelemetry {
             .any(|entry| name.starts_with(&entry.prefix) || entry.prefix.starts_with(name))
     }
 
+    fn is_raw_event_enabled(&self, name: &[&'static str]) -> bool {
+        self.raw_events
+            .borrow()
+            .iter()
+            .any(|entry| name.starts_with(&entry.prefix))
+            || self
+                .raw_lifecycle
+                .borrow()
+                .iter()
+                .any(|entry| name.starts_with(&entry.prefix))
+    }
+
     fn dispatch(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata) {
         let (span_id, parent_span_id) = self.current_span_ids();
         self.dispatch(name, EventKind::Event, measurements, metadata, span_id, parent_span_id);

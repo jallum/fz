@@ -60,7 +60,7 @@ fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads
                 .push(("settled", key.kind().to_string()))
         },
     );
-    for leaf in ["displaced", "cache_hit", "reentered"] {
+    for leaf in ["displaced", "cache_hit"] {
         let observed_products = Rc::clone(&product_lifecycle);
         tel.attach_raw_event1::<crate::compiler2::pull::ProductKey, _>(
             &["fz", "compiler2", "pull", "product", leaf],

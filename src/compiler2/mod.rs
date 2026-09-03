@@ -66,6 +66,7 @@ pub use body::{
 pub(crate) use canon::function_label;
 pub use cli::run as run_cli;
 pub use code::{CodeId, CodeMap, CodeState, QuotedCodeSource};
+pub(crate) use compiler::BackendRequestEvent;
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub use deps::{DependencyIndex, UnresolvedWait};
