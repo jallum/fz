@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.203"
+  ],
   "blocks": [],
   "created": "2026-09-03T10:28:04Z",
   "description": "From the fz-kdt.198 research (2026-09-03, 8de517a28). The @spec gate is\nargument-side only: apply_function_contract checks the arguments against\nthe clause domains (spec_violation at a user callsite) and REFINES the\nobserved return by the declared one (refine_observed_return), but nothing\never asks whether the body's return evidence is INSIDE the declared return.\nSix lines, no diagnostic, on three doors:\n    defmodule M do\n      @spec pick(binary) :: integer\n      fn pick(b), do: b\n    end\n    fn main(), do: dbg(M.pick(\u003c\u003c104, 105\u003e\u003e))   # prints \"hi\"\nSame for `@spec make() :: integer` returning a binary, and `@spec make() ::\nutf8` returning a bare binary. This is why fz-kdt.198's lattice fix has 0\ncorpus movers: the runtime library's only brand traffic (Utf8.from_bytes! ::\nutf8, from_bytes :: {:ok, utf8}) sits at RETURN positions that nothing gates.\nSEQUENCE: once the return side is checked, `any ⊄ utf8` bites on Utf8 (its\nvalues are minted by an extern returning any), so this needs the owner's\ndecision on a minting form for branded values (recorded on fz-kdt.198)\nFIRST, then lands as: the settled return of an activation with a declared\ncontract must be a subtype of the instantiated declared return, else a\ndiagnostic at the definition (not the callsite), with the same library/\nuser gating as fz-kdt.33. CONCORDANCE: fz-kdt.2 (protocol-domain @spec\nobligations never validated -- the protocol half of the same gap), fz-\nkdt.33 (where enforcement is gated), fz-kdt.37 (declared parameters that\nsilently degrade to any), fz-kdt.198 (the brand model this makes bite),\nfz-kdt.190 (how a declared return refines the join today).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] A @spec's declared RETURN is never checked against the body: `@spec pick(binary) :: integer; fn pick(b), do: b` is accepted and prints \"hi\"",
   "type": "task",
-  "updated_at": "2026-09-03T10:28:04Z"
+  "updated_at": "2026-09-03T11:05:24Z"
 }

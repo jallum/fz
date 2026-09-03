@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.198"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.201"
+  ],
   "created": "2026-09-03T11:02:45Z",
   "description": "From the fz-kdt.198 cold review (2026-09-03). Under 198's encoding a Descr is\nONE rectangle S x B (kind union x brand slot). union is the pointwise HULL:\nexact when the operands agree on one factor (Meters | int = int; Meters |\nFeet), but ANY union whose operands disagree on BOTH factors releases the\nslot to ⊤ and loses the brand entirely: `@spec take(utf8 | nil)` and\n`@spec take(utf8 | integer)` accept a bare binary on interp, run and build\n(probe/p1_union_nil.fz, p3_union_int.fz), and still do with fz-kdt.192's\nraw-argument gate stacked. TypeExpr::Union (resolve.rs:278-286) is the\nlanguage's ONLY type combinator, so the encoding cannot carry a brand\nthrough the one operator specs are written with. A missed diagnostic, never\na miscompile (brands are erased before the backend), and strictly smaller\nthan HEAD's inverted order -- which is why 198 lands with this as a labelled\nknown-wrong pin (HEAD accepts the same program). THE FIX (data-model up):\nthe brand slot moves DOWN onto the per-axis DNF clauses (a union of\nrectangles), where clause order / absorption / idempotence already exist;\nunion then keeps (utf8, binary) and (unbranded, nil) as two clauses; intersect\nand diff distribute over clauses; canon renders each clause's refinement.\nBLOCKS: trusting a brand at a @spec gate (fz-kdt.201's return side, any\nbrand-typed argument gate beyond the single-brand case), and the owner's\nminting form once it exists. Red-first: p1_union_nil / p3_union_int reject\nthe bare binary on three doors; the residue pin flips from known-wrong to\nlaw. CONCORDANCE: fz-kdt.198 (the rectangle encoding this extends), fz-\nkdt.182/48 (DNF normalisation and denotational identity -- the same clause\nmachinery), fz-kdt.172 (DNF hygiene coverage), fz-kdt.201, fz-kdt.192.",
   "id": "fz-kdt.203",
