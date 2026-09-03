@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-qon.2"
+    "fz-qon.2",
+    "fz-qon.5"
   ],
   "blocks": [],
   "created": "2026-09-03T01:31:54Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Delete the legacy dynamic telemetry object model after typed raw cutover",
   "type": "task",
-  "updated_at": "2026-09-03T03:24:58Z"
+  "updated_at": "2026-09-03T03:24:59Z"
 }
