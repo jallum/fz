@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.5"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Share immutable product payloads instead of deep-cloning artifacts",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:49Z"
+  "updated_at": "2026-09-03T23:03:27Z"
 }
