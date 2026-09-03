@@ -41,11 +41,15 @@
     {
       "text": "fz-kdt.183 landed (2e0bb2706): SELECTION_SEAT_ALLOWANCE 21 sites/27 readings -\u003e 17/29. 00277 w13/w14/w16/w17 retire; w15/w18/w19 go 2 -\u003e 4. No new site; every reading is still a member whose covering sibling exists and is seated second. Re-measure from this base.\n",
       "timestamp": "2026-09-03T12:16:41Z"
+    },
+    {
+      "text": "MEASUREMENT CORRECTION (fz-kdt.199 cold review, 2026-09-03): this ticket's report cites 6139 corpus executables at base ca23b676f. That figure does not reproduce under the repo's documented instrument -- `grep -c '^  executable '` over the backend dumps of the 597-path corpus list gives 5282, and widening to all 605 fixtures gives 5469 (base) / 5548, still not 6139. So 6139 was produced by a different counting method that the report does not state. This does NOT affect this ticket's conclusions: its behaviour result (0 movers on interp and run), its canon movers (5, all pure drops) and its executables-unchanged claim were all relative comparisons made with one consistent method, and the drop population was independently confirmed by its refuter. But the absolute figure should not be quoted as a corpus comparand elsewhere without stating how it was counted. Related: fz-kdt.211 (an AOT executable embeds the compiler's own build path, which makes byte/size comparands lie).",
+      "timestamp": "2026-09-03T18:54:42Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "Construction-wrapper member selection bypasses the drop and the covering seat: dispatch_from_callable_flow_edges seats members in interner order",
   "type": "task",
-  "updated_at": "2026-09-03T16:08:44Z"
+  "updated_at": "2026-09-03T18:54:42Z"
 }
