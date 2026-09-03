@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T09:16:54Z",
+  "description": "From the fz-kdt.192 cold review (2026-09-03, probes X5/X5B), pre-existing at\n8de517a28. types/mod.rs:644 mint_brand(inner, name) produces `inner | Brand`,\nso is_subtype(mint_brand(int, \"Meters\"), int) = false and is_subtype(int,\nmint_brand(int, \"Meters\")) = true -- a branded value is a strict supertype of\nits inner. At HEAD the pattern-derived witness hid the consequence at @spec\npositions; once the witness is the raw argument (fz-kdt.192) the structural\ngate `witness ⊆ σ(P)` REJECTS a branded argument at a ground `int` position\n(X5: `({int, a}) :: a` at {Meters, int} → Invalid, base Known by\nrestatement) and ACCEPTS a bare int at a branded position (X5B). Whether\nthat is the intended model (fz-bsx: runtime equality/matching brand-blind,\ntyping brand-aware; a brand is a nominal refinement, i.e. a SUBTYPE of its\ninner) or an inversion must be decided and pinned before 192 makes the\nrejection reachable in user programs. Corpus today: 0 movers (no fixture\npasses a branded value to a ground-int spec position). CONCORDANT: fz-bsx\n(the brand model), fz-kdt.169 (brand-erased forwarder keys), fz-kdt.192.",
+  "id": "fz-kdt.198",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "mint_brand unions the brand into its inner type, so a branded value is a strict SUPERTYPE of the inner: a ground `int` spec position rejects a Meters argument and accepts a bare int at a branded position -- confirm the brand model before witnesses become observations",
+  "type": "task",
+  "updated_at": "2026-09-03T09:16:54Z"
+}
