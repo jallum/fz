@@ -25,11 +25,15 @@
     {
       "text": "fz-kdt.192 refuter (2026-09-03): enum_take_drop_split (00420) carries 11 same-key duplicate executables out of 204 at base 8de517a28 and under 192 (x58/x59 both `Enum.reverse_list/1[fp[L] list(int)] need=Value`); 192 canon movers are exactly that alias. No new ticket: this is the mechanism 182 names. Reproducer: --dump backend= on the fixture, group executables by key.",
       "timestamp": "2026-09-03T11:29:37Z"
+    },
+    {
+      "text": "fz-kdt.183 landed (2e0bb2706): rung census 53/15 -\u003e 58/16 -- six added, all on DEMANDED slots and code-different ON THE RUNG SLOT (Map.to_list/4 s3 + Map.reverse/2 s0; Range.slice_from/5 s4 + Range.reverse/2 s0; Kernel.dbg/1 + fz_dbg_value/1 on 00277, non-recursive, mask [Ignore]); one retired (Range.reduce/5 s3). Same-key duplicate executables corpus-wide 67 -\u003e 73 (00531 List.delete_first/2[list(int), int] twice with a zero-line body diff; 00127 newly affected): your class, enlarged by six. compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key holds the freight boundary at 0; the ladder itself is yours plus list_element_type([]) = none.\n",
+      "timestamp": "2026-09-03T12:16:40Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
   "type": "task",
-  "updated_at": "2026-09-03T11:29:37Z"
+  "updated_at": "2026-09-03T12:16:40Z"
 }
