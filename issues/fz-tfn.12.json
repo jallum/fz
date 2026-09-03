@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T08:00:23Z",
+  "description": "## Goal\n\nMake macro execution consume the persistent root product graph directly, then delete the synthetic scheduler bridge for backend programs.\n\n## Current boundary\n\n`BuildMacroExecutable` currently synthesizes `BuildBackendProduct`, waits on `FactKey::BackendProgram`, and deep-clones the World-owned program. That bridge is live today. Once root products persist, retaining a second fact/map authority requires an explicit movement protocol and risks stale post-edit programs.\n\n## Strategy and proof\n\n1. Give hidden macro roots the same persistent product ownership and exact invalidation contract as user roots.\n2. Make macro executable production read the program-equality projection of `RootBackendProduct(root)` and react to its generation.\n3. Prove unchanged macro calls reuse the settled program; reachable macro-source changes invalidate the exact reader closure; unrelated source and transport-only/program-equal movement do not relower it.\n4. Delete `Job::BuildBackendProduct`, `FactKey::BackendProgram`, `BackendProgramMap`, product-to-fact copying, synthetic completion identity, and bridge-only tests/docs.\n5. Preserve macro recursion/cycle behavior, exact causal attribution, canonical artifacts, and runtime behavior.\n6. Run macro, library, fixture, determinism, formatting, and strict clippy checks.\n\nNo compatibility fact mirror remains after cutover.",
+  "id": "fz-tfn.12",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete the BackendProgram scheduler bridge after macro roots join persistent products",
+  "type": "task",
+  "updated_at": "2026-09-03T08:00:23Z"
+}
