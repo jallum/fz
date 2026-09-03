@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T01:53:56Z",
+  "description": "## Goal\nMake recursive-group search telemetry report the same canonical per-product work across process hash seeds without changing pull behavior.\n\n## Reproducer and evidence\nWhile implementing fz-kdt.5, two separate `fz2 --telemetry-jsonl` processes compiling `fixtures2/00420_enum_take_drop_split.fz` produced equal canonical request, evaluation, settlement, displacement, publication, demand-cone, and population dimensions after excluding only the already-proven CallableConstruction cache-hit redistribution. They disagreed on recursive search work for canonical CallableConstruction products: `recursive_dependency_reach_visits` (for example 43 versus 40), `recursive_candidate_scans`, and `recursive_searches` (for example 6 versus 4).\n\nThis is distinct from fz-kdt.47: that ticket explicitly says the cache-hit divergence does not prove formula/product-set divergence and routes product-work causality elsewhere. The recursive-search counters observe traversal/scheduling work directly and are not cache-hit dimensions.\n\n## Suspected boundary\nThe reach query stops as soon as it finds a target while traversing hash-backed dependency collections. The set of reached candidates may be semantic, but visits before the early exit are traversal-order work. Candidate/search counts may additionally expose order-dependent pending-group scheduling. Re-derive each dimension before changing code; do not sort merely to disguise work.\n\n## Acceptance\n- A focused seeded-order test proves which recursive-search dimensions are semantic sets versus actual traversal work.\n- Canonical per-product recursive searches, candidates, reached candidates, dependency visits, and successful publication membership are reproducible across processes, or the public report explicitly represents the true distribution with a justified stable comparand.\n- Pull settlement/publication behavior and backend programs do not change.\n- fz-kdt.5 cross-process acceptance needs no exclusion beyond the proven CallableConstruction cache-hit key.\n- Update performance instrumentation/fact-engine docs and run target fixture, causal, cross-process, and warning-free checks.",
+  "id": "fz-tfn.2",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] Make recursive-group discovery work reproducible across process hash seeds",
+  "type": "bug",
+  "updated_at": "2026-09-03T01:53:56Z"
+}
