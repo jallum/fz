@@ -430,7 +430,6 @@ impl<'a> ProgramCanon<'a> {
 
         let mut out = Out::default();
         out.enter("backend_program");
-        out.put(&format!("revision {}", program.backend_revision));
         out.put(&format!("entry {}", self.executable_ref(program.entry)));
         // The atom table's ORDER is an allocation artifact: nothing in the
         // artifact names an atom by its index (steps carry `GroundValue::Atom`

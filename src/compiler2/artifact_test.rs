@@ -5,7 +5,7 @@ use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, Function
 use crate::compiler2::artifact::{
     BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
-    NativeConstructionMember, NativeEntryAbi, NativeProgram,
+    NativeConstructionMember, NativeEntryAbi, NativeProgram, NativeProgramMap,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
@@ -39,7 +39,6 @@ struct TestTransportShapes {
 fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
     fn assert_closed(program: BackendProgram) {
         let BackendProgram {
-            backend_revision: _,
             entry: _,
             atom_names: _,
             struct_schemas: _,
@@ -64,6 +63,30 @@ fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
     }
 
     let _ = assert_closed as fn(BackendProgram);
+}
+
+#[test]
+fn compiler2_native_program_map_observes_schema_only_recompute() {
+    let root = RootId::for_test(0);
+    let initial = NativeProgram {
+        entry: FnId(0),
+        module: Module::default(),
+        bodies: Vec::new(),
+        callable_boundaries: Vec::new(),
+    };
+    let mut changed = initial.clone();
+    changed
+        .module
+        .struct_schemas
+        .insert("Point".to_string(), vec!["x".to_string(), "y".to_string()]);
+    let mut programs = NativeProgramMap::new();
+
+    assert!(programs.define(root, initial.clone()));
+    assert!(!programs.define(root, initial));
+    assert!(
+        programs.define(root, changed),
+        "a schema-only recompute changes codegen-visible native content and must emit a definition",
+    );
 }
 
 impl TestTransportShapes {
@@ -136,7 +159,6 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         ExternTy::I64,
     )]);
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
         bodies: vec![NativeBody {
@@ -290,7 +312,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         arg_idx: 0,
     };
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
         bodies: vec![
@@ -462,7 +483,6 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         arg_idx: 0,
     };
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
         bodies: vec![NativeBody {

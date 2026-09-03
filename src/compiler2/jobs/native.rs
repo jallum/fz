@@ -331,7 +331,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .collect();
         module.struct_schemas = self.program.struct_schemas.clone();
         Ok(NativeProgram {
-            backend_revision: self.program.backend_revision,
             entry,
             module,
             bodies: self.native_bodies,

@@ -3991,7 +3991,6 @@ mod tests {
             &root_key,
             ProductValue::RootBackendProduct(Box::new(RootBackendProductAnswer {
                 program: super::super::artifact::BackendProgram {
-                    backend_revision: 0,
                     entry: 0,
                     atom_names: Vec::new(),
                     struct_schemas: Default::default(),

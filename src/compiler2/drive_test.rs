@@ -5677,7 +5677,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
 }
 
 #[test]
-fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
+fn compiler2_identical_native_recompute_emits_no_definition() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -5717,7 +5717,7 @@ fn compiler2_native_program_revision_stays_stable_for_identical_recompute() {
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "re-lowering unchanged native state should resolve without bumping the revision: {outcome:?}; diagnostic={message}"
+            "re-lowering unchanged native state should resolve without redefining it: {outcome:?}; diagnostic={message}"
         );
     }
 
@@ -8617,7 +8617,7 @@ fn compiler2_native_codegen_dispatches_typed_capture_closure_directly_without_a_
 }
 
 #[test]
-fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
+fn compiler2_identical_backend_recompute_emits_no_definition() {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -8645,7 +8645,7 @@ fn compiler2_backend_program_revision_stays_stable_for_identical_recompute() {
     );
     assert_resolved(
         compiler.drive(),
-        "rebuilding unchanged backend state should resolve without bumping the revision",
+        "rebuilding unchanged backend state should resolve without redefining it",
     );
 
     let records = backend.records(root_id);

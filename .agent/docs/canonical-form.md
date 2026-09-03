@@ -90,7 +90,11 @@ over a whole arena stays affordable.
 
 ## canon(BackendProgram)
 
-Built on `canon(Ty)`, by three rules:
+Built on `canon(Ty)`, by four rules:
+
+- **only semantic artifact content renders**. Product generations and fact
+  revisions own freshness, so the program and its canonical form carry no
+  synthetic version line.
 
 - **interned ids expand** to what they describe. A `ShapeId` becomes its
   descriptor tree, bottoming out in lanes (a type plus a class) and callables (a
