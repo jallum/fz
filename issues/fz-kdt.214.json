@@ -10,9 +10,15 @@
   "id": "fz-kdt.214",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.199 landed (dd07432db) and names this ticket in return_flow_mask's doc and in type-specialization.md with all three holes. The returned axis is solved over the same forwarding cone as fz-kdt.183's dispatch axis, so it inherits that cone's edge set exactly: a DirectCall dest is ignored (deliver2.fz keys 7 -\u003e 9 for nothing), a RECONSTRUCTED argument is not an edge (hops.fz: outer/2 stays collapsed while inner/2 and mid/2 split, so two keys both publish the join -- 2 executables for 0 precision), and a PROJECTED argument is not an edge (proto_cb.fz, the protocol-callback case). One edge-set improvement serves three axes: 183's dispatch, 199's returned, and fz-kdt.165's planned identity axis on the same walk.\n",
+      "timestamp": "2026-09-03T19:44:37Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "The returned axis reuses forwarded_inputs, which ignores a DirectCall dest and does not see reconstructed or projected arguments",
   "type": "task",
-  "updated_at": "2026-09-03T18:54:39Z"
+  "updated_at": "2026-09-03T19:44:37Z"
 }
