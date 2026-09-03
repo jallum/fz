@@ -25,11 +25,15 @@
     {
       "text": "fz-kdt.141: the neither-covers residue this ticket owns is now perturbable, and it is what the new stress moves.\n\nThe retired reversal knob mirrored WITHIN a question group only, so it never touched a cross-group pair -- your recorded gap ('the reversal stress does NOT exercise cross-group order -- fz-kdt.131 needs a cross-group permutation stress'). FZ_STRESS_PERMUTE_DISPATCH=arms:\u003cseed\u003e permutes the whole arrival order and then lets specificity_order do its deterministic work, so what varies is exactly the arrival-kept residue: a question group's members (fz-kdt.107) and every pair where neither group covers the other (this ticket). The unit gate a_seed_moves_an_arrival_order_the_group_reversal_cannot pins that difference on three arms in three singleton groups -- the shape this ticket owns -- where the reversal is provably the identity.\n\nMeasured: arms:reverse moves 8 fixtures' artifacts, an arm seed moves 27. enum_predicate_search, whose two facet-3 pairs your latest comment names, now ABORTS natively under arms:6 (_fz_list_head_int_ref) where reversal left it green -- so the 'benign today only by a correlation the compiler never proved (luck, ARGUED not proven)' reading has an instrument behind it now.",
       "timestamp": "2026-09-02T04:30:50Z"
+    },
+    {
+      "text": "fz-kdt.143 LANDED (d2a5f3510) and CLOSED the \"un-dropped narrow arms a split question group re-arms\" population; what remains on the corpus is facet 3 alone. The blind-escape census gate now drives arms:1..6 as well as settled, comparing UNORDERED pairs (an arrival-kept facet-3 flip does not register) with per-setting named constants. Base -\u003e head: settled 3 -\u003e 3, arms:1 3 -\u003e 3, arms:2 5 -\u003e 3, arms:3 5 -\u003e 3, arms:4 3 -\u003e 3, arms:5 3 -\u003e 3, arms:6 7 -\u003e 5. Every entry that left was a dispatch_list_head_separates narrow arm a legal permutation seated ahead of its stand-in. THE FIVE THAT REMAIN ARE ALL THIS TICKET'S: the three settled pairs (dispatch_list_head_separates [:false | :true] with [int | :ok | :true]; enum_predicate_search [:false | :nil] with [int | :nil] and [:false | :true] with [int | :ok | :true]) plus two enum_predicate_search pairs only arms:6 reaches: [int | :nil] with [int] and [int | :ok | :true] with [int]. Those two are structurally out of 143's reach: that [int] arm's CALLABLE surface at subject 2 is strictly WIDER than its siblings' (5 lambdas vs 1 at the all? site, 3 vs 1 at any?), so containment runs one way at subject 0 and the other way at subject 2 and nothing stands in for it -- overlap without containment, exactly facet 3. The census gate is now the instrument that sees all five.",
+      "timestamp": "2026-09-03T02:44:56Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A seat must carry surface coverage: any arm ordering not covering-safe is unsound wherever the test is blind to what the body relies on",
   "type": "task",
-  "updated_at": "2026-09-02T04:30:50Z"
+  "updated_at": "2026-09-03T02:44:56Z"
 }
