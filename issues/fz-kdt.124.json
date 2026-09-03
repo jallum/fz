@@ -11,11 +11,15 @@
     {
       "text": "Data point from fz-kdt.132 (c31b309d0), which this ticket was named as a neighbour of. The take_drop 'cross-key subsumption smell' this ticket's neighbourhood was suspected of was NOT subsumption: the three same-function accumulator keys ({[], []}, {[], [int]}, {[], [int]} | {[int], []}) were a truncated ASCENT LADDER, not redundant siblings. Deduping them by containment would have been the wrong cure -- the right one minted the rung above them and the ladder collapsed to a single key on its own (three reducer specializations per captured lambda became one, 00420 215 -\u003e 196 executables). Worth re-measuring 00277's Kernel.dbg/1[empty_list()] vs Kernel.dbg/1[list(int)] pair against HEAD before building: the population this ticket asks to count may have moved.",
       "timestamp": "2026-09-02T07:46:15Z"
+    },
+    {
+      "text": "RE-MEASURED at d2a5f3510 (2026-09-02), head FIFO vs head LIFO: the Kernel.dbg/1[empty_list()] + fz_dbg_value/1[empty_list()] pair exists under LIFO only (beside dbg/1[list(int)] on both), and BOTH return `any` -- the fz-kdt.120 defect (a @spec variable bound to the whole `[]` argument is dropped by arrow_match.rs's empty-list ambiguity rule, so `dbg(t) :: t` at `[]` loses its result). FIFO carries its own one-schedule key instead: Range.reduce/5[..., {:cont, empty_list()}, ...]. So the population this ticket asks to count is, at head, two `[]`-keyed activations that a schedule mints when a callsite's argument is `[]` at an intermediate round and that survive beside the wider key. Sequence: after fz-kdt.120's rule lands (the `[]`-keyed dbg will then return `[]`, not `any`), re-count; what remains is the minting question this ticket owns, and fz-kdt.132's lesson applies (a truncated ascent ladder is not a subsumption problem).",
+      "timestamp": "2026-09-03T03:16:47Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Cross-key specialization subsumption: an executable whose whole domain is contained in a same-function sibling is minted and kept",
   "type": "task",
-  "updated_at": "2026-09-02T07:46:15Z"
+  "updated_at": "2026-09-03T03:16:47Z"
 }
