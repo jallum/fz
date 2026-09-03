@@ -10185,90 +10185,152 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
 /// `.agent/docs/dispatch-matrix.md` reads off stderr, driven in process so the
 /// population cannot grow unnoticed.
 ///
-/// A RATCHET, not a blessing. Every row reads 0 now, each holding a fixture and
-/// arrival that once escaped or could regress; a count this table does not carry
-/// -- in either direction -- is either a new latent miscompile or a cure, and
-/// both want the table edited deliberately rather than a number re-blessed.
+/// TWO ASSERTIONS, IN THIS ORDER, because a zero has two ways of being wrong
+/// (fz-kdt.187). First: the row OBSERVED something. A fixture whose wrappers
+/// have collapsed to single members runs no dispatch, so its escape count is 0
+/// no matter what the compiler does, and the row is watching an empty room --
+/// that is a stale row, not a green one, and it gets its own finding. Only then:
+/// the observations and the escapes are the two numbers
+/// [`SURFACE_MEMBERSHIP_CENSUS`] pins.
+///
+/// A RATCHET, not a blessing: see the table's own doc for what each row holds
+/// and what moving one means.
 #[test]
 fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
+    let mut blind = Vec::new();
     let mut moved = Vec::new();
-    for (fixture, setting, expected) in SURFACE_MEMBERSHIP_CENSUS {
+    for (fixture, setting, observed, expected) in SURFACE_MEMBERSHIP_CENSUS {
         let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
             crate::compiler2::callsite_dispatch::dispatch_stress::setting(setting),
         );
         let census = crate::runtime_type_predicate::surface_membership::SurfaceMembershipCensus::install();
         interpreted_answer(fixture);
-        let escapes = census.escapes();
-        if escapes != expected {
-            let arrival = if setting.is_empty() {
-                "the settled arrival"
-            } else {
-                setting
-            };
-            moved.push(format!("{fixture} under {arrival}: {escapes}, census says {expected}"));
+        let (observations, escapes) = (census.observations(), census.escapes());
+        let arrival = if setting.is_empty() {
+            "the settled arrival"
+        } else {
+            setting
+        };
+        if observations == 0 {
+            blind.push(format!("{fixture} under {arrival}"));
+        }
+        if (observations, escapes) != (observed, expected) {
+            moved.push(format!(
+                "{fixture} under {arrival}: {observations} observations / {escapes} escapes, census says \
+                 {observed} / {expected}"
+            ));
         }
     }
     assert!(
+        blind.is_empty(),
+        "a row that observes nothing reports no escape for the same reason an empty room is quiet, so its \
+         zero says `nothing was looked at` rather than `nothing escaped` -- re-home it onto a fixture and \
+         arrival that still reach a dispatch, or delete it and say why: {}",
+        blind.join("; "),
+    );
+    assert!(
         moved.is_empty(),
         "a value that passes an arm's test but lies outside the surface that arm was compiled for is \
-         running a body that never named it -- the arm is missing, not the test: {}",
+         running a body that never named it -- the arm is missing, not the test; and an observation count \
+         that moves is the row's denominator changing under it: {}",
         moved.join("; "),
     );
 }
 
-/// The measured surface-membership population: fixture, arrival, escapes.
-/// `""` is the settled arrival, and every other string is a
+/// The measured surface-membership population: fixture, arrival, observations,
+/// escapes. `""` is the settled arrival, and every other string is a
 /// `FZ_STRESS_PERMUTE_DISPATCH` setting the fixpoint could legally have
 /// delivered instead.
+///
+/// OBSERVATIONS ARE THE DENOMINATOR, and without them a row cannot be read
+/// (fz-kdt.187). `observe` fires once per `Region::Type` question a running
+/// dispatch plan MATCHES, so a fixture that runs no such question reports no
+/// escape for the same reason an empty room is quiet: its 0 says "nothing was
+/// looked at", not "nothing escaped". The gate asserts the count is positive
+/// before it reads the escapes, and pins it, so a row cannot go blind in
+/// silence.
 ///
 /// The list-tail reading (fz-kdt.144) replaced the tuple-era population, which
 /// fz-kdt.132 emptied and fz-kdt.138 then made empty by construction. The first
 /// seven rows are that tuple-era population, kept at 0 because a table that
 /// only lists what escapes cannot say that anything stopped escaping.
 ///
-/// **`00277_enum_tier0_fixture` = 0, and fz-kdt.179 is why it moved.** Its
-/// construction wrapper's member-selection plan for `Enum.reverse(1..7//2, [:tail])`'s
-/// reducer used to seat `list(int)` ahead of `list(int | :tail)`, so the
-/// accumulator `[1, :tail]` and its growth passed `list(int)`'s head test and
-/// ran the body compiled for `[integer]` -- 12 escapes at the settled arrival,
-/// 12 under `arms:6` and `arms:reverse`, 0 under every wrapper order. stdout was
-/// right on every door because the accumulator lane is `ValueRef` in both bodies
-/// (boxed element access, the fz-kdt.131 correlation nobody proved), so the
-/// escape was latent. Member selection now runs through `routable_alternatives`
-/// (fz-kdt.179): the covering member stands in for `list(int)`, the drop takes
-/// it, and the settled arrival reads 0 like every permutation. The rows for the
-/// three wrapper orders and `arms:6` stay so a regression is caught here.
+/// **`00277_enum_tier0_fixture` and `enum_predicate_search` are GONE from this
+/// table, and the observation counter is what found them.** Both held
+/// fz-kdt.179's and fz-kdt.183's cures; both now observe ZERO at every arrival
+/// this table drove them at. Read off `interp --dump backend=`, the cause is
+/// the same for both and it is fz-kdt.199: `00277` publishes five construction
+/// wrappers `w0`-`w4` and `enum_predicate_search` publishes 32, and EVERY one
+/// of them is single-member with no selection plan, so
+/// `select_construction_member` takes its `None if members.len() == 1` branch
+/// and no dispatch runs. The cures are real and their fixtures no longer build
+/// the shape that shows them.
 ///
-/// The `arms:6` row on `enum_predicate_search` was fz-kdt.131's facet-3 pair --
-/// two list arms whose heads overlap and neither of whose surfaces contains the
-/// other -- measured on the production path for the first time. **fz-kdt.183
-/// cured it: 1 -> 0.** The pair existed because one `List.reduce_while_step/3`
-/// key stood for two callers whose list elements differ; with the element in
-/// the key the two arms are two keys and neither is blind to the other's
-/// values. The row stays at 0 so a regression that re-blends them is a
-/// failure here rather than a silent return. fz-kdt.131 now has no reproducer
-/// in this tree and must decide one -- the facet-3 shape is still constructible,
-/// this fixture just no longer builds it.
-const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize); 15] = [
-    ("fixtures2/00183_enum_take_list_range.fz", "", 0),
-    ("fixtures2/00230_enum_take_chained.fz", "", 0),
-    ("fixtures2/00418_enum_count_range.fz", "", 0),
-    ("fixtures2/00419_enum_take_mixed.fz", "", 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 0),
-    ("fixtures2/behavior/unused_range_binding.fz", "", 0),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "", 0),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "arms:6", 0),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:1", 0),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:6", 0),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:reverse", 0),
-    ("fixtures2/behavior/enum_predicate_search.fz", "", 0),
-    ("fixtures2/behavior/enum_predicate_search.fz", "arms:6", 0),
+/// WHERE THE SEVEN BLIND ROWS WENT. `00277`'s three wrapper orders and its
+/// `arms:6` moved to `behavior/enum_take_drop_split`, which still builds what
+/// they were written to watch: 23 of its 38 wrappers are multi-member WITH a
+/// selection plan, so a permuted wrapper or arm order really does reseat the
+/// members a value is routed among, and it observes 375 at each of those four
+/// arrivals. `enum_predicate_search`'s `arms:6` moved to `00419_enum_take_mixed`
+/// -- fz-kdt.183's cure was about two list arms whose ELEMENTS differ, and that
+/// is `enum_take_mixed`'s subject; all four of its wrappers are two-member with
+/// a selection plan, and it observes 36 under `arms:6`. The two SETTLED rows
+/// were DELETED rather than re-homed, because the settled arrival is already
+/// held by the six settled rows above them and a re-homing would have been a
+/// duplicate row, not a kept property.
+///
+/// WHAT THE OLD `00277` ROWS RECORDED, kept here because the table no longer
+/// can. Its construction wrapper's member-selection plan for
+/// `Enum.reverse(1..7//2, [:tail])`'s reducer used to seat `list(int)` ahead of
+/// `list(int | :tail)`, so the accumulator `[1, :tail]` and its growth passed
+/// `list(int)`'s head test and ran the body compiled for `[integer]` -- 12
+/// escapes at the settled arrival, 12 under `arms:6` and `arms:reverse`, 0
+/// under every wrapper order. stdout was right on every door because the
+/// accumulator lane is `ValueRef` in both bodies (boxed element access, the
+/// fz-kdt.131 correlation nobody proved), so the escape was latent. Member
+/// selection now runs through `routable_alternatives` (fz-kdt.179): the
+/// covering member stands in for `list(int)`, the drop takes it, and every
+/// arrival read 0 -- until fz-kdt.199 left the fixture with nothing to select
+/// among at all.
+///
+/// WHAT THE OLD `enum_predicate_search` ROWS RECORDED. The `arms:6` row was
+/// fz-kdt.131's facet-3 pair -- two list arms whose heads overlap and neither
+/// of whose surfaces contains the other -- measured on the production path for
+/// the first time, and fz-kdt.183 cured it 1 -> 0. The pair existed because one
+/// `List.reduce_while_step/3` key stood for two callers whose list elements
+/// differ; with the element in the key the two arms are two keys and neither is
+/// blind to the other's values. fz-kdt.131 has no reproducer in this tree and
+/// must decide one -- the facet-3 shape is still constructible, this fixture
+/// just no longer builds it.
+///
+/// A RATCHET, not a blessing. Every row reads 0 escapes now, each holding a
+/// fixture and arrival that once escaped or could regress; a count this table
+/// does not carry -- in either direction, and in either column -- is either a
+/// new latent miscompile, a cure, or a fixture that stopped exercising the
+/// property, and all three want the table edited deliberately rather than a
+/// number re-blessed.
+const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
+    ("fixtures2/00183_enum_take_list_range.fz", "", 36, 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 36, 0),
+    ("fixtures2/00418_enum_count_range.fz", "", 6, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 36, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 375, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 375, 0),
+    ("fixtures2/behavior/unused_range_binding.fz", "", 6, 0),
+    // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
+    // hold, re-homed onto the fixture that still selects among members.
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 375, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 375, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 375, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 375, 0),
+    // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
+    // fixture whose list arms still differ at the element.
+    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 36, 0),
     // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is
     // what holds that sentence to the tree.
-    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 0),
+    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 4, 0),
 ];
 
 /// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.

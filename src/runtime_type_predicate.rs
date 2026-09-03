@@ -1508,6 +1508,10 @@ pub(crate) mod surface_membership {
     thread_local! {
         static MODE: Cell<Mode> = const { Cell::new(Mode::Unread) };
         static ESCAPES: Cell<usize> = const { Cell::new(0) };
+        /// The DENOMINATOR of [`ESCAPES`]: how many admitted values this
+        /// tripwire has looked at. A zero escape count says nothing until this
+        /// says something was looked at (fz-kdt.187).
+        static OBSERVATIONS: Cell<usize> = const { Cell::new(0) };
     }
 
     /// What this thread does with a finding. A process-wide default comes from
@@ -1545,6 +1549,7 @@ pub(crate) mod surface_membership {
         if mode == Mode::Off {
             return;
         }
+        OBSERVATIONS.with(|observations| observations.set(observations.get() + 1));
         let Some(witness) = escaped(predicate, reader, value) else {
             return;
         };
@@ -1560,18 +1565,26 @@ pub(crate) mod surface_membership {
     }
 
     /// Reports every finding on this thread and counts them, for as long as it
-    /// lives, then puts the previous setting and tally back.
+    /// lives, then puts the previous setting and tallies back.
     ///
     /// The census the shell recipe reads off stderr, available to an
-    /// in-process driver as a number.
+    /// in-process driver as two numbers: the findings, and how many values were
+    /// looked at to find them.
     #[cfg(test)]
-    pub(crate) struct SurfaceMembershipCensus(Mode, usize);
+    pub(crate) struct SurfaceMembershipCensus {
+        mode: Mode,
+        escapes: usize,
+        observations: usize,
+    }
 
     #[cfg(test)]
     impl SurfaceMembershipCensus {
         pub(crate) fn install() -> Self {
-            let previous = MODE.with(|mode| mode.replace(Mode::Report));
-            Self(previous, ESCAPES.with(|escapes| escapes.replace(0)))
+            Self {
+                mode: MODE.with(|mode| mode.replace(Mode::Report)),
+                escapes: ESCAPES.with(|escapes| escapes.replace(0)),
+                observations: OBSERVATIONS.with(|observations| observations.replace(0)),
+            }
         }
 
         /// How many values have reached a body whose surface never named them
@@ -1579,13 +1592,22 @@ pub(crate) mod surface_membership {
         pub(crate) fn escapes(&self) -> usize {
             ESCAPES.with(Cell::get)
         }
+
+        /// How many admitted values the tripwire has looked at since this
+        /// census was installed -- the denominator [`Self::escapes`] speaks
+        /// for. A census that observes nothing reports no escape for the same
+        /// reason an empty room is quiet (fz-kdt.187).
+        pub(crate) fn observations(&self) -> usize {
+            OBSERVATIONS.with(Cell::get)
+        }
     }
 
     #[cfg(test)]
     impl Drop for SurfaceMembershipCensus {
         fn drop(&mut self) {
-            MODE.with(|mode| mode.set(self.0));
-            ESCAPES.with(|escapes| escapes.set(self.1));
+            MODE.with(|mode| mode.set(self.mode));
+            ESCAPES.with(|escapes| escapes.set(self.escapes));
+            OBSERVATIONS.with(|observations| observations.set(self.observations));
         }
     }
 

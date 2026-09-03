@@ -928,17 +928,38 @@ before the recursive dispatch: the values that reach the `[:false | :true]` arm
 are `[false]` and `[]`. That pair is statically real and dynamically unreached,
 and **fz-kdt.131** owns constructing a new live one.
 
-The census stays a RATCHET with names:
+**A row must OBSERVE before its zero means anything (fz-kdt.187).** The
+tripwire counts the values it looks at as well as the ones that escape, and
+`SurfaceMembershipCensus` exposes both. Measured at head, seven of the fifteen
+rows the ratchet used to drive observed NOTHING — `00277_enum_tier0_fixture` at
+the settled arrival, `arms:6`, `wrappers:1`, `wrappers:6` and
+`wrappers:reverse`, and `enum_predicate_search` at the settled arrival and
+`arms:6` — so their 0 said "nothing was looked at" rather than "nothing
+escaped". The cause is **fz-kdt.199**, read off `interp --dump backend=`:
+`00277` now publishes five construction wrappers and `enum_predicate_search`
+32, and every one of them is single-member with NO selection plan, so
+`select_construction_member` takes its `None if members.len() == 1` branch and
+no dispatch runs. The cures above are real; those two fixtures no longer build
+the shape that shows them.
+
+The census stays a RATCHET with names, and it is now THIRTEEN named
+`(fixture, arrival)` pairs:
 `compiler2_no_value_reaches_a_construction_member_that_never_named_it` drives
-fifteen named `(fixture, arrival)` pairs in process — the SETTLED arrival of
-all nine fixtures that have ever reported, `00277` under `arms:6` and under each
-of the three wrapper orders, `enum_predicate_search` under `arms:6`, and
-`dispatch_list_head_separates` at the settled arrival (the row that holds its
-header's "dynamically unreached" sentence to the tree) — so a
-count that moves in either direction is a new latent miscompile or a cure and
-wants the table edited deliberately rather than a number re-blessed. The
-remaining `arms:` seeds on `00277` are the SWEEP's measurement above, re-read
-with the recipe rather than pinned in process, because every one of them reads
+the SETTLED arrival of `00183`, `00230`, `00418`, `00419`, `00420`,
+`behavior/enum_take_drop_split`, `unused_range_binding` and
+`dispatch_list_head_separates` (the last being the row that holds its header's
+"dynamically unreached" sentence to the tree), plus five permuted arrivals
+re-homed off the blind fixtures: `behavior/enum_take_drop_split` under `arms:6`
+and each of the three wrapper orders — 23 of its 38 wrappers are multi-member
+WITH a selection plan, so a permuted order really does reseat the members a
+value is routed among — and `00419_enum_take_mixed` under `arms:6`, which is
+where fz-kdt.183's "two list arms whose ELEMENTS differ" still lives. The gate
+asserts a positive observation count before it reads the escapes, and pins
+both, so a count that moves in either column is a new latent miscompile, a cure,
+or a fixture that stopped exercising the property — and all three want the table
+edited deliberately rather than a number re-blessed. The remaining `arms:` seeds
+are the SWEEP's measurement above, re-read with the recipe rather than pinned in
+process, because every one of them reads
 what the settled row already pins.
 
 **What it read before the spine.** fz-kdt.119 landed the tuple reading and
