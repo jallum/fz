@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T03:31:42Z",
+  "description": "From the fz-kdt.144 cold review (2026-09-02, d2a5f3510). drive_test.rs\ndispatch_call_edges (~:9156) yields only BackendTail::DirectCall { target:\nCallEdge::Dispatch(..) } plans, so compiler2_dispatch_blind_escape_census_\nis_the_known_population, compiler2_dispatch_seats_the_covering_arm_where_\none_covers and ARM_ORDER_CENSUS reason over a STRICT SUBSET of the dispatch\nsurface: an executable's entry_dispatch (clause dispatch) and every\nconstruction wrapper's `selection` plan (member selection) are never\ninspected. 00277_enum_tier0_fixture IS in ARM_ORDER_CENSUS and the census\nreports nothing for it while its wrapper w2 seats list(int) ahead of\nlist(int | :tail) -- the escape the dynamic tripwire found on its first\npass (12 values, [1, :tail] and its growth, running the [integer] body).\nFIX: one walk over every plan the artifact carries (call-edge dispatch,\nentry_dispatch, wrapper selection), each arm paired with the observable\nsurface its body was compiled for, feeding the same seated_arm_surfaces /\ncovers / blind_escapes readers; the doc sentence \"Every position in the\ncensus where the arm seated first does not name what the arm seated second\nholds\" becomes true. Expected: the census turns RED on 00277's wrapper\nselection (the reproducer for the cure ticket), and the population must be\nnamed per plan kind. Sequence: BEFORE the cure, so the cure is red-first.",
+  "id": "fz-kdt.178",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "The static blind-escape census walks only call-edge dispatches: entry_dispatch and construction-wrapper selection plans are outside every seating gate",
+  "type": "task",
+  "updated_at": "2026-09-03T03:31:42Z"
+}
