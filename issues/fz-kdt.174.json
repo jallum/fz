@@ -7,9 +7,15 @@
   "id": "fz-kdt.174",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "FOLDED into fz-kdt.161 (2026-09-02): same fixture, same 180-vs-181 / 2-vs-3-node residue, same root (schedule-unstable free-var tiebreak); this ticket adds the cross-session witness and the acceptance criterion (cross-process md5 stability), now recorded on 161.",
+      "timestamp": "2026-09-03T00:02:14Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "00277_enum_tier0_fixture compiled to two different backend programs from one binary on one input: cross-session discrepancy, not reproducible in 17 same-session runs",
   "type": "bug",
-  "updated_at": "2026-09-02T23:04:50Z"
+  "updated_at": "2026-09-03T00:02:14Z"
 }
