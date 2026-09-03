@@ -9,9 +9,15 @@
   "id": "fz-tfn.25",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "Authorized DAG split: port the already-green non-member/search-work portion from the parked fz-tfn.2 worktree. Do not absorb the exact recursive publication-member oracle; that remains in fz-tfn.2 after fz-kdt.4.",
+      "timestamp": "2026-09-03T13:51:53Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Stabilize recursive-search work shape before retained products",
   "type": "bug",
-  "updated_at": "2026-09-03T13:51:09Z"
+  "updated_at": "2026-09-03T13:51:53Z"
 }
