@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-kdt.15"
   ],
-  "blocks": [
-    "fz-qon.3"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-03T02:44:26Z",
   "close_reason": "Implemented by commit 1e7252981 and PR #114 in GitHub stack #112. Deleted both unreachable partial-key activation merge helpers and their mutation plumbing. Proof: 5 focused callsite-summary tests passed; library 1586 passed with 5 ignored; fixture matrix 485 passed with 9 ignored; workspace checks, strict clippy, formatting, diff, and residue scans passed.",
   "created": "2026-08-30T17:00:13Z",
@@ -17,5 +15,5 @@
   "status": "closed",
   "title": "Delete unreachable partial-key arrow merge branches",
   "type": "task",
-  "updated_at": "2026-09-03T02:44:26Z"
+  "updated_at": "2026-09-03T02:45:17Z"
 }
