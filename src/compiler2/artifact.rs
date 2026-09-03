@@ -278,7 +278,6 @@ pub enum BackendReturnFlow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendProgram {
-    pub backend_revision: u64,
     pub entry: usize,
     pub atom_names: Vec<String>,
     pub struct_schemas: BTreeMap<String, Vec<String>>,
@@ -301,9 +300,6 @@ pub(crate) struct MacroExecutable {
 
 #[derive(Debug, Clone)]
 pub(crate) struct NativeProgram {
-    /// Revision of the `BackendProgram(root)` snapshot this native handoff
-    /// was derived from.
-    pub backend_revision: u64,
     /// The CPS/native entry body the shared JIT/AOT pipeline should start at.
     pub entry: FnId,
     /// Compiler2-owned CPS/native module handed to shared codegen. This
@@ -1040,8 +1036,7 @@ fn native_program_same_state(left: &ProjectionState<NativeProgram>, right: &Proj
 }
 
 fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {
-    left.backend_revision == right.backend_revision
-        && left.entry == right.entry
+    left.entry == right.entry
         && left.bodies == right.bodies
         && left.callable_boundaries == right.callable_boundaries
         && native_modules_equal(&left.module, &right.module)

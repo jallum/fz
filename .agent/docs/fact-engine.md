@@ -626,6 +626,13 @@ waited on, while this starts work because the fact it needs has no producer a
 wait could ever name -- both are bounded, self-contained drives invoked
 directly rather than a job commanding another job to run.
 
+Freshness stays on those owners: the fact slot revision records published
+`BackendProgram(root)` movement, and product generations reject stale pull
+results. Neither `BackendProgram` nor its `NativeProgram` projection embeds a
+second revision field; their equality compares artifact content directly.
+`MacroExecutable.backend_revision` is deliberately different: it snapshots the
+live backend fact revision used to build a compile-time executable.
+
 ### Whole-program struct-schema completeness
 
 `World::struct_def_schemas()` snapshots the *entire* shared `StructDefMap` fact

@@ -221,6 +221,10 @@ fn canon_of_a_backend_program_carries_no_interned_id() {
             "the canonical form must not carry the interned id `{id}`"
         );
     }
+    assert!(
+        !rendered.lines().any(|line| line.trim_start().starts_with("revision ")),
+        "the canonical form must not carry synthetic artifact revisions"
+    );
     // A generated lambda's NAME mints its owner's raw id; `function_label` has
     // to resolve that away rather than pass it through.
     assert!(

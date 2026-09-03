@@ -251,7 +251,6 @@ pub(crate) fn produce_root_backend_product(
         .copied()
         .expect("root entry should be in packaged executable inventory");
     let program = BackendProgram {
-        backend_revision: 0,
         entry: entry_index,
         atom_names: collect_backend_atom_names(world, &executables),
         struct_schemas: world.struct_def_schemas(),
@@ -2470,7 +2469,6 @@ mod tests {
         };
         let callee = ValueId::from_u32(1);
         let program = |return_form| BackendProgram {
-            backend_revision: 0,
             entry: 0,
             atom_names: Vec::new(),
             struct_schemas: std::collections::BTreeMap::new(),

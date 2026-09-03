@@ -1476,10 +1476,6 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
     } else if let Some(program) = opaque.downcast_ref::<crate::compiler2::BackendProgram>() {
         let (birth_count, transport_count) = reusable_cons_counts(program);
         out.push(',');
-        write_str_lit(out, "backend_revision");
-        out.push(':');
-        push_u64(out, program.backend_revision);
-        out.push(',');
         write_str_lit(out, "executables");
         out.push(':');
         push_u64(out, program.executables.len() as u64);

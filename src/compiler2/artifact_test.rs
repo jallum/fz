@@ -39,7 +39,6 @@ struct TestTransportShapes {
 fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
     fn assert_closed(program: BackendProgram) {
         let BackendProgram {
-            backend_revision: _,
             entry: _,
             atom_names: _,
             struct_schemas: _,
@@ -136,7 +135,6 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         ExternTy::I64,
     )]);
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
         bodies: vec![NativeBody {
@@ -290,7 +288,6 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
         arg_idx: 0,
     };
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
         bodies: vec![
@@ -462,7 +459,6 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
         arg_idx: 0,
     };
     let program = NativeProgram {
-        backend_revision: 7,
         entry: entry_fn,
         module,
         bodies: vec![NativeBody {
