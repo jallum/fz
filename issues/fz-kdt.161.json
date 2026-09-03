@@ -11,11 +11,15 @@
     {
       "text": "CROSS-SESSION WITNESS folded from fz-kdt.174 (2026-09-02): the same base binary (8c3d5ce90) compiled 00277_enum_tier0_fixture to two different backend programs in two sessions/worktrees (md5 cafaf7f6.. 3 dispatch nodes/180 executables vs dc9a2fc7.. 2/181; 571 diff lines: shifted entry id, w6/w7 construction swaps on Enum.reduce/3#lambda, whole vs fields(whole,whole) return demand, an extra Enum.reverse/2#lambda target per row) while 17 same-session runs were stable. This is the 180-vs-181 residue this ticket already owns (free-var tiebreak on TypeVarId mint order + fz-kdt.124's dbg[empty_list()] key): the instability is cross-process, so the fix must be a content-derived key, and the acceptance is cross-process md5 stability of 00277's dump, not same-session.",
       "timestamp": "2026-09-03T00:02:14Z"
+    },
+    {
+      "text": "THESIS REFUTED BY PROBE at d2a5f3510 (2026-09-02). An eprintln in types/order.rs cmp_var's (None, None) arm -- the TypeVarId mint-order fallback this ticket names as 00277's root -- fires ZERO times on 00277 under FIFO and under LIFO, and zero times on every one of the 597 corpus fixtures under FIFO. Equal-key neighbours after the two cmp_tys wrapper/direct-edge sorts (jobs/runtime_demand.rs :1271 and :3206): none on 00277 under either schedule. The free-var tie is not what moves this fixture.\n\nWHAT DOES MOVE IT (head FIFO vs head LIFO canon, 571 lines, key-set and return-form diff):\n  LIFO only: Kernel.dbg/1[empty_list()] and Kernel.fz_dbg_value/1[empty_list()], both `return any`; main/0 `return any` (FIFO: list(int)).\n  LIFO only: Enum.reverse/2[impl-target::Range | {int,int,int} | %{...}, non_empty_list(:tail)] `return empty_list()` (FIFO: list(int)).\n  FIFO only: Range.reduce/5[int, int, int, {:cont, empty_list()}, closure[Enum.reduce/3#lambda](closure[Enum.reverse/2#lambda]())] returning {:done, list(int)}.\n  Everything else in the 571 lines is renumbering (x180/x181, w6/w7, w14/w15) downstream of that key-set difference.\nThis is fz-kdt.120's family: `dbg([])` returns `any` because arrow_match.rs drops a @spec variable bound to the whole `[]` argument (fz-f98.16's \"ambiguous empty list\" drop), and the join-only return ladder (fz-kdt.65) keeps whichever intermediate a schedule happened to publish. The `[]`-keyed activations that exist under one schedule only are fz-kdt.124's contained-key question. Re-measure this fixture after 120 lands; this ticket's cmp_var change is not on the path to 00277's confluence and should not be built for it.",
+      "timestamp": "2026-09-03T03:16:46Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "00277's confluence needs a schedule-stable free-var tiebreak: cmp_tys falls back to TypeVarId mint order",
   "type": "task",
-  "updated_at": "2026-09-03T00:02:14Z"
+  "updated_at": "2026-09-03T03:16:46Z"
 }
