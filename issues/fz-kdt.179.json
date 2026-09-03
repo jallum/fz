@@ -31,11 +31,15 @@
     {
       "text": "fz-kdt.183 rule review (2026-09-03): under the rule your dynamic reproducer (enum_predicate_search under arms:6) reads 0 and the selection seat findings fall 73 -\u003e 29 (after 186: 45 -\u003e ?): the members that differed only in a tail no test reads now differ in a key the seat CAN read. Member selection still never runs the drop or the seat (this ticket's subject); re-measure the reachable population after 186 and 183 land, in that order.",
       "timestamp": "2026-09-03T09:40:41Z"
+    },
+    {
+      "text": "fz-kdt.186 landed (accb5cfbe): your reproducer is now 45 reachable selection seat findings, not 62/73. SELECTION_SEAT_ALLOWANCE reads 00277 w10 2, w11 2, w13-w19 4 each, w20 2 (34 total), enum_hof_three_distinct_closures 3, 00420_enum_take_drop_split 4, behavior/enum_take_drop_split 4. Every row now routes a value; the 28 that did not are gone from both readers, not re-blessed. (fz-kdt.183 then retires more: re-measure after both land, in that order.)\n",
+      "timestamp": "2026-09-03T10:39:31Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Construction-wrapper member selection bypasses the drop and the covering seat: dispatch_from_callable_flow_edges seats members in interner order",
   "type": "task",
-  "updated_at": "2026-09-03T09:40:41Z"
+  "updated_at": "2026-09-03T10:39:31Z"
 }
