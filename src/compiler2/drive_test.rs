@@ -9490,16 +9490,47 @@ fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
 /// `Separated` for it, in this reader and in production alike, and the walk
 /// never opens it (fz-kdt.186).
 ///
-/// WHY IT IS DRIVEN UNDER SEEDS (fz-kdt.143). A census read at the settled
-/// arrival is blind to a seat only a legal permutation produces, and until
-/// fz-kdt.143 the corpus had such seats: an arm the seat would never let past
-/// its stand-in was kept anyway, because fz-kdt.118's drop ran only inside one
-/// question group and every axis refinement since had split those groups.
-/// Under `arms:2` and `arms:3` this census once read 5 where the settled order
-/// pinned 3, the two extras being `dispatch_list_head_separates`'s `[int]` arm
-/// seated ahead of the arms that stand in for it. Those arms are dropped now,
-/// so every seed reads the same empty population the settled arrival does, and
-/// the drive stays as the emptiness ratchet that a permutation could break.
+/// WHY IT IS DRIVEN UNDER ONE SEED (fz-kdt.143, narrowed by fz-kdt.196). A
+/// census read at the settled arrival was once blind to a seat only a legal
+/// permutation produced, and until fz-kdt.143 the corpus had such seats: an arm
+/// the seat would never let past its stand-in was kept anyway, because
+/// fz-kdt.118's drop ran only inside one question group and every axis
+/// refinement since had split those groups. Under `arms:2` and `arms:3` this
+/// census once read 5 where the settled order pinned 3, the two extras being
+/// `dispatch_list_head_separates`'s `[int]` arm seated ahead of the arms that
+/// stand in for it. Those arms are dropped now.
+///
+/// SIX SEEDS WERE SIX READINGS OF ONE FACT, and that is a derivation rather
+/// than a hope: fz-kdt.194 gave every separated pair a canonical order and
+/// pinned the ARTIFACT's arrival-invariance in its own gate, so a census OF
+/// THAT ARTIFACT is arrival-invariant too. Measured by instrumenting this walk
+/// to count pairs and verdicts at each arrival: **87 pairs -- 36 `Separated`,
+/// 51 `Covering`, 0 `Escaping` -- at the settled arrival AND at every one of
+/// seeds 1-6, so all seven arrivals together walk exactly 609 = 87 x 7 pairs
+/// with the histogram scaling exactly 7x (252 / 357 / 0).** Not one seed read
+/// a pair, or a verdict, the settled arrival did not.
+///
+/// So ONE seed is kept, not none. The loop is still the permutation ratchet --
+/// a future arm axis that re-opens breaks the invariance fz-kdt.194 pins and
+/// this walk would then read a pair its gate does not -- and `arms:6` is the
+/// seed kept because it is the one that once aborted `enum_map_family` and
+/// `enum_predicate_search`. Dropping the other five costs no reading. Measured
+/// back to back in a debug build: run alone and serially this gate goes from
+/// **108.5 s to 34.1 s of CPU** (109.1 s -> 37.2 s wall), and the lib suite,
+/// whose critical path it is, from **705.8 s to 620.9 s of CPU** and
+/// 157.5 s -> 105.1 s of wall clock. CPU is the figure to compare: this is a
+/// shared machine and the suite's wall clock swings with what else is on it.
+///
+/// INJECTION RECIPE, so this zero is a cure and not a blind spot. In
+/// `callsite_dispatch::seats_before`, widen the `covering` closure to
+/// `Seating::Covering | Seating::Escaping` and delete `specificity_order`'s two
+/// `debug_assert`s (which otherwise catch the injection before an artifact
+/// lands). Production then seats blind arms ahead, and this gate FAILS on its
+/// `Reachable` assert reporting **25 escapes at the settled arrival** -- and
+/// the injected population is arrival-invariant too, reading the same 137 pairs
+/// / 36 `Separated` / 76 `Covering` / **25 `Escaping`** at settled and at each
+/// of seeds 1-6. The injection is caught by the settled reading alone, which is
+/// the same measurement that says the extra seeds bought nothing.
 ///
 /// The census is a RATCHET, not a target: a new entry under ANY setting is a
 /// new latent miscompile and wants a ticket, not a re-blessed constant.
@@ -9535,11 +9566,11 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
     );
     // A permuted arrival is one the fixpoint could have delivered, so a blind
     // pair any legal arm order reaches is a pair production could ship. None
-    // does: the reachable and source-order populations are empty at every seed
-    // as well as at the settled arrival (fz-kdt.143's red-first drive, kept as
-    // an emptiness ratchet now that the call-edge and selection populations it
-    // once tracked have both retired).
-    for setting in ["arms:1", "arms:2", "arms:3", "arms:4", "arms:5", "arms:6"] {
+    // does: the reachable and source-order populations are empty at the seed as
+    // well as at the settled arrival (fz-kdt.143's red-first drive, kept as an
+    // emptiness ratchet now that the call-edge and selection populations it once
+    // tracked have both retired). ONE seed, not six: see the derivation above.
+    for setting in BLIND_ESCAPE_CENSUS_STRESSES {
         let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
             crate::compiler2::callsite_dispatch::dispatch_stress::setting(setting),
         );
@@ -9551,6 +9582,19 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
         );
     }
 }
+
+/// The permuted arrivals the blind-escape census is read at, beside the settled
+/// one.
+///
+/// ONE seed, because the census is a reading of an ARTIFACT fz-kdt.194 pins as
+/// arrival-invariant, and the measurement in
+/// `compiler2_dispatch_blind_escape_census_is_the_known_population`'s doc says
+/// so outright: all seven arrivals walked the same 87 pairs with the same 36 /
+/// 51 / 0 histogram. `arms:6` is kept rather than none because a re-opened arm
+/// axis is exactly what this loop is the ratchet for, and it is that seed
+/// rather than another because it is the arrival that once aborted
+/// `enum_map_family` and `enum_predicate_search` (see [`ARM_ORDER_STRESSES`]).
+const BLIND_ESCAPE_CENSUS_STRESSES: [&str; 1] = ["arms:6"];
 
 /// Which population a blind pair belongs to.
 ///
