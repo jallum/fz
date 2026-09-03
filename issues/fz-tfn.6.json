@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.5"
+  ],
   "blocks": [],
   "created": "2026-09-03T08:00:19Z",
   "description": "## Goal\n\nReplace the scan/sort `activation_frontier` side table with exact edge-triggered demand through the fact-to-producer map.\n\n## Evidence\n\nEvery listed or relisted `Activation` can be inserted into `activation_frontier`, including already-run but not-yet-settled analyses. At each drain the driver clones the full `HashSet`, renders structural type text, sorts it, checks `has_run`, and removes spent keys. On 00420 the frontier reached 66 entries, and 918 applied completions occurred while it was nonempty. The exact authoritative trigger already exists: the absent-to-present `FactChange` for `Activation(key)`.\n\n## Strategy and proof\n\n1. When a completion makes `Activation(key)` appear, demand `ActivationAnalyzed(key)` through `demand_fact_producer`.\n2. Preserve re-evaluation through the analysis job's standing `Current(Activation)` read; retraction and reappearance must not require rediscovery.\n3. Pin multi-activation emission order, blocked analysis, macro roots, retraction/reappearance, no-op reproduction, causal work counts, and byte-identical artifacts.\n4. Delete `World.activation_frontier`, note/retire/access APIs, drain scans, display-string ordering, `ActivationFrontier` telemetry, comments, and temporary probes.\n5. If eager edges require buffering, use an insertion-ordered pending-edge queue consumed once; do not restore a global set scan.\n\nThis follows the standing-root deletion and the common edge-triggered wait protocol.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Ignite activation analysis from exact activation-appearance edges",
   "type": "task",
-  "updated_at": "2026-09-03T08:00:19Z"
+  "updated_at": "2026-09-03T08:02:33Z"
 }
