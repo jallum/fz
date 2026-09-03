@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.183"
+  ],
   "blocks": [],
   "created": "2026-09-01T19:20:33Z",
   "description": "Found by the fz-kdt.107 cold review (2026-09-01 at 788c0c21f): the\nschedule-visible canon surface has a THIRD member beyond\n00277/enum_map_family -- behavior/dead_closure_capture_empty_list\ndiffers by ONE line: executable main/0[] `return fp[any] any` (FIFO) vs\n`return fp[L] list(int)` (LIFO). Not an ordering or demand-set class: a\nsettled RETURN-TYPE precision divergence. Characterize with the kdt.106\ndig discipline (probe the return evidence ladder under both schedules --\nlikely a widening-ladder rung count differing by wake order, i.e., the\ndefine_return ascent path, fz-kdt.65's open half). Fixture is new as of\nfz-kdt.111, which is why no earlier sweep saw it.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "dead_closure_capture_empty_list: main/0's settled return is any at FIFO, list(int) at LIFO -- a return-PRECISION schedule residue",
   "type": "task",
-  "updated_at": "2026-09-01T19:20:33Z"
+  "updated_at": "2026-09-03T04:45:46Z"
 }
