@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.5"
+  ],
   "created": "2026-09-03T13:50:39Z",
   "description": "## Goal\n\nMake recursive product-search work reproducible across process hash seeds before retained product sessions are introduced, without claiming that the current eager RuntimeDemand cone can choose identical pending recursive-group members.\n\n## Why this is separate\n\nThe previous fz-tfn.2 combined two facts with different construction order:\n\n1. Early-exit reachability and repeated per-candidate SCC walks make searches, candidate scans, reached candidates, and dependency visits depend on hash traversal. This can be fixed and proved on the current product graph, and fz-kdt.5 needs that stable causal signal.\n2. Exact pending recursive-group membership still varies because eager RuntimeDemand cone/product scheduling presents different pending members. Only fz-kdt.4 removes that schedule-dependent graph, so exact member identity remains in fz-tfn.2 after that cutover.\n\n## Strategy\n\nPort only the already-green current-graph work from the parked fz-tfn.2 branch. Replace the separate early-exit reachability gate and repeated per-candidate SCC walks with one deterministic structural traversal that includes the prospective edge and returns cycle membership. Preserve the raw causal ledger and current publication semantics. Do not sort merely to disguise work, change RuntimeDemand, or claim exact group-member equality.\n\n## Acceptance\n\n- A focused seeded-order test proves searches, candidate scans, reached candidates, and dependency visits are reproducible across at least 32 independently seeded product memos.\n- The new traversal performs no more graph work than the measured current implementation and materially less than exhaustive per-candidate SCC probing.\n- Product requests, settlements, search-shape totals, semantic outputs, backend programs, and runtime output remain identical.\n- fz-kdt.5 can compare cold and incremental causal work across processes with no exclusion for search counts; only the already-proven CallableConstruction cache-hit redistribution and the explicitly post-fz-kdt.4 exact recursive-member identity remain outside this prerequisite.\n- Temporary comparison switches and measurement scaffolding are removed before review.\n- Performance/fact-engine docs state the exact stable and deferred dimensions.\n- Focused pull/product tests, the three target fixture doors, causal cross-process tests, full library, formatting, and strict clippy pass.\n\n## Non-goal\n\nDo not make exact recursive publication membership reproducible here. fz-tfn.2 retains that requirement after fz-kdt.4.",
   "id": "fz-tfn.25",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Stabilize recursive-search work shape before retained products",
   "type": "bug",
-  "updated_at": "2026-09-03T13:50:39Z"
+  "updated_at": "2026-09-03T13:51:09Z"
 }
