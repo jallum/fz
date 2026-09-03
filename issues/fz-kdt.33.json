@@ -7,9 +7,15 @@
   "id": "fz-kdt.33",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CONCORDANT (2026-09-03): the retirement condition (\"correlation-sound activation evidence\") is exactly what fz-kdt.183 (List.reduce_step/3 keyed on free vars shares one joined return across users) and fz-kdt.120 (whose honest @spec rule removes the accidental re-correlation) turned into measured facts; fz-kdt.190 records that the current enforcement is also source-order dependent. The 120 review measured that widening this gate is a MASK (a phantom and a true violation -- 00188 -- are structurally identical at the span), so this ticket stays sequenced after 183/165, not before.",
+      "timestamp": "2026-09-03T08:19:10Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Enforce specs at library-internal callsites once activation evidence is correlation-sound",
   "type": "task",
-  "updated_at": "2026-08-25T01:41:59Z"
+  "updated_at": "2026-09-03T08:19:10Z"
 }
