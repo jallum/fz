@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-29T03:13:39Z",
-  "description": "drive.rs's quiescence_woke_work -\u003e changed_since_stall = true; continue\nbranch in the main drive loop is UNREACHABLE production code: every fixture\ncompile goes through product_drive, and no scheduler Settled-waiter exists on\nthe agenda path (the arbiter wakes nothing -- measured across the kdt.44/\n13.x arcs; the one experiment that created such waiters, fz-kdt.13.2, is\nparked unmerged). Dead branches read as live policy (rip-out law).\n\nDELETE the branch (and quiescence_woke_work if it has no other caller), with\na comment at the drain site naming this ticket and the resurrection\ncondition: the first landing that registers scheduler Settled-waiters on the\nagenda path (e.g. an unparked fz-kdt.13.2) must reintroduce the branch WITH\nthe world-level covering test this ticket originally demanded (a Settled\nwaiter over a quiesced cone driven through drive_for). Acceptance: gates\ngreen, grep-clean, zero behavior change (the branch never fires today --\nverify with the probe before deleting).",
+  "description": "## Finding\n\nThe proposed deletion is unsafe. The bare agenda drive still admits scheduler jobs that wait on settled facts, especially SeedRoot. When drain arbitration settles a quiesced fact, quiescence_woke_work detects the resulting wake and continues the drive so that job can run. The product driver has a separate movement-based loop, but it does not replace this behavior for Compiler2::drive callers.\n\n## Disproof\n\nA temporary probe aborted whenever the branch would fire. The full library suite reached it in seven scenarios: both return-widening corpus shards 2 and 3, two item-macro splicing tests, multiple test blocks, and passing and failing assert-macro compilation. The run completed with 1579 passed, 7 probe failures, and 5 ignored.\n\n## Resolution\n\nKeep the branch and helper. Remove the temporary probe after recording the result. Any future deletion must first eliminate or migrate the agenda-level settled waiters and prove that Compiler2::drive no longer depends on drain-arbiter wakes. No code tombstone is required; this ticket is the durable record.",
   "id": "fz-kdt.60",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
   "status": "open",
-  "title": "Delete the unreachable drive-loop arbiter branch; resurrect only with a consumer",
+  "title": "Keep the live drive-loop arbiter branch",
   "type": "task",
-  "updated_at": "2026-08-30T23:45:21Z"
+  "updated_at": "2026-09-03T03:06:20Z"
 }
