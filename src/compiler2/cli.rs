@@ -270,6 +270,7 @@ fn test_command(
     let exe = std::env::current_exe().map_err(|error| CliError::failure(format!("fz2 test: {error}")))?;
 
     println!("Running {}...\n", plural_count(tests.len(), "test", "tests"));
+    notify_fixture_execution_start();
     let mut failures = 0usize;
     for test in &tests {
         let module_arg = test.module_arg();

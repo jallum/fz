@@ -46,7 +46,7 @@ only the keys below:
   `interp`, or `build`.
 - `oracle:` — relative path to a sibling Elixir twin whose stdout owns
   `expected.txt`.
-- `timeout.<path>_secs:` — per-path wall-clock timeout override.
+- `timeout.<path>_secs:` — per-path wall-clock hang-guard override.
 - `budget.<namespace>.<metric>:` — a compiler-shape target counter (see Dump
   budgets).
 
@@ -137,11 +137,29 @@ expects the *build itself* to fail, so the build outcome is what `check()` judge
 
 Exit code 75 (EX_TEMPFAIL) from a declared path marks it not-yet-wired
 (`RunOutcome::Deferred`): the trial reports the reason on stderr and passes. The
-default per-fixture execution timeout is `FIXTURE_COMMAND_TIMEOUT` = 3s and
-covers execution only: `run`/`interp` start the clock when the program signals
-it is ready to run, and the `build` compile is an untimed step before the
-binary's run is timed. A `timeout.<path>_secs` override raises that wall-clock
-limit for one path while keeping it in correctness coverage.
+default per-fixture hang guard is `DEFAULT_FIXTURE_HANG_TIMEOUT` = 20s. It is
+deliberately generous: wall clock varies with machine contention and CI
+coverage instrumentation, so this limit detects nontermination, not compiler
+performance. Performance regressions require deterministic work counters from
+telemetry. `run`/`interp` have two hang phases: a fixed 20s setup guard starts at
+spawn, then the first execution-ready byte resets the clock for the execution
+guard. `kind: test` uses the same boundary: the outer `fz2 test` command signals
+once after discovery, before it starts its per-test child processes. Closing
+the readiness pipe, exiting, or holding it open past the setup guard without
+that signal is a harness failure; the runner terminates the command group and
+reports the missing boundary.
+
+`build` compilation, including an `expect: diagnostic` build, starts a fixed
+20s nontermination guard at spawn. A successful build's binary then gets its
+own execution guard, also starting at spawn; an Elixir oracle does likewise. A
+`timeout.<path>_secs` entry replaces the 20s execution guard for that path; the
+setup and compilation guards stay at the central 20s policy. Output is captured
+in anonymous temporary regular files, so output collection does not wait for
+inherited descriptors to close. On expiry or a lifecycle error, the runner
+signals its process group, falls back to signaling its owned child directly if
+needed, and does not return until the child is reaped. That teardown contract
+owns delegated roots that remain in the command's group; detached daemons are
+outside fixture-runner ownership.
 
 ### BLESS
 
@@ -216,7 +234,7 @@ The shared grammar is intentionally small:
 - `kind:` / `expect:` / `diagnostic.code:` / `defer:` / `oracle:` —
   behavioural matrix policy knobs, using the same meanings as the old
   directory-shaped fixtures.
-- `timeout.<path>_secs:` — behavioural matrix timeout overrides.
+- `timeout.<path>_secs:` — behavioural matrix hang-guard overrides.
 - `budget.<namespace>.<metric>:` — behavioural compiler-shape budgets.
 - `root:` — compiler2 root to drive, written as `name/arity`.
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
