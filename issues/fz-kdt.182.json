@@ -13,11 +13,15 @@
     {
       "text": "CLOSED AS DUPLICATE of fz-kdt.48 (2026-09-03); the measurements are recorded there.",
       "timestamp": "2026-09-03T08:19:04Z"
+    },
+    {
+      "text": "REOPENED (2026-09-03): the fz-tfn epic sequences this explicitly ('fz-kdt.182 then fz-kdt.48 establish one Ty per denotation'), so it is the concrete first step of 48 (empty-list union subsumption at intern), not a duplicate to close. The closing comment's measurements stand; keep parent fz-tfn.",
+      "timestamp": "2026-09-03T08:41:34Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
   "type": "task",
-  "updated_at": "2026-09-03T08:41:33Z"
+  "updated_at": "2026-09-03T08:41:34Z"
 }
