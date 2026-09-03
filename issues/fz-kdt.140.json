@@ -7,9 +7,15 @@
   "id": "fz-kdt.140",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RE-MEASURED at fz-kdt.143's landing (d2a5f3510). Population 11 -\u003e 13 per fixture, not 11 -\u003e 25: receive_map_pattern / receive_list_cons_pattern / receive_interleaved_tuple_arity hold 13 executables where they held 25, define_function 34 / 37 / 37 where it read 46 / 49 / 49 (-36 executables, -36 functions corpus-wide, all on these three). Six of the eight Kernel.dbg/1 arms and six of the eight fz_dbg_value/1 arms are dropped at the callsite: {any, any, any} stands in for all seven siblings, and for the six MIXED clauses the seat would never place the sibling first (an any-against-any tuple sub-position is an erasing overlap, so coverage demands whole-tuple containment and fails). {:unknown, :unknown, :unknown} survives beside it, seated first on precision. THE CAUSE IS UNCHANGED AND STILL THIS TICKET'S: the 2^arity product is still MINTED (eight clause specializations per callee); 143 removed only the dispatch over them and the demand that kept twelve alive. Headers re-priced with this cause.",
+      "timestamp": "2026-09-03T02:44:55Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A per-position tuple test specializes 2^arity where the callee reads no position",
   "type": "task",
-  "updated_at": "2026-09-02T02:38:04Z"
+  "updated_at": "2026-09-03T02:44:55Z"
 }
