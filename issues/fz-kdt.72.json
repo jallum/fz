@@ -9,9 +9,9 @@
   "id": "fz-kdt.72",
   "labels": [],
   "parent": "fz-tfn",
-  "priority": 3,
+  "priority": 1,
   "status": "open",
   "title": "Deduplicate identical callee input contributions before activation-input joins",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:42Z"
+  "updated_at": "2026-09-03T08:04:43Z"
 }
