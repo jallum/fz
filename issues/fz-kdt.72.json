@@ -9,9 +9,15 @@
   "id": "fz-kdt.72",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "ADJACENT (2026-09-03): fz-kdt.188 names a different bad row at the same join -- not identical duplicates but a CARTESIAN row synthesized by merge_summary_input_vec (jobs/semantic.rs:2074) from coalesced targets that share a callee+activation (column-wise union of their inputs), contributed by rebuild_coalesced_call_emission (:1245) beside the walked rows; it fires exactly when the callee key is blind. Deleting the blend measured 0 behaviour movers / +48 executables. This ticket dedups identical rows at the same boundary; 188 deletes a fabricated one. Land on one pass over the emission boundary.",
+      "timestamp": "2026-09-03T08:19:05Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Deduplicate identical callee input contributions before activation-input joins",
   "type": "bug",
-  "updated_at": "2026-09-03T08:04:43Z"
+  "updated_at": "2026-09-03T08:19:05Z"
 }
