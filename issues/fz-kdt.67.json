@@ -6,16 +6,16 @@
   "blocks": [
     "fz-qon.4"
   ],
-  "closed_at": "2026-09-03T02:59:24Z",
-  "close_reason": "Implemented by commit ab0b87185 and PR #115 in GitHub stack #112. Deleted the always-empty latent-executable channel, unreachable publication loop, empty dump/JSONL surface, and orphaned dump helpers. Proof: focused activation/executable tests passed; JSONL 18 passed; library 1586 passed with 5 ignored; CLI 24 passed; matrix rerun 485 passed with 9 ignored; workspace checks, strict clippy, formatting, diff, and residue scans passed. Initial matrix contention was reproduced and is already tracked by fz-kdt.175.",
+  "closed_at": "2026-09-03T07:40:46Z",
+  "close_reason": "Implemented by commit ab0b87185 in open stacked PR #115; lint and test checks are green. The change is not yet merged to main.",
   "created": "2026-08-30T15:23:04Z",
   "description": "## Goal\n\nRemove the latent-executable channel from activation analysis because it has no producer and can only publish empty collections. Correct semantic-fixpoint documentation so executable ownership matches the live root/product path.\n\n## Proof at a3a9761d1\n\nEvery leaf `CallEmission` constructor initializes `latent_executables` with `Vec::new()`. Merge and rebuild paths only concatenate values originating from those constructors. Therefore:\n\n- the activation publication loop can never emit `FactKey::Executable`;\n- `ActivationAnalysis::latent_executables` is always empty;\n- activation dumps can never render a latent-executables section;\n- JSONL telemetry always reports zero;\n- test constructors carry meaningless empty scaffolding.\n\nExecutable discovery already comes from the real ownership paths: roots seed their entry executable, while demanded products discover further executables through settled call edges and callable entries.\n\n## Change\n\n- Delete `CallEmission::latent_executables` and all initializer, merge, and rebuild plumbing.\n- Delete the unreachable executable-publication loop.\n- Delete `ActivationAnalysis::latent_executables`.\n- Delete dump, telemetry, and test handling for the field.\n- Delete dump helpers orphaned by removing the empty section.\n- Update `.agent/docs/semantic-fixpoint.md`: remove `Executable(callee_key, need)` from `AnalyzeActivation` outputs and replace the false ownership claim with the actual root/product path.\n- Add no compatibility field or adapter.\n\n## Signal and checks\n\n- Repository search finds no `latent_executables` or orphaned dump helper.\n- Documentation no longer claims that `AnalyzeActivation` publishes executable facts.\n- Existing root/executable inventory tests prove executable discovery is unchanged.\n- Focused activation-analysis, executable-inventory, dump, and JSONL tests pass.\n- Full library, CLI, single-threaded fixture matrix, workspace checks, formatting, and strict clippy pass.",
   "id": "fz-kdt.67",
   "labels": [],
   "parent": "fz-qon",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Delete the always-empty latent-executable channel and correct its documented ownership",
   "type": "task",
-  "updated_at": "2026-09-03T03:59:33Z"
+  "updated_at": "2026-09-03T07:40:46Z"
 }
