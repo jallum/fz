@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-qon.2"
+  ],
   "blocks": [],
   "created": "2026-09-03T01:31:54Z",
   "description": "## Goal\n\nMake typed borrowed telemetry the only compile-time event model. Remove the dynamic compatibility graph now that production compiler emitters and handlers have typed authority boundaries.\n\n## Current proof\n\nTelemetry documents typed raw callbacks as the production model but ConfiguredTelemetry still owns a legacy handler registry; Telemetry still requires dispatch and legacy span methods; JSONL adapts typed callbacks back into Event, Measurements, Metadata, Value, and opaque downcasts; stats and test capture install legacy handlers. Compiler production has one remaining legacy dispatch emitter. event.rs, handler.rs, and value.rs contain 350 lines before bus, sink, JSONL, stats, and capture adapters.\n\n## Strategy\n\nFirst add focused typed-handler tests that preserve the public JSONL schema, span nesting, stats counts, diagnostic delivery, and zero-work NullTelemetry boundary. Convert the last production emitter. Give JSONL direct typed rendering inputs, migrate stats and tests to exact raw or lifecycle subscriptions, then delete the legacy registry and object model. Preserve EventKind only if the raw lifecycle API needs it, under a lifecycle-specific home and name.\n\n## Signal\n\nRepository search finds no Measurements, Metadata, telemetry Value, OpaqueRef, Handler, legacy attach or dispatch/span API, or dynamic event construction. Public JSONL output and causal ordering are byte/schema compatible where contractual. No-handler optimized code remains erased. Focused telemetry tests, full library and CLI suites, fixture matrix, formatting, all-target/all-feature workspace checks, and strict clippy pass. Compare no-handler, JSONL, and stats compiler-work and wall-clock signal; none may regress without authorization.\n\n## Deletion\n\nDelete event.rs, value.rs, the legacy portion of handler.rs, legacy trait and extension methods, the bus registry, JSONL adapters and downcasts, stats/capture adapters, and compatibility documentation/tests. Add no dynamic replacement DTO, shim, or tombstone comment.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Delete the legacy dynamic telemetry object model after typed raw cutover",
   "type": "task",
-  "updated_at": "2026-09-03T01:31:54Z"
+  "updated_at": "2026-09-03T01:32:12Z"
 }

@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-qon.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-qon.3"
+  ],
   "created": "2026-09-03T01:31:53Z",
   "description": "## Goal\n\nDescribe the compiler by its current authorities instead of by a deleted predecessor, and remove tests that can only fail if deleted modules are reintroduced.\n\n## Current proof\n\nThe old compiler, planner, type-infer pipeline, REPL front door, and fz wrapper are absent. .agent/docs/compiler2-migration.md still says migration remains and contains mutually incompatible fixture-status snapshots. Compiler and CLI tests repeatedly assert that planner, type_infer, or frontend telemetry is absent even though those emitters and modules no longer exist. Public help still calls fz2 side-by-side.\n\n## Strategy\n\nInventory every unique still-true invariant in the migration document and move only missing durable facts into the owning pipeline, fact-engine, fixture, module, or telemetry document. Add or retain positive assertions at current artifact and telemetry boundaries. Delete the migration document, impossible negative helpers and calls, and side-by-side wording. Do not rename the public binary or compiler module in this ticket. Do not retain history as comments.\n\n## Signal\n\nNo active documentation is organized around migration from the deleted compiler. Repository search finds no old-pipeline absence helper or side-by-side claim. Current positive behavior, artifact, and telemetry assertions remain. Documentation references resolve; full library, CLI, and fixture-matrix tests, formatting, workspace checks, and strict clippy pass.\n\n## Deletion\n\nDelete the migration document after relocation, negative-only helper functions and invocations, and obsolete cutover wording. Port-prefixed test files are not deleted here because their behavioral uniqueness requires a separate census.",
   "id": "fz-qon.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Retire the completed Compiler2 migration narrative and impossible old-pipeline sentinels",
   "type": "task",
-  "updated_at": "2026-09-03T01:32:11Z"
+  "updated_at": "2026-09-03T01:32:12Z"
 }
