@@ -7,9 +7,15 @@
   "id": "fz-kdt.185",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "SAME CLASS AT HEAD, not only under 120 (fz-kdt.124 cold review, 2026-09-03): warning[type/no-matching-clause] from runtime:Enum.fz:320 and :323 fires on ANY Enum.with_index program at 8de517a28 (e.g. the two-user with_index reproducer). Library clause coverage warnings we control are errors; measure with the same probe as the member_result/3 case and decide fix-the-library vs phantom-joined-row for each site.",
+      "timestamp": "2026-09-03T08:02:59Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "enum_tier0 prints the oracle exactly once fz-kdt.120 lands but stays red on a warning[type/no-matching-clause] at Enum.member_result/3 (runtime:Enum.fz:267)",
   "type": "task",
-  "updated_at": "2026-09-03T04:45:45Z"
+  "updated_at": "2026-09-03T08:02:59Z"
 }
