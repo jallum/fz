@@ -11,11 +11,15 @@
     {
       "text": "LIST VARIANT of the same class (fz-kdt.183 cold review, 2026-09-03): `fn nest(acc, n), do: (if n == 0, do: acc, else: nest([acc], n - 1))` with nest([], 2) hangs (rc=124 at 40s) at 0889c0b3a for every n in {2,3,4,5,6,8}; the non-nesting control terminates in milliseconds. A self-nesting accumulator element -- tuple (this ticket) or list -- defeats the documented termination theorem in type-specialization.md:123-135 (no numeric singletons, finite atoms, return-join widening: none bounds element NESTING). Unaffected either way by 183's element-keyed prototype.",
       "timestamp": "2026-09-03T06:37:51Z"
+    },
+    {
+      "text": "CONCORDANT with fz-kdt.65 (the RETURN_WIDENING_BUDGET side of the ladder): the budget counts strict ascents of the RETURN; a nesting accumulator ascends the INPUT key per rung with a super-linear Types cost per rung, so neither the return budget nor ACTIVATION_INPUT_ROW_BUDGET ends it in time. Note in .agent/docs/type-specialization.md:123-135 the termination carriers (no numeric singletons, finite atoms, return-join widening) do not name element nesting.",
+      "timestamp": "2026-09-03T08:19:08Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Enum.reduce with a tuple-nesting accumulator does not terminate: {x, acc} over [1, 2] runs past 60s on interp and JIT",
   "type": "task",
-  "updated_at": "2026-09-03T06:37:51Z"
+  "updated_at": "2026-09-03T08:19:08Z"
 }
