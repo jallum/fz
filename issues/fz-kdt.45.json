@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Publish ExecutableFacts(E) as one World-owned scheduler fact and remove its product identity",
   "type": "task",
-  "updated_at": "2026-09-03T01:05:59Z"
+  "updated_at": "2026-09-03T08:07:02Z"
 }
