@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.203"
+  ],
   "created": "2026-09-03T12:34:50Z",
   "description": "Found by the fz-kdt.198 refutation (2026-09-03). PRE-EXISTING: identical at\naccb5cfbe, at 198's c1f7a7d1b and at its fold. Every `case` written over a\nvariable bound to a binary literal whose arms include a non-binary pattern\n(an integer literal, an atom, a list) crashes the interpreter with\n`fz2 interp: backend value 3 is unbound` instead of taking the binary arm or\ndiagnosing the dead arm. It is the reason no source-level reproducer exists\nfor 198's residue (fz-kdt.203) or for the union-hull regression 198's refuter\nfound at the calculator: cross-kind narrowing from source cannot be\nexercised. Reproducer (r4_lit_pattern_join.fz, also r6/r7 list variants in\nthe 198 research archive):\n\nimport Utf8\n\ndefmodule M do\n  @spec take(utf8) :: integer\n  fn take(_x), do: 1\nend\n\nfn main() do\n  b = \u003c\u003c104, 105\u003e\u003e\n  s = Utf8.from_bytes!(b)\n  x = case b do\n    1 -\u003e s\n    _ -\u003e s\n  end\n  dbg(M.take(x))\nend\n\nBoard neighbours: fz-9in (closed; \"backend value 0 is unbound\" on Enum.take\nbeside an unused range binding) and fz-xvq (closed; interp value unbound on\nbsx guards) are the same symptom class -- an unbound backend value is a\nlowering that referenced a slot no arm materialised. Red-first: the fixture\nprints its binary arm on three doors; a dead cross-kind arm is a\ntype/no-matching-clause warning, not a crash.",
   "id": "fz-kdt.206",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] interp dies \"backend value 3 is unbound\" on a `case` over a \u003c\u003c\u003e\u003e-bound variable with a cross-kind pattern arm",
   "type": "task",
-  "updated_at": "2026-09-03T12:34:50Z"
+  "updated_at": "2026-09-03T12:34:52Z"
 }

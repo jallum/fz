@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.198"
+    "fz-kdt.198",
+    "fz-kdt.206"
   ],
   "blocks": [
     "fz-kdt.201"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A union with a different-kind operand loses the brand: the brand slot is per-DESCRIPTOR, so `utf8 | nil` admits a bare binary -- the descriptor must hold a union of rectangles (the slot on each DNF clause) before a brand can be trusted at a @spec gate",
   "type": "task",
-  "updated_at": "2026-09-03T11:05:24Z"
+  "updated_at": "2026-09-03T12:34:52Z"
 }
