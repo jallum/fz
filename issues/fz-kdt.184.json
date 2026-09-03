@@ -4,7 +4,8 @@
     "fz-kdt.192"
   ],
   "blocks": [
-    "fz-kdt.120"
+    "fz-kdt.120",
+    "fz-kdt.210"
   ],
   "closed_at": "2026-09-03T16:25:56Z",
   "created": "2026-09-03T04:45:45Z",
@@ -34,5 +35,5 @@
   "status": "closed",
   "title": "A @spec variable collects lower bounds from covariant occurrences and upper bounds from contravariant ones: instantiation is the join of the lowers, the meet of the uppers is the solvability check",
   "type": "task",
-  "updated_at": "2026-09-03T16:25:56Z"
+  "updated_at": "2026-09-03T18:17:44Z"
 }

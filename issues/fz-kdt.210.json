@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.184"
+  ],
   "blocks": [
     "fz-kdt.120"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A ground seed argument instantiates a @spec return variable and refine_call_return MEETS it into the published return: reduce_cont keyed on list(int) publishes {:done, []}",
   "type": "task",
-  "updated_at": "2026-09-03T18:17:43Z"
+  "updated_at": "2026-09-03T18:17:44Z"
 }
