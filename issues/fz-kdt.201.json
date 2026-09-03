@@ -9,9 +9,15 @@
   "id": "fz-kdt.201",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.203 (2026-09-03): the brand slot is per-descriptor, so `utf8 | nil` loses the brand under fz-kdt.198. Checking a @spec RETURN that names a brand (the only interesting return check for brands) cannot be trusted until 203 puts the slot on each DNF clause. The non-brand half of 201 (a declared return whose kind the body does not meet) does not wait on 203.",
+      "timestamp": "2026-09-03T11:05:25Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] A @spec's declared RETURN is never checked against the body: `@spec pick(binary) :: integer; fn pick(b), do: b` is accepted and prints \"hi\"",
   "type": "task",
-  "updated_at": "2026-09-03T11:05:24Z"
+  "updated_at": "2026-09-03T11:05:25Z"
 }
