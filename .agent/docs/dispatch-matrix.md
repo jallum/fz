@@ -277,15 +277,24 @@ recognize panics rather than sweeping inertly, for the same reason.
 permutation, of exactly the pairs the plan cannot separate — so every time the
 predicate learned to separate more of them (fz-kdt.119) the same knob got
 weaker, and on a callsite whose groups are all singletons it is the identity.
-And it never touched the wrapper order at all (fz-kdt.136). Measured over the
-584-fixture corpus at the fz-kdt.141 landing, by backend-dump hash:
+And it never touched the wrapper order at all (fz-kdt.136). Measured by
+backend-dump comparand over all 604 corpus fixtures, 475 of which render one:
 
-| perturbation | fixtures whose artifact moves |
-| --- | --- |
-| `arms:reverse` | 8 |
-| `arms:<seed>` | 27 |
-| `wrappers:<seed>` | 19 |
-| unset vs `""` vs `0` | 0 — the knob is inert when off, on the same comparand |
+| perturbation | movers at fz-kdt.141 (584 fixtures) | at `ca23b676f` | + fz-kdt.194 |
+| --- | --- | --- | --- |
+| `arms:reverse` | 8 | 0 | 0 |
+| `arms:<seed>` | 27 | 22 | 0 |
+| `wrappers:<seed>` | 19 | 19 | 19 |
+| unset vs `""` vs `0` | 0 — the knob is inert when off, on the same comparand | | |
+
+`arms:reverse` reached 8 fixtures at the fz-kdt.141 landing and reaches none
+now, because fz-kdt.119 and fz-kdt.107 step 3 turned the groups it mirrors into
+singletons. An arm seed reached 27 then and 22 at `ca23b676f` — the identical
+fixture set at each of seeds 1-6 — and fz-kdt.194's canonical order over
+separated pairs takes those 22 to 0 at every seed. The wrapper column does not
+move, and the reason is fz-kdt.107's and fz-kdt.131's residue on that surface,
+not a repair that declines it: see "The canonical order over separated pairs"
+below, where the repair is measured firing on wrapper members.
 
 **The gates.** `compiler2_dispatch_answers_the_same_under_a_permuted_arm_order`
 and `..._under_a_permuted_wrapper_order` hold each census to one answer through
@@ -596,18 +605,15 @@ where the tests cannot both admit a value the projection would blur.
   inseparable class one rung wider, and **fz-kdt.131** owns it. The cure is a
   runtime test that can see what the body relies on — fz-kdt.119's per-position
   tuple tags, fz-kdt.107 step 3's list elements — not a cleverer sort.
-- where the pair is SEPARATED, arrival stands too, and that residue is the one
-  a canonical tie-break could remove: no value satisfies both conjunctions, so
-  neither order routes anything anywhere and changing it changes no
-  destination. **fz-kdt.194** owns it. Measured at fz-kdt.186's landing: under
-  `arms:3` the canonical form differs from the settled build's on 25 of the 597
-  corpus fixtures where it differed on 23 before, the two extras being
-  `00420_enum_take_drop_split` and `enum_take_drop_split`, whose call-edge plan
-  the old reading had been pinning to a seat.
+- where the pair is SEPARATED, the seat has nothing to decide — and because it
+  has nothing to decide, that pair is put in a CANONICAL order rather than the
+  one the fixpoint delivered (**fz-kdt.194**, below).
 
-So the three residues are one apiece: an inseparable GROUP (fz-kdt.107), an
-overlap WITHOUT containment (fz-kdt.131), and a SEPARATED pair (fz-kdt.194).
-The first two carry a routing the order decides; the third carries none.
+So the three pair classes the covering relation leaves are one apiece: an
+inseparable GROUP (fz-kdt.107), an overlap WITHOUT containment (fz-kdt.131),
+and a SEPARATED pair (fz-kdt.194). The first two carry a routing the order
+decides and keep arrival order. The third carries none, and is the only one any
+canonical order may touch.
 
 The correction is one backward insertion pass: each group walks left past
 already-seated groups for as long as the relation holds of the pair, and stops
@@ -618,6 +624,99 @@ first refusal is a requirement, not a compromise: passing a group means passing
 everything between. `Covering` is not transitive — two groups can be blind at
 different positions — so no rank or comparator linearizes it, which is why the
 pass is an explicit insertion rather than a sort.
+
+### The canonical order over separated pairs
+
+Reordering two arms changes where a value lands only if that value satisfies
+BOTH arms' tests: a plan is a first-match walk, so a value only one arm admits
+reaches that arm wherever the other sits. `Separated` is the statement that no
+such value exists. Swapping a separated pair is therefore a routing no-op by
+construction, and the order such a pair was in was never a fact about the
+program — it was the order the fixpoint's agenda delivered.
+
+So `canonically_order_separated_neighbours` runs after the insertion pass and
+puts every ADJACENT separated pair in `Types::cmp_tys` order of what the two
+groups say. Three properties carry it:
+
+- **Adjacent transpositions only, never a sort.** One swap of two adjacent
+  entries changes the relative order of exactly one pair — the pair it swapped
+  — and leaves every other pair alone. By induction over the swaps, the only
+  pairs this can reorder are separated ones, so fz-kdt.107's and fz-kdt.131's
+  residues are untouched by construction, and every inversion against arrival
+  order is still `Covering` or `Separated` and never `Escaping`. A comparison
+  sort would not have that property: it moves entries past neighbours the
+  comparator never examined, and a group could then cross a pair the relation
+  refuses. `specificity_order`'s `only_separated_pairs_moved` debug_assert
+  holds the result to it on every seated plan of every debug compile, which the
+  fixture matrix drives across the corpus.
+- **The key is the group's, not the first member's.** A group is compared by
+  the `cmp_tys`-least observable surface among its members. Reading the key off
+  whichever member arrived first would put the schedule straight back, because
+  a group's internal order is fz-kdt.107's residue. The key is a strict total
+  order across groups: `cmp_tys` is `Equal` only on identical `Ty` slices,
+  identical surfaces project to identical questions, and one question is one
+  group — so two distinct groups can never tie. It inherits `types::order`'s
+  two residuals (free-var ties, lambda byte-span labels), which are the same
+  ones fz-kdt.108's construction order inherits.
+- **It removes the axis exactly where the axis was free, and nowhere else.**
+  `Separated` is symmetric but NOT transitive: `A|B` and `B|C` separated says
+  nothing about `A|C`. The repair settles a run only where the run is pairwise
+  separated END TO END. One non-separated pair anywhere in it stops the repair
+  there, and everything that pair sits between stays a deterministic function
+  of the arrival rather than of the arm SET. The blocking pair is not
+  necessarily one whose order means something: a `Covering` pair — one the seat
+  ITSELF decided — blocks it exactly as an `Escaping` one does, which
+  `a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing` builds on
+  a callsite carrying neither an fz-kdt.107 group nor an fz-kdt.131 pair. So
+  the honest claim is the narrow one, and this repair does not make the
+  artifact a function of the arm set.
+
+**Two keys, and they are different quantities.** This repair orders by
+`cmp_tys` over the OBSERVABLE ENVELOPE; fz-kdt.108's
+`compiler2_construction_members_carry_the_cmp_tys_canonical_order` asserts
+`cmp_tys` over the members' `surface_inputs`, which is what the envelope was
+projected from. The two disagree on any surface holding a callable, so the
+concordance is measured and not assumed: with the repair suppressed, 108's own
+invariant is violated on **20 / 202 / 212** wrapper member lists under
+`wrappers:1` / `:6` / `:reverse` over the 604-fixture corpus, and on
+**6 / 192 / 198** with the repair in place. It strictly REDUCES 108's
+violations and introduces none. At the settled arrival, which is where 108's
+gate runs, the repair takes 0 wrapper swaps and both readings are 234 / 234
+non-decreasing.
+
+**Under this rule, `Separated` means "may reorder" and not merely "leave
+alone",** which raises the bar on the one separation `seating` can read off a
+fiction: two arms with DIFFERENT surfaces at a position where one projects to a
+predicate admitting nothing (**fz-kdt.202**). Such a pair is still a routing
+no-op, one step further along — `dispatch_row`'s preconditions are these same
+observable `Ty`s, so the arm emits a row no value can take, and moving an
+unreachable row changes no destination. The population is measured rather than
+assumed: classifying every `Separated` verdict as a FICTION when every
+separating position is self-blind on one side, the count over all 604 fixtures
+is **0** at the settled arrival and under `arms:1`/`:3`/`:6` and
+`wrappers:1`/`:6`, against 172-214 real separation readings per setting.
+
+Measured at `ca23b676f` over all 604 corpus fixtures, sweeping
+`interp --dump backend=`: the settled canon differed from the `arms:N` canon on
+**22** fixtures at each of seeds 1-6 — the identical fixture set at every seed
+— and on **0** with the repair in place, at every seed. `arms:reverse` moved 0
+both before and after, because a group mirror is the identity on singleton
+groups. The construction-wrapper axis reads **19 movers under
+`wrappers:1`/`6`/`reverse` before and after, the same fixture set** — and NOT
+because the repair declines a wrapper. It applies there (member selection runs
+the same `routable_alternatives`) and it FIRES there: 0 swaps at the settled
+arrival, and 14 / 10 / 14 under `wrappers:1` / `:6` / `:reverse`, on
+`00197_poly_capture_ref`, `00391_poly_capture_ref`,
+`behavior/callable_union_capture_containment`,
+`behavior/opaque_fn_mixed_return` and
+`behavior/same_lambda_two_capture_types_dynamic`. The 19 are unchanged because
+the residue those 19 carry is fz-kdt.107's and fz-kdt.131's, which no canonical
+order may touch.
+
+`compiler2_a_permuted_arm_order_renders_the_same_artifact` is the ratchet over
+that whole population. Removing the repair returns it to 66 findings under the
+four settings the prototype swept (22 fixtures × seeds 1, 3, 6; `arms:reverse`
+contributes none), and to 44 under the two seeds it now drives.
 
 ### What the seat guarantees
 

@@ -10038,7 +10038,10 @@ const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
 /// `arms:reverse` is the retired knob's exact permutation, kept because the
 /// fixtures and the prose around it were measured under it. The seeds are why
 /// this gate has teeth the reversal did not: measured at fz-kdt.141's landing,
-/// `arms:reverse` moves 8 fixtures' artifacts and a seed moves 27. The two
+/// `arms:reverse` moved 8 fixtures' artifacts and a seed moved 27 (both are 0
+/// at `ca23b676f` + fz-kdt.194, which is what
+/// `compiler2_a_permuted_arm_order_renders_the_same_artifact` ratchets; this
+/// gate holds the ANSWER, which was invariant throughout). The two
 /// seeds here are the ones that named the four native aborts fz-kdt.107 step 3
 /// then killed -- seed 1 aborted `00277` and `dispatch_seat_element_blind`,
 /// seed 6 aborted `enum_map_family` and `enum_predicate_search` -- and they
@@ -10071,10 +10074,14 @@ const WRAPPER_MEMBER_STRESSES: [&str; 2] = ["wrappers:1", "wrappers:6"];
 /// permutation of exactly the pairs the plan cannot separate -- so as
 /// fz-kdt.119 taught the predicate to separate more of them the same knob got
 /// weaker, and on a callsite whose groups are all singletons it is the
-/// IDENTITY. Measured at this commit: reversal moves 8 fixtures' artifacts, a
-/// seeded permutation moves 27, and reversal moves ZERO construction wrappers
-/// where a seed moves 19. Of the four fixtures that abort natively under a
-/// legal arm order, the reversal reaches ONE.
+/// IDENTITY -- and at `ca23b676f` + fz-kdt.194 every group on the corpus IS a
+/// singleton, so it moves nothing at all. Measured at that head over the
+/// 604-fixture corpus: reversal moves 0 fixtures' artifacts and a seeded arm
+/// permutation moves 0 as well (22 without fz-kdt.194's canonical order over
+/// separated pairs), while a wrapper seed still moves 19. So the arm gates
+/// below assert an invariance the perturbation can no longer break by
+/// reordering separated arms; what they still reach is a permuted arrival
+/// running through the drop and the seat.
 ///
 /// RED AT 788c0c21f on `enum_reduce_halt_arm_order`, which returned
 /// `{:done, 3}` for `{:halted, 3}` when the narrow `{:cont, int}` arm was
@@ -10287,6 +10294,126 @@ fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
          a stress that cannot move them proves nothing about the order they arrived in",
     );
 }
+
+/// fz-kdt.194: on the fixtures below, the ARTIFACT -- and not only the answer
+/// -- is the same whichever order the fixpoint delivered a callsite's targets
+/// in.
+///
+/// `compiler2_dispatch_answers_the_same_under_a_permuted_arm_order` holds the
+/// BEHAVIOUR invariant, and it was green long before this: the residues arrival
+/// order decided were meaning-free or the corpus never reached them. What moved
+/// was the ARTIFACT -- arm order, and every plan node and body numbering
+/// downstream of it. Measured at fz-kdt.184's landing (`ca23b676f`), sweeping
+/// all 604 fixtures through `interp --dump backend=`: the settled canon differs
+/// from the `arms:N` canon on the 22 fixtures below, at every one of seeds 1-6
+/// and on the identical fixture set at each, and on none of the other 453 that
+/// render one.
+///
+/// Every one of those 22 moved on a SEPARATED pair -- two arms no value can
+/// reach both of, whose order therefore said nothing.
+/// `specificity_order`'s canonical repair settles them from any arrival, and
+/// the population reads 0 at every seed.
+///
+/// WHAT THIS DOES NOT CLAIM. The arm axis is not closed in general. The repair
+/// settles a run only where the run is pairwise separated end to end, and a
+/// `Covering` or `Escaping` pair anywhere in it stops there
+/// (`a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing` and
+/// `a_separated_run_a_meaning_bearing_pair_blocks_is_not_sorted_through` are
+/// the two shapes). What is measured is this corpus at this head: the
+/// population that moved is 0, and this gate is the ratchet on it.
+///
+/// A RATCHET ON THE WHOLE MEASURED POPULATION, not a sample: a fixture that
+/// starts moving again is an ordering axis that has re-opened, and it must be
+/// diagnosed rather than removed from this list.
+///
+/// WHAT IT COSTS, AND WHAT THAT BOUGHT. 22 fixtures x 3 compiles -- one
+/// settled and one per seed -- is the whole of the gate, and compiling
+/// fixtures is the most expensive thing this suite does. Measured back to back
+/// in a debug build on one machine: **36.9 s** at the two seeds it drives,
+/// against **61.6 s** at the four settings the prototype swept
+/// (`arms:reverse` plus seeds 1, 3 and 6). At four it joined
+/// `compiler2_dispatch_answers_the_same_under_a_permuted_arm_order`,
+/// `..._wrapper_order` and
+/// `compiler2_dispatch_blind_escape_census_is_the_known_population` above the
+/// harness's 60-second banner; at two it runs below them.
+///
+/// The 25 s came off readings measured to carry no signal, and measured BY
+/// INJECTION rather than argued: with the repair call deleted, this gate
+/// reports **66** findings under the prototype's four settings and every one
+/// of them is a seed -- `arms:reverse` contributes ZERO (a group mirror is the
+/// identity on singleton groups, and every group on this corpus is one), and
+/// seeds 1, 3 and 6 each name the SAME 22 fixtures. So the reversal bought 22
+/// compiles of nothing and the third seed bought a duplicate. Under the two
+/// seeds kept, the same injection reports **44**, so the gate is still exactly
+/// as red at base as the population it ratchets.
+///
+/// The SECOND seed is kept for the reason `WRAPPER_MEMBER_STRESSES` keeps its
+/// second: a seeded permutation of a two-element arrival is the identity for
+/// half the seeds, so one seed can be blind on a callsite this corpus does not
+/// have yet. `arms:reverse` is still exercised by `ARM_ORDER_STRESSES`, which
+/// drives the cheap in-process ANSWER gates, and
+/// `.agent/docs/dispatch-matrix.md` carries the recipe for the full six-seed
+/// corpus sweep, which is where a wider question gets asked.
+#[test]
+fn compiler2_a_permuted_arm_order_renders_the_same_artifact() {
+    let mut moved = Vec::new();
+    for fixture in ARM_ORDER_ARTIFACT_CENSUS {
+        let settled = backend_canon(fixture);
+        for stress in ARM_ORDER_ARTIFACT_STRESSES {
+            let permuted = {
+                let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+                    crate::compiler2::callsite_dispatch::dispatch_stress::setting(stress),
+                );
+                backend_canon(fixture)
+            };
+            if permuted != settled {
+                moved.push(format!("{fixture} under {stress}"));
+            }
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "a permuted arrival is an order the fixpoint could legally have delivered, so an artifact \
+         that differs under one is an artifact the schedule wrote: {}",
+        moved.join("; "),
+    );
+}
+
+/// The fixtures whose backend canon moved under a seeded arm permutation at
+/// `ca23b676f`, measured over the whole corpus. Each one carried at least one
+/// separated pair the seat left in arrival order.
+const ARM_ORDER_ARTIFACT_CENSUS: [&str; 22] = [
+    "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
+    "fixtures2/00274_closed_union_protocol.fz",
+    "fixtures2/00281_opaque_reducer_closure.fz",
+    "fixtures2/00384_closure_predicate_wrapper.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/00426_closed_union_protocol_dispatch.fz",
+    "fixtures2/00428_open_union_protocol.fz",
+    "fixtures2/behavior/brand_refines_its_inner.fz",
+    "fixtures2/behavior/bsx_guard_eq.fz",
+    "fixtures2/behavior/bsx_nested_match.fz",
+    "fixtures2/behavior/closure_identity_captures.fz",
+    "fixtures2/behavior/closure_identity_tag_split.fz",
+    "fixtures2/behavior/enum_map_family.fz",
+    "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/enumerable_protocol_dispatch.fz",
+    "fixtures2/behavior/opaque_fn_mixed_return.fz",
+    "fixtures2/behavior/opaque_fn_value_join.fz",
+    "fixtures2/behavior/pipe_headless_case.fz",
+    "fixtures2/behavior/range_enumerable.fz",
+    "fixtures2/behavior/repr_seam_closure_predicate.fz",
+    "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz",
+];
+
+/// The arrival settings the artifact ratchet drives: the two SEEDS
+/// [`ARM_ORDER_STRESSES`] names, and not its `arms:reverse`. All six seeds
+/// moved the identical 22 fixtures at base and the reversal moved none, so a
+/// third seed is a duplicate reading and the reversal is an empty one -- the
+/// gate's doc has the injection numbers that say so. The corpus recipe in
+/// `.agent/docs/dispatch-matrix.md` drives all six seeds and the reversal.
+const ARM_ORDER_ARTIFACT_STRESSES: [&str; 2] = ["arms:1", "arms:6"];
 
 /// One fixture's canonical `BackendProgram` -- the comparand the `--dump
 /// backend` path renders.

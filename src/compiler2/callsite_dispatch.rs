@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 use crate::ast::{Pattern, Spanned};
 use crate::dispatch_matrix::pattern::{
@@ -191,19 +192,18 @@ fn routable_alternatives(
 /// [`seats_before`] says so, which is the whole of this rule's opinion and is
 /// also what [`unroutable_alternatives`] consults before it drops an arm.
 ///
-/// THREE RESIDUES KEEP ARRIVAL ORDER, and each is a different fact. The
+/// THREE RESIDUES THE SEAT DOES NOT DECIDE, and each is a different fact. The
 /// members of one question GROUP are inseparable -- a value reaches both, and
 /// which of them receives it is what their order MEANS (fz-kdt.107). A pair
 /// where neither group covers the other overlaps WITHOUT CONTAINMENT -- a
 /// value reaches both, and their order decides which representation reads it
-/// (fz-kdt.131). A SEPARATED pair routes nothing either way, so its order is
-/// meaning-free by construction; that makes it the one residue a canonical
-/// tie-break could remove outright, and fz-kdt.194 owns it. Measured at
-/// fz-kdt.186's landing: under `arms:3` the canonical form differs from the
-/// settled build's on 25 of the 597 corpus fixtures where it differed on 23
-/// before, the two extras being `00420_enum_take_drop_split` and
-/// `enum_take_drop_split`, whose call-edge plan the old reading had been
-/// pinning to a seat.
+/// (fz-kdt.131). Both of those KEEP ARRIVAL ORDER, and must.
+///
+/// The third is a SEPARATED pair, and it is not like the other two: no value
+/// reaches both arms, so neither order routes anything anywhere and the order
+/// they arrived in was never a fact about the program. That one residue is
+/// given a canonical order, by [`canonically_order_separated_neighbours`]
+/// below.
 ///
 /// # Why the result is a seat, and a safe one
 ///
@@ -230,6 +230,19 @@ fn routable_alternatives(
 /// an explicit insertion rather than a sort, and why a blocked move leaves
 /// arrival order standing instead of forcing an order the arms do not
 /// justify.
+///
+/// # The separated residue, and the one order it may be given
+///
+/// Of the three residues above, the SEPARATED pair is the only one whose order
+/// carries no routing at all, and [`canonically_order_separated_neighbours`]
+/// runs after the insertion pass to take that free axis away where it can: a
+/// pair of ADJACENT groups no value can reach both of is put in
+/// [`Types::cmp_tys`] order of what the two say, so the artifact stops
+/// recording which of them the fixpoint happened to settle first. Adjacency is
+/// the whole safety argument and it is also the limit -- a run settles only
+/// where it is pairwise separated end to end, and a non-separated pair of any
+/// kind stops the repair there. fz-kdt.107's and fz-kdt.131's residues keep
+/// arrival order, and must.
 fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], observable: &[Vec<Ty>]) -> Vec<usize> {
     let groups = grouped_by_question(questions);
     if groups.len() < 2 {
@@ -243,12 +256,216 @@ fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], obs
         }
         seated.insert(at, group);
     }
+    // What the seat alone decided, kept for the assert below and for nothing
+    // else -- a release build pays neither the copy nor the walk.
+    let insertion_pass = cfg!(debug_assertions).then(|| seated.clone()).unwrap_or_default();
+    canonically_order_separated_neighbours(types, questions, observable, &groups, &mut seated);
+    debug_assert!(
+        only_separated_pairs_moved(types, questions, observable, &groups, &insertion_pass, &seated),
+        "the canonical repair reordered a pair a value can reach both of, so it decided a routing \
+         the seat itself declined to decide",
+    );
     debug_assert!(
         every_inversion_covers(types, questions, observable, &groups, &seated),
         "a seat moved a group ahead of one whose surface it does not cover, so a value the plan admits \
          now reaches a body arrival order would have kept it out of",
     );
     seated.into_iter().flat_map(|group| groups[group].clone()).collect()
+}
+
+/// Put every ADJACENT separated pair the seat left behind into one canonical
+/// order, and touch nothing else.
+///
+/// # Why exactly this pair, and no other
+///
+/// Reordering two arms changes where a value lands only if that value
+/// satisfies BOTH arms' tests: a plan is a first-match walk, so a value only
+/// one arm admits reaches that arm wherever the other sits, and a value
+/// neither admits reaches neither. [`Seating::Separated`] is the statement
+/// that no such value exists -- some subject's two questions admit nothing in
+/// common, and a row is a conjunction over its subjects. So swapping a
+/// separated pair is a routing no-op, by construction, and the order they were
+/// in was never a fact about the program: it was the order the semantic
+/// fixpoint's agenda delivered them in.
+///
+/// The other two residues are NOT this: a question group's members and an
+/// overlap-without-containment pair are both reached by a common value, so
+/// their order decides which body that value runs (fz-kdt.107) and which
+/// representation reads it (fz-kdt.131). Neither may be reordered here, and
+/// the adjacency discipline below is what guarantees they are not.
+///
+/// # Adjacent transpositions only, and why that is the whole safety argument
+///
+/// This is a repair, not a sort. One swap of two ADJACENT entries changes the
+/// relative order of exactly one pair -- the pair it swapped -- and leaves
+/// every other pair's relative order alone. So by induction over the swaps,
+/// the only pairs whose order this can change are separated ones, and the
+/// seat's guarantee survives untouched: every inversion against arrival order
+/// is still either `Covering` or `Separated`, never `Escaping`, which is what
+/// the caller's `debug_assert` re-checks against the permutation that comes
+/// out.
+///
+/// A comparison SORT would not have that property. Sorting a run by a
+/// comparator moves entries past neighbours the comparator never examined, so
+/// a group could cross a pair the relation refuses -- and `Separated` is not
+/// transitive (`A|B` and `B|C` separated says nothing about `A|C`), so there
+/// is no run to sort in the first place. Refusing to look past the immediate
+/// neighbour is what keeps a non-transitive relation from being read as a
+/// total one.
+///
+/// # What it removes, and what it leaves
+///
+/// ```text
+///     A B C   pairwise separated end to end   ->  cmp_tys order, from any arrival
+///     A B C   A|B, B|C separated, A|C not     ->  blocked at B; both A|C orders survive
+/// ```
+///
+/// THE LIMIT, STATED EXACTLY: the repair settles a run only where the run is
+/// pairwise separated END TO END. A single non-separated pair anywhere in the
+/// run stops it there, and everything the block sits between stays a function
+/// of the arrival. That blocking pair is not necessarily one of the two
+/// meaning-bearing residues: a `Covering` pair -- one the seat ITSELF decided,
+/// on a fact about the arms -- blocks the repair the same way, and
+/// `a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing` builds a
+/// callsite with no fz-kdt.107 group and no fz-kdt.131 pair in it where two
+/// arrivals still render two orders. So the honest claim is the narrow one:
+/// this removes the free axis exactly where the axis was free, and it does not
+/// make the artifact a function of the arm SET.
+///
+/// # The key, and the other key it is not
+///
+/// A group is compared by the `cmp_tys`-LEAST OBSERVABLE surface among its
+/// members, never by whichever member arrived first -- the members' own order
+/// is fz-kdt.107's residue and a key read off it would put the schedule back.
+/// The key is a strict total order across groups: `cmp_tys` is `Equal` only on
+/// identical `Ty` slices, identical surfaces project to identical questions,
+/// and one question is one group -- so two distinct groups can never tie.
+///
+/// TWO KEYS, AND THEY ARE DIFFERENT QUANTITIES. This repair orders by
+/// `cmp_tys` over the OBSERVABLE ENVELOPE ([`observable_inputs`], which is
+/// what the plan's rows are built from); fz-kdt.108's gate
+/// `compiler2_construction_members_carry_the_cmp_tys_canonical_order` asserts
+/// `cmp_tys` over the members' `surface_inputs`, which is what the envelope
+/// was projected FROM. On any surface holding a callable the two disagree, so
+/// "concordant with 108" is not free and is not assumed here. It is MEASURED,
+/// at the seam 108 owns: with construction-wrapper member selection running
+/// this repair (fz-kdt.179), 108's own invariant is violated on 20 / 202 / 212
+/// member lists under `wrappers:1` / `:6` / `:reverse` across the 604-fixture
+/// corpus with the repair suppressed, and on 6 / 192 / 198 with it in place.
+/// The repair strictly REDUCES 108's violations and introduces none. At the
+/// settled arrival, where 108's gate actually runs, it takes 0 wrapper swaps
+/// and 234 / 234 member lists are non-decreasing either way.
+///
+/// # The one separation this may be reading off a fiction (fz-kdt.202)
+///
+/// [`seating`] separates a pair where some position answers
+/// `!(early == late || early.overlaps(late))`. That guard covers a position
+/// where BOTH arms carry the same unrealizable surface. It does not cover two
+/// arms carrying DIFFERENT surfaces at a position where one projects to a
+/// predicate admitting nothing -- `runtime_type_predicate_tuple_arities` drops
+/// a negated signature's whole arity, so `{any, any} & not({int, int})`
+/// projects to a test that admits nothing and does not overlap ITSELF
+/// (fz-kdt.202). Such a pair reads `Separated` on a fiction, and under
+/// fz-kdt.186 that only meant "leave alone" while here it means "MAY REORDER".
+///
+/// It is still a routing no-op, one step further along: [`dispatch_row`]'s
+/// preconditions are these very same [`observable_inputs`] `Ty`s, so an arm
+/// whose projected test admits nothing emits a row NO VALUE CAN TAKE, and
+/// moving an unreachable row past its neighbour changes no destination.
+/// Adjacency does the rest -- the dead row's own motion is the whole of the
+/// effect, because every other pair's order is preserved.
+///
+/// So no realizability conjunct is owed here, and the population is measured
+/// rather than assumed: over all 604 corpus fixtures, classifying every
+/// `Separated` verdict as a FICTION when every separating position is
+/// self-blind on one side, the fictional population is **0** -- at the settled
+/// arrival and under `arms:1`/`:3`/`:6` and `wrappers:1`/`:6` alike -- against
+/// 172 to 214 real separation readings per setting. Curing the projection is
+/// fz-kdt.202's, and tightening [`seating`] is fz-kdt.186's; neither is on
+/// this rule's critical path while that count is zero.
+fn canonically_order_separated_neighbours(
+    types: &Types,
+    questions: &[Vec<RuntimeTypePredicate>],
+    observable: &[Vec<Ty>],
+    groups: &[Vec<usize>],
+    seated: &mut [usize],
+) {
+    let keys = groups
+        .iter()
+        .map(|group| canonical_key(types, observable, group))
+        .collect::<Vec<_>>();
+    let mut settling = true;
+    while settling {
+        settling = false;
+        for at in 1..seated.len() {
+            let (early, late) = (seated[at - 1], seated[at]);
+            let separated = matches!(
+                seating(types, questions, observable, &groups[early], &groups[late]),
+                Seating::Separated,
+            );
+            if separated && types.cmp_tys(&observable[keys[early]], &observable[keys[late]]) == Ordering::Greater {
+                seated.swap(at - 1, at);
+                settling = true;
+            }
+        }
+    }
+}
+
+/// The member whose observable surface speaks for a whole group: the
+/// `cmp_tys`-least of them.
+///
+/// A group is a set of arms one question cannot separate, and their order
+/// within it is fz-kdt.107's residue -- so a group's canonical name may not be
+/// read off which member came first. The least surface is a function of the
+/// group's contents alone. Ties among members are surfaces that are EQUAL, so
+/// which of them the minimum picks cannot change a comparison.
+fn canonical_key(types: &Types, observable: &[Vec<Ty>], group: &[usize]) -> usize {
+    *group
+        .iter()
+        .min_by(|left, right| types.cmp_tys(&observable[**left], &observable[**right]))
+        .expect("a question group holds at least one arm")
+}
+
+/// Whether the canonical repair kept its promise: every pair whose relative
+/// order it changed is a pair no value can reach both of.
+///
+/// This is the SAFETY CLAIM ITSELF, checked against the two permutations
+/// rather than against the reasoning that produced them. A first-match walk
+/// sends a value to the first arm that admits it, so reordering two arms can
+/// only move a value that satisfies BOTH -- and `Separated` says there is no
+/// such value. So a repair that moves nothing else changes no destination
+/// anywhere, and this is what says it moved nothing else.
+///
+/// It is written as a quantification over pairs and not as a replay of the
+/// swaps, because the claim is about the RESULT: had the repair been a sort,
+/// or had a swap been taken on a stale reading, this is the assertion that
+/// would fire. Held on every seated plan of every debug compile, which the
+/// fixture matrix drives across the corpus.
+fn only_separated_pairs_moved(
+    types: &Types,
+    questions: &[Vec<RuntimeTypePredicate>],
+    observable: &[Vec<Ty>],
+    groups: &[Vec<usize>],
+    before: &[usize],
+    after: &[usize],
+) -> bool {
+    let rank = |order: &[usize]| {
+        let mut ranks = vec![0usize; groups.len()];
+        for (at, group) in order.iter().enumerate() {
+            ranks[*group] = at;
+        }
+        ranks
+    };
+    let (was, now) = (rank(before), rank(after));
+    (0..groups.len()).all(|x| {
+        (x + 1..groups.len()).all(|y| {
+            (was[x] < was[y]) == (now[x] < now[y])
+                || matches!(
+                    seating(types, questions, observable, &groups[x], &groups[y]),
+                    Seating::Separated,
+                )
+        })
+    })
 }
 
 /// Whether the seat would put `x` ahead of `y`: the OBLIGATION first (only one
@@ -266,7 +483,10 @@ fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], obs
 ///
 /// A SEPARATED pair is false both ways for free, because `Covering` is exactly
 /// what [`seating`] refuses such a pair: no value satisfies both tests, so
-/// there is no routing to prefer and arrival stands (fz-kdt.186).
+/// there is no routing to prefer (fz-kdt.186). The seat leaves it where it
+/// found it, and [`canonically_order_separated_neighbours`] then puts it in
+/// the one order that says something about the arms rather than about the
+/// schedule (fz-kdt.194).
 ///
 /// Where NEITHER side covers the other the relation is false both ways: no
 /// seat is escape-free and it declines to have an opinion. That is the
@@ -338,8 +558,11 @@ fn every_inversion_covers(
 enum Seating {
     /// No value satisfies both groups' tests, so no order between them routes
     /// anything: the plan's own tests already keep them apart, whichever way
-    /// round they sit. The seat has nothing to decide and leaves the pair
-    /// exactly as it arrived.
+    /// round they sit. The seat has nothing to decide, and because there is
+    /// nothing to decide the pair may be put in a canonical order instead of
+    /// the one the fixpoint happened to deliver -- the ONE pair class of which
+    /// that is true (fz-kdt.194,
+    /// [`canonically_order_separated_neighbours`]).
     Separated,
     /// Some value satisfies both, and wherever the tests cannot separate it
     /// `early`'s surface already names everything `late` holds. Seating
@@ -865,12 +1088,16 @@ fn unroutable_alternatives(
 /// What arrives is not always what the plan tests: [`specificity_order`]
 /// corrects arrival wherever the arms justify a correction, and it does so
 /// deterministically -- a covering-proven inversion is a fact about the arms,
-/// not about when they turned up. So permuting arrival does not perturb the
-/// seat's own decisions at all; what it perturbs is exactly the RESIDUE the
-/// seat declines to decide: the members of one question group, where arrival
-/// is the one thing standing between the corpus and a wrong answer
-/// (fz-kdt.107), and every pair where neither group covers the other, where no
-/// seat is any safer than the one it came with (fz-kdt.131).
+/// not about when they turned up, and a pair no value reaches both of is put
+/// in `cmp_tys` order whichever way it arrived, wherever the run it sits in is
+/// separated end to end (fz-kdt.194). So permuting arrival does not perturb
+/// the seat's own decisions at all; what it perturbs is exactly the RESIDUE
+/// nothing decides: the members of one question group, where arrival is the
+/// one thing standing between the corpus and a wrong answer (fz-kdt.107);
+/// every pair where neither group covers the other, where no seat is any safer
+/// than the one it came with (fz-kdt.131); and the separated pairs the
+/// canonical repair could not reach past a non-separated neighbour, which is
+/// the limit of fz-kdt.194 rather than a class of its own.
 fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow<'a, [CallTargetSummary]> {
     match dispatch_stress::arms() {
         dispatch_stress::Perturbation::Settled => Cow::Borrowed(targets),
@@ -910,10 +1137,20 @@ fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow
 ///
 /// A seeded permutation of the WHOLE order has neither limit: it varies every
 /// ordering the seat leaves free, on both surfaces, and it is a deterministic
-/// function of (seed, length) so a finding replays. Measured over the corpus at
-/// the fz-kdt.141 landing: the reversal moves 8 fixtures' artifacts, an arm
-/// seed moves 27, a wrapper seed moves 19, and of the four fixtures that abort
-/// natively under a legal arm order the reversal reaches ONE.
+/// function of (seed, length) so a finding replays.
+///
+/// WHAT EACH SURFACE STILL MOVES. Re-measured at `ca23b676f` + fz-kdt.194 over
+/// the 604-fixture corpus, by backend-dump comparand: an arm seed moves 0
+/// fixtures' artifacts (22 before fz-kdt.194's canonical order over separated
+/// pairs), `arms:reverse` moves 0 (a group mirror is the identity on singleton
+/// groups, and every group on this corpus is one), and a wrapper seed moves 19.
+/// The arm surface reads 0 ON THIS CORPUS, which is not the same as closed:
+/// [`canonically_order_separated_neighbours`] settles a run only where the run
+/// is pairwise separated end to end, and this corpus's movers all were. The
+/// wrapper surface still reads 19, and the repair is not declining it -- the
+/// repair fires on wrapper members (14 / 10 / 14 swaps under `wrappers:1` /
+/// `:6` / `:reverse`, 0 at the settled arrival). Those 19 carry fz-kdt.107's
+/// and fz-kdt.131's residue, which no canonical order may touch.
 ///
 /// # The setting
 ///
@@ -2314,6 +2551,29 @@ mod tests {
             shared > 100,
             "the battery must actually meet: {shared} pairs shared a value",
         );
+        let asymmetric = {
+            let types = world.types();
+            let mut asymmetric = Vec::new();
+            for left in battery {
+                for right in battery {
+                    let (a, b) = (
+                        types.runtime_type_predicate(&left),
+                        types.runtime_type_predicate(&right),
+                    );
+                    if a.overlaps(&b) != b.overlaps(&a) {
+                        asymmetric.push(format!("{} and {}", types.display(&left), types.display(&right)));
+                    }
+                }
+            }
+            asymmetric
+        };
+        assert!(
+            asymmetric.is_empty(),
+            "\"one value passes both tests\" names no direction, and `Seating::Separated` is read in \
+             one direction only -- by `canonically_order_separated_neighbours`, of the pair it is \
+             about to swap. An asymmetric reading would make that swap depend on which of the two \
+             the caller passed first: {asymmetric:#?}",
+        );
         let types = world.types();
         let self_blind = battery
             .into_iter()
@@ -2409,6 +2669,15 @@ mod tests {
             "the seat has no opinion about a pair that routes nothing, in either direction",
         );
 
+        // Read the expected order off the quantity PRODUCTION keys the repair
+        // on -- the observable envelope, not the surface it was projected
+        // from. The two agree on this pair, which carries no callable, and a
+        // gate that mirrored production with the other quantity would stop
+        // agreeing on one that did.
+        let canonical = match types.cmp_tys(&observable[0], &observable[1]) {
+            Ordering::Greater => vec![ints_arm.clone(), tails_arm.clone()],
+            _ => vec![tails_arm.clone(), ints_arm.clone()],
+        };
         for arrival in [[&tails_arm, &ints_arm], [&ints_arm, &tails_arm]] {
             let targets = arrival.into_iter().cloned().collect::<Vec<_>>();
             let summary = CallSiteSummary {
@@ -2421,9 +2690,189 @@ mod tests {
                 panic!("two arms subject 0 separates are two destinations");
             };
             assert_eq!(
-                dispatch.targets, targets,
-                "a separated pair is left exactly as it arrived, and neither arm is dropped for the other",
+                dispatch.targets, canonical,
+                "no value reaches both arms, so which of them the fixpoint delivered first is not a \
+                 fact about the program: BOTH arrivals come out in one `cmp_tys` order, and neither \
+                 arm is dropped for the other (fz-kdt.194)",
             );
+        }
+    }
+
+    /// THE TRANSITIVITY TRAP, and the honest limit it draws.
+    ///
+    /// `Separated` is symmetric but NOT transitive: `A|B` separated and `B|C`
+    /// separated says nothing at all about `A|C`. Three list arms are the
+    /// smallest witness --
+    ///
+    /// ```text
+    ///     A  {:p, [int | :ok]}    B  {:q, [int]}    C  {:p, [int | :tail]}
+    /// ```
+    ///
+    /// -- where `A|B` and `B|C` are separated at the TAG, which no value
+    /// answers both ways, while `A|C` carry the same tag and ask the list
+    /// behind it a question that shares `int` with neither surface containing
+    /// the other, so they are fz-kdt.131's class and no rule here may decide
+    /// them. (Two bare lists would not do it: every list type admits `[]`, so
+    /// even disjoint heads leave a list pair reachable.)
+    ///
+    /// So there is no run to sort, and the canonical repair does not pretend
+    /// there is: it swaps ADJACENT separated pairs and stops at `A|C`. What it
+    /// buys on such a triple is therefore partial, and this gate writes down
+    /// exactly which part:
+    ///
+    /// - the repair NEVER moves `A` past `C`. Whichever of them arrived first
+    ///   is still first, at both arrivals, which is the whole safety claim.
+    /// - the two arrivals below still come out DIFFERENT, because the pair
+    ///   that blocks is the one whose order means something. Where a run is
+    ///   pairwise separated all the way through, the repair does reach one
+    ///   order from every arrival -- `arms_no_value_can_reach_both_of_are_not_a_seat_question`
+    ///   is that case, and it is the one the corpus's 22 artifact movers were.
+    ///
+    /// A comparison sort would "fix" this by moving `A` past `C` on the
+    /// strength of a comparator that never asked whether it may. That is the
+    /// bug this shape exists to forbid.
+    #[test]
+    fn a_separated_run_a_meaning_bearing_pair_blocks_is_not_sorted_through() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let p = world.types_mut().atom_lit("p");
+        let q = world.types_mut().atom_lit("q");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_tail = world.types_mut().union(int, tail);
+        let ok_list = world.types_mut().list(int_or_ok);
+        let int_list = world.types_mut().list(int);
+        let tail_list = world.types_mut().list(int_or_tail);
+        let a = world.types_mut().tuple(&[p, ok_list]);
+        let b = world.types_mut().tuple(&[q, int_list]);
+        let c = world.types_mut().tuple(&[p, tail_list]);
+        let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "step", 1);
+        let target = |tagged| CallTargetSummary {
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: vec![tagged],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let (arm_a, arm_b, arm_c) = (target(a), target(b), target(c));
+        let arms = [arm_a.clone(), arm_b.clone(), arm_c.clone()];
+        {
+            let questions = target_questions(world.types_mut(), &arms);
+            let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+            let types = world.types();
+            for (x, y) in [(0, 1), (1, 2)] {
+                assert_eq!(
+                    seating(types, &questions, &observable, &[x], &[y]),
+                    Seating::Separated,
+                    "arm {x} and arm {y} ask disjoint TAGS, so no value reaches both",
+                );
+            }
+            assert_eq!(
+                seating(types, &questions, &observable, &[0], &[2]),
+                Seating::Escaping,
+                "the two ends carry one tag and share `int` behind it, and neither surface names \
+                 everything the other holds -- separation is not transitive, and this is the pair \
+                 that proves it",
+            );
+        }
+
+        let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
+            let summary = CallSiteSummary {
+                targets: arrival.to_vec(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three arms the tag question tells apart are three destinations");
+            };
+            dispatch.targets
+        };
+        let forwards = seated(&mut world, &[arm_a.clone(), arm_b.clone(), arm_c.clone()]);
+        let backwards = seated(&mut world, &[arm_c.clone(), arm_b, arm_a.clone()]);
+
+        let position = |order: &[CallTargetSummary], arm: &CallTargetSummary| {
+            order
+                .iter()
+                .position(|target| target == arm)
+                .expect("every arm survives")
+        };
+        assert!(
+            position(&forwards, &arm_a) < position(&forwards, &arm_c),
+            "arriving A-before-C, A stays before C: the repair may not decide fz-kdt.131's pair",
+        );
+        assert!(
+            position(&backwards, &arm_c) < position(&backwards, &arm_a),
+            "arriving C-before-A, C stays before A -- the same refusal, read the other way",
+        );
+        assert_ne!(
+            forwards, backwards,
+            "and so the two arrivals do NOT converge: where a meaning-bearing pair blocks the run, \
+             the order is still a function of the arrival, and that residue belongs to fz-kdt.131 \
+             rather than to any canonical order",
+        );
+    }
+
+    /// The tie the canonical repair can never be handed: two DISTINCT question
+    /// groups whose keys compare `Equal`.
+    ///
+    /// `cmp_tys` is `Equal` only on identical `Ty` slices, and a group's key is
+    /// one of its members' observable surfaces. So a tie would mean one surface
+    /// sitting in two groups -- but the question is a function of the surface,
+    /// and one question is one group. The repair therefore never has to fall
+    /// through to a second key, and never has to break a tie by arrival.
+    ///
+    /// Held on the shape that would produce one if anything did: two arms on
+    /// two DIFFERENT callees carrying the very same surface.
+    #[test]
+    fn two_arms_that_say_the_same_thing_are_one_group_and_never_a_tie() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let shared = world.types_mut().list(int_or_ok);
+        let separate = world.types_mut().list(ok);
+        let left_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "left_impl", 1);
+        let right_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "right_impl", 1);
+        let target = |function, surface| CallTargetSummary {
+            callee: SelectedCallee::Function(function),
+            surface_inputs: vec![surface],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let arms = [
+            target(left_fn, shared),
+            target(right_fn, shared),
+            target(left_fn, separate),
+        ];
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+        let questions = runtime_questions(world.types_mut(), &observable);
+        let groups = grouped_by_question(&questions);
+        assert_eq!(
+            groups,
+            vec![vec![0, 1], vec![2]],
+            "two arms carrying one surface ask one question, so they are ONE group however many \
+             callees they name",
+        );
+        let types = world.types();
+        let keys = groups
+            .iter()
+            .map(|group| canonical_key(types, &observable, group))
+            .collect::<Vec<_>>();
+        for (x, group_x) in groups.iter().enumerate() {
+            for (y, group_y) in groups.iter().enumerate().skip(x + 1) {
+                assert_ne!(
+                    types.cmp_tys(&observable[keys[x]], &observable[keys[y]]),
+                    Ordering::Equal,
+                    "distinct groups may never tie under the repair's key -- an equal key is an equal \
+                     surface, an equal surface is an equal question, and one question is one group: \
+                     {group_x:?} against {group_y:?}",
+                );
+            }
         }
     }
 
@@ -3146,24 +3595,40 @@ mod tests {
     ///
     /// Three arms on three DISTINCT questions, so `question_groups` gives three
     /// groups of one and the retired knob's within-group mirror is the
-    /// IDENTITY -- and the questions are exact atoms that neither contain each
-    /// other nor overlap on an erasing axis, so [`specificity_order`] declines
-    /// to have an opinion and arrival order stands all the way through to the
-    /// plan. That is the shape fz-kdt.131 owns and fz-kdt.107 step 3 leaves
-    /// behind: entirely arrival-decided, and entirely invisible to a knob that
-    /// only reverses groups.
+    /// IDENTITY. What is left over is what a seed has to reach.
     ///
-    /// A seed moves it. That is the whole difference this ticket buys, and it
-    /// is measured here rather than argued.
+    /// THE SUBJECT IS fz-kdt.131's class, and it has to be. Three lists whose
+    /// HEADS overlap pairwise while no surface contains another -- `[int|:ok]`,
+    /// `[int|:tail]`, `[:ok|:tail]`, each pair meeting on one element type and
+    /// disagreeing about the other. Every pair is reached by a common value
+    /// (`[1]`, `[:ok]`, `[:tail]` respectively), so [`seating`] answers
+    /// `Escaping` both ways, [`specificity_order`] declines to have an opinion,
+    /// and the canonical repair may not touch it either: fz-kdt.194's tie-break
+    /// is for pairs no value reaches both of, and these are the opposite.
+    /// Arrival order therefore stands all the way through to the plan, which is
+    /// exactly the residue that must stay perturbable.
+    ///
+    /// A seed moves it. That is the whole difference fz-kdt.141 buys, and it is
+    /// measured here rather than argued. Three exact ATOM arms used to be the
+    /// subject; the atom sets are DISJOINT, so those three arms are pairwise
+    /// separated and fz-kdt.194's repair now settles them from any arrival --
+    /// a stress that can no longer move them cannot prove anything about the
+    /// residue that remains.
     #[test]
     fn a_seed_moves_an_arrival_order_the_group_reversal_cannot() {
         use dispatch_stress::{DispatchStressed, setting};
 
         let _tel = ConfiguredTelemetry::new();
         let mut world = World::new();
-        let alpha = world.types_mut().atom_lit("alpha");
-        let beta = world.types_mut().atom_lit("beta");
-        let gamma = world.types_mut().atom_lit("gamma");
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_tail = world.types_mut().union(int, tail);
+        let ok_or_tail = world.types_mut().union(ok, tail);
+        let alpha = world.types_mut().list(int_or_ok);
+        let beta = world.types_mut().list(int_or_tail);
+        let gamma = world.types_mut().list(ok_or_tail);
         let tag = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "tag_impl", 1);
         let target = |atom| CallTargetSummary {
             callee: SelectedCallee::Function(tag),
@@ -3173,6 +3638,20 @@ mod tests {
             return_ty: None,
         };
         let arrived = vec![target(alpha), target(beta), target(gamma)];
+        {
+            let questions = target_questions(world.types_mut(), &arrived);
+            let observable = observable_inputs(world.types_mut(), &target_surfaces(&arrived));
+            let types = world.types();
+            for (x, y) in [(0, 1), (0, 2), (1, 2)] {
+                assert_eq!(
+                    seating(types, &questions, &observable, &[x], &[y]),
+                    Seating::Escaping,
+                    "arm {x} and arm {y} share an element type, so a value reaches both and neither \
+                     surface names everything the other holds -- fz-kdt.131's class, which no \
+                     canonical order may decide",
+                );
+            }
+        }
         let summary = CallSiteSummary {
             targets: arrived.clone(),
             return_ty: None,
@@ -3332,6 +3811,308 @@ mod tests {
             assert!(
                 std::panic::catch_unwind(|| setting(nonsense)).is_err(),
                 "{nonsense:?} must fail loudly: a stress that sweeps inertly reads as green",
+            );
+        }
+    }
+
+    /// fz-kdt.194 REVIEW PROBE (attack 1, on the design itself): the NAIVE reading of
+    /// the ticket -- fold the canonical tie-break into `seats_before` as an
+    /// extra disjunct and let the backward insertion pass use it -- SILENTLY
+    /// LOSES A COVERING SEAT, and `every_inversion_covers` does not catch it.
+    ///
+    /// Three single-input arms, each input a 2-tuple:
+    ///
+    /// ```text
+    ///     Q  {[int],      :s}
+    ///     R  {[int|:ok],  :s}    R covers Q: same question, strictly wider surface
+    ///                            on an ERASING axis (the list behind the tag)
+    ///     P  {[int|:bb],  :t}    separated from both at tuple position 1 (:t vs :s)
+    /// ```
+    ///
+    /// with `key(Q) < key(P) < key(R)` under `cmp_tys`. Arrival `[P, Q, R]`.
+    ///
+    /// - The LANDED shape (insertion pass, then adjacent-transposition repair)
+    ///   keeps `R` ahead of `Q`: the covering seat the insertion pass made
+    ///   survives, because a swap only ever exchanges the pair it is about.
+    /// - The NAIVE shape lets `Q` walk left past `P` on the tie-break, which
+    ///   puts `P` between `R` and the prefix -- so `R` stops at `P` and never
+    ///   reaches `Q` at all. `Q` comes out ahead of `R`, a pair
+    ///   `seating` calls `Escaping`, and the two were never compared.
+    /// - `every_inversion_covers` accepts the naive result, because `Q` before
+    ///   `R` is ARRIVAL order and therefore not an inversion.
+    #[test]
+    fn a_tie_break_folded_into_the_seat_loses_a_covering_seat() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let bb = world.types_mut().atom_lit("bb");
+        let ok = world.types_mut().atom_lit("ok");
+        let s = world.types_mut().atom_lit("s");
+        let t = world.types_mut().atom_lit("t");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_bb = world.types_mut().union(int, bb);
+        let int_list = world.types_mut().list(int);
+        let ok_list = world.types_mut().list(int_or_ok);
+        let bb_list = world.types_mut().list(int_or_bb);
+        let q_ty = world.types_mut().tuple(&[int_list, s]);
+        let r_ty = world.types_mut().tuple(&[ok_list, s]);
+        let p_ty = world.types_mut().tuple(&[bb_list, t]);
+        let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "step", 1);
+        let target = |ty| CallTargetSummary {
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: vec![ty],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        // arrival [P, Q, R]
+        let arms = [target(p_ty), target(q_ty), target(r_ty)];
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
+        let questions = runtime_questions(world.types_mut(), &observable);
+        let groups = grouped_by_question(&questions);
+        let types = world.types();
+        assert_eq!(groups, vec![vec![0], vec![1], vec![2]], "three singleton groups");
+        let (p, q, r) = (0usize, 1usize, 2usize);
+        let keys = groups
+            .iter()
+            .map(|group| canonical_key(types, &observable, group))
+            .collect::<Vec<_>>();
+        // The shape this witness needs. If any precondition stops holding the
+        // witness has to be rebuilt, so assert them rather than assume them.
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[p], &groups[q]),
+            Seating::Separated,
+            "P and Q ask disjoint tuple tags at position 1",
+        );
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[p], &groups[r]),
+            Seating::Separated,
+            "P and R ask disjoint tuple tags at position 1",
+        );
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[r], &groups[q]),
+            Seating::Covering,
+            "R's surface contains Q's on the erasing position, so the seat MUST put R first",
+        );
+        assert_eq!(
+            seating(types, &questions, &observable, &groups[q], &groups[r]),
+            Seating::Escaping,
+            "and the other direction is a blind escape -- Q ahead of R is what must not happen",
+        );
+        assert_eq!(
+            types.cmp_tys(&observable[keys[q]], &observable[keys[p]]),
+            Ordering::Less,
+            "key(Q) < key(P)",
+        );
+        assert_eq!(
+            types.cmp_tys(&observable[keys[p]], &observable[keys[r]]),
+            Ordering::Less,
+            "key(P) < key(R)",
+        );
+
+        // READING B, what landed.
+        let landed = specificity_order(types, &questions, &observable);
+        let position = |order: &[usize], arm: usize| order.iter().position(|a| *a == arm).unwrap();
+        assert!(
+            position(&landed, r) < position(&landed, q),
+            "the landed shape keeps the covering seat: R before Q, order {landed:?}",
+        );
+
+        // READING A, the naive fold, rebuilt here exactly as the ticket's
+        // wording admits it.
+        let naive = {
+            let naive_before = |x: usize, y: usize| {
+                seats_before(types, &questions, &observable, &groups[x], &groups[y])
+                    || (matches!(
+                        seating(types, &questions, &observable, &groups[x], &groups[y]),
+                        Seating::Separated
+                    ) && types.cmp_tys(&observable[keys[x]], &observable[keys[y]]) == Ordering::Less)
+            };
+            let mut seated: Vec<usize> = Vec::new();
+            for group in 0..groups.len() {
+                let mut at = seated.len();
+                while at > 0 && naive_before(group, seated[at - 1]) {
+                    at -= 1;
+                }
+                seated.insert(at, group);
+            }
+            seated
+        };
+        assert!(
+            position(&naive, q) < position(&naive, r),
+            "THE NAIVE READING IS UNSAFE: Q comes out ahead of R, a pair the seat calls Escaping, \
+             and the two were never compared -- the tie-break moved Q out of R's insertion walk. \
+             order {naive:?}",
+        );
+        assert!(
+            every_inversion_covers(types, &questions, &observable, &groups, &naive),
+            "and the standing law does NOT catch it: Q before R is ARRIVAL order, so it is not an \
+             inversion, and the escape fix is lost silently",
+        );
+    }
+
+    /// fz-kdt.194 REVIEW PROBE (attack 2, on the doc's account of the limit): the
+    /// residual arrival-dependence the repair leaves is NOT confined to
+    /// fz-kdt.107's and fz-kdt.131's classes. A COVERING pair -- one the seat
+    /// itself decided, and whose order is therefore already a function of the
+    /// arm set -- can sit between two separated groups and block the repair
+    /// just as an `Escaping` pair does.
+    ///
+    /// Same three arms as probe 1. `R` covers `Q`; `P` is separated from both;
+    /// `key(Q) < key(P) < key(R)`.
+    ///
+    /// ```text
+    ///     arrival [P, Q, R]  ->  seat [P, R, Q]  ->  repair [P, R, Q]
+    ///     arrival [Q, R, P]  ->  seat [R, Q, P]  ->  repair [R, Q, P]
+    /// ```
+    ///
+    /// Both are safe -- `R` is ahead of `Q` in both, which is the whole seat
+    /// obligation -- and both leave `P` where the seat's own walk stopped. But
+    /// they are DIFFERENT artifacts, and the pair that blocked the repair from
+    /// reconciling them is the `Covering` one, not a residue anybody owns.
+    ///
+    /// This is why [`canonically_order_separated_neighbours`]'s doc and
+    /// `.agent/docs/dispatch-matrix.md` state the limit as "pairwise separated
+    /// END TO END" and not as "blocked only by a pair whose order means
+    /// something". The first draft of both said the latter, and this gate is
+    /// what refuted it.
+    #[test]
+    fn a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let bb = world.types_mut().atom_lit("bb");
+        let ok = world.types_mut().atom_lit("ok");
+        let s = world.types_mut().atom_lit("s");
+        let t = world.types_mut().atom_lit("t");
+        let int_or_ok = world.types_mut().union(int, ok);
+        let int_or_bb = world.types_mut().union(int, bb);
+        let int_list = world.types_mut().list(int);
+        let ok_list = world.types_mut().list(int_or_ok);
+        let bb_list = world.types_mut().list(int_or_bb);
+        let q_ty = world.types_mut().tuple(&[int_list, s]);
+        let r_ty = world.types_mut().tuple(&[ok_list, s]);
+        let p_ty = world.types_mut().tuple(&[bb_list, t]);
+        // THREE callees, so `unroutable_alternatives`' same-callee conjunct
+        // keeps the drop out of this witness; only the seat is under test.
+        let p_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "p_impl", 1);
+        let q_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "q_impl", 1);
+        let r_fn = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "r_impl", 1);
+        let target = |function, ty| CallTargetSummary {
+            callee: SelectedCallee::Function(function),
+            surface_inputs: vec![ty],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
+            let summary = CallSiteSummary {
+                targets: arrival.to_vec(),
+                return_ty: None,
+            };
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three distinguishable arms are three destinations");
+            };
+            dispatch.targets
+        };
+        let (p, q, r) = (target(p_fn, p_ty), target(q_fn, q_ty), target(r_fn, r_ty));
+        let forwards = seated(&mut world, &[p.clone(), q.clone(), r.clone()]);
+        let backwards = seated(&mut world, &[q.clone(), r.clone(), p]);
+        let at = |order: &[CallTargetSummary], arm: &CallTargetSummary| {
+            order
+                .iter()
+                .position(|target| target == arm)
+                .expect("every arm survives")
+        };
+        assert!(
+            at(&forwards, &r) < at(&forwards, &q),
+            "the covering seat holds either way"
+        );
+        assert!(
+            at(&backwards, &r) < at(&backwards, &q),
+            "the covering seat holds either way"
+        );
+        assert_ne!(
+            forwards, backwards,
+            "and yet the two arrivals render DIFFERENT arm orders, with no fz-kdt.107 or fz-kdt.131 \
+             pair anywhere in the callsite: the blocker is the COVERING pair",
+        );
+    }
+
+    /// fz-kdt.194 REVIEW PROBE (attack 3, on the re-homing of
+    /// `a_seed_moves_an_arrival_order_the_group_reversal_cannot`): the OLD
+    /// subject really is settled by the repair, so the re-homing is honest
+    /// rather than a way to hide a lost instrument.
+    ///
+    /// Three exact-atom arms, pairwise disjoint. Under fz-kdt.194 they are
+    /// pairwise SEPARATED all the way through, so the repair reaches one order
+    /// from every arrival -- which is exactly what makes them useless as a
+    /// perturbable residue, and why that instrument had to be re-homed on
+    /// fz-kdt.131's class. It is also the positive statement of the repair's
+    /// reach at unit scale: an end-to-end separated run settles, from all six
+    /// seeds and from the group reversal.
+    #[test]
+    fn three_disjoint_atom_arms_settle_to_one_order_from_every_arrival() {
+        use dispatch_stress::{DispatchStressed, setting};
+
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let alpha = world.types_mut().atom_lit("alpha");
+        let beta = world.types_mut().atom_lit("beta");
+        let gamma = world.types_mut().atom_lit("gamma");
+        let tag = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "tag_impl", 1);
+        let target = |atom| CallTargetSummary {
+            callee: SelectedCallee::Function(tag),
+            surface_inputs: vec![atom],
+            activation: None,
+            activation_inputs: None,
+            return_ty: None,
+        };
+        let arrived = vec![target(alpha), target(beta), target(gamma)];
+        {
+            let questions = target_questions(world.types_mut(), &arrived);
+            let observable = observable_inputs(world.types_mut(), &target_surfaces(&arrived));
+            let types = world.types();
+            for (x, y) in [(0, 1), (0, 2), (1, 2)] {
+                assert_eq!(
+                    seating(types, &questions, &observable, &[x], &[y]),
+                    Seating::Separated,
+                    "three disjoint atoms are pairwise separated",
+                );
+            }
+        }
+        let summary = CallSiteSummary {
+            targets: arrived,
+            return_ty: None,
+        };
+        let seated = |world: &mut World| {
+            let CallDestinations::Dispatch(dispatch) =
+                call_destinations(world.types_mut(), &summary).expect("destinations should compile")
+            else {
+                panic!("three arms the atom tests separate are three destinations");
+            };
+            dispatch.targets
+        };
+        let settled = seated(&mut world);
+        for stress in [
+            "arms:1",
+            "arms:2",
+            "arms:3",
+            "arms:4",
+            "arms:5",
+            "arms:6",
+            "arms:reverse",
+        ] {
+            let permuted = {
+                let _stress = DispatchStressed::install(setting(stress));
+                seated(&mut world)
+            };
+            assert_eq!(
+                permuted, settled,
+                "{stress} no longer moves the old subject -- the instrument would have been \
+                 toothless there, so the re-homing is honest",
             );
         }
     }
