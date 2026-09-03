@@ -4,6 +4,7 @@
     "fz-qon.1"
   ],
   "blocks": [
+    "fz-kdt.15",
     "fz-qon.3"
   ],
   "closed_at": "2026-09-03T02:07:00Z",
@@ -17,5 +18,5 @@
   "status": "closed",
   "title": "Retire the completed Compiler2 migration narrative and impossible old-pipeline sentinels",
   "type": "task",
-  "updated_at": "2026-09-03T02:07:00Z"
+  "updated_at": "2026-09-03T02:26:44Z"
 }
