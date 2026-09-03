@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-tfn.7"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.1"
+  ],
   "created": "2026-09-03T08:00:21Z",
   "description": "## Goal\n\nMake `ExecutableEffects(E)` an ordinary reactive per-executable product and delete its private reachability, SCC, snapshot, fixpoint, reverse-graph, and cone-invalidation machinery.\n\n## Current defect\n\n`produce_executable_effects` collects the reachable call cone, discovers SCCs, snapshots inputs, and settles a bespoke fixpoint. `PullSession` separately maintains `latest_effect_inputs`, `effect_dependents`, and manual reverse-cone invalidation. This is a batch pass embedded inside the product recalculator.\n\n## Model\n\n`ExecutableEffects(E)` reads E's local materialized effect and exact `ExecutableEffects(callee)` inputs. Generic pending-product cycle handling owns cycles. The effect join is idempotent OR/union, so a call SCC is the union of member-local and external effects; it does not need a separate algorithmic authority.\n\n## TDD and signal\n\n- Acyclic chain, self-cycle, mutual cycle, edge addition, edge removal, unchanged local projection, and changed leaf.\n- Exact reverse dependents reevaluate; unreachable executables do not.\n- Same product values, canonical causal work multiset, backend artifact, and runtime behavior.\n- No cone collection, SCC discovery, snapshot replay, manual reverse effect graph, or end-session recomputation remains.\n- Full library, fixture matrix, cross-process determinism, formatting, and clippy with warnings denied pass.\n\nDelete `EffectGraph`, cone/SCC helpers, snapshot settlement, `latest_effect_inputs`, `effect_dependents`, `invalidate_effect_cone`, obsolete side inventory, tests that only prove the retired mini-pass, and documentation describing it.",
   "id": "fz-tfn.8",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Replace the executable-effect cone mini-compiler with reactive formulas",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:34Z"
+  "updated_at": "2026-09-03T08:02:36Z"
 }
