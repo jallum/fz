@@ -9,7 +9,7 @@
 <body>
 
 <h1>fz modules guide</h1>
-<p class="subtitle">How fz names code, imports public functions, records interfaces, and keeps whole-program optimization optional.</p>
+<p class="subtitle">How fz names code, imports public functions, records interfaces, and closes a requested root on demand.</p>
 
 <div class="toc">
 <ul>
@@ -19,10 +19,9 @@
   <li><a href="#import">4. Importing names</a></li>
   <li><a href="#interface">5. Interfaces - the public contract</a></li>
   <li><a href="#strict">6. Strict interfaces - public functions need specs</a></li>
-  <li><a href="#compile">7. Separate compilation without stored artifacts</a></li>
+  <li><a href="#compile">7. Module facts and root closure</a></li>
   <li><a href="#runtime">8. Runtime library modules</a></li>
-  <li><a href="#lto">9. LTO - whole-program mode when you ask for it</a></li>
-  <li><a href="#contract">10. The contract</a></li>
+  <li><a href="#contract">9. The contract</a></li>
 </ul>
 </div>
 
@@ -232,57 +231,51 @@ exist to catch that before code starts depending on an inferred body.
 </div>
 
 <!-- ─────────────────────────────── 7. ARTIFACTS ─────────────────────────────── -->
-<h2 id="compile">7. Separate compilation without stored artifacts</h2>
+<h2 id="compile">7. Module facts and root closure</h2>
 
-<p>Separate compilation still has two jobs, but they are compiler facts rather
-than filesystem products:</p>
+<p>Module interfaces and module bodies are separate compiler facts:</p>
 
 <table class="data">
 <thead><tr><th>Layer</th><th>What it stores</th><th>Who needs it</th></tr></thead>
 <tbody>
-<tr><td class="cls">public interface</td><td class="shape">module exports, imports, public types, protocol facts, and a compatibility fingerprint</td><td>dependent modules resolving imports and checking contracts</td></tr>
-<tr><td class="cls">implementation unit</td><td class="shape">checked IR plus planner facts for the current root source and reachable runtime modules</td><td>the linker building one runnable image</td></tr>
+<tr><td class="cls">module interface</td><td class="shape">exported function and macro identities plus exact import expectations</td><td>scopes resolving <code>import</code> and <code>require</code></td></tr>
+<tr><td class="cls">module source and body</td><td class="shape">indexed source, namespace state, and demanded function definitions</td><td>jobs deriving reachable semantic and backend facts</td></tr>
 </tbody>
 </table>
 
-<p>Public interfaces and compiler-internal activation facts are separate on
-purpose. Interfaces are the public contract other modules may depend on.
-Compiler-internal dumps and telemetry are for implementation behavior.</p>
+<p>An interface can answer which callable names a module exports without making
+every function body hot. A body is lowered only when a demanded root reaches
+it. Compiler-internal dumps and telemetry observe that implementation work;
+they are not another module authority.</p>
 
 <p>There is no <code>.fzi</code> / <code>.fzo</code> storage layer anymore.
 <code>fz2 run</code>, <code>fz2 build</code>, and <code>fz2 interp</code>
-submit the root source directly to compiler2. If execution needs built-in runtime modules such as
-<code>Utf8</code>, <code>Process</code>, or <code>Enum</code>, the graph loader
-discovers them from interface facts, recompiles their checked-in source, and
-links that reachable set into the same image.</p>
+submit the root source directly to compiler2. If execution reaches a built-in
+runtime module such as <code>Utf8</code>, <code>Process</code>, or
+<code>Enum</code>, that reference pulls the checked-in module source through
+the same indexing and scoping jobs as user source.</p>
 
-<p>Normal whole-file compilation follows this shape:</p>
+<p>Compilation follows demand from the requested root:</p>
 
-<pre>root source
-  -&gt; interface facts
-  -&gt; checked unit
+<pre>requested root
+  -&gt; entry function fact
+  -&gt; candidate source and namespace
+  -&gt; reachable function and module facts
+  -&gt; semantic and transport products
+  -&gt; one backend product</pre>
 
-reachable runtime modules
-  -&gt; interface facts
-  -&gt; checked source units
-
-link
-  -&gt; resolve every imported export exactly once
-  -&gt; merge runtime metadata
-  -&gt; produce one runnable image</pre>
-
-<p>The linker checks the boring but important things:</p>
+<p>The module boundary checks the boring but important things:</p>
 
 <ul>
-  <li>every required import has a provider;</li>
-  <li>no export has two providers;</li>
-  <li>each linked unit still matches the interface fingerprint it claims;</li>
-  <li>runtime-global tables such as atoms, schemas, static closures, and entrypoints can be merged deterministically.</li>
+  <li>every required import names an exported callable;</li>
+  <li>private functions remain private to their module;</li>
+  <li>function and macro expectations match the callable kind and arity;</li>
+  <li>runtime modules are pulled only when reachable from the root.</li>
 </ul>
 
-<p>If any of that fails, the build should report a compiler error with the
-module/import context. It should not quietly fall back to source-loading the
-world or some hidden persistence layer.</p>
+<p>Each command closes this demanded graph before producing its backend result.
+There is no alternate closure mode: root closure is part of ordinary
+<code>run</code>, <code>interp</code>, and <code>build</code>.</p>
 
 <!-- ─────────────────────────────── 8. RUNTIME ─────────────────────────────── -->
 <h2 id="runtime">8. Runtime library modules</h2>
@@ -356,55 +349,8 @@ APIs stay small and explicit; the larger standard library can be ordinary
 fz code compiled and imported through the same module path as user code.
 </div>
 
-<!-- ─────────────────────────────── 9. LTO ─────────────────────────────── -->
-<h2 id="lto">9. LTO - whole-program mode when you ask for it</h2>
-
-<p>Separate compilation is the correctness path: compile against
-interfaces, link compatible units, run the program. Whole-program analysis
-is allowed to be faster code, not a secret requirement.</p>
-
-<p>When you want whole-program optimization, ask for it explicitly:</p>
-
-<pre>fz2 run --lto path/to/file.fz
-fz2 build --lto path/to/file.fz -o /tmp/app</pre>
-
-<p><code>--whole-program</code> is accepted as an alias for
-<code>--lto</code>.</p>
-
-<p>Compiler2 telemetry records events such as interface collection,
-runtime-source materialization, link success/failure, and LTO boundary
-erasure.</p>
-
-<p>LTO does three things in order:</p>
-
-<ol>
-  <li>Validate public interfaces first.</li>
-  <li>Load compatible implementations.</li>
-  <li>Erase allowed module boundaries before reducer/planner/codegen optimization.</li>
-</ol>
-
-<p>The CLI uses one shared preparation path for normal and LTO run/build/interp
-commands. Boundary erasure is only available after the LTO path has built a
-validated linked-program state.</p>
-
-<p>That last step means an imported module call can become a direct local
-call for optimization. Specs normally act as public boundary firewalls; in
-explicit LTO mode, after validation, those firewalls can be cleared for
-loaded implementations so reducer and inliner passes may cross the module
-edge.</p>
-
-<p>Compiler2 backend dumps report the codegen-facing body set
-after those rewrites. If a validated cross-module tail call is erased and
-inlined, the provider body no longer appears as a reachable user body there.</p>
-
-<div class="box blue">
-<strong>Important:</strong> LTO must not change what the program means. It
-only changes how much implementation code the optimizer is allowed to see
-at once.
-</div>
-
-<!-- ─────────────────────────────── 10. CONTRACT ─────────────────────────────── -->
-<h2 id="contract">10. The contract</h2>
+<!-- ─────────────────────────────── 9. CONTRACT ─────────────────────────────── -->
+<h2 id="contract">9. The contract</h2>
 
 <p>The short version:</p>
 
@@ -412,14 +358,13 @@ at once.
   <li>Use modules to name public code.</li>
   <li>Use imports to bring selected public functions into a module.</li>
   <li>Use specs on module exports that other code should depend on.</li>
-  <li>Use interface dumps to see the public contract.</li>
-  <li>Normal builds should depend on interfaces and linked units, not dependency source bodies.</li>
-  <li>Use <code>--lto</code> only when you want the optimizer to erase validated boundaries.</li>
+  <li>Let root demand pull only the module source and function bodies it reaches.</li>
+  <li>Treat interfaces as callable visibility, not as a second stored program.</li>
 </ul>
 
-<p>After you forget the details, remember this: <strong>private code is
-inferred inside the module; public code is described by the interface; LTO
-may erase boundaries for speed, but correctness does not depend on it.</strong></p>
+<p>After you forget the details, remember this: <strong>private code remains
+inside its module, public callable names live in the interface, and every
+compile closes only the graph demanded by its requested root.</strong></p>
 
 </body>
 </html>
