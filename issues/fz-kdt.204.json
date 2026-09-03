@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T12:28:45Z",
+  "description": "Found by the fz-kdt.198 refutation (2026-09-03). PRE-EXISTING: measured\nidentical at accb5cfbe and at fz-kdt.198's c1f7a7d1b, so 198 neither causes\nnor worsens it -- but it FALSIFIES the sentence 198 wanted to write (\"brands\nare erased before the backend\"), which is why it is written down here.\n\nMEASURED. .kdt198/refute/a1_two_activations.fz:\n\n    import Utf8\n    @spec pass(a) :: a\n    fn pass(x), do: x\n    fn main() do\n      s = Utf8.from_bytes!(\u003c\u003c104, 105\u003e\u003e)\n      b = \u003c\u003c106, 107\u003e\u003e\n      dbg(Utf8.to_bytes(pass(s)))\n      dbg(pass(b))\n    end\n\n`fz2 interp --dump backend=...` gives TWO activations of one body:\n\n    key pass/1[fp[binary;nutf8] utf8(binary)] need=Value\n    key pass/1[fp[binary] binary]             need=Value\n\n(at accb5cfbe the same two keys, the second field rendering `binary | utf8`).\nThe `brand_refines_its_inner.fz` dump carries 29 `utf8` tokens.\n\nWHY IT IS WRONG. `TyCanon::descr_fingerprint` records the brand slot as the\n`n` component, and the fingerprint is what keys the activation. A brand is a\nTYPING refinement with no runtime witness: `Types::runtime_type_predicate`\nnever reads the slot (set-theoretic-types.md, \"Which predicate, where\"), the\nvalue model is brand-blind (fz-bsx), and a ShapeId is pure layout. So the two\nkeys above put the SAME question of the backend, hold the SAME layout, and\ncompile the same instructions twice. That is the shape fz-kdt.140 and the\nfz-y6w work call over-specialization: a distinction that cannot change one\nemitted byte splitting a body.\n\nSCOPE TODAY. The corpus has one brand with traffic (compiler-known `utf8`,\nresolve.rs:119) and it reaches only Utf8's own boundary, so the census cost is\nsmall; the defect is that the RULE is wrong, and it grows the moment a minting\nform exists (the fz-kdt.198 owner question) and user brands acquire traffic.\n\nSHAPE OF THE FIX. The activation key is a backend question, so it should be\nkeyed on the brand-ERASED type -- `erase_nominal` (or its equivalent) applied\nat the key-derivation seam, not a patch inside `descr_fingerprint`, and the\nsame erasure the runtime predicate and `is_value_disjoint` already apply.\nRed-first: the dump above holds ONE `pass/1` key, and no `--dump backend=`\noutput in the corpus contains a brand name (today `brand_refines_its_inner.fz`\nhas 29 `utf8` tokens; the other 596 fixtures have none).\n\nCONCORDANCE: fz-kdt.198 (the encoding; its doc sentence corrected in\n6e10e69f9 on wt/kdt198-refute), fz-bsx (brand-blind runtime), fz-kdt.140\n(per-position specialization), the \"ShapeId is pure layout\" rule.",
+  "id": "fz-kdt.204",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A brand fragments the activation key: pass/1 compiles twice for utf8(binary) and binary, one layout and one runtime test",
+  "type": "bug",
+  "updated_at": "2026-09-03T12:28:45Z"
+}
