@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.124"
+  ],
   "blocks": [
     "fz-kdt.120"
   ],
@@ -19,5 +21,5 @@
   "status": "open",
   "title": "List.reduce_step/3 is one activation keyed entirely on free type variables: every Enum.reduce/3 user shares one body and one joined return, and only @spec results re-correlate it",
   "type": "task",
-  "updated_at": "2026-09-03T05:49:56Z"
+  "updated_at": "2026-09-03T06:37:50Z"
 }
