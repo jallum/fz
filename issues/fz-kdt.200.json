@@ -7,9 +7,15 @@
   "id": "fz-kdt.200",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.183 landed (2e0bb2706): DispatchDemand::Whole returns ty verbatim (no collapse), and forwarding now hands a Whole UP from a callee that pattern-matches a literal: grow/2's accumulator loses its collapse, 1 -\u003e 2 keys, identical at union widths 3/6/9/12 (bounded, measured). 344 rows / 174 functions gain a forwarding-introduced Whole. fz-y6w's termination argument does not cover such a slot; stated in convergence_collapse's doc, type-specialization.md and addressed-arrow.md. The one divergent shape found (self-nesting accumulator) hangs at base with no forwarding at all -- fz-kdt.177's class, not this.\n",
+      "timestamp": "2026-09-03T12:16:43Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A Whole demand at a recursive slot has no convergence collapse, and forwarding now hands a Whole up: an accumulator loses its fz-y6w bound because a callee pattern-matches a literal (344 corpus rows)",
   "type": "task",
-  "updated_at": "2026-09-03T09:40:38Z"
+  "updated_at": "2026-09-03T12:16:43Z"
 }
