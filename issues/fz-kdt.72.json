@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T17:00:13Z",
-  "description": "Parent: fz-kdt\n\nmerge_call_emission (jobs/semantic.rs:1065-ish) extends .activations with no\ndedup; emitted_activations guards only the Activation FactKey push while\nactivation_input_contributions.push runs per duplicate -- so\nnormalize_contributions re-addresses and push_rows an IDENTICAL row many\ntimes in one conclusion. Measured at 84ae179b4 (fz2 interp debug): max\nidentical (key,inputs) rows per conclusion 26/3/12\n(take_drop/range_map/predicate); conclusions emitting \u003e=2 duplicates\n200/13/141. Wasted work + needless ACTIVATION_INPUT_ROW_BUDGET pressure.\n\nStandalone fix: dedup at merge_call_emission or at the contribution push.\nCheap and safe. (Two earlier plans subsumed this -- the refuted channel deletion and the\nrefuted cell model; the channel lives, so this is standalone. Just fix it.)\n",
+  "description": "## Goal\n\nPublish each identical (callee activation, input row) contribution at most once per AnalyzeActivation conclusion.\n\n## Evidence\n\nmerge_call_emission deduplicates the Activation FactKey but not activation_input_contributions. Measured at origin/main a3a9761d1, identical rows repeat up to 26 / 3 / 12 times in one conclusion on enum_take_drop_split, range_map, and predicate targets; 200 / 13 / 141 conclusions emit at least two duplicates. Every duplicate reaches addressing, antichain comparison, sorting, joining, and row-budget accounting.\n\n## Strategy and proof\n\n1. Add a temporary count asserting the current duplicate population.\n2. Deduplicate at the emission boundary before normalization/publication, using exact semantic row identity.\n3. Preserve distinct publishers and distinct input evidence; do not collapse merely equivalent rows whose ownership differs.\n4. Require one emitted row per identical contribution and byte-identical facts, products, backend/native artifacts, and runtime output.\n5. Compare activation-input join calls, row-budget pressure, and causal work before/after; remove the temporary counter and proof-only fixture metadata.\n6. Run focused semantic tests, full library, fixture matrix, determinism, formatting, and strict clippy.\n\nThis is a local duplicate-work deletion, not an antichain or activation-key policy change.",
   "id": "fz-kdt.72",
   "labels": [],
-  "parent": "fz-kdt",
+  "parent": "fz-tfn",
   "priority": 3,
   "status": "open",
-  "title": "One callsite emits the same callee contribution up to 35x per conclusion",
+  "title": "Deduplicate identical callee input contributions before activation-input joins",
   "type": "bug",
-  "updated_at": "2026-08-30T23:46:04Z"
+  "updated_at": "2026-09-03T08:02:13Z"
 }
