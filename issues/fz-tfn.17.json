@@ -9,9 +9,9 @@
   "id": "fz-tfn.17",
   "labels": [],
   "parent": "fz-tfn",
-  "priority": 3,
+  "priority": 1,
   "status": "open",
   "title": "Delete constant backend and native revision fields",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:38Z"
+  "updated_at": "2026-09-03T08:06:40Z"
 }
