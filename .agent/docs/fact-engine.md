@@ -411,8 +411,9 @@ the schedule itself:
 - a keep-first merge keeps whichever conclusion arrived first.
 
 So a hash-random wake order publishes a different `BackendProgram` for the same
-input — same structure, different `Ty` ids — while every fact is correct. That
-is why order is preserved end to end rather than restored afterwards:
+input — same structure, different `Ty` ids — while every fact is correct. Each
+owner therefore makes unordered membership typed and explicit before the next
+mutation boundary:
 
     job emits outputs (Vec, source order)
       -> dedupe_job_facts                  keeps order (OrderedSet, not HashSet)
@@ -420,13 +421,15 @@ is why order is preserved end to end rather than restored afterwards:
       -> DependencyIndex::outputs          keeps order
       -> mark_dirty                        iterates in that order
       -> pending_changes                   drained in that order
-      -> enqueue_dependents                subscribers/waiters in registration order
+      -> DependencyIndex                   typed Publisher/Job order
       -> job order                         -> intern order -> Ty ids
 
-`OrderedSet` (`ordered_set.rs`) is the single insertion-ordered membership set
-behind every hop. Losing the order at ANY hop is sufficient to lose
-reproducibility, and each hop that loses it merely moves where the divergence
-first shows.
+`OrderedSet` still preserves source emission and membership, but insertion
+order is not semantic identity. `DependencyIndex` orders subscriber, waiter,
+reader, and unresolved-job waves with the World's typed Job/Publisher
+relations. `ContributionMap` likewise orders every touched/next key wave before
+joins can allocate. Losing owner order at any mutation boundary is sufficient
+to move the first divergence downstream.
 
 Two non-cures, both tried and rejected. Sorting needs a comparator that does not
 depend on what is being minted, and Debug-text sorts are what fz-k22.21 had to
@@ -441,6 +444,35 @@ is the causal one and names the first swapped pair;
 end state. Both compile twice in ONE process, which is what exposes the hazard:
 `RandomState` is seeded per `HashMap` instance, so the second compile's maps
 iterate differently from the first's.
+
+Activation-bearing identities have one owner-supplied total order.
+`SemanticOrd<Types>` compares real fields and delegates activation arrows to
+`Types::cmp_activation_ty`. That operation reuses the type store's structural
+walk in activation mode: callable arguments, return, then literal; list
+emptiness and addressed variable paths remain explicit, and named literals use
+immutable owner-registered callable labels. It therefore distinguishes lattice
+forms that display intentionally merges, including possibly-empty and
+non-empty lists, without allocating or parsing presentation text.
+`Job`, `FactKey`, `FactUse`, callsites, executables, completion reports,
+settled-wait drains, terminal unresolved inventories, product fact waits, and
+activation dump/fixture inventories all delegate to that relation. `FactKey` has no
+raw `Ord`: only the owning `World` can interpret its World-local type handles.
+The generic scheduler and dependency index accept one semantic context whose
+`SemanticOrd` implementations own fact, job, and publisher order; neither
+accepts per-domain callbacks or falls back to type ids or hash iteration. Existing presentation
+orders remain intact: diagnostics retain their variant-name order, readiness
+is a tie-break after fact identity, and settled-wait draining uses that same
+fact relation. Only activation-bearing payloads replace raw type ids with typed
+structural comparison.
+
+The type store memoizes `ActivationArrow` verdicts by a normalized `(low Ty,
+high Ty)` pair; asking in the reverse direction reuses the inverse. Descriptors
+and structural addresses are immutable after interning, and callable labels
+must be registered before comparison and cannot be renamed, so the entry lives
+for the owning `Types`/`World` lifetime with no invalidation path. Hit/miss
+counters exist only in tests. ClauseOrder's private storage-canonical relation
+remains distinct: it intentionally puts a closure literal before its surface to
+group DNF clauses and must not determine activation order.
 
 ## The drive loop
 
@@ -473,21 +505,12 @@ ends only when nothing can be demanded: `Resolved` (no waiters),
 `Unresolved { waits }` (blocked facts with no mapped producer), or
 `Fatal { job }`.
 
-The standing waits themselves come out of a `HashMap`, so
-`DependencyIndex::unresolved` orders them before handing them over: by the
-fact's `Debug` rendering, with the readiness variant as tie-break. That is the
-one place the wait list is ordered, and both things that read it inherit it —
-the stall expansion pokes producers in that order, and the `Unresolved` message
-a stalled compile prints renders in it, so one binary prints one text for one
-program (fz-kdt.109). This key is the pattern fz-k22.21 removed from the fold
-paths above, and the difference is SCOPE, not taste: seven `FactKey` variants
-embed `ActivationKey.arrow`, a raw interned `Ty` id, so this rendering is
-mint-order-dependent — legal here only because its use is within-run (one
-binary, one program, ids already minted; the ticket's complaint was one binary
-printing many texts), and inherited unchanged from the two per-caller sorts it
-replaced, which used the identical key on the identical facts. Anything
-CROSS-run still goes through `StableSortKey`, per fz-k22.21; ordering the poke
-path by a structural key instead is open as fz-kdt.114.
+Standing waits come from a `HashMap`, but the dependency index does not guess
+their identity. `DependencyIndex::unresolved` uses the same typed semantic
+context as the other fact boundaries. Producer pokes and
+the terminal `Unresolved` result therefore inherit one structural order across
+opposite type-mint histories. This inventory is only materialized at the
+existing stall and terminal boundaries.
 
 **Errors are not facts.** A job returning `FatalError` aborts the whole drive;
 the diagnostic goes out through telemetry. Closure never masks an error, and
@@ -518,6 +541,11 @@ ProductKey =
 
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
+
+Before the pull stack expands an unordered wait set, product waits retain their
+existing product-key order and fact waits use the World's semantic `FactUse`
+key. Thus an activation-bearing fact cannot reverse product expansion merely
+because its arrow received a different arena handle.
 
 `ExecutableFacts(E)` is instead one direct fact. `DeriveExecutableFacts(E)`
 publishes its World-owned immutable value after settled reads of
@@ -550,11 +578,13 @@ from one graph. A settled product answers a read with the value it already
 holds, so it waits on
 nothing and no cycle of waits runs through it — and a settled product never
 depends on an unsettled one, so nothing is missed by not stepping into it.
-The temporary eager RuntimeDemand cone may still present a different pending
-graph in another process. Exact recursive publication-member identity is
-therefore deferred to `fz-tfn.2`, after `fz-kdt.4` removes that cone; this
-current traversal does not sort or rename members to disguise that boundary.
-Each group publishes every member atomically. Each memo entry
+Graph traversal establishes component membership only. `ProductReadContext`
+stages every peer value and dependency snapshot produced by one invocation;
+`ProductDriver` adds the requested key, and `ProductMemo` typed-sorts and
+commits that complete same-producer completion. Recursive components use the
+same completion owner, which validates the group and publishes every member
+atomically. This is an ordering envelope around one producer return, not a
+batch across independent product pulls or fact settlements. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
 fact-use states. Every member of a settled group retains the union of the
 group's external product and fact dependencies when every duplicate dependency
@@ -609,10 +639,12 @@ answer retains that `MaterializedTransportPlan` beside the closed
 There is no parallel session map of transport positions, shapes, layouts,
 callable boundaries, or transport-shape groups, and final packaging does not scan the
 fact table or memo to rediscover them.
-Outgoing publication is an order-free requested-publisher set plus immutable
-per-publisher slot-source maps. `IncomingInputRelations(root)` derives the
-immutable request-relative slot/source relation for the exact current frontier
-generation; each `IncomingInputSlot(slot)` projects one exact value.
+Outgoing publication is normalized once into an immutable, typed-sorted
+executable slice. `IncomingInputRelations(root)` and `OutgoingInputEdges`
+share a private immutable ordered slot/source value, and each
+`IncomingInputSlot(slot)` projects an immutable typed-sorted source slice.
+Hash maps and sets are ephemeral construction tools only; no consumer can
+observe their iteration order.
 Runtime-demand products also record the other runtime-demand products they read.
 When one settles to a changed value, only those recorded dependents are
 invalidated; if a product is invalidated while in progress, the pull driver
@@ -722,7 +754,7 @@ AnalyzeActivation(a) re-runs against the new body.
   the returned decision and immutable `World` getters; the context never owns
   store mutation or invariants.
 
-`AppliedStep<J, F>` is `Scheduler::complete`'s report of one completion's
+`AppliedStep<J, F>` is `Scheduler::complete_ordered`'s report of one completion's
 effect on the graph: `changed` (the `FactChange`s that resulted), `movements`
 (the full post-wave state of every fact this completion or its cascade
 touched), `wakes`, and `blocked` (the waits, if any, this completion left

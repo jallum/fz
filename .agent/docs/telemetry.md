@@ -260,8 +260,8 @@ the value is owned by `World` and its lifecycle is visible through the normal
 (`BackendExecutable`, `TransportShape`, ...): activation identity plus
 `need` (`"value"` or `"tuple_fields"` with a count). The blocked-wait lists
 on `AppliedStep` and `JobCompletion` render each waited-on `FactKey` as its
-own identity object, sorted as rendered strings (a presentation-boundary
-sort) rather than as bare kind strings.
+own identity object in the typed order established by the scheduler owner.
+Rendering does not reorder identities.
 
 `[fz, compiler2, activation_inputs, budget_collapsed]` is public (fz-0xp,
 allowlisted in `is_public_compiler2_trace_event`). It fires from
@@ -295,20 +295,18 @@ complete_job` call sites (`compiler.rs`, `drive.rs`, `product_drive.rs`,
 shared `AppliedStep` body once and both the standalone `AppliedStep` opaque
 arm and the `JobCompletion` arm call it, so the two can never drift apart:
 `"changed"` is every `FactChange` as a full identity object (`kind` + ids,
-`old_revision`/`new_revision`, `old_settled`/`new_settled`), in the
-completion's own emission order; `"wakes"` is every `Wake` this completion
+`old_revision`/`new_revision`, `old_settled`/`new_settled`), in the typed
+completion order; `"wakes"` is every `Wake` this completion
 caused, in wake order, each `{"cause": <FactUse identity>, "job": <Job
 identity>, "disposition": "enqueued"|"coalesced", "shift": bool}` —
 `AppliedStep::wakes` replaced the old deduped `enqueued`/`coalesced` job
 lists, so a job coalesced by two distinct causes in the same `Scheduler::
 complete` call now renders as two `Wake` records, not one; `"movements"` is
-the full post-wave `FactMovement` report, each entry a full identity object.
-Both `"movements"` and the event's own `"semantic":{"reads":[...]}` (the
-completed job's current `deps.reads`, read directly off
-`World.work_graph.reads` at render time — nothing new is stored) are
-rendered as presentation-sorted strings, because their source in both cases
-is a `HashSet` with no meaningful iteration order — the same
-presentation-boundary sort the blocked-wait lists already used.
+the full typed owner-ordered `FactMovement` report, each entry a full identity
+object. The event's `"semantic":{"reads":[...]}` projection reads the
+completed job's current `deps.reads` directly from `World.work_graph` and
+typed-sorts the actual `FactUse` keys with `World::types()` before rendering.
+No rendered string determines public event order.
 
 `old_settled`/`new_settled` and `movements[].settled` render TRANSITIVE
 finality (fz-kdt.44): `true` means the fact's whole upstream cone is
@@ -415,14 +413,13 @@ since the last content change, it pokes that fact's mapped producer through
 expansions poke at least one producer, the pass emits
 `[fz, compiler2, drive, demand_on_stall]` (raw event, no span) with `&u64` for
 that combined `producer_pokes` total and the cumulative blocked-waiter
-`stall_demanded` set (`&HashSet<FactKey>`) as a raw borrow.
+`stall_demanded` facts as a typed owner-ordered vector.
 
 `demand_on_stall` is public (allowlisted in
 `is_public_compiler2_trace_event`, `jsonl.rs`). Its projected metadata carries
 `"producer_pokes"`, plus a `"demanded_facts"` object with `"count"`, a
-`"facts"` array of presentation-sorted full fact identities (`kind` + ids, via
-`render_fact_identity` — the same presentation-boundary sort
-`blocked`/`movements` use, since the source is a `HashSet`), and a hard-coded
+`"facts"` array of full fact identities (`kind` + ids) in that typed owner
+order, and a hard-coded
 `"reason":"blocked_waiter_expansion"`. That reason qualifies only the
 `demanded_facts`: every member of that set passed through
 `demand_fact_producer(fact, WorkStartReason::BlockedWaiterExpansion)`. The

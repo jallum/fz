@@ -22,7 +22,7 @@ use super::super::pull::{
 };
 use super::super::semantic::{
     CallSiteSummary, CallableActivationInput, CallableDemand, CallableFlowEdge, CallableFlowFact, CallableSurface,
-    CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandTypeInputs, ShapeDemand,
+    CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandTypeInputs, SemanticOrd, ShapeDemand,
     ground_dispatch_surfaces,
 };
 use super::super::types::{Ty, Types};
@@ -424,12 +424,17 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
             ),
             None => {}
         }
-        let settled = match settle_demand_cone(world, tel, context, &graph) {
+        let mut settled = match settle_demand_cone(world, tel, context, &graph) {
             Ok(settled) => settled,
             Err(waits) => return product_waits(waits),
         };
+        let settlement_members = std::mem::take(&mut settled.members);
         let mut grew_actual_flow_edges = false;
-        for (member, demand) in &settled.demands {
+        for member in &settlement_members {
+            let demand = settled
+                .demands
+                .get(member)
+                .expect("every settled member has demand evidence");
             let graph_edges = graph.edges.get(member);
             let member_flow_edges = actual_flow_edges.entry(member.clone()).or_default();
             for target in demand
@@ -457,8 +462,11 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
         // `recompute_return_demand` fires only for NON-member targets — within this
         // settlement the joins are quiescent by construction, so recording the
         // members' memos afterwards cannot be wiped by their own contributions.
-        let mut displaced: HashSet<ExecutableKey> = HashSet::new();
-        for (member, contributions) in settled.contributions {
+        let mut contribution_transactions = Vec::new();
+        for member in &settlement_members {
+            let Some(contributions) = settled.contributions.remove(member) else {
+                continue;
+            };
             // A callable-flow resolution can already be
             // memoized from an earlier, separate pull (its own cone anchored
             // elsewhere ran first) -- then it is `graph.external`, not a member,
@@ -475,19 +483,14 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
                     input_demand_contributions.insert(target, contribution.input_demands);
                 }
             }
-            displaced.extend(context.session_mut().replace_settled_return_demand_contributions(
-                tel,
-                member.clone(),
-                return_demand_contributions,
-                &members,
-            ));
-            displaced.extend(context.session_mut().replace_settled_input_demand_contributions(
-                tel,
-                member,
-                input_demand_contributions,
-                &members,
-            ));
+            contribution_transactions.push((member.clone(), return_demand_contributions, input_demand_contributions));
         }
+        let displaced = context.session_mut().replace_settled_demand_contributions(
+            tel,
+            contribution_transactions,
+            &members,
+            world.types(),
+        );
         // The stale-caller window: this settlement read the external's settled
         // demand as an input AND its publication moved that external's join, so
         // every member was derived against a displaced value. Do not memoize —
@@ -506,7 +509,7 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
             });
             continue;
         }
-        context.remove_product_dependencies(members.iter().cloned().map(ProductKey::RuntimeDemand));
+        context.remove_product_dependencies(settlement_members.iter().cloned().map(ProductKey::RuntimeDemand));
         for (member, edges) in &graph.edges {
             context
                 .session_mut()
@@ -534,14 +537,17 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
             .get(executable)
             .cloned()
             .expect("requested executable should belong to its demand cone");
-        for (member, member_demand) in settled.demands {
+        for member in settlement_members {
             if member == *executable {
                 continue;
             }
+            let member_demand = settled
+                .demands
+                .remove(&member)
+                .expect("every published member has settled demand evidence");
             context.publish_product(
-                tel,
                 ProductKey::RuntimeDemand(member.clone()),
-                ProductValue::RuntimeDemand(Box::new(member_demand.clone())),
+                ProductValue::RuntimeDemand(Box::new(member_demand)),
             );
         }
         return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand)));
@@ -562,6 +568,7 @@ struct DemandGraph {
 }
 
 struct SettledDemandCone {
+    members: Vec<ExecutableKey>,
     demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
     contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>>,
 }
@@ -595,7 +602,7 @@ fn collect_demand_cone(
             continue;
         }
         if current != *anchor
-            && let Some(demand) = context.read_runtime_demand(tel, &current)
+            && let Some(demand) = context.read_runtime_demand(tel, &current, world.types())
         {
             external.insert(current, demand.clone());
             continue;
@@ -628,19 +635,25 @@ fn settle_demand_cone<T: Telemetry>(
     context: &mut ProductReadContext<'_>,
     graph: &DemandGraph,
 ) -> Result<SettledDemandCone, HashSet<PullWait>> {
-    // Each Jacobi round reads one frozen previous-round snapshot. Member order
-    // is therefore schedule only: formulas are read-only and joins commute, so
-    // the native HashMap order is deliberately left unconstrained.
-    let members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
-    #[cfg(test)]
-    let mut members = members;
+    // Each Jacobi round reads one frozen previous-round snapshot, but deriving
+    // a member can read products through the shared session. Keep that
+    // activation-bearing observation and the later settlement publication on
+    // one typed vector instead of rematerializing HashMap order between them.
+    let mut members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
+    members.sort_by(|left, right| left.semantic_cmp(right, world.types()));
+    for pair in members.windows(2) {
+        assert!(
+            pair[0] == pair[1] || pair[0].semantic_cmp(&pair[1], world.types()).is_lt(),
+            "semantic member comparator collision/order inversion: {:?} vs {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
     #[cfg(test)]
     DEMAND_FORMULA_HARNESS.with(|configured| {
-        use super::super::semantic::StableSortKey as _;
         let Some(order) = configured.borrow().as_ref().map(|harness| harness.order) else {
             return;
         };
-        members.sort_by_cached_key(|member| member.stable_sort_key(world.types()));
         match order {
             DemandFormulaOrder::Forward => {}
             DemandFormulaOrder::Reverse => members.reverse(),
@@ -662,7 +675,7 @@ fn settle_demand_cone<T: Telemetry>(
         .filter_map(|member| {
             context
                 .session()
-                .external_return_demand(member, &member_set)
+                .external_return_demand(member, &member_set, world.types())
                 .map(|demand| (member.clone(), demand))
         })
         .collect();
@@ -673,7 +686,9 @@ fn settle_demand_cone<T: Telemetry>(
     let external_input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = members
         .iter()
         .filter_map(|member| {
-            let demands = context.session().external_input_demand(member, &member_set);
+            let demands = context
+                .session()
+                .external_input_demand(member, &member_set, world.types());
             (!demands.is_empty()).then_some((member.clone(), demands))
         })
         .collect();
@@ -866,6 +881,7 @@ fn settle_demand_cone<T: Telemetry>(
                     },
                 );
                 return Ok(SettledDemandCone {
+                    members,
                     demands: iterates,
                     contributions,
                 });
@@ -915,7 +931,7 @@ fn derive_member_demand<T: Telemetry>(
     let mut derived = derive_executable_runtime_demand(types, &input);
     let return_demand_contributions = call_return_demand_contributions(&input.facts, derived.call_return_demands);
     let flow_plans = plan_callable_flows(types, &input, &derived.callable_flows, &derived.demand);
-    input.product_answers = read_runtime_demand_products(tel, context, &flow_plans, waits);
+    input.product_answers = read_runtime_demand_products(tel, context, &flow_plans, waits, types);
     finish_callable_flows(&input, flow_plans, &mut derived.demand);
     let boundary_input_demands = callable_boundary_input_demand_contributions_product(&derived.demand);
     let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
@@ -1035,7 +1051,7 @@ pub(crate) fn produce_outgoing_input_edges_product<T: Telemetry>(
         ))));
         return product_waits(waits);
     };
-    let Some(runtime_demand) = context.read_runtime_demand(tel, executable) else {
+    let Some(runtime_demand) = context.read_runtime_demand(tel, executable, world.types()) else {
         waits.insert(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
         return product_waits(waits);
     };
@@ -1043,7 +1059,9 @@ pub(crate) fn produce_outgoing_input_edges_product<T: Telemetry>(
     let mut contribution = HashMap::new();
     collect_callsite_input_sources(world, executable, &facts, &mut contribution);
     collect_callable_capture_input_sources(executable, &runtime_demand, &mut contribution);
-    PullOutcome::Produced(ProductValue::OutgoingInputEdges(Rc::new(contribution)))
+    PullOutcome::Produced(ProductValue::OutgoingInputEdges(Rc::new(
+        super::super::pull::OrderedIncomingInputs::from_unordered(contribution, world.types()),
+    )))
 }
 
 fn product_waits(waits: HashSet<PullWait>) -> PullOutcome {
@@ -1274,7 +1292,7 @@ fn plan_callable_flows(
         let first_class_surfaces =
             ground_dispatch_surfaces(types, &callable_flows.first_class_surfaces(value), &ground_source);
         let mut ordered = first_class_surfaces.iter().cloned().collect::<Vec<_>>();
-        ordered.sort_by(|a, b| types.cmp_tys(&a.inputs, &b.inputs));
+        ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs));
         plans.push(CallableFlowPlan {
             value,
             producer: producer.clone(),
@@ -1342,10 +1360,10 @@ fn callable_flow_edges_for_targets(
     // `targets` is a `BTreeSet<CallableTarget>` ordered by interned-`Ty` id, so
     // walking it leaks the interner's mint order (the agenda's) into this
     // executable's stored `direct_edges` and every artifact rendered from them.
-    // Order by what each surface SAYS, the same `cmp_tys` key the first-class
+    // Order by what each surface says, the same typed activation key the first-class
     // edges use, so the direct half is canonical for the same reason and by the
     // same authority (fz-kdt.108).
-    edges.sort_by(|a, b| types.cmp_tys(&a.surface.inputs, &b.surface.inputs));
+    edges.sort_by(|a, b| types.cmp_activation_tys(&a.surface.inputs, &b.surface.inputs));
     edges
 }
 
@@ -3059,13 +3077,14 @@ fn read_runtime_demand_products<T: Telemetry>(
     context: &mut ProductReadContext<'_>,
     plans: &[CallableFlowPlan],
     waits: &mut HashSet<PullWait>,
+    types: &Types,
 ) -> Vec<RuntimeDemandProductInput> {
     plans
         .iter()
         .flat_map(|plan| &plan.resolution_keys)
         .map(|resolution_key| {
             let key = ProductKey::CallableResolution(resolution_key.clone());
-            let answer = match context.read_product(tel, key.clone()) {
+            let answer = match context.read_product(tel, key.clone(), types) {
                 Some(ProductValue::CallableResolution(edge)) => Some(edge.clone()),
                 Some(other) => panic!("callable resolution produced unexpected value {other:?}"),
                 None => {

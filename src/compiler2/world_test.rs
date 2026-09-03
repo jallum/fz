@@ -2,7 +2,8 @@ use super::facts::FactUse;
 use super::keying::{BodyKeying, DispatchDemand, InputDemand};
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
-use crate::compiler2::drive::JobEffects;
+use crate::compiler2::drive::{JobDerivation, JobEffects};
+use crate::compiler2::facts::DerivationId;
 use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
@@ -1021,6 +1022,184 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
     );
 }
 
+#[test]
+fn terminal_unresolved_inventory_uses_semantic_order_across_type_mint_histories() {
+    let inventory = |non_empty_first: bool| {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let root = super::RootId::for_test(0);
+        let function = world.reference_function(ModuleId::GLOBAL, "lists", 1);
+        let int = world.types_mut().int();
+        let (list, non_empty, list_activation, non_empty_activation) = if non_empty_first {
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_activation =
+                super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let list = world.types_mut().list(int);
+            let list_activation = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            (list, non_empty, list_activation, non_empty_activation)
+        } else {
+            let list = world.types_mut().list(int);
+            let list_activation = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_activation =
+                super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            (list, non_empty, list_activation, non_empty_activation)
+        };
+        assert_eq!(world.types().display(&list), world.types().display(&non_empty));
+        let raw_order = list_activation.arrow < non_empty_activation.arrow;
+        let list_fact = FactKey::Executable(super::ExecutableKey {
+            activation: list_activation,
+            need: super::ExecutableNeed::Value,
+        });
+        let non_empty_fact = FactKey::Executable(super::ExecutableKey {
+            activation: non_empty_activation,
+            need: super::ExecutableNeed::Value,
+        });
+        let registrations = if non_empty_first {
+            vec![
+                FactUse::settled(non_empty_fact.clone()),
+                FactUse::settled(list_fact.clone()),
+            ]
+        } else {
+            vec![
+                FactUse::settled(list_fact.clone()),
+                FactUse::settled(non_empty_fact.clone()),
+            ]
+        };
+        let completion = world.complete_job(
+            Job::BuildBackendProduct(root),
+            JobEffects {
+                waits: registrations,
+                ..JobEffects::default()
+            },
+        );
+        let classify = |wait: &FactUse<FactKey>| {
+            if wait.fact() == &list_fact {
+                "list"
+            } else if wait.fact() == &non_empty_fact {
+                "non_empty_list"
+            } else {
+                panic!("unexpected unresolved fact: {wait:?}")
+            }
+        };
+        let completion_order = completion.blocked.iter().map(classify).collect::<Vec<_>>();
+
+        let DriveOutcome::Unresolved { waits } = super::drive::ExecutionContext::new(&mut world, &tel).drive() else {
+            panic!("unmapped executable facts must remain terminally unresolved");
+        };
+        let order = waits.iter().map(|wait| classify(&wait.fact)).collect::<Vec<_>>();
+        (raw_order, completion_order, order)
+    };
+
+    let list_first = inventory(false);
+    let non_empty_first = inventory(true);
+    assert_ne!(
+        list_first.0, non_empty_first.0,
+        "the fixture must reverse raw activation-arrow order"
+    );
+    assert_eq!(
+        (list_first.1, list_first.2),
+        (non_empty_first.1, non_empty_first.2),
+        "completion effects and terminal diagnostics must use canonical semantic fact order"
+    );
+}
+
+#[test]
+fn completion_derivations_movements_and_wakes_use_semantic_order_across_seeds() {
+    let completion_order = |non_empty_first: bool| {
+        let mut world = World::new();
+        let root = super::RootId::for_test(0);
+        let function = world.reference_function(ModuleId::GLOBAL, "lists", 1);
+        let int = world.types_mut().int();
+        let (list_key, non_empty_key) = if non_empty_first {
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            (list_key, non_empty_key)
+        } else {
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            (list_key, non_empty_key)
+        };
+        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let list_fact = FactKey::ReturnType(list_key);
+        let non_empty_fact = FactKey::ReturnType(non_empty_key);
+        world.complete_job(
+            Job::SeedRoot(root),
+            JobEffects {
+                waits: vec![
+                    FactUse::current(list_fact.clone()),
+                    FactUse::current(non_empty_fact.clone()),
+                ],
+                ..JobEffects::default()
+            },
+        );
+        let mut derivations = vec![
+            JobDerivation {
+                derivation: DerivationId(1),
+                reads: Vec::new(),
+                outputs: vec![list_fact.clone()],
+                changed: vec![list_fact.clone()],
+                concluded: true,
+            },
+            JobDerivation {
+                derivation: DerivationId(2),
+                reads: Vec::new(),
+                outputs: vec![non_empty_fact.clone()],
+                changed: vec![non_empty_fact.clone()],
+                concluded: true,
+            },
+        ];
+        if non_empty_first {
+            derivations.reverse();
+        }
+        let completion = world.complete_job(
+            Job::DeriveCallGraphComponent(function),
+            JobEffects {
+                derivations,
+                ..JobEffects::default()
+            },
+        );
+        let classify = |fact: &FactKey| {
+            if fact == &list_fact {
+                "list"
+            } else if fact == &non_empty_fact {
+                "non_empty_list"
+            } else {
+                panic!("unexpected completion fact: {fact:?}")
+            }
+        };
+        let changed = completion
+            .changed
+            .iter()
+            .map(|change| classify(&change.key))
+            .collect::<Vec<_>>();
+        let movements = completion
+            .movements
+            .iter()
+            .map(|movement| classify(&movement.key))
+            .collect::<Vec<_>>();
+        let wakes = completion
+            .wakes
+            .iter()
+            .map(|wake| classify(wake.cause.fact()))
+            .collect::<Vec<_>>();
+        (raw_order, changed, movements, wakes)
+    };
+
+    let list_first = completion_order(false);
+    let non_empty_first = completion_order(true);
+    assert_ne!(list_first.0, non_empty_first.0, "the fixture must reverse raw Ty order");
+    assert_eq!(
+        (&list_first.1, &list_first.2, &list_first.3),
+        (&non_empty_first.1, &non_empty_first.2, &non_empty_first.3),
+        "one typed order must own derivation application, movements, and wake publication"
+    );
+}
+
 /// The bare drive's demand-on-stall pass: a waiter blocked on a fact whose
 /// mapped producer has never run must not stall — the wait is the demand, the
 /// fact->producer map expands it, and the drive completes.
@@ -1029,10 +1208,10 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &["fz", "compiler2", "drive", "demand_on_stall"]);
-    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<std::collections::HashSet<FactKey>>>> =
+    let demanded_facts: std::rc::Rc<std::cell::RefCell<Vec<Vec<FactKey>>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let demanded_facts_sink = std::rc::Rc::clone(&demanded_facts);
-    tel.attach_raw_event2::<u64, std::collections::HashSet<FactKey>, _>(
+    tel.attach_raw_event2::<u64, Vec<FactKey>, _>(
         &["fz", "compiler2", "drive", "demand_on_stall"],
         move |_, _, _, _, facts| {
             demanded_facts_sink.borrow_mut().push(facts.clone());

@@ -151,13 +151,15 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         starts,
         WorkStartTally {
             ignition: 2,
-            changed_revision_wake: 1736,
+            // fz-tfn.26's typed completion order coalesces six revision wakes
+            // before their readers run; the activation frontier is unchanged.
+            changed_revision_wake: 1730,
             activation_frontier: 268,
             blocked_waiter_expansion: 1140,
             unclassified: 0,
             root_scans: 0,
         },
-        "the parent's 3 root and 265 callee starts must become 268 shared-frontier starts with every other work count unchanged",
+        "the parent's 3 root and 265 callee starts must become 268 shared-frontier starts; typed ordering may only remove causally redundant wakes",
     );
 
     let world = compiler.world();

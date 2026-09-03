@@ -351,11 +351,10 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
 /// for every raw id it names, and the causal report joins through them. Raw ids
 /// may differ; canonical identity may not.
 ///
-/// Recursive-search counts and traversal work are part of the comparand. Exact
-/// recursive publication-member identity is deliberately absent until
-/// fz-kdt.4 removes the eager RuntimeDemand cone that chooses the pending graph.
-/// The pre-existing CallableConstruction cache-hit redistribution is the only
-/// excluded work dimension.
+/// Recursive-search counts, typed completion publication, and cache behavior
+/// are all part of the comparand. There is no product-specific exclusion:
+/// owner-ordered completion waves make the whole canonical causal inventory
+/// reproducible.
 ///
 /// Work counts only — no wall-clock quantity appears in the comparand.
 #[test]
@@ -423,27 +422,11 @@ fn causal_work_multisets_agree_across_two_processes() {
             "expected a substantial {fixture} comparand, got {} entries",
             first.len()
         );
-        let unexplained = first
-            .keys()
-            .chain(second.keys())
-            .filter(|key| first.get(*key) != second.get(*key))
-            .filter(|key| !is_callable_construction_cache_hit(key))
-            .collect::<BTreeSet<_>>();
-        assert!(
-            unexplained.is_empty(),
-            "two processes compiling {fixture} must agree on every canonical work count outside the \
-             known callable-construction cache-hit divergence; unexplained: {unexplained:?}"
+        assert_eq!(
+            first, second,
+            "two processes compiling {fixture} must agree on every canonical work count"
         );
     }
-}
-
-/// The single measured cross-process divergence: see
-/// `causal_work_multisets_agree_across_two_processes`. A key in the canonical
-/// multiset is `<dimension>\u{1}<identity>\u{1}<count name>`.
-fn is_callable_construction_cache_hit(key: &str) -> bool {
-    key.starts_with("product\u{1}")
-        && key.ends_with("\u{1}cache_hits")
-        && key.contains("\"kind\":\"callable_construction\"")
 }
 
 /// `--dump backend` is the canonical external form, so two SEPARATE PROCESSES

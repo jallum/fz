@@ -231,7 +231,9 @@ semantic fixpoint's, which is the agenda's. A callable value's
 `BTreeSet<CallableSurface>` walked in interned-id order — the type interner's
 mint order, which is the agenda's again. `plan_callable_flows`
 (`jobs/runtime_demand.rs`) removes that schedule channel by sorting
-`CallableResolutionKey`s with `Types::cmp_tys` over each surface's inputs. That
+`CallableResolutionKey`s with `Types::cmp_activation_tys` over each surface's
+inputs. The typed relation walks addressed arrows and stable callable labels;
+raw type handles and rendered strings never establish construction order. That
 order schedules product reads only: each `CallableResolution` independently
 constructs its activation identity from authoritative facts, so no preceding
 resolution or shared interner mutation is an input to the next one.
@@ -244,11 +246,8 @@ So the fz-kdt.108 weld — a selection row's `body_id` equals its member's index
 is re-derived from the seat as a data dependency (member `i` was PUT there by
 the same walk), never inherited from resolution-product completion order. The direct half
 (`callable_flow_edges_for_targets`, a `BTreeSet<CallableTarget>`) is ordered by
-the same key for the same reason. `cmp_tys` is total up to the two
-residuals `types::order` documents (free-var ties, lambda byte-span labels);
-those fall back to mint order and are the only construction-order gap left across
-schedules (`00277_enum_tier0_fixture`'s `(int, list(int | :tail))` surfaces are
-one). The stress knob still owns the order for testing: `wrappers:<seed>`
+the same typed relation for the same reason. The stress knob still owns the
+order for testing: `wrappers:<seed>`
 permutes the resolved edge list in `finish_callable_flows`, before
 `construction_member_selection` drops and seats it, so the fz-kdt.141 gate that
 proves the perturbation reseats the members stays honest.
@@ -636,8 +635,8 @@ construction, and the order such a pair was in was never a fact about the
 program — it was the order the fixpoint's agenda delivered.
 
 So `canonically_order_separated_neighbours` runs after the insertion pass and
-puts every ADJACENT separated pair in `Types::cmp_tys` order of what the two
-groups say. Three properties carry it:
+puts every ADJACENT separated pair in `Types::cmp_activation_tys` order of what
+the two groups say. Three properties carry it:
 
 - **Adjacent transpositions only, never a sort.** One swap of two adjacent
   entries changes the relative order of exactly one pair — the pair it swapped
@@ -651,14 +650,14 @@ groups say. Three properties carry it:
   holds the result to it on every seated plan of every debug compile, which the
   fixture matrix drives across the corpus.
 - **The key is the group's, not the first member's.** A group is compared by
-  the `cmp_tys`-least observable surface among its members. Reading the key off
-  whichever member arrived first would put the schedule straight back, because
-  a group's internal order is fz-kdt.107's residue. The key is a strict total
-  order across groups: `cmp_tys` is `Equal` only on identical `Ty` slices,
-  identical surfaces project to identical questions, and one question is one
-  group — so two distinct groups can never tie. It inherits `types::order`'s
-  two residuals (free-var ties, lambda byte-span labels), which are the same
-  ones the earlier resolution-key order inherits.
+  typed-activation-least observable surface among its members. Reading the key
+  off whichever member arrived first would put the schedule straight back,
+  because a group's internal order is fz-kdt.107's residue. The key is a strict
+  total order across groups: the typed activation relation is `Equal` only on
+  identical `Ty` slices, identical surfaces project to identical questions,
+  and one question is one group — so two distinct groups can never tie. The
+  relation walks structural addresses and immutable callable labels; neither
+  raw type ids nor rendered strings break ties.
 - **It removes the axis exactly where the axis was free, and nowhere else.**
   `Separated` is symmetric but NOT transitive: `A|B` and `B|C` separated says
   nothing about `A|C`. The repair settles a run only where the run is pairwise
@@ -673,7 +672,7 @@ groups say. Three properties carry it:
   artifact a function of the arm set.
 
 **Two keys, and they are different quantities.** This repair orders semantic
-destinations by `cmp_tys` over the OBSERVABLE ENVELOPE. Earlier,
+destinations by the typed activation relation over the OBSERVABLE ENVELOPE. Earlier,
 `plan_callable_flows` orders independent `CallableResolutionKey` product reads
 by the full surface inputs. That order schedules resolution; it does not order
 wrapper destinations. `construction_member_selection` alone drops and seats

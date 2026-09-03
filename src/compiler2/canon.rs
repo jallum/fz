@@ -463,10 +463,10 @@ impl<'a> ProgramCanon<'a> {
     ///
     /// Two executables that render the SAME key tie, and `sort` breaks a tie on
     /// published position — so this rendering is only as id-free as the
-    /// published order behind it. That order is
-    /// `jobs::backend::compare_executable_keys`, which since fz-kdt.101
-    /// compares its type components through `Types::cmp_ty` rather than as raw
-    /// interner ids, so the fallback no longer smuggles interning order in.
+    /// published order behind it. That order is the central typed
+    /// `SemanticOrd<Types>` relation for `ExecutableKey`, which compares the
+    /// addressed activation arrow structurally and never consults rendering or
+    /// raw interner ids.
     fn executable_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
             .executables
@@ -492,8 +492,8 @@ impl<'a> ProgramCanon<'a> {
     /// Wrappers tie far more readily than executables — two specializations of
     /// one callable publish wrappers that render byte-identically — so the
     /// published-order fallback is load-bearing here rather than theoretical.
-    /// It is `jobs::artifact::compare_transport_positions` over the owner
-    /// positions the wrappers are enumerated from, canonical since fz-kdt.101.
+    /// It is the central typed `SemanticOrd<Types>` relation for
+    /// `TransportPosition`, shared by publication and packaging.
     fn wrapper_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
             .construction_wrappers

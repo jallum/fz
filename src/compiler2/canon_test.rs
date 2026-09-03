@@ -500,7 +500,7 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
 /// same types under different ids.
 ///
 /// The invariant that removes the freedom: siblings break their tie on
-/// fz-kdt.105's canonical, id-free structural comparator (`Types::cmp_tys`), so
+/// the canonical typed activation comparator (`Types::cmp_activation_tys`), so
 /// two entries a reader cannot tell apart still have ONE order, and it is a
 /// function of what they say rather than of when they were interned.
 #[test]
@@ -527,7 +527,7 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
             .filter(|(_, pair)| pair[0].key.activation.function == pair[1].key.activation.function)
             .filter(|(_, pair)| {
                 types
-                    .cmp_tys(
+                    .cmp_activation_tys(
                         &pair[0].key.activation.inputs(types),
                         &pair[1].key.activation.inputs(types),
                     )
@@ -605,10 +605,10 @@ const LENSES: [(&str, &str); 4] = [
 ///
 /// `enum_map_family` used to move between the schedules by 1170 backend-canon
 /// lines; fz-kdt.108 closes it (0 either way) by giving the callable-flow
-/// construction wrapper one canonical `cmp_tys` edge order. TWO corpus
+/// construction wrapper one canonical typed activation edge order. TWO corpus
 /// fixtures still move and are not this gate's business:
 /// `00277_enum_tier0_fixture` (562 lines -- fz-kdt.107's dispatch-twin class
-/// plus a `cmp_tys` free-var tie whose fallback to `TypeVarId` mint order is
+/// plus a structural free-var tie whose fallback to `TypeVarId` mint order is
 /// itself schedule-visible, fz-kdt.161) and `dead_closure_capture_empty_list`
 /// (2 lines -- fz-kdt.120's return-precision residue). Measured base-vs-head
 /// on 2026-09-02: enum_map_family 1170 -> 0, the other two unchanged at

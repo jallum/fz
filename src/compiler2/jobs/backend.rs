@@ -34,13 +34,14 @@ use super::super::pull::{
     TransportLayout,
 };
 use super::super::scheduler::FatalError;
+use super::super::semantic::SemanticOrd;
 use super::super::transport::{
     ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
     CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
-use super::artifact::{compare_codegen_seam_facts, compare_executable_needs, compare_transport_positions};
+use super::artifact::compare_codegen_seam_facts;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -164,7 +165,8 @@ pub(crate) fn produce_root_backend_product(
         if !reachable.insert(current.clone()) {
             continue;
         }
-        let Some(value) = context.read_product(tel, ProductKey::BackendExecutable(current.clone())) else {
+        let Some(value) = context.read_product(tel, ProductKey::BackendExecutable(current.clone()), world.types())
+        else {
             waits.push(PullWait::Product(ProductKey::BackendExecutable(current)));
             continue;
         };
@@ -202,7 +204,7 @@ pub(crate) fn produce_root_backend_product(
         symbolic_materialized_transport_plan(&backends, &entry, world, &produced_callables, &produced_boundaries);
 
     let mut executable_keys = reachable.into_iter().collect::<Vec<_>>();
-    executable_keys.sort_by(|left, right| compare_executable_keys(left, right, world.types()));
+    executable_keys.sort_by(|left, right| left.semantic_cmp(right, world.types()));
     let executable_index = executable_keys
         .iter()
         .enumerate()
@@ -312,7 +314,7 @@ pub(crate) fn produce_backend_executable_product(
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
-    let Some(value) = context.read_product(tel, ProductKey::AbiExecutable(executable.clone())) else {
+    let Some(value) = context.read_product(tel, ProductKey::AbiExecutable(executable.clone()), world.types()) else {
         return PullOutcome::Waiting(vec![PullWait::Product(ProductKey::AbiExecutable(executable.clone()))]);
     };
     let ProductValue::AbiExecutable(abi) = value else {
@@ -883,8 +885,7 @@ fn package_backend_construction_wrappers(
                 .map(|construction| (positioned, construction))
         })
         .collect::<Vec<_>>();
-    constructions
-        .sort_by(|(left, _), (right, _)| compare_transport_positions(&left.position, &right.position, world.types()));
+    constructions.sort_by(|(left, _), (right, _)| left.position.semantic_cmp(&right.position, world.types()));
     let identities = constructions
         .iter()
         .enumerate()
@@ -1029,36 +1030,9 @@ fn executable_key_for_symbol_in_index(
 /// The order the executable inventory is packaged in, and so the order its
 /// `x<N>` indices are handed out in.
 ///
-/// The input types compare through [`super::super::Types::cmp_tys`] — the
-/// canonical, id-free structural order — and NOT as raw interner ids, which are
-/// assigned in interning order and therefore move with the agenda. Two
-/// specializations of one function differ only in their inputs, so that
-/// tiebreak is the whole of the numbering for a family of siblings: keyed on
-/// raw ids, a re-ordered pull renumbers entries that say exactly the same thing
-/// (fz-kdt.101).
-///
-/// TOTAL: root and function are ids the source decides, the inputs determine
-/// the rest of the key, and `cmp_tys` is injective — so nothing is left to sort
-/// stability.
-pub(crate) fn compare_executable_keys(
-    left: &ExecutableKey,
-    right: &ExecutableKey,
-    types: &super::super::Types,
-) -> std::cmp::Ordering {
-    left.activation
-        .root
-        .as_u32()
-        .cmp(&right.activation.root.as_u32())
-        .then_with(|| {
-            left.activation
-                .function
-                .as_u32()
-                .cmp(&right.activation.function.as_u32())
-        })
-        .then_with(|| types.cmp_tys(&left.activation.inputs(types), &right.activation.inputs(types)))
-        .then_with(|| compare_executable_needs(left.need, right.need))
-}
-
+/// The inventory is already published in the central typed semantic order for
+/// `ExecutableKey`; activation arrows compare structurally through their owning
+/// `Types`, never through raw interner ids or rendering.
 fn lower_symbolic_body(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     emission: &EmissionReadyExecutable,
@@ -1271,7 +1245,7 @@ pub(crate) fn symbolic_materialized_transport_plan(
     // keys recomputed per comparison were ~21% of the release compile. Compared
     // in place rather than through a materialized key, so a comparison stops at
     // the first difference and the input-type vector is never cloned.
-    position_layouts.sort_by(|(left, _), (right, _)| compare_transport_positions(left, right, world.types()));
+    position_layouts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, world.types()));
     position_layouts.dedup_by(|left, right| {
         if left.0 != right.0 {
             return false;
@@ -1284,7 +1258,7 @@ pub(crate) fn symbolic_materialized_transport_plan(
         .values()
         .flat_map(|backend| backend.abi.callable_owners.iter().cloned())
         .collect::<Vec<_>>();
-    callable_owners.sort_by(|left, right| compare_transport_positions(&left.position, &right.position, world.types()));
+    callable_owners.sort_by(|left, right| left.position.semantic_cmp(&right.position, world.types()));
     callable_owners.dedup_by(|left, right| {
         if left.position != right.position {
             return false;

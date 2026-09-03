@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::canon::{canon_backend_program, function_label};
 use super::identity::{ActivationKey, ExecutableKey, RootId};
+use super::semantic::SemanticOrd;
 use super::world::World;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,7 +177,7 @@ fn parse_dump_kind_name(name: &str) -> Result<DumpKind, String> {
 
 fn render_types_dump(world: &World, activations: &[ActivationKey]) -> String {
     let mut activations = activations.to_vec();
-    activations.sort_by_cached_key(|activation| activation_sort_key(world, activation));
+    activations.sort_by(|left, right| activation_cmp(world, left, right));
     let mut out = String::new();
     for activation in activations {
         let return_ty = world
@@ -190,7 +191,7 @@ fn render_types_dump(world: &World, activations: &[ActivationKey]) -> String {
 
 fn render_activations_dump(world: &World, activations: &[ActivationKey]) -> String {
     let mut activations = activations.to_vec();
-    activations.sort_by_cached_key(|activation| activation_sort_key(world, activation));
+    activations.sort_by(|left, right| activation_cmp(world, left, right));
     let mut out = String::new();
     for activation in activations {
         out.push_str(&format!("{}\n", activation_label(world, &activation)));
@@ -202,7 +203,7 @@ fn render_activations_dump(world: &World, activations: &[ActivationKey]) -> Stri
 
         if let Some(analysis) = world.activation_analysis(&activation) {
             let mut executables = analysis.latent_executables.clone();
-            executables.sort_by_cached_key(|key| executable_sort_key(world, key));
+            executables.sort_by(|left, right| executable_cmp(world, left, right));
             if !executables.is_empty() {
                 out.push_str("  latent executables:\n");
                 for executable in executables {
@@ -285,28 +286,16 @@ fn render_callsite_summary(world: &World, summary: &super::semantic::CallSiteSum
     }
 }
 
-fn activation_sort_key(world: &World, activation: &ActivationKey) -> (String, Vec<String>) {
-    (
-        function_label(world, activation.function),
-        activation
-            .inputs(world.types())
-            .iter()
-            .map(|ty| world.types().display(ty))
-            .collect(),
-    )
+fn activation_cmp(world: &World, left: &ActivationKey, right: &ActivationKey) -> std::cmp::Ordering {
+    function_label(world, left.function)
+        .cmp(&function_label(world, right.function))
+        .then_with(|| left.semantic_cmp(right, world.types()))
 }
 
-fn executable_sort_key(world: &World, executable: &ExecutableKey) -> (String, Vec<String>, String) {
-    (
-        function_label(world, executable.activation.function),
-        executable
-            .activation
-            .inputs(world.types())
-            .iter()
-            .map(|ty| world.types().display(ty))
-            .collect(),
-        format!("{:?}", executable.need),
-    )
+fn executable_cmp(world: &World, left: &ExecutableKey, right: &ExecutableKey) -> std::cmp::Ordering {
+    function_label(world, left.activation.function)
+        .cmp(&function_label(world, right.activation.function))
+        .then_with(|| left.semantic_cmp(right, world.types()))
 }
 
 fn activation_label(world: &World, activation: &ActivationKey) -> String {

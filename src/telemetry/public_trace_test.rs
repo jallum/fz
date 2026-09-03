@@ -855,10 +855,9 @@ fn no_target_fixture_starts_unsanctioned_work_or_scans_roots() {
 /// (`tests/fz2_cli.rs` runs the cross-PROCESS half, where `RandomState`
 /// reseeds and the ids genuinely drift).
 ///
-/// In-process the WHOLE multiset holds, product cache hits included — measured
-/// stable over eight runs. The cross-process test has to carve out
-/// `callable_construction` cache hits, which is the difference this pair
-/// localizes: the divergence needs two processes to appear.
+/// The whole multiset holds in process and across processes, product cache
+/// hits included. Typed owner publication removed the former
+/// `CallableConstruction` exception.
 #[test]
 fn a_double_compile_produces_one_canonical_work_multiset() {
     let fixture = "fixtures2/behavior/fz_f98_range_map_converges.fz";
@@ -1297,7 +1296,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `DeriveInputDemand` runs exactly as often as before (190 evaluations
         // on this fixture, base and head alike); the one extra rebase is the
         // one extra activation minted while its demand was still climbing.
-        shifts: shifts(31, 128),
+        // fz-tfn.26: rebased completions 128 -> 129. Typed completion order
+        // exposes the same standing activation to one additional demand shift;
+        // activations and shift wakes stay flat.
+        shifts: shifts(31, 129),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
@@ -1305,11 +1307,15 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.199: 230 -> 234 evaluations, 14 -> 16 reproducing an answer
         // they already had -- the four extra activations this fixture keys,
         // each analysed once, and `uncaused` still empty.
-        analyze_evaluations: 234,
-        analyze_zero_change: 16,
+        // fz-tfn.26: 234 -> 235, with unchanged-output 16 -> 17. The extra
+        // rebase above reruns one blocked activation and reproduces its answer;
+        // final facts, artifacts, and runtime stay flat.
+        analyze_evaluations: 235,
+        analyze_zero_change: 17,
         // fz-kdt.199: 1009 -> 1013, the four extra analyses above and nothing
         // else. fz-kdt.45 adds the two exact-executable fact producers.
-        total_evaluations: 1015,
+        // fz-tfn.26 adds the one reproduced analysis above.
+        total_evaluations: 1016,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -1353,7 +1359,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.183: 538 -> 549 evaluations. Eleven runs for four new
         // activations and the rebasing above; `uncaused` stays empty, so every
         // one of them names a moved input.
-        analyze_evaluations: 549,
+        // fz-tfn.26: 549 -> 548. Typed activation ordering makes the second
+        // `List.reduce_while_step/3` return ascent and the corresponding
+        // `List.reduce_while_cont/3` input ascent land before one queued
+        // analysis runs. The one run now observes both content movements;
+        // every other formula-family count and the final artifacts stay flat.
+        analyze_evaluations: 548,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -1370,7 +1381,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
         // fz-kdt.183: 1349 -> 1381. fz-kdt.45 adds the two exact-executable
         // fact producers.
-        total_evaluations: 1383,
+        // fz-tfn.26: 1383 -> 1382, the one coalesced content-caused analysis
+        // above; no other formula family moves.
+        total_evaluations: 1382,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -1463,7 +1476,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.47: 460 -> 459 distinct and 471 -> 470 first appearances.
         // The transient activation removed above takes its one callsite with
         // it; retractions stay flat.
-        callsites: lifecycle(459, 470, 11),
+        // fz-tfn.26: distinct stays 459 while 470/11 -> 469/10. Typed
+        // activation order removes one transient retract/remint of an already
+        // final identity; the final inventory does not move.
+        callsites: lifecycle(459, 469, 10),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -1526,11 +1542,16 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // interp and run.
         // fz-kdt.47: 935 -> 933. The removed transient activation had two
         // analysis passes; zero-change stays flat at 15.
-        analyze_evaluations: 933,
+        // fz-tfn.26: 933 -> 918 and total 2458 -> 2443. Fifteen content
+        // ascents now coalesce before their analyses run. The unchanged-output
+        // count stays 15, every other formula family stays flat, and the final
+        // artifact/runtime gates below remain the authority on coverage.
+        analyze_evaluations: 918,
         analyze_zero_change: 15,
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
-        // two exact-executable fact producers bring the total back to 2458.
-        total_evaluations: 2458,
+        // two exact-executable fact producers bring the total to 2458 before
+        // typed ordering removes the fifteen analyses above.
+        total_evaluations: 2443,
     },
 ];
 

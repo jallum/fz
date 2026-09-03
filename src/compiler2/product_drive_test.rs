@@ -53,6 +53,61 @@ fn some_fact() -> FactUse<FactKey> {
     FactUse::settled(FactKey::BackendProgram(RootId::for_test(7)))
 }
 
+#[test]
+fn product_fact_waits_use_semantic_order_across_type_mint_histories() {
+    let order = |non_empty_first: bool| {
+        let mut world = World::new();
+        let root = RootId::for_test(0);
+        let function = world.reference_function(super::ModuleId::GLOBAL, "lists", 1);
+        let int = world.types_mut().int();
+        let (list_key, non_empty_key) = if non_empty_first {
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            (list_key, non_empty_key)
+        } else {
+            let list = world.types_mut().list(int);
+            let list_key = super::ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty = world.types_mut().non_empty_list(int);
+            let non_empty_key = super::ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            (list_key, non_empty_key)
+        };
+        let raw_order = list_key.arrow < non_empty_key.arrow;
+        let list_fact = FactKey::ReturnType(list_key);
+        let non_empty_fact = FactKey::ReturnType(non_empty_key);
+        let mut waits = if non_empty_first {
+            vec![
+                PullWait::Fact(FactUse::settled(non_empty_fact.clone())),
+                PullWait::Fact(FactUse::settled(list_fact.clone())),
+            ]
+        } else {
+            vec![
+                PullWait::Fact(FactUse::settled(list_fact.clone())),
+                PullWait::Fact(FactUse::settled(non_empty_fact.clone())),
+            ]
+        };
+        super::product_drive::sort_product_waits(world.types(), &mut waits);
+        let labels = waits
+            .iter()
+            .map(|wait| match wait {
+                PullWait::Fact(fact) if fact.fact() == &list_fact => "list",
+                PullWait::Fact(fact) if fact.fact() == &non_empty_fact => "non_empty_list",
+                other => panic!("unexpected product wait: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        (raw_order, labels)
+    };
+
+    let list_first = order(false);
+    let non_empty_first = order(true);
+    assert_ne!(list_first.0, non_empty_first.0, "the fixture must reverse raw Ty order");
+    assert_eq!(
+        list_first.1, non_empty_first.1,
+        "product fact waits must use the same semantic order"
+    );
+}
+
 /// fz-k22.13 regression: JIT-compiling one fixed root twice, in two
 /// independent `Compiler2`/`World`/`Types` instances within the same test
 /// process, must reach the exact same outcome -- both the success/failure
@@ -211,6 +266,101 @@ fn compiling_the_same_root_twice_publishes_byte_identical_backend_programs() {
     );
 }
 
+#[test]
+fn live_executable_order_distinguishes_noninjective_display_pairs() {
+    use super::semantic::SemanticOrd;
+    use std::collections::BTreeMap;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/behavior/enum_predicate_search.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let executables = compiler
+        .product_executable_inventory(root)
+        .expect("fixture must compile");
+    let types = compiler.types_for_test();
+    let mut by_display = BTreeMap::<String, Vec<super::Ty>>::new();
+    for ty in types.interned_tys() {
+        by_display.entry(types.display(&ty)).or_default().push(ty);
+    }
+    let reachable_by_executable = executables
+        .iter()
+        .map(|executable| types.activation_reachable_tys(executable.activation.arrow))
+        .collect::<Vec<_>>();
+    let mut measured_pairs = Vec::new();
+    for tys in by_display.into_values().filter(|tys| tys.len() > 1) {
+        for (index, left) in tys.iter().enumerate() {
+            for right in &tys[index + 1..] {
+                let distinct_executable_owners = reachable_by_executable.iter().enumerate().any(|(left_index, tys)| {
+                    tys.contains(left)
+                        && reachable_by_executable
+                            .iter()
+                            .enumerate()
+                            .any(|(right_index, tys)| right_index != left_index && tys.contains(right))
+                });
+                if !distinct_executable_owners {
+                    continue;
+                }
+                let activation_forward = types.cmp_activation_ty(*left, *right);
+                let activation_reverse = types.cmp_activation_ty(*right, *left);
+                let storage_forward = types.cmp_ty(*left, *right);
+                let storage_reverse = types.cmp_ty(*right, *left);
+                assert_ne!(
+                    activation_forward,
+                    std::cmp::Ordering::Equal,
+                    "distinct live types must not collapse in activation order: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                assert_eq!(
+                    activation_forward,
+                    activation_reverse.reverse(),
+                    "activation order must be antisymmetric: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                assert_ne!(
+                    storage_forward,
+                    std::cmp::Ordering::Equal,
+                    "distinct live types must not collapse in storage order: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                assert_eq!(
+                    storage_forward,
+                    storage_reverse.reverse(),
+                    "storage order must be antisymmetric: {}",
+                    types.activation_order_evidence_for_test(*left, *right),
+                );
+                measured_pairs.push((*left, *right));
+            }
+        }
+    }
+    assert_eq!(
+        measured_pairs.len(),
+        6,
+        "fixture must retain the six live empty/non-empty list pairs that display conflates"
+    );
+    for (index, left) in executables.iter().enumerate() {
+        for right in &executables[index + 1..] {
+            assert_ne!(
+                left, right,
+                "executable inventory must be deduplicated by exact identity"
+            );
+            assert_ne!(
+                left.semantic_cmp(right, types),
+                std::cmp::Ordering::Equal,
+                "typed executable order must be total for distinct live keys: left={left:?}; right={right:?}"
+            );
+        }
+    }
+}
+
 /// The `add1` fixture, submitted and rooted at `main/0`: the shared "ordinary,
 /// fully resolvable root" setup the `fact_wait_budget_exceeded`/
 /// `did_not_settle` end-to-end tests drive through the budget seam.
@@ -325,7 +475,7 @@ fn string_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
             fact,
             // Read after the fact so the assertion mirrors exactly what the
             // hook itself reports, not a separately reconstructed guess.
-            compiler.world().work_graph.unresolved()
+            compiler.world().unresolved_waits()
         ),
         "the String path should report the undefined entry's RootEntry keying wait, got: {error}"
     );

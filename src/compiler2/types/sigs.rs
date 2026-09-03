@@ -8,17 +8,20 @@ use crate::fz_ir::FnId;
 use super::{CallableValueKind, MapKey, Sigma, Ty, TyCtx, Types};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct TupleSig {
     pub elems: Vec<Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct ListSig {
     pub empty: bool,
     pub elem: Option<Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct ResourceSig {
     pub payload: Ty,
 }
@@ -86,6 +89,7 @@ impl ListSig {
 /// under union — callable singletons are stricter than plain arrows, and the
 /// union keeps both to preserve singleton precision downstream.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct ClosureLit {
     pub kind: CallableValueKind,
     /// The function the value was minted from, or `None` for an ANONYMOUS
@@ -101,6 +105,7 @@ pub(crate) struct ClosureLit {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct ArrowSig {
     pub args: Vec<Ty>,
     pub ret: Ty,
@@ -115,6 +120,7 @@ pub(crate) struct ArrowSig {
 /// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
 /// subtype value. More required keys = smaller set.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct MapSig {
     pub fields: BTreeMap<MapKey, Ty>,
 }

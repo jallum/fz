@@ -35,6 +35,7 @@ use super::super::pull::{
 use super::super::scheduler::FatalError;
 #[cfg(test)]
 use super::super::semantic::CallSiteKey;
+use super::super::semantic::SemanticOrd;
 use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee, ShapeDemand};
 use super::super::transport::{
     ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr,
@@ -62,12 +63,12 @@ pub(crate) fn produce_materialized_executable_product(
     if !context.read_fact(world, FactUse::settled(return_fact.clone())) {
         waits.push(PullWait::Fact(FactUse::settled(return_fact)));
     }
-    let runtime_demand = context.read_runtime_demand(tel, executable);
+    let runtime_demand = context.read_runtime_demand(tel, executable, world.types());
     if runtime_demand.is_none() {
         waits.push(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
     }
     let outgoing_key = ProductKey::OutgoingInputEdges(executable.clone());
-    if context.read_product(tel, outgoing_key.clone()).is_none() {
+    if context.read_product(tel, outgoing_key.clone(), world.types()).is_none() {
         waits.push(PullWait::Product(outgoing_key));
     }
     if !waits.is_empty() {
@@ -154,7 +155,7 @@ pub(crate) fn produce_materialized_executable_product(
     };
     context
         .session_mut()
-        .record_materialized_executable(tel, executable.clone(), materialized.clone());
+        .record_materialized_executable(tel, executable.clone(), materialized.clone(), world.types());
     PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)))
 }
 
@@ -162,13 +163,14 @@ pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>
     tel: &T,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
+    types: &Types,
 ) -> PullOutcome {
-    let graph = match collect_effect_cone(tel, context, executable) {
+    let graph = match collect_effect_cone(tel, context, executable, types) {
         Ok(graph) => graph,
         Err(waits) => return PullOutcome::Waiting(waits),
     };
     let scc = effect_scc_containing(executable, &graph.edges);
-    let (waits, external_effects) = effect_scc_external_waits(tel, context, &scc, &graph.edges);
+    let (waits, external_effects) = effect_scc_external_waits(tel, context, &scc, &graph.edges, types);
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
@@ -176,7 +178,6 @@ pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>
     for (key, effects) in &settled {
         if key != executable {
             context.publish_product(
-                tel,
                 ProductKey::ExecutableEffects(key.clone()),
                 ProductValue::ExecutableEffects(*effects),
             );
@@ -199,6 +200,7 @@ fn collect_effect_cone(
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
+    types: &Types,
 ) -> Result<EffectGraph, Vec<PullWait>> {
     let mut local = HashMap::new();
     let mut edges = HashMap::new();
@@ -210,7 +212,7 @@ fn collect_effect_cone(
             continue;
         }
         let key = ProductKey::MaterializedExecutable(current.clone());
-        let Some(value) = context.read_product(tel, key.clone()) else {
+        let Some(value) = context.read_product(tel, key.clone(), types) else {
             waits.push(PullWait::Product(key));
             continue;
         };
@@ -276,6 +278,7 @@ fn effect_scc_external_waits(
     context: &mut ProductReadContext<'_>,
     scc: &HashSet<ExecutableKey>,
     edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
+    types: &Types,
 ) -> (Vec<PullWait>, HashMap<ExecutableKey, EffectSummary>) {
     let mut waits = Vec::new();
     let mut effects = HashMap::new();
@@ -285,7 +288,7 @@ fn effect_scc_external_waits(
                 continue;
             }
             let key = ProductKey::ExecutableEffects(callee.clone());
-            match context.read_product(tel, key.clone()).cloned() {
+            match context.read_product(tel, key.clone(), types).cloned() {
                 Some(ProductValue::ExecutableEffects(value)) => {
                     effects.insert(callee.clone(), value);
                 }
@@ -345,7 +348,7 @@ pub(crate) fn produce_abi_executable_product(
 ) -> PullOutcome {
     let mut waits = Vec::new();
     let materialized_key = ProductKey::MaterializedExecutable(executable.clone());
-    let materialized = match context.read_product(tel, materialized_key.clone()) {
+    let materialized = match context.read_product(tel, materialized_key.clone(), world.types()) {
         Some(ProductValue::MaterializedExecutable(materialized)) => Some(materialized.as_ref().clone()),
         Some(other) => panic!("materialized executable product produced unexpected value {other:?}"),
         None => {
@@ -354,7 +357,7 @@ pub(crate) fn produce_abi_executable_product(
         }
     };
     let effects_key = ProductKey::ExecutableEffects(executable.clone());
-    let effects = match context.read_product(tel, effects_key.clone()) {
+    let effects = match context.read_product(tel, effects_key.clone(), world.types()) {
         Some(ProductValue::ExecutableEffects(effects)) => Some(*effects),
         Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
         None => {
@@ -392,7 +395,7 @@ pub(crate) fn produce_abi_executable_product(
     let mut callable_owners = Vec::new();
     for position in executable_transport_positions(&materialized.transport) {
         let key = ProductKey::CallableConstruction(position.clone());
-        match context.read_product(tel, key.clone()) {
+        match context.read_product(tel, key.clone(), world.types()) {
             Some(ProductValue::CallableConstruction(owner)) => {
                 callable_owners.push(PositionedCallableConstructionOwner {
                     position: position.clone(),
@@ -451,7 +454,7 @@ fn materialized_executable_transport(
     types: &Types,
 ) -> MaterializedExecutableTransport {
     let symbol = transport_executable_symbol(executable, types);
-    position_layouts.sort_by(|(left, _), (right, _)| compare_transport_positions(left, right, types));
+    position_layouts.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, types));
     position_layouts.dedup_by(|left, right| {
         if left.0 != right.0 {
             return false;
@@ -480,12 +483,12 @@ fn materialized_executable_transport(
             TransportPosition::Value { .. } => value_positions.push(position.clone()),
         }
     }
-    sort_transport_positions(&mut input_positions);
-    sort_transport_positions(&mut resume_positions);
-    sort_transport_positions(&mut return_payload_positions);
-    sort_transport_positions(&mut entry_capture_positions);
-    sort_transport_positions(&mut call_arg_positions);
-    sort_transport_positions(&mut value_positions);
+    sort_transport_positions(&mut input_positions, types);
+    sort_transport_positions(&mut resume_positions, types);
+    sort_transport_positions(&mut return_payload_positions, types);
+    sort_transport_positions(&mut entry_capture_positions, types);
+    sort_transport_positions(&mut call_arg_positions, types);
+    sort_transport_positions(&mut value_positions, types);
     MaterializedExecutableTransport {
         executable: symbol,
         position_layouts,
@@ -549,9 +552,7 @@ enum CodegenSeamOwner<'a> {
 
 fn compare_codegen_seam_owners(left: &CodegenSeamOwner<'_>, right: &CodegenSeamOwner<'_>, types: &Types) -> Ordering {
     match (left, right) {
-        (CodegenSeamOwner::Executable(left), CodegenSeamOwner::Executable(right)) => {
-            compare_executable_symbols(left, right, types)
-        }
+        (CodegenSeamOwner::Executable(left), CodegenSeamOwner::Executable(right)) => left.semantic_cmp(right, types),
         (CodegenSeamOwner::Executable(_), CodegenSeamOwner::Boundary(_)) => Ordering::Less,
         (CodegenSeamOwner::Boundary(_), CodegenSeamOwner::Executable(_)) => Ordering::Greater,
         (CodegenSeamOwner::Boundary(left), CodegenSeamOwner::Boundary(right)) => left.as_u32().cmp(&right.as_u32()),
@@ -861,12 +862,12 @@ fn read_transport_layouts(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    positions.sort_by(|left, right| compare_transport_positions(left, right, types));
+    positions.sort_by(|left, right| left.semantic_cmp(right, types));
     let mut layouts = Vec::with_capacity(positions.len());
     let mut waits = Vec::new();
     for position in positions {
         let key = ProductKey::TransportShape(position.clone());
-        match context.read_product(tel, key.clone()) {
+        match context.read_product(tel, key.clone(), types) {
             Some(ProductValue::TransportShape(super::super::pull::TransportShapeFact::Layout(layout))) => {
                 layouts.push((position, *layout));
             }
@@ -1037,96 +1038,8 @@ fn transport_executable_symbol(executable: &ExecutableKey, types: &Types) -> Exe
     }
 }
 
-/// Canonical packaging order for one MaterializedExecutableTransport field
-/// vector. Every call site sorts a single-variant, single-executable
-/// partition (the six category vectors `materialized_executable_transport`
-/// builds), so the key carries only the variant-local STRUCTURAL
-/// discriminants -- semantic indexes, callsites, entries -- and no
-/// executable component (constant within the vector) and no interned types.
-fn sort_transport_positions(positions: &mut [TransportPosition]) {
-    positions.sort_by_key(transport_position_local_sort_key);
-}
-
-type TransportPositionLocalSortKey = (u32, u32, usize);
-
-fn transport_position_local_sort_key(position: &TransportPosition) -> TransportPositionLocalSortKey {
-    match position {
-        TransportPosition::ExecutableInput { semantic_index, .. } => (0, 0, *semantic_index),
-        TransportPosition::ExecutableReturn { .. } => (0, 0, 0),
-        TransportPosition::ResumePayload { callsite, entry, .. } => (
-            callsite.map(|callsite| callsite.as_u32()).unwrap_or(u32::MAX),
-            entry.as_u32(),
-            0,
-        ),
-        TransportPosition::ReturnPayload { callsite, .. } => (callsite.as_u32(), 0, 0),
-        TransportPosition::EntryCapture {
-            entry, capture_index, ..
-        } => (0, entry.as_u32(), *capture_index),
-        TransportPosition::CallArg {
-            callsite,
-            semantic_index,
-            ..
-        } => (callsite.as_u32(), 0, *semantic_index),
-        TransportPosition::Value { value, .. } => (value.as_u32(), 0, 0),
-    }
-}
-
-/// Canonical packaging order for two executable symbols, and through them for
-/// every cross-executable artifact vector: transport positions, codegen seam
-/// facts, the construction wrappers keyed off owner positions.
-///
-/// The type components compare through [`Types::cmp_ty`] — fz-kdt.105's id-free
-/// structural order — and NOT as raw interner ids. Raw ids are assigned in
-/// interning order, which the agenda decides, so an id-keyed sort renumbers
-/// `entry x<N>` / `construction=w<N>` whenever the pull is re-ordered even
-/// though the artifact says exactly the same thing (fz-kdt.101).
-///
-/// TOTAL: `arrow` determines `input` and the comparator is injective, so no two
-/// distinct symbols of one root tie and nothing is left to sort stability.
-pub(crate) fn compare_executable_symbols(left: &ExecutableSymbol, right: &ExecutableSymbol, types: &Types) -> Ordering {
-    left.activation
-        .function
-        .as_u32()
-        .cmp(&right.activation.function.as_u32())
-        .then_with(|| types.cmp_ty(left.activation.arrow, right.activation.arrow))
-        .then_with(|| types.cmp_tys(&left.activation.input, &right.activation.input))
-        .then_with(|| compare_executable_needs(left.need, right.need))
-}
-
-/// A whole-value need leads the tuple-field needs it stands beside; two field
-/// needs order by arity.
-pub(crate) fn compare_executable_needs(left: ExecutableNeed, right: ExecutableNeed) -> Ordering {
-    match (left, right) {
-        (ExecutableNeed::Value, ExecutableNeed::Value) => Ordering::Equal,
-        (ExecutableNeed::Value, ExecutableNeed::TupleFields(_)) => Ordering::Less,
-        (ExecutableNeed::TupleFields(_), ExecutableNeed::Value) => Ordering::Greater,
-        (ExecutableNeed::TupleFields(left), ExecutableNeed::TupleFields(right)) => left.cmp(&right),
-    }
-}
-
-/// Canonical packaging order for a cross-executable set of transport positions:
-/// the owning executable, then the position's variant, then its variant-local
-/// structural discriminants.
-pub(crate) fn compare_transport_positions(
-    left: &TransportPosition,
-    right: &TransportPosition,
-    types: &Types,
-) -> Ordering {
-    compare_executable_symbols(left.executable(), right.executable(), types)
-        .then_with(|| transport_position_variant_rank(left).cmp(&transport_position_variant_rank(right)))
-        .then_with(|| transport_position_local_sort_key(left).cmp(&transport_position_local_sort_key(right)))
-}
-
-fn transport_position_variant_rank(position: &TransportPosition) -> u8 {
-    match position {
-        TransportPosition::ExecutableInput { .. } => 0,
-        TransportPosition::ExecutableReturn { .. } => 1,
-        TransportPosition::ResumePayload { .. } => 2,
-        TransportPosition::ReturnPayload { .. } => 3,
-        TransportPosition::CallArg { .. } => 4,
-        TransportPosition::EntryCapture { .. } => 5,
-        TransportPosition::Value { .. } => 6,
-    }
+fn sort_transport_positions(positions: &mut [TransportPosition], types: &Types) {
+    positions.sort_by(|left, right| left.semantic_cmp(right, types));
 }
 
 fn materialize_call_edges(
@@ -2391,7 +2304,7 @@ mod tests {
         };
 
         let mut positions = vec![call_arg(1, 1), call_arg(1, 0), call_arg(0, 1)];
-        sort_transport_positions(&mut positions);
+        sort_transport_positions(&mut positions, world.types());
 
         assert_eq!(positions, vec![call_arg(0, 1), call_arg(1, 0), call_arg(1, 1)]);
     }

@@ -120,8 +120,13 @@ struct TypeInterner {
 #[derive(Default)]
 struct ComparisonCache {
     values: HashMap<ComparisonKey, bool>,
+    semantic_order: HashMap<SemanticOrderKey, std::cmp::Ordering>,
     hits: usize,
     misses: usize,
+    #[cfg(test)]
+    semantic_order_hits: usize,
+    #[cfg(test)]
+    semantic_order_misses: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -135,12 +140,27 @@ enum ComparisonKey {
     RowColumnDominates(Ty, Ty),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SemanticOrderOperation {
+    ActivationArrow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct SemanticOrderKey {
+    operation: SemanticOrderOperation,
+    low: Ty,
+    high: Ty,
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ComparisonCacheStats {
     pub entries: usize,
     pub hits: usize,
     pub misses: usize,
+    pub semantic_order_entries: usize,
+    pub semantic_order_hits: usize,
+    pub semantic_order_misses: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -354,24 +374,108 @@ impl Types {
         order::ClauseOrder::new(self.ctx(), &self.callable_labels)
     }
 
-    /// The canonical order on interned types, read from OUTSIDE the persistence
-    /// boundary (fz-kdt.101). It is the same comparator that puts a
-    /// descriptor's DNF clauses in canonical order at `intern` — structural,
-    /// id-free in effect, injective — so a packaging sort keyed on it names
-    /// what a type SAYS rather than when it happened to be interned.
-    ///
-    /// Raw `Ty` ordering is interning order, which the agenda decides: sort an
-    /// artifact inventory by it and a re-ordered pull renumbers entries that
-    /// are otherwise identical. Sorting by this instead removes the degree of
-    /// freedom, up to the two residuals `super::order` documents (free-var ties
-    /// and lambda byte-span labels), neither of which moves within one compile.
+    fn activation_order(&self) -> order::ClauseOrder<'_> {
+        order::ClauseOrder::for_activation(self.ctx(), &self.callable_labels)
+    }
+
+    /// Test evidence for the storage-canonical relation. Production consumers
+    /// use the operation-specific activation relation below; storage order is
+    /// otherwise private to DNF canonicalization.
+    #[cfg(test)]
     pub(crate) fn cmp_ty(&self, a: Ty, b: Ty) -> std::cmp::Ordering {
         self.clause_order().cmp_ty(a, b)
     }
 
-    /// Elementwise [`Types::cmp_ty`], shorter slice first.
-    pub(crate) fn cmp_tys(&self, a: &[Ty], b: &[Ty]) -> std::cmp::Ordering {
-        self.clause_order().cmp_tys(a, b)
+    /// Total typed order for activation-bearing identities. Unlike storage
+    /// clause order, callable arrows compare arguments and return before their
+    /// literal identity, preserving the established observable precedence
+    /// without rendering either type. The interned descriptors and callable
+    /// labels are immutable, so one normalized pair has one verdict for this
+    /// `Types`/`World` lifetime and the reverse direction reuses its inverse.
+    pub(crate) fn cmp_activation_ty(&self, a: Ty, b: Ty) -> std::cmp::Ordering {
+        if a == b {
+            return std::cmp::Ordering::Equal;
+        }
+        let (low, high, reversed) = if a < b { (a, b, false) } else { (b, a, true) };
+        let key = SemanticOrderKey {
+            operation: SemanticOrderOperation::ActivationArrow,
+            low,
+            high,
+        };
+        let normalized = if let Some(order) = self.comparisons.borrow_mut().semantic_order_hit(key) {
+            order
+        } else {
+            self.assert_activation_labels_registered(low);
+            self.assert_activation_labels_registered(high);
+            let order = self.activation_order().cmp_ty(low, high);
+            self.comparisons.borrow_mut().semantic_order_miss(key, order);
+            order
+        };
+        if reversed { normalized.reverse() } else { normalized }
+    }
+
+    /// Lexicographic [`Types::cmp_activation_ty`], with length breaking prefix ties.
+    pub(crate) fn cmp_activation_tys(&self, a: &[Ty], b: &[Ty]) -> std::cmp::Ordering {
+        for (left, right) in a.iter().zip(b) {
+            let order = self.cmp_activation_ty(*left, *right);
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+        }
+        a.len().cmp(&b.len())
+    }
+
+    fn assert_activation_labels_registered(&self, root: Ty) {
+        self.activation_reachable(root, |ty| {
+            let d = self.descr(&ty);
+            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+                if let Some(lit) = &sig.lit
+                    && let Some(fn_id) = lit.fn_id
+                {
+                    assert!(
+                        self.callable_labels.contains_key(&fn_id),
+                        "activation arrow names unregistered callable {}",
+                        fn_id.0
+                    );
+                }
+            }
+        });
+    }
+
+    fn activation_reachable(&self, root: Ty, mut visit: impl FnMut(Ty)) -> HashSet<Ty> {
+        let mut pending = vec![root];
+        let mut seen = HashSet::new();
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            visit(ty);
+            let d = self.descr(&ty);
+            for sig in d.tuples.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+                pending.extend(sig.elems.iter().copied());
+            }
+            for sig in d.lists.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+                pending.extend(sig.elem);
+            }
+            for sig in d
+                .resources
+                .iter()
+                .flat_map(|conj| conj.pos.iter().chain(conj.neg.iter()))
+            {
+                pending.push(sig.payload);
+            }
+            for sig in d.funcs.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+                pending.extend(sig.args.iter().copied());
+                pending.push(sig.ret);
+                if let Some(lit) = &sig.lit {
+                    pending.extend(lit.captures.iter().copied());
+                }
+            }
+            for sig in d.maps.iter().flat_map(|conj| conj.pos.iter().chain(conj.neg.iter())) {
+                pending.extend(sig.fields.values().copied());
+            }
+        }
+        seen
     }
 
     /// The persistence boundary keeps the tuples axis of every
@@ -478,6 +582,27 @@ impl Types {
         (0..self.interner.arena.len() as u32).map(Ty).collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn activation_order_evidence_for_test(&self, left: Ty, right: Ty) -> String {
+        format!(
+            "left={left:?} right={right:?}; left_descr={:?}; right_descr={:?}; \
+             activation=({:?}, {:?}); storage=({:?}, {:?}); address_paths={:?}; callable_labels={:?}",
+            self.descr(&left),
+            self.descr(&right),
+            self.cmp_activation_ty(left, right),
+            self.cmp_activation_ty(right, left),
+            self.cmp_ty(left, right),
+            self.cmp_ty(right, left),
+            self.address_paths,
+            self.callable_labels,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn activation_reachable_tys(&self, root: Ty) -> HashSet<Ty> {
+        self.activation_reachable(root, |_| {})
+    }
+
     /// The two identity inventories demand-formula evaluation must leave
     /// untouched: interned type descriptors and interned structural addresses.
     #[cfg(test)]
@@ -492,6 +617,9 @@ impl Types {
             entries: cache.values.len(),
             hits: cache.hits,
             misses: cache.misses,
+            semantic_order_entries: cache.semantic_order.len(),
+            semantic_order_hits: cache.semantic_order_hits,
+            semantic_order_misses: cache.semantic_order_misses,
         }
     }
 }
@@ -508,6 +636,23 @@ impl ComparisonCache {
     fn miss(&mut self, key: ComparisonKey, result: bool) {
         self.misses += 1;
         self.values.insert(key, result);
+    }
+
+    fn semantic_order_hit(&mut self, key: SemanticOrderKey) -> Option<std::cmp::Ordering> {
+        let result = self.semantic_order.get(&key).copied();
+        #[cfg(test)]
+        if result.is_some() {
+            self.semantic_order_hits += 1;
+        }
+        result
+    }
+
+    fn semantic_order_miss(&mut self, key: SemanticOrderKey, result: std::cmp::Ordering) {
+        #[cfg(test)]
+        {
+            self.semantic_order_misses += 1;
+        }
+        self.semantic_order.insert(key, result);
     }
 }
 
@@ -1842,7 +1987,17 @@ impl Types {
     /// `Module.name/arity` behind the id and names it here as the id is minted,
     /// which is before any literal can reference it.
     pub(crate) fn name_callable(&mut self, target: ClosureTarget, label: impl Into<Arc<str>>) {
-        self.callable_labels.insert(target.into(), label.into());
+        let target = target.into();
+        let label = label.into();
+        if let Some(existing) = self.callable_labels.get(&target) {
+            assert_eq!(existing, &label, "callable labels are immutable once registered");
+        } else {
+            assert!(
+                self.callable_labels.values().all(|existing| existing != &label),
+                "distinct callable identities require distinct stable labels"
+            );
+            self.callable_labels.insert(target, label);
+        }
     }
 
     /// Every callable a closure literal in the arena names, that the owner
@@ -2695,9 +2850,9 @@ fn specialize_callable_clause(
     }
 }
 
-/// Collect every free type-var id `d` mentions, mirroring `has_vars`'
-/// recursion: the same axes, the same structural children, plus a closure
-/// literal's captures, which `has_vars` reaches through the arrow's own args.
+/// Collect every type-var id `d` mentions, mirroring `has_vars`' recursion:
+/// the same axes, the same structural children, including a closure literal's
+/// captures.
 fn collect_free_vars(cx: TyCtx<'_>, d: &Descr, ids: &mut BTreeSet<TypeVarId>) {
     ids.extend(d.vars.values.iter().copied());
     for c in &d.tuples {
@@ -2815,10 +2970,14 @@ fn has_vars(cx: TyCtx<'_>, d: &Descr) -> bool {
             .chain(c.neg.iter())
             .any(|sig| has_vars(cx, cx.descr(&sig.payload)))
     }) || d.funcs.iter().any(|c| {
-        c.pos
-            .iter()
-            .chain(c.neg.iter())
-            .any(|sig| sig.args.iter().any(|t| has_vars(cx, cx.descr(t))) || has_vars(cx, cx.descr(&sig.ret)))
+        c.pos.iter().chain(c.neg.iter()).any(|sig| {
+            sig.args.iter().any(|t| has_vars(cx, cx.descr(t)))
+                || has_vars(cx, cx.descr(&sig.ret))
+                || sig
+                    .lit
+                    .as_ref()
+                    .is_some_and(|lit| lit.captures.iter().any(|t| has_vars(cx, cx.descr(t))))
+        })
     }) || d.maps.iter().any(|c| {
         c.pos
             .iter()

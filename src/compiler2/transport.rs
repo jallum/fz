@@ -12,7 +12,8 @@ use std::ops::Range;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::identity::{ExecutableNeed, FunctionId};
-use super::types::Ty;
+use super::semantic::SemanticOrd;
+use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -178,6 +179,17 @@ pub struct ActivationSymbol {
 pub struct ExecutableSymbol {
     pub activation: ActivationSymbol,
     pub need: ExecutableNeed,
+}
+
+impl SemanticOrd<Types> for ExecutableSymbol {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        self.activation
+            .function
+            .cmp(&other.activation.function)
+            .then_with(|| types.cmp_activation_ty(self.activation.arrow, other.activation.arrow))
+            .then_with(|| types.cmp_activation_tys(&self.activation.input, &other.activation.input))
+            .then_with(|| self.need.cmp(&other.need))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -383,6 +395,84 @@ impl TransportPosition {
             | Self::EntryCapture { executable, .. }
             | Self::Value { executable, .. } => executable,
         }
+    }
+}
+
+impl SemanticOrd<Types> for TransportPosition {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        transport_position_rank(self)
+            .cmp(&transport_position_rank(other))
+            .then_with(|| self.executable().semantic_cmp(other.executable(), types))
+            .then_with(|| match (self, other) {
+                (
+                    Self::ExecutableInput {
+                        semantic_index: left, ..
+                    },
+                    Self::ExecutableInput {
+                        semantic_index: right, ..
+                    },
+                ) => left.cmp(right),
+                (
+                    Self::ResumePayload {
+                        callsite: left_callsite,
+                        entry: left_entry,
+                        ..
+                    },
+                    Self::ResumePayload {
+                        callsite: right_callsite,
+                        entry: right_entry,
+                        ..
+                    },
+                ) => left_callsite
+                    .cmp(right_callsite)
+                    .then_with(|| left_entry.as_u32().cmp(&right_entry.as_u32())),
+                (Self::ReturnPayload { callsite: left, .. }, Self::ReturnPayload { callsite: right, .. }) => {
+                    left.cmp(right)
+                }
+                (
+                    Self::CallArg {
+                        callsite: left_callsite,
+                        semantic_index: left_index,
+                        ..
+                    },
+                    Self::CallArg {
+                        callsite: right_callsite,
+                        semantic_index: right_index,
+                        ..
+                    },
+                ) => left_callsite
+                    .cmp(right_callsite)
+                    .then_with(|| left_index.cmp(right_index)),
+                (
+                    Self::EntryCapture {
+                        entry: left_entry,
+                        capture_index: left_index,
+                        ..
+                    },
+                    Self::EntryCapture {
+                        entry: right_entry,
+                        capture_index: right_index,
+                        ..
+                    },
+                ) => left_entry
+                    .as_u32()
+                    .cmp(&right_entry.as_u32())
+                    .then_with(|| left_index.cmp(right_index)),
+                (Self::Value { value: left, .. }, Self::Value { value: right, .. }) => left.cmp(right),
+                _ => std::cmp::Ordering::Equal,
+            })
+    }
+}
+
+fn transport_position_rank(position: &TransportPosition) -> u8 {
+    match position {
+        TransportPosition::CallArg { .. } => 0,
+        TransportPosition::EntryCapture { .. } => 1,
+        TransportPosition::ExecutableInput { .. } => 2,
+        TransportPosition::ExecutableReturn { .. } => 3,
+        TransportPosition::ResumePayload { .. } => 4,
+        TransportPosition::ReturnPayload { .. } => 5,
+        TransportPosition::Value { .. } => 6,
     }
 }
 

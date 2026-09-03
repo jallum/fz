@@ -17,6 +17,7 @@ use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
 use super::pull::{ProductDriver, ProductKey, ProductValue, PullOutcome, PullWait, WorldProductProducers};
 use super::scheduler::{FatalError, WorkStartReason};
+use super::semantic::SemanticOrd;
 use super::world::World;
 use super::{BackendProgram, Job};
 use crate::telemetry::RawSpanGuard as _;
@@ -29,7 +30,7 @@ pub(super) const PRODUCT_DRIVE_BUDGET: u64 = 50_000;
 /// Reports one of the four ways a `RootBackendProduct` pull-drive can fail.
 ///
 /// Each method receives the settled `World` so an implementation can read
-/// context (e.g. `work_graph.unresolved()`) or emit a diagnostic; the loop
+/// context (e.g. `World::unresolved_waits`) or emit a diagnostic; the loop
 /// itself only ever constructs `Self` through these hooks, so the two
 /// consumers keep their own error text/type without duplicating the loop
 /// that discovers the failure.
@@ -131,11 +132,11 @@ pub(super) fn drive_root_backend_product_with_budgets<
                 // which can flip a keep-first merge downstream. `PullWait`'s
                 // constituents span too many identity types across the
                 // compiler to give it a cheap structural `Ord`, but its
-                // `Debug` rendering is pure data (ids and enum tags, no
-                // addresses or hashes), so sorting by it is a valid,
-                // deterministic total order — it only pins iteration order,
-                // it does not change which wait is processed to completion.
-                waits.sort_by_cached_key(|wait| format!("{wait:?}"));
+                // Product keys retain their existing data ordering. Fact uses
+                // can carry activation arrows, whose raw `Ty` ids are mint
+                // history, so they share the World's faithful semantic key
+                // with terminal diagnostics and other fact-wait boundaries.
+                sort_product_waits(world.types(), &mut waits);
                 last_wait = Some((current.clone(), waits.clone()));
                 stack.push(current);
                 for wait in waits.into_iter().rev() {
@@ -152,6 +153,18 @@ pub(super) fn drive_root_backend_product_with_budgets<
         }
     }
     Err(E::did_not_settle(world, tel, root, last_wait))
+}
+
+/// Orders a product producer's unordered wait set before the stack consumes
+/// it. Fact waits use the World's semantic type key because they can contain
+/// activation arrows whose raw handles and display strings are not identities.
+pub(super) fn sort_product_waits(types: &super::types::Types, waits: &mut [PullWait]) {
+    waits.sort_by(|left, right| match (left, right) {
+        (PullWait::Fact(left), PullWait::Fact(right)) => left.semantic_cmp(right, types),
+        (PullWait::Product(left), PullWait::Product(right)) => left.semantic_cmp(right, types),
+        (PullWait::Fact(_), PullWait::Product(_)) => std::cmp::Ordering::Less,
+        (PullWait::Product(_), PullWait::Fact(_)) => std::cmp::Ordering::Greater,
+    });
 }
 
 /// The inner per-fact-wait job loop run while expanding a `PullWait::Fact`.

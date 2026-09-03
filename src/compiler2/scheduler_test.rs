@@ -4,6 +4,22 @@ use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, Wake
 use crate::compiler2::facts::ClaimShape;
 use crate::compiler2::facts::DerivationId;
 use crate::compiler2::scheduler::DerivationEffects;
+use crate::compiler2::scheduler::take_next_fact_change;
+use crate::compiler2::semantic::SemanticOrd;
+
+struct TestOrder;
+
+impl SemanticOrd<TestOrder> for u32 {
+    fn semantic_cmp(&self, other: &Self, _ctx: &TestOrder) -> std::cmp::Ordering {
+        self.cmp(other)
+    }
+}
+
+impl SemanticOrd<TestOrder> for &'static str {
+    fn semantic_cmp(&self, other: &Self, _ctx: &TestOrder) -> std::cmp::Ordering {
+        self.cmp(other)
+    }
+}
 
 type TestScheduler = Scheduler<u32, &'static str>;
 type TestStep = AppliedStep<u32, &'static str>;
@@ -44,6 +60,27 @@ impl ClaimShape for &'static str {
     fn is_cumulative(&self) -> bool {
         self.starts_with("cum")
     }
+}
+
+#[test]
+fn compiler2_scheduler_fact_frontier_preserves_newest_first_equal_key_chronology() {
+    let change = |key: &'static str, revision: u64| crate::compiler2::FactChange {
+        key,
+        old_revision: revision.checked_sub(1),
+        new_revision: Some(revision),
+        old_settled: false,
+        new_settled: false,
+    };
+    let mut pending = vec![change("a", 1), change("c", 2), change("b", 3), change("c", 4)];
+    let mut revisions = Vec::new();
+    while let Some(change) = take_next_fact_change(&mut pending, &TestOrder) {
+        revisions.push(change.new_revision.expect("fixture movements have revisions"));
+    }
+    assert_eq!(
+        revisions,
+        vec![1, 3, 4, 2],
+        "typed minimum keys drain first, while interleaved equal keys retain newest-first chronology",
+    );
 }
 
 #[test]
@@ -99,10 +136,11 @@ fn complete(
     changed: Vec<&'static str>,
 ) -> AppliedStep<u32, &'static str> {
     let concluded = waits.is_empty();
-    scheduler.complete(
+    scheduler.complete_ordered(
         &job,
         waits,
         vec![DerivationEffects::sole(reads, outputs, changed, concluded)],
+        &TestOrder,
     )
 }
 
@@ -133,7 +171,7 @@ fn complete_derivations(
             concluded,
         })
         .collect();
-    scheduler.complete(&job, waits, effects)
+    scheduler.complete_ordered(&job, waits, effects, &TestOrder)
 }
 
 #[test]
@@ -209,7 +247,7 @@ fn compiler2_dependency_index_wakes_exact_waiters() {
     let mut deps = DependencyIndex::new();
     deps.replace_waits(3_u32, HashSet::from([current("foo")]));
 
-    let waiters = deps.waiters(&current("foo"));
+    let waiters = deps.waiters(&current("foo"), &TestOrder);
     assert_eq!(waiters, vec![3], "exact fact waiters should wake on matching fact");
 }
 
@@ -569,7 +607,7 @@ fn compiler2_scheduler_reports_blocked_exact_facts() {
         HashSet::from([current("module_surface"), current("function_defined")]),
         "blocked facts should be the exact keys the completed job is waiting on"
     );
-    let unresolved = scheduler.unresolved();
+    let unresolved = scheduler.unresolved(&TestOrder);
     assert_eq!(
         unresolved.into_iter().map(|wait| wait.fact).collect::<HashSet<_>>(),
         HashSet::from([current("module_surface"), current("function_defined")]),
@@ -1674,7 +1712,7 @@ fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final(
         "counting alone can never finalize a cycle — each clean member counts the other as unfinal",
     );
 
-    let drained = scheduler.settle_quiescent(&["cum_a"]);
+    let drained = scheduler.settle_quiescent_ordered(&["cum_a"], &TestOrder);
 
     assert!(
         scheduler.facts().is_settled(&"cum_a") && scheduler.facts().is_settled(&"cum_b"),
@@ -1719,7 +1757,7 @@ fn compiler2_scheduler_the_drain_arbiter_refuses_a_fact_whose_own_publisher_is_d
     // it, which is the shape a blocked publisher leaves behind.
     while scheduler.pop().is_some() {}
 
-    let step = scheduler.settle_quiescent(&["a", "c"]);
+    let step = scheduler.settle_quiescent_ordered(&["a", "c"], &TestOrder);
 
     assert!(!scheduler.facts().is_settled(&"a"), "a's own publisher never re-ran");
     assert!(
@@ -1748,7 +1786,7 @@ fn compiler2_scheduler_the_drain_arbiter_does_nothing_while_work_is_queued() {
     );
     assert_eq!(scheduler.pending_jobs(), 1, "job_a is queued to re-run");
 
-    let step = scheduler.settle_quiescent(&["c"]);
+    let step = scheduler.settle_quiescent_ordered(&["c"], &TestOrder);
 
     assert!(
         step.changed.is_empty(),
@@ -2200,7 +2238,7 @@ fn compiler2_scheduler_the_drain_arbiter_settles_a_clean_answer_beside_a_dirty_s
         "x's own answer is clean but reads a fact that can still move",
     );
 
-    let drained = scheduler.settle_quiescent(&["x", "y"]);
+    let drained = scheduler.settle_quiescent_ordered(&["x", "y"], &TestOrder);
 
     assert!(
         scheduler.facts().is_settled(&"x"),
@@ -2432,8 +2470,8 @@ fn compiler2_unresolved_renders_the_same_whatever_order_the_waits_arrived_in() {
     }
 
     assert_eq!(
-        format!("{:?}", ascending.unresolved()),
-        format!("{:?}", descending.unresolved()),
+        format!("{:?}", ascending.unresolved(&TestOrder)),
+        format!("{:?}", descending.unresolved(&TestOrder)),
         "the same standing waits should render the same however they were recorded"
     );
 }

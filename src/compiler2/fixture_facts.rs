@@ -15,11 +15,11 @@ use crate::source::Span;
 
 use super::body::{CallSiteId, LoweredBody, LoweredTail};
 use super::identity::{ActivationKey, FunctionId, RootId};
-use super::semantic::{CallSiteSummary, SelectedCallee};
+use super::semantic::{CallSiteSummary, SelectedCallee, SemanticOrd};
 use super::types::{ClosureSurfacePos, TypeVarId, decode_closure_surface_var};
 use super::world::World;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CanonicalCallEdgeFact {
     pub caller: String,
     pub callsite: String,
@@ -28,7 +28,7 @@ pub struct CanonicalCallEdgeFact {
     pub return_ty: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CanonicalCallTargetFact {
     pub target: String,
     pub input_types: Vec<String>,
@@ -43,10 +43,9 @@ pub(crate) fn canonical_call_edge_facts(
     let root_code = world.function_definition(world.root_function(root)).0.code;
     let mut labels = HashMap::new();
     let mut activations = inventory.to_vec();
-    activations.sort_by_key(|activation| (activation.root.as_u32(), activation.function.as_u32(), activation.arrow));
-    activations.dedup();
     activations.retain(|activation| world.function_definition(activation.function).0.code == root_code);
-    activations.sort_by_cached_key(|activation| activation_sort_key(world, activation, &mut labels));
+    activations.sort_by(|left, right| activation_cmp(world, left, right, &mut labels));
+    activations.dedup();
 
     let mut facts = Vec::new();
     for activation in activations {
@@ -107,26 +106,30 @@ fn canonical_call_edge_fact(
     labels: &mut HashMap<FunctionId, String>,
 ) -> CanonicalCallEdgeFact {
     let dispatch = dispatch_kind.as_str(summary);
+    let mut targets = summary
+        .targets
+        .iter()
+        .map(|target| CanonicalCallTargetFact {
+            target: target_label(world, target.callee.clone(), labels),
+            input_types: target
+                .surface_inputs
+                .iter()
+                .map(|ty| stable_type_text(world, world.types().display(ty)))
+                .collect(),
+            return_ty: target
+                .return_ty
+                .map(|ty| stable_type_text(world, world.types().display(&ty)))
+                .unwrap_or_else(|| "none".to_string()),
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by(|left, right| {
+        (&left.target, &left.input_types, &left.return_ty).cmp(&(&right.target, &right.input_types, &right.return_ty))
+    });
     CanonicalCallEdgeFact {
         caller: activation_label(world, activation, labels),
         callsite: span_label(callsite.span()),
         dispatch,
-        targets: summary
-            .targets
-            .iter()
-            .map(|target| CanonicalCallTargetFact {
-                target: target_label(world, target.callee.clone(), labels),
-                input_types: target
-                    .surface_inputs
-                    .iter()
-                    .map(|ty| stable_type_text(world, world.types().display(ty)))
-                    .collect(),
-                return_ty: target
-                    .return_ty
-                    .map(|ty| stable_type_text(world, world.types().display(&ty)))
-                    .unwrap_or_else(|| "none".to_string()),
-            })
-            .collect(),
+        targets,
         return_ty: summary
             .return_ty
             .map(|ty| stable_type_text(world, world.types().display(&ty)))
@@ -181,19 +184,15 @@ fn callsite_kinds(body: &LoweredBody) -> HashMap<CallSiteId, CallsiteDispatchKin
     out
 }
 
-fn activation_sort_key(
+fn activation_cmp(
     world: &World,
-    activation: &ActivationKey,
+    left: &ActivationKey,
+    right: &ActivationKey,
     labels: &mut HashMap<FunctionId, String>,
-) -> (String, Vec<String>) {
-    (
-        canonical_function_label(world, activation.function, labels),
-        activation
-            .inputs(world.types())
-            .iter()
-            .map(|ty| world.types().display(ty))
-            .collect(),
-    )
+) -> std::cmp::Ordering {
+    canonical_function_label(world, left.function, labels)
+        .cmp(&canonical_function_label(world, right.function, labels))
+        .then_with(|| left.semantic_cmp(right, world.types()))
 }
 
 fn activation_label(world: &World, activation: &ActivationKey, labels: &mut HashMap<FunctionId, String>) -> String {

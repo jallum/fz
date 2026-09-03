@@ -12,7 +12,7 @@ use super::code::CodeId;
 use super::facts::{ClaimShape, DerivationId, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
-use super::semantic::{CallSiteKey, StableSortKey};
+use super::semantic::{CallSiteKey, SemanticOrd};
 use super::types::Types;
 use super::world::World;
 
@@ -94,26 +94,68 @@ pub enum Job {
     LowerNativeProgram(RootId),
 }
 
-impl StableSortKey<Types> for Job {
-    /// Every variant but `SeedActivation`/`AnalyzeActivation` carries only
-    /// ids assigned by deterministic parse/scope traversal (`CodeId`,
-    /// `ModuleId`, `FunctionId`, `RootId`), so their `Debug` text is already a
-    /// stable key. Those two carry an `ActivationKey`, whose `arrow` is a bare
-    /// interned `Ty` — rendered through `Types::display` instead of `{:?}` so
-    /// the key does not depend on which run happened to intern it first.
-    fn stable_sort_key(&self, types: &Types) -> String {
-        match self {
-            Job::SeedActivation(key) => format!("SeedActivation({})", key.stable_sort_key(types)),
-            Job::AnalyzeActivation(key) => format!("AnalyzeActivation({})", key.stable_sort_key(types)),
-            Job::DeriveExecutableFacts(key) => {
-                format!("DeriveExecutableFacts({})", key.stable_sort_key(types))
-            }
-            other => format!("{other:?}"),
-        }
+impl SemanticOrd<Types> for Job {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        job_order_rank(self)
+            .cmp(&job_order_rank(other))
+            .then_with(|| match (self, other) {
+                (Job::IndexCode(left), Job::IndexCode(right)) => left.cmp(right),
+                (Job::ScopeCode(left), Job::ScopeCode(right)) => left.cmp(right),
+                (Job::DefineModule(left), Job::DefineModule(right)) => left.cmp(right),
+                (Job::DefineModuleInterface(left), Job::DefineModuleInterface(right)) => left.cmp(right),
+                (Job::PublishFunctionSource(left), Job::PublishFunctionSource(right)) => left.cmp(right),
+                (Job::ExpandFunctionSource(left), Job::ExpandFunctionSource(right)) => left.cmp(right),
+                (Job::DefineFunction(left), Job::DefineFunction(right)) => left.cmp(right),
+                (Job::DeriveTypeDef(left), Job::DeriveTypeDef(right)) => left.cmp(right),
+                (Job::DeriveFunctionContract(left), Job::DeriveFunctionContract(right)) => left.cmp(right),
+                (Job::DeriveInputDemand(left), Job::DeriveInputDemand(right)) => left.cmp(right),
+                (Job::LowerFunction(left), Job::LowerFunction(right)) => left.cmp(right),
+                (Job::ReifyGuardDispatch(left), Job::ReifyGuardDispatch(right)) => left.cmp(right),
+                (Job::PlanEntryDispatch(left), Job::PlanEntryDispatch(right)) => left.cmp(right),
+                (Job::BuildMacroExecutable(left), Job::BuildMacroExecutable(right)) => left.cmp(right),
+                (Job::DeriveStaticCallees(left), Job::DeriveStaticCallees(right)) => left.cmp(right),
+                (Job::DeriveCallGraphComponent(left), Job::DeriveCallGraphComponent(right)) => left.cmp(right),
+                (Job::SeedRoot(left), Job::SeedRoot(right)) => left.cmp(right),
+                (Job::SeedActivation(left), Job::SeedActivation(right))
+                | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
+                (Job::DeriveExecutableFacts(left), Job::DeriveExecutableFacts(right)) => {
+                    left.semantic_cmp(right, types)
+                }
+                (Job::BuildBackendProduct(left), Job::BuildBackendProduct(right))
+                | (Job::LowerNativeProgram(left), Job::LowerNativeProgram(right)) => left.cmp(right),
+                _ => std::cmp::Ordering::Equal,
+            })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+fn job_order_rank(job: &Job) -> u8 {
+    match job {
+        Job::AnalyzeActivation(_) => 0,
+        Job::BuildBackendProduct(_) => 1,
+        Job::BuildMacroExecutable(_) => 2,
+        Job::DefineFunction(_) => 3,
+        Job::DefineModule(_) => 4,
+        Job::DefineModuleInterface(_) => 5,
+        Job::DeriveCallGraphComponent(_) => 6,
+        Job::DeriveExecutableFacts(_) => 7,
+        Job::DeriveFunctionContract(_) => 8,
+        Job::DeriveInputDemand(_) => 9,
+        Job::DeriveStaticCallees(_) => 10,
+        Job::DeriveTypeDef(_) => 11,
+        Job::ExpandFunctionSource(_) => 12,
+        Job::IndexCode(_) => 13,
+        Job::LowerFunction(_) => 14,
+        Job::LowerNativeProgram(_) => 15,
+        Job::PlanEntryDispatch(_) => 16,
+        Job::PublishFunctionSource(_) => 17,
+        Job::ReifyGuardDispatch(_) => 18,
+        Job::ScopeCode(_) => 19,
+        Job::SeedActivation(_) => 20,
+        Job::SeedRoot(_) => 21,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FactKey {
     CodeIndexed(CodeId),
     CodeScoped(CodeId),
@@ -148,6 +190,93 @@ pub enum FactKey {
     ExecutableFacts(ExecutableKey),
     BackendProgram(RootId),
     NativeProgram(RootId),
+}
+
+impl SemanticOrd<Types> for FactKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        fact_diagnostic_rank(self)
+            .cmp(&fact_diagnostic_rank(other))
+            .then_with(|| self.cmp_same_variant(other, types))
+    }
+}
+
+impl FactKey {
+    fn cmp_same_variant(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
+        match (self, other) {
+            (FactKey::CodeIndexed(left), FactKey::CodeIndexed(right))
+            | (FactKey::CodeScoped(left), FactKey::CodeScoped(right)) => left.cmp(right),
+            (FactKey::ModuleIndexed(left), FactKey::ModuleIndexed(right))
+            | (FactKey::ModuleDefined(left), FactKey::ModuleDefined(right))
+            | (FactKey::ModuleInterface(left), FactKey::ModuleInterface(right))
+            | (FactKey::StructDefined(left), FactKey::StructDefined(right))
+            | (FactKey::ProtocolDispatch(left), FactKey::ProtocolDispatch(right))
+            | (FactKey::ProtocolImplProviders(left), FactKey::ProtocolImplProviders(right)) => left.cmp(right),
+            (FactKey::FunctionSource(left), FactKey::FunctionSource(right))
+            | (FactKey::FunctionSourceStash(left), FactKey::FunctionSourceStash(right))
+            | (FactKey::ExpandedFunctionSource(left), FactKey::ExpandedFunctionSource(right))
+            | (FactKey::FunctionDefined(left), FactKey::FunctionDefined(right))
+            | (FactKey::FunctionContract(left), FactKey::FunctionContract(right))
+            | (FactKey::LoweredBody(left), FactKey::LoweredBody(right))
+            | (FactKey::GuardDispatch(left), FactKey::GuardDispatch(right))
+            | (FactKey::EntryDispatch(left), FactKey::EntryDispatch(right))
+            | (FactKey::MacroExecutable(left), FactKey::MacroExecutable(right))
+            | (FactKey::StaticCallees(left), FactKey::StaticCallees(right))
+            | (FactKey::CallGraphComponent(left), FactKey::CallGraphComponent(right))
+            | (FactKey::InputDemand(left), FactKey::InputDemand(right))
+            | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
+            (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
+            (FactKey::RootEntry(left), FactKey::RootEntry(right))
+            | (FactKey::BackendProgram(left), FactKey::BackendProgram(right))
+            | (FactKey::NativeProgram(left), FactKey::NativeProgram(right)) => left.cmp(right),
+            (FactKey::Activation(left), FactKey::Activation(right))
+            | (FactKey::ActivationInputs(left), FactKey::ActivationInputs(right))
+            | (FactKey::ActivationAnalyzed(left), FactKey::ActivationAnalyzed(right))
+            | (FactKey::ReturnType(left), FactKey::ReturnType(right)) => left.semantic_cmp(right, types),
+            (FactKey::CallSiteTargets(left), FactKey::CallSiteTargets(right))
+            | (FactKey::CallSiteSummary(left), FactKey::CallSiteSummary(right)) => left.semantic_cmp(right, types),
+            (FactKey::Executable(left), FactKey::Executable(right))
+            | (FactKey::ExecutableFacts(left), FactKey::ExecutableFacts(right)) => left.semantic_cmp(right, types),
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
+    match fact {
+        FactKey::Activation(_) => 0,
+        FactKey::ActivationAnalyzed(_) => 1,
+        FactKey::ActivationInputs(_) => 2,
+        FactKey::BackendProgram(_) => 3,
+        FactKey::CallGraphComponent(_) => 4,
+        FactKey::CallSiteSummary(_) => 5,
+        FactKey::CallSiteTargets(_) => 6,
+        FactKey::CodeIndexed(_) => 7,
+        FactKey::CodeScoped(_) => 8,
+        FactKey::EntryDispatch(_) => 9,
+        FactKey::Executable(_) => 10,
+        FactKey::ExecutableFacts(_) => 11,
+        FactKey::ExpandedFunctionSource(_) => 12,
+        FactKey::FunctionContract(_) => 13,
+        FactKey::FunctionDefined(_) => 14,
+        FactKey::FunctionSource(_) => 15,
+        FactKey::FunctionSourceStash(_) => 16,
+        FactKey::GuardDispatch(_) => 17,
+        FactKey::InputDemand(_) => 18,
+        FactKey::LoweredBody(_) => 19,
+        FactKey::MacroExecutable(_) => 20,
+        FactKey::ModuleDefined(_) => 21,
+        FactKey::ModuleIndexed(_) => 22,
+        FactKey::ModuleInterface(_) => 23,
+        FactKey::NativeProgram(_) => 24,
+        FactKey::ProtocolDispatch(_) => 25,
+        FactKey::ProtocolImplProviders(_) => 26,
+        FactKey::Recursive(_) => 27,
+        FactKey::ReturnType(_) => 28,
+        FactKey::RootEntry(_) => 29,
+        FactKey::StaticCallees(_) => 30,
+        FactKey::StructDefined(_) => 31,
+        FactKey::TypeDefined(_) => 32,
+    }
 }
 
 impl ClaimShape for FactKey {
@@ -370,7 +499,8 @@ impl World {
     /// produces is stashed for the execution context to emit, so the wake it
     /// causes always has a movement on the public stream to name.
     pub(crate) fn settle_quiescent(&mut self, facts: &[FactKey]) {
-        let step = self.work_graph.settle_quiescent(facts);
+        let (work_graph, types) = self.work_graph_and_types();
+        let step = work_graph.settle_quiescent_ordered(facts, types);
         self.note_quiescence_step(step);
     }
 
@@ -383,7 +513,7 @@ impl World {
     /// arbitrates the exact wait a completion left standing instead.
     pub(crate) fn settle_quiescent_waits(&mut self) {
         let mut facts = self.work_graph.waited_settled_facts();
-        facts.sort();
+        facts.sort_by(|left, right| left.semantic_cmp(right, self.types()));
         self.settle_quiescent(&facts);
     }
 
@@ -399,13 +529,12 @@ impl World {
     /// the order these calls happen in decides the order those jobs actually
     /// run — and a job that observes another job's published fact can join
     /// it under a keep-first merge, so run order is not free to vary.
-    /// `unresolved()` hands back its waits ordered by the fact's `Debug`
-    /// rendering, so one fact's several uses arrive adjacent and dropping the
+    /// `unresolved_waits()` hands back its waits in typed `FactUse` semantic
+    /// order, so one fact's several uses arrive adjacent and dropping the
     /// repeats leaves each fact once, in that same order.
     pub(crate) fn demand_blocked_wait_producers(&mut self) -> u64 {
         let mut facts: Vec<FactKey> = self
-            .work_graph
-            .unresolved()
+            .unresolved_waits()
             .into_iter()
             .map(|wait| wait.fact.into_fact())
             .collect();
@@ -439,11 +568,10 @@ impl World {
         // mints fresh `Ty` combinations (interned call-site arrows) as a side
         // effect of running, so demanding two ready activations in a
         // different relative order between runs mints their arrows in a
-        // different relative order too. Sort by `StableSortKey`
-        // (`Types::display`, not raw `Ty`/`{:?}`) so the demand order is a
-        // function of the activations' own structure, not of which run's
-        // hasher happened to bucket them first.
-        keys.sort_by_cached_key(|key| key.stable_sort_key(self.types()));
+        // different relative order too. Compare the addressed arrows through
+        // their owning `Types`, never through raw intern ids, so demand order
+        // is a function of the activations' structure rather than hash buckets.
+        keys.sort_by(|left, right| left.semantic_cmp(right, self.types()));
         for key in keys {
             if self.work_graph.has_run(&Job::AnalyzeActivation(key.clone())) {
                 self.retire_activation_frontier(&key);
@@ -571,7 +699,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 // left by the work that just quiesced.
                 world.settle_quiescent_waits();
                 let mut producer_pokes = world.demand_activation_frontier_analyses();
-                let unresolved = world.work_graph.unresolved();
+                let unresolved = world.unresolved_waits();
                 for wait in &unresolved {
                     if stall_demanded.insert(wait.fact.fact().clone()) {
                         producer_pokes +=
@@ -579,10 +707,12 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                     }
                 }
                 if producer_pokes > 0 {
+                    let mut demanded_facts = stall_demanded.iter().cloned().collect::<Vec<_>>();
+                    demanded_facts.sort_by(|left, right| left.semantic_cmp(right, world.types()));
                     tel.raw_event2(
                         &["fz", "compiler2", "drive", "demand_on_stall"],
                         &producer_pokes,
-                        &stall_demanded,
+                        &demanded_facts,
                     );
                 }
                 let quiesced = flush_quiescence(world, tel);
@@ -603,7 +733,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Resolved
             } else {
-                let waits = world.work_graph.unresolved();
+                let waits = world.unresolved_waits();
                 ExecutionContext::new(world, tel).emit_unresolved_diagnostics(&waits);
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Unresolved { waits }
