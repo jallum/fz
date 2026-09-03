@@ -1,7 +1,5 @@
 #---
 # purpose: "Enum predicate and search functions match Elixir and halt as soon as the answer is known"
-# timeout.run_secs: 20
-# timeout.interp_secs: 20
 # oracle: oracle.exs
 #---
 #
@@ -12,7 +10,7 @@
 # The final cases would panic if the runtime kept reducing after a decisive
 # answer, so this fixture also pins the `reduce_while/3` early-exit contract.
 #
-# ## The timeouts are a HANG BACKSTOP, not a perf detector
+# ## The hang guard is not a performance detector
 #
 # This fixture is small, so a compile measured in seconds means the compiler is
 # doing repeated work, not hard work. It used to take about 12s on `run`
@@ -20,19 +18,9 @@
 # anything from ([[fz-qe0]]); it now takes about 3s (3.15s, debug, on a fast dev
 # machine). The remaining seconds are excess work and belong to [[fz-xat]].
 #
-# The overrides above used to be held just above that as a tripwire. That does
-# not work and has been retired. A wall-clock budget calibrated on dev hardware
-# cannot also gate CI: the runners are much slower and run under `llvm-cov`
-# instrumentation, so `run` and `interp` exceeded the 6s tripwire on EVERY CI run
-# of this branch while passing locally. A tripwire that is always red is not a
-# tripwire.
-#
-# 20s is a tolerance, not a target. `enum_take_drop_split` takes 6.1s here and
-# passes CI at 15s -- 2.46x headroom -- so 20s gives this fixture 6.3x, well
-# clear of the runners even under instrumentation. It exists to catch a genuine
-# hang, and it is deliberately too loose to notice a perf regression. Twenty
-# seconds to compile the program below is an abysmal number and is accepted only
-# until [[fz-xat]] lands; it is not evidence that anything here is acceptable.
+# The shared 20s default is deliberately too loose to notice a performance
+# regression. It catches nontermination without turning machine contention or
+# coverage instrumentation into a false failure.
 #
 # The perf detector this replaces has to be work-based, not time-based -- assert
 # the settlement count from the telemetry job trace, which is machine
