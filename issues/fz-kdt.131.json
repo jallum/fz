@@ -33,11 +33,15 @@
     {
       "text": "DYNAMIC COUNTS, first time on the production path (fz-kdt.144, 0889c0b3a). The tripwire now walks every element of an admitted list against the clause its head answered, so facet 3 has a runtime instrument. Measured, 597 fixtures, interp: BOTH named settled fixtures read 0 at the settled arrival. dispatch_list_head_separates reads 0 at EVERY setting: Enum.all? folds through List.reduce_while_cont([head | tail], acc, r), which hands the TAIL to the recursive dispatch, so the whole [true, 1, :ok] never reaches a dispatch and what arrives at the [:false | :true] arm is [false] and []. Its header is corrected. The pair is STATICALLY REAL and DYNAMICALLY UNREACHED -- keep that distinction: the seat is still unsafe, the corpus just does not exercise it. enum_predicate_search reads 1 under arms:6: [1, :ok], element 1 = :ok, into a [integer] body -- the pair reached by a real value, and the reproducer to build the cure against; the two arms:6-only pairs named on 143's comment are the same shape. Pinned in SURFACE_MEMBERSHIP_CENSUS (enum_predicate_search settled 0, arms:6 1) so the cure is red-first: it must take that 1 to 0.",
       "timestamp": "2026-09-03T04:54:22Z"
+    },
+    {
+      "text": "HEADS-UP from the fz-kdt.183 cold review (2026-09-03): once recursive keys carry a ground list element, the static blind-escape census EMPTIES (3 -\u003e 0) and dispatch_list_head_separates -- added by fz-kdt.107 step 3 as this ticket's only source-level reproducer -- no longer reproduces its class (element precision keys the three arms apart). Decide on THIS ticket whether the fixture is rewritten to defeat element precision (a facet-3 pair that survives a ground element: overlap without containment at the head with the tails erased) or whether the loss is recorded here; a silent census edit is not the answer. Also: the same change retires every live surface-membership escape on the dynamic census (00277 12 -\u003e 0, enum_predicate_search under arms:6 1 -\u003e 0), so this ticket's dynamic instrument would read zero too -- the population moves to the callable slot (fz-kdt.189).",
+      "timestamp": "2026-09-03T06:37:51Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Runtime-dispatch predicates that overlap without covering either body leave representation safety to arrival order",
   "type": "task",
-  "updated_at": "2026-09-03T04:54:22Z"
+  "updated_at": "2026-09-03T06:37:51Z"
 }
