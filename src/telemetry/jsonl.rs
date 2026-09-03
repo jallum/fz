@@ -409,6 +409,27 @@ impl JsonlBackend {
                 );
             },
         );
+        let recursive_search_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event3::<
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::RecursiveGroupSearch,
+            _,
+        >(
+            &["fz", "compiler2", "pull", "recursive_group", "searched"],
+            move |name, span_id, parent_span_id, product, dependency, search| {
+                recursive_search_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        product: crate::telemetry::opaque(product),
+                        dependency: crate::telemetry::opaque(dependency),
+                        search: crate::telemetry::opaque(search),
+                    },
+                );
+            },
+        );
         let native_backend = Rc::clone(&backend);
         telemetry.attach_raw_event2::<crate::compiler2::RootId, crate::compiler2::BackendProgram, _>(
             &["fz", "compiler2", "native_program", "reusable_cons"],
@@ -1078,6 +1099,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "product", "cache_hit"]
             | ["fz", "compiler2", "pull", "product", "reentered"]
             | ["fz", "compiler2", "pull", "product", "displaced"]
+            | ["fz", "compiler2", "pull", "recursive_group", "searched"]
             | ["fz", "compiler2", "work", "started"]
             | ["fz", "compiler2", "demand", "cone", "settled"]
             | ["fz", "compiler2", "drive", "stalled"]
@@ -1607,6 +1629,22 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             Some(group) => push_u64(out, group),
             None => out.push_str("null"),
         }
+    } else if let Some(search) = opaque.downcast_ref::<crate::compiler2::pull::RecursiveGroupSearch>() {
+        for (name, value) in [
+            ("candidate_inventory", search.candidate_inventory),
+            ("vertex_visits", search.vertex_visits),
+            ("edge_scans", search.edge_scans),
+            ("group_members", search.group_members),
+        ] {
+            out.push(',');
+            write_str_lit(out, name);
+            out.push(':');
+            push_u64(out, value);
+        }
+        out.push(',');
+        write_str_lit(out, "cycle_closed");
+        out.push(':');
+        out.push_str(if search.cycle_closed { "true" } else { "false" });
     } else if let Some(outcome) = opaque.downcast_ref::<crate::compiler2::pull::PullOutcome>() {
         out.push(',');
         write_str_lit(out, "status");

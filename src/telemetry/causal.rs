@@ -179,6 +179,7 @@ const QUIESCED: &[&str] = &["fz", "compiler2", "work_graph", "quiesced"];
 const PRODUCT_SETTLED: &[&str] = &["fz", "compiler2", "pull", "product", "settled"];
 const PRODUCT_CACHE_HIT: &[&str] = &["fz", "compiler2", "pull", "product", "cache_hit"];
 const PRODUCT_DISPLACED: &[&str] = &["fz", "compiler2", "pull", "product", "displaced"];
+const RECURSIVE_GROUP_SEARCHED: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "searched"];
 const SESSION_FINISHED: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
 
 /// Fields that describe a fact's STATE rather than its identity. Stripping
@@ -251,6 +252,18 @@ pub struct ProductWork {
     pub generations: BTreeSet<u64>,
 }
 
+/// Aggregate pending-graph query work. Publisher/member identity is not part
+/// of this current-graph signal; fz-tfn.2 owns that post-cutover comparand.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RecursiveSearchWork {
+    pub searches: u64,
+    pub candidate_inventory: u64,
+    pub vertex_visits: u64,
+    pub edge_scans: u64,
+    pub closed_cycles: u64,
+    pub group_members: u64,
+}
+
 /// One fact KIND's lifecycle over a whole compile, read from the `changed`
 /// entries every applied step carries: the distinct facts of that kind the
 /// stream named, how many times one appeared out of nothing, and how many
@@ -310,6 +323,7 @@ pub struct UndefinedFirstUse {
 pub struct CausalReport {
     pub formulas: BTreeMap<String, FormulaWork>,
     pub products: BTreeMap<String, ProductWork>,
+    pub recursive_search: RecursiveSearchWork,
     pub sessions: SessionWork,
     /// Per fact-kind appearance/retraction accounting (fz-kdt.63).
     pub lifecycles: BTreeMap<String, FactLifecycle>,
@@ -373,6 +387,16 @@ impl CausalReport {
             put("cache_hits", work.cache_hits);
             put("displacements", work.displacements);
             put("generations", work.generations.len() as u64);
+        }
+        for (dimension, count) in [
+            ("searches", self.recursive_search.searches),
+            ("candidate_inventory", self.recursive_search.candidate_inventory),
+            ("vertex_visits", self.recursive_search.vertex_visits),
+            ("edge_scans", self.recursive_search.edge_scans),
+            ("closed_cycles", self.recursive_search.closed_cycles),
+            ("group_members", self.recursive_search.group_members),
+        ] {
+            multiset.insert(format!("recursive_search\u{1}{dimension}"), count);
         }
         let session = &self.sessions;
         for (dimension, count) in [
@@ -462,6 +486,7 @@ impl Replay {
             report: CausalReport {
                 formulas: BTreeMap::new(),
                 products: BTreeMap::new(),
+                recursive_search: RecursiveSearchWork::default(),
                 sessions: SessionWork::default(),
                 lifecycles: BTreeMap::new(),
                 shifts: ShiftWork::default(),
@@ -490,6 +515,8 @@ impl Replay {
                 self.product(event).cache_hits += 1;
             } else if event.named(PRODUCT_DISPLACED) {
                 self.product(event).displacements += 1;
+            } else if event.named(RECURSIVE_GROUP_SEARCHED) {
+                self.recursive_search(event);
             } else if event.named(SESSION_FINISHED) {
                 self.finish_session(event);
             }
@@ -765,6 +792,27 @@ impl Replay {
             |product| identity(product, Some(&self.canon)),
         );
         self.report.products.entry(key).or_default()
+    }
+
+    fn recursive_search(&mut self, event: &PublicEvent) {
+        let search = event.metadata.get("search");
+        let count = |field| {
+            search
+                .and_then(|search| search.get(field))
+                .and_then(Json::as_u64)
+                .unwrap_or(0)
+        };
+        let cycle_closed = search
+            .and_then(|search| search.get("cycle_closed"))
+            .and_then(Json::as_bool)
+            .unwrap_or(false);
+        let work = &mut self.report.recursive_search;
+        work.searches += 1;
+        work.candidate_inventory += count("candidate_inventory");
+        work.vertex_visits += count("vertex_visits");
+        work.edge_scans += count("edge_scans");
+        work.closed_cycles += u64::from(cycle_closed);
+        work.group_members += count("group_members");
     }
 
     fn settle_product(&mut self, event: &PublicEvent) {

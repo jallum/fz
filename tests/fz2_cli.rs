@@ -347,78 +347,101 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
 /// for every raw id it names, and the causal report joins through them. Raw ids
 /// may differ; canonical identity may not.
 ///
-/// ONE dimension is measured NOT to hold, and this test pins its blast radius
-/// rather than dropping it: `pull.product.cache_hit` counts on
-/// `CallableConstruction` products differ between processes (six processes per
-/// fixture, 15 pairs each: every formula dimension and every session tally
-/// agree 15/15 on all three target fixtures, as does every other product kind
-/// and every other dimension of `callable_construction` itself; cache hits
-/// agree 7/15, 6/15 and 1/15). The two runs construct different intermediate
-/// types, so a genuinely different set of construction products is pulled. Any
-/// divergence OUTSIDE that one dimension fails here.
+/// Recursive-search counts and traversal work are part of the comparand. Exact
+/// recursive publication-member identity is deliberately absent until
+/// fz-kdt.4 removes the eager RuntimeDemand cone that chooses the pending graph.
+/// The pre-existing CallableConstruction cache-hit redistribution is the only
+/// excluded work dimension.
 ///
 /// Work counts only — no wall-clock quantity appears in the comparand.
 #[test]
 fn causal_work_multisets_agree_across_two_processes() {
-    let fixture = "fixtures2/behavior/fz_f98_range_map_converges.fz";
-    let mut multisets = Vec::new();
-    for tag in ["first", "second"] {
-        let telemetry_path = unique_temp_path(&format!("fz2_causal_{tag}"), ".jsonl");
-        let out = run_fz2(&[
-            OsStr::new("--log-telemetry"),
-            telemetry_path.as_os_str(),
-            OsStr::new("interp"),
-            OsStr::new(fixture),
-        ]);
-        assert_successful_stdout(&out, &fixture_expected_stdout(fixture), fixture);
+    for (fixture, golden) in [
+        (
+            "fixtures2/00420_enum_take_drop_split.fz",
+            "fixtures2/behavior/enum_take_drop_split.fz",
+        ),
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            "fixtures2/behavior/enum_predicate_search.fz",
+        ),
+        (
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        ),
+    ] {
+        let mut multisets = Vec::new();
+        let mut outputs = Vec::new();
+        for tag in ["first", "second"] {
+            let telemetry_path = unique_temp_path(&format!("fz2_causal_{tag}"), ".jsonl");
+            let out = run_fz2(&[
+                OsStr::new("--log-telemetry"),
+                telemetry_path.as_os_str(),
+                OsStr::new("interp"),
+                OsStr::new(fixture),
+            ]);
+            assert_successful_stdout(&out, &fixture_expected_stdout(golden), fixture);
+            outputs.push(out.stdout);
 
-        let log = std::fs::read(&telemetry_path).expect("read public telemetry log");
-        let report = CausalReport::derive(&parse_public_trace(&log));
-        assert!(
-            report.undefined_first_uses.is_empty(),
-            "the {tag} log must define every raw id it names; first gap: {:?}",
-            report.undefined_first_uses.first()
+            let log = std::fs::read(&telemetry_path).expect("read public telemetry log");
+            let report = CausalReport::derive(&parse_public_trace(&log));
+            assert!(
+                report.recursive_search.searches > 0,
+                "{tag} {fixture}: no recursive search work"
+            );
+            assert!(
+                report.undefined_first_uses.is_empty(),
+                "the {tag} {fixture} log must define every raw id it names; first gap: {:?}",
+                report.undefined_first_uses.first()
+            );
+            assert!(
+                report.canon.types() > 0 && report.canon.functions() > 0,
+                "the {tag} {fixture} log must carry a populated canon dictionary"
+            );
+            if fixture.ends_with("fz_f98_range_map_converges.fz") {
+                assert!(
+                    report.uncaused.is_empty(),
+                    "the {tag} {fixture} log must attribute every evaluation; first unattributed: {:?}",
+                    report.uncaused.first()
+                );
+            }
+            let callable_resolutions = report
+                .products
+                .keys()
+                .filter(|identity| identity.contains("\"kind\":\"callable_resolution\""))
+                .collect::<Vec<_>>();
+            assert!(
+                !callable_resolutions.is_empty()
+                    && callable_resolutions.iter().all(|identity| !identity.contains("?ty:")),
+                "the {tag} {fixture} public trace must define every callable-resolution type: \
+                 {callable_resolutions:?}"
+            );
+            multisets.push(report.canonical_multiset());
+            let _ = remove_file(&telemetry_path);
+        }
+
+        let (first, second) = (&multisets[0], &multisets[1]);
+        assert_eq!(
+            outputs[0], outputs[1],
+            "{fixture}: runtime output moved across processes"
         );
         assert!(
-            report.canon.types() > 0 && report.canon.functions() > 0,
-            "the {tag} log must carry a populated canon dictionary"
+            first.len() > 1_000,
+            "expected a substantial {fixture} comparand, got {} entries",
+            first.len()
         );
-        assert!(
-            report.uncaused.is_empty(),
-            "the {tag} log must attribute every evaluation; first unattributed: {:?}",
-            report.uncaused.first()
-        );
-        let callable_resolutions = report
-            .products
+        let unexplained = first
             .keys()
-            .filter(|identity| identity.contains("\"kind\":\"callable_resolution\""))
-            .collect::<Vec<_>>();
+            .chain(second.keys())
+            .filter(|key| first.get(*key) != second.get(*key))
+            .filter(|key| !is_callable_construction_cache_hit(key))
+            .collect::<BTreeSet<_>>();
         assert!(
-            !callable_resolutions.is_empty() && callable_resolutions.iter().all(|identity| !identity.contains("?ty:")),
-            "the {tag} public trace must define and canonicalize every callable-resolution surface type: \
-             {callable_resolutions:?}"
+            unexplained.is_empty(),
+            "two processes compiling {fixture} must agree on every canonical work count outside the \
+             known callable-construction cache-hit divergence; unexplained: {unexplained:?}"
         );
-        multisets.push(report.canonical_multiset());
-        let _ = remove_file(&telemetry_path);
     }
-
-    let (first, second) = (&multisets[0], &multisets[1]);
-    assert!(
-        first.len() > 1_000,
-        "expected a substantial comparand, got {} entries",
-        first.len()
-    );
-    let unexplained = first
-        .keys()
-        .chain(second.keys())
-        .filter(|key| first.get(*key) != second.get(*key))
-        .filter(|key| !is_callable_construction_cache_hit(key))
-        .collect::<BTreeSet<_>>();
-    assert!(
-        unexplained.is_empty(),
-        "two processes compiling {fixture} must agree on every canonical work count outside the \
-         known callable-construction cache-hit divergence; unexplained: {unexplained:?}"
-    );
 }
 
 /// The single measured cross-process divergence: see

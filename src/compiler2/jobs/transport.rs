@@ -390,34 +390,36 @@ fn produce_generic_callable_owner(
     for source in &source_positions {
         let key = ProductKey::CallableConstruction(source.clone());
         let current = ProductKey::CallableConstruction(position.clone());
-        if context.pending_dependency_reaches(&key, &current) {
-            let _ = context.read_product(tel, key);
-            let members = context.pending_recursive_group(&current);
-            let mut evidence = TransportFactsBuilder::default();
-            evidence.merge(&builder);
-            for owner in context.recursive_group_callable_owners(&members) {
-                evidence.merge_owner(&owner);
+        let members = match context.read_recursive_product(tel, key.clone(), &current) {
+            super::super::pull::RecursiveProductRead::Ready(ProductValue::CallableConstruction(owner)) => {
+                builder.merge_owner(owner);
+                continue;
             }
-            let values = members
-                .iter()
-                .map(|member| project_group_member_owner(world, context, &evidence, member))
-                .collect();
-            if !context.finish_callable_construction_group(tel, &current, &members, values) {
-                return PullOutcome::wait_on_product(current);
+            super::super::pull::RecursiveProductRead::Ready(value) => {
+                panic!("callable construction produced unexpected value {value:?}")
             }
-            return context
-                .session()
-                .memo()
-                .get(&current)
-                .cloned()
-                .map(PullOutcome::Produced)
-                .expect("settled callable owner group must contain the requested member");
+            super::super::pull::RecursiveProductRead::Waiting => return PullOutcome::wait_on_product(key),
+            super::super::pull::RecursiveProductRead::Group(members) => members,
+        };
+        let mut evidence = TransportFactsBuilder::default();
+        evidence.merge(&builder);
+        for owner in context.recursive_group_callable_owners(&members) {
+            evidence.merge_owner(&owner);
         }
-        match context.read_product(tel, key.clone()) {
-            Some(ProductValue::CallableConstruction(owner)) => builder.merge_owner(owner),
-            Some(value) => panic!("callable construction produced unexpected value {value:?}"),
-            None => return PullOutcome::wait_on_product(key),
+        let values = members
+            .iter()
+            .map(|member| project_group_member_owner(world, context, &evidence, member))
+            .collect();
+        if !context.finish_callable_construction_group(tel, &current, &members, values) {
+            return PullOutcome::wait_on_product(current);
         }
+        return context
+            .session()
+            .memo()
+            .get(&current)
+            .cloned()
+            .map(PullOutcome::Produced)
+            .expect("settled callable owner group must contain the requested member");
     }
     PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(project_owner_answer(
         world, &builder, layout, ty, &demand, position,

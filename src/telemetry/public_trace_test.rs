@@ -702,6 +702,36 @@ fn compile_fixture(path: &str) -> PublicTrace {
     PublicTrace::compile(&source)
 }
 
+#[test]
+fn recursive_group_search_work_is_a_public_causal_fact() {
+    let source = include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz");
+    let trace = PublicTrace::compile_backend(source);
+    let searches = trace.events_named(&["fz", "compiler2", "pull", "recursive_group", "searched"]);
+    assert!(
+        !searches.is_empty(),
+        "the recursive fixture must search its pending graph"
+    );
+    for event in &searches {
+        assert!(event.metadata_key("product").is_some(), "{event:?}");
+        assert!(event.metadata_key("dependency").is_some(), "{event:?}");
+        let search = event.metadata_key("search").expect("recursive search report");
+        let candidates = search["candidate_inventory"].as_u64().expect("candidate inventory");
+        let vertices = search["vertex_visits"].as_u64().expect("vertex visits");
+        let edges = search["edge_scans"].as_u64().expect("edge scans");
+        let closed = search["cycle_closed"].as_bool().expect("cycle closure");
+        let members = search["group_members"].as_u64().expect("group members");
+        assert!(candidates <= vertices, "{search:?}");
+        assert!(vertices > 0 && edges + 1 >= vertices, "{search:?}");
+        assert_eq!(members > 0, closed, "{search:?}");
+        assert!(members <= candidates, "{search:?}");
+    }
+
+    let work = CausalReport::derive(trace.events()).recursive_search;
+    assert_eq!(work.searches, searches.len() as u64);
+    assert!(work.vertex_visits >= work.candidate_inventory);
+    assert!(work.edge_scans > 0);
+}
+
 /// fz-kdt.34's acceptance, on the public log and nothing else.
 ///
 /// Every evaluation of every formula must name new input evidence. The
