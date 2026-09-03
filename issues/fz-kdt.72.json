@@ -17,11 +17,15 @@
     {
       "text": "TDD proof on branch fz-kdt.72/deduplicate-activation-inputs: temporary census reproduced exact duplicate multiplicities 26/3/12 on enum_take_drop_split/range_map/predicate; attempted downstream rows 3425/330/1982 vs 2076/280/1488 distinct. Conclusion-local exact identity dedup at AnalyzeActivation emission makes max multiplicity 1 and attempted==distinct, preserving first occurrence, distinct rows, and publisher scope. Temporary census/probe metadata removed. A/B: canonical backend, CLIF, and runtime stdout byte-identical on all three fixtures; public causal dimensions/products unchanged, uncaused and undefined-first-use zero. Raw native debug dumps are intentionally non-canonical and differ even base-vs-base, so CLIF is the stable native artifact proof. Gates: focused tests green; cargo test --lib 1596 passed/5 ignored; fixture_matrix serial 485/9; fz2_cli 25/0; workspace all-target/all-feature check green; clippy -D warnings green; fmt/diff checks green. Two-file uncommitted diff (semantic.rs + semantic-fixpoint docs) is ready for cold review.",
       "timestamp": "2026-09-03T09:18:05Z"
+    },
+    {
+      "text": "Cold-review proof gap closed: the helper-only unit was removed. The permanent test now drives a source fixture through the production semantic pipeline, runs and completes actual AnalyzeActivation conclusions, and asserts ordered raw contributions: repeated sink/list(int) removed; other/list(int) retained under a distinct key; sink/list(atom) retained under the same recursive convergence key. It then replaces first/0's lowered body with a no-call body, signals LoweredBody movement, proves the first AnalyzeActivation job rebased, runs/completes that actual empty contribution conclusion, and only then runs/completes second/0's actual conclusion; second independently emits and owns the identical sink/list(int) contribution and keeps the shared facts published. Superseded helper/scaffolding absent. Reruns: focused production-boundary + contribution withdrawal/frontier ownership tests green; full lib 1596 passed/5 ignored; strict all-target/all-feature clippy green; fmt/diff/residue checks green. Production implementation remains the same minimal conclusion-local exact set, now inlined at its sole use.",
+      "timestamp": "2026-09-03T09:39:37Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Deduplicate identical callee input contributions before activation-input joins",
   "type": "bug",
-  "updated_at": "2026-09-03T09:18:05Z"
+  "updated_at": "2026-09-03T09:39:37Z"
 }
