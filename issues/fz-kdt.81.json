@@ -4,14 +4,16 @@
   "blocks": [
     "fz-kdt.90"
   ],
+  "closed_at": "2026-09-03T01:41:52Z",
+  "close_reason": "Closed as no longer applicable on origin/main a3a9761d1. The ticket's proposed carrier conflates facts that the current tree intentionally separates: CallSiteTargets is payload-free membership, while correlated evidence is already owned by ActivationInputAlternatives, read row-wise by analysis and runtime demand. Seven focused correlation/dispatch tests pass, 00183 prints the expected result, and all four production lenses report zero row-budget collapses. The live-edge and cell consumers named by the ticket were refuted and closed (kdt.69.3 and kdt.74). Surviving column-wise CallTargetSummary merges belong to the load-bearing semantic/artifact surface; prior deletion caused a miscompile and is not evidence for adding rows to membership edges. kdt.90 remains separate cleanup. File a fresh correctness ticket only if a production-path test demonstrates a synthetic cross-row contribution from rebuild; kdt.81 has none.",
   "created": "2026-08-30T20:02:56Z",
   "description": "CallTargetSummary.activation_inputs is merged COLUMN-WISE\n(merge_summary_input_vec, jobs/semantic.rs:1976-1991, via same_call_target)\nwhile ActivationInputRow must stay correlated (fz-9i4.7.10.2). Any\nedge-carried row model needs a correlated row SET on the edge value.\n\nPROVEN LOAD-BEARINGLY WRONG, TWICE (fz-kdt.80 builder + cold review,\n2026-08-31): deleting the blend-consuming rebuild (A1) MISCOMPILES --\nEnum.take([1,2,3,4,5],3) returns [1,2,3,4,5] -- and the miscompile PERSISTS\neven with fz-kdt.80's join-stable key landed (key equality != emission\nidempotence: rebuild_coalesced_call_emission, jobs/semantic.rs:1131-1216,\nalso recomputes contract return refinement, the blended surface, and the\nblended-row ActivationContribution seeding the callee's ActivationInputs).\n\nTHIS TICKET therefore owns the deletions fz-kdt.80's Stage 2 could not\ntake: when the correlated row carrier lands, merge_summary_input_vec, the\ncolumn-wise blend, and rebuild_coalesced_call_emission die IN THE SAME\nMOTION (rip-out law), and fz-kdt.90's merge_callsite_activation dead-arm\ncheck folds into the cleanup.\n\n## Sequencing (2026-08-31)\nShared substrate under BOTH live routes (a resumed fz-kdt.69.3 and any\nfuture cell model) -- not speculative. Requires fz-kdt.80's Stage-1 dedupe\nfirst (join-stable keys make row identity meaningful across coalescing).\nAcceptance: edge value carries rows; artifact byte-identical (measure\nagainst the post-kdt.80 baseline); pins hold. STOP: if carrying rows\nchanges the demanded key set, that is the artifact-vs-precision tension\nsurfacing (fz-kdt.74 item 5) -- stop and decide the artifact question\nexplicitly.",
   "id": "fz-kdt.81",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Edge facts cannot carry the correlated input-row model",
   "type": "task",
-  "updated_at": "2026-08-31T02:56:32Z"
+  "updated_at": "2026-09-03T01:41:52Z"
 }
