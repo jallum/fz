@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T01:33:41Z",
+  "close_reason": "Closed as disproven/superseded. The historical observation reproduces, but the remaining defect does not. A 574-fixture comparison found predicate was the only inventory increase after kdt.63; fz-kdt.106/dee588b95 removed that input-row-budget collapse. The unchanged return-widening corpus gate then covered 577 historical fixtures and all 597 origin/main fixtures with zero real return-widening engagements; every activation stayed at \u003c=5 return changes against budget 8. Rebase is already the sound signal that derived content may be invalid, while ActivationInputs remains cumulative, so the proposed separate non-monotone-input trigger does not exist and would undermine ascent convergence. Focused rebase, widening-honesty, inventory, causality, and budget tests all pass at a3a9761d1. Attribution: fz-kdt.106/dee588b95, the fz-rh2.22 return-honesty guard, and fz-kdt.132. File a fresh ticket if a current reproducer crosses the return-widening budget.",
   "created": "2026-08-29T14:19:35Z",
   "description": "Found by fz-kdt.63's adversarial review via canonical-form comparison\n(base vs commit, all 574 fixtures): removing the analysis's\nretract-and-remint churn moved the emitted inventory on 6 fixtures, in\nBOTH directions -- the churn's rebased AnalyzeActivation completions had\nbeen the sole reset of two accumulations.\n\nINSTANCE REPAIRED BY fz-kdt.106 (a010532e8, 2026-09-01): the\nenum_predicate_search WIDENING half (207 -\u003e 221; fourteen extra\nactivations keyed on int | :false | :ok | :true) was the INPUT-side\naccumulation -- superseded ascent-history rows tripping the row-budget\ncollapse -- and dominance absorption removes it principled-ly (the churn\nhad been accidental replace semantics). Predicate now emits 203 under\nBOTH schedules, byte-identical canon; the wide cone is gone. Do not\nre-derive that half here.\n\nWHAT REMAINS THIS TICKET'S: the RETURN-side ladder.\nActivationMap::define_return (semantic.rs) replaces evidence and resets\nslot.ascents ONLY when rebased -- rebasing is the sole narrowing path\nfor return evidence and the sole reset of RETURN_WIDENING_BUDGET. With\nthe churn gone the join-only ascent runs unchecked on some programs;\nlarger inputs sit closer to the convergence_class/any widening cliff.\nFix direction unchanged: an EXPLICIT reset tied to what actually\ninvalidates the count (the activation's input evidence moving\nnon-monotonically), not to retraction accidents. Re-measure the\nremaining 5 fixtures' movement on the post-106 base before scoping.",
   "id": "fz-kdt.65",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Return-widening ladder resets only on rebase: narrowing depended on retraction churn",
   "type": "bug",
-  "updated_at": "2026-09-01T16:55:56Z"
+  "updated_at": "2026-09-03T01:33:41Z"
 }
