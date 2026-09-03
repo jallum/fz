@@ -7,9 +7,15 @@
   "id": "fz-kdt.16",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CLOSED (2026-09-02) -- both halves of the mismatch are gone at main (a3a9761d1). (1) The envelope no longer erases callables to fun_top: fz-kdt.125 gave the predicate an identity axis and fz-kdt.127.1 made it name the construction (CallableShapes with containment admission), so targets differing only by which callable arrives are separable. (2) The predicate no longer preserves distinctions it cannot test: fz-kdt.119 made tuple tests per-position (TupleShapes), fz-kdt.107.3 made a list test ask its head, fz-kdt.131 states the erasing-axis law, and fz-kdt.129's covering seat forbids ordering on blind axes. The no-question dispatch population is ZERO (fz-kdt.123 closed) and INDISTINGUISHABLE_ARM_RESIDUE was deleted in 127.1. What survives is owned by fz-kdt.143 (drop across split groups), 131 (tail-blind residue), 168 (symmetric erasing_overlap).",
+      "timestamp": "2026-09-03T00:02:10Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Multi-target callsite dispatch mints arm tables the runtime predicate cannot decide; question-less arms collapse to arm 0",
   "type": "bug",
-  "updated_at": "2026-08-25T01:37:01Z"
+  "updated_at": "2026-09-03T00:02:10Z"
 }
