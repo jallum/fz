@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.5"
+  ],
   "created": "2026-09-03T11:08:01Z",
   "description": "## Goal\n\nCorrect the readiness telemetry test and documentation after fz-kdt.45 made direct DeriveExecutableFacts jobs stand on settled semantic facts. Attribute the newly live readiness cause to the direct scheduler fact boundary, not to later root-scanner deletion.\n\n## Evidence\n\nAt 548dbd87b, immediately before fz-kdt.45, the 00181 trace has 278 applied completions, 421 product settlements, 37 quiescence events, and zero scheduler readiness wakes. At 446374021, fz-kdt.45, it has 308 applied completions, 408 product settlements, 34 quiescence events, and 21 readiness wakes: 18 enqueued and 3 coalesced. The fz-tfn.5 candidate has the identical signal, proving root-scanner deletion did not introduce it.\n\nThe existing fz2_cli assertion still requires wakes == 0, so the current delivery head fails that integration test even though causal replay correctly attributes the wakes.\n\n## TDD and acceptance\n\n1. Reproduce the old zero-wake assertion failing on current delivery head.\n2. Pin that readiness wakes are nonzero, derive from Settled ActivationAnalyzed/CallSiteSummary uses that wake DeriveExecutableFacts, and produce a nonzero readiness-caused total with no uncaused evaluations.\n3. Update telemetry documentation with the exact fz-kdt.45 direct-fact cause.\n4. Do not change scheduling behavior or weaken other causal invariants.\n5. Run focused/full fz2_cli, library tests as needed, formatting, and strict clippy.\n\nThis ticket blocks fz-tfn.5 so its commit contains only root-scanner deletion and can be rebased on the corrected integration contract.",
   "id": "fz-tfn.23",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Correct readiness telemetry after direct ExecutableFacts scheduling",
   "type": "bug",
-  "updated_at": "2026-09-03T11:08:01Z"
+  "updated_at": "2026-09-03T11:08:06Z"
 }
