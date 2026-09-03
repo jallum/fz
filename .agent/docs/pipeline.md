@@ -100,7 +100,7 @@ durable source of truth for the pull artifact path as built.
   pulls `RootBackendProduct(root)`.
 - `RootKind::Macro` is a hidden compile-time entry request created only by
   `BuildMacroExecutable`. It uses the macro ABI input vector
-  `__CALLER__ + captures + quoted args`, uses the legacy backend program path,
+  `__CALLER__ + captures + quoted args`, drives its bounded backend product,
   and publishes `MacroExecutable(function)` for the macro expander.
 
 ## A root's journey
@@ -222,7 +222,7 @@ after bootstrap bindings — visibility, not a stage.
 
 `LoweredBlock { steps, result }` was enough for straight-line code plus a
 special-cased `if`, but it was too weak for `case`, `with`, and `receive`.
-Compiler2 now lowers one function body as:
+Compiler2 lowers one function body as:
 
 - `LoweredClause`: head projections plus the `ControlEntryId` where the clause
   body starts
@@ -275,7 +275,7 @@ graph instead of rebuilding hidden CPS structure from "tail position" guesses.
 The backend interpreter preserves the same distinction: tail calls can park on
 `receive`, and blocked tasks keep an explicit backend continuation stack so a
 woken callee can still deliver into the caller's resume entry later. For the
-compiler2 backend executable/entry seam, it now drives transitions from that
+compiler2 backend executable/entry seam, it drives transitions from that
 explicit resume state in a loop instead of re-entering through nested helper
 calls.
 
@@ -305,6 +305,23 @@ settled callsite facts for the activation it is materializing.
 So semantic facts settle locally, then products consume those facts by key.
 Growth across that line is represented by another named product/fact wait, not
 by a root pass.
+
+### Local and provider call targets
+
+`FunctionId` names a callable; it does not promise that this compiler owns a
+body for it. Semantic summaries therefore distinguish local functions from
+`SelectedCallee::ProviderBoundary`. Artifact and backend call edges preserve
+the same distinction in `CallTarget<T>`: local targets point into the demanded
+executable frontier, while provider targets retain their `FunctionId` until
+native lowering projects the corresponding `Mfa`.
+
+A provider boundary contributes a resolved call summary and import edge without
+waiting for local definition, activation, dispatch, or recursion facts. Runtime
+demand crosses it through the settled boundary input surface because there is
+no local body to inspect. Final raw IR represents the choice directly with
+`DirectCallTarget::Local(FnId)` or `DirectCallTarget::ProviderBoundary(Mfa)`;
+import-edge metadata is derived from those term targets rather than from a
+parallel side table or synthetic stub body.
 
 Backend-required transport positions wait for an actual produced
 `TransportShape(position)`. Backend and ABI products consume layouts, so their
@@ -482,10 +499,8 @@ template). It is the authoritative surface-set
 operation, applied at the demand→representation seam — `CallableFlowFact`
 first-class surfaces at construction and every callable axis at demand
 finalization (`ExecutableRuntimeDemand::ground_callable_surfaces`) — so transport
-never re-derives or relitigates the choice. The legacy root telemetry twins
-`fz.compiler2.runtime_demand.defined` and `fz.compiler2.transport_flow.defined`
-do not exist; the five distinctions
-this model keeps separate — omitted lanes, tuple-field transport,
+never re-derives or relitigates the choice. The five distinctions this model
+keeps separate — omitted lanes, tuple-field transport,
 direct-callable transport, first-class materialization, and callable-entry
 publication — stay individually observable through the demanded `RuntimeDemand`
 product and the per-position transport products pinned in
@@ -638,15 +653,13 @@ Things that belong in Compiler2 artifact facts:
 
 Things that do not belong there:
 
-- old `SpecPlan` as a backend artifact surface
-- `SpecRegistry` or `SpecId` as semantic identity
-- old `AbiFacts` sets such as `native_fns`, `cont_fns`, `cont_target_fns`, and
-  `cont_extras_count`
+- semantic registries or planner-local identity
+- root-wide ABI inventories
 - backend-specific callable wrapper signatures
 - formatted telemetry payloads
 
 Interpreter work should consume `BackendProgram`, and native work should
-consume `NativeProgram`, not invent old planner/codegen state while wiring
+consume `NativeProgram`. Neither consumer derives semantic state while wiring
 JIT or AOT entry points.
 
 Backend-facing product work has one hard rule after
@@ -678,32 +691,35 @@ fact/product, not to scan semantic state.
 consumption. Native codegen is allowed to ask only backend-consumption
 questions at that rung:
 
-| Old shared-native input | Compiler2-native answer |
+`fz2 build` links generated object code against the `fz-runtime` static library
+built into the compiler binary configuration by `build.rs`. Ordinary builds use
+the exact archive recorded from the isolated Cargo `OUT_DIR`; they do not invoke
+Cargo or scan dependency archives. `FZ_AOT_RUNTIME_STATICLIB` may name an
+absolute, existing prebuilt archive for packaging outside that build tree. The
+caller owns target/profile ABI compatibility for an override.
+
+| Native-codegen question | Published answer |
 | --- | --- |
-| prepared `Module` | `NativeProgram.module` |
+| lowered module | `NativeProgram.module` |
 | executable / helper inventory | `NativeProgram.entry` plus `NativeProgram.bodies[*].fn_id` and `origin` |
-| `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_reprs`, and `effects` |
-| `SpecPlan.vars` type queries | `NativeBody.value_types` |
-| `PlannedProgram.callable_entries` | `NativeProgram.callable_boundaries` |
-| callable-boundary lookup through planner state | `MakeFnRef` / `MakeClosure` `identity_fn` resolved against `NativeProgram.callable_boundaries` |
+| body result and effects | `NativeBody.return_ty`, `return_reprs`, and `effects` |
+| value type queries | `NativeBody.value_types` |
+| callable entries | `NativeProgram.callable_boundaries` |
+| callable-boundary lookup | `MakeFnRef` / `MakeClosure` `identity_fn` resolved against `NativeProgram.callable_boundaries` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |
 | continuation / entry ABI classification | `NativeBody.entry_abi` and `NativeBodyOrigin::Continuation` |
 | runtime type-membership questions | explicit `RuntimeTypePredicate` facts |
 
 Questions that are illegal after `NativeProgram(root)`:
 
-- reading `ModulePlan`, `PlannedProgram`, `SpecPlan`, `SpecRegistry`, or
-  `AbiFacts`
 - asking reachability, callee-selection, or semantic-closure questions
-- re-deriving callable-entry obligations, return lanes, or extern marshal
-  classes from old-world planner state
+- re-deriving callable-entry obligations, return lanes, extern marshal classes,
+  or runtime predicates from semantic state
 
-Compiler2-native no longer carries copied planner-shaped baggage
-(`SpecPlan`, `SpecRegistry`, synthetic `SpecKey`, widened `return_tys`) as part
-of its backend handoff. Runtime type-membership questions now cross the handoff
-through explicit `RuntimeTypePredicate` facts: compiler2 keeps rich semantic
-`Ty` facts for dispatch/refinement above the seam, then projects them into the
-runtime-observable predicate model the runtime can actually answer below it.
+Runtime type-membership questions cross the handoff through explicit
+`RuntimeTypePredicate` facts: compiler2 keeps rich semantic `Ty` facts for
+dispatch/refinement above the seam, then projects them into the
+runtime-observable predicate model the runtime can answer below it.
 
 Shared `ExternDecl` carries only ABI-facing metadata after `NativeProgram(root)`.
 Semantic extern facts stay in compiler2-owned structures: `LoweredExtern`,
@@ -716,32 +732,17 @@ continuation, while `Continue` and `Deliver` carry their resolved source layout 
 the caller executable or destination entry owns the other side of the adapter.
 Codegen does not rediscover ABI at individual tailcall or callable entry sites.
 
-The same two-layer split now applies on both sides of the migration seam:
-legacy lowering may still project legacy `Ty` handles into
-`RuntimeTypePredicate` for cached receive dispatch while that world exists, but
-the shared runtime predicate itself is first-class and is not a second semantic
-type system.
+## Front doors consume published artifacts
 
-Current conclusion from the code:
+`Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` consume
+`NativeProgram(root)` through the native product boundary and share the
+world-owned type store. `run_root_interp` consumes `BackendProgram(root)`
+without requesting `NativeProgram(root)`.
 
-- no missing closed fact has been identified for the current compiler2-native
-  codegen inputs
-- the compiler2-native JIT fixture tests now consume `NativeProgram(root)`
-  through the compiler2-owned backend path directly
-- `Compiler2::compile_root_jit`, `run_root_jit`, and `compile_root_aot` now
-  consume that same compiler2-owned backend path directly, using the world's
-  interned type store instead of a fresh legacy one
-- the native/JIT/AOT front doors reach `NativeProgram(root)` through the same
-  product boundary as interp: `native_program_for_root` runs the single demanded
-  `LowerNativeProgram(root)` job, which builds `BackendProgram(root)` via the
-  product driver (`build_backend_product`)
-- `fz2` is now the side-by-side outer shell for those front doors: `fz2 run`,
-  `fz2 interp`, and `fz2 build` submit source directly to Compiler2, seed
-  `main/0`, and never reopen old planner or type-infer work; `fz2 test`
-  submits the same way but seeds one root per discovered `test(:name) do ...
-  end` item instead of `main/0`, running each in its own subprocess
-- the old `fz` surface is retired; new compiler-facing work enters through
-  compiler2 APIs or `fz2`
+`fz2 run`, `fz2 interp`, and `fz2 build` submit source, request `main/0`, and
+invoke those artifact consumers. `fz2 test` submits the same source but requests
+one root per discovered `test(:name) do ... end` item and runs each root in its
+own subprocess.
 
 ## Redefinition retracts by ownership
 

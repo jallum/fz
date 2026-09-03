@@ -224,18 +224,6 @@ fn run_contract(case: ContractCase<'_>) {
         case.name
     );
     assert_eq!(
-        capture.count(&["fz", "frontend", "lowered"]),
-        0,
-        "{} should not invoke the production frontend",
-        case.name
-    );
-    assert_eq!(
-        capture.count(&["fz", "planner", "planned"]),
-        0,
-        "{} should not invoke the production planner",
-        case.name
-    );
-    assert_eq!(
         submissions.borrow().len(),
         1,
         "{} should emit exactly one Compiler2 submission event",
@@ -264,13 +252,6 @@ fn run_contract(case: ContractCase<'_>) {
         compiler.demand(Job::ScopeCode(code_id)),
         "{} should accept an explicit define-code demand after indexing",
         case.name
-    );
-}
-
-fn assert_no_legacy_planner_or_type_infer(capture: &Capture, context: &str) {
-    assert!(
-        capture.find(&["fz", "type_infer"]).is_empty() && capture.find(&["fz", "planner"]).is_empty(),
-        "{context}",
     );
 }
 
@@ -331,7 +312,7 @@ struct NativeEntryCase<'a> {
 }
 
 #[test]
-fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
+fn compiler2_compile_root_jit_consumes_native_program() {
     let quicksort = include_str!("../../fixtures2/00020_quicksort_jit_entry.fz").to_string();
     let cases = [
         NativeEntryCase {
@@ -396,15 +377,11 @@ fn compiler2_compile_root_jit_consumes_native_program_without_legacy_prepare() {
                 case.name
             );
         }
-        assert_no_legacy_planner_or_type_infer(
-            &capture,
-            "Compiler2 JIT front door should not reopen legacy planning or type inference",
-        );
     }
 }
 
 #[test]
-fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
+fn compiler2_compile_root_aot_consumes_native_program() {
     let cases = [
         (
             "quicksort",
@@ -454,10 +431,6 @@ fn compiler2_compile_root_aot_consumes_native_program_without_legacy_prepare() {
             artifact.main_symbol.as_deref(),
             Some("main"),
             "{name} should preserve the C-callable main symbol through the Compiler2 AOT front door",
-        );
-        assert_no_legacy_planner_or_type_infer(
-            &capture,
-            "Compiler2 AOT front door should not reopen legacy planning or type inference",
         );
     }
 }
@@ -518,7 +491,7 @@ fn compiler2_native_front_doors_jit_and_aot_enum_reduce_through_the_product_path
 }
 
 #[test]
-fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
+fn compiler2_run_root_jit_executes_resources() {
     let _lock = tests_support_lock().lock().unwrap();
     tests_support_dtor_reset();
 
@@ -556,10 +529,6 @@ fn compiler2_run_root_jit_executes_resources_without_legacy_prepare() {
     assert!(
         capture.find(&["fz", "runtime", "dtor_drain_failed"]).is_empty(),
         "Compiler2 JIT run should complete the runtime destructor drain cleanly",
-    );
-    assert_no_legacy_planner_or_type_infer(
-        &capture,
-        "Compiler2 JIT run should not reopen the legacy planner or type inference",
     );
 }
 
