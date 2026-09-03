@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T03:57:25Z",
+  "description": "## Finding\n\nAt pinned origin/main `a3a9761d1209165e5230625b9347cf6b0ad09b83`, `.agent/docs/telemetry.md:328-335` says drain-arbiter readiness movement wakes nothing because current product waits are polled and no scheduler waiter exists.\n\nThat statement is too broad. A scratch reachability probe on `compiler2::port_macros_test::item_macro_compiler_ast_splices_callable_fn` recorded:\n\n```text\nproducer_pokes=0, unresolved=1, quiescence_steps=1\n```\n\nDeleting only the drive-loop `if quiescence_woke_work { continue; }` branch and helper made the same test fail immediately with:\n\n```text\nUnresolved {\n  waits: [Settled(FunctionDefined(FunctionId(0)))],\n  jobs: [SeedRoot(RootId(0))]\n}\n```\n\nProduct-pull waits are indeed polled rather than scheduler-subscribed, but agenda-level jobs such as `SeedRoot` can subscribe to settled facts and be woken by drain arbitration. fz-kdt.60 correctly retained this branch.\n\n## Work\n\nUpdate telemetry/fact-engine documentation to distinguish product-driver polling from agenda-level scheduler waiters. Add or strengthen a focused regression that exposes the SeedRoot settled waiter and proves the quiescence wake continues the drive.\n\n## Acceptance\n\n- Documentation no longer claims drain arbitration wakes nothing categorically.\n- It states which product waits are polled and which agenda-level settled waiters remain scheduler-subscribed.\n- A focused regression fails if the live drive-loop arbiter branch/helper is removed.\n- Existing drain-arbiter telemetry tests, full library tests, formatting, and strict clippy pass.",
+  "id": "fz-kdt.180",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "Correct telemetry docs: drain arbitration wakes agenda-level SeedRoot settled waiters",
+  "type": "task",
+  "updated_at": "2026-09-03T03:57:25Z"
+}
