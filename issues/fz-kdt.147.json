@@ -15,11 +15,15 @@
     {
       "text": "CLOSED (2026-09-02) -- population dissolved, per the last measurement on this ticket: the surface-membership escape census is 0 at the settled order AND under every permutation (wrappers:1/6, arms:reverse/1/6) across all seven fixtures and the whole corpus. The one surviving observation -- construction-wrapper member order was the interner's mint order -- was closed by fz-kdt.108 (one canonical edge order, Types::cmp_tys on first_class_edges, 172ab21f1); the remaining free-var tie is fz-kdt.161.",
       "timestamp": "2026-09-03T00:02:12Z"
+    },
+    {
+      "text": "THE SHAPE IS BACK, on the list axis (fz-kdt.144, 0889c0b3a). This ticket closed because the tuple-era population dissolved. The list-tail reading finds a new one with the same signature: 00277_enum_tier0_fixture reads 12 escapes at the SETTLED construction-wrapper order and 0 under wrappers:1, wrappers:6 and wrappers:reverse -- every legal permutation is better than the order the compiler settles on, again, and again because nothing but the member list's order decides which member takes the value. The difference from last time: the covering member EXISTS (x23/x24, keyed list(int | :tail)) and is seated second, so this is not a missing specialization but a seat that never runs. fz-kdt.179 owns the cure (route wrapper members through routable_alternatives); this ticket's direction (b) \"widest surface first\" is subsumed by it. The facts are pinned in SURFACE_MEMBERSHIP_CENSUS's wrapper rows.",
+      "timestamp": "2026-09-03T04:54:23Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "The settled construction-wrapper member order is the worst of the legal orders for surface-membership escapes",
   "type": "bug",
-  "updated_at": "2026-09-03T00:02:12Z"
+  "updated_at": "2026-09-03T04:54:23Z"
 }
