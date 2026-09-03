@@ -7,9 +7,15 @@
   "id": "fz-kdt.193",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.179 landed (c3e27143d): member selection now runs the seat, but your two reader gaps are UNCHANGED and one is now the last census standing. INDISTINGUISHABLE_ARM_POPULATION (kept at 44 groups) still names CENSUS wrapper numbers, which differ from dump wN -- your dump-wN-vs-census-wN gap. And the static census reader's arm-pair skipping is retired for the SEAT census here but your description covers the reading logic that INDISTINGUISHABLE still uses. Re-measure against this base: the seat census is gone, so your scope narrows to INDISTINGUISHABLE's numbering and any reader the entry/case/receive censuses still use.\n",
+      "timestamp": "2026-09-03T16:08:46Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The static census reader skips arm pairs that ask different subject sets and consults separating subjects only on the earlier arm, where production covers walks the full position vector; and dump wrapper numbers differ from census wrapper numbers",
   "type": "task",
-  "updated_at": "2026-09-03T07:15:51Z"
+  "updated_at": "2026-09-03T16:08:46Z"
 }
