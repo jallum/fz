@@ -15,11 +15,15 @@
     {
       "text": "RE-MEASURED at d2a5f3510 (2026-09-02), head FIFO vs head LIFO: the Kernel.dbg/1[empty_list()] + fz_dbg_value/1[empty_list()] pair exists under LIFO only (beside dbg/1[list(int)] on both), and BOTH return `any` -- the fz-kdt.120 defect (a @spec variable bound to the whole `[]` argument is dropped by arrow_match.rs's empty-list ambiguity rule, so `dbg(t) :: t` at `[]` loses its result). FIFO carries its own one-schedule key instead: Range.reduce/5[..., {:cont, empty_list()}, ...]. So the population this ticket asks to count is, at head, two `[]`-keyed activations that a schedule mints when a callsite's argument is `[]` at an intermediate round and that survive beside the wider key. Sequence: after fz-kdt.120's rule lands (the `[]`-keyed dbg will then return `[]`, not `any`), re-count; what remains is the minting question this ticket owns, and fz-kdt.132's lesson applies (a truncated ascent ladder is not a subsumption problem).",
       "timestamp": "2026-09-03T03:16:47Z"
+    },
+    {
+      "text": "CLOSED AS REFUTED / SUPERSEDED (2026-09-03, owner decision): key-level empty-rung absorption blends two users that differ only in a []-seeded accumulator (attack b1/b2: an unsound, order-dependent published return on three doors), and the activation-key antichain design is unsound and contrary to exact, ledgered dependencies (an unledgered read of mutable world state inside the key mint; an insert-and-evict join that is not monotone as a set; a fact that can only be read, never waited; fz-kdt.69's decommission as an unnamed prerequisite). fz-kdt.183's demand-through-forwarding rule never mints the ladder this ticket would fold; its post-change rung census (rungs_canon.py definition, base 53/15, must not grow, created rungs named) is now 183's acceptance item. The HEAD population of 53 rungs stays: they sit on non-recursive keys where the key is evidence.",
+      "timestamp": "2026-09-03T08:33:11Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Empty-rung absorption at the key level is BLOCKED and likely retired: it blends two users that differ only in a []-seeded accumulator, and fz-kdt.183's demand-through-forwarding rule never mints the ladder it would fold",
   "type": "task",
-  "updated_at": "2026-09-03T08:33:08Z"
+  "updated_at": "2026-09-03T08:33:11Z"
 }
