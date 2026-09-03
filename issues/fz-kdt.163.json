@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-tfn.13"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Boxed captured-callable specializations duplicate native CPS bodies despite distinct semantic identities",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:40Z"
+  "updated_at": "2026-09-03T10:21:44Z"
 }
