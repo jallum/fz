@@ -9,9 +9,15 @@
   "id": "fz-kdt.65",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CONCORDANT (2026-09-03): fz-kdt.190 -- a published return fact is source-order dependent because analyze_activation refines the key-wide join by EACH ROW's @spec result in row order and refine_observed_return keeps the observed on an empty intersection (the first row's contract wins); and fz-kdt.177 -- a self-nesting accumulator ({x, acc} tuple, or nest([acc], n) list) never reaches the widening budget (\u003e60 s), i.e. the ladder's termination carriers do not bound element NESTING. Both are this ticket's return-ladder family; 190 is the join-only side, 177 the budget side.",
+      "timestamp": "2026-09-03T08:19:07Z"
+    }
+  ],
   "priority": 2,
   "status": "closed",
   "title": "Return-widening ladder resets only on rebase: narrowing depended on retraction churn",
   "type": "bug",
-  "updated_at": "2026-09-03T01:33:41Z"
+  "updated_at": "2026-09-03T08:19:07Z"
 }
