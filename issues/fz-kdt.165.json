@@ -17,11 +17,15 @@
     {
       "text": "GATES MOVED HERE from fz-kdt.183 (its rule review, 2026-09-03): review-attacks b1n.fz, b2n.fz and b4_three_same_driver.fz (identical driver [int], identical seed [], different lambdas) panic at artifact.rs:154 at HEAD and under 183's rule alike -- the minimal pair (kdt122 with different drivers is cured by 183; b1n is not) proves no ELEMENT rule can separate them: only the callable slot the key erases to a2 differs. They are this ticket's red-first gates. Also from that review: the composition is InputDemand { local_dispatch, forwarded_dispatch, identity } on 183's one cone walk -- the dispatch axis itself needs local (what brand erasure and clause reachability read) and forwarded (what the recursive collapse reads) halves; 183 publishes the local half as a co-value and renames the fact.",
       "timestamp": "2026-09-03T09:40:39Z"
+    },
+    {
+      "text": "fz-kdt.183 landed (2e0bb2706). FactKey::InputDemand carries { local_dispatch, forwarded_dispatch }; the identity axis you need is a THIRD component on the SAME cone walk -- collect_demand_cone / ForwardEdge / solve_forwarded_demand in jobs/keying.rs are reusable verbatim, only the per-node LOCAL component differs (ClosureCall callee / Lambda captures traced to clause.params[i]). erase_transported_closure_identities reads local_dispatch explicitly (world.rs; the fz-6gb coupling); when the identity axis exists that read moves to it. b1n/b2n/b4 (independent same-driver reducers) still panic at HEAD and are yours: the minimal pair holds (the two-user Enum.reduce/3 pair is cured, b1n is not).\n",
+      "timestamp": "2026-09-03T12:16:39Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Derive callable-identity key demand per input and reachable entry",
   "type": "task",
-  "updated_at": "2026-09-03T09:40:39Z"
+  "updated_at": "2026-09-03T12:16:39Z"
 }
