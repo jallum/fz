@@ -14,8 +14,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "00277_enum_tier0_fixture compiled to two different backend programs from one binary on one input: cross-session discrepancy, not reproducible in 17 same-session runs",
   "type": "bug",
-  "updated_at": "2026-09-03T00:02:14Z"
+  "updated_at": "2026-09-03T00:02:15Z"
 }
