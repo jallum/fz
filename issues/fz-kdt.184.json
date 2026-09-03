@@ -9,9 +9,15 @@
   "id": "fz-kdt.184",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RESEARCH DONE (2026-09-03, prototype proto184.diff in the coordinator's scratchpad, being cold-reviewed). THE RULE: each @spec variable gets LOWER bounds from covariant occurrences (joined) and UPPER bounds from contravariant ones (met, under an arrow's parameters -- the ONE reversing node, collect_arrow_match); instantiation is the join of the lower bounds and nothing else; the meet is the solvability CHECK (lower ⊄ upper → Invalid); a variable with only upper bounds stays free. Verdicts base → rule: A4 Known (any)-\u003enil (unsound) → Known (int)-\u003enil; A5 Invalid (false violation) → Known int; A3 a := any → int; A13 filter result [any] → [int]; A2 Known [any] → Underconstrained; all other attacks unchanged; 14 attacks promoted to named tests + a meet-check witness (arrow_match 35/0). Code: BindingSide { Unify, Lower, Upper } in types/mod.rs (collect_instantiation_subst documented as the UNIFIER, four callers byte-identical; new collect_constraint_subst is the solver), MatchBounds { lower, upper } through the six collectors, merge_subst_meet, upper bounds read from the RAW ARGUMENTS (the witnesses erase them: fz-kdt.192). CORPUS (597, base 0889c0b3a): 0 behaviour movers on interp and run, 0 canon movers, executables/any-returns/FIFO-LIFO set identical -- yet the path is exercised 52,475 times, 24,556 upper bindings base unioned are discarded and 912 Invalids ruled, none reaching a published fact; the defect is latent on the corpus exactly as this ticket predicted. Lib 1627/0/5, matrix 485/0/9. STACKED with fz-kdt.120: a FOLD, not a merge -- 120's OpenVars.positive/flipped() IS BindingSide and 120's open_vars walk is 184's args walk; the stacked tree is byte-identical to pure 120 on the corpus; four arrow_match pins flip to 120's deliberate decisions (A7/A8/A9 → Underconstrained, A3's b half → [] | [int]). Hand-off: 120 re-cut on top of 184. Note: the false doc sentence this ticket names (\"only the arrow's RESULT feeds the union\") is not at HEAD; it arrives with 120's diff, which is the sequencing rationale.",
+      "timestamp": "2026-09-03T06:31:29Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "merge_subst_union collects an arrow parameter (an upper bound) into the same union as a return (a lower bound): a @spec variable in a contravariant result position instantiates unsoundly",
   "type": "task",
-  "updated_at": "2026-09-03T04:45:46Z"
+  "updated_at": "2026-09-03T06:31:29Z"
 }
