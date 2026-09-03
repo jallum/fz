@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T12:34:51Z",
+  "description": "Found by the fz-kdt.198 refutation (2026-09-03). PRE-EXISTING at accb5cfbe\nand unchanged by 198. arrow_set_covers (contract.rs) asks\nis_subtype(tuple(args), domain) over the ground clause rows, and the\ncallable positions pass whatever arrow arrives: a `(binary) -\u003e int` at a\ndeclared `(utf8) -\u003e int` is accepted (correct: parameters are contravariant,\nbinary is wider), but so is the reverse, and so is `(integer) -\u003e int` at\n`(binary) -\u003e int`, which no value can satisfy. Either arrow subtyping is not\ncontravariant in the parameter at this seam or the coverage check erases the\ncallable position before comparing -- the ticket's first step is to say\nwhich, with the calculator answer for is_subtype((integer)-\u003eint,\n(binary)-\u003eint) quoted. Reproducers (198 research archive):\n\ns9:\nimport Utf8\n\ndefmodule M do\n  @spec apply1(((binary) -\u003e integer)) :: integer\n  fn apply1(_f), do: 1\nend\n\n@spec narrow(utf8) :: integer\nfn narrow(_b), do: 2\n\nfn main() do\n  dbg(M.apply1(\u0026narrow/1))\nend\n\ns10:\ndefmodule M do\n  @spec apply1(((binary) -\u003e integer)) :: integer\n  fn apply1(_f), do: 1\nend\n\n@spec narrow(integer) :: integer\nfn narrow(_b), do: 2\n\nfn main() do\n  dbg(M.apply1(\u0026narrow/1))\nend\n\nSibling of fz-kdt.201 (the @spec RETURN side is unchecked): together they\nare the two halves of \"a @spec is not a contract on callables\". Concordant:\nfz-kdt.184 (instantiation polarity for @spec variables under arrow\nparameters -- that ticket makes the VARIABLE side contravariant; this one is\nthe GROUND arrow) and fz-kdt.132 (closure clause arrows are evidence, not a\ncontract -- the callee side of the same seam). Red-first: s9 and s10 report\nspec/violation on three doors while the correct-direction case\n(`(binary) -\u003e int` at `(utf8) -\u003e int`) keeps printing.",
+  "id": "fz-kdt.207",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] A callable argument's DOMAIN is not checked at a @spec argument position: `(integer) -\u003e int` is accepted where `(binary) -\u003e int` is declared, and the reverse",
+  "type": "task",
+  "updated_at": "2026-09-03T12:34:51Z"
+}
