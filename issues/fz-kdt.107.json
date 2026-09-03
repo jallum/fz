@@ -49,11 +49,15 @@
     {
       "text": "fz-kdt.178 (8de517a28): INDISTINGUISHABLE_ARM_POPULATION is the new named ratchet -- one-question groups ALL on construction-wrapper member selections (00277 47, enum_map_family 46, 00420 12, ...). Call-edge, entry, case and receive dispatch offer none, so the three predicates that emptied the callsite census hold. What a drop cannot dissolve there is yours; fz-kdt.179 owns the fact that the drop never runs on member selection at all.",
       "timestamp": "2026-09-03T07:22:46Z"
+    },
+    {
+      "text": "fz-kdt.186 landed (accb5cfbe): specificity_order's doc now names the three arrival-kept residues and which is whose -- the inseparable question GROUP is yours (a value reaches both, so their order is what it means), overlap-without-containment is fz-kdt.131's, and a SEPARATED pair is fz-kdt.194's (no value reaches both, so a canonical tie-break is safe there and only there). No behaviour change: your class keeps arrival order exactly as before.\n",
+      "timestamp": "2026-09-03T10:39:32Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "A list test asks a cons cell what its first element is: the dispatch campaign's last question, and the residue fully owned",
   "type": "bug",
-  "updated_at": "2026-09-03T07:22:46Z"
+  "updated_at": "2026-09-03T10:39:32Z"
 }
