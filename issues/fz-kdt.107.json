@@ -45,11 +45,15 @@
     {
       "text": "fz-kdt.141's permutation stress landed; step 3's evidence base is four fixtures wide now, not one.\n\nThe reversal knob this replaces could perturb ONE list seat at head (fz-kdt.118's close: 'arm-reversal movers 3-\u003e1, enum_map_family remains'). A seeded arm permutation perturbs 27 fixtures' artifacts where reversal perturbs 8, and it makes FOUR fixtures abort natively, all with one signature -- _fz_list_head_int_ref, a list of atoms read as a list of ints -- and all in this ticket's step-3 class:\n\n  enum_map_family              arms:reverse, arms:6\n  00277_enum_tier0_fixture     arms:1 .. arms:5\n  dispatch_seat_element_blind  every arm seed\n  enum_predicate_search        arms:6\n\nThree of the four were unreachable by the reversal. dispatch_seat_element_blind is fz-kdt.129's own reproducer, and its native abort under a legal arrival order is the cleanest statement of this ticket to date: the fixture prints the right answers ONLY because arrival seats the atom arm first.\n\nJIT and AOT agree fixture for fixture (AOT checked over both censuses); the interpreter is invariant everywhere -- 0 movers over 584 fixtures x 19 settings -- so this stays a three-path-parity hazard exactly as the ticket says.\n\nNone of these is a new defect: all four are this ticket's declared population. What changed is that the instrument gating step 3 is now honest -- your prerequisite (1), 'the one gate that ever caught the list-element abort class cannot perturb a single list seat', is retired. Recipe and numbers are in .agent/docs/dispatch-matrix.md, section 'The two free orders, and the stress that moves them'.",
       "timestamp": "2026-09-02T04:30:37Z"
+    },
+    {
+      "text": "fz-kdt.178 (8de517a28): INDISTINGUISHABLE_ARM_POPULATION is the new named ratchet -- one-question groups ALL on construction-wrapper member selections (00277 47, enum_map_family 46, 00420 12, ...). Call-edge, entry, case and receive dispatch offer none, so the three predicates that emptied the callsite census hold. What a drop cannot dissolve there is yours; fz-kdt.179 owns the fact that the drop never runs on member selection at all.",
+      "timestamp": "2026-09-03T07:22:46Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "A list test asks a cons cell what its first element is: the dispatch campaign's last question, and the residue fully owned",
   "type": "bug",
-  "updated_at": "2026-09-02T06:58:09Z"
+  "updated_at": "2026-09-03T07:22:46Z"
 }
