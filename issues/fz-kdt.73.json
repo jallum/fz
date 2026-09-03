@@ -6,16 +6,16 @@
   "blocks": [
     "fz-kdt.67"
   ],
-  "closed_at": "2026-09-03T02:44:26Z",
-  "close_reason": "Implemented by commit 1e7252981 and PR #114 in GitHub stack #112. Deleted both unreachable partial-key activation merge helpers and their mutation plumbing. Proof: 5 focused callsite-summary tests passed; library 1586 passed with 5 ignored; fixture matrix 485 passed with 9 ignored; workspace checks, strict clippy, formatting, diff, and residue scans passed.",
+  "closed_at": "2026-09-03T07:40:47Z",
+  "close_reason": "Implemented by commit 1e7252981 in open stacked PR #114; lint and test checks are green. The change is not yet merged to main.",
   "created": "2026-08-30T17:00:13Z",
   "description": "## Goal\n\nMake activation coalescing express the full activation-key identity already enforced by every caller. Delete unreachable mutation paths rather than preserving misleading merge machinery.\n\n## Proof at origin/main a3a9761d1209165e5230625b9347cf6b0ad09b83\n\n`CallSiteSummary::replace_targets_join_returns` and `CallSiteSummary::coalesce_targets` invoke `merge_callsite_activation` only after `same_call_target` has matched the callee and the complete `Option\u003cActivationKey\u003e`. Nothing mutates an activation between that match and the helper call. The helper therefore receives only equal `Some` values or `None` values: its `Some` arm is a no-op, its `None/Some` assignment is unreachable, and its fallback is a no-op. The entire helper and both invocations are semantically inert.\n\n`merge_target_activation` likewise contains a root/function-only path for different arrows even though its callers select candidates by the complete activation identity. That partial-key path cannot execute and would silently keep an arbitrary arrow if a caller ever loosened the match.\n\nThe already-built commit 1e7252981 demonstrates the intended deletion, but it is not present on this pinned main baseline.\n\n## Change\n\n- Delete both `merge_callsite_activation` invocations and the helper itself.\n- Delete the unreachable partial-key path and mutation plumbing in `merge_target_activation`.\n- Keep `same_call_target` keyed by callee plus complete activation identity.\n- Preserve the existing surface-input, activation-input, and return joins.\n- Add no shim, compatibility path, or explanatory dead-code branch.\n\n## TDD and acceptance\n\n- Focused callsite-summary tests cover repeated equal-activation snapshots.\n- A different activation of the same callee remains distinct.\n- Distinct-arrow activation keys remain distinct before the merge boundary.\n- Arrival order cannot select which arrow survives.\n- Repository search finds neither `merge_callsite_activation` nor a root/function-only activation merge.\n- Full semantic tests, fixture matrix, formatting, and clippy with warnings denied pass.",
   "id": "fz-kdt.73",
   "labels": [],
   "parent": "fz-qon",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Delete the inert callsite-activation merge and unreachable target partial-key branch",
   "type": "task",
-  "updated_at": "2026-09-03T04:30:50Z"
+  "updated_at": "2026-09-03T07:40:47Z"
 }
