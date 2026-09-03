@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.78"
+  ],
   "blocks": [],
   "created": "2026-09-03T18:27:59Z",
   "description": "Found by the fz-kdt.194 cold review and the fz-kdt.179 build (2026-09-03),\nboth present at base ca23b676f and unchanged by either ticket.\n\n1. `fixtures2/behavior/enumerable_protocol_dispatch.fz` exits 1 when compiled\n   through the AOT `build` door and run, on the base binary and under both\n   tickets` prototypes. Its interp and JIT `run` doors are fine. The fixture is\n   in the matrix`s ignored set for other reasons, so the matrix does not catch\n   it; it was found only by an explicit three-door sweep.\n2. `fixtures2/00421_reduce_cont_clause.fz` has no `main/0` and STALLS standalone\n   `fz2 interp` rather than reporting that it has no entry point. It is\n   measurable only through a test harness, which is why it went unnoticed as a\n   canon mover in fz-kdt.179 (that ticket`s builder counted it as a 5th drop\n   fixture; the reviewer`s corpus method reached only 4 because the fixture\n   cannot be swept directly).\n\nBoth are three-door parity / diagnosability gaps rather than miscompiles.\nCONCORDANT: fz-kdt.78 (require explicit asserted gate ownership for every\nfixtures2 source -- a fixture that no gate drives and that cannot be swept is\nexactly what that ticket is about); fz-kdt.149 (00424 panics at\nartifact.rs:155, the same \"a fixture fails on a door and nothing owns it\"\nfamily).\n\nRED-FIRST: the AOT door of enumerable_protocol_dispatch exits 0 with the\nexpected stdout; `fz2 interp fixtures2/00421_reduce_cont_clause.fz` reports a\nmissing entry point instead of stalling.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] enumerable_protocol_dispatch exits 1 through AOT build, and 00421_reduce_cont_clause stalls standalone interp",
   "type": "task",
-  "updated_at": "2026-09-03T18:27:59Z"
+  "updated_at": "2026-09-03T18:28:00Z"
 }
