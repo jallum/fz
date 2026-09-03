@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.24"
+  ],
   "created": "2026-09-03T20:18:41Z",
   "description": "## Proven problem\\n\\nDuring the fz-tfn.26 current-base 502-test fixture matrix, fixture_command_rejects_missing_readiness failed once because the same child-without-ready-signal outcome raced between explicit readiness-pipe EOF wording and child-exited EOF wording. The isolated test passed unchanged. This is a harness ownership race, not compiler semantics.\\n\\n## Goal\\n\\nGive readiness termination one deterministic classification independent of whether pipe EOF or process status becomes observable first.\\n\\n## Strategy\\n\\nTrace the fixture command readiness state machine and make one owner combine child status, readiness bytes, stderr, and EOF before formatting the verdict. Do not loosen the assertion to accept multiple strings; remove the race.\\n\\n## TDD\\n\\nForce both observation orders for a child that exits successfully without the execution-ready signal. Both must produce the same structured verdict and exact diagnostic. Stress the complete fixture matrix under parallel load.\\n\\n## Acceptance\\n\\nThe isolated regression and repeated parallel matrices are green with one exact diagnostic. No timeout increase, retry, sleep, alternate-string assertion, or compiler behavior change. Update harness docs if the verdict contract changes.",
   "id": "fz-tfn.28",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Make readiness EOF failure classification deterministic under parallel fixture load",
   "type": "bug",
-  "updated_at": "2026-09-03T20:18:41Z"
+  "updated_at": "2026-09-03T20:18:59Z"
 }

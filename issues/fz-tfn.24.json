@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.4",
-    "fz-tfn.27"
+    "fz-tfn.27",
+    "fz-tfn.28"
   ],
   "blocks": [],
   "created": "2026-09-03T11:37:33Z",
@@ -14,5 +15,5 @@
   "status": "in_progress",
   "title": "Restore range-map work budget after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-03T17:27:25Z"
+  "updated_at": "2026-09-03T20:18:59Z"
 }
