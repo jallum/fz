@@ -2596,8 +2596,13 @@ mod tests {
     /// fz-kdt.186: a pair the plan's own tests keep apart OUTRIGHT is not a
     /// seat question, however blind some other subject happens to be.
     ///
-    /// These are `00277_enum_tier0_fixture`'s construction wrapper `w13`, arm
-    /// 4 against arm 9, written down as a two-subject callsite:
+    /// These are a construction wrapper of `00277_enum_tier0_fixture`, arm 4
+    /// against arm 9, written down as a two-subject callsite. (It was `w13` in
+    /// the PUBLISHED numbering of the tree it was measured in; 00277 publishes
+    /// five wrappers at head, all single-member with no selection plan since
+    /// fz-kdt.199, so `w13` names nothing in either numbering now -- and a
+    /// wrapper's published number is not the number a dump prints either, which
+    /// is fz-kdt.193's.) The shape is what matters and it is written out here:
     ///
     /// ```text
     ///     arm 4    s0 = :tail    s1 = [:tail]

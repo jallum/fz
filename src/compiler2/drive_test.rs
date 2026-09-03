@@ -9031,8 +9031,12 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
 /// specializations keyed on a blind list element. With the element in the key
 /// most of those members are one member, so there is nothing left to be
 /// indistinguishable from. fz-kdt.179 then dissolved the last groups a stand-in
-/// could reach (`00277` `w15`/`w18`/`w19` went 2 -> 1), and fz-kdt.199 drove
-/// the remainder to ZERO on every fixture the gate reads. The 44 groups this
+/// could reach (three of `00277`'s wrappers went 2 -> 1; they were `w15`, `w18`
+/// and `w19` in the PUBLISHED numbering of the tree that was measured in, and
+/// 00277 publishes five wrappers at head, so those names point at nothing now
+/// -- nor would they point at the same wrappers in a dump, which is
+/// fz-kdt.193's), and fz-kdt.199 drove the remainder to ZERO on every fixture
+/// the gate reads. The 44 groups this
 /// constant held -- 16 on `00277_enum_tier0_fixture`, 12 on
 /// `00420_enum_take_drop_split`, 16 on `enum_map_family`, each at group
 /// count 1 -- were construction-wrapper member selections whose members no
@@ -9076,7 +9080,7 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut separated = Vec::new();
-    for entry in artifact_plans(&program) {
+    for entry in artifact_plans(compiler.world(), &program) {
         let asked = entry
             .plan
             .matrix
@@ -9136,7 +9140,7 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
     let (compiler, program) = driven_backend_program(fixture);
-    let plans = artifact_plans(&program);
+    let plans = artifact_plans(compiler.world(), &program);
     assert!(
         plans.is_empty(),
         "{fixture} passes a known closure at every call site, so nothing may be left for a \
@@ -9181,7 +9185,7 @@ fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut findings = Vec::new();
-    for entry in artifact_plans(&program) {
+    for entry in artifact_plans(compiler.world(), &program) {
         for twin in indistinguishable_arms(entry.plan, types) {
             findings.push(format!("{} {twin}", entry.site));
         }
@@ -9245,9 +9249,14 @@ enum PlanSite {
     /// A `receive`'s clause dispatch, named by the control entry that tails
     /// into it.
     Receive { executable: usize, entry: usize },
-    /// A construction wrapper's member selection, named by the wrapper
-    /// identity the artifact publishes (`w<N>`).
-    Selection { wrapper: u32 },
+    /// A construction wrapper's member selection, carrying BOTH of the
+    /// wrapper's numbers: the `identity` the artifact publishes (which is its
+    /// position in `construction_wrappers`, and what the interpreter's own
+    /// errors print) and the `canonical` number
+    /// [`canon_backend_program`](crate::compiler2::canon::canon_backend_program)
+    /// heads its block with. They are different numbers and they agree only by
+    /// accident (fz-kdt.193).
+    Selection { wrapper: u32, canonical: usize },
 }
 
 impl PlanSite {
@@ -9281,7 +9290,9 @@ impl std::fmt::Display for PlanSite {
             Self::Entry { executable } => write!(f, "entry dispatch of executable {executable}"),
             Self::Case { executable, entry } => write!(f, "case dispatch at entry e{entry} (executable {executable})"),
             Self::Receive { executable, entry } => write!(f, "receive at entry e{entry} (executable {executable})"),
-            Self::Selection { wrapper } => write!(f, "wrapper w{wrapper} selection"),
+            Self::Selection { wrapper, canonical } => {
+                write!(f, "wrapper w{canonical} (published w{wrapper}) selection")
+            }
         }
     }
 }
@@ -9316,7 +9327,11 @@ struct ArtifactPlan<'a> {
 /// two that ride a `BackendTail` are matched here by naming every tail variant
 /// that carries one, so a sixth would have to be added to
 /// `BackendTail`/`BackendProgram` to escape this walk.
-fn artifact_plans(program: &BackendProgram) -> Vec<ArtifactPlan<'_>> {
+fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgram) -> Vec<ArtifactPlan<'a>> {
+    // A selection site is labelled with the number the DUMP prints, so a reader
+    // following a failure message into `--dump backend=` lands on the wrapper
+    // the message meant (fz-kdt.193).
+    let canonical = crate::compiler2::canon::canonical_wrapper_numbers(world, program);
     let mut plans = Vec::new();
     for (index, executable) in program.executables.iter().enumerate() {
         if let Some(entry) = &executable.entry_dispatch {
@@ -9374,6 +9389,7 @@ fn artifact_plans(program: &BackendProgram) -> Vec<ArtifactPlan<'_>> {
         plans.push(ArtifactPlan {
             site: PlanSite::Selection {
                 wrapper: wrapper.identity,
+                canonical: canonical[wrapper.identity as usize],
             },
             plan: selection,
             bodies: (0..wrapper.members.len() as u32).collect(),
@@ -9437,8 +9453,8 @@ fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
     let mut compared = 0;
     let mut disagreements = Vec::new();
     for fixture in ARM_ORDER_CENSUS {
-        let (_compiler, program) = driven_backend_program(fixture);
-        for entry in artifact_plans(&program) {
+        let (compiler, program) = driven_backend_program(fixture);
+        for entry in artifact_plans(compiler.world(), &program) {
             compared += 1;
             let walked = graph_first_match_bodies(entry.plan)
                 .into_iter()
@@ -9677,7 +9693,7 @@ fn blind_escape_census() -> BlindEscapeCensus {
     for fixture in ARM_ORDER_CENSUS {
         let (compiler, program) = driven_backend_program(fixture);
         let types = compiler.world().types();
-        for entry in artifact_plans(&program) {
+        for entry in artifact_plans(compiler.world(), &program) {
             *census.plans.entry(entry.site.kind()).or_default() += 1;
             if let Some(reason) = unreadable_reason(entry.plan, &entry.bodies) {
                 *census.unreadable.entry((entry.site.kind(), reason)).or_default() += 1;
@@ -9986,7 +10002,10 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 ///
 /// `00420_enum_take_drop_split` and `enum_take_drop_split` are the last two
 /// the corpus walk found: each carried four wrapper-selection seat findings on
-/// `w21`-`w24` that fz-kdt.179 has since cured, and they stay in the census
+/// four adjacent wrappers that fz-kdt.179 has since cured -- `w21`-`w24` in the
+/// PUBLISHED numbering of the tree they were measured in, which is neither the
+/// numbering of this tree nor the one a dump prints (fz-kdt.193) -- and they
+/// stay in the census
 /// because their wrapper member selections still exercise the weld gate and the
 /// blind-escape walk under every seed -- the ratchet that would catch a
 /// regression of that cure.
@@ -10260,7 +10279,7 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// fz-kdt.179's and fz-kdt.183's cures; both now observe ZERO at every arrival
 /// this table drove them at. Read off `interp --dump backend=`, the cause is
 /// the same for both and it is fz-kdt.199: `00277` publishes five construction
-/// wrappers `w0`-`w4` and `enum_predicate_search` publishes 32, and EVERY one
+/// wrappers and `enum_predicate_search` publishes 32, and EVERY one
 /// of them is single-member with no selection plan, so
 /// `select_construction_member` takes its `None if members.len() == 1` branch
 /// and no dispatch runs. The cures are real and their fixtures no longer build
@@ -10376,6 +10395,99 @@ fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
         permuted, settled,
         "a permuted wrapper order must reseat the construction members it was built to perturb; \
          a stress that cannot move them proves nothing about the order they arrived in",
+    );
+}
+
+/// fz-kdt.193: the number a selection site's LABEL prints is the number the
+/// dump heads that wrapper's block with.
+///
+/// A wrapper has two numbers. Its `identity` is its position in
+/// `construction_wrappers`, and it is what the interpreter prints when a member
+/// selection goes wrong (`select_construction_member`'s three error messages).
+/// Its CANONICAL number is where `ProgramCanon::wrapper_order` sorts it, and it
+/// is what `--dump backend=` prints. They agree only by accident: on
+/// `00419_enum_take_mixed` the map is `0->2, 1->3, 2->0, 3->1` and no wrapper
+/// is a fixed point at all, so a label that printed the identity sent a reader
+/// following a failure message into the dump to the WRONG BLOCK, every time.
+///
+/// The cure is one authority, not a second opinion:
+/// [`PlanSite::Selection`] carries the number
+/// [`canonical_wrapper_numbers`](crate::compiler2::canon::canonical_wrapper_numbers)
+/// computes, which is `wrapper_order` read the other way round -- the same
+/// order the dump prints in. It prints BOTH numbers, because both have a
+/// reader: the canonical one leads to the dump, and the published one is what
+/// a runtime error and a debugger show.
+///
+/// AND THE PERTURBATION LANDS, which is what stops this being a tautology: the
+/// last assertion is that no selection site on this fixture has its two numbers
+/// agree, so the old label named the wrong block at every one of the four and
+/// this gate is exactly as red at base as the defect it holds.
+///
+/// `enum_map_family` was the ticket's subject and cannot be: fz-kdt.199 left
+/// all twelve of its wrappers single-member with no selection plan, so it
+/// carries no `PlanSite::Selection` at all now. `00419_enum_take_mixed` does --
+/// four wrappers, four two-member selections -- and its map has no fixed point
+/// either.
+#[test]
+fn compiler2_a_selection_sites_label_names_the_wrapper_the_dump_prints() {
+    let fixture = "fixtures2/00419_enum_take_mixed.fz";
+    let (compiler, program) = driven_backend_program(fixture);
+    let world = compiler.world();
+
+    // The reader's destination. Canon prints one block per wrapper, in
+    // canonical order, so the Nth block is headed `wrapper wN` -- and that is
+    // the only thing a number in a label can mean to whoever follows it here.
+    let dump = crate::compiler2::canon::canon_backend_program(world, &program);
+    let heads = dump
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("wrapper w"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        heads,
+        (0..program.construction_wrappers.len())
+            .map(|canonical| format!("wrapper w{canonical}"))
+            .collect::<Vec<_>>(),
+        "the dump heads one block per wrapper in canonical order; if it stopped doing that, a label \
+         could not name a block at all",
+    );
+
+    let canonical_of = crate::compiler2::canon::canonical_wrapper_numbers(world, &program);
+    let mut checked = 0;
+    let mut both_numbers_differ = 0;
+    for entry in artifact_plans(world, &program) {
+        let PlanSite::Selection { wrapper, .. } = entry.site else {
+            continue;
+        };
+        let label = entry.site.to_string();
+        let canonical = canonical_of[wrapper as usize];
+        assert!(
+            label.starts_with(&format!("wrapper w{canonical} ")),
+            "a selection site's label must LEAD with the number the dump prints, because that is the \
+             number a reader carries into `--dump backend=`: {label}",
+        );
+        assert_eq!(
+            heads[canonical],
+            format!("wrapper w{canonical}"),
+            "the block {label} sends a reader to must be the one the dump heads with that number",
+        );
+        assert!(
+            label.contains(&format!("(published w{wrapper})")),
+            "the published identity is what a runtime error and a debugger show, so the label keeps it \
+             too rather than trading one wrong number for another: {label}",
+        );
+        checked += 1;
+        both_numbers_differ += usize::from(canonical != wrapper as usize);
+    }
+    assert_eq!(
+        checked, 4,
+        "{fixture} is the subject because it still publishes four wrapper member selections; a fixture \
+         with none proves nothing here",
+    );
+    assert_eq!(
+        both_numbers_differ, checked,
+        "the two numberings must actually disagree on every site, or this gate would pass on a label \
+         that printed the published identity and would not be red at the defect it holds",
     );
 }
 

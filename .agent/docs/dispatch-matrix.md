@@ -776,11 +776,13 @@ a body's own `case`, and `BackendTail::Receive`'s `BackendReceive`.
 `drive_test.rs`'s `artifact_plans` yields them, named by site: `callsite <n>
 (executable <e>)`, `entry dispatch of executable <e>`, `case dispatch at entry
 e<n> (executable <e>)`, `receive at entry e<n> (executable <e>)` and `wrapper
-w<n> selection`. Each site lists its bodies in its own order — the call arms,
+w<canonical> (published w<identity>) selection` — a wrapper's two numbers,
+because the dump prints one and the interpreter prints the other
+(**fz-kdt.193**). Each site lists its bodies in its own order — the call arms,
 the reachable clause ids, the arm entries, the receive clauses, the member
 index — and `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
 holds that list to the order the graph actually reaches them in, over every
-plan the census fixtures carry (261 plans, 0 disagreements), because the list
+plan the census fixtures carry (244 plans, 0 disagreements), because the list
 is what every seat argument here is read off and the graph is what execution
 follows.
 
@@ -795,27 +797,39 @@ The population, on the 22 census fixtures at the settled arrival:
 
 | kind | plans | unreadable | blind readings | seat findings | one-question groups |
 | --- | --- | --- | --- | --- | --- |
-| call edge | 17 | 0 | 0 | 0 | 0 |
-| entry | 153 | 146 | 0 | excluded | 0 |
+| call edge | 21 | 0 | 0 | 0 | 0 |
+| entry | 169 | 162 | 0 | excluded | 0 |
 | case | 3 | 3 | 0 | excluded | 0 |
 | receive | 2 | 0 | 0 | excluded | 0 |
-| wrapper selection | 86 | 0 | 0 | 0 | — |
+| wrapper selection | 49 | 0 | 0 | 0 | — |
+
+244 plans, of which 79 are readable — 21 call edges, 49 wrapper selections, 7
+entries and both receives. Those 79 open 87 arm pairs: 36 `Separated`, 51
+`Covering`, 0 `Escaping`. Re-measured at fz-kdt.193 (the table read 17 / 153,146
+/ 86 before); the entry class grew with fz-kdt.183's and fz-kdt.199's keying and
+the selection class shrank because fz-kdt.199 collapsed most wrappers to a
+single member, which needs no selection plan at all.
 
 The wrapper-selection seat findings are ZERO now that member selection runs the
 drop and the seat (**fz-kdt.179**); before it there were 45 REACHABLE readings —
 34 on 00277's escaping wrappers, 3 on `enum_hof_three_distinct_closures`, four
 apiece on `00420_enum_take_drop_split` and `enum_take_drop_split` — plus 28 that
-stood here until **fz-kdt.186** on `w13`-`w19`, which were never readings at all
-(the pair is SEPARATED, the walk does not open it). The one-question groups are
-counted on their own thirteen-fixture list by
-`compiler2_dispatch_offers_no_runtime_indistinguishable_arm`: 44 groups, all of
-them fz-kdt.107's (00277 16, `enum_map_family` 16, `00420` 12) — members no
-runtime predicate tells apart, which no drop or seat can help.
+stood here until **fz-kdt.186** on seven of 00277's wrappers, which were never
+readings at all (the pair is SEPARATED, the walk does not open it). Those seven
+were `w13`-`w19` in the PUBLISHED numbering of the tree they were measured in;
+00277 publishes five wrappers at head, so that range names nothing in either
+numbering now, and the wrappers themselves are gone (fz-kdt.199 collapsed them
+to single members). The one-question groups are counted on their own
+thirteen-fixture list by
+`compiler2_dispatch_offers_no_runtime_indistinguishable_arm`, and they read
+**0**: the 44 that stood here — all fz-kdt.107's, members no runtime predicate
+told apart — dissolved when fz-kdt.199 gave a returned accumulator position its
+own type.
 
-THE SOURCE-ORDER CLASS READS 0, and that zero speaks for 9 plans of 158: a
+THE SOURCE-ORDER CLASS READS 0, and that zero speaks for 9 plans of 174: a
 clause dispatch asks whatever the source patterns ask, and the reader compares
-`Region::Type` questions only, so 149 are skipped — on entry plans
-`Region::List` 87, `Region::Equal` 19, `Region::TupleArity` 25,
+`Region::Type` questions only, so 165 are skipped — on entry plans
+`Region::List` 103, `Region::Equal` 19, `Region::TupleArity` 25,
 `Region::Guard` 15, and all three `case` plans on a `Region::Equal`. The gate
 prints the breakdown and pins the plans and the skips per kind. A `Guard`
 cannot be read statically; a `List` or a `TupleArity` can, and reading them is
