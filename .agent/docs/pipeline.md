@@ -56,6 +56,8 @@ product   RootBackendProduct(root)
             transport positions
           ExecutableEffects(E)
             effect summary over the symbolic call-edge closure demanded by E
+          ExecutableFacts(E), CallableResolution(E, value, surface)
+            immutable demand inputs and exact first-class callable resolutions
           RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
             request-local representation demand and input-source accounting
           TransportShape(position), CallableConstruction(position)
@@ -450,13 +452,21 @@ call. `verify_boxed_apply_seam_return_convention` turns that into a named
 invariant at backend packaging — every boxed closure callsite must deliver
 exactly what the wrappers it can reach publish.
 
-The exact callable surfaces demand reads from live in
+The exact callable surfaces demand reads originate in
 `CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
 callable shape a call actually uses, and it is small and executable-origin-aware
 by construction — it names the surfaces a body proves, not every surface a type
-permits. Recursive transport (nested captures, tuple fields, direct-callable
-producers) is not stored on that witness; it is derived downstream from settled
-demand into `TransportShape(position)` and related callable/boundary products.
+permits. `ExecutableFacts(E)` stores the canonical type projections demand reads.
+For a multi-target receiver, demand joins every target's supplied receiver
+surface as a set. Target order is not an authority, a target with no surface
+does not widen a concrete sibling to `any`, and `any` is used only when no
+target supplies a receiver surface.
+First-class local resolution is an exact `CallableResolution(E, value, surface)`
+product; misses wait and rerun, and successful formulas consume its resolved
+edge. Recursive
+transport (nested captures, tuple fields, direct-callable producers) is not
+stored on the callsite witness; it is derived downstream from settled demand
+into `TransportShape(position)` and related callable/boundary products.
 Actual call-argument values also inherit the selected callee input demand during
 transport projection, so recursive calls do not omit a local argument value just
 because the caller's own `call_arg_demands` are temporarily bottom.

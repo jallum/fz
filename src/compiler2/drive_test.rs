@@ -9749,6 +9749,346 @@ fn backend_canon(fixture: &str) -> String {
     crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root))
 }
 
+/// fz-kdt.47: a RuntimeDemand formula reads one frozen demand snapshot and
+/// immutable authoritative inputs. Independent members and recursive members
+/// may therefore be evaluated in any schedule order without moving the
+/// canonical demand/flow answer, requested executable identities, or backend.
+#[test]
+fn runtime_demand_formulas_are_order_independent_for_independent_self_and_mutual_cycles() {
+    use crate::compiler2::jobs::runtime_demand::{DemandFormulaCapture, DemandFormulaOrder, DemandFormulaOrdered};
+
+    const SYNTHETIC_CASES: &str = r#"
+fn left(x), do: fn(y) -> x + y end
+fn right(x), do: fn(y) -> x * y end
+fn count(0), do: fn(x) -> x end
+fn count(n), do: count(n - 1)
+fn even(0), do: fn(x) -> x end
+fn even(n), do: odd(n - 1)
+fn odd(0), do: fn(x) -> x + 1 end
+fn odd(n), do: even(n - 1)
+fn main() do
+  l = left(1)
+  r = right(2)
+  c = count(3)
+  e = even(4)
+  {l.(3), r.(4), c.(1), e.(1)}
+end
+"#;
+
+    fn snapshot(
+        source: &str,
+        formula_order: DemandFormulaOrder,
+        capture: DemandFormulaCapture,
+    ) -> (String, Vec<crate::compiler2::canon::DemandFormulaCanon>) {
+        let order = match capture {
+            DemandFormulaCapture::All => DemandFormulaOrdered::install(formula_order),
+            DemandFormulaCapture::Latest => DemandFormulaOrdered::latest(formula_order),
+            DemandFormulaCapture::None => DemandFormulaOrdered::shuffle(formula_order),
+        };
+        let tel = ConfiguredTelemetry::new();
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some("demand_formula_order.fz".to_string()),
+            text: source.to_string(),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler
+            .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
+            .expect("order harness should reach a backend program");
+        let world = compiler.world();
+        let backend = crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root));
+        let evaluations = match capture {
+            DemandFormulaCapture::All | DemandFormulaCapture::Latest => order.evaluations(),
+            DemandFormulaCapture::None => Vec::new(),
+        };
+        if source == SYNTHETIC_CASES {
+            assert_canonical_distinctions(world, &evaluations);
+        }
+        let mut facts_canons = std::collections::HashMap::new();
+        for evaluation in &evaluations {
+            facts_canons
+                .entry(evaluation.member.clone())
+                .or_insert_with(|| crate::compiler2::canon::canon_runtime_demand_facts(world, &evaluation.facts));
+        }
+        let formulas = evaluations
+            .iter()
+            .map(|evaluation| {
+                crate::compiler2::canon::canon_demand_formula(
+                    world,
+                    &evaluation.member,
+                    &evaluation.facts,
+                    &facts_canons[&evaluation.member],
+                    &evaluation.current,
+                    &evaluation.product_answers,
+                    &evaluation.demand,
+                    &evaluation.contributions,
+                    &evaluation.product_reads,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (evaluation, formula) in evaluations.iter().zip(&formulas) {
+            assert_eq!(evaluation.product_reads.len(), evaluation.product_answers.len());
+            for (read, answer) in evaluation.product_reads.iter().zip(&evaluation.product_answers) {
+                assert_eq!(
+                    read.key,
+                    crate::compiler2::pull::ProductKey::CallableResolution(answer.key.clone())
+                );
+                assert_eq!(read.hit, answer.answer.is_some());
+            }
+            let current_cells = 1 + evaluation.current.target_inputs.len() + evaluation.current.callable_inputs.len();
+            assert!(
+                current_cells <= 64
+                    && evaluation.product_answers.len() <= 32
+                    && formula.input.len() + formula.output.len() <= 128 * 1024,
+                "one formula input exceeded the compact-boundary ratchet: current={} products={} bytes={}",
+                current_cells,
+                evaluation.product_answers.len(),
+                formula.input.len() + formula.output.len()
+            );
+        }
+        (backend, formulas)
+    }
+
+    type FinalAnswers = Vec<(String, String, String, Vec<(String, bool)>)>;
+
+    fn final_answers(canons: &[crate::compiler2::canon::DemandFormulaCanon]) -> FinalAnswers {
+        let mut final_by_member = std::collections::HashMap::new();
+        for canon in canons {
+            final_by_member.insert(
+                canon.input.lines().next().unwrap(),
+                (
+                    canon.input.lines().next().unwrap().to_string(),
+                    canon.input.clone(),
+                    canon.output.clone(),
+                    canon.requests.clone(),
+                ),
+            );
+        }
+        let mut final_answers = final_by_member.into_values().collect::<Vec<_>>();
+        final_answers.sort();
+        final_answers
+    }
+
+    fn record_formula_function(
+        observed: &mut FormulaAnswers,
+        canons: &[crate::compiler2::canon::DemandFormulaCanon],
+        context: &str,
+    ) {
+        for canon in canons {
+            let key = (canon.input.clone(), canon.requests.clone());
+            if let Some(previous) = observed.insert(key, canon.output.clone()) {
+                assert_eq!(
+                    previous, canon.output,
+                    "{context}: equal complete inputs produced different outputs"
+                );
+            }
+        }
+    }
+
+    type FormulaAnswers = std::collections::HashMap<(String, Vec<(String, bool)>), String>;
+
+    fn assert_canonical_distinctions(
+        world: &crate::compiler2::World,
+        evaluations: &[crate::compiler2::jobs::runtime_demand::DemandFormulaEvaluation],
+    ) {
+        let render = |evaluation: &crate::compiler2::jobs::runtime_demand::DemandFormulaEvaluation,
+                      demand: &crate::compiler2::ExecutableRuntimeDemand| {
+            crate::compiler2::canon::canon_runtime_demand(world, &evaluation.facts, demand)
+        };
+
+        let values = evaluations
+            .iter()
+            .find_map(|evaluation| {
+                let ids = evaluation
+                    .facts
+                    .analysis()
+                    .value_types
+                    .keys()
+                    .copied()
+                    .take(2)
+                    .collect::<Vec<_>>();
+                (ids.len() == 2).then_some((evaluation, ids))
+            })
+            .expect("fixture must expose two body-local values");
+        let mut left = values.0.demand.clone();
+        left.value_demands
+            .insert(values.1[0], crate::compiler2::RuntimeDemand::ignore());
+        left.value_demands
+            .insert(values.1[1], crate::compiler2::RuntimeDemand::whole());
+        let mut right = left.clone();
+        right
+            .value_demands
+            .insert(values.1[0], crate::compiler2::RuntimeDemand::whole());
+        right
+            .value_demands
+            .insert(values.1[1], crate::compiler2::RuntimeDemand::ignore());
+        assert_ne!(
+            render(values.0, &left),
+            render(values.0, &right),
+            "swapped local demands must retain identity"
+        );
+
+        let calls = evaluations
+            .iter()
+            .find_map(|evaluation| {
+                let ids = evaluation.facts.callsites().keys().copied().take(2).collect::<Vec<_>>();
+                (ids.len() == 2).then_some((evaluation, ids))
+            })
+            .expect("fixture must expose two body-local callsites");
+        let mut left = calls.0.demand.clone();
+        left.call_arg_demands
+            .insert(calls.1[0], vec![crate::compiler2::RuntimeDemand::ignore()]);
+        left.call_arg_demands
+            .insert(calls.1[1], vec![crate::compiler2::RuntimeDemand::whole()]);
+        let mut right = left.clone();
+        right
+            .call_arg_demands
+            .insert(calls.1[0], vec![crate::compiler2::RuntimeDemand::whole()]);
+        right
+            .call_arg_demands
+            .insert(calls.1[1], vec![crate::compiler2::RuntimeDemand::ignore()]);
+        assert_ne!(
+            render(calls.0, &left),
+            render(calls.0, &right),
+            "swapped callsite demands must retain identity"
+        );
+
+        let activation = evaluations
+            .iter()
+            .find(|evaluation| !evaluation.demand.callable_activation_inputs.is_empty())
+            .expect("fixture must carry a callable activation frame");
+        let mut without_frame = activation.demand.clone();
+        without_frame.callable_activation_inputs.remove(0);
+        assert_ne!(
+            render(activation, &activation.demand),
+            render(activation, &without_frame),
+            "callable activation frames are part of the canonical answer"
+        );
+
+        let boundary = evaluations
+            .iter()
+            .find(|evaluation| {
+                evaluation.demand.callable_flows.values().any(|flow| {
+                    flow.direct_edges
+                        .iter()
+                        .chain(&flow.first_class_edges)
+                        .any(|edge| !edge.boundary_input_demands.is_empty())
+                })
+            })
+            .expect("fixture must carry a callable boundary projection");
+        let mut without_boundary = boundary.demand.clone();
+        let edge = without_boundary
+            .callable_flows
+            .values_mut()
+            .flat_map(|flow| flow.direct_edges.iter_mut().chain(&mut flow.first_class_edges))
+            .find(|edge| !edge.boundary_input_demands.is_empty())
+            .unwrap();
+        edge.boundary_input_demands = Box::new([]);
+        assert_ne!(
+            render(boundary, &boundary.demand),
+            render(boundary, &without_boundary),
+            "boundary input demands are part of the canonical answer"
+        );
+    }
+
+    fn assert_closed_canon(name: &str, canons: &[crate::compiler2::canon::DemandFormulaCanon]) {
+        const FORBIDDEN: [&str; 7] = ["ValueId(", "CallSiteId(", "FunctionId(", "Ty(", "v?", "cs?", "?ty:"];
+        let has_raw_alpha = |text: &str| {
+            let mut chars = text.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == 'α' && chars.peek().is_some_and(char::is_ascii_digit) {
+                    return true;
+                }
+            }
+            false
+        };
+        let gap = canons.iter().find(|canon| {
+            FORBIDDEN.iter().any(|text| {
+                canon.input.contains(text)
+                    || canon.output.contains(text)
+                    || canon.requests.iter().any(|(key, _)| key.contains(text))
+            }) || has_raw_alpha(&canon.input)
+                || has_raw_alpha(&canon.output)
+                || canon.requests.iter().any(|(key, _)| has_raw_alpha(key))
+        });
+        assert!(
+            gap.is_none(),
+            "{name}: formula canon leaked a raw or unknown identity: {gap:#?}"
+        );
+    }
+
+    let expected = snapshot(SYNTHETIC_CASES, DemandFormulaOrder::Forward, DemandFormulaCapture::All);
+    let expected_final = final_answers(&expected.1);
+    let mut observed_function = std::collections::HashMap::new();
+    record_formula_function(&mut observed_function, &expected.1, "recursive formulas");
+    assert!(
+        expected.1.iter().any(|formula| !formula.requests.is_empty()),
+        "callable formulas must request exact callable resolutions"
+    );
+    assert_closed_canon("recursive formulas", &expected.1);
+    assert!(
+        expected.1.iter().flat_map(|canon| &canon.requests).any(|(_, hit)| !hit),
+        "harness must retain product misses rather than reconstructing settled edges"
+    );
+    let requests = expected
+        .1
+        .iter()
+        .flat_map(|canon| canon.requests.iter().map(|(key, _)| key))
+        .collect::<Vec<_>>();
+    assert!(
+        requests.iter().collect::<std::collections::HashSet<_>>().len() < requests.len(),
+        "harness must retain duplicate reads across retries"
+    );
+    for order in [
+        DemandFormulaOrder::Reverse,
+        DemandFormulaOrder::Seeded(1),
+        DemandFormulaOrder::Seeded(0x9e37_79b9),
+    ] {
+        let actual = snapshot(SYNTHETIC_CASES, order, DemandFormulaCapture::All);
+        assert_eq!(actual.0, expected.0, "formula order moved the canonical backend");
+        assert_eq!(
+            final_answers(&actual.1),
+            expected_final,
+            "formula order moved final canonical demand, callable flows, or contributions"
+        );
+        record_formula_function(&mut observed_function, &actual.1, "recursive formulas");
+    }
+
+    for (name, source) in [
+        (
+            "enum take/drop/split",
+            include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
+        ),
+        (
+            "enum predicate search",
+            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
+        ),
+        (
+            "f98 range/map orbit",
+            include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
+        ),
+    ] {
+        let expected = snapshot(source, DemandFormulaOrder::Forward, DemandFormulaCapture::Latest);
+        assert_closed_canon(name, &expected.1);
+        for order in [
+            DemandFormulaOrder::Reverse,
+            DemandFormulaOrder::Seeded(1),
+            DemandFormulaOrder::Seeded(0x9e37_79b9),
+        ] {
+            assert_eq!(
+                snapshot(source, order, DemandFormulaCapture::None).0,
+                expected.0,
+                "{name}: formula order moved the backend"
+            );
+        }
+    }
+}
+
 /// fz-kdt.108: the construction wrapper's members carry ONE canonical order --
 /// `Types::cmp_tys` over each member's surface inputs -- so the settled artifact
 /// stops depending on the type interner's mint order (which is the agenda's).

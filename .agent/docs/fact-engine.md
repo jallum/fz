@@ -511,6 +511,7 @@ ProductKey =
   ExecutableEffects(E)
   ExecutableFacts(E)
   RuntimeDemand(E)
+  CallableResolution(E, value, surface)
   OutgoingEdgeFrontier(root)
   OutgoingInputEdges(E)
   IncomingInputRelations(root)
@@ -520,6 +521,11 @@ ProductKey =
 
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
+
+`ExecutableFacts(E)` owns runtime demand's canonical type projections.
+`RuntimeDemand(E)` is read-only over those facts and its demand snapshot. Local
+first-class calls request `CallableResolution(E, value, surface)`; a miss waits
+and reruns, while success reads the producer's resolved edge.
 
 The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled

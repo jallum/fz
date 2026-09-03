@@ -216,8 +216,17 @@ pub(crate) fn produce_callable_construction_product(
         return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
     let demand = runtime.value_demands.get(value).cloned().unwrap_or_default();
-    match produce_local_callable_construction(world, tel, context, &executable, facts.as_ref(), producer, flow, demand)
-    {
+    match produce_local_callable_construction(
+        world,
+        tel,
+        context,
+        &executable,
+        facts.as_ref(),
+        *value,
+        producer,
+        flow,
+        demand,
+    ) {
         Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(answer))),
         Err(waits) => PullOutcome::Waiting(waits),
     }
@@ -1161,6 +1170,7 @@ fn produce_local_callable_construction(
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
     facts: &super::runtime_demand::ExecutableFacts,
+    value: ValueId,
     producer: &LocalCallableProducer,
     flow: &CallableFlowFact,
     demand: RuntimeDemand,
@@ -1170,7 +1180,7 @@ fn produce_local_callable_construction(
     let callable_ty = facts
         .analysis()
         .value_types
-        .get(&producer.value)
+        .get(&value)
         .copied()
         .unwrap_or_else(|| world.types_mut().any());
     let capture_tys = producer
@@ -1247,7 +1257,7 @@ fn produce_local_callable_construction(
     let boundary_resolutions = boundary_resolution_symbols_for_flow_surfaces(flow, &boundary_surfaces, world.types());
     let producer_position = TransportPosition::Value {
         executable: symbol,
-        value: producer.value,
+        value,
     };
     let boundaries_by_surface = publish_boundaries_for_callable(
         world,

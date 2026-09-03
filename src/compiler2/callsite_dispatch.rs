@@ -836,6 +836,7 @@ mod tests {
                     surface_inputs: vec![list],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
                 CallTargetSummary {
@@ -843,6 +844,7 @@ mod tests {
                     surface_inputs: vec![range],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
             ],
@@ -909,6 +911,7 @@ mod tests {
                 surface_inputs: vec![any],
                 activation: None,
                 activation_inputs: None,
+                extern_params: None,
                 return_ty: None,
             }],
             return_ty: None,
@@ -961,6 +964,7 @@ mod tests {
             surface_inputs: vec![list, state],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -1013,6 +1017,7 @@ mod tests {
             surface_inputs: vec![list, state],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -1068,6 +1073,7 @@ mod tests {
             surface_inputs: vec![state, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -1125,6 +1131,7 @@ mod tests {
             surface_inputs: vec![boxed],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -1179,6 +1186,7 @@ mod tests {
             surface_inputs: vec![boxed],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -1228,6 +1236,7 @@ mod tests {
             surface_inputs: vec![int, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -1275,6 +1284,7 @@ mod tests {
             surface_inputs: vec![input],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -1351,6 +1361,7 @@ mod tests {
             surface_inputs: vec![list, state, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(halt_false, empty);
@@ -1418,6 +1429,7 @@ mod tests {
             surface_inputs: vec![list, int, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let bools_arm = target(bool_list, all_one);
@@ -1482,6 +1494,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let atoms_arm = target(atom_list, either);
@@ -1574,6 +1587,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arms = [target(bool_list), target(mixed_list), target(int_list)];
@@ -1664,6 +1678,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(int_list);
@@ -1728,6 +1743,7 @@ mod tests {
             surface_inputs: vec![reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let ints = target(first_fn, over_int);
@@ -1775,6 +1791,7 @@ mod tests {
                     surface_inputs: vec![int, cont],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
                 CallTargetSummary {
@@ -1782,6 +1799,7 @@ mod tests {
                     surface_inputs: vec![int, halt],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
             ],
@@ -1828,6 +1846,7 @@ mod tests {
             },
             capture_semantic_inputs: Box::default(),
             surface_semantic_inputs: Box::from([0, 1]),
+            boundary_input_demands: Box::new([]),
         };
 
         let edges = [edge(atom), edge(tuple)];
@@ -1874,6 +1893,7 @@ mod tests {
                 },
                 capture_semantic_inputs: Box::default(),
                 surface_semantic_inputs: Box::from([0]),
+                boundary_input_demands: Box::new([]),
             },
             CallableFlowEdge {
                 surface: super::super::semantic::CallableSurface {
@@ -1890,6 +1910,7 @@ mod tests {
                 },
                 capture_semantic_inputs: Box::default(),
                 surface_semantic_inputs: Box::from([0]),
+                boundary_input_demands: Box::new([]),
             },
         ];
         let plan = dispatch_from_callable_flow_edges(world.types_mut(), &edges)
@@ -1947,6 +1968,7 @@ mod tests {
             surface_inputs: vec![atom],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arrived = vec![target(alpha), target(beta), target(gamma)];
@@ -2034,6 +2056,7 @@ mod tests {
             surface_inputs: vec![ty],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let targets = vec![target(int), target(atom)];

@@ -1660,6 +1660,7 @@ fn resolving_a_published_unresolved_edge_wakes_its_readers() {
             surface_inputs: Vec::new(),
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         }],
         return_ty: None,

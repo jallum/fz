@@ -71,6 +71,9 @@ pub struct CallTargetSummary {
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
     pub activation: Option<ActivationKey>,
     pub activation_inputs: Option<Vec<Ty>>,
+    /// Fixed positional inputs consumed by an extern body; absent for ordinary
+    /// executables and provider boundaries.
+    pub extern_params: Option<usize>,
     /// `None` means the callee has produced no return evidence yet — an
     /// honest snapshot mid-ascent. Settledness guarantees resolution before
     /// consumers read; at the fixpoint a still-`None` return *is* the empty
@@ -510,6 +513,82 @@ pub struct CallableFlowEdge {
     pub resolution: ExecutableKey,
     pub capture_semantic_inputs: Box<[usize]>,
     pub surface_semantic_inputs: Box<[usize]>,
+    pub boundary_input_demands: Box<[Option<RuntimeDemand>]>,
+}
+
+/// One authoritative activation-input row projected into the callable frame:
+/// addressed captures followed by the standalone addressed call surface.
+/// Runtime-demand formulas compare these immutable identities; they never
+/// re-address activation evidence in the shared type world.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableActivationInput {
+    pub captures: Vec<Ty>,
+    pub surface: CallableSurface,
+    /// Whether each capture is invoked with this callable's own parameters.
+    pub capture_called_with_own_surface: Box<[bool]>,
+}
+
+/// Canonical type-bearing inputs settled before RuntimeDemand runs.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimeDemandTypeInputs {
+    pub(crate) any: Ty,
+    pub(crate) projections: HashMap<Ty, RuntimeDemandTypeProjection>,
+    pub(crate) surfaces: HashMap<Vec<Ty>, CallableSurface>,
+    pub(crate) addressed_inputs: HashMap<Vec<Ty>, Vec<Ty>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RuntimeDemandTypeProjection {
+    pub(crate) boundary: RuntimeDemand,
+    pub(crate) dispatch: RuntimeDemand,
+    pub(crate) callable_value_demand: Option<RuntimeDemand>,
+}
+
+impl RuntimeDemandTypeInputs {
+    pub(crate) fn new(any: Ty) -> Self {
+        Self {
+            any,
+            projections: HashMap::new(),
+            surfaces: HashMap::new(),
+            addressed_inputs: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn projection(&self, ty: Ty) -> &RuntimeDemandTypeProjection {
+        self.projections
+            .get(&ty)
+            .unwrap_or_else(|| panic!("settled executable facts omitted runtime-demand projection for {ty:?}"))
+    }
+
+    pub(crate) fn boundary_demand(&self, ty: Ty) -> RuntimeDemand {
+        self.projection(ty).boundary.clone()
+    }
+
+    pub(crate) fn dispatch_demand(&self, ty: Ty) -> RuntimeDemand {
+        self.projection(ty).dispatch.clone()
+    }
+
+    pub(crate) fn callable_surfaces(&self, ty: Ty) -> Option<&BTreeSet<CallableSurface>> {
+        let resolved = &self.projection(ty).boundary.callable.resolved;
+        (!resolved.is_empty()).then_some(resolved)
+    }
+
+    pub(crate) fn callable_value_demand(&self, ty: Ty) -> Option<RuntimeDemand> {
+        self.projection(ty).callable_value_demand.clone()
+    }
+
+    pub(crate) fn surface(&self, inputs: &[Ty]) -> CallableSurface {
+        self.surfaces
+            .get(inputs)
+            .unwrap_or_else(|| panic!("settled executable facts omitted callable surface for {inputs:?}"))
+            .clone()
+    }
+
+    pub(crate) fn addressed_inputs(&self, inputs: &[Ty]) -> &[Ty] {
+        self.addressed_inputs
+            .get(inputs)
+            .unwrap_or_else(|| panic!("settled executable facts omitted addressed inputs for {inputs:?}"))
+    }
 }
 
 /// Resolve callable `surfaces` to the ground runtime dispatch shapes the program
@@ -568,6 +647,7 @@ pub(crate) fn ground_dispatch_surfaces(
 /// The full runtime-demand projection for one analyzed executable.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExecutableRuntimeDemand {
+    pub callable_activation_inputs: Vec<CallableActivationInput>,
     pub return_demand: RuntimeDemand,
     pub input_demands: Vec<RuntimeDemand>,
     pub value_demands: HashMap<ValueId, RuntimeDemand>,
@@ -642,6 +722,8 @@ impl EntryReachability {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationAnalysis {
+    /// Correlated rows already read by the activation analysis.
+    pub input_rows: Vec<Vec<Ty>>,
     pub entry_reachability: EntryReachability,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
@@ -1510,6 +1592,7 @@ mod tests {
                 surface_inputs: vec![int],
                 activation: Some(activation.clone()),
                 activation_inputs: Some(vec![int]),
+                extern_params: None,
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1520,6 +1603,7 @@ mod tests {
                 surface_inputs: vec![any],
                 activation: Some(activation),
                 activation_inputs: Some(vec![any]),
+                extern_params: None,
                 return_ty: Some(atom),
             }],
             return_ty: Some(atom),
@@ -1563,6 +1647,7 @@ mod tests {
                 surface_inputs: vec![int],
                 activation: Some(callee_activation.clone()),
                 activation_inputs: Some(vec![int]),
+                extern_params: None,
                 return_ty: Some(int),
             }],
             return_ty: Some(int),
@@ -1573,6 +1658,7 @@ mod tests {
                 surface_inputs: vec![int],
                 activation: Some(callee_activation),
                 activation_inputs: Some(vec![int]),
+                extern_params: None,
                 return_ty: None,
             }],
             return_ty: None,
@@ -1621,6 +1707,7 @@ mod tests {
                 surface_inputs: vec![input],
                 activation: Some(activation),
                 activation_inputs: Some(vec![input]),
+                extern_params: None,
                 return_ty: Some(input),
             }],
             return_ty: Some(input),
@@ -1679,6 +1766,7 @@ mod tests {
                     surface_inputs: vec![int],
                     activation: Some(int_activation.clone()),
                     activation_inputs: Some(vec![int]),
+                    extern_params: None,
                     return_ty: Some(int),
                 },
                 CallTargetSummary {
@@ -1686,6 +1774,7 @@ mod tests {
                     surface_inputs: vec![float],
                     activation: Some(float_activation.clone()),
                     activation_inputs: Some(vec![float]),
+                    extern_params: None,
                     return_ty: Some(float),
                 },
             ],
@@ -1740,6 +1829,7 @@ mod tests {
                 surface_inputs: vec![ty],
                 activation: Some(callee_activation.clone()),
                 activation_inputs: Some(vec![ty]),
+                extern_params: None,
                 return_ty: Some(ty),
             }],
             return_ty: Some(ty),

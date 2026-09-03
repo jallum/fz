@@ -478,6 +478,13 @@ impl Types {
         (0..self.interner.arena.len() as u32).map(Ty).collect()
     }
 
+    /// The two identity inventories demand-formula evaluation must leave
+    /// untouched: interned type descriptors and interned structural addresses.
+    #[cfg(test)]
+    pub(crate) fn identity_inventory(&self) -> (usize, usize) {
+        (self.interner.arena.len(), self.address_paths.len())
+    }
+
     #[cfg(test)]
     pub(crate) fn comparison_cache_stats(&self) -> ComparisonCacheStats {
         let cache = self.comparisons.borrow();
