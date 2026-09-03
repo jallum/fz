@@ -2575,7 +2575,6 @@ mod tests {
             entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),
-            latent_executables: Vec::new(),
             value_types: call_returns.then_some((result_value, int)).into_iter().collect(),
         };
         let positions = if call_returns {

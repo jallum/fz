@@ -1240,8 +1240,6 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
                 push_u64(out, analysis.reachable_entries.len() as u64);
                 out.push_str(",\"callsites\":");
                 push_u64(out, analysis.callsites.len() as u64);
-                out.push_str(",\"latent_executables\":");
-                push_u64(out, analysis.latent_executables.len() as u64);
                 out.push_str(",\"values\":");
                 push_u64(out, analysis.value_types.len() as u64);
                 out.push('}');
