@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.73"
   ],
@@ -12,7 +12,7 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete the always-empty latent-executable channel from activation analysis",
   "type": "task",
   "updated_at": "2026-09-03T02:45:19Z"
