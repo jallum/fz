@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T05:49:56Z",
+  "description": "From the fz-kdt.183 research (2026-09-03). `cargo test --release --lib\nmetadata_macro_rejects_duplicate_keys` -\u003e \"test did not panic as expected at\nsrc/telemetry/event_test.rs:36\". The test is #[should_panic(expected =\n\"duplicate telemetry key\")] over a debug_assert! (src/telemetry/event.rs:\n29-35); [profile.release] (Cargo.toml:57-59) sets no debug-assertions, so the\nassertion is compiled out and the release lib run reads 1589 passed / 1\nFAILED at d2a5f3510. Either the duplicate-key rejection is a real invariant\n(make it an assert!, or a Result the macro surfaces) or the test is debug-\nonly and must say so (#[cfg(debug_assertions)]). A gate that only passes in\none profile is not a gate.",
+  "id": "fz-kdt.191",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "telemetry metadata_macro_rejects_duplicate_keys is red under --release: a should_panic over a debug_assert",
+  "type": "task",
+  "updated_at": "2026-09-03T05:49:56Z"
+}
