@@ -15,11 +15,15 @@
     {
       "text": "fz-kdt.183 landed (2e0bb2706): unblocked. Reproducer: step/2 with a {:done, acc} slot keyed TupleFields({0: Whole}) -- the key names the tag while the return IS acc. The forwarding rule does not touch it; it fires in the library only because Enum.reduce_finish/1 is non-recursive. (The source is in the 183 research artifacts as g0n.fz; reconstruct from this description.)\n",
       "timestamp": "2026-09-03T12:16:42Z"
+    },
+    {
+      "text": "A SECOND, SHARPER REPRODUCER and a corpus consequence, from the fz-kdt.120 re-cut research (2026-09-03, ca23b676f). Your shape is what blocks fz-kdt.120. Enum.reduce/3 finishes through `reduce_finish({:done, a} | ..) :: a`. The first ascent rung's argument is `{:done, []}`, and because the tuple FIELD is freight (masked TupleFields({0: Whole}), keying the tag only) while the return IS that field, `a` binds `[]` and the join-only ladder never re-narrows -- Enum.reverse/1([int]) types as `[]`. Measured consequence: the fz-f98.16 empty-list cleaner in arrow_match.rs is the only thing discarding that stale binding today. Delete the cleaner (which fz-kdt.120 must do, and which fz-kdt.184 deliberately left inert for it) and SEVEN corpus fixtures produce WRONG ANSWERS -- 00276, 00277, 00420, enum_map_family, enum_take_drop_split, fz_f98_range_map_converges, mailbox_closure_enum_hofs -- with Enum.map/to_list/with_index collapsing to []. So this ticket is not only a precision matter: it is load-bearing for correctness the moment the masking cleaner goes. fz-kdt.120 is now marked BLOCKED BY this ticket. Red-first for you should include: with the acc field keyed, `Enum.reverse/1([int])` types as [int] and not [], and the seven fixtures stay correct with the cleaner deleted.",
+      "timestamp": "2026-09-03T16:54:31Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A returned tuple FIELD at a recursive key is freight: a {:done, acc} slot masked TupleFields({0: Whole}) keys only the tag while the return IS acc, so two users still share one joined return",
   "type": "task",
-  "updated_at": "2026-09-03T16:54:30Z"
+  "updated_at": "2026-09-03T16:54:31Z"
 }
