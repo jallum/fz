@@ -9,9 +9,15 @@
   "id": "fz-tfn.26",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "Dedicated worktree: /Users/j5n/Workspace/fz-wt-tfn26 at delivered head 3af40f715. Full mixed kdt46 source remains untouched in /Users/j5n/Workspace/fz-wt-kdt46; recoverable tree object 99ec12ece363a7a4c9d66902f00ee7c2b212ceaf captures the post-v10 binder-scope state before partition.",
+      "timestamp": "2026-09-03T15:13:18Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Give activation facts one binder-scoped semantic order",
   "type": "bug",
-  "updated_at": "2026-09-03T14:53:42Z"
+  "updated_at": "2026-09-03T15:13:18Z"
 }
