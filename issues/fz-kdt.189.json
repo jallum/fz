@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T05:49:55Z",
+  "description": "From the fz-kdt.183 research (2026-09-03). Two facts. (1) Types::convergence_\nclass_at (types/mod.rs:792-796) turns a pure callable slot of a recursive key\ninto address_var(path): List.reduce_step/3 keys its reducer as a2 while\nreduce_cont/3's body CALLS it, so the return depends on a slot the key erased\n(the same invariant fz-kdt.183 states for the list element). Candidate A\n(keep the callable verbatim) measured 7 behaviour movers that are ONE failure\nseven times: \"backend dispatch call requires semantic argument N value N:\nbackend value N is unbound\" on 00231, 00281, 00285, enum_map_family,\nenum_reduce_halt_arm_order, opaque_fn_value_join, range_enumerable -- the\nmulti-target-closure arg-floor family pinned at drive_test.rs:16351-16394\n(a reducer that is a runtime union of targets, 00281's `case -\u003e add_a | add_b`,\nspecialized per target stops being materialized: param_reprs [ValueRef,\nRawInt, RawInt] -\u003e [RawInt, RawInt], carrier ValueRef -\u003e Absent). So the\ncallable half is blocked behind RUNTIME DEMAND, not semantics; that pin says\nthe family was fixed -- it recurs the moment a key names a union of targets.\n(2) On the NON-recursive branch, erase_closure_identity (types/mod.rs:2926)\nrecurses into captures (:2941), so on 00420 Enum.reduce_while/3 (mask all\nIgnore) collapses seven distinct lambdas (#79/#81/#82/#89/#83/#85/#86) into\none key `(a2_p0, a2_p1) -\u003e a2_r#?closure[(a1_p0) -\u003e a1_r]` -- seven\npublishers, one return. After fz-kdt.183's element fix 78 blind-shared\nactivations remain, 32 of them Enum.reduce_while/3. Related: consumes_\ncallable_identity is computed from ONE body (jobs/keying.rs::body_consumes_\ncallable_identity); a forwarder that hands its reducer to a body that calls\nit consumes identity transitively (the StaticCallees walk derive_call_graph_\ncomponent already does) -- measure that first, it may retire most of (2)\nwithout touching the arg-floor. Sequence after fz-kdt.183.",
+  "id": "fz-kdt.189",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The callable slot of a recursive activation key stays blind (a2): naming the reducer is blocked behind the multi-target-closure arg-floor, and Enum.reduce_while/3 collapses seven lambdas into one key",
+  "type": "task",
+  "updated_at": "2026-09-03T05:49:55Z"
+}
