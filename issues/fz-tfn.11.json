@@ -4,7 +4,9 @@
     "fz-tfn.1",
     "fz-tfn.17"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.12"
+  ],
   "created": "2026-09-03T08:00:22Z",
   "description": "## Goal\n\nMove native lowering behind the retained root product graph so unchanged requests perform zero native lowering, unreachable edits do no native work, and reached edits lower only the exact invalidated closure.\n\n## Current defect\n\nEvery native front door directly invokes `Job::LowerNativeProgram(root)` even when a settled native program already exists. The job reconstructs `NativeLowerer`, walks every backend executable and wrapper, and globally annotates back edges before whole-program equality is checked. On 00420 the BackendProgram-to-NativeProgram handoff measured about 616 ms and visited 204 backend executables.\n\n## Strategy and proof\n\n1. After persistent root product sessions exist, add `NativeProgram(root)` as a product reading the exact program-equality projection of `RootBackendProduct(root)`.\n2. Make front doors pull that product rather than directly running a scheduler job.\n3. Preserve transport-only root-answer movement as a cache hit when the backend program is equal.\n4. Delete `Job::LowerNativeProgram`, `FactKey::NativeProgram`, `NativeProgramMap`, direct execution, and stale scheduler documentation/tests.\n5. TDD one compiler/root across unchanged second request, unreachable edit, reached-leaf edit, equal reproduction, macro roots, interp/run/build, and byte-identical output.\n6. Require causal counts: zero lowering on unchanged and unreachable requests; exact invalidated product-reader closure otherwise.\n7. Run full tests, fixture matrix, determinism, formatting, and strict clippy.\n\nThis ticket does not delete the separate BackendProgram fact bridge still used by macro execution.",
   "id": "fz-tfn.11",
