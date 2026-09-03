@@ -11,11 +11,15 @@
     {
       "text": "CONCORDANT with fz-kdt.65 (return-widening ladder resets only on rebase; join-only ascent) -- this is its join-only side made order-dependent by contract refinement. Also with fz-kdt.33 (spec enforcement waits for correlation-sound evidence). fz-kdt.183 removes the instance on List.reduce_step/3; the mechanism survives on any shared key.",
       "timestamp": "2026-09-03T08:19:08Z"
+    },
+    {
+      "text": "fz-kdt.210 (filed 2026-09-03) is a SECOND, distinct defect at your seam. You own refine_observed_return keeping the observed on an empty intersection and the row-order dependence of the key-wide join. fz-kdt.210 owns refine_call_return MEETING a contract return that was instantiated from a GROUND seed argument: reduce_cont keyed [list(int), empty_list(), a2] publishes {:done, []} because `b|c := []` binds from the seed and `[] \u003c: list(int)` makes the meet []. Same function, different failure. Linking so neither is fixed in a way that re-breaks the other.",
+      "timestamp": "2026-09-03T18:17:44Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A published return fact is source-order dependent: analyze_activation refines the key-wide join by each row @spec result in row order and refine_observed_return keeps the observed on an empty intersection, so the first row wins",
   "type": "task",
-  "updated_at": "2026-09-03T08:19:08Z"
+  "updated_at": "2026-09-03T18:17:44Z"
 }
