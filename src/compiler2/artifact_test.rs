@@ -5,7 +5,7 @@ use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, Function
 use crate::compiler2::artifact::{
     BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
-    NativeConstructionMember, NativeEntryAbi, NativeProgram,
+    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram, NativeProgramMap,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
@@ -95,7 +95,7 @@ fn compiler2_native_program_contract_test_shapes_use_one_interner() {
 fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let mut types = Types::new();
     let int = types.int();
-    let (_, _, activation) = stub_activation_key(&mut types, vec![int]);
+    let (root, _, activation) = stub_activation_key(&mut types, vec![int]);
     let mut shapes = TestTransportShapes::default();
     let (return_shape, _) = shapes.scalar_shape(int);
     let executable = ExecutableKey {
@@ -137,6 +137,10 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     let program = NativeProgram {
         entry: entry_fn,
         module,
+        executable_entries: vec![NativeExecutableEntry {
+            key: executable.clone(),
+            fn_id: entry_fn,
+        }],
         bodies: vec![NativeBody {
             fn_id: entry_fn,
             origin: NativeBodyOrigin::Executable(executable.clone()),
@@ -196,6 +200,11 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
         "the native handoff should name one CPS/native entry body"
     );
     assert_eq!(
+        program.executable_fn(&executable),
+        Some(entry_fn),
+        "the native handoff should preserve the semantic executable to physical entry mapping",
+    );
+    assert_eq!(
         program.bodies[0].origin,
         NativeBodyOrigin::Executable(executable.clone()),
         "the body contract should keep executable identity on the body record instead of an external planner shell",
@@ -216,6 +225,26 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     assert_eq!(
         program.callable_boundaries[0].members[0].target, executable,
         "callable boundary members should name the executable they adapt",
+    );
+
+    let mut programs = NativeProgramMap::new();
+    assert!(programs.define(root, program.clone()));
+    assert!(
+        !programs.define(root, program.clone()),
+        "an identical recomputation should remain quiet",
+    );
+    let mut logically_changed = program;
+    logically_changed.executable_entries[0].key.need = ExecutableNeed::TupleFields(1);
+    // `lower_native_program` feeds this exact `define` result into
+    // `JobEffects.changed`, which is the scheduler's dependent-wake signal.
+    assert!(
+        programs.define(root, logically_changed.clone()),
+        "a changed semantic-to-physical entry must report movement even when all physical native code is identical",
+    );
+    assert_eq!(
+        programs.get(root).unwrap().executable_entries,
+        logically_changed.executable_entries,
+        "the movement signal used to wake NativeProgram dependents must install the changed logical mapping",
     );
 }
 
@@ -290,6 +319,10 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     let program = NativeProgram {
         entry: entry_fn,
         module,
+        executable_entries: vec![NativeExecutableEntry {
+            key: executable.clone(),
+            fn_id: entry_fn,
+        }],
         bodies: vec![
             NativeBody {
                 fn_id: entry_fn,
@@ -306,10 +339,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             },
             NativeBody {
                 fn_id: cont_fn,
-                origin: NativeBodyOrigin::Continuation {
-                    owner: entry_fn,
-                    index: 0,
-                },
+                origin: NativeBodyOrigin::Continuation { owner: entry_fn },
                 entry_abi: NativeEntryAbi::Continuation { extra_params: 1 },
                 param_reprs: vec![AbiValueRepr::ValueRef],
                 return_ty: int,
@@ -405,10 +435,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
     );
     assert_eq!(
         program.bodies[1].origin,
-        NativeBodyOrigin::Continuation {
-            owner: entry_fn,
-            index: 0
-        },
+        NativeBodyOrigin::Continuation { owner: entry_fn },
         "native codegen should recover helper ownership from NativeBody.origin instead of planner reachability metadata",
     );
 }
@@ -461,6 +488,10 @@ fn compiler2_native_program_contract_uses_native_body_extern_marshals_as_authori
     let program = NativeProgram {
         entry: entry_fn,
         module,
+        executable_entries: vec![NativeExecutableEntry {
+            key: executable.clone(),
+            fn_id: entry_fn,
+        }],
         bodies: vec![NativeBody {
             fn_id: entry_fn,
             origin: NativeBodyOrigin::Executable(executable),

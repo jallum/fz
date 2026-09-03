@@ -1,0 +1,149 @@
+fz-kdt.163 native CPS sharing census
+=====================================
+
+Reproduce
+---------
+
+Run from the repository root:
+
+    cargo test --lib compiler2::drive_test::measure_native_cps_sharing_corpus -- --ignored --exact --nocapture
+
+The retained ignored test selects every direct child of `fixtures2/` and
+`fixtures2/behavior/` whose extension is `.fz` and whose source contains
+`fn main()`. It captures the closed native program immediately before and after
+sharing, compiles both, and prints totals plus every excluded and moving path.
+The selection is deliberately syntactic and deterministic: 502 candidates =
+467 resolved + 2 panics + 33 expected fatal/unresolved fixtures.
+
+Corpus result (2026-09-03)
+--------------------------
+
+- resolved fixtures: 467
+- paired pre/post codegen successes: 465
+- semantic executable entries: 5,338
+- same-function sibling groups: 662
+- initially equivalent graph classes: 40, covering 56 redundant roots
+- physical executable roots: 5,338 before; 5,281 after (-57)
+- owned continuations: 8,356 before; 8,220 after (-136)
+- all native bodies: 14,989 before; 14,796 after (-193)
+- compiled native text: 3,483,036 bytes before; 3,438,764 after (-44,272)
+- static `MakeClosure` instructions: 148 before and after
+- deterministic sharing work: 488 ownership-index passes over 19,599 bodies
+  and 17,417 structurally reachable graph-body roles; 4,751 graph comparisons and 4,499 body
+  comparisons
+- observed clean warm sharing passes: 90,192 us and 84,513 us
+- observed clean warm paired codegen passes: 16,986 -> 16,816 ms and
+  15,662 -> 14,966 ms
+- isolated cold target: 63 s compilation plus 120.05 s census, 184.69 s
+  end to end, exit 0, and 2.386 GB maximum resident set size
+- isolated cold paired codegen pass: 19,535 -> 19,590 ms
+  (elapsed samples are corroborative, not thresholds)
+
+The clean warm samples removed 170 ms and 696 ms of paired codegen work for
+90 ms and 85 ms of sharing. The cold sample varied by 55 ms in the other
+direction while two full codegen passes each took about 19.5 seconds; that
+noise is retained rather than presented as a speedup. The primary work proof
+is deterministic: codegen sees 193 fewer bodies and 44,272 fewer bytes, while
+sharing performs one bounded inventory index per pass and the exact comparison
+counters repeat. Elapsed samples are a coarse systematic-regression check only.
+The integer counters are test-only fields and compile out of production builds;
+they measure the retained algorithm without adding runtime observation work.
+
+Continuation roles come from first-reachable completed-IR control-edge paths,
+independent of helper construction and body-inventory order. Fifty-nine owned
+body occurrences across the 488 fixed-point passes have no such path, so their
+graphs are conservatively ineligible rather than receiving a temporal fallback
+role. An exhaustive audit found that every omitted helper is a generated
+`__branch_N` or `__resume_N` body with no control edge, construction word, or
+published native/callable-boundary reference anywhere in its program: genuinely
+dead native emission, tracked for deletion at its emitter by fz-tfn.27. The
+indexer rejects duplicate body, clause, or structural graph roles instead of
+silently choosing one.
+
+The first comparison implementation was rejected before delivery. It rebuilt
+owned graphs by scanning the full body list for each candidate comparison:
+4,924 graph comparisons produced 5,659 and 5,698 body comparisons on two
+identical corpus runs because `HashMap` iteration changed the early-exit order.
+That version spent about 1,516 ms while its paired run avoided only 1,179 ms of
+code generation. The retained implementation instead builds one ownership
+index per fixed-point pass and compares bodies in canonical role order.
+
+The fixed point removes one additional root after equivalent callees have
+shared, hence 56 roots are equivalent initially and 57 are absent from the
+final physical inventory. Semantic entries and constructions are unchanged.
+
+Excluded fixtures
+-----------------
+
+The two pre-existing lowering panics are
+`00424_protocol_no_impl` and `00429_external_impl_residual`.
+
+The two fixtures that resolve but fail native code generation both before and
+after sharing are `00243_receive_after_zero` and
+`00253_variadic_float_error`.
+
+The 33 expected fatal/unresolved candidates are:
+
+    00014_unresolved_callable_boundary
+    00052_variadic_open_too_few
+    00116_runaway_macro_loop
+    00142_spec_float_disjoint
+    00156_unbound_name_error
+    00188_enum_reduce_ill_typed
+    00310_binary_pattern_header
+    00311_binary_variable_size
+    00415_cross_module_user
+    00417_protocol_user
+    00433_opaque_pid_arithmetic
+    00434_opaque_ref_arithmetic
+    00480_extern_arity_mismatch
+    00481_variadic_extern_too_few
+    00532_elixir_parser_range_do_blocks
+    00533_elixir_parser_range_no_parens
+    00534_elixir_invalid_keyword_list_tuple_one
+    00535_elixir_invalid_keyword_list_tuple_two
+    00536_elixir_invalid_keyword_list_bitstring
+    00537_elixir_expression_after_keyword_list_noparens_call
+    00538_elixir_expression_after_keyword_list_paren_call
+    00539_elixir_expression_after_keyword_list_list_literal
+    00540_elixir_expression_after_keyword_list_map_literal
+    00541_elixir_keyword_list_literals
+    00543_elixir_last_arg_keyword_list
+    00555_bitstring_bad_modifier
+    00556_bitstring_float_modifier
+    00557_bitstring_bad_size
+    behavior/opaque_fn_all_divergent
+    behavior/spec_mixed_protocol_concrete_violation
+    behavior/spec_violation
+    behavior/spec_violation_between_side_effects
+    behavior/spec_violation_cross_kind_union
+
+Mover classification
+--------------------
+
+Twenty fixtures share physical graphs. The retained harness prints, for each,
+the initial equivalent-class count, initially redundant roots, final root
+reduction, total body reduction, and native-byte reduction.
+
+- enum traversal/reduction and mirrored behavior fixtures:
+  `00183_enum_take_list_range`, `00230_enum_take_chained`,
+  `00231_joined_fn_refs_enum_reduce`, `00277_enum_tier0_fixture`,
+  `00280_enum_find_index`, `00418_enum_count_range`,
+  `00419_enum_take_mixed`, `00420_enum_take_drop_split`, `a_mixed`,
+  `enum_predicate_search`, `enum_take_drop_split`, `enum_tier0`, and
+  `repr_seam_enum_count_after_reduce2`
+- boxed/opaque callable paths: `00281_opaque_reducer_closure`,
+  `opaque_fn_value_join`, and the new `boxed_callable_cps_sharing` witness
+- equivalent structural continuations: `00352_recursive_cons_clause`,
+  `00385_tuple_destructure_demand`, and `00388_wildcard_param_hole`
+- boxed membership predicate path: `membership_operator`
+
+Controls
+--------
+
+The boxed reducer witness begins with two distinct, disjoint native graphs,
+including their continuations. Their only rich-type difference is on a
+`ValueRef` variable proved to be used solely as an indirect callee. Sharing
+retains both semantic activations and both predicate construction words while
+mapping them to the first physical graph. The direct control `mk(double)` /
+`mk(triple)` remains two graphs with distinct grounded local targets.

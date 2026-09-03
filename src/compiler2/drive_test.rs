@@ -2,7 +2,9 @@ use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed
 use crate::compiler2::artifact::{
     BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge, DispatchCallEdge,
 };
-use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
+use crate::compiler2::artifact::{
+    NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeGraphSharingWork, NativeProgram,
+};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
@@ -4986,8 +4988,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
 }
 
 #[test]
-fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs()
-{
+fn compiler2_native_program_shares_boxed_callable_cps_without_erasing_semantic_identity() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -4995,29 +4996,17 @@ fn compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_
     functions.install(&tel);
     let native = NativeProgramCapture::new();
     native.install(&tel);
+    let before_sharing = Rc::new(RefCell::new(Vec::<NativeProgram>::new()));
+    let before_sharing_sink = Rc::clone(&before_sharing);
+    tel.attach_raw_event2::<crate::compiler2::RootId, NativeProgram, _>(
+        &["fz", "compiler2", "native_program", "before_sharing"],
+        move |_, _, _, _, program| before_sharing_sink.borrow_mut().push(program.clone()),
+    );
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/callable_boundary_capture_identity.fz".to_string()),
-        text: r#"
-fn reduce_plain([], acc, _reducer), do: acc
-fn reduce_plain([head | tail], acc, reducer), do: reduce_plain(tail, reducer.(head, acc), reducer)
-
-fn gt2(x), do: x > 2
-fn even(x), do: (x % 2) == 0
-
-fn make_reducer(predicate) do
-  fn (entry, acc) ->
-    if predicate.(entry), do: acc + 1, else: acc
-  end
-end
-
-fn main() do
-  xs = [1, 2, 3, 4]
-  reduce_plain(xs, 0, make_reducer(gt2)) + reduce_plain(xs, 0, make_reducer(even))
-end
-"#
-        .to_string(),
+        name: Some("fixtures2/behavior/boxed_callable_cps_sharing.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/boxed_callable_cps_sharing.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5034,42 +5023,644 @@ end
             .map(|event| metadata_str(&event, "message").to_string())
             .unwrap_or_else(|| "<missing diagnostic>".to_string());
         panic!(
-            "native lowering should preserve distinct direct callable identities when the same reducer surface captures different predicates: {outcome:?}; diagnostic={message}"
+            "native lowering should preserve reducer behavior when the same boxed surface captures different predicates: {outcome:?}; diagnostic={message}"
         );
     }
 
     let make_reducer_id = function_id(&functions, "make_reducer", 1);
+    let predicate_functions = HashSet::from([
+        function_id(&functions, "gt2", 1).as_u32(),
+        function_id(&functions, "even", 1).as_u32(),
+    ]);
     let reducer_id = generated_functions_owned_by(&functions, make_reducer_id)
         .into_iter()
         .find(|record| record.arity == 2)
         .expect("make_reducer/1 should generate the reducer lambda")
         .function_id;
 
-    let program = native.last(root_id).program;
-    let reducer_executables = program
+    let mut unshared_program = before_sharing
+        .borrow()
+        .last()
+        .cloned()
+        .expect("native lowering should expose its complete graph before physical sharing");
+    let unshared_reducers = unshared_program
+        .executable_entries
+        .iter()
+        .filter(|entry| entry.key.activation.function == reducer_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        unshared_reducers
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "the comparison proof must begin with distinct physical reducer graphs",
+    );
+    let left_graph = unshared_program.native_graph_fn_ids(&unshared_reducers[0].key);
+    let right_graph = unshared_program.native_graph_fn_ids(&unshared_reducers[1].key);
+    assert!(
+        left_graph.len() > 1 && left_graph.len() == right_graph.len() && left_graph.is_disjoint(&right_graph),
+        "the distinct proof pair must include equally sized, disjoint owned continuation graphs",
+    );
+    let body = |fn_id| {
+        unshared_program
+            .bodies
+            .iter()
+            .find(|body| body.fn_id == fn_id)
+            .expect("executable native body")
+    };
+    let left_body = body(unshared_reducers[0].fn_id);
+    let right_body = body(unshared_reducers[1].fn_id);
+    let differing_value_types = left_body
+        .value_types
+        .iter()
+        .filter_map(|(var, left_ty)| (right_body.value_types.get(var) != Some(left_ty)).then_some(*var))
+        .collect::<HashSet<_>>();
+    let left_callee_only = crate::compiler2::artifact::indirect_callee_only_vars(
+        unshared_program.module.fn_by_id(unshared_reducers[0].fn_id),
+    );
+    let right_callee_only = crate::compiler2::artifact::indirect_callee_only_vars(
+        unshared_program.module.fn_by_id(unshared_reducers[1].fn_id),
+    );
+    assert!(
+        !differing_value_types.is_empty()
+            && differing_value_types.iter().all(|var| {
+                left_callee_only.contains(var)
+                    && right_callee_only.contains(var)
+                    && left_body.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
+                    && right_body.block_param_reprs.get(var) == Some(&AbiValueRepr::ValueRef)
+            }),
+        "the positive pair must exercise only the proven ValueRef indirect-callee type exception",
+    );
+    assert!(
+        unshared_program.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
+        "the distinct boxed reducer and full continuation graphs should normalize as equivalent",
+    );
+    let mut opposite_construction_order = unshared_program.clone();
+    opposite_construction_order.bodies.reverse();
+    opposite_construction_order.module.fns.reverse();
+    opposite_construction_order.module.fn_idx = opposite_construction_order
+        .module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(index, function)| (function.id, index))
+        .collect();
+    assert!(
+        opposite_construction_order.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
+        "structurally equal graphs must compare equally after opposite body construction order",
+    );
+    let mut broken_structure = unshared_program.clone();
+    let mut detached = None;
+    'functions: for function in &mut broken_structure.module.fns {
+        if !right_graph.contains(&function.id) {
+            continue;
+        }
+        for block in &mut function.blocks {
+            let continuation = match &mut block.terminator {
+                IrTerm::Call { continuation, .. } | IrTerm::CallClosure { continuation, .. } => {
+                    Some(&mut continuation.fn_id)
+                }
+                _ => None,
+            };
+            if let Some(continuation) = continuation.filter(|continuation| right_graph.contains(continuation)) {
+                detached = Some(*continuation);
+                *continuation = unshared_reducers[0].fn_id;
+                break 'functions;
+            }
+        }
+    }
+    let detached = detached.expect("the structural-role control needs a continuation control edge in the right graph");
+    assert!(
+        !broken_structure.native_cps_graphs_equivalent(&unshared_reducers[0].key, &unshared_reducers[1].key),
+        "an owned continuation detached from the completed IR control graph must make sharing ineligible",
+    );
+    broken_structure.deduplicate_equivalent_sibling_graphs();
+    assert_eq!(
+        unshared_reducers
+            .iter()
+            .map(|entry| broken_structure.executable_fn(&entry.key).expect("reducer executable"))
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "an incomplete ownership graph must not enter equivalence during the sharing fixed point",
+    );
+    let detached_owner = broken_structure
         .bodies
         .iter()
-        .filter_map(|body| match &body.origin {
-            NativeBodyOrigin::Executable(key) if key.activation.function == reducer_id => Some(key),
-            _ => None,
+        .find_map(|body| {
+            (body.fn_id == detached).then(|| match body.origin {
+                NativeBodyOrigin::Continuation { owner } => owner,
+                _ => panic!("the detached body must remain a continuation"),
+            })
         })
+        .expect("an ineligible continuation must not be removed by an unrelated representative remap");
+    assert!(
+        broken_structure.module.fn_idx.contains_key(&detached)
+            && broken_structure.module.fn_idx.contains_key(&detached_owner),
+        "an ineligible continuation and its owner must remain internally valid after other graph remaps",
+    );
+    let representative = unshared_reducers[0].fn_id;
+    let sharing_work = unshared_program.deduplicate_equivalent_sibling_graphs();
+    assert_eq!(
+        sharing_work,
+        NativeGraphSharingWork {
+            passes: 2,
+            indexed_bodies: 95,
+            owned_graph_bodies: 84,
+            graph_comparisons: 3,
+            body_comparisons: 7,
+        },
+        "sharing work must be a deterministic function of indexed graph ownership",
+    );
+    assert!(
+        unshared_reducers
+            .iter()
+            .all(|entry| unshared_program.executable_fn(&entry.key) == Some(representative)),
+        "fixed-point sharing should deterministically retain the first semantic entry's physical graph",
+    );
+    assert!(
+        left_graph
+            .iter()
+            .all(|fn_id| unshared_program.module.fn_idx.contains_key(fn_id))
+            && right_graph
+                .iter()
+                .all(|fn_id| !unshared_program.module.fn_idx.contains_key(fn_id)),
+        "sharing must retain every representative continuation and remove every redundant continuation",
+    );
+    assert!(
+        unshared_program.bodies.iter().all(|body| match body.origin {
+            NativeBodyOrigin::Continuation { owner } => unshared_program.module.fn_idx.contains_key(&owner),
+            _ => true,
+        }),
+        "representative remapping must not leave any retained continuation with a removed owner",
+    );
+
+    let program = native.last(root_id).program;
+    let reducer_executables = program
+        .executable_entries
+        .iter()
+        .filter(|entry| entry.key.activation.function == reducer_id)
         .collect::<Vec<_>>();
     let types = compiler.types_for_test();
     assert!(
         reducer_executables
             .iter()
-            .all(|key| key.activation.input_len(types) != 0),
+            .all(|entry| entry.key.activation.input_len(types) != 0),
         "the reducer executable should still carry a captured predicate identity lane",
     );
 
     let capture_identities = reducer_executables
         .iter()
-        .map(|key| key.activation.inputs(types)[..1].to_vec())
+        .map(|entry| entry.key.activation.inputs(types)[..1].to_vec())
         .collect::<HashSet<_>>();
     assert_eq!(
         capture_identities.len(),
         2,
-        "the reducer lambda should keep two distinct captured predicate identities in the direct callable executable frontier",
+        "the reducer lambda should preserve both semantic activation identities",
+    );
+    assert_eq!(
+        reducer_executables
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        1,
+        "equivalent boxed reducer activations should share one native body graph",
+    );
+    let predicate_words = program
+        .callable_boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary
+                .shape
+                .as_ref()
+                .is_some_and(|shape| predicate_functions.contains(&shape.target.0))
+        })
+        .map(|boundary| boundary.identity_fn)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        predicate_words.len(),
+        2,
+        "even and gt2 must keep distinct runtime construction words",
+    );
+    let emitted_predicate_words = program
+        .module
+        .fns
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.stmts)
+        .filter_map(|stmt| match stmt {
+            IrStmt::Let(_, IrPrim::MakeFnRef(_, identity_fn) | IrPrim::MakeClosure(_, identity_fn, _))
+                if predicate_words.contains(identity_fn) =>
+            {
+                Some(*identity_fn)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        emitted_predicate_words, predicate_words,
+        "sharing reducer code must not merge the predicate construction words it dispatches through",
+    );
+    let reducer_graph = program.native_graph_fn_ids(&reducer_executables[0].key);
+    assert_eq!(
+        reducer_graph
+            .iter()
+            .flat_map(|fn_id| &program.module.fn_by_id(*fn_id).blocks)
+            .filter(|block| matches!(
+                block.terminator,
+                IrTerm::CallClosure { .. } | IrTerm::TailCallClosure { .. }
+            ))
+            .count(),
+        1,
+        "the shared reducer graph must still invoke its captured predicate through the boxed callable word",
+    );
+}
+
+#[test]
+fn compiler2_native_program_keeps_direct_callable_specializations_inequivalent() {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/direct_callable_capture_identity.fz".to_string()),
+        text: r#"
+fn double(n), do: n * 2
+fn triple(n), do: n * 3
+fn mk(g), do: fn (n) -> g.(n) end
+fn main(), do: mk(double).(4) + mk(triple).(4)
+"#
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.demand(Job::LowerNativeProgram(root_id));
+    let outcome = compiler.drive();
+    if !matches!(outcome, DriveOutcome::Resolved) {
+        let message = capture
+            .last(&["fz", "diag", "error"])
+            .map(|event| metadata_str(&event, "message").to_string())
+            .unwrap_or_else(|| "<missing diagnostic>".to_string());
+        panic!("direct callable control should lower: {outcome:?}; diagnostic={message}");
+    }
+
+    let mk_id = function_id(&functions, "mk", 1);
+    let double_id = function_id(&functions, "double", 1);
+    let triple_id = function_id(&functions, "triple", 1);
+    let lambda_id = generated_functions_owned_by(&functions, mk_id)
+        .into_iter()
+        .find(|record| record.arity == 1)
+        .expect("mk/1 should generate its returned lambda")
+        .function_id;
+    let program = native.last(root_id).program;
+    let lambda_executables = program
+        .executable_entries
+        .iter()
+        .filter(|entry| entry.key.activation.function == lambda_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lambda_executables.len(),
+        2,
+        "double and triple should mint two semantic activations"
+    );
+    assert!(
+        !program.native_cps_graphs_equivalent(&lambda_executables[0].key, &lambda_executables[1].key),
+        "the direct-carrier lambda bodies ground to different call targets and must remain inequivalent",
+    );
+    assert_eq!(
+        lambda_executables
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "inequivalent direct specializations must retain separate native bodies",
+    );
+    let direct_target = |entry: &crate::compiler2::artifact::NativeExecutableEntry| {
+        program
+            .native_graph_fn_ids(&entry.key)
+            .into_iter()
+            .flat_map(|fn_id| program.module.fn_by_id(fn_id).blocks.iter())
+            .filter_map(|block| match block.terminator {
+                IrTerm::Call {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                }
+                | IrTerm::TailCall {
+                    callee: crate::fz_ir::DirectCallTarget::Local(target),
+                    ..
+                } => Some(target),
+                _ => None,
+            })
+            .find(|target| {
+                program.executable_entries.iter().any(|candidate| {
+                    candidate.fn_id == *target
+                        && matches!(candidate.key.activation.function, function if function == double_id || function == triple_id)
+                })
+            })
+            .expect("each direct-carrier lambda should ground its captured call")
+    };
+    let grounded_targets = lambda_executables
+        .iter()
+        .map(|entry| direct_target(entry))
+        .collect::<HashSet<_>>();
+    let expected_targets = program
+        .executable_entries
+        .iter()
+        .filter(
+            |entry| matches!(entry.key.activation.function, function if function == double_id || function == triple_id),
+        )
+        .map(|entry| entry.fn_id)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        grounded_targets, expected_targets,
+        "double and triple must remain distinct grounded direct targets",
+    );
+}
+
+/// Regenerate `.agent/measurements/fz-kdt.163-native-cps-sharing.txt` with:
+///
+/// `cargo test --lib compiler2::drive_test::measure_native_cps_sharing_corpus -- --ignored --exact --nocapture`
+#[test]
+#[ignore = "full-corpus fz-kdt.163 native CPS sharing census"]
+fn measure_native_cps_sharing_corpus() {
+    #[derive(Default, Debug)]
+    struct Totals {
+        candidates: usize,
+        resolved: usize,
+        codegen_pairs: usize,
+        semantic_executables: usize,
+        before_physical_executables: usize,
+        after_physical_executables: usize,
+        sibling_groups: usize,
+        equivalent_groups: usize,
+        redundant_executables: usize,
+        before_bodies: usize,
+        after_bodies: usize,
+        before_continuations: usize,
+        after_continuations: usize,
+        before_native_bytes: usize,
+        after_native_bytes: usize,
+        before_constructions: usize,
+        after_constructions: usize,
+        before_codegen_millis: u128,
+        after_codegen_millis: u128,
+        sharing_passes: usize,
+        indexed_bodies: usize,
+        owned_graph_bodies: usize,
+        graph_comparisons: usize,
+        body_comparisons: usize,
+        sharing_micros: u128,
+    }
+    #[derive(Debug)]
+    struct Mover {
+        fixture: String,
+        initial_classes: usize,
+        initially_redundant_roots: usize,
+        removed_roots: usize,
+        removed_bodies: usize,
+        removed_native_bytes: usize,
+    }
+
+    let mut paths = ["fixtures2", "fixtures2/behavior"]
+        .into_iter()
+        .flat_map(|directory| {
+            std::fs::read_dir(directory)
+                .unwrap_or_else(|error| panic!("read {directory}: {error}"))
+                .map(|entry| entry.expect("fixture directory entry").path())
+        })
+        .filter(|path| path.extension().is_some_and(|extension| extension == "fz"))
+        .collect::<Vec<_>>();
+    paths.sort();
+
+    let mut totals = Totals::default();
+    let mut drive_panics = Vec::new();
+    let mut unresolved = Vec::new();
+    let mut codegen_failures = Vec::new();
+    let mut movers = Vec::new();
+    for path in paths {
+        let source = std::fs::read_to_string(&path).expect("fixture source");
+        if !source.contains("fn main()") {
+            continue;
+        }
+        totals.candidates += 1;
+
+        let tel = ConfiguredTelemetry::new();
+        let before_sharing = Rc::new(RefCell::new(Vec::<NativeProgram>::new()));
+        let before_sharing_sink = Rc::clone(&before_sharing);
+        tel.attach_raw_event2::<crate::compiler2::RootId, NativeProgram, _>(
+            &["fz", "compiler2", "native_program", "before_sharing"],
+            move |_, _, _, _, program| before_sharing_sink.borrow_mut().push(program.clone()),
+        );
+        let after_sharing = NativeProgramCapture::new();
+        after_sharing.install(&tel);
+        let compiled_bytes = Rc::new(RefCell::new(HashMap::<FnId, usize>::new()));
+        let compiling_functions = Rc::new(RefCell::new(HashMap::<u64, FnId>::new()));
+        let compiling_functions_start = Rc::clone(&compiling_functions);
+        let compiling_functions_stop = Rc::clone(&compiling_functions);
+        let compiled_bytes_sink = Rc::clone(&compiled_bytes);
+        tel.attach_raw_span1_1::<FnId, cranelift_codegen::Context, _, _, _>(
+            &["fz", "codegen", "define_function"],
+            move |_, span_id, _, fn_id| {
+                compiling_functions_start.borrow_mut().insert(span_id, *fn_id);
+            },
+            move |_, span_id, _, _, context| {
+                if let Some(code) = context.compiled_code() {
+                    let fn_id = compiling_functions_stop
+                        .borrow_mut()
+                        .remove(&span_id)
+                        .expect("define stop should pair with its function start");
+                    compiled_bytes_sink.borrow_mut().insert(fn_id, code.code_buffer().len());
+                }
+            },
+            |_, _, _, _| {},
+        );
+
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(path.display().to_string()),
+            text: source,
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        compiler.demand(Job::LowerNativeProgram(root));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compiler.drive()));
+        let Ok(outcome) = outcome else {
+            drive_panics.push(path.display().to_string());
+            continue;
+        };
+        if !matches!(outcome, DriveOutcome::Resolved) {
+            unresolved.push((path.display().to_string(), format!("{outcome:?}")));
+            continue;
+        }
+        totals.resolved += 1;
+        let before = before_sharing
+            .borrow()
+            .last()
+            .cloned()
+            .expect("pre-sharing native program");
+        let after = after_sharing.last(root).program;
+        let mut reproduced = before.clone();
+        let sharing_started = std::time::Instant::now();
+        let sharing_work = reproduced.deduplicate_equivalent_sibling_graphs();
+        totals.sharing_micros += sharing_started.elapsed().as_micros();
+        totals.sharing_passes += sharing_work.passes;
+        totals.indexed_bodies += sharing_work.indexed_bodies;
+        totals.owned_graph_bodies += sharing_work.owned_graph_bodies;
+        totals.graph_comparisons += sharing_work.graph_comparisons;
+        totals.body_comparisons += sharing_work.body_comparisons;
+        assert_eq!(reproduced.entry, after.entry);
+        assert_eq!(reproduced.executable_entries, after.executable_entries);
+        assert_eq!(reproduced.bodies, after.bodies);
+        assert_eq!(reproduced.callable_boundaries, after.callable_boundaries);
+        assert_eq!(reproduced.module.fns, after.module.fns);
+        assert_eq!(
+            before
+                .executable_entries
+                .iter()
+                .map(|entry| &entry.key)
+                .collect::<Vec<_>>(),
+            after
+                .executable_entries
+                .iter()
+                .map(|entry| &entry.key)
+                .collect::<Vec<_>>(),
+            "physical sharing must preserve the semantic executable inventory",
+        );
+
+        let count_constructions = |program: &NativeProgram| {
+            program
+                .module
+                .fns
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .flat_map(|block| &block.stmts)
+                .filter(|stmt| matches!(stmt, IrStmt::Let(_, IrPrim::MakeClosure(..))))
+                .count()
+        };
+        let before_physical_executables = before
+            .executable_entries
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len();
+        let after_physical_executables = after
+            .executable_entries
+            .iter()
+            .map(|entry| entry.fn_id)
+            .collect::<HashSet<_>>()
+            .len();
+        totals.semantic_executables += after.executable_entries.len();
+        totals.before_physical_executables += before_physical_executables;
+        totals.after_physical_executables += after_physical_executables;
+        totals.before_bodies += before.bodies.len();
+        totals.after_bodies += after.bodies.len();
+        totals.before_continuations += before
+            .bodies
+            .iter()
+            .filter(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+            .count();
+        totals.after_continuations += after
+            .bodies
+            .iter()
+            .filter(|body| matches!(body.origin, NativeBodyOrigin::Continuation { .. }))
+            .count();
+        totals.before_constructions += count_constructions(&before);
+        totals.after_constructions += count_constructions(&after);
+
+        let mut siblings = HashMap::<FunctionId, Vec<&crate::compiler2::artifact::NativeExecutableEntry>>::new();
+        for entry in &before.executable_entries {
+            siblings.entry(entry.key.activation.function).or_default().push(entry);
+        }
+        let mut fixture_groups = 0;
+        let mut fixture_redundant = 0;
+        for entries in siblings.values().filter(|entries| entries.len() > 1) {
+            totals.sibling_groups += 1;
+            let mut classes: Vec<Vec<&crate::compiler2::artifact::NativeExecutableEntry>> = Vec::new();
+            for entry in entries {
+                if let Some(class) = classes
+                    .iter_mut()
+                    .find(|class| before.native_cps_graphs_equivalent(&class[0].key, &entry.key))
+                {
+                    class.push(entry);
+                } else {
+                    classes.push(vec![entry]);
+                }
+            }
+            for class in classes.into_iter().filter(|class| class.len() > 1) {
+                totals.equivalent_groups += 1;
+                totals.redundant_executables += class.len() - 1;
+                fixture_groups += 1;
+                fixture_redundant += class.len() - 1;
+            }
+        }
+
+        let mut compile = |label: &str, program: &NativeProgram| {
+            compiled_bytes.borrow_mut().clear();
+            let started = std::time::Instant::now();
+            let result = compiler.compile_native_program_jit_for_test(program);
+            let elapsed = started.elapsed().as_millis();
+            let bytes = compiled_bytes.borrow().values().sum::<usize>();
+            if result.is_err() {
+                codegen_failures.push((path.display().to_string(), label.to_string()));
+            }
+            (result.is_ok(), bytes, elapsed)
+        };
+        let (before_ok, before_bytes, before_millis) = compile("before", &before);
+        let (after_ok, after_bytes, after_millis) = compile("after", &after);
+        if before_ok && after_ok {
+            totals.codegen_pairs += 1;
+            totals.before_native_bytes += before_bytes;
+            totals.after_native_bytes += after_bytes;
+            totals.before_codegen_millis += before_millis;
+            totals.after_codegen_millis += after_millis;
+        }
+        if fixture_groups != 0 {
+            movers.push(Mover {
+                fixture: path.display().to_string(),
+                initial_classes: fixture_groups,
+                initially_redundant_roots: fixture_redundant,
+                removed_roots: before_physical_executables - after_physical_executables,
+                removed_bodies: before.bodies.len() - after.bodies.len(),
+                removed_native_bytes: before_bytes.saturating_sub(after_bytes),
+            });
+        }
+    }
+
+    let mover_lines = movers
+        .iter()
+        .map(|mover| {
+            format!(
+                "{}: initial_classes={} initially_redundant_roots={} removed_roots={} removed_bodies={} removed_native_bytes={}",
+                mover.fixture,
+                mover.initial_classes,
+                mover.initially_redundant_roots,
+                mover.removed_roots,
+                mover.removed_bodies,
+                mover.removed_native_bytes,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    eprintln!(
+        "fz-kdt.163 census: {totals:#?}\ndrive_panics={drive_panics:#?}\nunresolved={unresolved:#?}\ncodegen_failures={codegen_failures:#?}\nmovers:\n{mover_lines}"
     );
 }
 
@@ -12446,13 +13037,14 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
 /// a function that neither calls through a callable nor captures one into a
 /// lambda it constructs treats closure brands as freight, and every
 /// same-surface brand shares its activation. Identity-CONSUMING functions
-/// deliberately stay split: `find/3` captures the predicate into its wrapper
-/// lambda, and the wrapper calls it, so those two specialize per brand —
-/// that is the direct-dispatch trade
-/// `compiler2_native_program_keeps_distinct_direct_callable_executables_for_same_surface_when_capture_identity_differs`
-/// pins. The marginal cost of a call site is therefore three executables
-/// (its lambda, the constructor's split, the wrapper's split), not the
-/// seven it was when the pure transporters `find/2` and three
+/// deliberately retain separate semantic activations: `find/3` captures the
+/// predicate into its wrapper lambda, and the wrapper calls it, so both remain
+/// keyed per brand. Native lowering may map equivalent boxed-call activations
+/// to one physical CPS graph; grounded direct targets remain distinct, as
+/// `compiler2_native_program_keeps_direct_callable_specializations_inequivalent`
+/// pins. The semantic marginal cost of a call site is therefore three
+/// executables (its lambda, the constructor's split, the wrapper's split), not
+/// the seven it was when the pure transporters `find/2` and three
 /// `reduce_while/3`s respecialized too. This pins the
 /// correlation-preserving regime below `ACTIVATION_INPUT_ROW_BUDGET`; past
 /// the budget the evidence rows collapse to their join and the

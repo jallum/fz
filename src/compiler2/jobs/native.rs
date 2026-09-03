@@ -28,8 +28,8 @@ use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendCallableReturn, BackendClause, BackendEntry, BackendEntryCapture,
     BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge,
     CallTarget, DispatchCallEdge, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
-    NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeProgram, ReusableConsCapture,
-    required_dispatch_input_ordinals,
+    NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
+    ReusableConsCapture, required_dispatch_input_ordinals,
 };
 use super::super::body::{ControlDestination, ControlEntryId, LoweredExtern, ValueId};
 use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
@@ -319,6 +319,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .executable_fns
             .get(self.program.entry)
             .expect("native entry executable should exist");
+        let executable_entries = self
+            .program
+            .executables
+            .iter()
+            .zip(&self.executable_fns)
+            .map(|(executable, fn_id)| NativeExecutableEntry {
+                key: executable.key.clone(),
+                fn_id: *fn_id,
+            })
+            .collect();
         let mut module = self.module.build();
         annotate_back_edges(&mut module);
         module.atom_names = atom_names(&self.atom_ids);
@@ -330,12 +340,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .map(|(index, decl)| (decl.id, index))
             .collect();
         module.struct_schemas = self.program.struct_schemas.clone();
-        Ok(NativeProgram {
+        let mut program = NativeProgram {
             entry,
             module,
+            executable_entries,
             bodies: self.native_bodies,
             callable_boundaries: self.callable_boundaries,
-        })
+        };
+        #[cfg(test)]
+        self.telemetry.raw_event2(
+            &["fz", "compiler2", "native_program", "before_sharing"],
+            &self.root_id,
+            &program,
+        );
+        program.deduplicate_equivalent_sibling_graphs();
+        Ok(program)
     }
 
     fn lower_callable_construction_wrapper(&mut self, boundary: &NativeCallableBoundary) -> Result<(), FatalError> {
@@ -669,10 +688,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             fn_id,
             &format!("callable_wrapper_return_{}_{}", owner.fn_id.0, index),
             FnCategory::CpsCont,
-            NativeBodyOrigin::Continuation {
-                owner: owner.fn_id,
-                index,
-            },
+            NativeBodyOrigin::Continuation { owner: owner.fn_id },
             NativeEntryAbi::Continuation {
                 extra_params: member.target_return.layout.reprs.len(),
             },
@@ -988,7 +1004,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             entry_category,
             NativeBodyOrigin::Continuation {
                 owner: self.executable_fns[executable_index],
-                index: entry_id.as_u32(),
             },
             entry_abi,
             param_reprs,
@@ -2381,10 +2396,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             fn_id,
             &name,
             FnCategory::CpsCont,
-            NativeBodyOrigin::Continuation {
-                owner: ctx.fn_id,
-                index,
-            },
+            NativeBodyOrigin::Continuation { owner: ctx.fn_id },
             NativeEntryAbi::Continuation {
                 extra_params: source_reprs.len(),
             },
@@ -2507,10 +2519,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             fn_id,
             &name,
             FnCategory::CpsCont,
-            NativeBodyOrigin::Continuation {
-                owner: ctx.fn_id,
-                index,
-            },
+            NativeBodyOrigin::Continuation { owner: ctx.fn_id },
             NativeEntryAbi::Continuation { extra_params },
             param_reprs,
             executable.return_ty,
