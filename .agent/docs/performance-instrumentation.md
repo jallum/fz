@@ -131,8 +131,10 @@ anything that does not grow linearly is structural.
 
 A product whose settle **count** grows with the program and whose **cost per
 settle** stays flat is incremental — that is the shape to expect.
-`executable_facts` and `abi_executable` hold flat per-settle costs across a 32x
-ladder. A product whose settle count is *constant* while its per-settle cost
+`abi_executable` holds flat per-settle costs across a 32x ladder.
+`ExecutableFacts(E)` now appears in formula evaluation counts as the direct
+`DeriveExecutableFacts(E)` job and in the fact publication/read ledger; it must
+never appear in any per-product count. A product whose settle count is *constant* while its per-settle cost
 grows is a pass wearing a product's clothes: its unit of work is the program,
 not the key it is filed under.
 

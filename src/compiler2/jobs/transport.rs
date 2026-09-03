@@ -6,6 +6,7 @@ use super::super::body::{
     callsite_input_modes,
 };
 use super::super::drive::FactKey;
+use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 use super::super::facts::FactUse;
 use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::pull::{
@@ -24,7 +25,6 @@ use super::super::transport::{
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::artifact::{compare_executable_symbols, compare_transport_positions};
-use super::runtime_demand::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallableFactsDraft {
@@ -198,9 +198,9 @@ pub(crate) fn produce_callable_construction_product(
     position: &TransportPosition,
 ) -> PullOutcome {
     let executable = executable_key_for_transport_position(context.session().root(), position);
-    let facts = match context.read_executable_facts(tel, &executable) {
+    let facts = match context.read_executable_facts(world, &executable) {
         Some(facts) => facts,
-        None => return PullOutcome::wait_on_product(ProductKey::ExecutableFacts(executable)),
+        None => return PullOutcome::wait_on_fact(FactUse::settled(FactKey::ExecutableFacts(executable))),
     };
     let runtime = match context.read_runtime_demand(tel, &executable) {
         Some(runtime) => runtime,
@@ -237,7 +237,7 @@ fn produce_generic_callable_owner(
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     runtime: &ExecutableRuntimeDemand,
     position: &TransportPosition,
 ) -> PullOutcome {
@@ -442,8 +442,9 @@ fn project_group_member_owner(
         .callable_group_layout(member)
         .expect("callable owner group member must have a settled transport shape");
     let executable = executable_key_for_transport_position(context.session().root(), position);
-    let facts = context
-        .settled_executable_facts(&executable)
+    let facts = world
+        .executable_facts(&executable)
+        .cloned()
         .expect("callable owner group member must have settled executable facts");
     let runtime = context
         .settled_runtime_demand(&executable)
@@ -1037,7 +1038,7 @@ fn direct_callable_descr(
 /// own transport carrier — the same fact `materialize_closure_call_edge` uses
 /// to choose a direct edge — so claim and call share one authority.
 fn singleton_closure_call_target(
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     callsite: &CallSiteId,
 ) -> Option<(ActivationKey, ExecutableNeed)> {
     let summary = facts.callsites().get(callsite)?;
@@ -1058,7 +1059,7 @@ fn singleton_closure_call_target(
 fn origin_transport_recipe(
     world: &World,
     symbol: &ExecutableSymbol,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     origin: &TransportSource,
 ) -> TransportRecipe {
     match origin {
@@ -1169,7 +1170,7 @@ fn produce_local_callable_construction(
     tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     value: ValueId,
     producer: &LocalCallableProducer,
     flow: &CallableFlowFact,
@@ -1349,7 +1350,7 @@ fn produce_local_callable_construction(
 /// The callsite's result value and whether the call sits in tail position
 /// (`ControlDestination::Return`), where the result aliases the caller's
 /// return. `None` when the callsite id names no call tail in this body.
-fn callsite_result(facts: &super::runtime_demand::ExecutableFacts, callsite: CallSiteId) -> Option<(ValueId, bool)> {
+fn callsite_result(facts: &ExecutableFacts, callsite: CallSiteId) -> Option<(ValueId, bool)> {
     let LoweredBody::Clauses { entries, .. } = facts.body() else {
         return None;
     };
@@ -1446,12 +1447,12 @@ fn produce_named_transport_position(
     executable: &ExecutableKey,
     position: &TransportPosition,
 ) -> Option<PullOutcome> {
-    let facts = match context.read_executable_facts(tel, executable) {
+    let facts = match context.read_executable_facts(world, executable) {
         Some(facts) => facts,
         None => {
-            return Some(PullOutcome::wait_on_product(ProductKey::ExecutableFacts(
+            return Some(PullOutcome::wait_on_fact(FactUse::settled(FactKey::ExecutableFacts(
                 executable.clone(),
-            )));
+            ))));
         }
     };
     let runtime = match context.read_runtime_demand(tel, executable) {
@@ -1956,7 +1957,7 @@ fn append_origin_children(
     world: &World,
     executable: &ExecutableKey,
     symbol: &ExecutableSymbol,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     origin: &TransportSource,
     children: &mut Vec<TransportPosition>,
 ) -> bool {
@@ -2033,7 +2034,7 @@ fn append_origin_children(
 
 fn produce_joined_transport_layout(
     world: &mut World,
-    _facts: &super::runtime_demand::ExecutableFacts,
+    _facts: &ExecutableFacts,
     ty: Ty,
     demand: RuntimeDemand,
     position: &TransportPosition,
@@ -2074,7 +2075,7 @@ fn joined_transport_layout(
 
 fn produce_generic_transport_layout(
     world: &mut World,
-    facts: &super::runtime_demand::ExecutableFacts,
+    facts: &ExecutableFacts,
     ty: Ty,
     demand: RuntimeDemand,
     position: &TransportPosition,

@@ -559,6 +559,18 @@ fn public_settled_events_carry_settlement_and_multiple_transport_shape_products_
         !settled.is_empty(),
         "expected at least one settled product in the public stream"
     );
+    for leaf in ["settled", "displaced", "cache_hit", "reentered"] {
+        for event in trace.events_named(&["fz", "compiler2", "pull", "product", leaf]) {
+            let product = event
+                .metadata_key("product")
+                .unwrap_or_else(|| panic!("{leaf} event missing product identity: {event:?}"));
+            assert_ne!(
+                product.get("kind").and_then(|value| value.as_str()),
+                Some("executable_facts"),
+                "ExecutableFacts is a scheduler fact and must be absent from the public product {leaf} leaf",
+            );
+        }
+    }
 
     // (a) THE PROOF the arity-3 settled handler fires and renders: every
     // public settled row carries a `settlement` object with generation >= 1.
@@ -1266,8 +1278,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         analyze_evaluations: 234,
         analyze_zero_change: 16,
         // fz-kdt.199: 1009 -> 1013, the four extra analyses above and nothing
-        // else -- no other formula gains an evaluation on this fixture.
-        total_evaluations: 1013,
+        // else. fz-kdt.45 adds the two exact-executable fact producers.
+        total_evaluations: 1015,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -1326,8 +1338,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
         // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
-        // fz-kdt.183: 1349 -> 1381.
-        total_evaluations: 1381,
+        // fz-kdt.183: 1349 -> 1381. fz-kdt.45 adds the two exact-executable
+        // fact producers.
+        total_evaluations: 1383,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -1485,8 +1498,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // analysis passes; zero-change stays flat at 15.
         analyze_evaluations: 933,
         analyze_zero_change: 15,
-        // The same two deleted analysis passes are the whole-run fall.
-        total_evaluations: 2456,
+        // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
+        // two exact-executable fact producers bring the total back to 2458.
+        total_evaluations: 2458,
     },
 ];
 
@@ -1525,6 +1539,17 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             "{fixture} must resolve for its causal report to describe a whole compile"
         );
         let report = CausalReport::derive(trace.events());
+        let (executable_fact_formulas, executable_fact_work) = family_work(&report, "DeriveExecutableFacts");
+        assert_eq!(
+            (
+                executable_fact_formulas,
+                executable_fact_work.evaluations,
+                executable_fact_work.changed_outputs
+            ),
+            (2, 2, 2),
+            "{fixture}: the +2 total is exactly the two World fact producers that replaced the product formula: \
+             {executable_fact_work:?}",
+        );
         let lifecycle_of = |kind: &str| report.lifecycles.get(kind).cloned().unwrap_or_default();
 
         assert_eq!(

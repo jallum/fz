@@ -1981,6 +1981,7 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
             write_root_id(out, *root)
         }
         Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
+        Job::DeriveExecutableFacts(key) => write_executable_key(out, key),
     }
 }
 
@@ -2019,7 +2020,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::ActivationAnalyzed(key)
         | FactKey::ReturnType(key) => write_activation_key(out, key),
         FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
-        FactKey::Executable(key) => write_executable_key(out, key),
+        FactKey::Executable(key) | FactKey::ExecutableFacts(key) => write_executable_key(out, key),
     }
 }
 
@@ -2215,7 +2216,6 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
         | ProductKey::AbiExecutable(executable)
         | ProductKey::MaterializedExecutable(executable)
         | ProductKey::ExecutableEffects(executable)
-        | ProductKey::ExecutableFacts(executable)
         | ProductKey::RuntimeDemand(executable)
         | ProductKey::OutgoingInputEdges(executable) => write_executable_key(out, executable),
         ProductKey::CallableResolution(key) => {
@@ -2275,6 +2275,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::CallSiteTargets(_) => "CallSiteTargets",
         FactKey::CallSiteSummary(_) => "CallSiteSummary",
         FactKey::Executable(_) => "Executable",
+        FactKey::ExecutableFacts(_) => "ExecutableFacts",
         FactKey::BackendProgram(_) => "BackendProgram",
         FactKey::NativeProgram(_) => "NativeProgram",
     }
@@ -2303,6 +2304,7 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",
         Job::AnalyzeActivation(_) => "AnalyzeActivation",
+        Job::DeriveExecutableFacts(_) => "DeriveExecutableFacts",
         Job::BuildBackendProduct(_) => "BuildBackendProduct",
         Job::LowerNativeProgram(_) => "LowerNativeProgram",
     }

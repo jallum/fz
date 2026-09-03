@@ -17,8 +17,8 @@ use crate::source::Span;
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendReturnLayout, BackendSemanticInputLayout,
     BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm, DispatchCallEdge,
-    DispatchCallMiss, EffectSummary, ExecutableDispatch, MaterializedCallEdge, MaterializedExecutable,
-    MaterializedExecutableTransport, PositionedCallableConstructionOwner,
+    DispatchCallMiss, EffectSummary, MaterializedCallEdge, MaterializedExecutable, MaterializedExecutableTransport,
+    PositionedCallableConstructionOwner,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -26,22 +26,22 @@ use super::super::body::{
 };
 use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
+use super::super::executable_facts::ExecutableFacts;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
 };
 use super::super::scheduler::FatalError;
-use super::super::semantic::{
-    ActivationAnalysis, CallSiteKey, CallSiteSummary, CallTargetSummary, SelectedCallee, ShapeDemand,
-};
+#[cfg(test)]
+use super::super::semantic::CallSiteKey;
+use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee, ShapeDemand};
 use super::super::transport::{
     ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr,
     ShapeId, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
-use super::semantic::executable_callsite_needs;
 
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
@@ -52,17 +52,15 @@ pub(crate) fn produce_materialized_executable_product(
     executable: &ExecutableKey,
 ) -> PullOutcome {
     let mut waits = Vec::new();
-    let activation_fact = FactKey::ActivationAnalyzed(executable.activation.clone());
-    if !context.read_fact(world, FactUse::settled(activation_fact.clone())) {
-        waits.push(PullWait::Fact(FactUse::settled(activation_fact)));
+    let executable_facts = context.read_executable_facts(world, executable);
+    if executable_facts.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(
+            executable.clone(),
+        ))));
     }
     let return_fact = FactKey::ReturnType(executable.activation.clone());
     if !context.read_fact(world, FactUse::settled(return_fact.clone())) {
         waits.push(PullWait::Fact(FactUse::settled(return_fact)));
-    }
-    let lowered_fact = FactKey::LoweredBody(executable.activation.function);
-    if !context.read_fact(world, FactUse::settled(lowered_fact.clone())) {
-        waits.push(PullWait::Fact(FactUse::settled(lowered_fact)));
     }
     let runtime_demand = context.read_runtime_demand(tel, executable);
     if runtime_demand.is_none() {
@@ -72,29 +70,16 @@ pub(crate) fn produce_materialized_executable_product(
     if context.read_product(tel, outgoing_key.clone()).is_none() {
         waits.push(PullWait::Product(outgoing_key));
     }
-    if let Some(analysis) = world.activation_analysis(&executable.activation) {
-        for callsite in &analysis.callsites {
-            let fact = FactKey::CallSiteSummary(CallSiteKey {
-                activation: executable.activation.clone(),
-                callsite: *callsite,
-            });
-            if !context.read_fact(world, FactUse::settled(fact.clone())) {
-                waits.push(PullWait::Fact(FactUse::settled(fact)));
-            }
-        }
-    }
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
 
-    let analysis = world
-        .activation_analysis(&executable.activation)
-        .cloned()
-        .expect("settled activation analysis should be readable for materialized product");
+    let executable_facts = executable_facts.expect("executable-facts wait should have been satisfied");
+    let analysis = executable_facts.analysis().clone();
     let return_ty = world
         .activation_return(&executable.activation)
         .unwrap_or_else(|| world.types_mut().none());
-    let lowered = world.lowered_body(executable.activation.function);
+    let lowered = executable_facts.body().clone();
     let (dispatch_outcomes, retained_entries) = match lowered {
         LoweredBody::Clauses { ref clauses, .. } => {
             let mut entries = analysis.reachable_entries.clone();
@@ -123,7 +108,7 @@ pub(crate) fn produce_materialized_executable_product(
     transport_positions.extend(required_call_edge_transport_positions(
         world,
         executable,
-        &analysis,
+        &executable_facts,
         &body,
         &callsite_args,
     ));
@@ -147,6 +132,8 @@ pub(crate) fn produce_materialized_executable_product(
         &transport_plan,
         executable,
         &analysis,
+        executable_facts.callsites(),
+        executable_facts.callsite_needs(),
         &body,
         &pruned.original_entry_ids,
         &callsite_args,
@@ -155,7 +142,7 @@ pub(crate) fn produce_materialized_executable_product(
     .expect("product materialization should have complete call edges after waits");
     let effects = local_effects(&body, &call_edges);
     let materialized = MaterializedExecutable {
-        entry_dispatch: materialize_entry_dispatch(world, executable, &analysis),
+        entry_dispatch: executable_facts.entry_dispatch().cloned(),
         return_ty,
         runtime_demand: runtime_demand.expect("runtime-demand product wait should have been satisfied"),
         transport,
@@ -924,7 +911,7 @@ pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::
 fn required_call_edge_transport_positions(
     world: &mut World,
     executable: &ExecutableKey,
-    analysis: &ActivationAnalysis,
+    facts: &ExecutableFacts,
     body: &LoweredBody,
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Vec<TransportPosition> {
@@ -932,21 +919,8 @@ fn required_call_edge_transport_positions(
         return Vec::new();
     };
     let caller_symbol = transport_executable_symbol(executable, world.types());
-    let callsite_needs = callsite_needs_for_body(body, executable.need);
-    let summaries = analysis
-        .callsites
-        .iter()
-        .filter_map(|callsite| {
-            let key = CallSiteKey {
-                activation: executable.activation.clone(),
-                callsite: *callsite,
-            };
-            world
-                .callsite_summary(&key)
-                .cloned()
-                .map(|summary| (*callsite, summary))
-        })
-        .collect::<HashMap<_, _>>();
+    let callsite_needs = facts.callsite_needs();
+    let summaries = facts.callsites();
     let mut positions = HashSet::new();
     for entry in entries {
         match &entry.tail {
@@ -1162,12 +1136,13 @@ fn materialize_call_edges(
     transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
+    summaries: &HashMap<CallSiteId, CallSiteSummary>,
+    callsite_needs: &HashMap<CallSiteId, ExecutableNeed>,
     body: &LoweredBody,
     original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<HashMap<CallSiteId, MaterializedCallEdge>>, FatalError> {
     let mut call_edges = HashMap::new();
-    let callsite_needs = callsite_needs_for_body(body, executable.need);
     let LoweredBody::Clauses { entries, .. } = body else {
         return Ok(Some(call_edges));
     };
@@ -1181,6 +1156,7 @@ fn materialize_call_edges(
                     transport_plan,
                     executable,
                     analysis,
+                    summaries,
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
                     dest,
@@ -1211,6 +1187,7 @@ fn materialize_call_edges(
                     transport_plan,
                     executable,
                     analysis,
+                    summaries,
                     callee_layout,
                     callsite_needs.get(callsite).copied().unwrap_or(ExecutableNeed::Value),
                     *callsite,
@@ -1239,16 +1216,13 @@ fn materialize_direct_call_edge(
     transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
+    summaries: &HashMap<CallSiteId, CallSiteSummary>,
     need: ExecutableNeed,
     callsite: CallSiteId,
     dest: &ControlDestination,
     original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
-    let key = CallSiteKey {
-        activation: executable.activation.clone(),
-        callsite,
-    };
     // One door: a callsite that named no targets -- never reached, proven
     // dead, or reached and still unresolved -- materializes no edge. (The
     // `has_fact` pre-test that used to stand here asked a DIFFERENT question:
@@ -1258,7 +1232,7 @@ fn materialize_direct_call_edge(
     // and matrix -- so the store answers alone: fz-kdt.69.2. fz-kdt.69.3
     // makes the ledger authoritative over exactly this divergence; revisit
     // then.)
-    let Some(summary) = world.callsite_summary(&key).cloned() else {
+    let Some(summary) = summaries.get(&callsite).cloned() else {
         return Ok(None);
     };
     // The callsite's DESTINATIONS, not its settled targets: a target the
@@ -1339,6 +1313,7 @@ fn materialize_closure_call_edge(
     transport_plan: &ArtifactTransportLookup<'_>,
     executable: &ExecutableKey,
     analysis: &ActivationAnalysis,
+    summaries: &HashMap<CallSiteId, CallSiteSummary>,
     callee_layout: TransportLayout,
     need: ExecutableNeed,
     callsite: CallSiteId,
@@ -1347,11 +1322,7 @@ fn materialize_closure_call_edge(
     original_entry_ids: &[ControlEntryId],
     callsite_args: &HashMap<CallSiteId, Vec<CallArg>>,
 ) -> Result<Option<MaterializedCallEdge>, FatalError> {
-    let key = CallSiteKey {
-        activation: executable.activation.clone(),
-        callsite,
-    };
-    let summary = world.callsite_summary(&key).cloned();
+    let summary = summaries.get(&callsite).cloned();
     let target = summary.as_ref().and_then(|summary| summary.single_target().cloned());
     // The callee's CARRIER decides whether this call happens, not the static
     // target evidence standing behind it. A `ValueRef` carrier means a real
@@ -1657,33 +1628,6 @@ fn require_transport_layout(
             format!("missing transport layout for position {position:?}"),
         )
     })
-}
-
-fn callsite_needs_for_body(body: &LoweredBody, need: ExecutableNeed) -> HashMap<CallSiteId, ExecutableNeed> {
-    match body {
-        LoweredBody::Extern { .. } => HashMap::new(),
-        LoweredBody::Clauses { clauses, .. } => {
-            let clause_ids = (0..clauses.len() as u32).collect::<Vec<_>>();
-            executable_callsite_needs(body, &clause_ids, need)
-        }
-    }
-}
-
-fn materialize_entry_dispatch(
-    world: &World,
-    executable: &ExecutableKey,
-    analysis: &ActivationAnalysis,
-) -> Option<ExecutableDispatch> {
-    if analysis.entry_reachability.is_direct_clause() {
-        return None;
-    }
-    match world.lowered_body(executable.activation.function) {
-        LoweredBody::Extern { .. } => None,
-        LoweredBody::Clauses { .. } => Some(ExecutableDispatch::new(
-            world.entry_dispatch(executable.activation.function),
-            analysis.entry_reachability.clauses().to_vec(),
-        )),
-    }
 }
 
 fn prune_lowered_body(
@@ -2612,6 +2556,14 @@ mod tests {
             structural: world.intern_shape(ShapeDescr::Nothing),
             carrier,
         };
+        let summaries = world
+            .callsite_summary(&CallSiteKey {
+                activation: caller.activation.clone(),
+                callsite,
+            })
+            .cloned()
+            .map(|summary| HashMap::from([(callsite, summary)]))
+            .unwrap_or_default();
         let edge = materialize_closure_call_edge(
             &mut world,
             &tel,
@@ -2619,6 +2571,7 @@ mod tests {
             &transport_plan,
             &caller,
             &analysis,
+            &summaries,
             callee_layout,
             ExecutableNeed::Value,
             callsite,

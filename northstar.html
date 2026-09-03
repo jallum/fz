@@ -680,7 +680,13 @@ MaterializedExecutable(E)
         Backend-required transport positions wait for produced
         <code>TransportShape(position)</code> values, not just demanded position membership.
         Each position owns one layout answer derived from settled <code>RuntimeDemand(E)</code>,
-        normalized <code>ExecutableFacts</code>, and exact upstream position products. Direct-call
+        the World-owned <code>ExecutableFacts(E)</code> fact, and exact upstream position products. One
+        <code>DeriveExecutableFacts(E)</code> scheduler job reads the exact settled activation analysis,
+        lowered body, entry dispatch, and analyzed callsite summaries. <code>RuntimeDemand</code>,
+        <code>OutgoingInputEdges</code>, <code>CallableResolution</code>, <code>TransportShape</code>,
+        <code>CallableConstruction</code>, and <code>MaterializedExecutable</code> record that fact as an
+        ordinary dependency; materialization additionally waits on its activation's <code>ReturnType</code>.
+        There is no product, producer bridge, reader, driver branch, or memo identity for executable facts. Direct-call
         and public-callable return origins are distinguished before transport. Recursive position
         dependencies settle as one atomic product group from their external anchors; there is no
         root transport solve, component inventory, or absence-provenance side channel. Exact fact

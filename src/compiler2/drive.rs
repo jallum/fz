@@ -89,6 +89,7 @@ pub enum Job {
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
+    DeriveExecutableFacts(ExecutableKey),
     BuildBackendProduct(RootId),
     LowerNativeProgram(RootId),
 }
@@ -104,6 +105,9 @@ impl StableSortKey<Types> for Job {
         match self {
             Job::SeedActivation(key) => format!("SeedActivation({})", key.stable_sort_key(types)),
             Job::AnalyzeActivation(key) => format!("AnalyzeActivation({})", key.stable_sort_key(types)),
+            Job::DeriveExecutableFacts(key) => {
+                format!("DeriveExecutableFacts({})", key.stable_sort_key(types))
+            }
             other => format!("{other:?}"),
         }
     }
@@ -141,6 +145,7 @@ pub enum FactKey {
     CallSiteTargets(CallSiteKey),
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
+    ExecutableFacts(ExecutableKey),
     BackendProgram(RootId),
     NativeProgram(RootId),
 }
@@ -283,6 +288,7 @@ impl World {
                 }
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
             }
+            FactKey::ExecutableFacts(executable) => Some(Job::DeriveExecutableFacts(executable.clone())),
             _ => None,
         };
         job.map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)
