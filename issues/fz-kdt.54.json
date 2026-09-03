@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.211"
+  ],
   "created": "2026-08-28T14:08:23Z",
   "description": "Measured while landing fz-f98.21: two processes running --dump native on\nfixtures2/00181_enum_reduce_operator_ref.fz write files that differ at char\n59,803 of 98,141 (HashMap Debug order is per-process RandomState order), even\nthough the underlying programs are equal. --dump backend was the same disease\nand now emits the canonical form (fz-kdt.6, absorbed by fz-f98.21); native and\nfnir are the only dumps left that cannot be diffed run to run.\n\nFix: extend compiler2/canon.rs to NativeProgram (fnir is its .module\nprojection). The machinery (id-free labels, TyCanon, index remapping, sorted\nmap rendering) already exists; dump.rs:126-127 are the two {:#?} sites.",
   "id": "fz-kdt.54",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "dump native/fnir are {:#?}: non-reproducible across processes",
   "type": "bug",
-  "updated_at": "2026-08-28T14:08:23Z"
+  "updated_at": "2026-09-03T18:27:59Z"
 }
