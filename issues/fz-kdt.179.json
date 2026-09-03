@@ -17,11 +17,15 @@
     {
       "text": "CORRECTION from the fz-kdt.178 cold review (2026-09-03): the escaping wrappers on 00277 are w10, w11, w20 (4 members) and w13-w19 (11 members) -- TEN wrappers, 62 static covering-seat findings -- not w2, which holds s1 = [] / [{any,any}] / [] | [{any,any}] and escapes nowhere. The dynamic tripwire prints no wrapper id (value + element + predicate only), so \"w2\" was an inference never measured; its 12 escapes carry the test `lists {Empty, NonEmpty}, heads [ints cofinite]`, matching the [int] / [] | [int] members at those ten wrappers. Of the 62 static findings, 28 are pairs whose tests are DISJOINT at subject 0 (no value can satisfy both arms; covers's position-wise `all` reports them anyway -\u003e fz-kdt.186), so this ticket's reachable reproducer is 34 seats across those wrappers plus 00420 4, enum_take_drop_split 4, enum_hof_three_distinct_closures 3 on the corpus. fz-kdt.178 lands a per-SITE allowance in the seat gate; this ticket retires it row by row. Also measured: selection findings are invariant under every arm seed (this is a wrapper-order axis), the fz-kdt.108 weld (outcomes[i].body_id == i) holds on every wrapper in the corpus, and the seated order IS the member-list order by construction -- so routing members through routable_alternatives must re-derive the weld from the seated order, exactly as the ticket says.",
       "timestamp": "2026-09-03T05:28:10Z"
+    },
+    {
+      "text": "DATA POINT from the fz-kdt.183 cold review (2026-09-03): keying recursive activations on the list ELEMENT (183's prototype) retires this ticket's dynamic reproducer entirely -- 00277 surface-membership escapes 12 -\u003e 0 at settled and under arms:6, enum_predicate_search 1 -\u003e 0 -- because the members that used to differ only in a tail no test reads become distinct elements the test CAN read. That does not make member selection sound (the seat and drop still never run on it: a wrapper whose members differ elsewhere still seats by mint order), so this ticket stays; but its acceptance oracle changes with 183/124 and the reachable reproducer set must be re-measured after they land.",
+      "timestamp": "2026-09-03T06:37:52Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Construction-wrapper member selection bypasses the drop and the covering seat: dispatch_from_callable_flow_edges seats members in interner order",
   "type": "task",
-  "updated_at": "2026-09-03T05:28:10Z"
+  "updated_at": "2026-09-03T06:37:52Z"
 }
