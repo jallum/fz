@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.20"
+  ],
   "created": "2026-08-25T01:41:58Z",
   "description": "At origin/main `a3a9761d1209165e5230625b9347cf6b0ad09b83`, same-World source redefinition is live, while `StructExpectationMap` remains append-only. A superseded body can therefore poison a later `defstruct` redefinition.\n\n## Reproducer\n\nRun as one `Compiler2` instance:\n\n1. Submit `Point` v1 with `defstruct [:x]` and `User.run` returning `%Point{x: 1}`; root `User.run` resolves.\n2. Submit `User` v2 whose `run` returns `2`; it resolves.\n3. Submit `Point` v2 with `defstruct [:y]` and `get` returning `%Point{y: 3}`; add root `Point.get`.\n\nActual: `Unresolved` after the Point definition fails on the stale `x` obligation. A control whose v1 User body never referenced `x` resolves.\n\n## Root cause\n\n`StructExpectationMap` records `(target module, field, InterfaceRequester { code, module, span })` by append/dedup only. Redefinition replaces the requester's live body facts but never replaces its expectation contribution; `validate_struct_field_expectations` checks every historical entry against the new schema.\n\nThe original ticket's \"cannot fire today\" premise is obsolete: current main explicitly supports and tests same-World redefinition through fresh CodeIds.\n\n## Goal\n\nMake expectations owned, replaceable contributions of the source/definition job that derived them, so a concluded redefinition withdraws omitted obligations while waits preserve standing ones. Do not generation-filter blindly; follow scheduler conclude-replaces/wait-extends ownership semantics.\n\nDo not assume all three expectation stores share one live defect. The bare module-reference store deliberately preserves unresolved-diagnostic provenance today, and an import-only removal probe remained resolved because module surfaces are additive. Fold stores only if concrete lifecycle/settlement behavior proves they match.\n\n## TDD / acceptance\n\n- Pin the three-step redefinition reproducer and its no-old-reference control.\n- Keep an error when User v2 still references `x`.\n- With two requesters, retract only the dropped requester's obligation.\n- Preserve out-of-order reference-before-struct validation and reference-span diagnostics.\n- Census `ModuleInterface.expectations` and bare module-reference provenance under concrete redefinition reproducers; fold only on proven shared semantics, otherwise document their separate ownership.\n- Focused redefinition/struct tests, full library/CLI/matrix, formatting, and strict clippy pass.",
   "id": "fz-kdt.32",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] Retract requester-owned struct-field expectations when live redefinition drops the reference",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:19Z"
+  "updated_at": "2026-09-03T08:02:49Z"
 }

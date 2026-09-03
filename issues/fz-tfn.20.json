@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.24",
-    "fz-kdt.30"
+    "fz-kdt.30",
+    "fz-kdt.32"
   ],
   "blocks": [],
   "created": "2026-09-03T08:01:25Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "Retire superseded source snapshots after exact ownership lands",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:48Z"
+  "updated_at": "2026-09-03T08:02:49Z"
 }
