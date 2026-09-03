@@ -13,11 +13,15 @@
     {
       "text": "Dedicated worktree: /Users/j5n/Workspace/fz-wt-tfn26 at delivered head 3af40f715. Full mixed kdt46 source remains untouched in /Users/j5n/Workspace/fz-wt-kdt46; recoverable tree object 99ec12ece363a7a4c9d66902f00ee7c2b212ceaf captures the post-v10 binder-scope state before partition.",
       "timestamp": "2026-09-03T15:13:18Z"
+    },
+    {
+      "text": "Design correction approved during implementation: canonical/display strings are forbidden as production order keys. Use the existing typed structural Types comparison after complete binder-scoped addressing, and propagate typed comparators through Job/FactKey/FactUse/scheduler consumers. The string-key attempt is rejected and must be deleted before review.",
+      "timestamp": "2026-09-03T16:27:58Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Give activation facts one binder-scoped semantic order",
   "type": "bug",
-  "updated_at": "2026-09-03T16:27:57Z"
+  "updated_at": "2026-09-03T16:27:58Z"
 }
