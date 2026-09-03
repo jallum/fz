@@ -1995,8 +1995,6 @@ fn merge_call_targets(
                 &mut current_target.activation_inputs,
                 observed_target.activation_inputs.as_deref(),
             );
-            current_target.activation =
-                merge_target_activation(world, current_target.activation.take(), observed_target.activation)?;
             current_target.return_ty = join_evidence(world, current_target.return_ty, observed_target.return_ty);
             continue;
         }
@@ -2010,23 +2008,6 @@ fn merge_call_targets(
 
 fn same_call_target(left: &CallTargetSummary, right: &CallTargetSummary) -> bool {
     left.callee == right.callee && left.activation == right.activation
-}
-
-fn merge_target_activation(
-    _world: &mut World,
-    current: Option<ActivationKey>,
-    observed: Option<ActivationKey>,
-) -> Result<Option<ActivationKey>, FatalError> {
-    match (current, observed) {
-        (Some(current), Some(observed)) => {
-            if current.root != observed.root || current.function != observed.function {
-                return Err(FatalError);
-            }
-            Ok(Some(current))
-        }
-        (None, None) => Ok(None),
-        (Some(_), None) | (None, Some(_)) => Err(FatalError),
-    }
 }
 
 /// Published call-edge summaries live on the semantic/artifact plane, not the
