@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.20"
+  ],
   "created": "2026-08-25T01:41:26Z",
   "description": "## Goal\n\nA second source definition of the same qualified module must produce a module-level diagnostic and must never silently replace the first module body/interface. This includes two user-code contributions and collisions with compiler-owned runtime module names. Multiple clauses of one function inside one module remain valid.\n\n## Current behavior / evidence\n\nAt pinned origin/main a3a9761d, `discover_modules` maps every `defmodule` to the stable `ModuleId`, then calls `index_module_body`. `ModuleMap::index_body` overwrites whatever source the slot already held.\n\nThus two codes defining `Foo` resolve silently, and a user `List` prevents lazy runtime `List` from loading: custom `List.count/1` runs, while unrelated `List.member?/2` disappears and only reports `resolve/unknown-import`.\n\n## Strategy\n\nEnforce source ownership at the module-indexing boundary, before mutating `ModuleState`; retain enough first-definition provenance for a deterministic diagnostic at the second declaration span. Add a dedicated `resolve/duplicate-module` code/message naming the qualified module.\n\nTreat a reserved runtime-module identity as already owned, so `defmodule List` cannot bypass the check merely because runtime source is lazy. Do not extend `demand_function_scope`: by then the prior module source has already been erased.\n\nDocument the no-reopening/runtime-name rule in `.agent/docs/modules.md` and user guidance if applicable.\n\n## Checks\n\n- Two `submit_code` calls each defining `Foo`, even with disjoint function names, fail with `resolve/duplicate-module` at the second module declaration and keep the first source intact.\n- The same test with both defining `bar/0` proves the diagnostic names module `Foo`, not duplicate function.\n- A user `defmodule List` fails explicitly before the runtime List surface can disappear.\n- Multiple clauses of one function within one module still compile.\n- Existing duplicate-global-function and duplicate-defstruct tests stay green.\n- Focused tests plus relevant compiler2 module/drive proof gates pass.",
   "id": "fz-kdt.30",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] Reject duplicate named-module source before it replaces the prior module body",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:19Z"
+  "updated_at": "2026-09-03T08:02:48Z"
 }
