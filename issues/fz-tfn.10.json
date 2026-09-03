@@ -7,7 +7,7 @@
     "fz-tfn.1"
   ],
   "created": "2026-09-03T08:00:22Z",
-  "description": "## Goal\n\nMake `ProductMemo` the sole authority for settled artifact products and delete parallel typed artifact inventories from `PullSession`.\n\n## Evidence\n\n`PullSession` stores materialized, effect, ABI, backend, and executable-index maps in parallel with the memo. Producers clone values into these side maps. Most reads are inventory or tests; typed iteration over settled memo keys and values can answer the same questions. Parallel storage increases memory, clone work, invalidation surface, and the chance that two stores disagree.\n\n## Strategy and proof\n\n1. Inventory every side-map producer and consumer and classify the semantic question it asks.\n2. Add typed memo iteration/query APIs only for live questions.\n3. Move production consumers and assertions to memo-owned products.\n4. Prove identical materialized activation set, executable index, settled-key set, product generations, root artifact, and telemetry.\n5. Delete `materialized_executables`, effect inventory, `abi_executables`, `backend_executables`, `executable_index`, record APIs, invalidation code made unreachable, and transition-only tests.\n6. Run full product tests, library, fixture matrix, determinism, formatting, and clippy with warnings denied.\n\nNo compatibility mirror remains.",
+  "description": "## Goal\n\nMake ProductMemo the sole authority for settled materialized, ABI, backend, and executable-index products and delete their parallel typed inventories from PullSession.\n\n## Evidence\n\nPullSession stores materialized, ABI, backend, and executable-index maps in parallel with the memo. Producers clone values into these side maps. Most reads are inventory or tests; typed iteration over settled memo keys and values can answer the same questions. ExecutableEffects side storage is deliberately out of scope and is removed by fz-tfn.8 with its private effect graph.\n\n## Strategy and proof\n\n1. After reactive effects and shared payloads land, inventory every remaining side-map producer and consumer and classify the semantic question it asks.\n2. Add typed memo iteration/query APIs only for live questions.\n3. Move production consumers and assertions to memo-owned products.\n4. Prove identical materialized activation set, executable index, settled-key set, product generations, root artifact, and telemetry.\n5. Delete materialized_executables, abi_executables, backend_executables, executable_index, record APIs, invalidation code made unreachable, and transition-only tests.\n6. Run full product tests, library, fixture matrix, determinism, formatting, and clippy with warnings denied.\n\nNo compatibility mirror remains.",
   "id": "fz-tfn.10",
   "labels": [],
   "parent": "fz-tfn",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Delete PullSession's parallel artifact side maps",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:37Z"
+  "updated_at": "2026-09-03T08:06:17Z"
 }
