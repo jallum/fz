@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Stop rebuilding test-only output sets on every scheduler completion",
   "type": "task",
-  "updated_at": "2026-09-03T08:00:18Z"
+  "updated_at": "2026-09-03T08:09:08Z"
 }
