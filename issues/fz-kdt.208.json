@@ -9,9 +9,15 @@
   "id": "fz-kdt.208",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Filed from your build (c3e27143d): fz-kdt.208 -- a construction wrapper's resolutions and boundaries follow its surviving members. The dropped member's executable is still compiled and its boundary still published (flow.resolutions + boundary built pre-drop from ALL edges in runtime_demand.rs); native DCEs it (00420 -4,832 B, 00277 -5,024 B measured), interp/canon keep it (executables unchanged). No miscompile -- nothing routes to the dropped symbol. Blocked by this ticket; concordant with fz-kdt.58.\n",
+      "timestamp": "2026-09-03T16:08:45Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A construction wrapper's resolutions and boundaries follow its surviving members: a member the drop removes still has its executable compiled and its boundary published",
   "type": "task",
-  "updated_at": "2026-09-03T15:37:03Z"
+  "updated_at": "2026-09-03T16:08:45Z"
 }
