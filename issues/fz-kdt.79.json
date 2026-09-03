@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T19:26:24Z",
-  "description": "CallSiteMap/CallSiteTargetsMap slots are never pruned when their ledger fact\nretracts. The ledger-withdrawn/store-stale state is read nowhere today\n(measured 0 across corpus/lib/matrix/cli at fz-kdt.69.2) but three\nartifact.rs unit tests construct exactly that state, so the invariant is\naccidental, not structural. The one production divergence site is\nmaterialize_direct_call_edge's store read (the 69.2 comment there names the\nledger-vs-store question).\n\nSTANDALONE DECISION (no longer tied to any demand-derivation route -- that\ndied with fz-kdt.69.3): either (a) prune the stores on fact retraction so\nledger and store cannot diverge, or (b) document the store-outlives-ledger\ncontract explicitly and gate the divergent read. (a) is\ncorrect-by-construction; measure that nothing depended on stale reads\n(expected: nothing does).",
+  "description": "## Goal\n\nMake `CallSiteMap` and `CallSiteTargetsMap` exact value stores for the live `CallSiteSummary`/`CallSiteTargets` ledger facts. When the last publisher withdraws a callsite fact, remove its stored resolution so absence is bottom and a later `Unresolved` publication cannot inherit a stale `Resolved` answer.\n\n## Signal\n\n- A red World test publishes resolved summary and targets through one `AnalyzeActivation` conclusion, concludes while omitting both, and proves both facts are absent and `callsite_resolution`, `callsite_summary`, `callsite_target_resolution`, and `callsite_targets` all return `None`.\n- The same test re-publishes `Unresolved` and proves both resolution accessors return `Unresolved`, both resolved accessors return `None`, and the remint wakes/moves readers as a fresh replacing fact.\n- Artifact helpers no longer construct store-without-ledger state; they either publish matching facts or accept isolated semantic values directly.\n- Focused compiler2 tests and corpus/lib/matrix/CLI gates pass; a census finds zero reads of a callsite map entry whose corresponding fact is absent.\n\n## Strategy\n\n- Add key removal to both maps and, after `work_graph.complete`, consume its `FactChange` entries whose `new_revision` is `None` to prune matching store keys. Keep pruning at the single ledger-completion boundary, not scattered reader gates.\n- Cover multi-publisher behavior: prune only on actual final retraction, never when one publisher withdraws but the fact remains.\n- Delete or update `artifact.rs:1252-1260` and semantic-fixpoint wording that claim the stale split or defer it to dead fz-kdt.69.3.\n- Keep Unresolved-as-bottom join behavior only within a live fact epoch; retraction starts a fresh epoch.\n\nNo store-outlives-ledger contract, no per-consumer `has_fact` shims, no stale resolved answer surviving retraction, and no test-only impossible World state.",
   "id": "fz-kdt.79",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
   "status": "open",
-  "title": "CallSiteMap/CallSiteTargetsMap slots never pruned on fact retraction",
+  "title": "Prune callsite semantic stores when their facts retract",
   "type": "task",
-  "updated_at": "2026-08-30T23:45:38Z"
+  "updated_at": "2026-09-03T04:05:34Z"
 }
