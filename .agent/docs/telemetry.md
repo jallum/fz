@@ -330,14 +330,21 @@ Without this event a fact's `settled` bit would change between
 two `movements` renderings with nothing on the log to explain it, and any
 evaluation woken by such a flip would classify as `Cause::Uncaused`.
 
-Measured today the arbiter wakes NOTHING: the settled waits it answers belong
-to the product pull (`jobs::artifact`, `jobs::backend`, `jobs::transport`,
-`jobs::runtime_demand`, `jobs::root`), and the pull driver polls the fact
-rather than registering a scheduler waiter. So `Cause::Readiness` remains
-unobserved (fz-kdt.59) — but now for a stated reason, with the movement
-already on the log the day a scheduler waiter does stand on one of these
-facts. `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
-(`tests/fz2_cli.rs`) asserts the zero rather than assuming it.
+Fact waits returned by product producers in `jobs::artifact`, `jobs::backend`,
+`jobs::transport`, and `jobs::runtime_demand` are polled by the pull driver, so
+they do not register scheduler waiters. Scheduler jobs are different:
+`SeedRoot`, for example, returns settled `JobEffects` waits that
+`World::complete_job` registers with the work graph. fz-kdt.45 added another
+scheduler formula, `DeriveExecutableFacts(E)`, for the direct
+`ExecutableFacts(E)` World fact. It stands directly on settled semantic facts;
+in this fixture, `ActivationAnalyzed` and `CallSiteSummary` finality flips wake
+that exact producer and exercise `Cause::Readiness`. This signal exists before,
+and is not caused by, the later standing-root scanner deletion. On
+`00181_enum_reduce_operator_ref`, the 21 recorded wakes are 18 enqueues and 3
+coalesces, producing 18 readiness-caused evaluations and no uncaused work.
+`the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
+(`tests/fz2_cli.rs`) pins the cause identities and preserves the surrounding
+causal and output counts.
 
 The public stream is SELF-DESCRIBING (fz-kdt.34.6). A raw `Ty` or `FunctionId`
 is a position in one `World`, so a log that carries only ids means nothing to a
