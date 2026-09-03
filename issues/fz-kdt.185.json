@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T04:45:45Z",
+  "description": "From the fz-kdt.120 cold review (2026-09-03): with 120's prototype applied,\nfixtures2/behavior/enum_tier0.fz -- one of the three known-red matrix fixtures\n-- runs on all three doors and its stdout matches enum_tier0.expected.txt\nbyte for byte, but it emits a NEW warning[type/no-matching-clause] at\nruntime:Enum.fz:267 (Enum.member_result/3), the fixture has no\n.expected.diagnostics, and warnings are errors when we control them. So the\nlast thing between that fixture and green is a library clause coverage\nquestion in Enum.member_result/3: either a clause is genuinely missing for a\nrow the analysis now reaches (fix the library) or the row is a phantom joined\nacross users (the same blind-activation family as the List.reduce_step/3\nticket). Measure which, on 120's branch, before touching either. Also: under\nthe prototype enum_tier0 becomes a FIFO/LIFO canon mover (2413 lines, all\nexecutable numbering / callee ids, stdout identical) -- classify that with\nthe same probe. Sequence: on fz-kdt.120's landing.",
+  "id": "fz-kdt.185",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "enum_tier0 prints the oracle exactly once fz-kdt.120 lands but stays red on a warning[type/no-matching-clause] at Enum.member_result/3 (runtime:Enum.fz:267)",
+  "type": "task",
+  "updated_at": "2026-09-03T04:45:45Z"
+}
