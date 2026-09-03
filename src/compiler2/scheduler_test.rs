@@ -46,6 +46,34 @@ impl ClaimShape for &'static str {
     }
 }
 
+#[test]
+fn compiler2_scheduler_keeps_claims_in_the_ledger_not_the_completion_report() {
+    let mut scheduler = TestScheduler::new();
+    let step = complete(
+        &mut scheduler,
+        1,
+        HashSet::new(),
+        HashSet::new(),
+        vec!["answer"],
+        vec!["answer"],
+    );
+
+    let AppliedStep {
+        changed,
+        movements,
+        wakes,
+        blocked,
+    } = step;
+    assert_eq!(changed.len(), 1);
+    assert_eq!(movements.len(), 1);
+    assert!(wakes.is_empty());
+    assert!(blocked.is_empty());
+    assert_eq!(
+        scheduler.output_keys(&1).iter().copied().collect::<Vec<_>>(),
+        vec!["answer"]
+    );
+}
+
 fn current(fact: &'static str) -> FactUse<&'static str> {
     FactUse::current(fact)
 }

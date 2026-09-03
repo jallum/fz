@@ -319,9 +319,9 @@ job completion behind it, so it gets its own event.
 `AppliedStep` under `metadata.step`, rendered by the same
 `write_applied_step_body`, and fires when the drain arbiter
 (`Scheduler::settle_quiescent`) discharges the settled questions standing at an
-empty agenda. `outputs` and `blocked` are always empty and every `changed`
-entry is readiness-only: `old_revision == new_revision`, `old_settled !=
-new_settled`. Without this event a fact's `settled` bit would change between
+empty agenda. `blocked` is always empty and every `changed` entry is
+readiness-only: `old_revision == new_revision`, `old_settled != new_settled`.
+Without this event a fact's `settled` bit would change between
 two `movements` renderings with nothing on the log to explain it, and any
 evaluation woken by such a flip would classify as `Cause::Uncaused`.
 
@@ -593,9 +593,12 @@ stored artifacts.
 
 Scheduler completion events carry raw `JobCompletion`. The
 `work_graph.applied` and job-span handlers read its job and applied step;
-`AppliedStep` owns the resulting output-key set, so job spans do not duplicate
-raw `JobEffects`. One `activation_inputs.defined` event carries the same
-completion plus `World`, and handlers iterate its affected activation-key set.
+production handlers observe changed facts, movements, wakes, and waits from
+that step. Published keys remain in the scheduler's per-job claim ledger;
+test-only output capture reads those standing claims from `World` instead of
+making every completion rebuild them. One `activation_inputs.defined` event
+carries the same completion plus `World`, and handlers iterate its affected
+activation-key set.
 Return publication carries raw `World` plus `ActivationKey` only when the
 stored return changes. Event presence is the change signal; handlers read the
 settled return from `World`. `return_type.widened` is a separate raw

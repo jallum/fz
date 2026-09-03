@@ -1595,6 +1595,11 @@ impl World {
         self.work_graph.reads(job)
     }
 
+    #[cfg(test)]
+    pub(crate) fn job_outputs(&self, job: &Job) -> Vec<FactKey> {
+        self.work_graph.output_keys(job).iter().cloned().collect()
+    }
+
     pub fn has_fact(&self, key: &FactKey) -> bool {
         self.work_graph.facts().revision(key).is_some()
     }

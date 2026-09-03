@@ -15042,7 +15042,7 @@ impl OutputCapture {
                 let effects = JobEffects {
                     reads: world.job_reads(&job).into_iter().collect(),
                     waits: completion.blocked.clone(),
-                    outputs: completion.outputs.iter().cloned().collect(),
+                    outputs: world.job_outputs(&job),
                     changed,
                     ..JobEffects::default()
                 };
