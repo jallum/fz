@@ -292,7 +292,7 @@ publications from local semantic analysis. Downstream products consume that
 already-joined boundary surface instead of rediscovering or deduplicating
 semantic targets.
 
-## Product waits replace root semantic closure
+## Artifact products wait on exact facts
 
 The product path consumes settled facts directly. For one executable `E`,
 `MaterializedExecutable(E)` waits on settled `ActivationAnalyzed(E.activation)`,
@@ -305,8 +305,8 @@ The root product waits on `RootEntry(root)`, `Recursive(entry)`, and
 `DispatchMask(entry)` only so it can key the entry executable, then asks for
 `BackendExecutable(entry)`. Additional executables enter the request through
 symbolic call edges and callable entries recorded by already demanded products.
-There is no `SemanticClosed(root)` prerequisite on the product path and no
-root-wide semantic scan that decides artifact membership.
+Those exact dependencies grow artifact membership; no root-wide scan decides
+it.
 
 `RuntimeDemand(E)` is a product that settles its whole demand SCC inside one
 producer, the same pattern `ExecutableEffects` uses. Demand dependencies run

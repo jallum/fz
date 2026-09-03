@@ -1,14 +1,13 @@
-//! Compiler2's root-scoped semantic facts.
+//! Compiler2's activation-local semantic facts.
 //!
-//! This module stores activation-local summaries and closed-root frontiers that
-//! the work graph owns: observed input shapes, reachable callsites, settled
-//! return types, and the semantic closure each root has reached.
+//! This module stores the keyed values the work graph owns: observed input
+//! shapes, reachable callsites, settled return types, and runtime demand.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
+use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
 use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -65,7 +64,7 @@ pub struct CallTargetSummary {
     ///
     /// This is not the same thing as the bounded recursive activation key.
     /// Materialization follows `activation`; diagnostics, fixture contracts,
-    /// and semantic closure reasoning describe the externally visible surface.
+    /// and settled boundary facts describe the externally visible surface.
     pub surface_inputs: Vec<Ty>,
     /// The exact bounded activation this target demanded, when the callee is
     /// compiler-owned. Provider boundaries do not name a compiler2 activation.
@@ -649,13 +648,6 @@ pub struct ActivationAnalysis {
     pub value_types: HashMap<ValueId, Ty>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticClosure {
-    pub entry: ExecutableKey,
-    pub activations: HashSet<ActivationKey>,
-    pub executables: HashSet<ExecutableKey>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
@@ -994,16 +986,6 @@ pub struct CallSiteMap {
 #[derive(Debug, Default)]
 pub struct CallSiteTargetsMap {
     slots: HashMap<CallSiteKey, CallSiteResolution<CallSiteTargets>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SemanticClosureSlot {
-    closure: SemanticClosure,
-}
-
-#[derive(Debug, Default)]
-pub struct SemanticClosureMap {
-    slots: Vec<Option<SemanticClosureSlot>>,
 }
 
 impl ActivationMap {
@@ -1364,32 +1346,6 @@ impl CallSiteSummary {
 
     pub fn single_target(&self) -> Option<&CallTargetSummary> {
         (self.targets.len() == 1).then_some(&self.targets[0])
-    }
-}
-
-impl SemanticClosureMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn define(&mut self, root: RootId, closure: SemanticClosure) -> bool {
-        self.ensure(root);
-        let slot = &mut self.slots[root.as_u32() as usize];
-        let changed = !matches!(slot, Some(existing) if existing.closure == closure);
-        *slot = Some(SemanticClosureSlot { closure });
-        changed
-    }
-
-    pub fn get(&self, root: RootId) -> Option<&SemanticClosure> {
-        self.slots
-            .get(root.as_u32() as usize)
-            .and_then(|slot| slot.as_ref().map(|slot| &slot.closure))
-    }
-    fn ensure(&mut self, root: RootId) {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || None);
-        }
     }
 }
 

@@ -52,8 +52,8 @@ fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
 /// Lowers one backend program into the Compiler2-owned native handoff.
 ///
 /// The native handoff consumes only `BackendProgram(root)` plus compiler-owned
-/// stores. It introduces CPS/native bodies and side facts, but it does not
-/// reopen semantic closure, type inference, or planner discovery.
+/// stores. It introduces CPS/native bodies and side facts without re-running
+/// semantic derivations or discovering new callees.
 pub(super) fn lower_native_program(
     world: &mut World,
     tel: &impl crate::telemetry::RawSpanTelemetry,
