@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T03:53:51Z",
+  "close_reason": "Closed on current evidence, not an attributed fix. The dormant representation gap remains, but same-axis positives already merge and repeated impossible meets are stable; the claimed conjunctive pile-up does not reproduce. This duplicates the measured-and-closed fz-go4.26 result, whose full corpus probe found zero map-axis hygiene events. File a fresh ticket only if a real map-heavy fixture later shows growing empty/subsumed map clauses or measurable compile-work cost.",
   "created": "2026-08-28T14:08:16Z",
   "description": "Noted while landing fz-f98.21: sigs.rs documents MapSig::intersect_pos as\nnever returning PosMeet::Empty (measured-and-left), so same-axis positive map\nsigs never collapse or refute at meet time; the map axis relies on\nmap_clause_empty alone. canon's union-level subsumption drop covers the\ncomparison boundary, but production intersections can pile up conjunctive map\nstructure the way fz-go4.24 fixed for the other axes. If map-heavy traffic\ngrows, this is the axis with no clause-level normalization. Verify cost with a\nmap-heavy fixture before investing.",
   "id": "fz-kdt.53",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Map axis has no clause-level normalization: MapSig::intersect_pos never reports Empty",
   "type": "task",
-  "updated_at": "2026-08-28T14:08:16Z"
+  "updated_at": "2026-09-03T03:53:51Z"
 }
