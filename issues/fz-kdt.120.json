@@ -18,11 +18,15 @@
     {
       "text": "fz-kdt.192 landed (343f3a134): open_vars(params, args) deletes -- instantiate_match already walks (params, args) once, so OpenVars becomes an out-parameter of that walk. This ticket also DELETES the empty-list cleaner, which is the real fix for D3/R20/X6: the per-parameter veto scope is now pinned as a precision loss in two places (r20_cleaner_flip_inside_one_position, x6_one_tuple_parameter_two_fields, against x6b_two_parameters_same_constraint), and 192 widened its corpus exposure from 1 row to 8. Marking ambiguity at the moment of binding removes the scope, the disagreement, and collect_ambiguous_tuple_field_vars with it. Re-cut on 184 (which re-cuts on 192).\n",
       "timestamp": "2026-09-03T14:15:41Z"
+    },
+    {
+      "text": "fz-kdt.184 landed (ca23b676f): the polarity spine is in place and ready for you to fold onto. arrow_match.rs now has BindingSide { Unify, Lower, Upper } with a total flipped(), MatchBounds { lower, upper } threaded through all six collectors, and collect_arrow_match as the one reversing node. 120 re-cuts to: replace OpenVars.positive with BindingSide (it IS the polarity, measured), add OpenVars.vars (openness, the distinct axis this ticket did NOT add), and DELETE drop_ambiguous_empty_list_bindings -- which 184 deliberately left polarity-blind and inert at arrow_match.rs:585 exactly so you delete it whole. The empty-list ambiguity drop, dbg([]) = [], and dead_closure_capture_empty_list convergence are yours. Re-cut on this base (343f3a134 + 184); the old proto120.diff predates 192 and 184 and will not apply.\n",
+      "timestamp": "2026-09-03T16:25:57Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A @spec variable is a lower bound and a fact only when every positive occurrence contributed: the empty-list ambiguity drop goes, dbg([]) is [], and dead_closure_capture_empty_list converges",
   "type": "task",
-  "updated_at": "2026-09-03T14:15:41Z"
+  "updated_at": "2026-09-03T16:25:57Z"
 }
