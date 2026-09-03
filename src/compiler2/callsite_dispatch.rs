@@ -52,7 +52,9 @@ pub(crate) fn call_destinations(
     }
     let arity = summary.arity();
     let arrived = arrival_order(types, &summary.targets);
-    let (targets, observable_inputs) = routable_alternatives(types, &arrived);
+    let surfaces = target_surfaces(&arrived);
+    let (order, observable_inputs) = routable_alternatives(types, &surfaces, &same_callee(&arrived));
+    let targets = order.iter().map(|index| arrived[*index].clone()).collect::<Vec<_>>();
     if targets.len() <= 1 {
         return Ok(sole_destination(targets.into_iter().next()));
     }
@@ -82,26 +84,39 @@ fn sole_destination(target: Option<CallTargetSummary>) -> CallDestinations {
     }
 }
 
-/// The routable targets among two or more, each paired with the widened
-/// surface its runtime questions are asked about, in the order the plan tests
-/// them.
+/// The routable alternatives among two or more: which of them are destinations
+/// at all, named by their arrival index and listed in the order the plan tests
+/// them, each paired with the widened surface its runtime questions are asked
+/// about.
 ///
-/// The projection runs ONCE here. Every arm's observable surface and the
-/// question that surface projects to are computed before the drop, the
+/// AN ALTERNATIVE IS A SURFACE AND A CALLEE, and nothing else. The drop and
+/// the seat read a semantic surface per input and ask whether two alternatives
+/// name one callee; whatever the caller hangs off that -- a
+/// [`CallTargetSummary`] at a callsite, a [`CallableFlowEdge`] in a
+/// construction wrapper's member list -- is the caller's business and it
+/// re-associates by the index this returns. That is why there is ONE routing
+/// rule and not one per plan kind (fz-kdt.179): member selection is a dispatch
+/// like any other, and before this it was the one plan that ran neither the
+/// drop nor the seat.
+///
+/// The projection runs ONCE here. Every alternative's observable surface and
+/// the question that surface projects to are computed before the drop, the
 /// survivors' are carried into the seat, and nothing downstream re-derives
 /// either: the drop and the seat read one and the same reading of what the
 /// runtime can ask.
-fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (Vec<CallTargetSummary>, Vec<Vec<Ty>>) {
-    let observable_inputs = observable_inputs(types, targets);
+fn routable_alternatives(
+    types: &mut Types,
+    surfaces: &[Vec<Ty>],
+    same_callee: &dyn Fn(usize, usize) -> bool,
+) -> (Vec<usize>, Vec<Vec<Ty>>) {
+    let observable_inputs = observable_inputs(types, surfaces);
     let questions = runtime_questions(types, &observable_inputs);
-    let unroutable = unroutable_alternatives(types, targets, &observable_inputs, &questions);
-    let (routable, surviving): (Vec<_>, Vec<_>) = targets
-        .iter()
-        .cloned()
-        .zip(observable_inputs.into_iter().zip(questions))
+    let unroutable = unroutable_alternatives(types, same_callee, &observable_inputs, &questions);
+    let (routable, surviving): (Vec<_>, Vec<_>) = observable_inputs
+        .into_iter()
+        .zip(questions)
         .enumerate()
         .filter(|(index, _)| !unroutable.contains(index))
-        .map(|(_, alternative)| alternative)
         .unzip();
     let (observable, questions): (Vec<_>, Vec<_>) = surviving.into_iter().unzip();
     let order = specificity_order(types, &questions, &observable);
@@ -205,9 +220,10 @@ fn routable_alternatives(types: &mut Types, targets: &[CallTargetSummary]) -> (V
 /// under `Covering`, which admits no blind escape; every other pair sits
 /// exactly as arrival left it. So the seat's blind escapes are a SUBSET of
 /// arrival order's -- this rule can only ever remove them, never add one. The
-/// `debug_assert` below holds every callsite of every debug compile to it, and
-/// `compiler2_dispatch_seats_the_covering_arm_where_one_covers` reads the same
-/// property back off the landed artifact.
+/// `debug_assert` below holds every callsite of every debug compile to it,
+/// which the fixture matrix drives across the corpus. Construction-wrapper
+/// member selection runs this same seat now (fz-kdt.179), so the static census
+/// that once read the property back off the landed artifact is retired.
 ///
 /// `Covering` is not transitive (two groups can be blind at different
 /// positions), so no rank or comparator linearizes it; that is why the pass is
@@ -470,13 +486,13 @@ fn permuted<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
 /// `a_narrow_surface_carrying_the_wider_test_is_not_dropped_for_it` pins it.
 fn stands_in_for(
     types: &Types,
-    targets: &[CallTargetSummary],
+    same_callee: &dyn Fn(usize, usize) -> bool,
     observable: &[Vec<Ty>],
     questions: &[Vec<RuntimeTypePredicate>],
     wide: usize,
     narrow: usize,
 ) -> bool {
-    targets[wide].callee == targets[narrow].callee
+    same_callee(wide, narrow)
         && surface_inside(types, observable, narrow, wide)
         && !surface_inside(types, observable, wide, narrow)
         && test_inside(questions, narrow, wide)
@@ -524,8 +540,21 @@ pub(crate) fn question_groups(types: &mut Types, targets: &[CallTargetSummary]) 
 /// surfaces already and passes them straight to [`runtime_questions`]. This is
 /// the door for a caller that has only targets.
 fn target_questions(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<RuntimeTypePredicate>> {
-    let observable = observable_inputs(types, targets);
+    let observable = observable_inputs(types, &target_surfaces(targets));
     runtime_questions(types, &observable)
+}
+
+/// The semantic surface each target offers, which is all
+/// [`routable_alternatives`] reads of a target.
+fn target_surfaces(targets: &[CallTargetSummary]) -> Vec<Vec<Ty>> {
+    targets.iter().map(|target| target.surface_inputs.clone()).collect()
+}
+
+/// Whether two of a callsite's targets sit on one callee -- the conjunct
+/// [`stands_in_for`] asks of every alternative set, answered here off the
+/// selected callee a callsite settled per viable impl.
+fn same_callee(targets: &[CallTargetSummary]) -> impl Fn(usize, usize) -> bool + '_ {
+    move |left, right| targets[left].callee == targets[right].callee
 }
 
 /// The grouping itself: one group per distinct question, in arrival order.
@@ -572,48 +601,87 @@ fn runtime_questions(types: &mut Types, observable: &[Vec<Ty>]) -> Vec<Vec<Runti
         .collect()
 }
 
-/// Each target's inputs widened to the surface a runtime test can read back
-/// off a value -- the same projection the plan's rows are built from.
-fn observable_inputs(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<Ty>> {
-    targets
+/// Each alternative's inputs widened to the surface a runtime test can read
+/// back off a value -- the same projection the plan's rows are built from.
+fn observable_inputs(types: &mut Types, surfaces: &[Vec<Ty>]) -> Vec<Vec<Ty>> {
+    surfaces
         .iter()
-        .map(|target| runtime_dispatch_inputs(types, &target.surface_inputs))
+        .map(|inputs| runtime_dispatch_inputs(types, inputs))
         .collect()
 }
 
-pub(crate) fn dispatch_from_callable_flow_edges(
+/// Which of a construction wrapper's members are destinations at all, in the
+/// order the wrapper tests them, and the plan that tests them.
+///
+/// THE WELD, RE-DERIVED. fz-kdt.108 established that a selection row's
+/// `body_id` indexes the parallel member list and must increase
+/// monotonically, so the two are welded. This carries the weld as DATA:
+/// `members` names the surviving edges in seated order, transport builds the
+/// member list by walking exactly that, and row `i`'s `body_id` is `i`
+/// because member `i` was PUT there by the same walk. Nothing assumes the
+/// edge list's own order survives, and nothing may reorder either list
+/// afterwards.
+pub(crate) struct ConstructionSelection {
+    /// The surviving members, in the order the plan tests them, each named by
+    /// its index in the edge list the selection was computed from.
+    pub(crate) members: Vec<usize>,
+    /// `None` where one member is left: a wrapper with one destination calls
+    /// it, exactly as a callsite with one target is a `Direct` call.
+    pub(crate) plan: Option<PatternDispatchPlan<Ty>>,
+}
+
+/// A construction wrapper's member selection, seated and dropped by the ONE
+/// routing rule.
+///
+/// A wrapper's members are a runtime choice like any other: the value carries
+/// its call arguments, the plan asks its questions, and whichever member the
+/// graph reaches first receives it. So the same two obligations apply --
+/// [`unroutable_alternatives`] removes a member the seat would never put ahead
+/// of the member that stands in for it, and [`specificity_order`] corrects the
+/// order wherever a member would otherwise take values its own surface never
+/// named. Before fz-kdt.179 this plan ran neither: its rows were built
+/// straight from the edge list, which is the fz-kdt.108 `cmp_tys` order, and
+/// that is a CONTENT order, not a safety one.
+///
+/// EVERY MEMBER OF ONE WRAPPER IS ONE CALLEE, which is why the stand-in test's
+/// same-callee conjunct is satisfied outright here. A construction wrapper is
+/// one function at one capture layout -- `jobs/runtime_demand.rs`'s
+/// `callable_flow_resolution_edges_product` mints every edge's resolution from
+/// `producer.function` and the producer's capture types, varying only the call
+/// surface -- so two members are two specializations of one body, never two
+/// bodies. That also settles the drop's one open residue in this caller's
+/// favour: fz-kdt.143's group-dissolution reroute is meaning-bearing only
+/// between DIFFERENT callees, and there are none to be had.
+pub(crate) fn construction_member_selection(
     types: &mut Types,
     edges: &[CallableFlowEdge],
-) -> Result<Option<PatternDispatchPlan<Ty>>, PatternDispatchError> {
+) -> Result<ConstructionSelection, PatternDispatchError> {
     if edges.len() <= 1 {
-        return Ok(None);
+        return Ok(ConstructionSelection {
+            members: (0..edges.len()).collect(),
+            plan: None,
+        });
     }
     let arity = edges[0].surface.inputs.len();
-    let observable_inputs = edges
-        .iter()
-        .map(|edge| runtime_dispatch_inputs(types, &edge.surface.inputs))
-        .collect::<Vec<_>>();
+    let surfaces = edges.iter().map(|edge| edge.surface.inputs.clone()).collect::<Vec<_>>();
+    let (members, observable_inputs) = routable_alternatives(types, &surfaces, &|_, _| true);
+    if members.len() <= 1 {
+        return Ok(ConstructionSelection { members, plan: None });
+    }
     let discriminating_inputs = discriminating_inputs(arity, observable_inputs.iter().map(Vec::as_slice));
     let rows = observable_inputs
-        .into_iter()
+        .iter()
         .enumerate()
-        .map(|(index, inputs)| PatternRow {
-            patterns: (0..arity)
-                .map(|_| Spanned::new(Pattern::Wildcard, Span::DUMMY))
-                .collect(),
-            preconditions: discriminating_inputs
-                .iter()
-                .map(|input| (PatternSubjectRef::Input(*input as u32), inputs[*input]))
-                .collect(),
-            guard: None,
-            body_id: index as PatternBodyId,
-        })
+        .map(|(index, inputs)| dispatch_row(inputs, arity, &discriminating_inputs, index as PatternBodyId))
         .collect::<Vec<_>>();
-    pattern_dispatch_from_source(SourcePatternRows {
+    let plan = pattern_dispatch_from_source(SourcePatternRows {
         input_count: arity,
         rows,
+    })?;
+    Ok(ConstructionSelection {
+        members,
+        plan: Some(plan),
     })
-    .map(Some)
 }
 
 /// The alternatives no runtime test could ever route to: each is an arm the
@@ -771,15 +839,15 @@ pub(crate) fn dispatch_from_callable_flow_edges(
 /// fz-kdt.131 facet 3).
 fn unroutable_alternatives(
     types: &Types,
-    targets: &[CallTargetSummary],
+    same_callee: &dyn Fn(usize, usize) -> bool,
     observable: &[Vec<Ty>],
     questions: &[Vec<RuntimeTypePredicate>],
 ) -> Vec<usize> {
-    (0..targets.len())
+    (0..observable.len())
         .filter(|narrow| {
-            (0..targets.len()).any(|wide| {
+            (0..observable.len()).any(|wide| {
                 wide != *narrow
-                    && stands_in_for(types, targets, observable, questions, wide, *narrow)
+                    && stands_in_for(types, same_callee, observable, questions, wide, *narrow)
                     && !seats_before(types, questions, observable, &[*narrow], &[wide])
             })
         })
@@ -822,10 +890,10 @@ fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow
 ///
 /// - a callsite's ARRIVAL order, which is the settled targets' order, which is
 ///   the semantic fixpoint's, which is the agenda's ([`arrival_order`]);
-/// - a callable value's CONSTRUCTION-WRAPPER member order, which is a
-///   `BTreeSet<CallableSurface>` walked in interned-id order, which is the type
-///   interner's mint order, which is the agenda's again
-///   ([`dispatch_from_callable_flow_edges`] and the members beside it).
+/// - a callable value's CONSTRUCTION-WRAPPER member order, whose surfaces arrive
+///   as a `BTreeSet<CallableSurface>` walked in interned-id order -- the type
+///   interner's mint order, which is the agenda's again -- before
+///   [`construction_member_selection`] drops and seats them into the member list.
 ///
 /// Any permutation of either is an order the fixpoint could have delivered, so
 /// an answer that moves under one is an answer a schedule decides.
@@ -1600,7 +1668,7 @@ mod tests {
         let wide = target(two, wide_map, atoms_a_c);
         let arrival = vec![narrow, sibling.clone(), wide.clone()];
 
-        let observable = observable_inputs(world.types_mut(), &arrival);
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arrival));
         let questions = runtime_questions(world.types_mut(), &observable);
         assert_eq!(
             questions[0], questions[1],
@@ -2313,7 +2381,7 @@ mod tests {
         let ints_arm = target(int, either_list);
 
         let arms = [tails_arm.clone(), ints_arm.clone()];
-        let observable = observable_inputs(world.types_mut(), &arms);
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
         let questions = runtime_questions(world.types_mut(), &observable);
         assert!(
             !questions[0][0].overlaps(&questions[1][0]),
@@ -2416,7 +2484,7 @@ mod tests {
         let narrow = target(ok, carved);
         let wide = target(ok_or_tail, carved);
         let arms = [narrow.clone(), wide.clone()];
-        let observable = observable_inputs(world.types_mut(), &arms);
+        let observable = observable_inputs(world.types_mut(), &target_surfaces(&arms));
         let questions = runtime_questions(world.types_mut(), &observable);
         assert_eq!(
             discriminating_inputs(2, observable.iter().map(Vec::as_slice)),
@@ -2440,11 +2508,11 @@ mod tests {
              the arm that named its values most tightly",
         );
         assert!(
-            stands_in_for(types, &arms, &observable, &questions, 1, 0),
+            stands_in_for(types, &same_callee(&arms), &observable, &questions, 1, 0),
             "the wide arm is the narrow one's stand-in, which is what puts the drop in reach at all",
         );
         assert!(
-            unroutable_alternatives(types, &arms, &observable, &questions).is_empty(),
+            unroutable_alternatives(types, &same_callee(&arms), &observable, &questions).is_empty(),
             "the seat puts the narrow arm FIRST, so the drop may not take it: dropping it would send \
              `(:ok, pair)` to the wide body, which no arrival of these two arms does",
         );
@@ -2777,8 +2845,9 @@ mod tests {
         };
 
         let edges = [edge(atom), edge(tuple)];
-        let dispatch = dispatch_from_callable_flow_edges(world.types_mut(), &edges)
+        let dispatch = construction_member_selection(world.types_mut(), &edges)
             .expect("callable flow dispatch should compile")
+            .plan
             .expect("distinct callable members require dispatch");
 
         assert!(
@@ -2788,6 +2857,213 @@ mod tests {
                 .iter()
                 .any(|subject| subject.source == SubjectSource::Input { ordinal: 1 }),
             "the bridge must discriminate its state argument, not its shared entry argument"
+        );
+    }
+
+    /// A construction wrapper's own edge builder, so the fz-kdt.179 probes can
+    /// say what a member's surface is and nothing else.
+    fn wrapper_edge(world: &mut World, surface: Vec<Ty>) -> CallableFlowEdge {
+        let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "wrapped", surface.len());
+        let activation = super::super::identity::ActivationKey::from_inputs(
+            crate::compiler2::RootId::for_test(0),
+            function,
+            &surface,
+            world.types_mut(),
+        );
+        CallableFlowEdge {
+            surface: super::super::semantic::CallableSurface {
+                inputs: surface.clone(),
+            },
+            resolution: super::super::identity::ExecutableKey {
+                activation,
+                need: crate::compiler2::ExecutableNeed::Value,
+            },
+            capture_semantic_inputs: Box::default(),
+            surface_semantic_inputs: (0..surface.len()).collect(),
+        }
+    }
+
+    /// fz-kdt.179 attack 1: a member whose sibling stands in for it completely
+    /// is not a destination, and what is left is the sibling ALONE -- so the
+    /// wrapper calls it directly instead of testing for it.
+    #[test]
+    fn a_wrapper_member_its_sibling_stands_in_for_is_not_a_destination() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let tail = world.types_mut().atom_lit("tail");
+        let int_or_tail = world.types_mut().union(int, tail);
+        let narrow = world.types_mut().list(int);
+        let wide = world.types_mut().list(int_or_tail);
+        let edges = [
+            wrapper_edge(&mut world, vec![narrow]),
+            wrapper_edge(&mut world, vec![wide]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![1],
+            "`[int]` passes `[int | :tail]`'s head test and its body names less, so it is the arm the seat              would never put first and the drop takes it",
+        );
+        assert!(
+            selection.plan.is_none(),
+            "one member left is one destination, and a wrapper with one destination calls it",
+        );
+    }
+
+    /// fz-kdt.179 attack 2: two members that overlap without either surface
+    /// containing the other are fz-kdt.131's residue, and member selection
+    /// inherits it exactly as a callsite does -- no drop, no seat, arrival
+    /// order kept.
+    #[test]
+    fn wrapper_members_that_overlap_without_containment_keep_arrival_order() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let left = world.types_mut().union(int, ok);
+        let right = world.types_mut().union(int, tail);
+        let left_list = world.types_mut().list(left);
+        let right_list = world.types_mut().list(right);
+        let edges = [
+            wrapper_edge(&mut world, vec![left_list]),
+            wrapper_edge(&mut world, vec![right_list]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![0, 1],
+            "neither surface contains the other, so no member stands in for its sibling and no seat between              them is safer than the one they arrived in (fz-kdt.131)",
+        );
+    }
+
+    /// fz-kdt.179 attack 3: the weld is re-derived, not assumed. Row `i` names
+    /// member `i` of the list transport builds FROM `members`, whatever the
+    /// edge list's own order was.
+    #[test]
+    fn a_seated_selection_welds_row_index_to_member_index() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let ok = world.types_mut().atom_lit("ok");
+        let tail = world.types_mut().atom_lit("tail");
+        let left = world.types_mut().union(int, ok);
+        let right = world.types_mut().union(int, tail);
+        let left_list = world.types_mut().list(left);
+        let right_list = world.types_mut().list(right);
+        let edges = [
+            wrapper_edge(&mut world, vec![left_list]),
+            wrapper_edge(&mut world, vec![right_list]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        let plan = selection
+            .plan
+            .expect("two members the runtime can tell apart need a plan");
+        assert_eq!(
+            plan.outcomes
+                .iter()
+                .map(|outcome| outcome.body_id as usize)
+                .collect::<Vec<_>>(),
+            (0..selection.members.len()).collect::<Vec<_>>(),
+            "a selection row's `body_id` is its index in the seated member list, which is the list              transport builds -- the fz-kdt.108 weld, re-derived from the seat",
+        );
+    }
+
+    /// fz-kdt.179 REVIEW PROBE (attack 5): the case the corpus does not
+    /// exercise -- a wrapper whose members the seat must REORDER, not merely
+    /// drop. `[:ok, carved]` sits inside `[:ok | :tail, carved]` on the atom
+    /// axis at subject 0, which SEPARATES, so coverage runs both ways and the
+    /// precision preference seats the narrow member first; because the seat
+    /// puts it first, the drop may NOT take it (both survive). This is the
+    /// reorder path, and the point of the probe is that the weld still holds:
+    /// `members` is the SEATED order (narrow first), whatever the edge list's
+    /// own `cmp_tys` order was, and each row's `body_id` is its index in that
+    /// seated list. This is what every body_id consumer indexes.
+    #[test]
+    fn a_wrapper_the_seat_reorders_welds_row_index_to_member_index() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let (ok, ok_or_tail, carved) = {
+            let types = world.types_mut();
+            let any = types.any();
+            let int = types.int();
+            let ok = types.atom_lit("ok");
+            let tail = types.atom_lit("tail");
+            let ok_or_tail = types.union(ok, tail);
+            let any_pair = types.tuple(&[any, any]);
+            let int_pair = types.tuple(&[int, int]);
+            let carved = types.difference(any_pair, int_pair);
+            (ok, ok_or_tail, carved)
+        };
+        // Edge 0 carries the WIDE surface, edge 1 the NARROW one, so if the
+        // result kept edge-list order it would read [0, 1]; a reorder that
+        // puts the narrow member first reads [1, 0].
+        let edges = [
+            wrapper_edge(&mut world, vec![ok_or_tail, carved]),
+            wrapper_edge(&mut world, vec![ok, carved]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![1, 0],
+            "the narrow member `[:ok, carved]` is seated FIRST though it is edge 1, so the seat reordered \
+             the member list off the edge order -- the case the corpus's 117 selections never force",
+        );
+        let plan = selection
+            .plan
+            .expect("two members the runtime can tell apart need a plan");
+        assert_eq!(
+            plan.outcomes
+                .iter()
+                .map(|outcome| outcome.body_id as usize)
+                .collect::<Vec<_>>(),
+            (0..selection.members.len()).collect::<Vec<_>>(),
+            "even under a reorder the weld holds: row i's body_id is i, indexing the SEATED member list",
+        );
+    }
+
+    /// fz-kdt.179 drop-to-one: THREE nested members collapse to ONE, so the
+    /// wrapper calls the survivor directly. `[int]` and `[int | :a]` each pass
+    /// `[int | :a | :b]`'s head test while naming less than it, and neither
+    /// covers it, so the seat would never put either ahead of it and the drop
+    /// takes BOTH -- reaching the `members.len() <= 1 => plan None` path from a
+    /// three-member wrapper, which no source fixture forces (every list-recursive
+    /// construction wrapper fz mints carries a separated empty-list member that
+    /// survives, so the corpus floor is two, never one).
+    #[test]
+    fn a_wrapper_whose_three_members_all_stand_in_for_one_drops_to_it() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let (narrow, middle, wide) = {
+            let types = world.types_mut();
+            let int = types.int();
+            let a = types.atom_lit("a");
+            let b = types.atom_lit("b");
+            let int_a = types.union(int, a);
+            let int_a_b = types.union(int_a, b);
+            (types.list(int), types.list(int_a), types.list(int_a_b))
+        };
+        let edges = [
+            wrapper_edge(&mut world, vec![narrow]),
+            wrapper_edge(&mut world, vec![middle]),
+            wrapper_edge(&mut world, vec![wide]),
+        ];
+
+        let selection = construction_member_selection(world.types_mut(), &edges).expect("selection should compile");
+        assert_eq!(
+            selection.members,
+            vec![2],
+            "`[int]` and `[int | :a]` both pass `[int | :a | :b]`'s head test and name less, so the drop \
+             takes both and only the widest member is left",
+        );
+        assert!(
+            selection.plan.is_none(),
+            "one member left after a three-member drop is one destination, called directly with no plan",
         );
     }
 
@@ -2838,8 +3114,9 @@ mod tests {
                 surface_semantic_inputs: Box::from([0]),
             },
         ];
-        let plan = dispatch_from_callable_flow_edges(world.types_mut(), &edges)
+        let plan = construction_member_selection(world.types_mut(), &edges)
             .expect("callable flow dispatch should compile")
+            .plan
             .expect("distinct callable correlations should produce a plan");
         assert_ne!(
             world.types().runtime_type_predicate(&closure_a),

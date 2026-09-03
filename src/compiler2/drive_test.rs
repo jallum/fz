@@ -8966,10 +8966,10 @@ end
 /// wrapper's member selection are plans with arms exactly as a callsite is --
 /// and the wrapper selections are NOT empty:
 /// [`INDISTINGUISHABLE_ARM_POPULATION`] names each site and its group count.
-/// Those are fz-kdt.179's (member selection never ran the drop that would
-/// dissolve a group with a stand-in) and fz-kdt.107's (a group with no
-/// stand-in needs a predicate that can tell its members apart), and the
-/// constant is the ratchet either ticket shrinks.
+/// Member selection runs the drop now (fz-kdt.179), so any group whose members
+/// have a stand-in dissolves; what remains is fz-kdt.107's -- a group with no
+/// stand-in, whose members no runtime predicate tells apart -- and the constant
+/// is the ratchet fz-kdt.107 shrinks.
 #[test]
 fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     let mut measured: BTreeMap<(&str, String), usize> = BTreeMap::new();
@@ -9004,23 +9004,23 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
     assert_eq!(
         measured, known,
         "a dispatch must not offer two arms that ask one runtime question, or arm order decides the \
-         program's meaning -- and the only plans that may is the wrapper member selection fz-kdt.179 and \
-         fz-kdt.107 own: {twins:#?}",
+         program's meaning -- and the only groups that may are the ones fz-kdt.107 owns: members no \
+         runtime predicate tells apart, on a wrapper selection or a callsite alike: {twins:#?}",
     );
 }
 
 /// The plans that still offer two arms one runtime question cannot separate,
 /// by site and by how many such groups the site carries.
 ///
-/// Every row is a construction wrapper's member selection, and that is the
-/// whole shape of the finding: `dispatch_from_callable_flow_edges` builds a
-/// wrapper's rows straight from `flow.first_class_edges` and never calls
-/// `routable_alternatives`, so fz-kdt.118's drop -- which dissolves a group
-/// whose members have a stand-in -- never runs there (fz-kdt.179). What a drop
-/// cannot reach afterwards is fz-kdt.107's: members no runtime predicate tells
-/// apart at all.
+/// Every row is a construction wrapper's member selection, and what remains is
+/// fz-kdt.107's alone. Member selection runs through `routable_alternatives`
+/// now (fz-kdt.179, `construction_member_selection`), so fz-kdt.118's drop --
+/// which dissolves a group whose members have a stand-in -- runs there exactly
+/// as it does on a callsite. What a drop cannot reach afterwards is fz-kdt.107's:
+/// members no runtime predicate tells apart at all, whose only cure is a sharper
+/// test, not a smaller plan.
 ///
-/// A ratchet, per site, so either ticket can retire a wrapper at a time. A new
+/// A ratchet, per site, so fz-kdt.107 can retire a wrapper at a time. A new
 /// row, or a row on a call edge or an entry dispatch, is a new latent
 /// miscompile and wants a ticket rather than a re-blessed constant.
 ///
@@ -9030,18 +9030,19 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
 /// fall because the members whose arms asked one question were reducer
 /// specializations keyed on a blind list element. With the element in the key
 /// most of those members are one member, so there is nothing left to be
-/// indistinguishable from. What remains is what fz-kdt.179 and fz-kdt.107
-/// always owned.
+/// indistinguishable from. fz-kdt.179 then dissolved the last groups a stand-in
+/// could reach (`00277` `w15`/`w18`/`w19` went 2 -> 1), leaving the 44 groups
+/// fz-kdt.107 owns.
 const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 2),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 2),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 2),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w2 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w3 selection", 1),
@@ -9491,183 +9492,21 @@ fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
     );
 }
 
-/// fz-kdt.129 / fz-kdt.131: a seat must carry surface coverage.
+/// fz-kdt.131: no seat over the corpus lets a value reach a body its surface
+/// never named -- at the settled arrival AND under every arm perturbation the
+/// stress can name.
 ///
-/// An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
-/// compiled for -- a list head says nothing about the tail, a tuple position
-/// erases whatever its own sub-test erases -- so a value can satisfy every
-/// question an arm asks and still lie outside the surface that arm's body was
-/// compiled for. Call that a BLIND ESCAPE: at some position the earlier and
-/// later arms put a question that cannot separate them, and the later arm's
-/// surface holds values the earlier arm's does not.
-///
-/// Two orderings were built on containment alone and BOTH miscompile, in
-/// opposite directions. Seating the narrower SURFACE first put
-/// `list(int) x {all?/1, all?/2, empty?}` ahead of `list(:ok) x {empty?}`
-/// (both measured when a list test still saw empty-or-cons and nothing else).
-/// Seating the narrower TEST first -- fz-kdt.129's first build, which this
-/// gate used to assert -- put `list(int) x {all?/1}` ahead of
-/// `list(:ok) x {all?/1, empty?}`, because a callable set of one is inside a
-/// set of two, and `Enum.all?([:ok, :ok])` then satisfied every question the
-/// int arm asks and aborted in `fz_list_head_int_ref` on `run` and `build`.
-///
-/// So this gate asserts the SOUND condition instead of either containment: an
-/// arm is seated ahead of a sibling only where the seat it took is the one no
-/// worse than its opposite. Formally, for every seated pair
-///
-/// ```text
-///     covers(early, late)  or  not covers(late, early)
-/// ```
-///
-/// -- either the earlier arm's surface already names everything the blind
-/// positions would hand it, or the reverse seat is no safer and the pair is
-/// the fz-kdt.107 inseparable class one rung wider, which fz-kdt.131 owns. A
-/// SEPARATED pair answers false both ways and is neither: no value satisfies
-/// both arms, so the condition holds of it for the reason that there is
-/// nothing to route (fz-kdt.186).
-/// What this forbids is the one seat that is strictly wrong: taking the
-/// escaping direction when the covering direction was available.
-///
-/// RED at 1dc98b087 on `enum_predicate_search` and
-/// `dispatch_seat_element_blind`, whose covering arms were both displaced by
-/// their strictly-smaller-test siblings.
-///
-/// THE SOURCE-ORDER SITES ARE EXCLUDED, and that is a decision rather than an
-/// omission (fz-kdt.178). An executable's clause order, a `case`'s clause
-/// order and a `receive`'s clause order are all the PROGRAMMER's -- the
-/// language's meaning is first-matching clause -- so a covering clause seated
-/// second is what the source said, and moving it would change the program.
-/// A blind escape there is still a latent miscompile, so those plans are
-/// counted in the blind-escape census next door under their own class, where
-/// the cure is a repr or a test rather than a seat.
-///
-/// RED AGAIN at fz-kdt.178's widening, once the walk stopped seeing only call
-/// edges: construction-wrapper member selection never ran the seat at all
-/// (fz-kdt.179), so [`SELECTION_SEAT_ALLOWANCE`] names every wrapper site that
-/// still takes the escaping seat and how many times, and 179 retires them one
-/// row at a time.
-#[test]
-fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
-    let mut proven = 0;
-    let mut displaced = Vec::new();
-    let mut measured: BTreeMap<(&str, String), usize> = BTreeMap::new();
-    for fixture in ARM_ORDER_CENSUS {
-        let (compiler, program) = driven_backend_program(fixture);
-        let types = compiler.world().types();
-        for entry in artifact_plans(&program) {
-            if entry.site.is_source_order() {
-                continue;
-            }
-            let seated = seated_arm_surfaces(entry.plan, &entry.bodies);
-            for early in 0..seated.len() {
-                for late in early + 1..seated.len() {
-                    proven += 1;
-                    if !covers(types, &seated[early], &seated[late]) && covers(types, &seated[late], &seated[early]) {
-                        *measured.entry((fixture, entry.site.to_string())).or_default() += 1;
-                        displaced.push(format!(
-                            "{fixture} {}: arm {late} covers arm {early}'s surface where their tests are \
-                             blind, and arm {early} is seated first anyway",
-                            entry.site,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    let allowed = SELECTION_SEAT_ALLOWANCE
-        .iter()
-        .map(|(fixture, site, count)| ((*fixture, (*site).to_string()), *count))
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(
-        measured, allowed,
-        "a dispatch seated the escaping arm first where the covering one was available, so a value every \
-         question admits runs a body its representation does not fit -- and the only sites that may do it are \
-         the wrapper selections fz-kdt.179 owns: {displaced:#?}",
-    );
-    assert!(
-        proven > 0,
-        "the census proved no seated pair at all, so it cannot have held anything"
-    );
-}
-
-/// The construction-wrapper sites whose member selection still takes the
-/// escaping seat, and how many pairs each one takes it on -- fz-kdt.179's
-/// reproducer, written down per SITE so that ticket retires it a wrapper at a
-/// time rather than re-blessing a fixture.
-///
-/// `dispatch_from_callable_flow_edges` builds a wrapper's rows straight from
-/// `flow.first_class_edges` and never calls `routable_alternatives`, so
-/// neither fz-kdt.143's drop nor fz-kdt.129/131's covering seat runs on member
-/// selection at all. Every row here is a member whose covering sibling exists
-/// and is seated second.
-///
-/// Every row here routes a value. Twenty-eight further readings stood here
-/// until fz-kdt.186 -- four apiece on `w13`-`w19`, where subject 0 asks a
-/// `:tail` head against an `int` head that no value answers both ways -- and
-/// they were never seat findings at all: a pair the plan's own test separates
-/// outright is `Seating::Separated` and the walk does not open it.
-///
-/// A ratchet: a new row is a new latent miscompile and wants a ticket, and a
-/// row that stops reading is a cure and wants deleting.
-///
-/// fz-kdt.183 moved this population in both directions: 21 sites / 27 readings
-/// -> 17 / 29. Four of `00277`'s wrappers -- `w13`, `w14`, `w16`, `w17` --
-/// stop reading entirely, and three -- `w15`, `w18`, `w19` -- go 2 -> 4. Both
-/// halves have one cause: with a demanded list element in the key, a wrapper's
-/// members are keyed on the element they actually carry, so some wrappers lose
-/// the member that was covering-with-escape and others keep two members where
-/// they kept one blended one. Every reading is still a member whose covering
-/// sibling exists and is seated second, which is fz-kdt.179's, and no site
-/// appears that was not here before.
-const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 2),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 2),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 2),
-    (
-        "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
-        "wrapper w3 selection",
-        1,
-    ),
-    (
-        "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
-        "wrapper w4 selection",
-        1,
-    ),
-    (
-        "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
-        "wrapper w5 selection",
-        1,
-    ),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w21 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w22 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w23 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w24 selection", 1),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w21 selection", 1),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w22 selection", 1),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w23 selection", 1),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w24 selection", 1),
-];
-
-/// fz-kdt.131: the seats where no order is escape-free, counted -- at the
-/// settled arrival AND under every arm perturbation the stress can name.
-///
-/// A blind escape this gate finds on a CALL EDGE is one both seats carry --
-/// the gate next door proves the covering seat was taken wherever one existed
-/// -- so what is left there is the population fz-kdt.131 owns: pairs whose
-/// surfaces are incomparable at a position their tests cannot see. Arrival
-/// order carried them before any seating rule existed and carries them still;
-/// the seating rule declines to move such a pair, so it can only ever remove
-/// one of these, never add one.
-///
-/// A blind escape on a WRAPPER SELECTION is not that. The seat never ran there
-/// at all (fz-kdt.179), so the covering member is simply seated second, and
-/// [`SELECTION_SEAT_ALLOWANCE`] next door names each such site. Those are the
-/// escapes the dynamic tripwire has been reporting on
-/// `00277_enum_tier0_fixture` since fz-kdt.144 while no static gate could see
-/// them, which is what fz-kdt.178 came to fix.
+/// A blind escape is a seat where the arm tested first does not name what the
+/// arm tested second holds while some value satisfies both. Both a CALL EDGE
+/// and a construction wrapper's MEMBER SELECTION are seated by the same relation
+/// now (fz-kdt.179, `routable_alternatives`), so the seating law -- an arm is
+/// moved ahead of a sibling only under `Covering`, which admits no blind escape
+/// -- is the debug_assert in `specificity_order` that the fixture matrix drives
+/// on every debug compile. This gate reads the LANDED artifact back to the same
+/// law, and it reads zero: fz-kdt.119 and fz-kdt.107 gave the tuple and list
+/// axes the tests that separated the call-edge pairs, fz-kdt.183 keyed the
+/// reducer specializations on the element they carry, and fz-kdt.179 put member
+/// selection through the drop and the covering seat.
 ///
 /// THREE POPULATIONS, ONE WALK, because a reading only means something once it
 /// says which of them it belongs to: the REACHABLE escapes, which are latent
@@ -9679,32 +9518,19 @@ const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
 /// `Separated` for it, in this reader and in production alike, and the walk
 /// never opens it (fz-kdt.186).
 ///
-/// The reachable ones are latent MISCOMPILES, not untidiness. Nothing there is
-/// safe by proof; it is safe by arrival.
-///
 /// WHY IT IS DRIVEN UNDER SEEDS (fz-kdt.143). A census read at the settled
 /// arrival is blind to a seat only a legal permutation produces, and until
 /// fz-kdt.143 the corpus had such seats: an arm the seat would never let past
 /// its stand-in was kept anyway, because fz-kdt.118's drop ran only inside one
 /// question group and every axis refinement since had split those groups.
-/// Under `arms:2` and `arms:3` this census read 5 where the settled order
+/// Under `arms:2` and `arms:3` this census once read 5 where the settled order
 /// pinned 3, the two extras being `dispatch_list_head_separates`'s `[int]` arm
 /// seated ahead of the arms that stand in for it. Those arms are dropped now,
-/// so six of the seven settings read the settled population exactly -- with
-/// one named exception below.
+/// so every seed reads the same empty population the settled arrival does, and
+/// the drive stays as the emptiness ratchet that a permutation could break.
 ///
-/// PAIRS, NOT SEATS. A perturbation may flip which member of a facet-3 pair
-/// comes first, which is arrival-kept by design and not a new escape, so the
-/// per-setting comparand is the unordered PAIR. The settled reading keeps its
-/// directed form: that is the seat production actually ships.
-///
-/// The lists are a RATCHET, not a target. The call-edge ones reached zero at
-/// fz-kdt.183 -- what the runtime can see (fz-kdt.119's per-position tuple
-/// tags, fz-kdt.107 step 3's list elements) was half of it, and the other half
-/// was the KEY naming the element the two arms were specialized on; the
-/// selection ones go when fz-kdt.179 makes member selection run the seat. A
-/// new entry under ANY setting is a new latent miscompile and wants a ticket,
-/// not a re-blessed constant.
+/// The census is a RATCHET, not a target: a new entry under ANY setting is a
+/// new latent miscompile and wants a ticket, not a re-blessed constant.
 #[test]
 fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
     let settled = blind_escape_census();
@@ -9719,12 +9545,14 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
          its plans it could read: {:?}",
         settled.unreadable,
     );
-    assert_eq!(
-        seated_escapes(&settled, EscapeClass::Reachable),
-        BLIND_ESCAPE_POPULATION,
-        "the blind-escape population moved at the settled arrival: every entry is a seat where a value the \
-         plan admits reaches a body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 / \
-         fz-kdt.179 can retire one",
+    let reachable = seated_escapes(&settled, EscapeClass::Reachable);
+    assert!(
+        reachable.is_empty(),
+        "the corpus carries no reachable blind escape at the settled arrival: fz-kdt.119 and fz-kdt.107 \
+         gave the tuple and list axes the tests that separate the call-edge pairs, fz-kdt.183 keyed the \
+         reducer specializations on the list element they carry, and fz-kdt.179 made construction-wrapper \
+         member selection run the drop and the covering seat -- so a new entry here is a new latent \
+         miscompile and wants a ticket, not a re-blessed constant: {reachable:#?}",
     );
     assert_eq!(
         seated_escapes(&settled, EscapeClass::SourceOrder),
@@ -9733,23 +9561,23 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
          escape there is a source-level fact with a repr-level cure, and it gets its own population rather \
          than a seat finding",
     );
-    let mut measured = Vec::new();
-    for (setting, _) in BLIND_ESCAPE_PAIRS_BY_ARM_ORDER {
+    // A permuted arrival is one the fixpoint could have delivered, so a blind
+    // pair any legal arm order reaches is a pair production could ship. None
+    // does: the reachable and source-order populations are empty at every seed
+    // as well as at the settled arrival (fz-kdt.143's red-first drive, kept as
+    // an emptiness ratchet now that the call-edge and selection populations it
+    // once tracked have both retired).
+    for setting in ["arms:1", "arms:2", "arms:3", "arms:4", "arms:5", "arms:6"] {
         let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
             crate::compiler2::callsite_dispatch::dispatch_stress::setting(setting),
         );
-        measured.extend(labelled(setting, escaping_pairs(&blind_escape_census())));
+        let pairs = escaping_pairs(&blind_escape_census());
+        assert!(
+            pairs.is_empty(),
+            "FZ_STRESS_PERMUTE_DISPATCH={setting} reached a blind pair the settled arrival does not, which \
+             is an arrival production could deliver: {pairs:#?}",
+        );
     }
-    let expected = BLIND_ESCAPE_PAIRS_BY_ARM_ORDER
-        .into_iter()
-        .flat_map(|(setting, pairs)| labelled(setting, pairs.iter().map(|pair| (*pair).to_string()).collect()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        measured, expected,
-        "a permuted arrival is an arrival the fixpoint could have delivered, so a blind pair one reaches is \
-         a pair production could ship -- and the only pairs any of them may reach are the ones the settled \
-         census already names",
-    );
 }
 
 /// Which population a blind pair belongs to.
@@ -9898,92 +9726,6 @@ fn escaping_pairs(census: &BlindEscapeCensus) -> Vec<String> {
     pairs
 }
 
-/// The pairs one setting reads, each carrying the setting that read it, so
-/// every setting's reading is in one comparand and a failure names all of them
-/// rather than the first.
-fn labelled(setting: &str, pairs: Vec<String>) -> Vec<String> {
-    pairs.into_iter().map(|pair| format!("{setting}  {pair}")).collect()
-}
-
-/// Every position in the census where the arm seated first does not name what
-/// the arm seated second holds AND some value can reach both arms, at the
-/// arrival production ships.
-///
-/// Each line reads: at this subject the two arms put ONE question to the
-/// runtime, and the arm seated second holds values the arm seated first does
-/// not name. The subject is a LIST at every position here and at every one of
-/// the 19 this census carried at fz-kdt.129's landing, which was fz-kdt.107
-/// step 3's, because a list-shape test could not see elements. It is not a law
-/// of the class: the corpus carries the same reading at tuple-of-list subjects
-/// on `00420_enum_take_drop_split`, `enum_take_drop_split` and
-/// `enum_hof_three_distinct_closures`, where the blind position is the list
-/// INSIDE a fold accumulator's tuple.
-///
-/// The list axis can see them now, and the census reads it: seventeen entries
-/// left outright at fz-kdt.107 step 3 (disjoint heads are a real separation,
-/// so those pairs never meet on an erasing axis at all).
-///
-/// THERE ARE NO CALL-EDGE ENTRIES LEFT. Three stood here until fz-kdt.183:
-/// `[:false | :nil]` against `[int | :nil]` and `[:false | :true]` against
-/// `[int | :ok | :true]` on `enum_predicate_search`, and the same pair written
-/// as source in `dispatch_list_head_separates`. All three were fz-kdt.131's
-/// facet 3 -- heads that overlap with neither surface containing the other --
-/// and all three retired for one reason: the two arms were reducer
-/// specializations sharing ONE activation key over a list element the key did
-/// not name, and with the element in the key they are two keys whose arms no
-/// longer meet blind. That is a cure, not a re-blessing, and it leaves
-/// fz-kdt.131 with no reproducer in this tree: the facet-3 shape is still
-/// constructible and that ticket must decide one.
-///
-/// THE REMAINING TWENTY-NINE ARE WRAPPER SELECTIONS, and they are what
-/// fz-kdt.178 made visible: while this walk saw call edges alone, a
-/// construction wrapper's member-selection plan was never read, and the
-/// dynamic tripwire was already reporting real escapes on
-/// `00277_enum_tier0_fixture` that no static gate could see. Eighteen are
-/// 00277's six escaping wrappers -- `w10`, `w11`, `w15`, `w18`, `w19`, `w20`
-/// -- where `[int]` is seated ahead of the member that also names
-/// `[int | :tail]`, and the accumulator `[1, :tail]` passes the first member's
-/// head test. (`w13`, `w14`, `w16` and `w17` were on this list until
-/// fz-kdt.183 keyed their members on the element they carry.) The other
-/// eleven are the same shape one level down, where the blind position is the
-/// list inside a `{list, atom}` accumulator tuple: three on
-/// `enum_hof_three_distinct_closures`, and four apiece on
-/// `00420_enum_take_drop_split` and `enum_take_drop_split` (`w21`-`w24`). All
-/// twenty-nine are fz-kdt.179's: the covering member exists at every one of
-/// them and is seated second, because member selection never runs the
-/// covering seat.
-const BLIND_ESCAPE_POPULATION: &[&str] = &[
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-];
-
 /// The blind escapes at the SOURCE-ORDER sites: a function's own clause
 /// dispatch, a body's `case`, a `receive`'s clauses.
 ///
@@ -10016,64 +9758,6 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// unchanged and the zero above still speaks for exactly what it did.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
     &[("case", 3, 3), ("entry", 153, 146), ("receive", 2, 0)];
-
-/// The same twenty-nine readings with the seat forgotten. ALL SIX seeds read
-/// exactly this, which is what driving the census under seeds is for: the
-/// pairs a legal permutation reaches are the pairs production ships.
-///
-/// An arm seed cannot move a wrapper's members, so every selection reading is
-/// the same under all six. What a seed CAN move is a callsite's arms, and
-/// until fz-kdt.183 `arms:6` had its own list because it alone reached
-/// `enum_predicate_search`'s `[int | :ok | :true]` against `[int]` at
-/// executable 203 -- fz-kdt.131's facet-3 pair. That callsite is gone: the
-/// two arms were reducer specializations sharing one key over a blind list
-/// element, and with the element in the key they are one arm. So the seed-six
-/// list is not "the same by luck", it is the same because the only reading
-/// that ever distinguished it retired, and folding it away is what says so.
-/// fz-kdt.131 must construct a new reproducer.
-const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-];
-
-/// What each arm setting reads, named one by one rather than asserted as an
-/// invariant: a seed is a different set of legal arrivals, and which blind
-/// pairs it reaches is a measurement, not a theorem.
-const BLIND_ESCAPE_PAIRS_BY_ARM_ORDER: [(&str, &[&str]); 6] = [
-    ("arms:1", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
-    ("arms:2", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
-    ("arms:3", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
-    ("arms:4", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
-    ("arms:5", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
-    ("arms:6", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
-];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -10150,12 +9834,6 @@ fn seating(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<Subje
         true => Seating::Covering,
         false => Seating::Escaping,
     }
-}
-
-/// Whether seating `early` before `late` can route a value into a body that
-/// never named it.
-fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
-    matches!(seating(types, early, late), Seating::Covering)
 }
 
 /// Why the census cannot read a plan's surfaces, if it cannot: the first
@@ -10285,12 +9963,11 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// ask.
 ///
 /// `00420_enum_take_drop_split` and `enum_take_drop_split` are the last two
-/// the corpus walk found, and they are here because MEASUREMENT says they cost
-/// what any other fixture costs: four wrapper-selection seat findings apiece,
-/// on `w21`-`w24`, identical under all six arm seeds. Leaving them out would
-/// have left
-/// eight reachable escapes -- latent miscompiles, fz-kdt.179's -- pinned by no
-/// gate at all.
+/// the corpus walk found: each carried four wrapper-selection seat findings on
+/// `w21`-`w24` that fz-kdt.179 has since cured, and they stay in the census
+/// because their wrapper member selections still exercise the weld gate and the
+/// blind-escape walk under every seed -- the ratchet that would catch a
+/// regression of that cure.
 const ARM_ORDER_CENSUS: [&str; 22] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/dispatch_list_head_separates.fz",
@@ -10320,12 +9997,13 @@ const ARM_ORDER_CENSUS: [&str; 22] = [
 /// under a permuted wrapper order moves its `BackendProgram` canon, and
 /// compiling it under the settled one does not.
 ///
-/// A callable value's construction wrapper carries one member per first-class
-/// surface it can be invoked at, and the selection plan that picks between them
-/// is built from the same list (`dispatch_from_callable_flow_edges` and the
-/// members beside it, `jobs/transport.rs`). That list is a `BTreeSet` walked in
+/// A callable value's construction wrapper carries one member per surviving
+/// first-class surface it can be invoked at, and both the member list and the
+/// selection plan are derived from one seated order (`construction_member_selection`
+/// returns the surviving member indices and transport walks exactly them,
+/// `jobs/transport.rs`). The surfaces arrive as a `BTreeSet` walked in
 /// interned-surface order -- the type interner's mint order, which is the
-/// agenda's -- so its order is the scheduler's, exactly like a callsite's
+/// agenda's -- so that order is the scheduler's, exactly like a callsite's
 /// arrival order, and exactly as free to move.
 ///
 /// This is the census the retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` never
@@ -10429,15 +10107,16 @@ fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
 /// were derived in, and nothing else.
 ///
 /// This half is what fz-kdt.136 found missing. It is green on stdout at this
-/// commit, on every door -- and it is green OVER a live hazard, which is the
-/// distinction this gate exists to keep. The surface-membership tripwire reads
-/// 12 escapes on `00277_enum_tier0_fixture` at the SETTLED wrapper order and 0
-/// under `wrappers:1`, `wrappers:6` and `wrappers:reverse`: the member the mint
-/// order puts first takes values its surface never named, and every permutation
-/// of that order happens to put a covering member there instead (fz-kdt.179).
-/// Identical answers are therefore not the same claim as safe routing, and
-/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` is
-/// what holds the other half;
+/// commit, on every door. Until fz-kdt.179 it was green OVER a live hazard: the
+/// surface-membership tripwire read 12 escapes on `00277_enum_tier0_fixture` at
+/// the SETTLED wrapper order and 0 under `wrappers:1`/`wrappers:6`/
+/// `wrappers:reverse`, because the member the mint order put first took values
+/// its surface never named and only a permutation happened to put a covering
+/// member there instead. Member selection runs the drop and the covering seat
+/// now, so the settled order reads 0 as well -- but identical answers still are
+/// not the same claim as safe routing, and
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` holds
+/// the other half;
 /// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members` is
 /// what proves the perturbation still lands.
 #[test]
@@ -10465,8 +10144,8 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
     }
 }
 
-/// A value never reaches a body whose surface never named it, except where
-/// [`SURFACE_MEMBERSHIP_CENSUS`] names the escape and the ticket that owns it.
+/// A value never reaches a body whose surface never named it, on any fixture
+/// [`SURFACE_MEMBERSHIP_CENSUS`] names, at any arrival it names.
 ///
 /// A dispatch test is a PROJECTION of the surface an arm was compiled for, so
 /// passing the test is not the same as belonging to the surface. Where the two
@@ -10477,10 +10156,10 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
 /// `.agent/docs/dispatch-matrix.md` reads off stderr, driven in process so the
 /// population cannot grow unnoticed.
 ///
-/// A RATCHET, not a blessing. Every non-zero entry is a live escape with a
-/// ticket behind it, and a count this table does not carry -- in either
-/// direction -- is either a new latent miscompile or a cure, and both want the
-/// table edited deliberately rather than a number re-blessed.
+/// A RATCHET, not a blessing. Every row reads 0 now, each holding a fixture and
+/// arrival that once escaped or could regress; a count this table does not carry
+/// -- in either direction -- is either a new latent miscompile or a cure, and
+/// both want the table edited deliberately rather than a number re-blessed.
 #[test]
 fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
     let mut moved = Vec::new();
@@ -10518,25 +10197,18 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// seven rows are that tuple-era population, kept at 0 because a table that
 /// only lists what escapes cannot say that anything stopped escaping.
 ///
-/// **`00277_enum_tier0_fixture` = 12, and it is fz-kdt.179's.** A construction
-/// wrapper's member-selection plan for `Enum.reverse(1..7//2, [:tail])`'s
-/// reducer seats `list(int)` ahead of `list(int | :tail)`, so the accumulator
-/// `[1, :tail]` and its growth pass `list(int)`'s head test and run the body
-/// compiled for `[integer]`. The escaping wrappers are `w10`, `w11`, `w20`
-/// (four members) and `w13`-`w19` (eleven), which the static census reads by
-/// name since fz-kdt.178; the dynamic report prints the value, the element and
-/// the predicate but no site at all, so this count cannot say which of them a
-/// given escape came through, and naming it is fz-kdt.187's. The covering
-/// member exists and is seated second:
-/// `dispatch_from_callable_flow_edges` builds a wrapper's rows straight from
-/// `flow.first_class_edges` and never calls `routable_alternatives`, so neither
-/// the drop nor the covering seat runs on member selection at all. stdout is
-/// right on every door because the accumulator lane is `ValueRef` in both
-/// bodies -- boxed element access, the fz-kdt.131 correlation nobody proved.
-///
-/// The wrapper rows are the shape fz-kdt.147 named on the tuple axis, reborn on
-/// the list one: the SETTLED wrapper order is the only order that escapes, and
-/// every legal permutation of it reads 0.
+/// **`00277_enum_tier0_fixture` = 0, and fz-kdt.179 is why it moved.** Its
+/// construction wrapper's member-selection plan for `Enum.reverse(1..7//2, [:tail])`'s
+/// reducer used to seat `list(int)` ahead of `list(int | :tail)`, so the
+/// accumulator `[1, :tail]` and its growth passed `list(int)`'s head test and
+/// ran the body compiled for `[integer]` -- 12 escapes at the settled arrival,
+/// 12 under `arms:6` and `arms:reverse`, 0 under every wrapper order. stdout was
+/// right on every door because the accumulator lane is `ValueRef` in both bodies
+/// (boxed element access, the fz-kdt.131 correlation nobody proved), so the
+/// escape was latent. Member selection now runs through `routable_alternatives`
+/// (fz-kdt.179): the covering member stands in for `list(int)`, the drop takes
+/// it, and the settled arrival reads 0 like every permutation. The rows for the
+/// three wrapper orders and `arms:6` stay so a regression is caught here.
 ///
 /// The `arms:6` row on `enum_predicate_search` was fz-kdt.131's facet-3 pair --
 /// two list arms whose heads overlap and neither of whose surfaces contains the
@@ -10556,8 +10228,8 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize); 15] = [
     ("fixtures2/00420_enum_take_drop_split.fz", "", 0),
     ("fixtures2/behavior/enum_take_drop_split.fz", "", 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 0),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "", 12),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "arms:6", 12),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "", 0),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "arms:6", 0),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:1", 0),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:6", 0),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:reverse", 0),
@@ -10588,9 +10260,11 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize); 15] = [
 /// covering rung every one of its members needed, and the tripwire reads 0 here
 /// at every setting -- but it is still a choice nothing but the interner makes,
 /// which is what this gate holds to one answer. Where a wrapper's members are
-/// NOT all covering the choice is a live hazard, measured on
-/// `00277_enum_tier0_fixture` by
-/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it`.
+/// NOT all covering, the mint order used to decide a routing (00277 read 12
+/// surface-membership escapes at the settled order before fz-kdt.179); member
+/// selection runs the drop and the covering seat now, so that no longer depends
+/// on the interner, and `compiler2_no_value_reaches_a_construction_member_that_never_named_it`
+/// holds it at 0 under every setting.
 #[test]
 fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
     use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
