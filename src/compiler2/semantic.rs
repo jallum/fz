@@ -628,7 +628,6 @@ pub struct ActivationAnalysis {
     pub entry_reachability: EntryReachability,
     pub reachable_entries: Vec<ControlEntryId>,
     pub callsites: Vec<CallSiteId>,
-    pub latent_executables: Vec<ExecutableKey>,
     pub value_types: HashMap<ValueId, Ty>,
 }
 
