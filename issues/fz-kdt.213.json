@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.182",
     "fz-kdt.183",
     "fz-kdt.199"
   ],
@@ -21,5 +20,5 @@
   "status": "open",
   "title": "The returned-axis subtraction is self-only: a mutual cycle it cannot see mints 79 executables that buy no distinct return",
   "type": "task",
-  "updated_at": "2026-09-03T19:44:37Z"
+  "updated_at": "2026-09-03T21:20:07Z"
 }
