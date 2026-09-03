@@ -576,14 +576,26 @@ pass is an explicit insertion rather than a sort.
 
 ### What the seat guarantees
 
-Every pair whose seat differs from arrival order was individually checked and
-moved only under `covers`, which admits no blind escape; every other pair sits
-exactly as arrival left it. So **the seat's blind escapes are a SUBSET of
-arrival order's** — this rule can only ever remove one, never add one. A
-`debug_assert` in `specificity_order` holds every callsite of every debug
-compile to it, and
+**All of this is about CALL-EDGE dispatch, and only about it.** The seat runs
+where `routable_alternatives` runs, which is the callsite path;
+`dispatch_from_callable_flow_edges` builds a construction wrapper's member
+selection without it, so a wrapper's plan has no drop, no seat and no
+`debug_assert` behind it (**fz-kdt.179**). The three SOURCE-ORDER sites — an
+executable's own entry dispatch, a body's `case`, a `receive` — have no seat
+either, and must not: their order is the source clause order, which is the
+language's meaning.
+
+Of call-edge dispatch, then: every pair whose seat differs from arrival order
+was individually checked and moved only under `covers`, which admits no blind
+escape; every other pair sits exactly as arrival left it. So **the seat's blind
+escapes are a SUBSET of arrival order's** — this rule can only ever remove one,
+never add one. A `debug_assert` in `specificity_order` holds every callsite of
+every debug compile to it, and
 `compiler2_dispatch_seats_the_covering_arm_where_one_covers` reads the same
-property back off the landed artifact across the arm-order census.
+property back off the landed artifact across the arm-order census — for call
+edges, and for the wrapper selections whose findings that gate's
+`SELECTION_SEAT_ALLOWANCE` names one site at a time until fz-kdt.179 retires
+them.
 
 What the seat does NOT guarantee is that no blind escape remains.
 `compiler2_dispatch_blind_escape_census_is_the_known_population` counts the
@@ -597,29 +609,94 @@ three of `enum_map_family`'s, which is why its arm-reversal abort dies, and
 `dispatch_seat_element_blind`'s one, which is why that fixture stops aborting
 under every arm seed.
 
-TWO survive, both in `enum_predicate_search`: `[:false | :nil]` seated before
-`[int | :nil]`, and `[:false | :true]` before `[int | :ok | :true]`. Their heads
-genuinely OVERLAP — on `:nil` and on `:true` — and neither surface contains the
-other, so no seat is escape-free and arrival stands. That is **fz-kdt.131**'s
-facet 3, not a head the axis failed to read, and its cure is a repr-level or
-minting-level decision rather than an ordering rule. The reproducer fixture
-`dispatch_list_head_separates` carries the same pair on purpose, so the census
-reads three.
+TWO survive on call edges, both in `enum_predicate_search`: `[:false | :nil]`
+seated before `[int | :nil]`, and `[:false | :true]` before
+`[int | :ok | :true]`. Their heads genuinely OVERLAP — on `:nil` and on `:true`
+— and neither surface contains the other, so no seat is escape-free and arrival
+stands. That is **fz-kdt.131**'s facet 3, not a head the axis failed to read,
+and its cure is a repr-level or minting-level decision rather than an ordering
+rule. The reproducer fixture `dispatch_list_head_separates` carries the same
+pair on purpose, so the call-edge census reads three.
 
-The census is a RATCHET pointing at fz-kdt.131, not a target: any other new
+### What the static census walks
+
+The artifact carries a `PatternDispatchPlan` at FIVE kinds of site, and the
+runtime reaches a body from each of them by the same first-match walk of the
+same decision graph, so all five are censused (**fz-kdt.178**; before it, only
+the call edges were). Three of the five have a plan field of their own —
+`DispatchCallEdge`, `ExecutableDispatch`, `BackendConstructionWrapper` — and
+two ride a `BackendTail`: `BackendTail::Dispatch`'s `ControlDispatch`, which is
+a body's own `case`, and `BackendTail::Receive`'s `BackendReceive`.
+`drive_test.rs`'s `artifact_plans` yields them, named by site: `callsite <n>
+(executable <e>)`, `entry dispatch of executable <e>`, `case dispatch at entry
+e<n> (executable <e>)`, `receive at entry e<n> (executable <e>)` and `wrapper
+w<n> selection`. Each site lists its bodies in its own order — the call arms,
+the reachable clause ids, the arm entries, the receive clauses, the member
+index — and `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
+holds that list to the order the graph actually reaches them in, over every
+plan the census fixtures carry (281 plans, 0 disagreements), because the list
+is what every seat argument here is read off and the graph is what execution
+follows.
+
+TWO OF THE FIVE ARE THE COMPILER'S ORDER and three are the PROGRAMMER's. A
+call edge's arms and a wrapper's members are seated by the compiler, and those
+are the two a seat rule may move. A function's clauses, a `case`'s clauses and
+a `receive`'s clauses are tried first-match in SOURCE order, which is what the
+language means, so all three are excluded from the seat gate and counted for
+blind escapes under one source-order class instead.
+
+The population, on the 22 census fixtures at the settled arrival:
+
+| kind | plans | unreadable | blind readings | seat findings | one-question groups |
+| --- | --- | --- | --- | --- | --- |
+| call edge | 25 | 0 | 3 | 0 | 0 |
+| entry | 144 | 137 | 0 | excluded | 0 |
+| case | 3 | 3 | 0 | excluded | 0 |
+| receive | 2 | 0 | 0 | excluded | 0 |
+| wrapper selection | 107 | 0 | 73 | 73 | — |
+
+The 73 selection readings split 45 REACHABLE (fz-kdt.179's: 34 on 00277's ten
+escaping wrappers, 3 on `enum_hof_three_distinct_closures`, and four apiece on
+`00420_enum_take_drop_split` and `enum_take_drop_split`) and 28
+UNREACHABLE-PAIR (**fz-kdt.186**'s: `covers` judges each subject with an `all`,
+so a pair whose tests are DISJOINT at subject 0 is still called blind at
+subject 1, and no value can reach either arm through the other). The seat
+findings split the same 28 / 45. The one-question groups are counted on their
+own thirteen-fixture list by
+`compiler2_dispatch_offers_no_runtime_indistinguishable_arm`: 105 groups, all
+of them wrapper selections (00277 47, `enum_map_family` 46, `00420` 12), owned
+by fz-kdt.179 and fz-kdt.107.
+
+THE SOURCE-ORDER CLASS READS 0, and that zero speaks for 9 plans of 149: a
+clause dispatch asks whatever the source patterns ask, and the reader compares
+`Region::Type` questions only, so 140 are skipped — on entry plans
+`Region::List` 87, `Region::Equal` 18, `Region::TupleArity` 17,
+`Region::Guard` 15, and all three `case` plans on a `Region::Equal`. The gate
+prints the breakdown and pins the plans and the skips per kind. A `Guard`
+cannot be read statically; a `List` or a `TupleArity` can, and reading them is
+**fz-kdt.187**'s.
+
+The `case` and `receive` kinds contribute nothing to any of those columns
+ANYWHERE, not just here: a corpus walk of the 469 drivable fixtures finds 70
+`case` plans and 86 `receive` plans, and zero blind pairs across all 156,
+because those sites ask `Region::Equal`, `TupleArity`, `List`, `MapKind`,
+`Bitstring` or a guard and almost never a bare `Region::Type`. So the census
+fixture list needed no widening for them.
+
+The census is a RATCHET pointing at its tickets, not a target: any other new
 entry is a new latent miscompile and wants a ticket, not a re-blessed constant.
 
-Those three are what the STATIC reading can see. The dynamic tripwire below now
-reads the same class on the production path and finds a different subset of it:
-`enum_predicate_search`'s pair is reached by a real value under `arms:6` and
-`dispatch_list_head_separates`'s is never reached at all, while a wrapper's
-member selection — which no static census walks (fz-kdt.178) — escapes 12 times
-on `00277_enum_tier0_fixture`. Statically real and dynamically unreached are
-different facts, and it takes both instruments to tell them apart.
+The static and the dynamic instrument see different subsets of the same class,
+and it takes both to tell them apart. `enum_predicate_search`'s pair is
+statically real and dynamically reached only under `arms:6`;
+`dispatch_list_head_separates`'s is statically real and never reached at all;
+00277's wrapper selections are both — 34 reachable seats statically, 12 escapes
+dynamically.
 
 ### The dynamic tripwire
 
-The static census reasons about pairs of arms on hand-picked fixtures.
+The static census reasons about pairs of arms on hand-picked fixtures, and it
+reasons about pairs the running program may never build.
 `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` measures the real thing instead, on the
 production path, over whatever the corpus actually runs (fz-kdt.135,
 fz-kdt.144): the interpreter answers each dispatch type test under
@@ -682,8 +759,8 @@ not listed reads 0 at every setting.
 | `enum_predicate_search` | `arms:6` | 1 | fz-kdt.131 (facet 3) |
 | `enum_predicate_search` | settled, every other setting | 0 | — |
 
-`00277` is a construction-wrapper MEMBER SELECTION, not a callsite: wrapper
-`w2`'s plan for `Enum.reverse(1..7//2, [:tail])`'s reducer tests
+`00277` is a construction-wrapper MEMBER SELECTION, not a callsite: a wrapper's
+plan for `Enum.reverse(1..7//2, [:tail])`'s reducer tests
 `empty_list() → list(int) → list(int | :tail)`, so the accumulator `[1, :tail]`
 and its growth (`[3, 1, :tail]`, `[5, 3, 1, :tail]`, four values each) pass
 `list(int)`'s head test and run the body compiled for `[integer]`. The covering
@@ -694,6 +771,14 @@ covering seat runs on member selection at all. stdout is right on every door
 because the accumulator lane is `ValueRef` in both bodies: boxed element access,
 the correlation nobody proved. **The SETTLED wrapper order is the only order
 that escapes**, which is fz-kdt.147's shape reborn on the list axis.
+
+WHICH wrapper the report does not say: `observe` prints the value, the element
+and the predicate, and no plan site at all, so the twelve cannot be attributed
+from this instrument (naming the site is **fz-kdt.187**'s). The static census
+reads the sites by name, and there are ten of them on this fixture: `w10`,
+`w11` and `w20` carry four members each and `w13`–`w19` carry eleven. `w2` is
+not among them — its members are `[]`, `[{any, any}]` and their union, which
+hold no int and escape nowhere.
 
 `enum_predicate_search` under `arms:6` is fz-kdt.131's facet 3 measured on the
 production path for the first time: `[1, :ok]` reaching a `[integer]` body

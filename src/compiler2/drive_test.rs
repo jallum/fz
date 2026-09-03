@@ -1,7 +1,5 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{
-    BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge, DispatchCallEdge,
-};
+use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
@@ -8960,11 +8958,22 @@ end
 /// five: `00231`, `00277`, `00281`, `opaque_fn_value_join` and
 /// `repr_seam_enum_count_after_reduce2` each had one or two groups that were
 /// one lambda over two capture types, which is one code pointer only while
-/// the axis stops at the function. The corpus census is now empty, and this
-/// list is the ratchet that keeps it so: a new entry is a new latent
-/// miscompile and wants a ticket, not a re-blessed constant.
+/// the axis stops at the function.
+///
+/// The CALL-EDGE census those three cures emptied is empty still, and every
+/// fixture each one cleared is listed below. What fz-kdt.178 added is the rest
+/// of the artifact -- an executable's clause dispatch and a construction
+/// wrapper's member selection are plans with arms exactly as a callsite is --
+/// and the wrapper selections are NOT empty:
+/// [`INDISTINGUISHABLE_ARM_POPULATION`] names each site and its group count.
+/// Those are fz-kdt.179's (member selection never ran the drop that would
+/// dissolve a group with a stand-in) and fz-kdt.107's (a group with no
+/// stand-in needs a predicate that can tell its members apart), and the
+/// constant is the ratchet either ticket shrinks.
 #[test]
 fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
+    let mut measured: BTreeMap<(&str, String), usize> = BTreeMap::new();
+    let mut twins = Vec::new();
     for fixture in [
         "fixtures2/00183_enum_take_list_range.fz",
         "fixtures2/00420_enum_take_drop_split.fz",
@@ -8980,14 +8989,86 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
         "fixtures2/behavior/opaque_fn_value_join.fz",
         "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
     ] {
-        let twins = indistinguishable_dispatch_arms(fixture);
-        assert!(
-            twins.is_empty(),
-            "{fixture}: a dispatch must not offer two arms that ask one runtime question, \
-             or arm order decides the program's meaning: {twins:#?}",
-        );
+        for finding in indistinguishable_dispatch_arms(fixture) {
+            let (site, group) = finding
+                .split_once(" arm ")
+                .expect("a twin names its site then its arms");
+            *measured.entry((fixture, site.to_string())).or_default() += 1;
+            twins.push(format!("{fixture} {site}: arm {group}"));
+        }
     }
+    let known = INDISTINGUISHABLE_ARM_POPULATION
+        .iter()
+        .map(|(fixture, site, groups)| ((*fixture, (*site).to_string()), *groups))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        measured, known,
+        "a dispatch must not offer two arms that ask one runtime question, or arm order decides the \
+         program's meaning -- and the only plans that may is the wrapper member selection fz-kdt.179 and \
+         fz-kdt.107 own: {twins:#?}",
+    );
 }
+
+/// The plans that still offer two arms one runtime question cannot separate,
+/// by site and by how many such groups the site carries.
+///
+/// Every row is a construction wrapper's member selection, and that is the
+/// whole shape of the finding: `dispatch_from_callable_flow_edges` builds a
+/// wrapper's rows straight from `flow.first_class_edges` and never calls
+/// `routable_alternatives`, so fz-kdt.118's drop -- which dissolves a group
+/// whose members have a stand-in -- never runs there (fz-kdt.179). What a drop
+/// cannot reach afterwards is fz-kdt.107's: members no runtime predicate tells
+/// apart at all.
+///
+/// A ratchet, per site, so either ticket can retire a wrapper at a time. A new
+/// row, or a row on a call edge or an entry dispatch, is a new latent
+/// miscompile and wants a ticket rather than a re-blessed constant.
+const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w2 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w3 selection", 3),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w4 selection", 3),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w7 selection", 3),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w8 selection", 3),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w9 selection", 3),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w15 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w16 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w17 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w18 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w34 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w35 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w36 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w37 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w38 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w39 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w40 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w41 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w12 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w13 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w14 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w15 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w16 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w17 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w18 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w19 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w20 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w21 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w22 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w23 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w24 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w25 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w26 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w27 selection", 3),
+];
 
 /// The question that clears the last of them, in the program that names it.
 ///
@@ -9013,8 +9094,8 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut separated = Vec::new();
-    for (callsite, dispatch) in dispatch_call_edges(&program) {
-        let asked = dispatch
+    for entry in artifact_plans(&program) {
+        let asked = entry
             .plan
             .matrix
             .arms
@@ -9039,11 +9120,12 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
                 }
                 assert!(
                     !left.overlaps(right),
-                    "{fixture} callsite {callsite}: two constructions of one lambda must put \
+                    "{fixture} {}: two constructions of one lambda must put \
                      disjoint questions, or a value reaches a body whose capture lane never \
                      named it -- {left} vs {right}",
+                    entry.site,
                 );
-                separated.push(format!("callsite {callsite}: {left} vs {right}"));
+                separated.push(format!("{}: {left} vs {right}", entry.site));
             }
         }
     }
@@ -9056,8 +9138,9 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 }
 
 /// The static twin asks NOTHING: the forwarder key carries the capture types,
-/// so each callsite has one callee and the program has no dispatch at all
-/// (fz-kdt.127 stage A).
+/// so each callsite has one callee and the program carries no dispatch plan of
+/// any kind -- no call edge, no clause dispatch, no wrapper member selection
+/// (fz-kdt.127 stage A, widened to the whole artifact by fz-kdt.178).
 ///
 /// `same_lambda_two_capture_types` forwards ONE lambda -- closed over an int at
 /// one callsite and over a float at another -- through `P.run/2`. Every call
@@ -9071,12 +9154,13 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
     let (compiler, program) = driven_backend_program(fixture);
-    let dispatches = dispatch_call_edges(&program);
+    let plans = artifact_plans(&program);
     assert!(
-        dispatches.is_empty(),
+        plans.is_empty(),
         "{fixture} passes a known closure at every call site, so nothing may be left for a \
-         runtime test; {} callsites still dispatch",
-        dispatches.len(),
+         runtime test; {} plan(s) still dispatch: {:?}",
+        plans.len(),
+        plans.iter().map(|plan| plan.site.to_string()).collect::<Vec<_>>(),
     );
 
     let types = compiler.world().types();
@@ -9108,15 +9192,16 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     );
 }
 
-/// Drives one fixture to its backend product and names every dispatch call
-/// edge arm pair that asks one and the same runtime question.
+/// Drives one fixture to its backend product and names every arm pair, at
+/// every plan the artifact carries, that asks one and the same runtime
+/// question.
 fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut findings = Vec::new();
-    for (callsite, dispatch) in dispatch_call_edges(&program) {
-        for twin in indistinguishable_arms(&dispatch.plan, types) {
-            findings.push(format!("callsite {callsite} {twin}"));
+    for entry in artifact_plans(&program) {
+        for twin in indistinguishable_arms(entry.plan, types) {
+            findings.push(format!("{} {twin}", entry.site));
         }
     }
     findings
@@ -9151,27 +9236,250 @@ fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Bac
     (compiler, program)
 }
 
-/// Every dispatching direct call a program's bodies tail into, named by its
-/// callsite.
-fn dispatch_call_edges(program: &BackendProgram) -> Vec<(u32, &DispatchCallEdge<usize, BackendReturnFlow>)> {
-    let mut edges = Vec::new();
-    for executable in &program.executables {
+/// Where in the artifact a [`PatternDispatchPlan`] sits.
+///
+/// The artifact carries FIVE, and every one of them decides which body a
+/// runtime value reaches, so every one of them is a seat the census owes an
+/// answer about. Three of the five have a `PatternDispatchPlan` field of their
+/// own -- `DispatchCallEdge`, `ExecutableDispatch`, `BackendConstructionWrapper`
+/// -- and two more ride a `BackendTail`: `BackendTail::Dispatch`'s
+/// `ControlDispatch` (a body's own `case`) and `BackendTail::Receive`'s
+/// `BackendReceive` (a `receive`'s clauses).
+///
+/// Two of the five seat their bodies in an order the COMPILER chose, and those
+/// are the ones a seat rule may move: a call edge's arms and a wrapper's
+/// members. The other three seat them in SOURCE order -- a function's clauses,
+/// a `case`'s clauses, a `receive`'s clauses -- and there the first matching
+/// clause is what the language means, so moving one would change the program.
+/// [`PlanSite::is_source_order`] is that split, and it is what the seat gate
+/// and the blind-escape census both read.
+enum PlanSite {
+    /// A dispatching direct call a body tails into, named by its callsite.
+    CallEdge { executable: usize, callsite: u32 },
+    /// An executable's own clause dispatch: the function's source clauses.
+    Entry { executable: usize },
+    /// A body's own `case`, named by the control entry that tails into it.
+    Case { executable: usize, entry: usize },
+    /// A `receive`'s clause dispatch, named by the control entry that tails
+    /// into it.
+    Receive { executable: usize, entry: usize },
+    /// A construction wrapper's member selection, named by the wrapper
+    /// identity the artifact publishes (`w<N>`).
+    Selection { wrapper: u32 },
+}
+
+impl PlanSite {
+    /// The class a census counts this plan under.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::CallEdge { .. } => "call-edge",
+            Self::Entry { .. } => "entry",
+            Self::Case { .. } => "case",
+            Self::Receive { .. } => "receive",
+            Self::Selection { .. } => "selection",
+        }
+    }
+
+    /// Whether the order this site lists its bodies in is the PROGRAMMER's.
+    ///
+    /// A function's clauses, a `case`'s clauses and a `receive`'s clauses are
+    /// all tried first-match in source order, which is what the language
+    /// means; a seat rule that reordered one would change the program. A call
+    /// edge's arms and a wrapper's members are the compiler's own order, and
+    /// those are the two the seat owns.
+    fn is_source_order(&self) -> bool {
+        matches!(self, Self::Entry { .. } | Self::Case { .. } | Self::Receive { .. })
+    }
+}
+
+impl std::fmt::Display for PlanSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CallEdge { executable, callsite } => write!(f, "callsite {callsite} (executable {executable})"),
+            Self::Entry { executable } => write!(f, "entry dispatch of executable {executable}"),
+            Self::Case { executable, entry } => write!(f, "case dispatch at entry e{entry} (executable {executable})"),
+            Self::Receive { executable, entry } => write!(f, "receive at entry e{entry} (executable {executable})"),
+            Self::Selection { wrapper } => write!(f, "wrapper w{wrapper} selection"),
+        }
+    }
+}
+
+/// One plan the artifact carries, with the bodies it can reach in the order
+/// the site itself lists them.
+struct ArtifactPlan<'a> {
+    site: PlanSite,
+    plan: &'a PatternDispatchPlan<Ty>,
+    /// The body ids this site offers, in the site's own list order: the call
+    /// arms for a call edge, the reachable clause ids for an entry, the member
+    /// index for a selection (welded to the plan's rows by fz-kdt.108).
+    ///
+    /// That list order is the order the runtime reaches them in.
+    /// `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
+    /// holds it to the decision graph, which is the only order execution has.
+    bodies: Vec<u32>,
+}
+
+/// Every [`PatternDispatchPlan`] a backend program carries, whatever kind of
+/// site it sits at.
+///
+/// A plan is a plan: the runtime walks the same decision graph and reaches a
+/// body by the same first-match rule whether the site is a callsite's arms, a
+/// function's own clauses, a body's `case`, a `receive`'s clauses or a
+/// construction wrapper's members. Walking only the call edges (fz-kdt.178)
+/// left the other kinds uncensused, and the dynamic tripwire was reading
+/// escapes in a wrapper's member selection that no static gate could see.
+///
+/// EXHAUSTIVE BY MEASUREMENT, not by hope: the five sites are every field of
+/// type `PatternDispatchPlan<Ty>` reachable from a `BackendProgram`, and the
+/// two that ride a `BackendTail` are matched here by naming every tail variant
+/// that carries one, so a sixth would have to be added to
+/// `BackendTail`/`BackendProgram` to escape this walk.
+fn artifact_plans(program: &BackendProgram) -> Vec<ArtifactPlan<'_>> {
+    let mut plans = Vec::new();
+    for (index, executable) in program.executables.iter().enumerate() {
+        if let Some(entry) = &executable.entry_dispatch {
+            plans.push(ArtifactPlan {
+                site: PlanSite::Entry { executable: index },
+                plan: entry.plan(),
+                bodies: entry.clause_ids().to_vec(),
+            });
+        }
         let BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
-        for entry in entries {
-            let BackendTail::DirectCall {
-                callsite,
-                target: CallEdge::Dispatch(dispatch),
-                ..
-            } = &entry.tail
-            else {
-                continue;
-            };
-            edges.push((callsite.as_u32(), dispatch.as_ref()));
+        for (entry_index, entry) in entries.iter().enumerate() {
+            match &entry.tail {
+                BackendTail::DirectCall {
+                    callsite,
+                    target: CallEdge::Dispatch(dispatch),
+                    ..
+                } => plans.push(ArtifactPlan {
+                    site: PlanSite::CallEdge {
+                        executable: index,
+                        callsite: callsite.as_u32(),
+                    },
+                    plan: &dispatch.plan,
+                    bodies: dispatch.arms.iter().map(|arm| arm.body_id).collect(),
+                }),
+                // `native.rs` and `ir_interp/backend.rs` both reach the arm by
+                // `arm_entries[body_id]`, so the arm order IS the body order.
+                BackendTail::Dispatch { dispatch, .. } => plans.push(ArtifactPlan {
+                    site: PlanSite::Case {
+                        executable: index,
+                        entry: entry_index,
+                    },
+                    plan: &dispatch.plan,
+                    bodies: (0..dispatch.arm_entries.len() as u32).collect(),
+                }),
+                // Same weld on the receive side: the matched clause index is
+                // the plan's body id, and `clauses` is in source order.
+                BackendTail::Receive(receive) => plans.push(ArtifactPlan {
+                    site: PlanSite::Receive {
+                        executable: index,
+                        entry: entry_index,
+                    },
+                    plan: &receive.dispatch,
+                    bodies: (0..receive.clauses.len() as u32).collect(),
+                }),
+                _ => {}
+            }
         }
     }
-    edges
+    for wrapper in &program.construction_wrappers {
+        let Some(selection) = &wrapper.selection else {
+            continue;
+        };
+        plans.push(ArtifactPlan {
+            site: PlanSite::Selection {
+                wrapper: wrapper.identity,
+            },
+            plan: selection,
+            bodies: (0..wrapper.members.len() as u32).collect(),
+        });
+    }
+    plans
+}
+
+/// The order a plan's decision graph actually reaches its bodies in: a walk
+/// from the root taking the match edge before the miss edge, recording each
+/// outcome the first time it is reached.
+///
+/// This is the only order execution has -- the runtime executes `plan.graph`
+/// and never `plan.matrix.arms` -- so whether a site's own list agrees with it
+/// is a measurement, which
+/// `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
+/// takes.
+fn graph_first_match_bodies(plan: &PatternDispatchPlan<Ty>) -> Vec<u32> {
+    use crate::dispatch_matrix::DispatchNode;
+
+    let mut order = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![plan.graph.root];
+    while let Some(node) = stack.pop() {
+        match plan.graph.node(node) {
+            None | Some(DispatchNode::Fail) => {}
+            Some(DispatchNode::Outcome { outcome, .. }) => {
+                if let Some(entry) = plan.outcome(*outcome)
+                    && seen.insert(entry.body_id)
+                {
+                    order.push(entry.body_id);
+                }
+            }
+            Some(DispatchNode::Test { on_match, on_miss, .. }) => {
+                stack.push(on_miss.target);
+                stack.push(on_match.target);
+            }
+        }
+    }
+    order
+}
+
+/// fz-kdt.178: every census here reads a plan's bodies off the site's own
+/// list, and the runtime reaches them by walking the plan's decision graph.
+/// Those are two different orders unless they agree, and this is what says
+/// they do.
+///
+/// They agree BY CONSTRUCTION: `compile_dispatch_matrix` compiles the arms
+/// first-match in list order and emits one arm per row, so the graph's
+/// first-match walk is the list restricted to the bodies the site offers. An
+/// entry site offers only its reachable clause ids, which is a restriction of
+/// the same order, so the comparand is the graph order filtered to the bodies
+/// the site lists.
+///
+/// A fact by construction holds only while the construction does, which is why
+/// it is a gate: if a producer ever emits a graph that reaches its rows out of
+/// order, every seat this file reasons about is read off the wrong list, and
+/// nothing else here would say so.
+#[test]
+fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
+    let mut compared = 0;
+    let mut disagreements = Vec::new();
+    for fixture in ARM_ORDER_CENSUS {
+        let (_compiler, program) = driven_backend_program(fixture);
+        for entry in artifact_plans(&program) {
+            compared += 1;
+            let walked = graph_first_match_bodies(entry.plan)
+                .into_iter()
+                .filter(|body| entry.bodies.contains(body))
+                .collect::<Vec<_>>();
+            if walked != entry.bodies {
+                disagreements.push(format!(
+                    "{fixture} {}: the site lists {:?} and the graph reaches {walked:?}",
+                    entry.site, entry.bodies,
+                ));
+            }
+        }
+    }
+    println!("plans whose list order was held to the graph's first-match order: {compared}");
+    assert!(
+        disagreements.is_empty(),
+        "a plan's bodies must be reached in the order its site lists them, or the seat every census in this \
+         file reads is not the seat the runtime takes: {disagreements:#?}",
+    );
+    assert!(
+        compared > 0,
+        "the agreement gate compared no plan at all, so it cannot have held anything"
+    );
 }
 
 /// fz-kdt.129 / fz-kdt.131: a seat must carry surface coverage.
@@ -9211,52 +9519,152 @@ fn dispatch_call_edges(program: &BackendProgram) -> Vec<(u32, &DispatchCallEdge<
 /// RED at 1dc98b087 on `enum_predicate_search` and
 /// `dispatch_seat_element_blind`, whose covering arms were both displaced by
 /// their strictly-smaller-test siblings.
+///
+/// THE SOURCE-ORDER SITES ARE EXCLUDED, and that is a decision rather than an
+/// omission (fz-kdt.178). An executable's clause order, a `case`'s clause
+/// order and a `receive`'s clause order are all the PROGRAMMER's -- the
+/// language's meaning is first-matching clause -- so a covering clause seated
+/// second is what the source said, and moving it would change the program.
+/// A blind escape there is still a latent miscompile, so those plans are
+/// counted in the blind-escape census next door under their own class, where
+/// the cure is a repr or a test rather than a seat.
+///
+/// RED AGAIN at fz-kdt.178's widening, once the walk stopped seeing only call
+/// edges: construction-wrapper member selection never ran the seat at all
+/// (fz-kdt.179), so [`SELECTION_SEAT_ALLOWANCE`] names every wrapper site that
+/// still takes the escaping seat and how many times, and 179 retires them one
+/// row at a time.
 #[test]
 fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
     let mut proven = 0;
+    let mut displaced = Vec::new();
+    let mut measured: BTreeMap<(&str, String), usize> = BTreeMap::new();
     for fixture in ARM_ORDER_CENSUS {
         let (compiler, program) = driven_backend_program(fixture);
         let types = compiler.world().types();
-        let mut displaced = Vec::new();
-        for (callsite, dispatch) in dispatch_call_edges(&program) {
-            let seated = seated_arm_surfaces(dispatch);
+        for entry in artifact_plans(&program) {
+            if entry.site.is_source_order() {
+                continue;
+            }
+            let seated = seated_arm_surfaces(entry.plan, &entry.bodies);
             for early in 0..seated.len() {
                 for late in early + 1..seated.len() {
                     proven += 1;
                     if !covers(types, &seated[early], &seated[late]) && covers(types, &seated[late], &seated[early]) {
+                        *measured.entry((fixture, entry.site.to_string())).or_default() += 1;
                         displaced.push(format!(
-                            "callsite {callsite}: arm {late} covers arm {early}'s surface where their tests are \
-                             blind, and arm {early} is seated first anyway",
+                            "{fixture} {}: arm {late} covers arm {early}'s surface where their tests are \
+                             blind, and arm {early} is seated first anyway{}",
+                            entry.site,
+                            match separated_somewhere(types, &seated[early], &seated[late]) {
+                                true => " -- UNREACHABLE-PAIR, fz-kdt.186's",
+                                false => "",
+                            },
                         ));
                     }
                 }
             }
         }
-        assert!(
-            displaced.is_empty(),
-            "{fixture}: a dispatch seated the escaping arm first where the covering one was available, so a \
-             value every question admits runs a body its representation does not fit: {displaced:#?}",
-        );
     }
+    let allowed = SELECTION_SEAT_ALLOWANCE
+        .iter()
+        .map(|(fixture, site, count)| ((*fixture, (*site).to_string()), *count))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        measured, allowed,
+        "a dispatch seated the escaping arm first where the covering one was available, so a value every \
+         question admits runs a body its representation does not fit -- and the only sites that may do it are \
+         the wrapper selections fz-kdt.179 owns: {displaced:#?}",
+    );
     assert!(
         proven > 0,
         "the census proved no seated pair at all, so it cannot have held anything"
     );
 }
 
+/// The construction-wrapper sites whose member selection still takes the
+/// escaping seat, and how many pairs each one takes it on -- fz-kdt.179's
+/// reproducer, written down per SITE so that ticket retires it a wrapper at a
+/// time rather than re-blessing a fixture.
+///
+/// `dispatch_from_callable_flow_edges` builds a wrapper's rows straight from
+/// `flow.first_class_edges` and never calls `routable_alternatives`, so
+/// neither fz-kdt.143's drop nor fz-kdt.129/131's covering seat runs on member
+/// selection at all. Every row here is a member whose covering sibling exists
+/// and is seated second.
+///
+/// Part of each count is fz-kdt.186's rather than fz-kdt.179's: a pair whose
+/// tests are DISJOINT at some other subject can route nothing either way, and
+/// `covers` judges each subject with an `all` and reports it anyway. The
+/// failure text marks those `UNREACHABLE-PAIR`, and
+/// [`BLIND_ESCAPE_UNREACHABLE_PAIRS`] counts the same class in the census next
+/// door.
+///
+/// A ratchet: a new row is a new latent miscompile and wants a ticket, and a
+/// row that stops reading is a cure and wants deleting.
+const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 2),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 2),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 8),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 2),
+    (
+        "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+        "wrapper w3 selection",
+        1,
+    ),
+    (
+        "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+        "wrapper w4 selection",
+        1,
+    ),
+    (
+        "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+        "wrapper w5 selection",
+        1,
+    ),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w21 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w22 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w23 selection", 1),
+    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w24 selection", 1),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w21 selection", 1),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w22 selection", 1),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w23 selection", 1),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrapper w24 selection", 1),
+];
+
 /// fz-kdt.131: the seats where no order is escape-free, counted -- at the
 /// settled arrival AND under every arm perturbation the stress can name.
 ///
-/// A blind escape this gate still finds is one BOTH seats carry -- the gate
-/// next door proves the covering seat was taken wherever one existed -- so
-/// what is left is the population fz-kdt.131 owns: pairs whose surfaces are
-/// incomparable at a position their tests cannot see. Arrival order carried
-/// them before any seating rule existed and carries them still; the seating
-/// rule declines to move such a pair, so it can only ever remove one of these,
-/// never add one.
+/// A blind escape this gate finds on a CALL EDGE is one both seats carry --
+/// the gate next door proves the covering seat was taken wherever one existed
+/// -- so what is left there is the population fz-kdt.131 owns: pairs whose
+/// surfaces are incomparable at a position their tests cannot see. Arrival
+/// order carried them before any seating rule existed and carries them still;
+/// the seating rule declines to move such a pair, so it can only ever remove
+/// one of these, never add one.
 ///
-/// These are latent MISCOMPILES, not untidiness. Nothing here is safe by
-/// proof; it is safe by arrival.
+/// A blind escape on a WRAPPER SELECTION is not that. The seat never ran there
+/// at all (fz-kdt.179), so the covering member is simply seated second, and
+/// [`SELECTION_SEAT_ALLOWANCE`] next door names each such site. Those are the
+/// escapes the dynamic tripwire has been reporting on
+/// `00277_enum_tier0_fixture` since fz-kdt.144 while no static gate could see
+/// them, which is what fz-kdt.178 came to fix.
+///
+/// FOUR POPULATIONS, ONE WALK, because a reading only means something once it
+/// says which of them it belongs to: the REACHABLE escapes, which are latent
+/// miscompiles; the UNREACHABLE-PAIR readings, which are `covers`'s fiction
+/// (fz-kdt.186); the SOURCE-ORDER escapes -- a function's clauses, a `case`'s,
+/// a `receive`'s -- whose order is the programmer's; and the plans the walk
+/// could not read at all, counted so that class's zero is honest.
+///
+/// The reachable ones are latent MISCOMPILES, not untidiness. Nothing there is
+/// safe by proof; it is safe by arrival.
 ///
 /// WHY IT IS DRIVEN UNDER SEEDS (fz-kdt.143). A census read at the settled
 /// arrival is blind to a seat only a legal permutation produces, and until
@@ -9274,19 +9682,47 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
 /// per-setting comparand is the unordered PAIR. The settled reading keeps its
 /// directed form: that is the seat production actually ships.
 ///
-/// The lists are a RATCHET, not a target. They go to zero when the runtime can
-/// see what the bodies rely on -- fz-kdt.119's per-position tuple tags and
-/// fz-kdt.107 step 3's list elements -- and not before. A new entry under ANY
-/// setting is a new latent miscompile and wants a ticket, not a re-blessed
-/// constant.
+/// The lists are a RATCHET, not a target. The call-edge ones go to zero when
+/// the runtime can see what the bodies rely on -- fz-kdt.119's per-position
+/// tuple tags and fz-kdt.107 step 3's list elements -- and not before; the
+/// selection ones go when fz-kdt.179 makes member selection run the seat, and
+/// the unreachable-pair ones when fz-kdt.186 stops `covers` reporting a
+/// routing that cannot happen. A new entry under ANY setting is a new latent
+/// miscompile and wants a ticket, not a re-blessed constant.
 #[test]
 fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
+    let settled = blind_escape_census();
+    println!(
+        "plans walked: {:?}; plans the census cannot read: {:?}",
+        settled.plans, settled.unreadable,
+    );
     assert_eq!(
-        seated_escapes(&blind_escape_census()),
+        settled.source_order_plans(),
+        SOURCE_ORDER_PLANS_ON_THE_CENSUS,
+        "a source-order class that reports no blind escape says nothing unless it also says how many of \
+         its plans it could read: {:?}",
+        settled.unreadable,
+    );
+    assert_eq!(
+        seated_escapes(&settled, EscapeClass::Reachable),
         BLIND_ESCAPE_POPULATION,
         "the blind-escape population moved at the settled arrival: every entry is a seat where a value the \
-         plan admits reaches a body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 can \
-         retire one",
+         plan admits reaches a body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 / \
+         fz-kdt.179 can retire one",
+    );
+    assert_eq!(
+        seated_escapes(&settled, EscapeClass::UnreachablePair),
+        BLIND_ESCAPE_UNREACHABLE_PAIRS,
+        "the unreachable-pair population moved: every entry is a pair `covers` calls blind at one subject \
+         while the plan's own test already separates it at another, which is fz-kdt.186's imprecision and \
+         nobody else's",
+    );
+    assert_eq!(
+        seated_escapes(&settled, EscapeClass::SourceOrder),
+        SOURCE_ORDER_BLIND_ESCAPES,
+        "a clause order -- a function's, a `case`'s or a `receive`'s -- is the programmer's, so a blind \
+         escape there is a source-level fact with a repr-level cure, and it gets its own population rather \
+         than a seat finding",
     );
     let mut measured = Vec::new();
     for (setting, _) in BLIND_ESCAPE_PAIRS_BY_ARM_ORDER {
@@ -9307,37 +9743,130 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
     );
 }
 
+/// Which population a blind pair belongs to.
+///
+/// One reading, three owners, because the cure differs: a seat can move the
+/// first, only a repr or a sharper test can help the third, and the second is
+/// not a routing anything can be cured of.
+#[derive(Clone, Copy, PartialEq)]
+enum EscapeClass {
+    /// A call-edge or wrapper-selection pair some value can satisfy both
+    /// halves of, so the seat between them decides which body it reaches.
+    Reachable,
+    /// A pair whose tests are DISJOINT at some other subject: no value
+    /// satisfies both arms, so no seat between them routes anything. `covers`
+    /// judges each subject with an `all` and reports it anyway -- fz-kdt.186.
+    UnreachablePair,
+    /// A function's own clause dispatch, a body's `case`, or a `receive`:
+    /// sites where the order is the programmer's and the cure is never a seat.
+    SourceOrder,
+}
+
+/// One reading of the census: where it was found, and the two surfaces that
+/// meet blind there.
+struct BlindEscape {
+    class: EscapeClass,
+    site: String,
+    early: String,
+    late: String,
+}
+
+/// A census pass: every blind pair the walk found, and what it was able to
+/// look at while finding them.
+struct BlindEscapeCensus {
+    escapes: Vec<BlindEscape>,
+    /// How many plans of each site kind the walk saw.
+    plans: BTreeMap<&'static str, usize>,
+    /// The plans whose surfaces could not be read, by site kind and by the
+    /// question variant that stopped the read. fz-kdt.187 reads the readable
+    /// ones; a `Guard` genuinely cannot be read at all.
+    unreadable: BTreeMap<(&'static str, &'static str), usize>,
+}
+
+impl BlindEscapeCensus {
+    /// How many plans of one site kind the walk could not read.
+    fn unreadable_plans_of(&self, kind: &str) -> usize {
+        self.unreadable
+            .iter()
+            .filter(|((candidate, _), _)| *candidate == kind)
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    /// Every SOURCE-ORDER kind the walk saw, with how many plans it saw and
+    /// how many of those it could not read -- the comparand
+    /// [`SOURCE_ORDER_PLANS_ON_THE_CENSUS`] pins so the class's zero says how
+    /// much of itself it speaks for.
+    fn source_order_plans(&self) -> Vec<(&'static str, usize, usize)> {
+        let mut rows = self
+            .plans
+            .iter()
+            .filter(|(kind, _)| matches!(**kind, "entry" | "case" | "receive"))
+            .map(|(kind, plans)| (*kind, *plans, self.unreadable_plans_of(kind)))
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows
+    }
+}
+
 /// Every seat in the census fixtures where the arm tested first does not name
 /// what the arm tested second holds, under whatever arrival this thread's
-/// stress setting asks for: where it happens, and the two surfaces that meet.
-fn blind_escape_census() -> Vec<(String, String, String)> {
-    let mut escapes = Vec::new();
+/// stress setting asks for: where it happens, which population it belongs to,
+/// and the two surfaces that meet.
+///
+/// Every plan the artifact carries is walked -- call edge, entry dispatch and
+/// wrapper selection alike -- and the ones the reader cannot read are counted
+/// rather than passed over, so an empty class says how much of itself it
+/// speaks for.
+fn blind_escape_census() -> BlindEscapeCensus {
+    let mut census = BlindEscapeCensus {
+        escapes: Vec::new(),
+        plans: BTreeMap::new(),
+        unreadable: BTreeMap::new(),
+    };
     for fixture in ARM_ORDER_CENSUS {
         let (compiler, program) = driven_backend_program(fixture);
         let types = compiler.world().types();
-        for (_, dispatch) in dispatch_call_edges(&program) {
-            let seated = seated_arm_surfaces(dispatch);
+        for entry in artifact_plans(&program) {
+            *census.plans.entry(entry.site.kind()).or_default() += 1;
+            if let Some(reason) = unreadable_reason(entry.plan, &entry.bodies) {
+                *census.unreadable.entry((entry.site.kind(), reason)).or_default() += 1;
+                continue;
+            }
+            let seated = seated_arm_surfaces(entry.plan, &entry.bodies);
             for early in 0..seated.len() {
                 for late in early + 1..seated.len() {
+                    let class = match (
+                        entry.site.is_source_order(),
+                        separated_somewhere(types, &seated[early], &seated[late]),
+                    ) {
+                        (true, _) => EscapeClass::SourceOrder,
+                        (false, true) => EscapeClass::UnreachablePair,
+                        (false, false) => EscapeClass::Reachable,
+                    };
                     for subject in blind_escapes(types, &seated[early], &seated[late]) {
-                        escapes.push((
-                            format!("{fixture} subject {}", subject.0),
-                            types.display(&seated[early][&subject]),
-                            types.display(&seated[late][&subject]),
-                        ));
+                        census.escapes.push(BlindEscape {
+                            class,
+                            site: format!("{fixture} {} subject {}", entry.site, subject.0),
+                            early: types.display(&seated[early][&subject]),
+                            late: types.display(&seated[late][&subject]),
+                        });
                     }
                 }
             }
         }
     }
-    escapes
+    census
 }
 
-/// The census as SEATS: which surface the plan tests first.
-fn seated_escapes(census: &[(String, String, String)]) -> Vec<String> {
+/// The census as SEATS, one class at a time: which surface the plan tests
+/// first.
+fn seated_escapes(census: &BlindEscapeCensus, class: EscapeClass) -> Vec<String> {
     let mut seated = census
+        .escapes
         .iter()
-        .map(|(where_, early, late)| format!("{where_}: {early} is seated before {late}"))
+        .filter(|escape| escape.class == class)
+        .map(|escape| format!("{}: {} is seated before {}", escape.site, escape.early, escape.late))
         .collect::<Vec<_>>();
     seated.sort();
     seated
@@ -9345,12 +9874,22 @@ fn seated_escapes(census: &[(String, String, String)]) -> Vec<String> {
 
 /// The census as PAIRS: which two surfaces meet blind, with the seat
 /// forgotten, so an arrival that flips an arrival-kept pair reads the same.
-fn escaping_pairs(census: &[(String, String, String)]) -> Vec<String> {
+/// Every class is here, each carrying its own name, because a permuted
+/// arrival can move a pair between classes and that would be a finding.
+fn escaping_pairs(census: &BlindEscapeCensus) -> Vec<String> {
     let mut pairs = census
+        .escapes
         .iter()
-        .map(|(where_, early, late)| match early <= late {
-            true => format!("{where_}: {early} with {late}"),
-            false => format!("{where_}: {late} with {early}"),
+        .map(|escape| {
+            let (first, second) = match escape.early <= escape.late {
+                true => (&escape.early, &escape.late),
+                false => (&escape.late, &escape.early),
+            };
+            let marker = match escape.class {
+                EscapeClass::Reachable | EscapeClass::SourceOrder => "",
+                EscapeClass::UnreachablePair => "UNREACHABLE-PAIR ",
+            };
+            format!("{marker}{}: {first} with {second}", escape.site)
         })
         .collect::<Vec<_>>();
     pairs.sort();
@@ -9365,13 +9904,18 @@ fn labelled(setting: &str, pairs: Vec<String>) -> Vec<String> {
 }
 
 /// Every position in the census where the arm seated first does not name what
-/// the arm seated second holds, at the arrival production ships.
+/// the arm seated second holds AND some value can reach both arms, at the
+/// arrival production ships.
 ///
 /// Each line reads: at this subject the two arms put ONE question to the
 /// runtime, and the arm seated second holds values the arm seated first does
-/// not name. Every subject here holds a LIST, and every one of the 19 this
-/// census carried at fz-kdt.129's landing was fz-kdt.107 step 3's, because a
-/// list-shape test could not see elements.
+/// not name. The subject is a LIST at every position here and at every one of
+/// the 19 this census carried at fz-kdt.129's landing, which was fz-kdt.107
+/// step 3's, because a list-shape test could not see elements. It is not a law
+/// of the class: the corpus carries the same reading at tuple-of-list subjects
+/// on `00420_enum_take_drop_split`, `enum_take_drop_split` and
+/// `enum_hof_three_distinct_closures`, where the blind position is the list
+/// INSIDE a fold accumulator's tuple.
 ///
 /// The list axis can see them now, and the census reads it: seventeen entries
 /// leave outright (disjoint heads are a real separation, so those pairs never
@@ -9388,24 +9932,247 @@ fn labelled(setting: &str, pairs: Vec<String>) -> Vec<String> {
 /// element access -- argued, never proven -- and the cure is a repr-level or
 /// minting-level decision, not an ordering rule.
 ///
-/// The third entry is `dispatch_list_head_separates`, the fixture fz-kdt.107
-/// step 3 added, and it is here ON PURPOSE: the same A/B pair, written down as
-/// source, so the population fz-kdt.131 owns has a reproducer of its own
-/// beside the pairs that ticket cured. It is not a regression and it is not a
-/// new class.
+/// The third call-edge entry is `dispatch_list_head_separates`, the fixture
+/// fz-kdt.107 step 3 added, and it is here ON PURPOSE: the same A/B pair,
+/// written down as source, so the population fz-kdt.131 owns has a reproducer
+/// of its own beside the pairs that ticket cured. It is not a regression and
+/// it is not a new class.
+///
+/// THE OTHER FORTY-FIVE ARE WRAPPER SELECTIONS, and they are what fz-kdt.178
+/// made visible: while this walk saw call edges alone, a construction
+/// wrapper's member-selection plan was never read, and the dynamic tripwire
+/// was already reporting twelve real escapes on `00277_enum_tier0_fixture`
+/// that no static gate could see. Thirty-four are 00277's ten escaping
+/// wrappers -- `w10`, `w11`, `w13`-`w19`, `w20` -- where `[int]` is seated
+/// ahead of the member that also names `[int | :tail]`, and the accumulator
+/// `[1, :tail]` passes the first member's head test. The other eleven are the
+/// same shape one level down, where the blind position is the list inside a
+/// `{list, atom}` accumulator tuple: three on
+/// `enum_hof_three_distinct_closures`, and four apiece on
+/// `00420_enum_take_drop_split` and `enum_take_drop_split` (`w21`-`w24`). All
+/// forty-five are fz-kdt.179's: the covering member exists at every one of
+/// them and is seated second, because member selection never runs the
+/// covering seat.
 const BLIND_ESCAPE_POPULATION: &[&str] = &[
-    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] is seated before [int] | [int | :tail]",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/dispatch_list_head_separates.fz callsite 0 (executable 38) subject 0: [:false | :true] is seated before [int | :ok | :true]",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [:false | :nil] is seated before [int | :nil]",
+    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [:false | :true] is seated before [int | :ok | :true]",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
 ];
 
-/// The same three pairs with the seat forgotten. Five of the six seeds read
-/// exactly this, which is what driving the census under seeds is for: the
-/// pairs a legal permutation reaches are the pairs production ships.
+/// The pairs `covers` calls blind that no value can reach: at some OTHER
+/// subject the two arms' predicates are disjoint, so the plan's own test
+/// already keeps them apart and the seat between them routes nothing.
+///
+/// This is not a miscompile and it is not a seat question. It is
+/// `covers`'s position-wise `all` reporting a routing that cannot happen, in
+/// production and in this file's mirror of it alike, and **fz-kdt.186** owns
+/// it. All twenty-eight are 00277's seven eleven-member wrappers `w13`-`w19`,
+/// four apiece: subject 0 asks a `:tail` head against an `int` head, which no
+/// value answers both ways, while subject 1 is the list behind it, which no
+/// test reads at all.
+///
+/// It only became visible when the census stopped walking call edges alone
+/// (fz-kdt.178), and that is a fact about these fixtures rather than about
+/// call edges: the class needs a pair blind at one subject and disjoint at
+/// another, and at the settled arrival only the wrapper selections carry one.
+/// A call edge can carry it and does -- under `arms:6`
+/// `enum_predicate_search`'s `[int | :nil]` and `[int]` arms are blind at
+/// subject 0 and separated at subject 2, where their callable questions name
+/// disjoint closure sets, and
+/// [`BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX`] marks that reading too.
+///
+/// The same twenty-eight sit inside [`SELECTION_SEAT_ALLOWANCE`]'s
+/// seventy-three, where the failure text marks them, so fz-kdt.186 lands
+/// before fz-kdt.179 and leaves 179 the forty-five that route something.
+const BLIND_ESCAPE_UNREACHABLE_PAIRS: &[&str] = &[
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] is seated before [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] is seated before [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] is seated before [int] | [int | :tail]",
+];
+
+/// The blind escapes at the SOURCE-ORDER sites: a function's own clause
+/// dispatch, a body's `case`, a `receive`'s clauses.
+///
+/// Empty, and the emptiness is the finding: the seat gate excludes these three
+/// because their order is the programmer's, so this is the only place a blind
+/// clause pair would be counted, and there are none.
+///
+/// [`SOURCE_ORDER_PLANS_ON_THE_CENSUS`] says how much of the class that zero
+/// speaks for.
+const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
+
+/// How many plans of each source-order kind the census walks, and how many of
+/// them it cannot read: `(kind, plans, unreadable)`.
+///
+/// A clause dispatch asks whatever the source patterns ask, and
+/// [`seated_arm_surfaces`] compares `Region::Type` questions only, so most
+/// entry plans and every `case` here are skipped. Pinning the numbers per kind
+/// is what stops [`SOURCE_ORDER_BLIND_ESCAPES`] from being an honest-looking
+/// zero over a class nobody looked at. The gate prints the variant breakdown
+/// beside them, and reading the readable variants is fz-kdt.187's.
+///
+/// A kind that reads zero plans is ABSENT here rather than zero, because the
+/// walk only reports the kinds it saw; a row appearing or leaving is the
+/// census fixtures changing shape, which wants looking at either way.
+const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
+    &[("case", 3, 3), ("entry", 144, 137), ("receive", 2, 0)];
+
+/// The same seventy-six readings -- forty-eight reachable and twenty-eight
+/// unreachable-pair, the latter marked -- with the seat forgotten. Five of the
+/// six seeds read exactly this, which is what driving the census under seeds
+/// is for: the pairs a legal permutation reaches are the pairs production
+/// ships.
+///
+/// An arm seed cannot move a wrapper's members, so every selection reading is
+/// the same under all six; what a seed can move is a callsite's arms, and
+/// `arms:6` is the one that does.
 const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
-    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] with [int | :ok | :true]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] with [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] with [int | :ok | :true]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/dispatch_list_head_separates.fz callsite 0 (executable 38) subject 0: [:false | :true] with [int | :ok | :true]",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [:false | :nil] with [int | :nil]",
+    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [:false | :true] with [int | :ok | :true]",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
 ];
 
 /// `arms:6` adds two, and they are fz-kdt.131 FACET 3, not a redundant arm the
@@ -9419,12 +10186,92 @@ const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
 /// stand-in, so there is nothing to drop, and the pair is exactly the
 /// overlap-without-containment class fz-kdt.131 owns -- reachable here only
 /// because seed 6 is the arrival that puts these members that way round.
+///
+/// One of the two carries the `UNREACHABLE-PAIR` mark and one does not, which
+/// is a measurement rather than a claim about the ticket: `[int | :nil]`
+/// against `[int]` at executable 201 is separated outright at another subject,
+/// and `[int | :ok | :true]` against `[int]` at executable 203 is not. Only
+/// the second is a pair a value can be routed through, so fz-kdt.131's facet-3
+/// reproducer under this seed is that one.
 const BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX: &[&str] = &[
-    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] with [int | :ok | :true]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] with [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] with [int | :ok | :true]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [int | :nil] with [int]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [int | :ok | :true] with [int]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [] | [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [:tail] with [int] | [int | :tail]",
+    "UNREACHABLE-PAIR fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [int | :nil] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [] | [int] | [int | :tail] with [int]",
+    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] with [int] | [int | :tail]",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/dispatch_list_head_separates.fz callsite 0 (executable 38) subject 0: [:false | :true] with [int | :ok | :true]",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [:false | :nil] with [int | :nil]",
+    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [:false | :true] with [int | :ok | :true]",
+    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [int | :ok | :true] with [int]",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
+    "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
 ];
 
 /// What each arm setting reads, named one by one rather than asserted as an
@@ -9481,7 +10328,61 @@ fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<Subjec
     early.len() == late.len() && blind_escapes(types, early, late).is_empty()
 }
 
-/// A dispatch's arms in the order the plan seats them, each as the observable
+/// Whether the plan's own tests already keep these two arms apart: at some
+/// subject their predicates are DISJOINT, so no value satisfies both and no
+/// seat between them routes anything anywhere.
+///
+/// `covers` asks its question subject by subject with an `all` and never
+/// consults this, so it calls such a pair blind wherever one other subject
+/// happens to be erasing. That reading is a fiction about a routing that
+/// cannot happen, and it is production's reading as much as this file's --
+/// fz-kdt.186 owns the relation, and both readers change together. Until then
+/// the census names the class rather than hiding it inside the real one.
+fn separated_somewhere(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
+    early.iter().any(|(subject, early)| {
+        late.get(subject).is_some_and(|late| {
+            !types
+                .runtime_type_predicate(early)
+                .overlaps(&types.runtime_type_predicate(late))
+        })
+    })
+}
+
+/// Why the census cannot read a plan's surfaces, if it cannot: the first
+/// question variant that is not a `Region::Type`, or the broken weld that
+/// leaves a listed body with no arm to read.
+///
+/// This is the same condition [`seated_arm_surfaces`] gives up on, named
+/// instead of silent, so a class whose census reads zero also says how much of
+/// itself it actually looked at. Reading the readable variants -- a
+/// `Region::List` is a shape test over the value exactly as a `Region::Type`
+/// is -- is fz-kdt.187's.
+fn unreadable_reason(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Option<&'static str> {
+    for body_id in bodies {
+        let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
+            return Some("a listed body has no outcome");
+        };
+        let Some(arm) = plan.matrix.arms.iter().find(|arm| arm.outcome == outcome.outcome) else {
+            return Some("an outcome has no arm");
+        };
+        for question in &arm.questions {
+            let variant = match &question.predicate.region {
+                Region::Type(_) => continue,
+                Region::Equal(_) => "Region::Equal",
+                Region::TupleArity(_) => "Region::TupleArity",
+                Region::List(_) => "Region::List",
+                Region::MapKind => "Region::MapKind",
+                Region::MapKeyPresent { .. } => "Region::MapKeyPresent",
+                Region::Bitstring(_) => "Region::Bitstring",
+                Region::Guard(_) => "Region::Guard",
+            };
+            return Some(variant);
+        }
+    }
+    None
+}
+
+/// A plan's bodies in the order its site seats them, each as the observable
 /// surface it puts to every subject it asks about.
 ///
 /// The surface, not only the predicate projected from it: the projection is
@@ -9489,26 +10390,17 @@ fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<Subjec
 /// come off the artifact together.
 ///
 /// An arm asking a question the plan does not put through `Region::Type` is not
-/// a test this can compare, and the whole dispatch is skipped rather than
-/// guessed at.
-fn seated_arm_surfaces(dispatch: &DispatchCallEdge<usize, BackendReturnFlow>) -> Vec<BTreeMap<SubjectId, Ty>> {
+/// a test this can compare, and the whole plan is skipped rather than guessed
+/// at. That skip is silent no longer: [`unreadable_reason`] names it, the
+/// census counts it and [`SOURCE_ORDER_PLANS_ON_THE_CENSUS`] pins it, and
+/// reading the readable variants is fz-kdt.187's.
+fn seated_arm_surfaces(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Vec<BTreeMap<SubjectId, Ty>> {
     let mut seated = Vec::new();
-    for call_arm in &dispatch.arms {
-        let Some(outcome) = dispatch
-            .plan
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.body_id == call_arm.body_id)
-        else {
+    for body_id in bodies {
+        let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
             return Vec::new();
         };
-        let Some(arm) = dispatch
-            .plan
-            .matrix
-            .arms
-            .iter()
-            .find(|arm| arm.outcome == outcome.outcome)
-        else {
+        let Some(arm) = plan.matrix.arms.iter().find(|arm| arm.outcome == outcome.outcome) else {
             return Vec::new();
         };
         let mut asked = BTreeMap::new();
@@ -9568,14 +10460,28 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// either first (fz-kdt.143). The pair that survives is the fz-kdt.131
 /// facet-3 reproducer this census is here to hold.
 ///
-/// DELIBERATE SUBSET (fz-kdt.141 refutation): the arm perturbation moves 27
-/// fixtures' artifacts; the 13 not listed here (protocol-dispatch, bsx guard,
-/// pipe and receive shapes) move plan content but carry no known arms one
-/// question cannot separate -- their coverage is the doc'd sweep recipe with
-/// the canon comparand, not this in-process gate, which exists to hold the
-/// census population's SEATS specifically. Widen it if any of the 13 ever
-/// gains a pair asking one question.
-const ARM_ORDER_CENSUS: [&str; 15] = [
+/// WHAT IS IN IT (fz-kdt.178): every fixture a corpus walk of all five plan
+/// kinds found carrying a blind pair or a pair one question cannot separate.
+/// The `case` and `receive` kinds put none of them anywhere: over the 469
+/// drivable fixtures the corpus carries 70 `case` plans and 86 `receive`
+/// plans, 156 of which read zero blind pairs, because a `case` or a `receive`
+/// asks `Region::Equal`, `TupleArity`, `List`, `MapKind`, `Bitstring` or a
+/// guard and almost never a bare `Region::Type` -- the same reason the entry
+/// class reads what it reads, and the same fz-kdt.187 that would widen it.
+/// The seven at the end were outside this census while the walk saw call edges
+/// alone -- `mailbox_closure_enum_hofs` was in no census at all, and the other
+/// six were in `WRAPPER_MEMBER_CENSUS` only, which measures whether an
+/// artifact MOVES under a permuted wrapper order and not what its plans then
+/// ask.
+///
+/// `00420_enum_take_drop_split` and `enum_take_drop_split` are the last two
+/// the corpus walk found, and they are here because MEASUREMENT says they cost
+/// what any other fixture costs: four wrapper-selection seat findings apiece,
+/// on `w21`-`w24`, identical under all six arm seeds, and not one
+/// unreachable-pair reading between them. Leaving them out would have left
+/// eight reachable escapes -- latent miscompiles, fz-kdt.179's -- pinned by no
+/// gate at all.
+const ARM_ORDER_CENSUS: [&str; 22] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/dispatch_list_head_separates.fz",
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
@@ -9591,6 +10497,13 @@ const ARM_ORDER_CENSUS: [&str; 15] = [
     "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
     "fixtures2/behavior/closure_identity_tag_split.fz",
     "fixtures2/behavior/closure_identity_captures.fz",
+    "fixtures2/00276_enum_to_list_and_map.fz",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+    "fixtures2/behavior/list_literal_trailing_call.fz",
+    "fixtures2/behavior/mailbox_closure_enum_hofs.fz",
+    "fixtures2/behavior/map_enumerable.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
 ];
 
 /// The fixtures whose CONSTRUCTION-WRAPPER member order is free: compiling each
@@ -9607,8 +10520,9 @@ const ARM_ORDER_CENSUS: [&str; 15] = [
 ///
 /// This is the census the retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` never
 /// touched at all (fz-kdt.136). Measured at this commit by sweeping the corpus
-/// under `wrappers:` seeds and diffing the backend dump; five of the nineteen
-/// are named by the arm census too.
+/// under `wrappers:` seeds and diffing the backend dump; eleven of the nineteen
+/// are named by [`ARM_ORDER_CENSUS`] too, which walks the same wrappers'
+/// selection PLANS rather than whether their artifact moves.
 const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
     "fixtures2/00183_enum_take_list_range.fz",
     "fixtures2/00197_poly_capture_ref.fz",
@@ -9794,11 +10708,16 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// seven rows are that tuple-era population, kept at 0 because a table that
 /// only lists what escapes cannot say that anything stopped escaping.
 ///
-/// **`00277_enum_tier0_fixture` = 12, and it is fz-kdt.179's.** Construction
-/// wrapper `w2`'s member-selection plan for `Enum.reverse(1..7//2, [:tail])`'s
+/// **`00277_enum_tier0_fixture` = 12, and it is fz-kdt.179's.** A construction
+/// wrapper's member-selection plan for `Enum.reverse(1..7//2, [:tail])`'s
 /// reducer seats `list(int)` ahead of `list(int | :tail)`, so the accumulator
 /// `[1, :tail]` and its growth pass `list(int)`'s head test and run the body
-/// compiled for `[integer]`. The covering member exists and is seated second:
+/// compiled for `[integer]`. The escaping wrappers are `w10`, `w11`, `w20`
+/// (four members) and `w13`-`w19` (eleven), which the static census reads by
+/// name since fz-kdt.178; the dynamic report prints the value, the element and
+/// the predicate but no site at all, so this count cannot say which of them a
+/// given escape came through, and naming it is fz-kdt.187's. The covering
+/// member exists and is seated second:
 /// `dispatch_from_callable_flow_edges` builds a wrapper's rows straight from
 /// `flow.first_class_edges` and never calls `routable_alternatives`, so neither
 /// the drop nor the covering seat runs on member selection at all. stdout is
