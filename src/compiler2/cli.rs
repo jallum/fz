@@ -1,9 +1,7 @@
-//! Compiler2's side-by-side command-line front door.
+//! Compiler2's command-line front door.
 //!
 //! `fz2` stays narrow on purpose: it submits source text, seeds `main/0`,
-//! then drives Compiler2's native run/build/interp entry points directly.
-//! It does not reopen the old planner/module pipeline or emulate old-world
-//! diagnostics.
+//! then drives Compiler2's run/build/interp artifact entry points directly.
 
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
@@ -146,7 +144,7 @@ fn dispatch(tel: ConfiguredTelemetry, args: Vec<String>, diagnostic_status: &Dia
 fn print_help() {
     print!(
         "\
-fz2 — Compiler2 side-by-side front door
+fz2 — incremental compiler
 
 Usage:
   fz2 <command> [options] <src.fz>

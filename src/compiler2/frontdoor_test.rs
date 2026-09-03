@@ -531,8 +531,8 @@ fn compiler2_frontdoor_parses_remote_calls_captures_and_headless_case_from_fixtu
         &tel,
     )
     .expect("lambda sugar parse");
-    // Capture placeholders and capture expressions should enter quoted source
-    // as compiler2-owned AST, not as old frontend nodes.
+    // Capture placeholders and capture expressions are represented directly in
+    // compiler-owned quoted source.
     assert_quoted_mentions(&lambda_sugars, &["&", "+", "fn", "when", "->"]);
 }
 
