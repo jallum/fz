@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T01:31:52Z",
+  "description": "## Goal\n\nMake the command surface tell the truth: root compilation is always closed as one program, and no flag pretends to select behavior that does not exist.\n\n## Current proof\n\nBoth source and build parsers accept --lto and --whole-program with empty match arms. The help text calls them compatibility flags, while guides/modules.html claims they enable a distinct optimizer mode and advises users when to select it. There is no mode bit or downstream consumer.\n\n## Strategy\n\nAdd red CLI parser and process tests requiring both spellings to fail as unknown arguments. Delete both parser arms and every usage/help mention. Rewrite the modules guide around unconditional root closure and remove the LTO section and navigation entry rather than preserving historical language.\n\n## Signal\n\nRepository search finds no CLI option or guide instruction for lto or whole-program. Ordinary run and build behavior is unchanged. Focused CLI tests, guide checks, full library and CLI suites, formatting, workspace checks, and strict clippy pass.\n\n## Deletion\n\nRemove the two empty parser branches, help and usage vocabulary, obsolete guide section, examples, and compatibility assertions. Add no alias, hidden option, warning path, or tombstone comment.",
+  "id": "fz-qon.1",
+  "labels": [],
+  "parent": "fz-qon",
+  "priority": 1,
+  "status": "open",
+  "title": "Delete no-op LTO compatibility modes and document unconditional root closure",
+  "type": "task",
+  "updated_at": "2026-09-03T01:31:52Z"
+}
