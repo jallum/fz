@@ -7,9 +7,15 @@
   "id": "fz-kdt.202",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.194 raised the stakes on this projection defect, and measured the population it reaches so the argument stops being silently load-bearing.\n\nfz-kdt.194 gives a SEPARATED adjacent pair a canonical order in specificity_order. Under fz-kdt.186 a fictional separation (two arms with DIFFERENT surfaces at a position where one projects to the empty predicate -- this ticket's shape) only meant \"leave the pair alone\"; under fz-kdt.194 it means \"MAY REORDER\". The seat's guard `early == late || early.overlaps(late)` still covers the case where both arms carry the SAME unrealizable surface; it does not cover two different surfaces where one projects to nothing.\n\nThat is still a routing no-op, one step further along: dispatch_row's preconditions are the very same observable_inputs Ty values, so an arm whose projected test admits nothing emits a row NO VALUE CAN TAKE, and moving an unreachable row past its neighbour changes no destination. fz-kdt.194's repair is adjacent-transpositions-only, so the dead row's own motion is the whole of the effect. The argument is written at the seam, in canonically_order_separated_neighbours' doc, naming this ticket.\n\nMEASURED POPULATION (fz-kdt.194 build worktree, base ca23b676f + fz-kdt.194, release binary, all 604 fixtures2 fixtures). Every Separated verdict was classified as a FICTION when EVERY separating position is self-blind on one side (!p.overlaps(\u0026p)):\n\n  setting        separation readings   FICTION   arity-mismatch\n  settled        172 (25 fixtures)     0         0\n  arms:1         214                   0         0\n  arms:3         214                   0         0\n  arms:6         214                   0         0\n  wrappers:1     186                   0         0\n  wrappers:6     182                   0         0\n\nSo the fictional-separation population that reaches fz-kdt.194's rule is ZERO on this corpus, and no realizability conjunct was added there. If this ticket's fix lands, that stays zero by construction rather than by measurement. If instead the seat is ever tightened with a realizability conjunct, that is fz-kdt.186's surface and needs its own red-first gate.",
+      "timestamp": "2026-09-03T19:15:18Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] runtime_type_predicate_tuple_arities drops an arity for ANY same-arity negation: `{any, any} \u0026 not({int, int})` (non-empty) projects to the empty predicate, so a live arm compiles to a test that never fires",
   "type": "task",
-  "updated_at": "2026-09-03T10:30:32Z"
+  "updated_at": "2026-09-03T19:15:18Z"
 }
