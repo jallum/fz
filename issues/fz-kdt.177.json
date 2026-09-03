@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T03:08:36Z",
+  "description": "Found 2026-09-02 while probing fz-kdt.120 (head d2a5f3510). Four lines, no\nanswer after 60 s on `fz2 interp` and `fz2 run` (Elixir: {2, {1, :start}}):\n\n    fn main() do\n      dbg(Enum.reduce([1, 2], :start, fn (x, acc) -\u003e {x, acc} end))\n    end\n\nSiblings that answer in well under a second: seed 0 with `acc + 0.5` (1.0),\nseed 0 with `acc + x` (3), seed [] with `x` (2). So it is the accumulator\ntype NESTING ({int, {int, :start}} -\u003e {int, {int, {int, :start}}} ...) that\nruns away, and the RETURN_WIDENING_BUDGET (8 strict ascents -\u003e convergence\n_class, 16 -\u003e any) is not ending it in time. NOT a job storm: in 60 s the\ntelemetry holds only 6517 job spans and 3261 work_graph.applied, and the\nbusiest activation completes 5 times -- the time is inside jobs (1523\ncanon.type events; a Types operation on the nested tuple looks super-linear),\nso the first probe is a per-job span profile (--log-telemetry, longest span)\nrather than a wake count. House law: a simple program must answer in\nseconds; an unbounded ascent must hit its budget in a bounded number of\nrounds AND each round must be cheap on a small program.",
+  "id": "fz-kdt.177",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Enum.reduce with a tuple-nesting accumulator does not terminate: {x, acc} over [1, 2] runs past 60s on interp and JIT",
+  "type": "task",
+  "updated_at": "2026-09-03T03:08:36Z"
+}
