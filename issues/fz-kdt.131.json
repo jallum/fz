@@ -53,11 +53,15 @@
     {
       "text": "fz-kdt.183 landed (2e0bb2706): YOUR REPRODUCER IS GONE, as a cure. dispatch_list_head_separates callsite 0 and both enum_predicate_search callsite-0 readings retired from BLIND_ESCAPE_POPULATION (48 -\u003e 29, every call-edge reading gone); SURFACE_MEMBERSHIP_CENSUS enum_predicate_search arms:6 went 1 -\u003e 0 and is pinned at 0; BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX folded into ARRIVAL_KEPT because seed 6 no longer differs. The facet-3 shape (heads overlap, neither surface contains the other) is still constructible from source; this ticket needs a new reproducer before it can be worked.\n",
       "timestamp": "2026-09-03T12:16:40Z"
+    },
+    {
+      "text": "fz-kdt.179 landed (c3e27143d): the wrapper-axis witness for your facet-3 shape is in the tree as the drive test wrapper_members_that_overlap_without_containment_keep_arrival_order ([int|:ok] beside [int|:tail]: members [0,1], arrival kept, the seat declines and the drop finds no stand-in). But you still have NO live SOURCE reproducer: fz-kdt.183 retired the enum_predicate_search facet-3 pair, and dispatch_list_head_separates is statically real but dynamically unreached. This ticket does not cure your shape (member selection inherits it -- overlap without containment keeps arrival order by construction); it owes a new source-level .fz that reaches a wrapper whose members overlap without either containing the other.\n",
+      "timestamp": "2026-09-03T16:08:45Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Runtime-dispatch predicates that overlap without covering either body leave representation safety to arrival order",
   "type": "task",
-  "updated_at": "2026-09-03T12:16:40Z"
+  "updated_at": "2026-09-03T16:08:45Z"
 }
