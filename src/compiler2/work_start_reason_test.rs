@@ -31,7 +31,8 @@
 //! for exactly that class: if the external ignition count ever exceeds the
 //! true front-door count, an internal caller mislabeled its work-start.
 
-use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+use super::drive::Job;
+use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission, WorkStartReason};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// One `submit_code` (its `IndexCode`) plus one `submit_root` (its `SeedRoot`)
@@ -118,5 +119,85 @@ fn pull_only_guard_holds_for_protocol_impl_dispatch() {
     assert_pull_only(
         "fixtures2/00272_protocol_impl_dispatch.fz",
         include_str!("../../fixtures2/00272_protocol_impl_dispatch.fz"),
+    );
+}
+
+/// fz-tfn.5: root entries and caller-discovered callees are ordinary published
+/// `Activation` edges. Their analyses must enter through the same frontier,
+/// with no root-specific ignition path beside it. The five latent
+/// `SeedActivation` keys in this fixture are co-demanded before publication
+/// under `BlockedWaiterExpansion`; fz-kdt.75 tracks that separate path.
+#[test]
+fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
+    let telemetry = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
+        text: include_str!("../../fixtures2/00420_enum_take_drop_split.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    let starts = compiler
+        .drive_root_backend_work_starts(root)
+        .expect("the activation-edge fixture should settle its backend product");
+
+    assert_eq!(
+        starts.activation_frontier, 255,
+        "expected 255 published root-entry and caller-discovered-callee frontier starts; latent SeedActivation keys remain blocked-waiter work",
+    );
+
+    let world = compiler.world();
+    let identity = |key: &super::ActivationKey| {
+        let labels = |function| super::canon::function_label(world, super::FunctionId::from_fn_id(function));
+        let mut types = super::TyCanon::new(&labels);
+        format!(
+            "{:?} :: {} :: {}",
+            key.root,
+            super::canon::function_label(world, key.function),
+            types.render(world.types(), key.arrow),
+        )
+    };
+    let expected = [
+        "Enum.reduce/3#lambda@439-517/2 :: fp[F] (closure[Enum.reverse/1#lambda@1563-1599/2](), int, list(int)) -> r0",
+        "Enum.take_while/2#lambda@6167-6266/2 :: fp[F] (closure[main/0#lambda@1319-1438/1](), int, list(int)) -> r0",
+        "Enum.take_while/2#lambda@6167-6266/2 :: fp[F] (closure[main/0#lambda@204-223/1](), int, list(int)) -> r0",
+        "Enum.take_while/2#lambda@6167-6266/2 :: fp[F] (closure[main/0#lambda@252-271/1](), int, list(int)) -> r0",
+        "Enum.take_while/2#lambda@6167-6266/2 :: fp[F] (closure[main/0#lambda@300-319/1](), int, list(int)) -> r0",
+    ]
+    .map(|identity| format!("{root:?} :: {identity}"));
+    let mut seed_starts = world
+        .work_start_trace()
+        .iter()
+        .filter_map(|(job, reason)| match job {
+            Job::SeedActivation(key) => Some(format!("{} :: {reason:?}", identity(key))),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    seed_starts.sort();
+    assert_eq!(
+        seed_starts,
+        expected
+            .clone()
+            .map(|identity| format!("{identity} :: {:?}", WorkStartReason::BlockedWaiterExpansion)),
+        "the fixture's exact five latent identities must be seeded under blocked-waiter demand",
+    );
+
+    let mut blocked_analyses = world
+        .work_start_trace()
+        .iter()
+        .filter_map(|(job, reason)| match (job, reason) {
+            (Job::AnalyzeActivation(key), WorkStartReason::BlockedWaiterExpansion) => Some(identity(key)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    blocked_analyses.sort();
+    assert_eq!(
+        blocked_analyses, expected,
+        "each latent seed must co-demand its matching analysis under the same blocked-waiter reason",
     );
 }

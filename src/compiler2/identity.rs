@@ -819,8 +819,8 @@ impl RootMap {
         self.slots.is_empty()
     }
 
-    pub fn ids(&self) -> impl Iterator<Item = RootId> + use<> {
-        (0..self.slots.len() as u32).map(RootId)
+    pub fn len(&self) -> usize {
+        self.slots.len()
     }
 }
 

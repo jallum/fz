@@ -295,7 +295,6 @@ pub struct SessionWork {
     pub producer_pokes: u64,
     pub ignition: u64,
     pub changed_revision_wake: u64,
-    pub standing_root_frontier: u64,
     pub activation_frontier: u64,
     pub blocked_waiter_expansion: u64,
     pub unsanctioned_work_starts: u64,
@@ -404,7 +403,6 @@ impl CausalReport {
             ("producer_pokes", session.producer_pokes),
             ("ignition", session.ignition),
             ("changed_revision_wake", session.changed_revision_wake),
-            ("standing_root_frontier", session.standing_root_frontier),
             ("activation_frontier", session.activation_frontier),
             ("blocked_waiter_expansion", session.blocked_waiter_expansion),
             ("unsanctioned_work_starts", session.unsanctioned_work_starts),
@@ -849,7 +847,6 @@ impl Replay {
         tally.producer_pokes += count("producer_pokes");
         tally.ignition += count("work_starts_ignition");
         tally.changed_revision_wake += count("work_starts_changed_revision_wake");
-        tally.standing_root_frontier += count("work_starts_standing_root_frontier");
         tally.activation_frontier += count("work_starts_activation_frontier");
         tally.blocked_waiter_expansion += count("work_starts_blocked_waiter_expansion");
         tally.unsanctioned_work_starts += count("unsanctioned_work_starts");

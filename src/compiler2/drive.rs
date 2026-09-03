@@ -415,44 +415,12 @@ impl World {
             .sum()
     }
 
-    /// Expands the standing demand every submitted root carries: a root is an
-    /// external request that its entry activation be analyzed, exactly as the
-    /// product boundary treats `RootBackendProduct(root)`. The expansion only
-    /// ignites first-run analysis — once `AnalyzeActivation(entry)` has run, the
-    /// graph's own wakes carry every later revision — and it can only fire once
-    /// the seed has settled the facts that make the entry key derivable.
-    /// Returns how many entry analyses were demanded.
-    pub(crate) fn demand_root_entry_analyses(&mut self) -> u64 {
-        let roots: Vec<RootId> = self.root_ids().collect();
-        let mut demanded = 0_u64;
-        for root_id in roots {
-            let root = self.root_entry(root_id);
-            let gates = [FactKey::Recursive(root.function), FactKey::DispatchMask(root.function)];
-            // A direct settled query is a settled question too: arbitrate it
-            // before answering, or a quiesced cone would gate the root's own
-            // entry analysis forever.
-            self.settle_quiescent(&gates);
-            if !gates.iter().all(|gate| self.fact_is_settled(gate)) {
-                continue;
-            }
-            let entry = self.activation_key(root_id, root.function, &root.input);
-            if self.work_graph.has_run(&Job::AnalyzeActivation(entry.clone())) {
-                continue;
-            }
-            demanded += self.demand_fact_producer(
-                &FactKey::ActivationAnalyzed(entry),
-                WorkStartReason::StandingRootFrontier,
-            );
-        }
-        demanded
-    }
-
-    /// Expands the standing demand every discovered callee activation
-    /// carries: an `Activation(key)` fact published without a settled
-    /// `ActivationAnalyzed(key)` is a standing demand for that activation's
-    /// analysis, the non-root analogue of `demand_root_entry_analyses`. Like
-    /// the root expansion, this only ignites first-run analysis — the
-    /// `has_run` check is load-bearing, not an optimization: a callee whose
+    /// Expands the standing demand every published activation carries: an
+    /// `Activation(key)` fact without a settled `ActivationAnalyzed(key)` is a
+    /// standing demand for that activation's analysis. This includes root
+    /// entries published by `SeedRoot` and caller-discovered callees published
+    /// by semantic analysis. The expansion only ignites first-run analysis —
+    /// the `has_run` check is load-bearing, not an optimization: a callee whose
     /// first run blocked (waiting on some other fact, never claiming
     /// `ActivationAnalyzed`) stays perpetually `rebased` while blocked, and
     /// `demand_fact_producer`'s rebased branch re-enqueues unconditionally on
@@ -460,16 +428,15 @@ impl World {
     /// callee would be re-run every stall pass forever. Once a callee has
     /// run at all, its own read/wait subscriptions (an unresolved wait's
     /// fact is separately covered by `demand_blocked_wait_producers`) carry
-    /// every later revision, exactly as `demand_root_entry_analyses` relies
-    /// on for roots. Retires each such key from the frontier so the working
-    /// set stays bounded. Returns how many analyses were demanded.
+    /// every later revision. Retires each such key from the frontier so the
+    /// working set stays bounded. Returns how many analyses were demanded.
     pub(crate) fn demand_activation_frontier_analyses(&mut self) -> u64 {
         let mut demanded = 0_u64;
         let mut keys = self.activation_frontier_keys();
         // `activation_frontier` is a `HashSet<ActivationKey>` (`world.rs`):
         // its iteration order is `RandomState`-dependent. `AnalyzeActivation`
         // mints fresh `Ty` combinations (interned call-site arrows) as a side
-        // effect of running, so demanding two ready callee activations in a
+        // effect of running, so demanding two ready activations in a
         // different relative order between runs mints their arrows in a
         // different relative order too. Sort by `StableSortKey`
         // (`Types::display`, not raw `Ty`/`{:?}`) so the demand order is a
@@ -487,13 +454,12 @@ impl World {
         demanded
     }
 
-    /// Pops the next ready job, expanding the three standing demand sources
-    /// when the agenda has drained: the roots' entry-analysis demands, the
-    /// discovered callees' activation-frontier demands, and the blocked
-    /// waiters' fact->producer expansions. Every job loop (the bare drive and
-    /// the product fact-wait loops) pulls through this, so first-run
-    /// ignition is owned by the scheduler boundary, not by any job's
-    /// follow-up.
+    /// Pops the next ready job, expanding the two standing demand sources when
+    /// the agenda has drained: published root-entry/caller-discovered-callee
+    /// activations and blocked waiters' fact->producer expansions. Every job
+    /// loop (the bare drive and the product fact-wait loops) pulls through this,
+    /// so first-run ignition is owned by the scheduler boundary, not by any
+    /// job's follow-up.
     pub(crate) fn next_ready_job(&mut self) -> Option<Job> {
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
@@ -502,7 +468,7 @@ impl World {
         if let Some(job) = self.work_graph.pop() {
             return Some(job);
         }
-        let ignited = self.demand_root_entry_analyses() + self.demand_activation_frontier_analyses();
+        let ignited = self.demand_activation_frontier_analyses();
         if ignited > 0
             && let Some(job) = self.work_graph.pop()
         {
@@ -574,10 +540,9 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                         }
                     }
                 }
-                // The agenda drained. Three standing demand sources remain, all
-                // pulls: every submitted root demands its entry analysis, every
-                // discovered callee activation not yet analyzed demands its own
-                // analysis (`demand_activation_frontier_analyses`), and every
+                // The agenda drained. Two standing demand sources remain, both
+                // pulls: every published activation not yet analyzed demands its
+                // own analysis (`demand_activation_frontier_analyses`), and every
                 // blocked waiter's fact names its single producer through the
                 // fact->producer map — the same expansion the product drivers
                 // perform when a fact wait finds an empty agenda. Only a genuine
@@ -594,11 +559,10 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 }
                 // The agenda is empty, so every settled question standing over
                 // a quiesced cone can be answered now (fz-kdt.44). Doing it
-                // before the demand expansions is what lets a root's own
-                // recursion gate — a direct settled query — pass.
+                // before the demand expansions answers any settled questions
+                // left by the work that just quiesced.
                 world.settle_quiescent_waits();
-                let mut producer_pokes =
-                    world.demand_root_entry_analyses() + world.demand_activation_frontier_analyses();
+                let mut producer_pokes = world.demand_activation_frontier_analyses();
                 let unresolved = world.work_graph.unresolved();
                 for wait in &unresolved {
                     if stall_demanded.insert(wait.fact.fact().clone()) {

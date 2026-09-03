@@ -81,12 +81,10 @@ pub(super) fn seed_root(
     // DeriveCallGraphComponent/DeriveDispatchMask; later change waves reach
     // them via the normal wake mechanism.
     //
-    // `AnalyzeActivation` is not pushed either: the root itself is the
-    // standing demand for its entry's analysis. When the agenda drains,
-    // `World::demand_root_entry_analyses` expands that demand through the
-    // fact->producer map (`World::demand_fact_producer`) on every path -- the
-    // bare drive's demand-on-stall pass and the product fact-wait loops both
-    // pull through `World::next_ready_job`.
+    // `AnalyzeActivation` is not pushed either. Publishing `Activation(entry)`
+    // above records the same standing frontier edge as caller-discovered
+    // callees; `demand_activation_frontier_analyses` expands it through the
+    // fact->producer map on both the bare drive and product fact-wait paths.
     Ok(JobEffects {
         reads: settled_uses(reads),
         outputs,

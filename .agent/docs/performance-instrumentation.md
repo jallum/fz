@@ -54,13 +54,21 @@ product that settles a recursive group publishes its members atomically and
 reports the group id on each.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
-`WorkStartTally`: `ignition`, `changed_revision_wake`, `standing_root_frontier`,
-`activation_frontier`, `blocked_waiter_expansion`, plus `unsanctioned_work_starts`
+`WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_frontier`,
+`blocked_waiter_expansion`, plus `unsanctioned_work_starts`
 and `root_scans`. This is the pull-only guard's evidence — every job on the
 agenda must name a sanctioned reason. `unsanctioned_work_starts` and `root_scans`
 are zero, and `compiler2::work_start_reason_test` holds them there: a
 reintroduced job-pushes-job path lands in `Unclassified` by construction, and a
 producer that discovers work by scanning the fact table shows up in `root_scans`.
+`activation_frontier` counts root-entry and caller-discovered-callee analyses
+ignited from their published `Activation` edges. It does not count every
+`AnalyzeActivation` first run: a latent key demanded before its `Activation`
+publication is attributed to `blocked_waiter_expansion` (fz-kdt.75).
+`Scheduler::enqueue` is the single accepted-start boundary for explicit demand
+and changed-revision wakes. Under `cfg(test)`, `Scheduler::work_start_trace`
+retains each accepted `(Job, WorkStartReason)` pair so identity-level tests can
+reject compensating aggregate counts; production stores only the tally.
 
 **Demand cones** — `fz.compiler2.demand.cone.settled` carries `members`,
 `external_members`, `rounds`, `derivations`. `RuntimeDemand(E)` is settled by a

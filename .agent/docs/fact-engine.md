@@ -60,8 +60,8 @@ A job that cannot proceed records `waits` and returns; it never names another
 job to run. Restarting blocked work is the fact->producer map's job, not the
 blocked job's: `World::demand_fact_producer` (`drive.rs`) maps a fact to its
 single producing job, and every path that discovers a blocked wait —
-`demand_blocked_wait_producers` at drain time, the standing activation and
-root-entry frontier expansions, and the product pull driver's fact waits —
+`demand_blocked_wait_producers` at drain time, the standing activation
+frontier expansion, and the product pull driver's fact waits —
 demands that producer through the map. A fact with more than one possible
 producer (for example `ModuleInterface`, produced by either `DefineModule` or
 `DefineModuleInterface` depending on whether the module has source state) maps
@@ -387,10 +387,9 @@ ascent; the drain is where it is discharged.
 
 `Scheduler::settle_quiescent(facts)` is that discharge, and it is
 demand-driven: it answers the exact settled questions something is actually
-asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`),
-a product pull's awaited fact (`product_drive::drive_product_fact_wait`), and
-the root-entry gate's direct `Recursive`/`DispatchMask` queries
-(`demand_root_entry_analyses`). Nothing else is arbitrated. One arbitrated
+asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`)
+and a product pull's awaited fact (`product_drive::drive_product_fact_wait`).
+Nothing else is arbitrated. One arbitrated
 fact discharges a whole quiesced cycle, because clearing it makes it quiet and
 the ordinary wave carries that through every publisher that was only waiting on
 it.
@@ -458,13 +457,12 @@ while let Some(job) = agenda.pop():
 ```
 
 When the agenda drains, standing demands expand before the drive ends: every
-submitted root demands its entry activation's analysis
-(`World::demand_root_entry_analyses`), every discovered callee activation
-demands its own analysis (`World::demand_activation_frontier_analyses`), and
+published activation — root entry or caller-discovered callee — demands its
+own analysis (`World::demand_activation_frontier_analyses`), and
 every blocked waiter's fact names its single producer through the
 fact->producer map (`World::demand_fact_producer` — the same expansion the
-product fact-wait loops reach through `World::next_ready_job`). Both
-activation-analysis expansions are first-run ignition only: each checks
+product fact-wait loops reach through `World::next_ready_job`). The activation
+frontier expansion is first-run ignition only: it checks
 `Scheduler::has_run` for its `AnalyzeActivation` job and skips a key that has
 already run at least once, because the graph's own read/wait subscriptions
 carry every later revision from there — a key whose first run blocked without

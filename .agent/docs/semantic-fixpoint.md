@@ -248,16 +248,18 @@ Executable(callee_key, need)
 ```
 
 That publication is how executable demand grows. No separate sweep discovers
-reachable callees. Publishing `Activation(callee_key)` is also the record site
+reachable callees. Publishing any `Activation(key)` is also the record site
 for `World`'s activation frontier: `World::complete_job` folds the key into
-`activation_frontier` unless `ActivationAnalyzed(callee_key)` has already
-settled, and `World::demand_activation_frontier_analyses` — the non-root
-analogue of `demand_root_entry_analyses` — demands the callee's own
-`AnalyzeActivation` the next time the agenda drains. `analyze_activation`
+`activation_frontier` unless `ActivationAnalyzed(key)` has already settled,
+and `World::demand_activation_frontier_analyses` demands its
+`AnalyzeActivation` the next time the agenda drains. Root entries published by
+`SeedRoot` and caller-discovered callees published by `analyze_activation` use
+this one path.
+`analyze_activation`
 itself never schedules the callee directly: `prepare_function_call` only
 `reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
 nothing about discovering a callee blocks on its analysis, and the frontier is
-the only thing that ignites a callee's first analysis pass.
+the ignition path for that caller-discovered callee's first analysis pass.
 `ActivationInputs(a)` is cumulative for semantic-analysis
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new

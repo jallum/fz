@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition};
+use super::{Agenda, AppliedStep, DependencyIndex, FactUse, Scheduler, Wake, WakeDisposition, WorkStartReason};
 use crate::compiler2::facts::ClaimShape;
 use crate::compiler2::facts::DerivationId;
 use crate::compiler2::scheduler::DerivationEffects;
@@ -1396,6 +1396,11 @@ fn compiler2_scheduler_wake_attributes_each_coalesced_cause_to_a_single_evaluati
     assert!(
         subscriber_wakes.iter().any(|wake| wake.cause == current("f2")),
         "f2 should be attributed as a cause: {subscriber_wakes:?}"
+    );
+    assert_eq!(
+        scheduler.work_start_trace(),
+        &[(subscriber, WorkStartReason::ChangedRevisionWake)],
+        "the accepted wake is traced once; its coalesced sibling is attribution, not another work start",
     );
 }
 

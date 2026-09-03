@@ -24,12 +24,10 @@ use super::ordered_set::OrderedSet;
 ///   subscription (read, wait, or settled-presence) just changed. This is
 ///   the core pull mechanism: readers wake because their ground moved, never
 ///   because a producer pushed them by name.
-/// - `StandingRootFrontier`: `drive::demand_root_entry_analyses` expanding a
-///   submitted root's standing entry-analysis demand through the
-///   fact->producer map.
 /// - `ActivationFrontier`: `drive::demand_activation_frontier_analyses`
-///   expanding a discovered callee activation's standing analysis demand
-///   through the same map.
+///   expanding a published activation's standing analysis demand through the
+///   fact->producer map. Root entries and caller-discovered callees use this
+///   one path.
 /// - `BlockedWaiterExpansion`: the fact->producer map
 ///   (`World::demand_fact_producer`) expanding a blocked waiter's missing
 ///   fact to its single producer at a drain/stall point — both the bare
@@ -46,7 +44,6 @@ use super::ordered_set::OrderedSet;
 pub enum WorkStartReason {
     Ignition,
     ChangedRevisionWake,
-    StandingRootFrontier,
     ActivationFrontier,
     BlockedWaiterExpansion,
     #[default]
@@ -63,7 +60,6 @@ pub enum WorkStartReason {
 pub struct WorkStartTally {
     pub ignition: u64,
     pub changed_revision_wake: u64,
-    pub standing_root_frontier: u64,
     pub activation_frontier: u64,
     pub blocked_waiter_expansion: u64,
     pub unclassified: u64,
@@ -192,6 +188,11 @@ pub struct Scheduler<J, F> {
     /// agenda (deduped coalescing does not count) under each
     /// `WorkStartReason`. Observation-only — see `WorkStartReason`.
     work_starts: HashMap<WorkStartReason, u64>,
+    /// Test-only identity trace behind the aggregate tally. Production pays no
+    /// storage or clone cost; regression tests use it to reject compensating
+    /// per-reason counts that started the wrong jobs.
+    #[cfg(test)]
+    work_start_trace: Vec<(J, WorkStartReason)>,
     /// How many times a whole-fact-table scan (`fact_keys`) has been taken.
     /// The pull-cutover anti-pattern is a producer discovering work by
     /// scanning every fact instead of following named dependencies; this
@@ -223,6 +224,8 @@ where
             rebased: HashSet::new(),
             unfinal_reads: HashMap::new(),
             work_starts: HashMap::new(),
+            #[cfg(test)]
+            work_start_trace: Vec::new(),
             root_scans: 0,
         }
     }
@@ -235,12 +238,16 @@ where
         WorkStartTally {
             ignition: count(WorkStartReason::Ignition),
             changed_revision_wake: count(WorkStartReason::ChangedRevisionWake),
-            standing_root_frontier: count(WorkStartReason::StandingRootFrontier),
             activation_frontier: count(WorkStartReason::ActivationFrontier),
             blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
             unclassified: count(WorkStartReason::Unclassified),
             root_scans: self.root_scans,
         }
+    }
+
+    #[cfg(test)]
+    pub fn work_start_trace(&self) -> &[(J, WorkStartReason)] {
+        &self.work_start_trace
     }
 
     /// Whether `job`'s ground has shifted since it last concluded.
@@ -340,9 +347,13 @@ where
     /// pending and this call coalesced into it — not a new work start, so
     /// the tally does not count it).
     pub fn enqueue(&mut self, job: J, reason: WorkStartReason) -> bool {
+        #[cfg(test)]
+        let traced_job = job.clone();
         let started = self.agenda.enqueue(job);
         if started {
             *self.work_starts.entry(reason).or_insert(0) += 1;
+            #[cfg(test)]
+            self.work_start_trace.push((traced_job, reason));
         }
         started
     }
@@ -769,17 +780,13 @@ where
 
     /// The changed-revision wake path: a subscriber's fact use changed, so it
     /// re-enters the agenda under `WorkStartReason::ChangedRevisionWake` --
-    /// the one work-start reason that is never passed in by a caller, since
-    /// it names the wake mechanism itself, not an external demand. Records
+    /// the one work-start reason assigned by the wake mechanism itself rather
+    /// than an external demand caller. Records
     /// one `Wake` attributing `job` to `cause`, whatever the disposition —
     /// there is no dedupe here, since a distinct cause is a distinct
     /// attribution even when it lands on an already-pending job.
     fn enqueue_step(&mut self, job: J, cause: &FactUse<F>, shift: bool, wakes: &mut Vec<Wake<J, F>>) {
-        let disposition = if self.agenda.enqueue(job.clone()) {
-            *self
-                .work_starts
-                .entry(WorkStartReason::ChangedRevisionWake)
-                .or_insert(0) += 1;
+        let disposition = if self.enqueue(job.clone(), WorkStartReason::ChangedRevisionWake) {
             WakeDisposition::Enqueued
         } else {
             WakeDisposition::Coalesced
