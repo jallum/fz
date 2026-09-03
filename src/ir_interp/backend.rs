@@ -31,9 +31,9 @@ use fz_runtime::exec_ctx::ExecCtx;
 use fz_runtime::heap::Schema;
 use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts, fz_map_empty,
-    fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref,
+    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
+    fz_list_tail_ref, fz_map_empty, fz_map_get_atom_key_ref, fz_mark_published_ref_aliased, fz_matcher_map_get_ref,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref,
 };
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
 use fz_runtime::procbin::mso_drop_all_deferred;
@@ -710,6 +710,12 @@ fn select_dispatch_match(
                     .ok()
                     .and_then(|value| value.value(proc).ok())
             };
+            let list_tail = |value: RuntimeAnyValue| {
+                let tail = fz_list_tail_ref(value.ref_word().raw_word());
+                interp_value_from_ref_word(tail, "list tail")
+                    .ok()
+                    .and_then(|value| value.value(proc).ok())
+            };
             let reader = RuntimeValueReader {
                 module,
                 tuple_schema_ids: &tuple_schema_ids,
@@ -717,6 +723,7 @@ fn select_dispatch_match(
                 callables: &callables,
                 fields: &fields,
                 list_head: &list_head,
+                list_tail: &list_tail,
             };
             let matched = matches_runtime_type_predicate(&predicate, &reader, runtime_value);
             if matched {

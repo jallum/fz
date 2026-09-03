@@ -9705,13 +9705,15 @@ fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
 /// were derived in, and nothing else.
 ///
 /// This half is what fz-kdt.136 found missing. It is green on stdout at this
-/// commit, on every door. It used to be green over a live hazard: the
-/// surface-membership tripwire reported 268 escapes at the settled order, 68
-/// under `wrappers:1` and 20 under `wrappers:6` -- values reaching a member
-/// whose surface never named them, with the order deciding which. fz-kdt.132
-/// removed the population rather than the ordering (the escapes were a fold
-/// accumulator rung that had no member at all), so the tripwire now reads 0
-/// under every setting and this gate holds the law on its own:
+/// commit, on every door -- and it is green OVER a live hazard, which is the
+/// distinction this gate exists to keep. The surface-membership tripwire reads
+/// 12 escapes on `00277_enum_tier0_fixture` at the SETTLED wrapper order and 0
+/// under `wrappers:1`, `wrappers:6` and `wrappers:reverse`: the member the mint
+/// order puts first takes values its surface never named, and every permutation
+/// of that order happens to put a covering member there instead (fz-kdt.179).
+/// Identical answers are therefore not the same claim as safe routing, and
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` is
+/// what holds the other half;
 /// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members` is
 /// what proves the perturbation still lands.
 #[test]
@@ -9739,63 +9741,97 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
     }
 }
 
-/// fz-kdt.132: a value never reaches a body whose surface never named it.
+/// A value never reaches a body whose surface never named it, except where
+/// [`SURFACE_MEMBERSHIP_CENSUS`] names the escape and the ticket that owns it.
 ///
 /// A dispatch test is a PROJECTION of the surface an arm was compiled for, so
 /// passing the test is not the same as belonging to the surface. Where the two
-/// part company, a body typed for one domain runs on a value from another --
-/// today by luck: BEFORE fz-kdt.138 the emitted tuple test was blind at a
-/// list position (the fz-kdt.119 Scope-A carve-out, since deleted) and handed
-/// every value to whichever member came first; making the test exact would
-/// have left that population nowhere to go (`backend callable construction N
-/// matched no member`) -- which is why fz-kdt.132 (the covering rung) had to
-/// land first, and did.
+/// part company, a body typed for one domain runs on a value from another. The
+/// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` tripwire measures that gap on the
+/// production interpreter path by re-asking each admitted value's own test
+/// under `PositionScope::Full`; this is the same census the shell recipe in
+/// `.agent/docs/dispatch-matrix.md` reads off stderr, driven in process so the
+/// population cannot grow unnoticed.
 ///
-/// The escapes were never a dispatch defect. They were a MISSING
-/// SPECIALIZATION: a fold's reducer is minted beside its initial accumulator
-/// and keeps that arrow, and `resolve_closure_call` used to intersect every
-/// later argument with it -- so each call was clamped back onto the initial
-/// specialization, the accumulator's ascent stopped one rung short, and the
-/// grown accumulator the fold actually produces got no specialization and no
-/// construction member at all. The values with nowhere to belong are exactly
-/// that rung.
-///
-/// This is the dynamic census the shell recipe in `.agent/docs/dispatch-matrix.md`
-/// reads off stderr, driven in process. The seven fixtures are the whole of the
-/// corpus that ever reported an escape; RED at 8002889ff with 268 of them
-/// (00183 16, 00230 16, 00418 4, 00419 16, 00420 106, enum_take_drop_split 106,
-/// unused_range_binding 4), and the corpus total is 0 either way outside this
-/// list.
+/// A RATCHET, not a blessing. Every non-zero entry is a live escape with a
+/// ticket behind it, and a count this table does not carry -- in either
+/// direction -- is either a new latent miscompile or a cure, and both want the
+/// table edited deliberately rather than a number re-blessed.
 #[test]
 fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
-    let mut escaping = Vec::new();
-    for fixture in SURFACE_MEMBERSHIP_CENSUS {
+    let mut moved = Vec::new();
+    for (fixture, setting, expected) in SURFACE_MEMBERSHIP_CENSUS {
+        let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+            crate::compiler2::callsite_dispatch::dispatch_stress::setting(setting),
+        );
         let census = crate::runtime_type_predicate::surface_membership::SurfaceMembershipCensus::install();
         interpreted_answer(fixture);
         let escapes = census.escapes();
-        if escapes != 0 {
-            escaping.push(format!("{fixture}: {escapes}"));
+        if escapes != expected {
+            let arrival = if setting.is_empty() {
+                "the settled arrival"
+            } else {
+                setting
+            };
+            moved.push(format!("{fixture} under {arrival}: {escapes}, census says {expected}"));
         }
     }
     assert!(
-        escaping.is_empty(),
+        moved.is_empty(),
         "a value that passes an arm's test but lies outside the surface that arm was compiled for is \
          running a body that never named it -- the arm is missing, not the test: {}",
-        escaping.join(", "),
+        moved.join("; "),
     );
 }
 
-/// Every fixture in the corpus that has ever reported a surface-membership
-/// escape. The whole corpus is the shell sweep in
-/// `.agent/docs/dispatch-matrix.md`; these seven are what it found.
-const SURFACE_MEMBERSHIP_CENSUS: [&str; 7] = [
-    "fixtures2/00183_enum_take_list_range.fz",
-    "fixtures2/00230_enum_take_chained.fz",
-    "fixtures2/00418_enum_count_range.fz",
-    "fixtures2/00419_enum_take_mixed.fz",
-    "fixtures2/00420_enum_take_drop_split.fz",
-    "fixtures2/behavior/enum_take_drop_split.fz",
-    "fixtures2/behavior/unused_range_binding.fz",
+/// The measured surface-membership population: fixture, arrival, escapes.
+/// `""` is the settled arrival, and every other string is a
+/// `FZ_STRESS_PERMUTE_DISPATCH` setting the fixpoint could legally have
+/// delivered instead.
+///
+/// The list-tail reading (fz-kdt.144) replaced the tuple-era population, which
+/// fz-kdt.132 emptied and fz-kdt.138 then made empty by construction. The first
+/// seven rows are that tuple-era population, kept at 0 because a table that
+/// only lists what escapes cannot say that anything stopped escaping.
+///
+/// **`00277_enum_tier0_fixture` = 12, and it is fz-kdt.179's.** Construction
+/// wrapper `w2`'s member-selection plan for `Enum.reverse(1..7//2, [:tail])`'s
+/// reducer seats `list(int)` ahead of `list(int | :tail)`, so the accumulator
+/// `[1, :tail]` and its growth pass `list(int)`'s head test and run the body
+/// compiled for `[integer]`. The covering member exists and is seated second:
+/// `dispatch_from_callable_flow_edges` builds a wrapper's rows straight from
+/// `flow.first_class_edges` and never calls `routable_alternatives`, so neither
+/// the drop nor the covering seat runs on member selection at all. stdout is
+/// right on every door because the accumulator lane is `ValueRef` in both
+/// bodies -- boxed element access, the fz-kdt.131 correlation nobody proved.
+///
+/// The wrapper rows are the shape fz-kdt.147 named on the tuple axis, reborn on
+/// the list one: the SETTLED wrapper order is the only order that escapes, and
+/// every legal permutation of it reads 0. The `arms:6` row on
+/// `enum_predicate_search` is fz-kdt.131's facet-3 pair -- two list arms whose
+/// heads overlap and neither of whose surfaces contains the other -- measured
+/// on the production path for the first time, and it is 0 at the settled
+/// arrival, which is why the ticket needs the seed to see it.
+const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize); 15] = [
+    ("fixtures2/00183_enum_take_list_range.fz", "", 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 0),
+    ("fixtures2/00418_enum_count_range.fz", "", 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 0),
+    ("fixtures2/behavior/unused_range_binding.fz", "", 0),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "", 12),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "arms:6", 12),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:1", 0),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:6", 0),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:reverse", 0),
+    ("fixtures2/behavior/enum_predicate_search.fz", "", 0),
+    ("fixtures2/behavior/enum_predicate_search.fz", "arms:6", 1),
+    // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
+    // says why (the fold hands the TAIL to the recursive dispatch, so the
+    // mixed list never reaches the `[:false | :true]` arm), and this row is
+    // what holds that sentence to the tree.
+    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 0),
 ];
 
 /// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
@@ -9811,10 +9847,14 @@ const SURFACE_MEMBERSHIP_CENSUS: [&str; 7] = [
 /// keyed on accumulator tuples that differ only at a list position -- pairs
 /// the tuple test COULD not separate before fz-kdt.138 (whichever the mint
 /// order put first took every value) and now separates by shape and head.
-/// Which member the mint order lists first is what this perturbation moves. (fz-kdt.132 made every one of those members cover the values that
-/// reach it, so the choice is no longer a hazard -- but it is still a choice
-/// nothing but the interner makes, which is what this gate holds to one
-/// answer.)
+/// Which member the mint order lists first is what this perturbation moves.
+/// On this fixture that choice is no longer a hazard -- fz-kdt.132 minted the
+/// covering rung every one of its members needed, and the tripwire reads 0 here
+/// at every setting -- but it is still a choice nothing but the interner makes,
+/// which is what this gate holds to one answer. Where a wrapper's members are
+/// NOT all covering the choice is a live hazard, measured on
+/// `00277_enum_tier0_fixture` by
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it`.
 #[test]
 fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
     use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};

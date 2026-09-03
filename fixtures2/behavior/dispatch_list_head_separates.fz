@@ -51,6 +51,19 @@
 # reproducer, and 131 owns it; `enum_predicate_search` carries the corpus's
 # other two.
 #
+# STATICALLY REAL, DYNAMICALLY UNREACHED. The pair is a seat the compiler
+# cannot make safe, and no value in this program crosses it. `Enum.all?` folds
+# through `List.reduce_while_cont([head | tail], acc, reducer)`, which hands the
+# TAIL to the recursive dispatch, so the whole `[true, 1, :ok]` never arrives at
+# a dispatch at all -- what reaches the A arm is `[false]` and `[]`, both inside
+# `[:false | :true]`. Measured at fz-kdt.144 with the surface-membership
+# tripwire, which walks every element of an admitted list against the clause its
+# head answered: this fixture reads 0 escapes at the settled arrival and under
+# `arms:reverse`, `arms:1` .. `arms:6` and every `wrappers:` setting. The one
+# arrival in the corpus that reaches a facet-3 pair with a real value is
+# `enum_predicate_search` under `arms:6`, where `[1, :ok]` runs a `[integer]`
+# body.
+#
 # History, because the defect is what the fixture is for. Measured at
 # f69c5ea26, before the head question existed, all four arms were one question
 # and fz-kdt.118's drop removed C and D inside that one group -- so neither was

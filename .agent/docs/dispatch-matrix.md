@@ -435,7 +435,7 @@ reason the atom axis separates. Meeting through a cons cell is the erasing case,
 because the tail behind it is what neither test looked at.
 
 Both the interpreter and the two native doors read the head through the
-representation's own owner — `matches_list_head` through a `ListHeadReader`,
+representation's own owner — `matches_list_elements` through a `ListHeadReader`,
 `emit_list_axis` through `RuntimeTestEmitter::list_head` — and the head question
 is asked INSIDE the cons branch and nowhere else, so a head-blind or `[]`-only
 test emits and answers exactly what it did before. The nested question is a full
@@ -609,73 +609,127 @@ reads three.
 The census is a RATCHET pointing at fz-kdt.131, not a target: any other new
 entry is a new latent miscompile and wants a ticket, not a re-blessed constant.
 
+Those three are what the STATIC reading can see. The dynamic tripwire below now
+reads the same class on the production path and finds a different subset of it:
+`enum_predicate_search`'s pair is reached by a real value under `arms:6` and
+`dispatch_list_head_separates`'s is never reached at all, while a wrapper's
+member selection — which no static census walks (fz-kdt.178) — escapes 12 times
+on `00277_enum_tier0_fixture`. Statically real and dynamically unreached are
+different facts, and it takes both instruments to tell them apart.
+
 ### The dynamic tripwire
 
 The static census reasons about pairs of arms on hand-picked fixtures.
 `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` measures the real thing instead, on the
-production path, over whatever the corpus actually runs (fz-kdt.135): the
-interpreter answers each dispatch type test under `PositionScope::Lowered` and
-re-asks the tuple axis under `PositionScope::Full`. Since fz-kdt.138 deleted
-the list-position carve-out the two readings are THE SAME FUNCTION — no
-position is skipped — so the tripwire is inert by construction until
-fz-kdt.144's list-tail re-ask gives `Full` content again.
-A value admitted by the first reading and refused by the second passed a test no
-shape of the arm's surface names, which is precisely a blind routing. Unset, it
-is off and costs nothing; set to `abort` each finding is fatal, which is how a
-single fixture is bisected down to the dispatch; set to anything else each
-finding is reported on stderr, and a corpus census is
+production path, over whatever the corpus actually runs (fz-kdt.135,
+fz-kdt.144): the interpreter answers each dispatch type test under
+`PositionScope::Lowered`, which is what the three lowerings can afford, and the
+tripwire re-asks the admitted value's own axes under `PositionScope::Full`,
+which is what the surface names. A value admitted by the first reading and
+refused by the second passed a test no shape of the arm's surface names, which
+is precisely a blind routing.
+
+**What the two readings disagree about is the list SPINE.** Every tuple
+position is asked identically by both (fz-kdt.138), and scalar and content-blind
+axes coincide, so the only gap left is the one the one-sided-filter law names: a
+head load is exact on rejection and erasing on acceptance, and the tail is what
+no emitted test reads. Under `Full` a list is inside the surface when SOME ONE
+clause's element question admits EVERY element — per-clause homogeneity, because
+a `ListSig` carries one element type, so `[int] | [:ok]` must not claim
+`[1, :ok]`. Each element is asked under `Full` in turn, so a list inside a list
+or inside a tuple position walks too. A clause the projection could not shape
+(fz-kdt.146's `shape_only` degrade) asks no head, so it has no `Full` content and
+reports nothing: honest inertness, not a guess.
+
+The cost is O(clauses × length) per admitted list and O(clauses × outer × inner)
+one level of nesting down, which is why it lives behind the env gate and never
+on the production answer. The walk stops at anything that is not a cons cell —
+the empty list and an improper tail alike — and is bounded at 2^16 elements, so
+its termination is a fact of the code rather than of the heap it reads.
+
+Unset, the instrument is off and costs nothing; set to `abort` each finding is
+fatal, which is how a single fixture is bisected down to the dispatch; set to
+anything else each finding is reported on stderr with the offending VALUE and
+the element that broke it, and a corpus census is
 
     FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp <fixture> 2>&1 >/dev/null \
       | grep -c 'surface-membership escape'
 
-**The census reads ZERO, corpus-wide, under every legal order** (fz-kdt.132),
-and since fz-kdt.138 it reads zero BY CONSTRUCTION: the skipped positions the
-`Full` reading was built to look at were the list-bearing ones, they are asked
-now, and the two readings are the same function. So this instrument is inert
-until `Full` is given content the lowerings do not have — the list TAIL, which
-is **fz-kdt.144**'s re-ask (a head is exact on rejection and erasing on
-acceptance, so the residue a full walk would find is real and unmeasured). What
-follows is the population it did report, kept because it is what the tuple half
-was worth.
+Sweep the whole corpus by looping that over `fixtures2/*.fz
+fixtures2/behavior/*.fz`, and re-run it under each legal arrival by adding
+`FZ_STRESS_PERMUTE_DISPATCH=<setting>`: an escape the settled order does not
+reach is still a latent one. The whole 597-fixture sweep costs about 10s, and
+the knob's cost does not separate from that sweep's run-to-run spread —
+measured at fz-kdt.144, 9.4-9.8s off against 11.0-13.2s on, and re-measured on a
+second machine at 9.0-12.6s off against 8.9-10.6s on. Read it as free at corpus
+scale rather than as a number.
 
-fz-kdt.119 measured SEVEN fixtures and 268 occurrences, and they were all one
-defect.
+**Interpreter only, and that is the whole instrument rather than half of one.**
+All three doors answer the same `Lowered` question over the same dispatch plans,
+so the escaping POPULATION is door-independent by construction. What differs
+between doors is the HARM — `interp` survives on dynamic tags where the native
+doors read the element through a grounded accessor — and harm is what the
+three-door behaviour sweep above measures.
 
-| fixture | at fz-kdt.119 | now |
-| --- | --- | --- |
-| `00183_enum_take_list_range` | 16 | 0 |
-| `00230_enum_take_chained` | 16 | 0 |
-| `00418_enum_count_range` | 4 | 0 |
-| `00419_enum_take_mixed` | 16 | 0 |
-| `00420_enum_take_drop_split` | 106 | 0 |
-| `enum_take_drop_split` | 106 | 0 |
-| `unused_range_binding` | 4 | 0 |
+**The measured population** (fz-kdt.144, 597 fixtures, `interp`). Every fixture
+not listed reads 0 at every setting.
 
-Every escape was a nested LIST position inside a fold's accumulator, and every
-one was a MISSING SPECIALIZATION rather than a blind dispatch. A reducer is
-minted beside the fold's initial accumulator and carries that arrow;
-`resolve_closure_call` used to intersect every later argument with it, so each
-call was clamped back onto the initial specialization, the accumulator's ascent
-stopped one rung short, and the accumulator the fold actually produces got no
-specialization and no construction member at all. The escaping values were
-exactly that missing rung — values with no member to belong to, kept harmless
-only because the blind tuple test handed them to whichever member came first.
-Unclamped, `enum_take_drop_split`'s reducers collapse three partial rungs into
-the one grown accumulator (215 → 196 executables) and the census empties.
+| fixture | setting | escapes | owner |
+| --- | --- | --- | --- |
+| `00277_enum_tier0_fixture` | settled | 12 | fz-kdt.179 |
+| `00277_enum_tier0_fixture` | `arms:reverse`, `arms:1` … `arms:6` | 12 | fz-kdt.179 |
+| `00277_enum_tier0_fixture` | `wrappers:1`, `wrappers:6`, `wrappers:reverse` | 0 | — |
+| `enum_predicate_search` | `arms:6` | 1 | fz-kdt.131 (facet 3) |
+| `enum_predicate_search` | settled, every other setting | 0 | — |
 
-fz-kdt.141 had measured the population as wrapper-order-decided (268 settled,
-68 at `wrappers:1`, 20 at `wrappers:6`, `arms:` seeds moving it by zero) and
-filed fz-kdt.147 on the settled order being the worst of them. That reading was
-true and the conclusion was one layer too low: the order decided which of the
-uncovering members took the values, not whether a covering member existed.
-With the rung minted there is nothing to reorder — the census is 0 at the
-settled order and 0 under `wrappers:1`, `wrappers:6`, `arms:reverse`, `arms:1`,
-`arms:6` and both seeds on both surfaces.
+`00277` is a construction-wrapper MEMBER SELECTION, not a callsite: wrapper
+`w2`'s plan for `Enum.reverse(1..7//2, [:tail])`'s reducer tests
+`empty_list() → list(int) → list(int | :tail)`, so the accumulator `[1, :tail]`
+and its growth (`[3, 1, :tail]`, `[5, 3, 1, :tail]`, four values each) pass
+`list(int)`'s head test and run the body compiled for `[integer]`. The covering
+member exists and is seated second, because `dispatch_from_callable_flow_edges`
+builds a wrapper's rows straight from `flow.first_class_edges` and never calls
+`routable_alternatives` — neither fz-kdt.143's drop nor fz-kdt.129/131's
+covering seat runs on member selection at all. stdout is right on every door
+because the accumulator lane is `ValueRef` in both bodies: boxed element access,
+the correlation nobody proved. **The SETTLED wrapper order is the only order
+that escapes**, which is fz-kdt.147's shape reborn on the list axis.
 
-The census stays a RATCHET: it is now pinned at zero by
-`compiler2_no_value_reaches_a_construction_member_that_never_named_it`, which
-drives the seven fixtures in process, and a new entry is a new latent
-miscompile that wants a ticket rather than a re-blessed constant.
+`enum_predicate_search` under `arms:6` is fz-kdt.131's facet 3 measured on the
+production path for the first time: `[1, :ok]` reaching a `[integer]` body
+through two arms whose heads overlap and neither of whose surfaces contains the
+other. It is 0 at the settled arrival, so only the seed reaches it.
+`dispatch_list_head_separates` — the written-down reproducer for the same
+facet — reads 0 at EVERY setting, because `Enum.all?` consumes the first element
+before the recursive dispatch: the values that reach the `[:false | :true]` arm
+are `[false]` and `[]`. That pair is statically real and dynamically unreached.
+
+The census stays a RATCHET with names:
+`compiler2_no_value_reaches_a_construction_member_that_never_named_it` drives
+fifteen named `(fixture, arrival)` pairs in process — the SETTLED arrival of
+all nine fixtures that have ever reported, `00277` under `arms:6` and under each
+of the three wrapper orders, `enum_predicate_search` under `arms:6`, and
+`dispatch_list_head_separates` at the settled arrival (the row that holds its
+header's "dynamically unreached" sentence to the tree) — so a
+count that moves in either direction is a new latent miscompile or a cure and
+wants the table edited deliberately rather than a number re-blessed. The
+remaining `arms:` seeds on `00277` are the SWEEP's measurement above, re-read
+with the recipe rather than pinned in process, because every one of them reads
+what the settled row already pins.
+
+**What it read before the spine.** fz-kdt.119 landed the tuple reading and
+measured SEVEN fixtures and 268 occurrences (`00183` 16, `00230` 16, `00418` 4,
+`00419` 16, `00420` 106, `enum_take_drop_split` 106, `unused_range_binding` 4),
+and they were all one defect: a nested LIST position inside a fold's
+accumulator, and a MISSING SPECIALIZATION rather than a blind dispatch. A
+reducer is minted beside the fold's initial accumulator and carries that arrow;
+`resolve_closure_call` used to intersect every later argument with it, so the
+accumulator's ascent stopped one rung short and the accumulator the fold
+actually produces got no specialization and no construction member at all.
+fz-kdt.132 minted the rung and the tuple population emptied; fz-kdt.138 then made
+those positions testable, at which point the two scopes coincided and the
+instrument had nothing left to compare. All seven still read 0, and they are in
+the ratchet table's first rows so that stays a measurement.
 
 Arm order was the settled targets' order and nothing else before fz-kdt.129 —
 the fixpoint's, which is the agenda's — and `enum_predicate_search` seated one
