@@ -84,6 +84,38 @@ impl PublicTrace {
         Self { outcome, events }
     }
 
+    /// Compile and request the interpreter backend so product-search events
+    /// are included in the captured public stream.
+    pub fn compile_backend(source: &str) -> Self {
+        let telemetry = ConfiguredTelemetry::new();
+        let (buf, writer) = vec_writer();
+        JsonlBackend::new_public_writer(writer).install(&telemetry);
+
+        let outcome = {
+            let mut compiler = Compiler2::new(telemetry);
+            compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+            compiler.submit_code(CodeSubmission {
+                name: Some("public_product_trace.fz".to_string()),
+                text: source.to_string(),
+            });
+            let root = compiler.submit_root(RootSubmission {
+                module_name: None,
+                name: "main".to_string(),
+                arity: 0,
+                need: ExecutableNeed::Value,
+            });
+            let outcome = compiler.drive();
+            assert!(matches!(outcome, DriveOutcome::Resolved));
+            compiler
+                .run_root_interp(root)
+                .unwrap_or_else(|error| panic!("public product trace failed: {error}"));
+            outcome
+        };
+
+        let events = parse_public_trace(&buf.borrow());
+        Self { outcome, events }
+    }
+
     /// The public stream in emission order.
     pub fn events(&self) -> &[PublicEvent] {
         &self.events

@@ -73,6 +73,21 @@ under `members * rounds` because a member whose reads did not move is skipped.
 Separating the three tells a cone that is too big from an ascent that climbs too
 far from members that re-derive too often; a wall-clock number cannot.
 
+**Recursive-group searches** —
+`fz.compiler2.pull.recursive_group.searched` carries the current product, the
+prospective dependency, and one `RecursiveGroupSearch`. `candidate_inventory`
+counts reachable unsettled products of the publishing kind; `vertex_visits`
+counts all reached pending products, including cross-kind bridges; and
+`edge_scans` counts their pending dependency edges. `cycle_closed` says the
+component contains the current product, and `group_members` counts only its
+same-kind members. One dependency-rooted Tarjan traversal supplies all six
+values. The prospective edge is recorded before borrowing the dependency map;
+there is no graph copy, separate early-exit reachability pass, or repeated scan
+per candidate. Causal replay deliberately compares these totals without treating
+the currently chosen publisher as stable. Exact publication-member identity
+becomes a comparand in `fz-tfn.2`, after `fz-kdt.4` removes the eager
+RuntimeDemand cone's schedule-dependent pending graph.
+
 ## In tests
 
 `Capture` and `StatsHandler` (`telemetry/`) attach to a `ConfiguredTelemetry` in

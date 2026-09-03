@@ -542,14 +542,20 @@ group: it cuts its own recursion from `CallGraphComponent` and `StaticCallees`
 facts at recipe construction, so its evaluation is a function of settled facts
 and of products that can settle without it. Component membership answers
 mutual reachability, which is an equality; a grounded closure-call edge has no
-static edge of its own and needs the ONE-WAY question, so that rare edge walks
-`StaticCallees` at the asking site instead of turning a second reachability
-answer into a fact. A producer discovers its group by asking whether the
-dependency it is about to wait on reaches back to it; that walk, and the strong
-component it gates, follow the dependencies of unsettled products only. A
-settled product answers a read with the value it already holds, so it waits on
+static edge of its own. The group query records the prospective
+`current -> dependency` read before borrowing the dependency map, so no graph
+copy precedes the one Tarjan traversal that both detects a cycle and returns
+the component containing the dependency. It follows the dependencies
+of unsettled products only and visits each reachable product once. Hash order
+may change visitation order, but not the search counts or component selected
+from one graph. A settled product answers a read with the value it already
+holds, so it waits on
 nothing and no cycle of waits runs through it — and a settled product never
 depends on an unsettled one, so nothing is missed by not stepping into it.
+The temporary eager RuntimeDemand cone may still present a different pending
+graph in another process. Exact recursive publication-member identity is
+therefore deferred to `fz-tfn.2`, after `fz-kdt.4` removes that cone; this
+current traversal does not sort or rename members to disguise that boundary.
 Each group publishes every member atomically. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
 fact-use states. Every member of a settled group retains the union of the

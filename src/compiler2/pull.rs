@@ -271,6 +271,126 @@ pub struct ProductSettlement {
     pub group: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingNode {
+    index: usize,
+    lowlink: usize,
+}
+
+/// One Tarjan traversal over the dependency-reachable pending graph.
+struct PendingStrongComponent {
+    next_index: usize,
+    nodes: HashMap<ProductKey, PendingNode>,
+    stack: Vec<ProductKey>,
+    on_stack: HashSet<ProductKey>,
+    candidate_inventory: u64,
+    vertex_visits: u64,
+    edge_scans: u64,
+}
+
+impl PendingStrongComponent {
+    fn find(
+        memo: &ProductMemo,
+        current: &ProductKey,
+        current_dependencies: &ProductDependencies,
+        dependency: &ProductKey,
+    ) -> (Vec<ProductKey>, u64, u64, u64) {
+        let mut search = Self {
+            next_index: 0,
+            nodes: HashMap::new(),
+            stack: Vec::new(),
+            on_stack: HashSet::new(),
+            candidate_inventory: 0,
+            vertex_visits: 0,
+            edge_scans: 0,
+        };
+        if dependency != current && memo.unsettled_product_dependencies(dependency).is_none() {
+            return (Vec::new(), 0, 0, 0);
+        }
+        let members = search
+            .visit(memo, current, current_dependencies, dependency)
+            .expect("the traversal root must complete its strong component");
+        (
+            members,
+            search.candidate_inventory,
+            search.vertex_visits,
+            search.edge_scans,
+        )
+    }
+
+    fn visit(
+        &mut self,
+        memo: &ProductMemo,
+        current: &ProductKey,
+        current_dependencies: &ProductDependencies,
+        key: &ProductKey,
+    ) -> Option<Vec<ProductKey>> {
+        let index = self.next_index;
+        self.next_index += 1;
+        self.nodes.insert(key.clone(), PendingNode { index, lowlink: index });
+        self.stack.push(key.clone());
+        self.on_stack.insert(key.clone());
+        self.vertex_visits += 1;
+
+        let dependencies = if key == current {
+            Some(current_dependencies)
+        } else {
+            memo.unsettled_product_dependencies(key)
+        };
+        if dependencies.is_some() && key.kind() == current.kind() {
+            self.candidate_inventory += 1;
+        }
+        for dependency in dependencies
+            .into_iter()
+            .flat_map(|dependencies| dependencies.products.keys())
+        {
+            if dependency != current && memo.unsettled_product_dependencies(dependency).is_none() {
+                continue;
+            }
+            self.edge_scans += 1;
+            if !self.nodes.contains_key(dependency) {
+                let _ = self.visit(memo, current, current_dependencies, dependency);
+                let dependency_lowlink = self.nodes[dependency].lowlink;
+                let node = self.nodes.get_mut(key).expect("visited product node");
+                node.lowlink = node.lowlink.min(dependency_lowlink);
+            } else if self.on_stack.contains(dependency) {
+                let dependency_index = self.nodes[dependency].index;
+                let node = self.nodes.get_mut(key).expect("visited product node");
+                node.lowlink = node.lowlink.min(dependency_index);
+            }
+        }
+
+        let node = self.nodes[key];
+        if node.lowlink != node.index {
+            return None;
+        }
+
+        let mut component = Vec::new();
+        loop {
+            let member = self
+                .stack
+                .pop()
+                .expect("a strong-component root must remain on the stack");
+            self.on_stack.remove(&member);
+            let complete = member == *key;
+            component.push(member);
+            if complete {
+                break;
+            }
+        }
+        Some(component)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecursiveGroupSearch {
+    pub candidate_inventory: u64,
+    pub vertex_visits: u64,
+    pub edge_scans: u64,
+    pub cycle_closed: bool,
+    pub group_members: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ProductEntry {
     value: ProductValue,
@@ -334,74 +454,35 @@ impl ProductMemo {
         self.in_progress.contains(key)
     }
 
-    /// Does `from` reach `target` by following the dependencies of products
-    /// that have not settled?
-    ///
-    /// Both askers -- the recursive-group gate and the strong component that
-    /// gate leads to -- are asking one question: would waiting on this
-    /// dependency deadlock, because it is itself waiting on me? Only an
-    /// unsettled product can be waiting on anything. A settled one answers a
-    /// read immediately with the value it already holds, so no chain of waits
-    /// runs through it and the walk has nothing to learn by stepping into one.
-    /// `settled_products_depend_only_on_settled_products` pins the memo state
-    /// that makes ignoring them lossless rather than merely safe.
-    ///
-    /// `overlay` supplies the dependencies of a product that is mid-production
-    /// and so has none recorded in the memo yet.
-    fn dependency_reaches(
-        &self,
-        from: &ProductKey,
-        target: &ProductKey,
-        overlay: Option<(&ProductKey, &ProductDependencies)>,
-    ) -> bool {
-        let mut pending = vec![from];
-        let mut seen = HashSet::new();
-        while let Some(key) = pending.pop() {
-            if key == target {
-                return true;
-            }
-            if !seen.insert(key) {
-                continue;
-            }
-            let dependencies = match overlay {
-                Some((current, dependencies)) if key == current => Some(dependencies),
-                _ => self.unsettled_product_dependencies(key),
-            };
-            if let Some(dependencies) = dependencies {
-                pending.extend(dependencies.products.keys());
-            }
-        }
-        false
-    }
-
     /// The products that are mutually reachable with `current`: the recursive
     /// group that has to settle as one because no member can be believed
     /// before the others are.
     ///
-    /// Only unsettled products are candidates, for the same reason
-    /// `dependency_reaches` only walks them: a settled product is already
+    /// Only unsettled products are candidates: a settled product is already
     /// believed, so it is not waiting on this group and does not belong to it.
     fn pending_strong_component(
         &self,
         current: &ProductKey,
         current_dependencies: &ProductDependencies,
-    ) -> Vec<ProductKey> {
-        let overlay = Some((current, current_dependencies));
-        let mut candidates = self
-            .pending_dependencies
-            .keys()
-            .chain(self.displaced.keys())
-            .filter(|key| key.kind() == current.kind())
-            .collect::<HashSet<_>>();
-        candidates.insert(current);
-        candidates
-            .into_iter()
-            .filter(|candidate| {
-                self.dependency_reaches(current, candidate, overlay)
-                    && self.dependency_reaches(candidate, current, overlay)
-            })
-            .cloned()
-            .collect()
+        dependency: &ProductKey,
+    ) -> (Option<Vec<ProductKey>>, RecursiveGroupSearch) {
+        let (component, candidate_inventory, vertex_visits, edge_scans) =
+            PendingStrongComponent::find(self, current, current_dependencies, dependency);
+        let cycle_closed = component.iter().any(|member| member == current);
+        let members = cycle_closed.then(|| {
+            component
+                .into_iter()
+                .filter(|member| member.kind() == current.kind())
+                .collect::<Vec<_>>()
+        });
+        let search = RecursiveGroupSearch {
+            candidate_inventory,
+            vertex_visits,
+            edge_scans,
+            cycle_closed,
+            group_members: members.as_ref().map_or(0, |members| members.len() as u64),
+        };
+        (members, search)
     }
 
     fn product_dependencies_for_group(&self, key: &ProductKey) -> Option<&ProductDependencies> {
@@ -414,7 +495,7 @@ impl ProductMemo {
     /// The dependencies of `key` if `key` has not settled: either it is in
     /// flight and has recorded some, or it was displaced and is waiting to be
     /// produced again. A settled product is deliberately absent -- see
-    /// `dependency_reaches`, the only caller.
+    /// no pending wait chain can pass through it.
     fn unsettled_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
         self.pending_dependencies
             .get(key)
@@ -1589,6 +1670,12 @@ pub(crate) struct ProductReadObservation {
     pub(crate) hit: bool,
 }
 
+pub(crate) enum RecursiveProductRead<'a> {
+    Ready(&'a ProductValue),
+    Waiting,
+    Group(Vec<ProductKey>),
+}
+
 impl<'s> ProductReadContext<'s> {
     pub(crate) fn new(session: &'s mut PullSession) -> Self {
         Self {
@@ -1614,15 +1701,38 @@ impl<'s> ProductReadContext<'s> {
         self.read_product_entry(tel, key)
     }
 
-    /// Would reading `from` close a cycle back onto `target`, the product being
-    /// produced right now? A `true` answer means `from` belongs to `target`'s
-    /// recursive group and must settle with it rather than be waited on.
-    pub(crate) fn pending_dependency_reaches(&self, from: &ProductKey, target: &ProductKey) -> bool {
-        self.session.memo.dependency_reaches(from, target, None)
-    }
-
-    pub(crate) fn pending_recursive_group(&self, current: &ProductKey) -> Vec<ProductKey> {
-        self.session.memo.pending_strong_component(current, &self.dependencies)
+    /// Record the prospective read, then borrow the dependency graph for one
+    /// traversal that decides whether it closes a recursive group. Discovery
+    /// must precede stale-read normalization: the pending edges are the
+    /// evidence that the products are waiting on one another.
+    pub(crate) fn read_recursive_product(
+        &mut self,
+        tel: &impl Telemetry,
+        dependency: ProductKey,
+        current: &ProductKey,
+    ) -> RecursiveProductRead<'_> {
+        let generation = self.session.memo.generation(&dependency);
+        self.dependencies.products.insert(dependency.clone(), generation);
+        let (members, search) = self
+            .session
+            .memo
+            .pending_strong_component(current, &self.dependencies, &dependency);
+        if search.vertex_visits > 0 {
+            tel.raw_event3(
+                &["fz", "compiler2", "pull", "recursive_group", "searched"],
+                current,
+                &dependency,
+                &search,
+            );
+        }
+        if let Some(members) = members {
+            let _ = self.read_product_entry(tel, dependency);
+            return RecursiveProductRead::Group(members);
+        }
+        match self.read_product_entry(tel, dependency) {
+            Some(value) => RecursiveProductRead::Ready(value),
+            None => RecursiveProductRead::Waiting,
+        }
     }
 
     pub(crate) fn recursive_group_callable_owners(&self, members: &[ProductKey]) -> Vec<CallableConstructionOwner> {
@@ -1708,7 +1818,10 @@ impl<'s> ProductReadContext<'s> {
             let generation = self.session.memo.generation(&key);
             self.dependencies.products.insert(key.clone(), generation);
             #[cfg(test)]
-            self.product_reads.push(ProductReadObservation { key, hit: false });
+            self.product_reads.push(ProductReadObservation {
+                key: key.clone(),
+                hit: false,
+            });
             return None;
         }
         let generation = self.session.memo.generation(&key);
@@ -2121,6 +2234,242 @@ mod tests {
     use super::super::scheduler::DerivationEffects;
     use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
     use super::*;
+
+    fn prospective_dependency(dependency: &ProductKey) -> ProductDependencies {
+        ProductDependencies {
+            products: HashMap::from([(dependency.clone(), None)]),
+            facts: HashMap::new(),
+        }
+    }
+
+    /// Recursive search work is a property of the pending graph, not of the
+    /// fresh `RandomState` assigned to each memo. The side branch made the old
+    /// early-exit gate visit a variable prefix before its repeated component
+    /// scans. One traversal must inspect each reachable vertex and edge once.
+    #[test]
+    fn recursive_group_search_work_is_a_function_of_the_pending_graph() {
+        let root = RootId::for_test(81);
+        let callable = |function, value| {
+            ProductKey::CallableConstruction(TransportPosition::Value {
+                executable: executable_symbol_for_test(&fake_executable_with_function(root, function)),
+                value: ValueId::from_u32(value),
+            })
+        };
+        let current = callable(810, 0);
+        let target = callable(811, 1);
+        let detour_1 = callable(812, 2);
+        let detour_2 = callable(813, 3);
+        let detour_3 = callable(814, 4);
+
+        for _ in 0..32 {
+            let mut memo = ProductMemo::default();
+            for (key, dependencies) in [
+                (
+                    target.clone(),
+                    ProductDependencies {
+                        products: HashMap::from([(current.clone(), None), (detour_1.clone(), None)]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (
+                    detour_1.clone(),
+                    ProductDependencies {
+                        products: HashMap::from([(detour_2.clone(), None)]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (
+                    detour_2.clone(),
+                    ProductDependencies {
+                        products: HashMap::from([(detour_3.clone(), None)]),
+                        facts: HashMap::new(),
+                    },
+                ),
+                (detour_3.clone(), ProductDependencies::default()),
+            ] {
+                memo.unblock(&key, dependencies);
+            }
+
+            let (members, search) = memo.pending_strong_component(&current, &prospective_dependency(&target), &target);
+            assert_eq!(
+                members.map(|members| members.into_iter().collect::<HashSet<_>>()),
+                Some(HashSet::from([current.clone(), target.clone()]))
+            );
+            assert_eq!(
+                search,
+                RecursiveGroupSearch {
+                    candidate_inventory: 5,
+                    vertex_visits: 5,
+                    edge_scans: 5,
+                    cycle_closed: true,
+                    group_members: 2,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_group_search_matches_pending_graph_boundaries() {
+        let root = RootId::for_test(84);
+        let current = ProductKey::RuntimeDemand(fake_executable_with_function(root, 840));
+        let dependency = ProductKey::RuntimeDemand(fake_executable_with_function(root, 841));
+        let peer = ProductKey::RuntimeDemand(fake_executable_with_function(root, 842));
+        let bridge = ProductKey::RootBackendProduct(root);
+        let missing = ProductMemo::default();
+        assert_eq!(
+            missing.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency),
+            (
+                None,
+                RecursiveGroupSearch {
+                    candidate_inventory: 0,
+                    vertex_visits: 0,
+                    edge_scans: 0,
+                    cycle_closed: false,
+                    group_members: 0,
+                }
+            )
+        );
+
+        let mut self_cycle = ProductMemo::default();
+        self_cycle.unblock(&current, ProductDependencies::default());
+        assert_eq!(
+            self_cycle.pending_strong_component(&current, &prospective_dependency(&current), &current),
+            (
+                Some(vec![current.clone()]),
+                RecursiveGroupSearch {
+                    candidate_inventory: 1,
+                    vertex_visits: 1,
+                    edge_scans: 1,
+                    cycle_closed: true,
+                    group_members: 1,
+                }
+            )
+        );
+
+        let mut disjoint = ProductMemo::default();
+        disjoint.unblock(
+            &dependency,
+            ProductDependencies {
+                products: HashMap::from([(peer.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        disjoint.unblock(
+            &peer,
+            ProductDependencies {
+                products: HashMap::from([(dependency.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        assert_eq!(
+            disjoint.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency),
+            (
+                None,
+                RecursiveGroupSearch {
+                    candidate_inventory: 2,
+                    vertex_visits: 2,
+                    edge_scans: 2,
+                    cycle_closed: false,
+                    group_members: 0,
+                }
+            )
+        );
+
+        let mut cross_kind = ProductMemo::default();
+        cross_kind.unblock(
+            &dependency,
+            ProductDependencies {
+                products: HashMap::from([(bridge.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        cross_kind.unblock(
+            &bridge,
+            ProductDependencies {
+                products: HashMap::from([(current.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        let (members, search) =
+            cross_kind.pending_strong_component(&current, &prospective_dependency(&dependency), &dependency);
+        assert_eq!(
+            members.map(|members| members.into_iter().collect::<HashSet<_>>()),
+            Some(HashSet::from([current.clone(), dependency.clone()]))
+        );
+        assert_eq!(
+            search,
+            RecursiveGroupSearch {
+                candidate_inventory: 2,
+                vertex_visits: 3,
+                edge_scans: 3,
+                cycle_closed: true,
+                group_members: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn recursive_reads_record_exact_dependency_generation_on_every_outcome() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(85);
+        let current = ProductKey::RuntimeDemand(fake_executable_with_function(root, 850));
+        let missing = ProductKey::RuntimeDemand(fake_executable_with_function(root, 851));
+        let ready = ProductKey::RuntimeDemand(fake_executable_with_function(root, 852));
+        let cyclic = ProductKey::RuntimeDemand(fake_executable_with_function(root, 853));
+        let mut session = PullSession::new(root);
+
+        {
+            let mut context = ProductReadContext::new(&mut session);
+            assert!(matches!(
+                context.read_recursive_product(&tel, missing.clone(), &current),
+                RecursiveProductRead::Waiting
+            ));
+            assert_eq!(context.dependencies.products.get(&missing), Some(&None));
+        }
+
+        finish_test_product(&mut session.memo, &ready, ProductValue::Unit, []);
+        assert_eq!(
+            session
+                .memo
+                .pending_strong_component(&current, &prospective_dependency(&ready), &ready),
+            (
+                None,
+                RecursiveGroupSearch {
+                    candidate_inventory: 0,
+                    vertex_visits: 0,
+                    edge_scans: 0,
+                    cycle_closed: false,
+                    group_members: 0,
+                }
+            )
+        );
+        {
+            let mut context = ProductReadContext::new(&mut session);
+            assert!(matches!(
+                context.read_recursive_product(&tel, ready.clone(), &current),
+                RecursiveProductRead::Ready(ProductValue::Unit)
+            ));
+            assert_eq!(context.dependencies.products.get(&ready), Some(&Some(1)));
+        }
+
+        session.memo.unblock(
+            &cyclic,
+            ProductDependencies {
+                products: HashMap::from([(current.clone(), None)]),
+                facts: HashMap::new(),
+            },
+        );
+        let mut context = ProductReadContext::new(&mut session);
+        let RecursiveProductRead::Group(members) = context.read_recursive_product(&tel, cyclic.clone(), &current)
+        else {
+            panic!("the prospective edge should close the pending cycle");
+        };
+        assert_eq!(
+            members.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([current, cyclic.clone()])
+        );
+        assert_eq!(context.dependencies.products.get(&cyclic), Some(&None));
+    }
 
     fn fact_movement(key: FactKey, revision: Option<u64>, settled: bool) -> FactMovement<FactKey> {
         FactMovement {
