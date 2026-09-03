@@ -13,11 +13,15 @@
     {
       "text": "fz-kdt.183 landed (2e0bb2706): a new cost to own. InputDemand is a fact that MOVES: a function whose forwarding cone is still filling publishes a demand that climbs the lattice, and every activation keyed off it rebases. Three lenses: shift wakes 17 -\u003e 30 / 1 -\u003e 5 / 6 -\u003e 25; rebased completions 19 -\u003e 127 / 2 -\u003e 22 / 10 -\u003e 77; AnalyzeActivation +4/+11/+10; uncaused empty throughout. DeriveInputDemand ran exactly 2x per function at base; now long-tailed (max 17 on one function) because the cone walk restarts from scratch on every re-entry. Bounded by lattice height and cone depth; settling the demand before the first key is minted is the cure. ALSO ungated: World's evidence-collapse read of forwarded_dispatch -- flipping it to local_dispatch moves nothing on 597 fixtures (0 canon movers, 5282 executables). Either the read is inert (fold-concordant: delete it) or the corpus lacks the shape; decide with a witness, not a comment.\n",
       "timestamp": "2026-09-03T12:16:44Z"
+    },
+    {
+      "text": "fz-kdt.179 landed (c3e27143d) and FOLDED YOUR STEP 1: member selection now runs through routable_alternatives, so the static seat census is retired. Deleted here: the seat gate (compiler2_dispatch_seats_the_covering_arm_where_one_covers) + SELECTION_SEAT_ALLOWANCE; BLIND_ESCAPE_POPULATION, BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT, BLIND_ESCAPE_PAIRS_BY_ARM_ORDER. The blind-escape gate is now an assert-empty ratchet (proven non-vacuous: inject an escape → it fails and the tripwire returns to 12). The law lives in specificity_order's debug_assert as you specified. STILL OPEN (your steps 2-4): SURFACE_MEMBERSHIP_CENSUS is kept as an all-zero ratchet (step 4 -- decide whether the dynamic tripwire is redundant now); INDISTINGUISHABLE_ARM_POPULATION stays at 44 (fz-kdt.107's named residue, not retired); the ARM_ORDER_CENSUS corpus walks (your ~120s prize) are untouched. Re-scope this ticket to what remains.\n",
+      "timestamp": "2026-09-03T16:08:44Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Retire the static seat census once member selection runs through the seat: the law lives in specificity_order's debug_assert, the census keeps only the named residue",
   "type": "task",
-  "updated_at": "2026-09-03T12:16:44Z"
+  "updated_at": "2026-09-03T16:08:44Z"
 }
