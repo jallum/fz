@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T04:10:55Z",
+  "description": "From the fz-kdt.120 research (2026-09-02, d2a5f3510). A free type variable\nintersects every concrete kind to `none`, so a union member that carries one\nis silently DELETED:\n  {:cont,{[int],int}} | {:halt,{[int],int}}  ∩  ({:cont,b} | {:halt,c})          = none\n  {:cont,{[int],int}} | {:halt,{[int],int}}  ∩  ({:cont,{[int],int}} | {:halt,c}) = {:cont,{[int],int}}   \u003c- :halt arm gone\n  (int,{[int],int}) -\u003e {:cont,..}|{:halt,..}  ∩  (a,b) -\u003e {:cont,b}|{:halt,c}     = (int | a0, a1 | {[int],int}) -\u003e none\njobs/semantic.rs refine_contract_inputs guards only the WHOLE-input empty case\n(if is_empty(refined) { input }), so the partial erasure passes as a\n\"refinement\", keys the callee's activation on the narrowed row, and the callee's\nentry_dispatch loses the arm. Measured consequence (prototype with facts-only\ncontract params): List.reduce_while_step/3 keyed [.., {:cont,{list,int}}, ..]\ninstead of [.., {:cont,{list,int}} | {:halt,{list,int}}, ..], its entry_dispatch\nlost the whole :halt arm (46 canon lines) and Enum.take([1,2,3,4,5], 3)\nprinted the whole list -- 15 behaviour movers, all early-halt (take, find,\nfind_index, count, reduce_while). contract.rs narrow_args_to_clause ALREADY\nskips var-carrying positions (:232); refine_contract_inputs does not: two\nsibling narrowing paths of one feature disagree. WARNING: adding the same skip\nto refine_contract_inputs alone at HEAD takes 00277_enum_tier0_fixture from\ngreen to rc=101 -- HEAD's correctness currently DEPENDS on narrowing closure\narguments by a var-carrying arrow surface. Direction: Types::intersect must\ntreat a free variable as `any` for the purpose of set operations (a variable\ndenotes an unknown SUBSET, and intersecting with an unknown cannot delete),\nor refuse the operation; then the guard becomes unnecessary and the 00277\ndependency must be understood (what does it rely on?). Blocks the principled\nfacts-only parameter policy for @spec instantiation (fz-kdt.120's residue).",
+  "id": "fz-kdt.181",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "Types::intersect deletes a union member whose surface member carries a free type variable, and refine_contract_inputs consumes the erasure as a refinement",
+  "type": "task",
+  "updated_at": "2026-09-03T04:10:55Z"
+}
