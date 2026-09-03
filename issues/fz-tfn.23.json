@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.175"
+  ],
   "blocks": [
     "fz-tfn.5"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Correct readiness telemetry after direct ExecutableFacts scheduling",
   "type": "bug",
-  "updated_at": "2026-09-03T11:08:42Z"
+  "updated_at": "2026-09-03T11:33:47Z"
 }
