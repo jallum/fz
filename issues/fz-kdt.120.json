@@ -14,5 +14,5 @@
   "status": "open",
   "title": "A @spec variable is a lower bound and a fact only when every positive occurrence contributed: the empty-list ambiguity drop goes, dbg([]) is [], and dead_closure_capture_empty_list converges",
   "type": "task",
-  "updated_at": "2026-09-03T04:45:47Z"
+  "updated_at": "2026-09-03T11:05:33Z"
 }
