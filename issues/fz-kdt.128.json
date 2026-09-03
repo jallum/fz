@@ -22,7 +22,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A dispatch arm must not name a callee whose ABI the caller cannot satisfy",
   "type": "task",
   "updated_at": "2026-09-03T00:02:13Z"
