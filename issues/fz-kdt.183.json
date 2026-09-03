@@ -19,11 +19,15 @@
     {
       "text": "RESEARCH DONE, RULE PROTOTYPED (2026-09-03, proto183r.diff in the coordinator's scratchpad, being cold-reviewed). demand(f,i) = local(f,i) ⊔ ⨆{demand(g,j) : f forwards i to g@j} over the DispatchDemand lattice; forwarded = a direct-call tail arg equal to a clause param (projections/constructions/closure calls/captures are opaque); protocol callbacks forward to every implementation (FactKey::ProtocolDispatch); one job walks the forwarding cone and runs the Kleene least fixpoint; convergence_class_at keeps the element only where demand arrives (keep_elements). MEASURED (base 8de517a28): repro183 [1, 1]/[0, 1] and fz-kdt.122's oracle [12, 11]/[\"b!\", \"a!\"] on three doors in both orders; partition/4 stays ONE activation (17 execs), freight loop(n, junk) ONE, split3/4 ONE; corpus interp/run 0 movers; executables 5297 -\u003e 5282; FIFO/LIFO movers 2 -\u003e 1 (0 with 120 stacked; LIFO execs = FIFO); blind-escape census 48 -\u003e 29 (dispatch_list_head_separates and both enum_predicate_search entries retire); seat findings 73 -\u003e 29; twins per site -\u003e 1; 179's dynamic reproducer (enum_predicate_search arms:6) 1 -\u003e 0; blind-shared 146 -\u003e 136 (reduce_step/3 gone); wall clock 00420 1883 -\u003e 1334 ms, enum_predicate_search 729 -\u003e 366 ms; DeriveCallGraphComponent evaluations 134 -\u003e 126; the four old-law keying tests and both quicksort gates UNMOVED (E' moved all of them); lib 1605/8/5 (2 re-pins, 5 cures, 1 vacuous gate), matrix 485/0/9; with 120 stacked enum_map_family/enum_tier0/fz_f98_map_reduce byte-equal to expected. RESIDUE: b1n/b2n/b4 (identical driver + seed, different lambda: only the a2 slot differs) still panic -- the minimal pair (kdt122 cured, b1n not) proves they are fz-kdt.165's callable axis, not this ticket's; rung census 53/15 -\u003e 58/16: six rungs at accumulator slots genuinely forwarded into a dispatch (Map.to_list/4 + Map.reverse/2, Range.slice_from/5 + Range.reverse/2, dbg/1 + fz_dbg_value/1 on 00277) -- the rule's own law, one accumulator per function, not 2^k; the 'must not grow' acceptance is under review (restate to 'no rung on a freight slot' vs the pre-existing empty_list()/list(τ) non-convergence at demanded slots as its own item). Composition with 165: one cone walk, two demand axes (InputDemand { dispatch, identity }); erase_transported_closure_identities keys brand erasure off DispatchDemand::Ignore -- a dispatch-axis/callable-axis coupling to move to the identity axis.",
       "timestamp": "2026-09-03T09:00:00Z"
+    },
+    {
+      "text": "Commit rewritten 2e0bb2706 -\u003e 985406f7e (2026-09-03): CI ran `cargo test --workspace --doc` and the derive_input_demand doc comment in jobs/keying.rs carried an indented formula rustdoc treated as a doctest. It is a ```text block now, folded into fz-kdt.183; fz-kdt.198 replayed on top unchanged (tree diff between the two heads is that one doc line). The coordinator gate now runs the doctests.",
+      "timestamp": "2026-09-03T13:38:13Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "A recursive activation key keeps a list element wherever demand reaches it -- through forwarding, not everywhere -- so one Enum.reduce/3 user cannot publish another user's return",
   "type": "task",
-  "updated_at": "2026-09-03T12:16:38Z"
+  "updated_at": "2026-09-03T13:38:13Z"
 }
