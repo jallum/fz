@@ -23,11 +23,15 @@
     {
       "text": "Sequence update (2026-09-03): fz-kdt.183 LANDED (2e0bb2706, independent of this ticket; it does not touch arrow_match.rs), fz-kdt.124 CLOSED as refuted. Live order is now 198 -\u003e 192 -\u003e 184 -\u003e 120. 192 is built and refuted (bcca85148 on wt/kdt192-build, waiting only on 198), so this ticket re-cuts on THAT commit: the builder must re-measure R20 there before deciding whether \"never record an upper bound of none\" is still needed (192 folded D1 and made the witness the raw argument, which changes where a `[]` under an arrow parameter is read from). R2 stays the red-first witness.",
       "timestamp": "2026-09-03T12:18:18Z"
+    },
+    {
+      "text": "fz-kdt.192 landed (343f3a134): base for this ticket's re-cut. The re-cut must DELETE: the `args` parameter on instantiate_match and the second full walk per position (192 has one walk over (params, args)); the discarded position.upper / observed.lower from that walk and the dropped MatchWitness with no `let _`; every match_witness / overlapping_witnesses edit; the \"upper bounds from the raw ARGUMENTS\" doc paragraph. Fix 2 (\"never record an upper bound of none\") is STRUCK -- its witness R20 is Underconstrained here. Fix 3 collapses to a one-line `if !has_vars(witness)` guard on the position. \"Promote R2 as the gate's red-first witness\" is SUBSUMED: R2 is already Invalid at 192 (reached with no polarity machinery), so the polarity split's red-first witnesses are A4 (unsound (any)-\u003enil → (int)-\u003enil) and A5 (false Invalid → Known int); the solvability gate ships on the theorem and its ablation. The pin literals this ticket updates live in pinned_verdicts (52 pins in arrow_match.rs + 4 in contract_test.rs).\n",
+      "timestamp": "2026-09-03T14:15:41Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A @spec variable collects lower bounds from covariant occurrences and upper bounds from contravariant ones: instantiation is the join of the lowers, the meet of the uppers is the solvability check",
   "type": "task",
-  "updated_at": "2026-09-03T12:18:18Z"
+  "updated_at": "2026-09-03T14:15:41Z"
 }
