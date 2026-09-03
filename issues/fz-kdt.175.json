@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.24"
+  ],
   "blocks": [
     "fz-tfn.23"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "fixture_matrix's FIXTURE_COMMAND_TIMEOUT (3s wall clock) is a contention tripwire: polymorphic::build flaked under a parallel corpus sweep",
   "type": "task",
-  "updated_at": "2026-09-03T11:34:34Z"
+  "updated_at": "2026-09-03T11:37:38Z"
 }

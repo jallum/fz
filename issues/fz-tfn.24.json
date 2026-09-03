@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.175"
+  ],
   "created": "2026-09-03T11:37:33Z",
   "description": "## Goal\n\nRestore the fz_f98_range_map_converges run-path compiler and execution work budget after the RuntimeDemand cutover before changing any fixture timeout policy.\n\n## CI evidence\n\nUnder the same GitHub cargo llvm-cov job, the elapsed interval ending at matrix::fz_f98_range_map_converges::run was approximately:\n- main a3a9761d1: 1.47s, pass\n- fz-kdt.47 b533b965: 3.02s, timeout\n- fz-tfn.3 8859a37f: 2.95s, pass just under the limit\n- fz-kdt.72 c7235335: 3.02s, timeout\n- fz-tfn.17 548dbd87: 3.02s, timeout\n- fz-kdt.45 446374021: 2.25s, pass\n\nThe first epic commit therefore introduced a material regression; later direct ExecutableFacts work recovers only part of it. The three-second gate is currently detecting real movement and must not be raised first.\n\n## Strategy and TDD\n\n1. Reproduce main versus each epic commit with identical instrumentation and repeated clean runs.\n2. Compare deterministic scheduler evaluations, product settlements/evaluations/cache behavior, RuntimeDemand work, semantic facts, backend/native body and byte counts, and runtime output.\n3. Identify the first additional work introduced by fz-kdt.47 and trace it to exact formula/dependency ownership.\n4. Add a work-budget regression that fails on the current epic head and passes only when the extra work is removed.\n5. Remove or fold the redundant work at its authoritative data-model boundary; do not special-case this fixture or relax a time limit.\n6. Prove outputs/artifacts and determinism unchanged, and run target three doors, full library, serial matrix, fz2_cli, strict clippy and formatting.\n\n## Acceptance\n\nCurrent epic head returns to mainline-or-better deterministic work counts and a comparable instrumented run distribution. Any remaining wall-clock variance must be explained by equal-or-lower work before fz-kdt.175 may reconsider the hang guard.",
   "id": "fz-tfn.24",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Restore range-map work budget after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-03T11:37:33Z"
+  "updated_at": "2026-09-03T11:37:38Z"
 }
