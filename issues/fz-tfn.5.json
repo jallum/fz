@@ -6,14 +6,15 @@
   "blocks": [
     "fz-tfn.6"
   ],
+  "closed_at": "2026-09-03T13:22:53Z",
   "created": "2026-09-03T08:00:19Z",
   "description": "## Goal\n\nMake the published `Activation(entry)` edge the sole ignition path for root analysis and delete `demand_root_entry_analyses`.\n\n## Evidence\n\nEvery concluding `SeedRoot` publishes `Activation(entry)`, and `World::complete_job` immediately records that key in the activation frontier. In the 00420 trace, all three root conclusions had `activation_frontier = 1`; nevertheless `StandingRootFrontier` started exactly three analyses because the root scanner runs first and the already-recorded activation demand then coalesces. The scanner clones retained root entries, rechecks keying gates, and reconstructs activation keys at eligible drains. Retained macro roots make this scan grow with compiler lifetime.\n\n## Strategy and proof\n\n1. Add a temporary A/B probe that disables only the standing-root scan.\n2. Prove bare drive, product pull, macro-root compilation, retraction/reappearance, determinism, and the fixture matrix retain identical facts, products, artifacts, and runtime output.\n3. Require the three measured starts to transfer from `StandingRootFrontier` to the activation path with no extra evaluations.\n4. Delete `demand_root_entry_analyses`, `RootMap::ids` / `World::root_ids` if unreferenced, the work-start reason and counter, stale comments, and the temporary probe.\n5. Run full tests and strict clippy.\n\nDo not preserve a second root-specific ignition path.",
   "id": "fz-tfn.5",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete the duplicate standing-root activation scanner",
   "type": "task",
-  "updated_at": "2026-09-03T11:08:06Z"
+  "updated_at": "2026-09-03T13:22:53Z"
 }
