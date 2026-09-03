@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-qon.4"
   ],
@@ -12,7 +12,7 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete the obsolete nominal-environment type carrier",
   "type": "task",
   "updated_at": "2026-09-03T03:24:59Z"
