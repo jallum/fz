@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T07:15:51Z",
+  "description": "From the fz-kdt.178 refutation (2026-09-03, 8de517a28). Three reader gaps in\ndrive_test.rs, all pre-existing (seated_arm_surfaces is older than 178):\n(1) blind_escapes bails on `early.len() != late.len()` -- the census compares\nsubject MAPS, so a pair of arms that question DIFFERENT subject sets is\nsilently skipped, while production callsite_dispatch::covers (~:305) walks\nevery position of the full question vector and judges it. Any plan where two\narms ask about different numbers of subjects: the test reports nothing,\nproduction seats it. (2) separated_somewhere iterates only the subjects\npresent in `early`; a separating subject present only in `late` is never\nconsulted (masked today by (1)'s length guard). (3) Site keys: `executable N`\nand case/receive `e\u003cN\u003e` are positional indexes that renumber on unrelated\nsource edits (ratchet rows churn); `w\u003cN\u003e` (wrapper.identity) does not -- but\nthe canon dump (--dump backend=) renumbers wrappers canonically, so dump wN !=\ncensus wN, and a reader following \"w10, w11, w20\" from the docs into a dump\nlands on the wrong wrapper. FIX: the reader reads the plan's full question\nvector per arm (positions, not subject maps) so it mirrors covers exactly and\nno pair is skipped; separation is judged over the union of both arms'\npositions; site keys are the STABLE identities (wrapper.identity, and an\nexecutable's canonical key label instead of its index), and the docs name\nwrappers by the identity the dump prints (or the dump prints the identity).\nMeasure how many pairs the length guard skipped on the 22 census fixtures\nbefore/after.",
+  "id": "fz-kdt.193",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The static census reader skips arm pairs that ask different subject sets and consults separating subjects only on the earlier arm, where production covers walks the full position vector; and dump wrapper numbers differ from census wrapper numbers",
+  "type": "task",
+  "updated_at": "2026-09-03T07:15:51Z"
+}
