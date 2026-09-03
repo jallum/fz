@@ -7,9 +7,15 @@
   "id": "fz-kdt.187",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "BOTH GAPS ARE NOW PINNED NUMBERS (fz-kdt.178, 8de517a28). (1) SOURCE_ORDER_PLANS_ON_THE_CENSUS pins (kind, plans, unreadable): entry 144 / 137, case 3 / 3, receive 2 / 0 (the refuter found the case and receive plan kinds the first cut missed); the unreadable variants are Region::List, TupleArity, Guard, Equal, printed by the census gate; SOURCE_ORDER_BLIND_ESCAPES reads 0 over the readable ones. Reading Region::List and TupleArity (shape tests) would bring most of the unreadable entries into the census. (2) The dynamic report's missing site is stated in dispatch-matrix.md and SURFACE_MEMBERSHIP_CENSUS's doc: the static census names ten escaping wrappers on 00277 (w10, w11, w20 with four members; w13-w19 with eleven) and the twelve dynamic escapes cannot be attributed among them until observe prints its PlanSite.",
+      "timestamp": "2026-09-03T07:22:44Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "The dynamic tripwire prints no plan site and the static census silently skips 82.5% of entry plans: name the wrapper/callsite in the escape report and read Region::List questions",
   "type": "task",
-  "updated_at": "2026-09-03T05:28:09Z"
+  "updated_at": "2026-09-03T07:22:44Z"
 }
