@@ -18,33 +18,6 @@ pub use closure::{CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarg
 pub use literal::LiteralTypes;
 pub use map::MapKey;
 
-/// A borrowed view of a module's nominal environment: the brand- and
-/// opaque-tag inner-type maps. They are only ever consulted together — to
-/// discharge a tag to its runtime representation — so they travel as one
-/// value rather than two parallel parameters.
-pub struct Nominals<'a, T> {
-    pub brand_inners: &'a HashMap<String, T>,
-    pub opaque_inners: &'a HashMap<String, T>,
-}
-
-// Hand-rolled so the `Copy` bound lands on the references, not on `T`
-// (a derive would demand `T: Copy`, which `Descr`/`Ty` are not).
-impl<T> Clone for Nominals<'_, T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T> Copy for Nominals<'_, T> {}
-
-impl<'a, T> Nominals<'a, T> {
-    pub fn new(brand_inners: &'a HashMap<String, T>, opaque_inners: &'a HashMap<String, T>) -> Self {
-        Self {
-            brand_inners,
-            opaque_inners,
-        }
-    }
-}
-
 pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
@@ -229,15 +202,8 @@ pub trait Types {
     /// Brand-BLIND disjointness in the runtime-representation model: true iff
     /// no two runtime values of `a`/`b` can ever be equal / match. The ONLY
     /// disjointness that may authorize folding `==`/`!=` or pruning a pattern
-    /// arm. Tags are discharged through `nominals`.
-    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool;
-    /// True iff `a`/`b` are brand-AWARE disjoint yet NOT value-disjoint: they
-    /// differ only by a brand/opaque the runtime erases. This is exactly the
-    /// set of comparisons the old brand-aware fold broke; consumers emit a
-    /// telemetry signal on it.
-    fn differs_only_nominally(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool {
-        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, nominals)
-    }
+    /// arm. The type value carries the nominal structure needed to answer.
+    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
     fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
         a == b || (self.is_subtype(a, b) && self.is_subtype(b, a))
     }

@@ -107,8 +107,8 @@ pub use source::{
 };
 pub(crate) use types::TyCanon;
 pub use types::{
-    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, Nominals, OpaqueVisibilityError, Sigma,
-    Ty, TypeVarId, Types,
+    CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, MapKey, OpaqueVisibilityError, Sigma, Ty,
+    TypeVarId, Types,
 };
 pub(crate) use world::JobCompletion;
 pub use world::World;
