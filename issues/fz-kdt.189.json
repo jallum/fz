@@ -8,9 +8,15 @@
   "id": "fz-kdt.189",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CLOSED AS FOLDED into fz-kdt.165 (2026-09-03): same idea (callable-identity key demand per input and reachable entry); the facts measured here are recorded there.",
+      "timestamp": "2026-09-03T08:19:02Z"
+    }
+  ],
   "priority": 2,
   "status": "closed",
   "title": "The callable slot of a recursive activation key stays blind (a2): naming the reducer is blocked behind the multi-target-closure arg-floor, and Enum.reduce_while/3 collapses seven lambdas into one key",
   "type": "task",
-  "updated_at": "2026-09-03T08:19:01Z"
+  "updated_at": "2026-09-03T08:19:02Z"
 }
