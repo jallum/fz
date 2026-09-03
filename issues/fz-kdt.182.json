@@ -10,6 +10,12 @@
   "id": "fz-kdt.182",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "CLOSED AS DUPLICATE of fz-kdt.48 (2026-09-03); the measurements are recorded there.",
+      "timestamp": "2026-09-03T08:19:04Z"
+    }
+  ],
   "priority": 3,
   "status": "closed",
   "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
