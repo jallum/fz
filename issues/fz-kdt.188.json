@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T05:49:54Z",
+  "description": "From the fz-kdt.183 research (2026-09-03, d2a5f3510). jobs/semantic.rs\nmerge_call_targets (:2016) treats two coalesced targets as one when\nsame_call_target (:2049) says callee == callee \u0026\u0026 activation == activation,\nthen joins their inputs COLUMN-WISE via merge_summary_input_vec (:2074,\ncurrent[slot] = union(current[slot], next)); rebuild_coalesced_call_emission\n(:1159) re-mints from that blended vector and contributes it as an\nActivationInputRow (:1245) beside the walked rows. That is the Cartesian\ncombination ActivationInputRow's own doc (semantic.rs:792-796) says the type\nexists to make unrepresentable -- and it fires exactly when the callee key is\nBLIND (two rows keying one activation), so the blend turns key blindness into\npublished evidence. Candidate C in the research (3 lines: stop contributing\nthe blend) measured 0 behaviour movers, 12 canon movers, executables +48,\nand does not cure the false return fact by itself (repro183 then dies with\ncompiler2_unreachable_control) -- a correctness cleanup on its own terms.\nSequence AFTER fz-kdt.183's key fix (fewer blind keys =\u003e fewer blends to\ndelete; measure the executable delta then).",
+  "id": "fz-kdt.188",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "merge_summary_input_vec synthesizes a Cartesian activation-input row from coalesced call targets, the row type ActivationInputRow exists to forbid",
+  "type": "task",
+  "updated_at": "2026-09-03T05:49:54Z"
+}
