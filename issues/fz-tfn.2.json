@@ -15,11 +15,15 @@
     {
       "text": "TDD implementation ready for cold review (uncommitted). Red: focused five-node pending graph failed on legacy early-exit reach work with left=1/right=5. Design deletes the separate reachability gate and repeated per-candidate SCC walks; one Tarjan traversal includes the prospective current-\u003edependency edge, so it simultaneously detects the cycle and returns its members. Across 32 fresh RandomState memos the report is exact: candidate_scans=5, reached_candidates=2, dependency_reach_visits=5; a naive exhaustive-per-candidate rewrite would cost 41 SCC visits plus a separate gate. Checks: pull tests 31/31; full lib 1587 passed/5 ignored; target fixture interp/run/build 9/9; fz2_cli causal cross-process pass; clippy all-targets -D warnings pass; git diff --check pass. fz-kdt.5 must retain its JSONL/causal wiring and rerun its three-fixture cross-process acceptance after applying this structural diff.",
       "timestamp": "2026-09-03T02:11:06Z"
+    },
+    {
+      "text": "Post-fz-kdt.47 evidence: RuntimeDemand formula values, requested products, settled product sets, search-shape totals, and backend artifacts are stable across processes, but the current eager cone/product interaction closes different exact pending SCC member sets (union-typed versus narrower CallableConstruction activations). This is not a Ty alias defect and cannot be repaired by choosing a canonical resolver or folding activation identity. Reactive per-executable RuntimeDemand in fz-kdt.4 must remove the schedule-dependent pending graph before this ticket can require exact stable group membership. The raw causal ledger and focused red subprocess oracle are preserved.",
+      "timestamp": "2026-09-03T07:52:11Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "[BUG] Make recursive-group discovery work reproducible across process hash seeds",
   "type": "bug",
-  "updated_at": "2026-09-03T02:41:54Z"
+  "updated_at": "2026-09-03T07:52:11Z"
 }
