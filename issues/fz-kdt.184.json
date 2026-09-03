@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T04:45:45Z",
+  "description": "From the fz-kdt.120 cold review (2026-09-03, d2a5f3510), attacks A3/A4/A5/A13\nin types/arrow_match.rs. collect_arrow_match descends into an arrow pattern's\nparameters with the polarity FLIPPED for openness (OpenVars in 120's\nprototype) but passes the SAME sigma, so a parameter witness contributes a\nbinding as if it were a lower bound:\n  A3  reduce([a], b, (a,b)-\u003eb) :: b @ ([int], [], (any,[int])-\u003e[int]): a := int U any = any\n  A13 filter(t(a), (a)-\u003eany) :: [a] @ ([int], (any)-\u003ebool): result [any], not [int]\n  A4  f(a, (a)-\u003enil) :: (a)-\u003enil @ (int, (any)-\u003enil): Known (any)-\u003enil -- UNSOUND\n      (the honest answer is (int)-\u003enil, a SUPERTYPE of every legal (a)-\u003enil;\n      (any)-\u003enil claims the produced function accepts values the callee never\n      promised)\n  A5  f(a, (a)-\u003enil) :: a when a: integer @ (int, (any)-\u003enil): Invalid -- a\n      FALSE spec violation on a legal call (the bound check reads the polluted\n      union)\nAll pre-existing (HEAD and prototype agree). Latent today: no @spec in\nsrc/modules/runtime_library/ or fixtures2/ has an arrow in its RESULT; A13 is\na precision loss on filter/reject/take_while/drop_while/split_with whenever the\npredicate's arrow has an any parameter. The arrow_match.rs module doc (~28-32,\n~263-266) already claims \"only the arrow's RESULT feeds the union\" -- false of\nthe code. FIX: collection becomes polarity-aware (a negative occurrence records\nan upper bound in its own map; the instantiation of a variable is the join of\nits lower bounds, checked against the meet of its upper bounds; a variable\nwith only upper bounds instantiates to that meet in result positions). Red-\nfirst: A4 and A5 as unit tests. Sequence: before fz-kdt.120 (so 120's doc\ntheorem is true of the code it lands on).",
+  "id": "fz-kdt.184",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "merge_subst_union collects an arrow parameter (an upper bound) into the same union as a return (a lower bound): a @spec variable in a contravariant result position instantiates unsoundly",
+  "type": "task",
+  "updated_at": "2026-09-03T04:45:45Z"
+}
