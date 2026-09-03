@@ -24,11 +24,15 @@
     {
       "text": "fz-kdt.132 ripple (2026-09-02): fz-kdt.147 is RETIRED — the 268-escape census its quality-dimension note was built on is EMPTY under every legal wrapper order (the order only ever chose which uncovering member took values; coverage is now correct by construction). This ticket's canonical-edge-order fix therefore has NO escape-minimization dimension left: the goal is pure schedule CONFLUENCE again (enum_map_family's 1170-line FIFO/LIFO gap, the last big one), and any deterministic canonical order on flow.first_class_edges upstream of the members/selection weld suffices. Pick the simplest sound key (cmp_ty-based, per the kdt.101/129 instruments).",
       "timestamp": "2026-09-02T08:23:51Z"
+    },
+    {
+      "text": "fz-kdt.194 landed (04a10fb51): the canonical tie-break for separated arm pairs also fires on construction-wrapper member selection (fz-kdt.179 routed members through the same seat), and it strictly REDUCES your monotonicity violations rather than adding any -- measured 20 -\u003e 6, 202 -\u003e 192, 212 -\u003e 198, and 234/234 unchanged at settled. Worth knowing because your gate runs only where the repair never fires, so that concordance is now measured rather than assumed. The two keys are stated explicitly at the seam: the observable envelope versus surface_inputs.\n",
+      "timestamp": "2026-09-03T19:30:25Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Give the callable-flow construction wrapper one canonical edge order: the last big schedule gap closed",
   "type": "bug",
-  "updated_at": "2026-09-02T15:39:39Z"
+  "updated_at": "2026-09-03T19:30:25Z"
 }
