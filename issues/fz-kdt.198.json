@@ -20,11 +20,15 @@
     {
       "text": "Commit rewritten 4c3fa4c63 -\u003e cad78d87f (2026-09-03): CI ran `cargo test --workspace --doc` and the derive_input_demand doc comment in jobs/keying.rs carried an indented formula rustdoc treated as a doctest. It is a ```text block now, folded into fz-kdt.183; fz-kdt.198 replayed on top unchanged (tree diff between the two heads is that one doc line). The coordinator gate now runs the doctests.",
       "timestamp": "2026-09-03T13:38:14Z"
+    },
+    {
+      "text": "fz-kdt.192 landed (343f3a134) rebased ONTO fz-kdt.198. The two pins now hold the POST-198 answers, not the inverted ones: x5_branded_argument_at_a_ground_pattern_field is accepting (display Meters(int); is_subtype(Meters(int), int) TRUE; verdict Known params=[{int, binary}] result=binary) and cites \"utf8 \u003c: binary\" in set-theoretic-types.md; x5b_bare_argument_at_a_branded_pattern_field is Invalid -- a bare int is rejected at a Meters(int) field by 192's raw-argument gate (198 alone left it Known; that flip was 192's red-first signal). The gate is not brand-blind: it reads the argument and 198's lattice answers.\n",
+      "timestamp": "2026-09-03T14:15:42Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "[BUG] The brand lattice is inverted (int \u003c: Meters, Meters ⊄ int): brands become a refinement FACTOR over the kind axes so the documented law `utf8 \u003c: binary` holds by construction",
   "type": "task",
-  "updated_at": "2026-09-03T13:38:14Z"
+  "updated_at": "2026-09-03T14:15:42Z"
 }
