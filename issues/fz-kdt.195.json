@@ -7,9 +7,15 @@
   "id": "fz-kdt.195",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "SUPERSEDED IN SCOPE by fz-kdt.196 (2026-09-03): after fz-kdt.179 the seat gate and the corpus order walk are deleted and the census collapses to a residue ratchet compiled once per carrier, which removes most of the cost this ticket would cache; keep this open only if the residue ratchet still needs the seven-arrival drive.",
+      "timestamp": "2026-09-03T08:50:41Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "The static dispatch gates recompile the same 22 census fixtures per gate and per stress setting: 160-230 s of the 221 s lib run is repeated compilation, and no relation change can be timed",
   "type": "task",
-  "updated_at": "2026-09-03T08:28:16Z"
+  "updated_at": "2026-09-03T08:50:41Z"
 }
