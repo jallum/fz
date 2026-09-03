@@ -282,9 +282,23 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     }
 
     fn product_backend_program_for_root(&mut self, root: RootId) -> Result<BackendProgram, String> {
-        let (program, driver) = self.drive_root_backend_product(root)?;
-        driver.finish_session();
-        Ok(program)
+        const STARTED: &[&str] = &["fz", "compiler2", "backend_request", "started"];
+        const FINISHED: &[&str] = &["fz", "compiler2", "backend_request", "finished"];
+        if self.telemetry.is_raw_event_enabled(STARTED) {
+            self.telemetry.raw_event2(STARTED, &self.world, &root);
+        }
+        let result = self.drive_root_backend_product(root).map(|(program, driver)| {
+            driver.finish_session();
+            program
+        });
+        if self.telemetry.is_raw_event_enabled(FINISHED) {
+            if let Ok(program) = &result {
+                self.telemetry.raw_event3(FINISHED, &self.world, &root, program);
+            } else {
+                self.telemetry.raw_event2(FINISHED, &self.world, &root);
+            }
+        }
+        result
     }
 
     /// Drives one root to its `BackendProgram` through the guarded product

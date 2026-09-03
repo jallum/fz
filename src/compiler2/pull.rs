@@ -5,8 +5,10 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
@@ -26,6 +28,28 @@ use super::semantic::{CallableFlowEdge, CallableSurface, ExecutableRuntimeDemand
 use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
 use super::world::World;
+
+static NEXT_PULL_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+const SESSION_STARTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
+const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
+const PRODUCT_REQUESTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
+const PRODUCT_EVALUATED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
+const PRODUCT_COPUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
+const RECURSIVE_GROUP_PUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
+
+fn causal_product_events_enabled(tel: &impl Telemetry) -> bool {
+    [
+        PRODUCT_REQUESTED_EVENT,
+        PRODUCT_EVALUATED_EVENT,
+        PRODUCT_COPUBLISHED_EVENT,
+        RECURSIVE_GROUP_PUBLISHED_EVENT,
+    ]
+    .into_iter()
+    .any(|event| tel.is_raw_event_enabled(event))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PullSessionId(pub u64);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InputSlot {
@@ -655,6 +679,7 @@ impl ProductMemo {
     fn finish_completion(
         &mut self,
         tel: &impl Telemetry,
+        emit_causal: bool,
         requested: &ProductKey,
         mut completion: ProductCompletion,
         types: &super::types::Types,
@@ -690,7 +715,7 @@ impl ProductMemo {
                     self.produced.remove(requested);
                     return false;
                 }
-                self.commit_members(tel, members, None, types);
+                self.commit_members(tel, emit_causal, requested, members, None, types);
             }
             ProductCompletion::RecursiveGroup(members) => {
                 let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
@@ -732,7 +757,7 @@ impl ProductMemo {
                     .into_iter()
                     .map(|(key, value, _)| (key, value, group_dependencies.clone()))
                     .collect();
-                self.commit_members(tel, members, Some(group_id), types);
+                self.commit_members(tel, emit_causal, requested, members, Some(group_id), types);
             }
         }
         true
@@ -741,6 +766,8 @@ impl ProductMemo {
     fn commit_members(
         &mut self,
         tel: &impl Telemetry,
+        emit_causal: bool,
+        requested: &ProductKey,
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
         group: Option<u64>,
         types: &super::types::Types,
@@ -784,6 +811,11 @@ impl ProductMemo {
                     group,
                 },
             );
+            if emit_causal && group.is_some() {
+                tel.raw_event2(RECURSIVE_GROUP_PUBLISHED_EVENT, requested, key);
+            } else if emit_causal && key != requested {
+                tel.raw_event2(PRODUCT_COPUBLISHED_EVENT, requested, key);
+            }
         }
         let mutations = prepared.iter().flat_map(|(key, _, _, _, changed)| {
             self.reader_mutations(
@@ -1170,6 +1202,7 @@ type DemandContributionTransaction = (
 
 #[derive(Debug)]
 pub struct PullSession {
+    id: PullSessionId,
     root: RootId,
     memo: ProductMemo,
     outgoing_edge_request_set: HashSet<ExecutableKey>,
@@ -1242,6 +1275,7 @@ pub struct PullSession {
 impl PullSession {
     pub fn new(root: RootId) -> Self {
         Self {
+            id: PullSessionId(0),
             root,
             memo: ProductMemo::default(),
             outgoing_edge_request_set: HashSet::new(),
@@ -1270,6 +1304,10 @@ impl PullSession {
 
     pub fn root(&self) -> RootId {
         self.root
+    }
+
+    pub fn id(&self) -> PullSessionId {
+        self.id
     }
 
     fn outgoing_edge_requests(&self) -> &HashSet<ExecutableKey> {
@@ -1336,6 +1374,7 @@ impl PullSession {
         let changed = previous.is_some_and(|previous| previous != demand);
         self.memo.finish_completion(
             tel,
+            causal_product_events_enabled(tel),
             &key,
             ProductCompletion::Batch(vec![(
                 key.clone(),
@@ -2526,6 +2565,9 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
 pub struct ProductDriver<'a, T: Telemetry> {
     tel: &'a T,
     session: PullSession,
+    emit_causal_products: bool,
+    emit_session_lifecycle: bool,
+    finished: Cell<bool>,
 }
 
 impl<'a, T: Telemetry> ProductDriver<'a, T> {
@@ -2538,8 +2580,22 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         self.tel
     }
 
-    pub fn with_session(tel: &'a T, session: PullSession) -> Self {
-        Self { tel, session }
+    pub fn with_session(tel: &'a T, mut session: PullSession) -> Self {
+        let emit_session_lifecycle =
+            tel.is_raw_event_enabled(SESSION_STARTED_EVENT) || tel.is_raw_event_enabled(SESSION_FINISHED_EVENT);
+        if session.id.0 == 0 && emit_session_lifecycle {
+            session.id = PullSessionId(NEXT_PULL_SESSION_ID.fetch_add(1, Ordering::Relaxed));
+        }
+        if emit_session_lifecycle {
+            tel.raw_event1(SESSION_STARTED_EVENT, &session.id);
+        }
+        Self {
+            tel,
+            session,
+            emit_causal_products: causal_product_events_enabled(tel),
+            emit_session_lifecycle,
+            finished: Cell::new(false),
+        }
     }
 
     pub fn session(&self) -> &PullSession {
@@ -2553,7 +2609,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     pub fn finish_session(&self) {
         #[cfg(debug_assertions)]
         self.session.assert_executable_effects_fresh();
-        self.session.emit_finished(self.tel);
+        self.emit_finished_once();
     }
 
     pub(crate) fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
@@ -2561,6 +2617,9 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
+        if self.emit_causal_products {
+            self.tel.raw_event1(PRODUCT_REQUESTED_EVENT, &key);
+        }
         self.session
             .reconcile_fact_movements(self.tel, producers.product_types());
         self.session
@@ -2608,6 +2667,9 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             }
         };
         let (dependencies, mut staged, recursive_group) = context.into_completion();
+        if self.emit_causal_products {
+            self.tel.raw_event2(PRODUCT_EVALUATED_EVENT, &key, &outcome);
+        }
 
         match outcome {
             PullOutcome::Produced(value) => {
@@ -2621,10 +2683,13 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     staged.push((key.clone(), value.clone(), dependencies));
                     ProductCompletion::Batch(staged)
                 };
-                let settled =
-                    self.session
-                        .memo
-                        .finish_completion(self.tel, &key, completion, producers.product_types());
+                let settled = self.session.memo.finish_completion(
+                    self.tel,
+                    self.emit_causal_products,
+                    &key,
+                    completion,
+                    producers.product_types(),
+                );
                 if !settled {
                     self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
@@ -2642,6 +2707,18 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
 
     fn emit(&self, event: &'static str, key: &ProductKey) {
         self.tel.raw_event1(&["fz", "compiler2", "pull", "product", event], key);
+    }
+
+    fn emit_finished_once(&self) {
+        if self.emit_session_lifecycle && !self.finished.replace(true) {
+            self.session.emit_finished(self.tel);
+        }
+    }
+}
+
+impl<T: Telemetry> Drop for ProductDriver<'_, T> {
+    fn drop(&mut self) {
+        self.emit_finished_once();
     }
 }
 
@@ -2670,6 +2747,7 @@ mod tests {
     ) -> bool {
         memo.finish_completion(
             tel,
+            causal_product_events_enabled(tel),
             key,
             ProductCompletion::Batch(vec![(key.clone(), value, dependencies)]),
             types,
@@ -2683,7 +2761,13 @@ mod tests {
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
         types: &super::super::types::Types,
     ) -> bool {
-        memo.finish_completion(tel, requested, ProductCompletion::Batch(members), types)
+        memo.finish_completion(
+            tel,
+            causal_product_events_enabled(tel),
+            requested,
+            ProductCompletion::Batch(members),
+            types,
+        )
     }
 
     fn finish_test_group(
@@ -2693,7 +2777,13 @@ mod tests {
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
         types: &super::super::types::Types,
     ) -> bool {
-        memo.finish_completion(tel, requested, ProductCompletion::RecursiveGroup(members), types)
+        memo.finish_completion(
+            tel,
+            causal_product_events_enabled(tel),
+            requested,
+            ProductCompletion::RecursiveGroup(members),
+            types,
+        )
     }
 
     /// Recursive search work is a property of the pending graph, not of the
@@ -4751,14 +4841,18 @@ mod tests {
     }
 
     #[test]
-    fn pull_session_finished_telemetry_reports_producer_pokes() {
+    fn pull_session_lifecycle_finishes_on_drop_and_reports_producer_pokes() {
         let tel = ConfiguredTelemetry::new();
         let observed = Rc::new(Cell::new(None));
         let sink = Rc::clone(&observed);
         tel.attach_raw_event1::<PullSession, _>(
             &["fz", "compiler2", "pull", "session", "finished"],
             move |_, _, _, session| {
-                sink.set(Some((session.demanded_executables.len(), session.producer_pokes)));
+                sink.set(Some((
+                    session.id(),
+                    session.demanded_executables.len(),
+                    session.producer_pokes,
+                )));
             },
         );
         let root = RootId::for_test(5);
@@ -4771,9 +4865,27 @@ mod tests {
             PullOutcome::Produced(ProductValue::Unit)
         );
         driver.session_mut().record_producer_pokes(2);
-        driver.finish_session();
+        let session_id = driver.session().id();
+        drop(driver);
 
-        assert_eq!(observed.get(), Some((1, 2)));
+        assert_eq!(observed.get(), Some((session_id, 1, 2)));
+        assert_ne!(session_id, PullSessionId(0));
+
+        let second = ProductDriver::new(&tel, RootId::for_test(6));
+        let second_id = second.session().id();
+        drop(second);
+        assert_ne!(second_id, PullSessionId(0));
+        assert_ne!(second_id, session_id);
+    }
+
+    #[test]
+    fn disabled_telemetry_does_not_mint_a_session_identity() {
+        let driver = ProductDriver::new(&crate::telemetry::sink::NullTelemetry, RootId::for_test(5));
+        assert_eq!(driver.session().id(), PullSessionId(0));
+
+        let configured = ConfiguredTelemetry::new();
+        let driver = ProductDriver::new(&configured, RootId::for_test(5));
+        assert_eq!(driver.session().id(), PullSessionId(0));
     }
 
     fn fake_executable(root: RootId) -> ExecutableKey {

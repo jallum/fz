@@ -68,6 +68,11 @@ pub trait Telemetry {
         self.is_enabled(name)
     }
 
+    /// Returns whether a typed raw-event or raw-lifecycle subscriber observes `name`.
+    fn is_raw_event_enabled(&self, name: &[&'static str]) -> bool {
+        self.is_enabled(name)
+    }
+
     /// Emit a single event. `name` is the hierarchical path
     /// (e.g. `&["fz", "lexer", "tokens_built"]`); `measurements` carry
     /// numeric data fit for aggregation; `metadata` carries everything else.

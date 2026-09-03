@@ -84,9 +84,12 @@ impl PublicTrace {
         Self { outcome, events }
     }
 
-    /// Compile and request the interpreter backend so product-search events
-    /// are included in the captured public stream.
-    pub fn compile_backend(source: &str) -> Self {
+    /// Issues multiple backend requests through one `Compiler2`. `revisions`
+    /// describes the requests after the cold one: `None` asks for the same
+    /// root unchanged, while `Some(source)` submits that source before asking
+    /// again. The helper drives the production interpreter boundary and keeps
+    /// its output silent; only observability is test-owned.
+    pub fn compile_requests(source: &str, revisions: &[Option<&str>]) -> Self {
         let telemetry = ConfiguredTelemetry::new();
         let (buf, writer) = vec_writer();
         JsonlBackend::new_public_writer(writer).install(&telemetry);
@@ -95,7 +98,7 @@ impl PublicTrace {
             let mut compiler = Compiler2::new(telemetry);
             compiler.set_output(Box::new(fz_runtime::output::NullOutput));
             compiler.submit_code(CodeSubmission {
-                name: Some("public_product_trace.fz".to_string()),
+                name: Some("public_trace_initial.fz".to_string()),
                 text: source.to_string(),
             });
             let root = compiler.submit_root(RootSubmission {
@@ -104,11 +107,32 @@ impl PublicTrace {
                 arity: 0,
                 need: ExecutableNeed::Value,
             });
-            let outcome = compiler.drive();
-            assert!(matches!(outcome, DriveOutcome::Resolved));
+            let mut outcome = compiler.drive();
+            assert!(
+                matches!(outcome, DriveOutcome::Resolved),
+                "cold public-trace semantic drive did not resolve"
+            );
             compiler
                 .run_root_interp(root)
-                .unwrap_or_else(|error| panic!("public product trace failed: {error}"));
+                .unwrap_or_else(|error| panic!("cold public-trace request failed: {error}"));
+            for (index, revision) in revisions.iter().enumerate() {
+                if let Some(source) = revision {
+                    compiler.submit_code(CodeSubmission {
+                        name: Some(format!("public_trace_revision_{}.fz", index + 1)),
+                        text: (*source).to_string(),
+                    });
+                    outcome = compiler.drive();
+                    assert!(
+                        matches!(outcome, DriveOutcome::Resolved),
+                        "public-trace revision {} did not resolve: {:?}",
+                        index + 1,
+                        outcome
+                    );
+                }
+                compiler
+                    .run_root_interp(root)
+                    .unwrap_or_else(|error| panic!("public-trace request {} failed: {error}", index + 2));
+            }
             outcome
         };
 

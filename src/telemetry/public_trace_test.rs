@@ -1,12 +1,357 @@
 use super::*;
 use crate::compiler2::DriveOutcome;
-use crate::telemetry::causal::{CausalReport, Dependencies, FactLifecycle, FormulaWork, ShiftWork};
+use crate::telemetry::causal::{
+    CausalReport, FactLifecycle, FormulaWork, ProductEvaluationCause, ProductEvaluationTriggerKind,
+    ProductPublicationKind, PublicEvent, ShiftWork,
+};
 use crate::telemetry::handler::EventKind;
 
 /// The ticket's acceptance scenario: two functions, one calling the other.
 /// `main/0` is required — `PublicTrace::compile` closes it as the root, the
 /// same way `fz2 run`/`interp`/`build` do.
 const TWO_FORMULA_SOURCE: &str = "fn helper(x), do: x + 1\nfn main(), do: helper(41)\n";
+
+fn causal_event(name: &[&str], metadata: serde_json::Value) -> PublicEvent {
+    PublicEvent {
+        name: name.iter().map(|part| (*part).to_string()).collect(),
+        kind: EventKind::Event,
+        span_id: 0,
+        parent_span_id: 0,
+        measurements: serde_json::json!({}),
+        metadata,
+        semantic: serde_json::json!({}),
+    }
+}
+
+#[derive(Default)]
+struct ReplayEvents(Vec<PublicEvent>);
+
+impl ReplayEvents {
+    fn push(&mut self, suffix: &[&str], metadata: serde_json::Value) {
+        let mut name = vec!["fz", "compiler2"];
+        name.extend_from_slice(suffix);
+        self.0.push(causal_event(&name, metadata));
+    }
+
+    fn session(&mut self, event: &str, id: u64) {
+        self.push(
+            &["pull", "session", event],
+            serde_json::json!({"session_id": id, "session": {}}),
+        );
+    }
+
+    fn request(&mut self, product: &serde_json::Value) {
+        self.push(
+            &["pull", "product", "requested"],
+            serde_json::json!({"product": product}),
+        );
+    }
+
+    fn evaluate(&mut self, product: &serde_json::Value, waits: &[serde_json::Value]) {
+        self.push(
+            &["pull", "product", "evaluated"],
+            serde_json::json!({"product": product, "outcome": {"status": "produced", "waits": waits}}),
+        );
+    }
+
+    fn product_event(&mut self, event: &str, product: &serde_json::Value) {
+        self.push(&["pull", "product", event], serde_json::json!({"product": product}));
+    }
+
+    fn settle(&mut self, product: &serde_json::Value, generation: u64, changed: bool) {
+        self.push(
+            &["pull", "product", "settled"],
+            serde_json::json!({"product": product, "settlement": {"generation": generation, "changed": changed}}),
+        );
+    }
+
+    fn backend(&mut self, event: &str, metadata: serde_json::Value) {
+        self.push(&["backend_request", event], metadata);
+    }
+
+    fn applied(&mut self, completion: serde_json::Value) {
+        self.push(
+            &["work_graph", "applied"],
+            serde_json::json!({"completion": completion}),
+        );
+    }
+
+    fn movement(&mut self, job: u64, fact: &serde_json::Value) {
+        self.applied(serde_json::json!({
+            "kind": "SyntheticJob",
+            "root_id": job,
+            "movements": [{
+                "kind": fact["kind"],
+                "root_id": fact["root_id"],
+                "old_revision": 1,
+                "new_revision": 2,
+            }],
+        }));
+    }
+
+    fn recursive_search(&mut self, product: &serde_json::Value, dependency: &serde_json::Value) {
+        self.push(
+            &["pull", "recursive_group", "searched"],
+            serde_json::json!({
+                "product": product,
+                "dependency": dependency,
+                "search": {
+                    "candidate_inventory": 2,
+                    "vertex_visits": 3,
+                    "edge_scans": 2,
+                    "cycle_closed": true,
+                    "group_members": 2,
+                }
+            }),
+        );
+    }
+}
+
+#[test]
+fn nested_product_session_restores_outer_exact_evaluation_history() {
+    let product = |root_id| serde_json::json!({"kind": "root_backend_product", "root_id": root_id});
+    let (outer, dependency, inner) = (product(1), product(2), product(3));
+    let mut events = ReplayEvents::default();
+    events.session("started", 1);
+    events.request(&outer);
+    events.evaluate(&outer, &[serde_json::json!({"product": dependency})]);
+    events.session("started", 2);
+    events.request(&inner);
+    events.evaluate(&inner, &[]);
+    events.session("finished", 2);
+    events.settle(&dependency, 1, true);
+    events.request(&outer);
+    events.evaluate(&outer, &[]);
+    events.session("finished", 1);
+    let report = CausalReport::derive(&events.0);
+    let resumed = report.product_evaluations.last().expect("outer evaluation resumed");
+    assert_eq!(resumed.session, 1);
+    assert_eq!(resumed.prior_evaluation, Some(2));
+    assert_eq!(resumed.cause, ProductEvaluationCause::ProductMovement);
+    assert_eq!(resumed.triggers.len(), 1);
+    assert_eq!(resumed.triggers[0].position, 7);
+    assert_eq!(
+        resumed.triggers[0].kind,
+        ProductEvaluationTriggerKind::ProductSettlement
+    );
+}
+
+#[test]
+fn retained_session_classifies_hits_and_equal_reproduction_from_event_order() {
+    let product = serde_json::json!({"kind": "root_backend_product", "root_id": 1});
+    let mut events = ReplayEvents::default();
+    events.session("started", 1);
+    events.backend("started", serde_json::json!({}));
+    events.request(&product);
+    events.evaluate(&product, &[serde_json::json!({"product": product})]);
+    events.settle(&product, 1, true);
+    events.backend("finished", serde_json::json!({}));
+    events.backend("started", serde_json::json!({}));
+    events.product_event("cache_hit", &product);
+    events.request(&product);
+    events.settle(&product, 7, false);
+    events.product_event("cache_hit", &product);
+    events.evaluate(&product, &[]);
+    events.backend("finished", serde_json::json!({}));
+    events.session("finished", 1);
+
+    let reports = CausalReport::derive_requests(&events.0);
+    assert_eq!(reports.len(), 2);
+    let retained = reports[1].product_totals();
+    assert_eq!(retained.cache_hits, 2);
+    assert_eq!(
+        retained.retained_cache_hits, 1,
+        "only the hit before this request settles the key is retained"
+    );
+    assert_eq!(retained.equal_reproductions, 1);
+    assert_eq!(retained.first_productions, 0);
+    assert_eq!(retained.reproductions, 0);
+    let evaluation = reports[1]
+        .product_evaluations
+        .last()
+        .expect("retained-session evaluation");
+    assert_eq!(evaluation.session, 1);
+    assert_eq!(evaluation.prior_evaluation, Some(3));
+    assert_eq!(evaluation.cause, ProductEvaluationCause::ProductMovement);
+}
+
+#[test]
+fn product_replay_classifies_exact_movements_and_recursive_searches() {
+    let product = |id| serde_json::json!({"kind": "synthetic", "root_id": id});
+    let fact = |id| serde_json::json!({"kind": "SyntheticFact", "root_id": id, "use": "settled"});
+    let fact_owner = product(1);
+    let dependency_owner = product(2);
+    let self_owner = product(3);
+    let mixed_owner = product(4);
+    let unrelated_owner = product(5);
+    let dependency = product(20);
+    let unrelated = product(21);
+    let unrelated_wait = product(22);
+    let moved_fact = fact(30);
+    let mixed_fact = fact(31);
+    let mut events = ReplayEvents::default();
+    events.session("started", 1);
+    {
+        let mut initial = |owner: &serde_json::Value, waits: &[serde_json::Value]| {
+            events.request(owner);
+            events.evaluate(owner, waits);
+        };
+        initial(&fact_owner, &[serde_json::json!({"fact": moved_fact})]);
+        initial(&dependency_owner, &[serde_json::json!({"product": dependency})]);
+        initial(&self_owner, &[]);
+        initial(
+            &mixed_owner,
+            &[
+                serde_json::json!({"fact": mixed_fact}),
+                serde_json::json!({"product": dependency}),
+            ],
+        );
+        initial(&unrelated_owner, &[serde_json::json!({"product": unrelated_wait})]);
+    }
+
+    events.movement(40, &moved_fact);
+    events.request(&fact_owner);
+    events.evaluate(&fact_owner, &[]);
+    events.product_event("displaced", &dependency);
+    events.request(&dependency_owner);
+    events.evaluate(&dependency_owner, &[]);
+    events.product_event("displaced", &self_owner);
+    events.request(&self_owner);
+    events.evaluate(&self_owner, &[]);
+    events.movement(41, &mixed_fact);
+    events.product_event("displaced", &dependency);
+    events.request(&mixed_owner);
+    events.recursive_search(&mixed_owner, &dependency);
+    events.evaluate(&mixed_owner, &[]);
+    events.product_event("displaced", &unrelated);
+    events.request(&unrelated_owner);
+    events.evaluate(&unrelated_owner, &[]);
+    events.session("finished", 1);
+
+    let report = CausalReport::derive(&events.0);
+    let causes = report
+        .product_evaluations
+        .iter()
+        .filter(|evaluation| evaluation.prior_evaluation.is_some())
+        .map(|evaluation| evaluation.cause)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        causes,
+        vec![
+            ProductEvaluationCause::FactMovement,
+            ProductEvaluationCause::ProductMovement,
+            ProductEvaluationCause::Displacement,
+            ProductEvaluationCause::Mixed,
+            ProductEvaluationCause::Unexplained,
+        ]
+    );
+    let search = report.recursive_searches.first().expect("exact recursive search");
+    assert_eq!(search.product.raw, mixed_owner);
+    assert_eq!(search.dependency.raw, dependency);
+    assert_eq!(search.cause, Some(ProductEvaluationCause::Mixed));
+    assert_eq!(
+        search.work,
+        crate::telemetry::causal::RecursiveSearchWork {
+            searches: 1,
+            candidate_inventory: 2,
+            vertex_visits: 3,
+            edge_scans: 2,
+            closed_cycles: 1,
+            group_members: 2,
+        }
+    );
+}
+
+#[test]
+fn request_population_survives_a_cache_only_request() {
+    let mut events = ReplayEvents::default();
+    events.backend("started", serde_json::json!({}));
+    events.backend(
+        "finished",
+        serde_json::json!({"program": {"executables": 7, "construction_wrappers": 2}}),
+    );
+
+    let reports = CausalReport::derive_requests(&events.0);
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].final_population.reachable_executables, 7);
+    assert_eq!(reports[0].final_population.construction_wrappers, 2);
+    assert_eq!(reports[0].product_totals().settlements, 0);
+}
+
+#[test]
+fn request_reports_count_distinct_moved_facts_per_request() {
+    let mut events = ReplayEvents::default();
+    for _ in 0..2 {
+        events.backend("started", serde_json::json!({}));
+        events.applied(serde_json::json!({
+            "kind": "SyntheticJob",
+            "root_id": 1,
+            "changed": [{
+                "kind": "SyntheticFact",
+                "root_id": 2,
+                "old_revision": 1,
+                "new_revision": 2,
+            }]
+        }));
+        events.backend("finished", serde_json::json!({"program": {}}));
+    }
+
+    let reports = CausalReport::derive_requests(&events.0);
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].lifecycles["SyntheticFact"].distinct, 1);
+    assert_eq!(reports[1].lifecycles["SyntheticFact"].distinct, 1);
+}
+
+#[test]
+fn raw_product_rows_remain_distinct_while_canonical_multisets_fold_them() {
+    let mut events = ReplayEvents::default();
+    for id in 1..=2 {
+        events.push(&["canon", "type"], serde_json::json!({"type_id": id, "canon": "int"}));
+    }
+    events.session("started", 1);
+    for arrow in 1..=2 {
+        events.request(&serde_json::json!({"kind": "transport_shape", "arrow": arrow}));
+    }
+    events.session("finished", 1);
+    let report = CausalReport::derive(&events.0);
+    assert_eq!(report.products.len(), 2, "raw arena identities must not collapse");
+    let requests = report
+        .canonical_multiset()
+        .into_iter()
+        .filter(|(key, _)| key.ends_with("\u{1}requests"))
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 1, "canonical packaging folds equivalent raw keys");
+    assert_eq!(requests[0].1, 2);
+}
+
+#[test]
+fn canonical_product_causality_preserves_fact_use_mode() {
+    let report = |fact_use| {
+        let product = serde_json::json!({"kind": "synthetic", "root_id": 1});
+        let mut events = ReplayEvents::default();
+        events.session("started", 1);
+        events.request(&product);
+        events.evaluate(
+            &product,
+            &[serde_json::json!({"fact": {
+                "use": fact_use,
+                "kind": "SyntheticFact",
+                "root_id": 2,
+            }})],
+        );
+        events.request(&product);
+        events.evaluate(&product, &[]);
+        events.session("finished", 1);
+        CausalReport::derive(&events.0).canonical_multiset()
+    };
+
+    let current = report("current");
+    let settled = report("settled");
+    let settled_presence = report("settled_presence");
+    assert_ne!(current, settled);
+    assert_ne!(current, settled_presence);
+    assert_ne!(settled, settled_presence);
+}
 
 fn named(ev: &PublicEvent, name: &[&str]) -> bool {
     ev.name.iter().map(String::as_str).eq(name.iter().copied())
@@ -612,6 +957,28 @@ fn public_settled_events_carry_settlement_and_multiple_transport_shape_products_
     assert!(!cache_hits.is_empty(), "expected at least one public cache_hit event");
 }
 
+#[test]
+fn product_sessions_publish_balanced_identity_lifecycles() {
+    let trace = PublicTrace::compile_requests(TWO_FORMULA_SOURCE, &[None]);
+    let mut stack = Vec::new();
+    let mut starts = 0;
+    for event in trace.events() {
+        if named(event, &["fz", "compiler2", "pull", "session", "started"]) {
+            starts += 1;
+            stack.push(event.metadata["session_id"].as_u64().expect("raw session identity"));
+        } else if named(event, &["fz", "compiler2", "pull", "session", "finished"]) {
+            let finished = event.metadata["session_id"].as_u64().expect("raw session identity");
+            assert_eq!(
+                stack.pop(),
+                Some(finished),
+                "session lifecycles must be properly nested"
+            );
+        }
+    }
+    assert!(starts > 0, "production product pulls must announce their session start");
+    assert!(stack.is_empty(), "every started session must finish");
+}
+
 /// fz-kdt.34.5: `demand_on_stall`'s aggregate tally (`pull.session.finished`'s
 /// `work_starts_blocked_waiter_expansion`) says how many work starts were a
 /// blocked-waiter expansion, but never which fact drove any one of them.
@@ -694,189 +1061,249 @@ fn demand_on_stall_names_the_exact_fact_and_closes_to_its_producer() {
 const TARGET_FIXTURES: [&str; 3] = [
     "fixtures2/behavior/fz_f98_range_map_converges.fz",
     "fixtures2/behavior/enum_predicate_search.fz",
-    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
 ];
+
+const SCENARIOS: [&str; 5] = [
+    "cold",
+    "unchanged",
+    "unreachable_edit",
+    "reached_leaf_edit",
+    "callee_replaced",
+];
+
+// (product evaluations, settlements, demanded keys, distinct generations,
+// first productions, cross-request recomputations, unexplained evaluations,
+// formula evaluations, unexplained formula evaluations)
+type RequestBaseline = (u64, u64, usize, u64, u64, u64, u64, u64, u64);
+const REQUEST_BASELINES: [[RequestBaseline; 5]; 3] = [
+    [
+        (2732, 1970, 1868, 1945, 1932, 0, 723, 1117, 0),
+        (2544, 1888, 1786, 1863, 1850, 1850, 720, 0, 0),
+        (2544, 1888, 1786, 1863, 1850, 1850, 720, 2, 0),
+        (2563, 1888, 1786, 1863, 1850, 1850, 707, 101, 34),
+        (2564, 1888, 1786, 1863, 1850, 1840, 707, 163, 40),
+    ],
+    [
+        (8745, 6373, 5892, 6179, 6109, 0, 2265, 2090, 12),
+        (8399, 6291, 5810, 6097, 6027, 6027, 2325, 0, 0),
+        (8399, 6291, 5810, 6097, 6027, 6027, 2325, 2, 0),
+        (8463, 6291, 5810, 6097, 6027, 6027, 2292, 264, 90),
+        (8464, 6291, 5810, 6097, 6027, 6017, 2292, 459, 122),
+    ],
+    [
+        (12542, 9687, 9235, 9532, 9451, 0, 2758, 3017, 0),
+        (12225, 9605, 9153, 9450, 9369, 9369, 2836, 0, 0),
+        (12225, 9605, 9153, 9450, 9369, 9369, 2836, 2, 0),
+        (12304, 9605, 9153, 9450, 9369, 9369, 2777, 362, 122),
+        (12305, 9605, 9153, 9450, 9369, 9359, 2777, 541, 151),
+    ],
+];
+
+const POPULATION_BASELINES: [(u64, u64); 3] = [(61, 8), (208, 36), (206, 46)];
+
+fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
+    let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
+    let source = fixture.replacen("fn main() do", "fn main() do\n  kdt_reached()", 1);
+    (
+        format!(
+            "fn kdt_unreachable(), do: 0\n\
+             fn kdt_old_leaf(), do: 1\n\
+             fn kdt_new_leaf(), do: 2\n\
+             fn kdt_reached(), do: kdt_old_leaf()\n{source}"
+        ),
+        [
+            "fn kdt_unreachable(), do: 99\n",
+            "fn kdt_old_leaf(), do: 3\n",
+            "fn kdt_new_leaf(), do: 2\nfn kdt_reached(), do: kdt_new_leaf()\n",
+        ],
+    )
+}
+
+fn assert_product_causes_are_exact_or_explicit(fixture: &str, scenario: usize, report: &CausalReport) {
+    let mut unexplained = 0;
+    for evaluation in &report.product_evaluations {
+        match evaluation.prior_evaluation {
+            None => {
+                assert_eq!(
+                    evaluation.cause,
+                    ProductEvaluationCause::Initial,
+                    "{fixture} {scenario}"
+                );
+                assert!(evaluation.triggers.is_empty(), "{fixture} {scenario}");
+            }
+            Some(previous) => {
+                if evaluation.cause == ProductEvaluationCause::Unexplained {
+                    unexplained += 1;
+                }
+                assert_eq!(
+                    evaluation.triggers.is_empty(),
+                    evaluation.cause == ProductEvaluationCause::Unexplained,
+                    "{fixture} {scenario}: {evaluation:?}"
+                );
+                assert!(
+                    evaluation
+                        .triggers
+                        .iter()
+                        .all(|trigger| trigger.position >= previous && trigger.position < evaluation.position),
+                    "{fixture} {scenario}: {evaluation:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        unexplained,
+        report.product_totals().unexplained_evaluations,
+        "{fixture} {scenario}: every unexplained evaluation must remain visible in the aggregate"
+    );
+}
+
+fn function_id(trace: &PublicTrace, name: &str) -> u64 {
+    trace
+        .events_named(&["fz", "compiler2", "canon", "function"])
+        .into_iter()
+        .find(|event| event.metadata_key("canon").and_then(serde_json::Value::as_str) == Some(name))
+        .and_then(|event| event.metadata_key("function_id"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| panic!("missing canonical function definition for {name}"))
+}
+
+fn value_names_function(value: &serde_json::Value, function: u64) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => fields.iter().any(|(name, value)| {
+            (name == "function_id" && value.as_u64() == Some(function)) || value_names_function(value, function)
+        }),
+        serde_json::Value::Array(values) => values.iter().any(|value| value_names_function(value, function)),
+        _ => false,
+    }
+}
+
+#[test]
+fn target_fixture_reports_exercise_all_five_request_scenarios() {
+    for (fixture_index, fixture) in TARGET_FIXTURES.into_iter().enumerate() {
+        let (source, edits) = target_edit_sequence(fixture);
+        let trace = PublicTrace::compile_requests(&source, &[None, Some(edits[0]), Some(edits[1]), Some(edits[2])]);
+        let reports = CausalReport::derive_requests(trace.events());
+        assert_eq!(reports.len(), SCENARIOS.len(), "{fixture}");
+        let cold = reports[0].product_totals();
+        let unchanged = reports[1].product_totals();
+        assert!(cold.first_productions > 0, "{fixture}: cold population");
+        assert_eq!(cold.cross_request_recomputations, 0, "{fixture}: cold request");
+        assert_eq!(
+            unchanged.cross_request_recomputations, unchanged.first_productions,
+            "{fixture}: unchanged request exposes fresh-session repopulation"
+        );
+        let irrelevant = reports[2].product_totals();
+        assert_eq!(
+            irrelevant.cross_request_recomputations, irrelevant.first_productions,
+            "{fixture}: an unreachable edit must expose the same fresh-session repopulation"
+        );
+        assert_eq!(
+            reports[1].formula_totals().evaluations,
+            0,
+            "{fixture}: unchanged scheduler work"
+        );
+        assert!(
+            reports[3].formula_totals().content_caused > 0,
+            "{fixture}: reached leaf movement"
+        );
+        let old_callee = function_id(&trace, "kdt_old_leaf/0");
+        let new_callee = function_id(&trace, "kdt_new_leaf/0");
+        assert!(
+            reports[3]
+                .products
+                .keys()
+                .any(|product| value_names_function(&product.raw, old_callee)),
+            "{fixture}: reached request must demand the old callee"
+        );
+        assert!(
+            reports[4]
+                .products
+                .keys()
+                .any(|product| value_names_function(&product.raw, new_callee)),
+            "{fixture}: replacement request must introduce the new callee"
+        );
+        assert!(
+            !reports[4]
+                .products
+                .keys()
+                .any(|product| value_names_function(&product.raw, old_callee)),
+            "{fixture}: replacement request must withdraw the old callee"
+        );
+        for (scenario, ((name, report), expected)) in SCENARIOS
+            .iter()
+            .zip(&reports)
+            .zip(REQUEST_BASELINES[fixture_index])
+            .enumerate()
+        {
+            assert_product_causes_are_exact_or_explicit(fixture, scenario, report);
+            let product = report.product_totals();
+            let formula = report.formula_totals();
+            assert_eq!(
+                (
+                    product.evaluations,
+                    product.settlements,
+                    report.distinct_demanded_products(),
+                    product.distinct_generations,
+                    product.first_productions,
+                    product.cross_request_recomputations,
+                    product.unexplained_evaluations,
+                    formula.evaluations,
+                    formula.uncaused,
+                ),
+                expected,
+                "{fixture} {name}: causal work baseline"
+            );
+            assert_eq!(
+                (
+                    report.final_population.reachable_executables,
+                    report.final_population.construction_wrappers,
+                ),
+                POPULATION_BASELINES[fixture_index],
+                "{fixture} {name}: final population"
+            );
+            assert_eq!(
+                report.uncaused.len() as u64,
+                formula.uncaused,
+                "{fixture} {name}: every unexplained formula evaluation must remain exact in the report"
+            );
+            assert!(report.readiness_without_settled_wake.is_empty(), "{fixture} {name}");
+            assert!(report.undefined_first_uses.is_empty(), "{fixture} {name}");
+            assert!(
+                report.canon.types() > 0 && report.canon.functions() > 0,
+                "{fixture} {name}"
+            );
+            assert!(report.sessions.sessions > 0, "{fixture} {name}");
+            assert_eq!(report.sessions.unsanctioned_work_starts, 0, "{fixture} {name}");
+            assert_eq!(report.sessions.root_scans, 0, "{fixture} {name}");
+            assert_eq!(
+                report.recursive_searches.len() as u64,
+                report.recursive_search.searches,
+                "{fixture} {name}: every recursive traversal stays exact"
+            );
+            assert!(
+                report
+                    .recursive_searches
+                    .iter()
+                    .all(|search| search.cause.is_some() && search.work.vertex_visits > 0),
+                "{fixture} {name}: recursive work belongs to its producer evaluation"
+            );
+            assert_eq!(
+                report
+                    .product_publications
+                    .iter()
+                    .filter(|publication| publication.kind == ProductPublicationKind::RecursiveGroup)
+                    .count() as u64,
+                product.recursive_members,
+                "{fixture} {name}: recursive publications retain exact members"
+            );
+        }
+    }
+}
 
 fn compile_fixture(path: &str) -> PublicTrace {
     let source = std::fs::read_to_string(path).unwrap_or_else(|error| panic!("read fixture {path}: {error}"));
     PublicTrace::compile(&source)
-}
-
-#[test]
-fn recursive_group_search_work_is_a_public_causal_fact() {
-    let source = include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz");
-    let trace = PublicTrace::compile_backend(source);
-    let searches = trace.events_named(&["fz", "compiler2", "pull", "recursive_group", "searched"]);
-    assert!(
-        !searches.is_empty(),
-        "the recursive fixture must search its pending graph"
-    );
-    for event in &searches {
-        assert!(event.metadata_key("product").is_some(), "{event:?}");
-        assert!(event.metadata_key("dependency").is_some(), "{event:?}");
-        let search = event.metadata_key("search").expect("recursive search report");
-        let candidates = search["candidate_inventory"].as_u64().expect("candidate inventory");
-        let vertices = search["vertex_visits"].as_u64().expect("vertex visits");
-        let edges = search["edge_scans"].as_u64().expect("edge scans");
-        let closed = search["cycle_closed"].as_bool().expect("cycle closure");
-        let members = search["group_members"].as_u64().expect("group members");
-        assert!(candidates <= vertices, "{search:?}");
-        assert!(vertices > 0 && edges + 1 >= vertices, "{search:?}");
-        assert_eq!(members > 0, closed, "{search:?}");
-        assert!(members <= candidates, "{search:?}");
-    }
-
-    let work = CausalReport::derive(trace.events()).recursive_search;
-    assert_eq!(work.searches, searches.len() as u64);
-    assert!(work.vertex_visits >= work.candidate_inventory);
-    assert!(work.edge_scans > 0);
-}
-
-/// fz-kdt.34's acceptance, on the public log and nothing else.
-///
-/// Every evaluation of every formula must name new input evidence. The
-/// derivation is `(reads UNION the previous completion's blocked-set)` with a
-/// movement in `[previous conclusion, now)`; `causal.rs` documents why both
-/// halves are load-bearing. The sibling test below measures the reads-only
-/// variant failing, which is the red half of this pair.
-///
-/// Work counts only. Nothing here reads a duration, an `elapsed_ns`, or a
-/// `time_ns`: a compile that did the same work slower is the same report.
-#[test]
-fn every_evaluation_on_the_target_fixtures_names_a_moved_input() {
-    for fixture in TARGET_FIXTURES {
-        let trace = compile_fixture(fixture);
-        assert!(
-            matches!(trace.outcome, DriveOutcome::Resolved),
-            "{fixture} must resolve for its causal report to describe a whole compile"
-        );
-        let report = CausalReport::derive(trace.events());
-        let totals = report.formula_totals();
-
-        assert_eq!(
-            report.uncaused,
-            Vec::new(),
-            "{fixture}: every non-initial evaluation must name a moved dependency"
-        );
-        assert_eq!(
-            report.readiness_without_settled_wake,
-            Vec::new(),
-            "{fixture}: a readiness cause is only claimable where a Settled/SettledPresence wake carried it"
-        );
-        assert_eq!(
-            totals.evaluations,
-            totals.initial + totals.content_caused + totals.readiness_caused,
-            "{fixture}: every evaluation must fall in exactly one cause class; totals={totals:?}"
-        );
-        assert!(
-            totals.evaluations > 0 && totals.content_caused > 0,
-            "{fixture}: expected a compile with re-evaluated formulas; totals={totals:?}"
-        );
-    }
-}
-
-/// The red half: `reads` alone is not the dependency set.
-///
-/// `DependencyIndex` keeps `reads` and `waits` in separate maps, so a job
-/// re-run because a WAIT became satisfiable has that fact only in `waits`. A
-/// reads-only rule therefore reports real, fully-caused work as uncaused. This
-/// asserts the failure exists and that the shipped derivation removes it, so
-/// nobody simplifies the rule back.
-#[test]
-fn reads_alone_false_flags_evaluations_the_blocked_set_explains() {
-    for fixture in TARGET_FIXTURES {
-        let trace = compile_fixture(fixture);
-        let reads_only = CausalReport::derive_with(trace.events(), Dependencies::Reads);
-        let shipped = CausalReport::derive_with(trace.events(), Dependencies::ReadsAndBlocked);
-
-        assert!(
-            !reads_only.uncaused.is_empty(),
-            "{fixture}: the reads-only rule is expected to false-flag work; if it no longer does, \
-             the stream changed and this pair needs re-measuring"
-        );
-        assert!(
-            shipped.uncaused.is_empty(),
-            "{fixture}: reads UNION the previous blocked-set must attribute every evaluation; \
-             first unattributed: {:?}",
-            shipped.uncaused.first()
-        );
-    }
-}
-
-/// The self-describing contract: a raw `Ty` or `FunctionId` is a position in
-/// one `World`, so a log that only carries ids means nothing to a second
-/// process. Every id the public stream names must be defined by an EARLIER
-/// `fz.compiler2.canon.*` line, which is what makes the log a self-contained
-/// dictionary.
-#[test]
-fn every_raw_id_on_the_public_stream_is_defined_before_it_is_used() {
-    for fixture in TARGET_FIXTURES {
-        let trace = compile_fixture(fixture);
-        let report = CausalReport::derive(trace.events());
-        assert_eq!(
-            report.undefined_first_uses,
-            Vec::new(),
-            "{fixture}: the stream referenced a raw id it had not defined"
-        );
-        assert!(
-            report.canon.types() > 0 && report.canon.functions() > 0,
-            "{fixture}: expected a populated canon dictionary, got {} types / {} functions",
-            report.canon.types(),
-            report.canon.functions()
-        );
-    }
-}
-
-/// The pull sessions' own verdict on their work starts. Both zeros are
-/// absolute: an unsanctioned work start is a job the scheduler could not
-/// attribute to a sanctioned reason, and a root scan is the frontier being
-/// swept instead of driven.
-#[test]
-fn no_target_fixture_starts_unsanctioned_work_or_scans_roots() {
-    for fixture in TARGET_FIXTURES {
-        let trace = compile_fixture(fixture);
-        let sessions = CausalReport::derive(trace.events()).sessions;
-        assert!(sessions.sessions > 0, "{fixture}: expected at least one pull session");
-        assert_eq!(
-            sessions.unsanctioned_work_starts, 0,
-            "{fixture}: every work start must name a sanctioned reason; {sessions:?}"
-        );
-        assert_eq!(
-            sessions.root_scans, 0,
-            "{fixture}: the root frontier must be driven, never scanned; {sessions:?}"
-        );
-    }
-}
-
-/// Two compiles of one input must have done the same work.
-///
-/// The comparand is the CANONICAL multiset: raw arena ids are free to differ,
-/// canonical identity may not. This is the in-process half of the acceptance
-/// (`tests/fz2_cli.rs` runs the cross-PROCESS half, where `RandomState`
-/// reseeds and the ids genuinely drift).
-///
-/// The whole multiset holds in process and across processes, product cache
-/// hits included. Typed owner publication removed the former
-/// `CallableConstruction` exception.
-#[test]
-fn a_double_compile_produces_one_canonical_work_multiset() {
-    let fixture = "fixtures2/behavior/fz_f98_range_map_converges.fz";
-    let first = CausalReport::derive(compile_fixture(fixture).events()).canonical_multiset();
-    let second = CausalReport::derive(compile_fixture(fixture).events()).canonical_multiset();
-
-    let divergence = first
-        .iter()
-        .find(|(key, count)| second.get(*key) != Some(count))
-        .or_else(|| second.iter().find(|(key, _)| !first.contains_key(*key)));
-    assert!(
-        first == second,
-        "two compiles of {fixture} must agree on the canonical work multiset; first divergence: {divergence:?}"
-    );
-    assert!(
-        first.len() > 100,
-        "expected a substantial multiset, got {} entries",
-        first.len()
-    );
 }
 
 /// The work one job family did, summed over its per-function formulas, plus

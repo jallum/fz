@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fz::causal::{CausalReport, FormulaWork, ProductWork, parse_public_trace};
+use fz::causal::{CausalReport, FormulaWork, parse_public_trace};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -317,12 +317,13 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // arbiter's `work_graph.quiesced` steps (+37 on 00181, none on 00009) while
     // shrinking every `changed` array, because a fact that is transitively
     // unfinal no longer flips its settled bit on each local dirty/clean cycle.
-    // Net on 00181: 1,545 -> 1,563 events, 970,146 -> 921,532 bytes; 00009 is
-    // 205 events either way, 105,699 -> 105,683 bytes. Pins keep tight headroom
-    // so creep without cause still trips them.
+    // fz-kdt.5's request/evaluation/wait identities make product work exactly
+    // attributable. Measured on 00181: 2,864 events / 1,501,814 bytes; on
+    // 00009: 377 / 178,988. Pins retain modest headroom for the known
+    // fz-kdt.47 request-set variance while unrelated public-stream creep trips.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures2/00181_enum_reduce_operator_ref.fz", 1_620, 1024 * 1024),
-        ("fixtures2/00009_no_runtime.fz", 300, 128 * 1024),
+        ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_000, 1_600 * 1024),
+        ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
         let output = run_fz2(&[
@@ -404,18 +405,17 @@ fn causal_work_multisets_agree_across_two_processes() {
                     report.uncaused.first()
                 );
             }
-            let callable_resolutions = report
-                .products
+            let multiset = report.canonical_multiset();
+            let callable_resolutions = multiset
                 .keys()
                 .filter(|identity| identity.contains("\"kind\":\"callable_resolution\""))
                 .collect::<Vec<_>>();
             assert!(
                 !callable_resolutions.is_empty()
                     && callable_resolutions.iter().all(|identity| !identity.contains("?ty:")),
-                "the {tag} {fixture} public trace must define every callable-resolution type: \
-                 {callable_resolutions:?}"
+                "the {tag} {fixture} trace must define every callable-resolution surface: {callable_resolutions:?}"
             );
-            multisets.push(report.canonical_multiset());
+            multisets.push(multiset);
             let _ = remove_file(&telemetry_path);
         }
 
@@ -429,9 +429,13 @@ fn causal_work_multisets_agree_across_two_processes() {
             "expected a substantial {fixture} comparand, got {} entries",
             first.len()
         );
-        assert_eq!(
-            first, second,
-            "two processes compiling {fixture} must agree on every canonical work count"
+        let divergence = first
+            .iter()
+            .find(|(key, count)| second.get(*key) != Some(count))
+            .or_else(|| second.iter().find(|(key, _)| !first.contains_key(*key)));
+        assert!(
+            first == second,
+            "two processes compiling {fixture} must agree on every canonical work count; first divergence: {divergence:?}"
         );
     }
 }
@@ -1213,17 +1217,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         },
         "{fixture}: causal or output work moved outside the readiness reclassification"
     );
+    let products = report.product_totals();
     assert_eq!(
-        report.product_totals(),
-        ProductWork {
-            settlements: 408,
-            changed: 408,
-            unchanged: 0,
-            cache_hits: 18,
-            displacements: 0,
-            generations: BTreeSet::new(),
-        },
-        "{fixture}: product work moved while pinning direct-fact readiness"
+        (
+            products.settlements,
+            products.distinct_generations,
+            products.changed,
+            products.unchanged,
+            products.cache_hits,
+            products.displacements,
+        ),
+        (408, 408, 408, 0, 18, 0),
+        "{fixture}: established product settlement work moved while pinning direct-fact readiness"
     );
     assert!(
         report.uncaused.is_empty(),

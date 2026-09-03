@@ -424,7 +424,7 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
             ),
             None => {}
         }
-        let mut settled = match settle_demand_cone(world, tel, context, &graph) {
+        let mut settled = match settle_demand_cone(world, tel, context, executable, &graph) {
             Ok(settled) => settled,
             Err(waits) => return product_waits(waits),
         };
@@ -633,6 +633,7 @@ fn settle_demand_cone<T: Telemetry>(
     world: &mut World,
     tel: &T,
     context: &mut ProductReadContext<'_>,
+    anchor: &ExecutableKey,
     graph: &DemandGraph,
 ) -> Result<SettledDemandCone, HashSet<PullWait>> {
     // Each Jacobi round reads one frozen previous-round snapshot, but deriving
@@ -871,15 +872,19 @@ fn settle_demand_cone<T: Telemetry>(
                 .cloned()
                 .collect();
             if unnamed.is_empty() {
-                tel.raw_event1(
-                    &["fz", "compiler2", "demand", "cone", "settled"],
-                    &DemandConeSettlement {
-                        members: members.len() as u64,
-                        external_members: graph.external.len() as u64,
-                        rounds: u64::from(rounds),
-                        derivations,
-                    },
-                );
+                const EVENT: &[&str] = &["fz", "compiler2", "demand", "cone", "settled"];
+                if tel.is_raw_event_enabled(EVENT) {
+                    tel.raw_event2(
+                        EVENT,
+                        &ProductKey::RuntimeDemand(anchor.clone()),
+                        &DemandConeSettlement {
+                            members: members.len() as u64,
+                            external_members: graph.external.len() as u64,
+                            rounds: u64::from(rounds),
+                            derivations,
+                        },
+                    );
+                }
                 return Ok(SettledDemandCone {
                     members,
                     demands: iterates,
