@@ -49,11 +49,15 @@
     {
       "text": "fz-kdt.186 landed (accb5cfbe): under arms:6 the seed adds ONE facet-3 pair, not two. `[int | :nil]` with `[int]` at enum_predicate_search executable 201 is separated outright (its callable questions name disjoint closure sets) and is no longer a reading; `[int | :ok | :true]` with `[int]` at executable 203 is your reproducer under that seed. BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX is 49. Your facet-3 class is otherwise unchanged (3 call-edge entries at the settled arrival) -- and fz-kdt.183 empties it (see the decision request above).\n",
       "timestamp": "2026-09-03T10:39:32Z"
+    },
+    {
+      "text": "fz-kdt.183 landed (2e0bb2706): YOUR REPRODUCER IS GONE, as a cure. dispatch_list_head_separates callsite 0 and both enum_predicate_search callsite-0 readings retired from BLIND_ESCAPE_POPULATION (48 -\u003e 29, every call-edge reading gone); SURFACE_MEMBERSHIP_CENSUS enum_predicate_search arms:6 went 1 -\u003e 0 and is pinned at 0; BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX folded into ARRIVAL_KEPT because seed 6 no longer differs. The facet-3 shape (heads overlap, neither surface contains the other) is still constructible from source; this ticket needs a new reproducer before it can be worked.\n",
+      "timestamp": "2026-09-03T12:16:40Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Runtime-dispatch predicates that overlap without covering either body leave representation safety to arrival order",
   "type": "task",
-  "updated_at": "2026-09-03T10:39:32Z"
+  "updated_at": "2026-09-03T12:16:40Z"
 }
