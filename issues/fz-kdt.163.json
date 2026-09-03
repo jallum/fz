@@ -9,9 +9,15 @@
   "id": "fz-kdt.163",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "Reopened during cumulative current-base review: the original normalized comparer saved 44,272 emitted bytes but temporary census instrumentation measured 4,924 graph / 5,698 body comparisons across 488 passes and ~1.516s sharing cost versus ~1.179s codegen reduction, with a ~586ms worst case and hash/early-exit-dependent comparison counts. This violates the arc performance goal. Retain the native ownership boundary, but replace repeated full-body scans with deterministic indexed/canonical ownership (or a simpler measured equivalent), remove probes, and re-run exact output/work/behavior gates before cold review and delivery.",
+      "timestamp": "2026-09-03T16:08:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Boxed captured-callable specializations duplicate native CPS bodies despite distinct semantic identities",
   "type": "task",
-  "updated_at": "2026-09-03T16:08:37Z"
+  "updated_at": "2026-09-03T16:08:38Z"
 }
