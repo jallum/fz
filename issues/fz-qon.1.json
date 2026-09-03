@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete no-op LTO compatibility modes and document unconditional root closure",
   "type": "task",
-  "updated_at": "2026-09-03T01:32:11Z"
+  "updated_at": "2026-09-03T01:44:27Z"
 }
