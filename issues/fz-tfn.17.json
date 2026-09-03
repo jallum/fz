@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.11"
+  ],
   "created": "2026-09-03T08:00:26Z",
   "description": "## Goal\n\nRemove `BackendProgram.backend_revision` and `NativeProgram.backend_revision`, which carry a constant rather than freshness information.\n\n## Evidence\n\nRoot backend production always writes `BackendProgram.backend_revision = 0`. Native lowering only copies that constant. Equality and canonical rendering therefore carry a ghost field with no state transition. Macro freshness is separate and live: `MacroExecutable.backend_revision` comes from the scheduler fact revision and remains out of scope.\n\n## Strategy and proof\n\n1. Pin backend/native equality and canonical artifact output without the constant field.\n2. Delete both fields, constructors, copies, canonical rendering, equality branches, and field-only tests.\n3. Confirm no freshness decision reads either field and that `MacroExecutable.backend_revision` remains intact.\n4. Prove identical semantic/native behavior and artifacts except for removal of the nonsemantic canonical dump line where applicable; update snapshots/docs deliberately.\n5. Run full tests, fixture matrix, formatting, and strict clippy.\n\nDo not replace the fields with another synthetic version. Product generations and exact fact revisions own freshness.",
   "id": "fz-tfn.17",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Delete constant backend and native revision fields",
   "type": "task",
-  "updated_at": "2026-09-03T08:00:26Z"
+  "updated_at": "2026-09-03T08:02:38Z"
 }
