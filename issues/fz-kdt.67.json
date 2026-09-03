@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T15:23:04Z",
-  "description": "Every CallEmission in jobs/semantic.rs is constructed with `latent_executables: Vec::new()` (five construction sites; resolve_closure_call binds a `let latent_executables = Vec::new()` it never pushes to), and the merge/rebuild paths only concatenate empties. So:\n\n- the `for executable in \u0026call.latent_executables` loop at the publish block never runs -- `analyze_activation` publishes no `Executable` fact at all;\n- `ActivationAnalysis::latent_executables` is always an empty Vec for every activation, and every consumer of it reads an empty list.\n\nFound while assigning each of analyze_activation's outputs to a derivation for fz-kdt.13.2 (the assignment had to enumerate the publish block; `Executable` was assigned to the whole-body answer, which is correct and also unreachable).\n\nRemove the field from `CallEmission`, the field from `ActivationAnalysis`, the publish loop, and the `Executable` arm of the analysis's output vocabulary -- or, if latent executables are meant to exist, restore the site that fills them and say what fills it. Verify against consumers of `ActivationAnalysis::latent_executables` first.",
+  "description": "## Goal\n\nRemove the latent-executable channel from activation analysis because it has no producer and can only publish empty collections. Executable existence must continue to come from its actual root/product ownership path, not from a dormant second vocabulary.\n\n## Proof at a3a9761d1\n\nEvery CallEmission construction initializes `latent_executables` to an empty Vec. Merge and rebuild paths only concatenate those empty vectors. Therefore:\n\n- the activation publish loop over call latent executables never emits an Executable fact;\n- ActivationAnalysis.latent_executables is always empty;\n- dump and telemetry consumers observe only an empty list;\n- tests that construct ActivationAnalysis must supply meaningless empty scaffolding.\n\n## Change\n\n- Delete `CallEmission::latent_executables` and `ActivationAnalysis::latent_executables`.\n- Delete all empty initializers, merges, rebuild plumbing, and the unreachable publication loop.\n- Delete dump, telemetry, and test handling for the field.\n- Correct `northstar.html` and agent documentation so AnalyzeActivation publishes only facts it can actually derive.\n\nDo not restore a producer unless a separate semantic requirement identifies an authoritative source, consumer, and exact dependency contract.\n\n## TDD and checks\n\n- `rg latent_executables src tests .agent northstar.html` returns no live-model references.\n- Existing root/executable inventory tests prove executable discovery remains unchanged.\n- Activation analysis output and causal work are unchanged except for removal of empty data.\n- Full library, single-threaded fixture matrix, target fixtures, and clippy with warnings denied pass.\n\nNo compatibility field or adapter remains.",
   "id": "fz-kdt.67",
   "labels": [],
-  "parent": "fz-kdt",
+  "parent": "fz-tfn",
   "priority": 3,
   "status": "open",
-  "title": "analyze_activation's latent_executables is provably always empty",
+  "title": "Delete the always-empty latent-executable channel from activation analysis",
   "type": "task",
-  "updated_at": "2026-08-30T15:23:04Z"
+  "updated_at": "2026-09-03T00:37:00Z"
 }
