@@ -10,9 +10,15 @@
   "id": "fz-kdt.120",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.183 landed (2e0bb2706): unblocked. With proto120.diff stacked on this base, enum_map_family, enum_tier0 and fz_f98_map_reduce are byte-equal to expected and dead_closure_capture_empty_list + 00277 are FIFO/LIFO byte-identical. Handoff hazard: proto120.diff also edits .agent/docs/{externs,semantic-fixpoint,specs}.md and fixtures2/behavior/spec_shared_var_self_composition.fz, so `git checkout -- src` does not revert it. Re-cut on fz-kdt.184 (which re-cuts on 192, which waits on 198) before building.\n",
+      "timestamp": "2026-09-03T12:16:44Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A @spec variable is a lower bound and a fact only when every positive occurrence contributed: the empty-list ambiguity drop goes, dbg([]) is [], and dead_closure_capture_empty_list converges",
   "type": "task",
-  "updated_at": "2026-09-03T11:05:33Z"
+  "updated_at": "2026-09-03T12:16:44Z"
 }
