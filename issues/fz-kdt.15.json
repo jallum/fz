@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 4,
-  "status": "closed",
+  "status": "open",
   "title": "Delete the orphaned SemanticClosure data model",
   "type": "task",
-  "updated_at": "2026-09-03T02:35:41Z"
+  "updated_at": "2026-09-03T04:17:47Z"
 }
