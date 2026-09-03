@@ -15,12 +15,61 @@
 //! This is the authoritative calculator behind direct-call contract
 //! application. It is the home — per "Types is the calculator" — of the
 //! substitution/witness logic that previously lived hand-rolled in
-//! `contract.rs`. Six behaviors the boolean subsumption surface
+//! `contract.rs`. Seven behaviors the boolean subsumption surface
 //! (`key_subsumes_with`) cannot express live here: the Known/Underconstrained/
 //! Invalid trichotomy; union-on-rebind when one variable binds several
 //! witnesses; structural-mismatch -> Invalid for arrow arity; the same for
-//! map-key presence and tuple arity; ambiguous empty-list witnesses; and the
-//! POLARITY of a variable's occurrences.
+//! map-key presence and tuple arity; ambiguous empty-list witnesses; the
+//! POLARITY of a variable's occurrences; and whether the JOIN behind a
+//! variable's lower bound is FINISHED.
+//!
+//! A PARTIAL JOIN IS NOT A FACT (fz-kdt.210). A variable's lower bound is the
+//! JOIN of its covariant occurrences, and a join needs every term. Where the
+//! walk reaches a NODE it cannot read — every collector answers
+//! `MatchWitness::Unknown`, because the witness carries variables or names no
+//! structure of the pattern's kind — the terms the covariant variables beneath
+//! that node were owed are UNKNOWN, not `none`. What `Sigma` then holds for
+//! such a variable is a partial join: still a sound LOWER bound, and the
+//! PARAMETER surface may keep refining from it, but not the solution. `Known`
+//! claims a runtime FACT, so a result naming such a variable answers
+//! `Underconstrained` instead.
+//!
+//! `reduce_cont([a], b | c, (a, b | c) -> {:cont, b | c} | ..) :: {:done, b |
+//! c} | ..` folding `[int]` from a `[]` seed at an opaque reducer is the shape:
+//! `b | c` occurs covariantly twice — at the SEED, and inside the reducer
+//! arrow's RESULT, which is the occurrence that says what the accumulator
+//! BECOMES — and only the seed is readable, so `{:done, []}` would claim the
+//! fold returns what it started with.
+//!
+//! The rule reads the merged outcome of a NODE, and that is precisely what it
+//! delivers: a `Known` verdict means no node the walk visited was wholly
+//! unreadable — NOT that every covariant occurrence was individually read. Two
+//! collectors skip a single unread occurrence while a sibling keeps the node's
+//! merged outcome `Known`, so the marking site never fires: `collect_map_match`
+//! skips a pattern key the witness does not name, and `collect_arrow_match`
+//! skips a pattern clause no witness clause matches on arity. Both are pinned
+//! KNOWN-WRONG below (`p5_*`, `p10_*`) and neither is reachable from the
+//! shipped library, which declares no map-typed and no multi-clause `@spec`;
+//! fz-kdt.218 owns closing them.
+//!
+//! The coarseness runs the other way too: an unreadable node marks every
+//! covariant variable beneath it, including one another position already
+//! determined (pinned as `an_uninhabited_arrow_clause_still_marks`). That costs
+//! precision, never soundness, and it is measured free — see
+//! [`Types::result_variables_are_determined`].
+//!
+//! A variable the walk observed NOWHERE is a different case and stays a fact:
+//! it never enters `Sigma`, `close_bounds` fills it from its DECLARED bound,
+//! and a declaration is not a partial observation. `@spec f(integer) :: a when
+//! a: binary` is `Known binary`.
+//!
+//! One interaction to hold in view. `FunctionContract::apply` unions the
+//! results of a contract's `Known` clauses and drops an `Underconstrained`
+//! clause's, so a clause moving `Known -> Underconstrained` REMOVES a term from
+//! a multi-clause contract's published result, which `refine_call_return` then
+//! meets into the observed return. That is fz-kdt.190's half-(a) mechanism; on
+//! the corpus it does not fire — no contract loses a term and no new narrowing
+//! of a published return appears anywhere.
 //!
 //! POLARITY (fz-kdt.184). Passing argument `W` where pattern `P` is declared
 //! asserts `W ⊆ σ(P)`. Covariant slots (list element, tuple field, map field,
@@ -106,6 +155,16 @@ pub enum ArrowMatch {
 struct MatchBounds {
     lower: Sigma<Ty>,
     upper: Sigma<Ty>,
+    /// The variables whose lower bound this walk could not finish reading.
+    ///
+    /// A lower bound is the JOIN of a variable's covariant occurrences, and a
+    /// join needs every term. Where the walk reaches a covariant occurrence it
+    /// cannot observe -- the witness carries variables, or names no structure
+    /// of the pattern's kind -- that term is UNKNOWN, not `none`. The join of
+    /// an unknown is unknown, so what `lower` holds for such a variable is a
+    /// PARTIAL join: sound as a lower bound, but not the solution
+    /// (fz-kdt.210).
+    undetermined: HashSet<TypeVarId>,
 }
 
 impl MatchBounds {
@@ -172,6 +231,7 @@ impl Types {
                 return ArrowMatch::Invalid;
             }
             self.drop_ambiguous_empty_list_bindings(pattern, witness, &mut position.lower);
+            solution.undetermined.extend(position.undetermined);
             self.merge_subst_union(&mut solution.lower, position.lower);
             // A var-carrying argument's evidence is still in flight: an upper
             // bound read from it could ratchet the meet down to a false
@@ -226,12 +286,52 @@ impl Types {
             }
         }
 
+        let result_is_a_fact = self.result_variables_are_determined(result, &sigma, &solution.undetermined);
         let (params, result) = self.instantiated_match(params, result, &closed);
-        if params.iter().any(|param| self.has_vars(param)) || self.has_vars(&result) {
+        if params.iter().any(|param| self.has_vars(param)) || self.has_vars(&result) || !result_is_a_fact {
             ArrowMatch::Underconstrained { params, result }
         } else {
             ArrowMatch::Known { params, result }
         }
+    }
+
+    /// Whether the RESULT this match instantiates is a fact about the call.
+    ///
+    /// `Known` claims a runtime fact. The result may only claim one when every
+    /// variable it names was SOLVED -- when the join that produced its lower
+    /// bound had every term. A variable the walk observed nowhere is not in
+    /// `sigma` at all; `close_bounds` fills it from its DECLARED bound, and a
+    /// declaration is a fact the call cannot contradict. A variable the walk
+    /// observed at some occurrences and could not read at others is in
+    /// `sigma` holding a partial join -- a lower bound, not the solution --
+    /// and a result built from it is a guess. The `reduce_cont([a], b | c,
+    /// (a, b | c) -> ..) :: {:done, b | c} | ..` fold seeded `[]` at an opaque
+    /// reducer is exactly that: `b | c` is read from the SEED alone, the
+    /// reducer's arrow result -- the occurrence that says what the accumulator
+    /// becomes -- is never read, and `{:done, []}` claims the walk finished a
+    /// list that has not been walked (fz-kdt.210).
+    ///
+    /// The marking behind `undetermined` is per-NODE, so it is coarse: an
+    /// unreadable node names every covariant variable beneath it, including
+    /// one another position already determined. Keep it that way. Measured
+    /// over the 605-fixture corpus at fz-kdt.210, the coarseness costs 1189
+    /// `Known` verdicts, and at the consumer that reads them
+    /// (`refine_call_return`) 447 become ABSENT and 817 become NOOP: they were
+    /// doing nothing. The 4 that were doing something were the 4 that narrowed
+    /// a published return to its seed's own type -- this defect. Per-occurrence
+    /// marking would buy back verdicts that reach no artifact.
+    fn result_variables_are_determined(
+        &mut self,
+        result: &Ty,
+        sigma: &Sigma<Ty>,
+        undetermined: &HashSet<TypeVarId>,
+    ) -> bool {
+        if undetermined.is_empty() {
+            return true;
+        }
+        self.free_var_ids(result)
+            .iter()
+            .all(|var| !undetermined.contains(var) || !sigma.contains_key(var))
     }
 
     fn instantiated_match(&mut self, params: &[Ty], result: &Ty, sigma: &Sigma<Ty>) -> (Vec<Ty>, Ty) {
@@ -252,13 +352,76 @@ impl Types {
         side: BindingSide,
         bounds: &mut MatchBounds,
     ) -> MatchWitness {
-        MatchWitness::Unknown
+        let outcome = MatchWitness::Unknown
             .merge(self.collect_var_match(pattern, witness, side, bounds))
             .merge(self.collect_tuple_match(pattern, witness, side, bounds))
             .merge(self.collect_list_match(pattern, witness, side, bounds))
             .merge(self.collect_resource_match(pattern, witness, side, bounds))
             .merge(self.collect_map_match(pattern, witness, side, bounds))
-            .merge(self.collect_arrow_match(pattern, witness, side, bounds))
+            .merge(self.collect_arrow_match(pattern, witness, side, bounds));
+        if outcome == MatchWitness::Unknown && self.has_vars(pattern) {
+            // No collector read this node. Every variable that occurs
+            // covariantly beneath it was owed a term of its join and did not
+            // get one, so its lower bound is partial from here on
+            // (fz-kdt.210).
+            //
+            // This is the ONE marking site, and it reads the node's MERGED
+            // outcome. A collector that skips a single occurrence while a
+            // sibling reads another leaves the node `Known` and marks nothing
+            // -- see the `p5_`/`p10_` known-wrong pins for the two that do.
+            let mut seen = HashSet::new();
+            self.collect_lower_occurrences(pattern, side, &mut seen, &mut bounds.undetermined);
+        }
+        outcome
+    }
+
+    /// The variables a subtree would give a LOWER bound to, had the walk been
+    /// able to read it. Mirrors the collectors exactly -- every kind descends
+    /// at the same side and only an arrow's parameters flip -- so a variable
+    /// bounded only from above is never named here (fz-kdt.184).
+    ///
+    /// `Unify` contributes like `Lower`, because `Unify` means the two sides
+    /// describe the same thing and every position binds. The memo is keyed on
+    /// the whole [`BindingSide`] for the same reason: the three sides give
+    /// three different answers, so collapsing any two of them into one slot
+    /// would return the wrong one.
+    fn collect_lower_occurrences(
+        &mut self,
+        pattern: &Ty,
+        side: BindingSide,
+        seen: &mut HashSet<(Ty, BindingSide)>,
+        out: &mut HashSet<TypeVarId>,
+    ) {
+        if !self.has_vars(pattern) || !seen.insert((*pattern, side)) {
+            return;
+        }
+        if side == BindingSide::Lower || side == BindingSide::Unify {
+            out.extend(self.descr(pattern).clone().vars.values.iter().copied());
+        }
+        let arity = self.max_tuple_arity(pattern);
+        for field in self.tuple_projections(pattern, arity) {
+            self.collect_lower_occurrences(&field, side, seen, out);
+        }
+        if self.has_list_shape(pattern) {
+            let elem = self.list_element_type(pattern);
+            self.collect_lower_occurrences(&elem, side, seen, out);
+        }
+        if let Some(payload) = self.resource_payload_type(pattern) {
+            self.collect_lower_occurrences(&payload, side, seen, out);
+        }
+        for key in self.map_known_keys(pattern) {
+            if let Some(field) = self.map_field_lookup(pattern, &key) {
+                self.collect_lower_occurrences(&field, side, seen, out);
+            }
+        }
+        if let Some(clauses) = self.callable_clauses(pattern) {
+            for clause in clauses {
+                for arg in &clause.args {
+                    self.collect_lower_occurrences(arg, side.flipped(), seen, out);
+                }
+                self.collect_lower_occurrences(&clause.ret, side, seen, out);
+            }
+        }
     }
 
     fn collect_var_match(
@@ -354,6 +517,7 @@ impl Types {
                 }
                 self.merge_subst_union(&mut bounds.lower, pair_bounds.lower);
                 self.merge_subst_meet(&mut bounds.upper, pair_bounds.upper);
+                bounds.undetermined.extend(pair_bounds.undetermined);
                 outcome = outcome.merge(pair_outcome);
             }
         }
@@ -1812,7 +1976,12 @@ mod pinned_verdicts {
         );
     }
 
-    // A7. `f(a, a) :: a` at `(int, <unanalyzed arrow>)`.
+    // A7. `f(a, a) :: a` at `(int, <unanalyzed arrow>)`. `a` is owed two terms
+    // of its join and gets one: the second position's witness carries
+    // variables, so what `a` becomes there is unread. `int` is a sound LOWER
+    // bound and the parameter surface keeps it, but the result cannot claim
+    // the call returns an `int` when the unread term may be an arrow
+    // (fz-kdt.210).
     #[test]
     fn a7_var_carrying_argument_contributes_no_bound() {
         let mut t = Types::new();
@@ -1820,7 +1989,327 @@ mod pinned_verdicts {
         let int = t.int();
         let unanalyzed = unanalyzed_arrow(&mut t, 1);
         let v = t.match_arrow(&[a, a], &a, &no_bounds(), &[int, unanalyzed]);
-        assert_eq!(render(&t, &v), "Known params=[int, int] result=int", "A7");
+        assert_eq!(render(&t, &v), "Underconstrained params=[int, int] result=int", "A7");
+    }
+
+    /// fz-kdt.210. The fold shape, as `List.reduce_cont/3` declares it: the
+    /// accumulator variable occurs covariantly TWICE -- at the seed, and
+    /// inside the reducer arrow's RESULT, which is the occurrence that says
+    /// what the accumulator BECOMES. Hand the reducer over unanalyzed and only
+    /// the seed is read. `{:done, seed}` would be a claim that the fold
+    /// returns what it started with, so the verdict withholds the result.
+    ///
+    /// Structural throughout (fz-kdt.209): the verdict is matched, and the
+    /// parameter surface -- which a partial lower bound is still allowed to
+    /// refine -- is compared with the calculator.
+    #[test]
+    fn a_partially_joined_variable_does_not_make_the_result_a_fact() {
+        let mut t = Types::new();
+        let acc = t.param_alpha(0);
+        let seed = t.atom_lit(":a");
+        let done = t.atom_lit(":done");
+        let reducer = t.arrow(&[acc], acc);
+        let result = t.tuple(&[done, acc]);
+        let opaque = unanalyzed_arrow(&mut t, 1);
+
+        match t.match_arrow(&[acc, reducer], &result, &no_bounds(), &[seed, opaque]) {
+            ArrowMatch::Underconstrained { params, .. } => {
+                assert!(t.is_equivalent(&params[0], &seed), "the seed still refines the surface");
+            }
+            other => panic!("a partial join must withhold the result, got {}", render(&t, &other)),
+        }
+
+        // The control: an observed reducer determines the second occurrence,
+        // and the result is a fact again.
+        let b = t.atom_lit(":b");
+        let grown = t.union(seed, b);
+        let observed = t.arrow(&[grown], grown);
+        match t.match_arrow(&[acc, reducer], &result, &no_bounds(), &[seed, observed]) {
+            ArrowMatch::Known { result, .. } => {
+                let expected_payload = t.union(seed, grown);
+                let expected = t.tuple(&[done, expected_payload]);
+                assert!(t.is_equivalent(&result, &expected), "a full join is a fact");
+            }
+            other => panic!("a determined variable is a fact, got {}", render(&t, &other)),
+        }
+    }
+
+    /// fz-kdt.210. `Underconstrained` is not free, and this is the shape that
+    /// pays for it. `behavior/mailbox_closure_reduce` folds a
+    /// `non_empty_list(int)` from a `0` seed with a reducer that arrives from
+    /// `receive` as an opaque `any`, so the accumulator's second covariant
+    /// occurrence is unreadable. Before this rule the contract answered
+    /// `{:done, int}` -- read from the seed and from nothing else -- and
+    /// `refine_call_return` carved the observed `{:done, any}` down to it, so
+    /// `Enum.reduce/3[non_empty_list(int), int, any]` published `int` with a
+    /// `return_layout` of `reprs=[RawInt]`. It now publishes `any` with
+    /// `reprs=[ValueRef]`. That is a real physical de-optimisation on a corpus
+    /// fixture, and it is the honest answer: nothing in the call said the fold
+    /// returns an `int`.
+    #[test]
+    fn an_opaque_fold_keeps_its_observed_return_at_the_cost_of_a_raw_lane() {
+        let mut t = Types::new();
+        let acc = t.param_alpha(0);
+        let int = t.int();
+        let done = t.atom_lit(":done");
+        let reducer = t.arrow(&[acc], acc);
+        let result = t.tuple(&[done, acc]);
+        let opaque = unanalyzed_arrow(&mut t, 1);
+        match t.match_arrow(&[acc, reducer], &result, &no_bounds(), &[int, opaque]) {
+            ArrowMatch::Underconstrained { params, .. } => {
+                assert!(t.is_equivalent(&params[0], &int), "the seed still refines the surface");
+            }
+            other => panic!(
+                "a ground seed alone is not the fold's return, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    /// fz-kdt.210. Marking mirrors the collectors' POLARITY: an occurrence
+    /// reached through an arrow's PARAMETERS is bounded from above and gives
+    /// no term of any join, so an unreadable node never names it.
+    /// `each([a], (a) -> any) :: [a]` at `([int], <opaque>)` reads `a` at
+    /// parameter 0 and owes it nothing at parameter 1, and the result is a
+    /// fact.
+    #[test]
+    fn a_contravariant_only_occurrence_is_not_marked() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let any = t.any();
+        let list_a = t.list(a);
+        let list_int = t.list(int);
+        let each = t.arrow(&[a], any);
+        let opaque = unanalyzed_arrow(&mut t, 1);
+        match t.match_arrow(&[list_a, each], &list_a, &no_bounds(), &[list_int, opaque]) {
+            ArrowMatch::Known { result, .. } => {
+                assert!(
+                    t.is_equivalent(&result, &list_int),
+                    "a contravariant occurrence owes no term"
+                );
+            }
+            other => panic!(
+                "a contravariant-only occurrence must not be marked, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    /// fz-kdt.210. An unreadable node marks the variables BENEATH it and no
+    /// others, and the verdict then turns on what the RESULT names.
+    /// `f(a, b, (b) -> b)` at `(int, binary, <opaque>)` marks `b` alone: a
+    /// result naming `a` is still a fact, a result naming `b` is not.
+    #[test]
+    fn marking_is_scoped_to_the_unreadable_subtree() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let b = t.param_alpha(1);
+        let int = t.int();
+        let str_t = t.str_t();
+        let arrow_b = t.arrow(&[b], b);
+        let opaque = unanalyzed_arrow(&mut t, 1);
+        match t.match_arrow(&[a, b, arrow_b], &a, &no_bounds(), &[int, str_t, opaque]) {
+            ArrowMatch::Known { result, .. } => {
+                assert!(t.is_equivalent(&result, &int), "`a` was read at its only occurrence");
+            }
+            other => panic!("an unmarked result variable is a fact, got {}", render(&t, &other)),
+        }
+        match t.match_arrow(&[a, b, arrow_b], &b, &no_bounds(), &[int, str_t, opaque]) {
+            ArrowMatch::Underconstrained { .. } => {}
+            other => panic!("the marked variable withholds the result, got {}", render(&t, &other)),
+        }
+    }
+
+    /// fz-kdt.210, the load-bearing exception at its exact boundary. A
+    /// variable the walk MARKED but never bound is not in `Sigma`, so
+    /// `close_bounds` fills it from its DECLARED bound: a declaration is not a
+    /// partial observation. `f(a, (any) -> a) :: a when a: binary` at two
+    /// opaque arrows marks `a` at BOTH occurrences and binds it at neither.
+    #[test]
+    fn a_marked_variable_that_never_entered_sigma_keeps_its_declared_bound() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let any = t.any();
+        let str_t = t.str_t();
+        let a_id = t.param_alpha_id(0);
+        let arrow = t.arrow(&[any], a);
+        let opaque1 = unanalyzed_arrow(&mut t, 1);
+        let opaque2 = unanalyzed_arrow(&mut t, 1);
+        let mut bounds = HashMap::new();
+        bounds.insert(a_id, str_t);
+        match t.match_arrow(&[a, arrow], &a, &bounds, &[opaque1, opaque2]) {
+            ArrowMatch::Known { result, .. } => {
+                assert!(
+                    t.is_equivalent(&result, &str_t),
+                    "a declared bound survives the marking"
+                );
+            }
+            other => panic!(
+                "an unobserved variable keeps its declaration, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    /// fz-kdt.210. The same exception with no argument occurrence at all:
+    /// `only_bound(integer) :: a when a: binary`. `a` never enters `Sigma`, so
+    /// nothing about the call can contradict the declaration.
+    #[test]
+    fn a_result_only_variable_with_a_declared_bound_is_a_fact() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let str_t = t.str_t();
+        let a_id = t.param_alpha_id(0);
+        let mut bounds = HashMap::new();
+        bounds.insert(a_id, str_t);
+        match t.match_arrow(&[int], &a, &bounds, &[int]) {
+            ArrowMatch::Known { result, .. } => {
+                assert!(t.is_equivalent(&result, &str_t), "a declared bound is a fact");
+            }
+            other => panic!(
+                "a result-only variable is its declared bound, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    /// fz-kdt.210, the DELIBERATE coarseness. The marking site reads a node's
+    /// MERGED outcome, so an unreadable node names every covariant variable
+    /// beneath it -- including one another position already determined.
+    /// `f(a, ((any) -> int) | ((any, any) -> a)) :: a` at `(int, (any) -> int)`
+    /// has `a` fully determined at position 0, and the arity-2 clause is a
+    /// branch the unary witness can never select, yet the node reads as
+    /// unreadable and the result stops being a fact. Precision, never
+    /// soundness; see [`Types::result_variables_are_determined`] for what the
+    /// whole class costs.
+    #[test]
+    fn an_uninhabited_arrow_clause_still_marks() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let any = t.any();
+        let unary = t.arrow(&[any], int);
+        let binary_clause = t.arrow(&[any, any], a);
+        let pattern = t.union(unary, binary_clause);
+        let witness = t.arrow(&[any], int);
+        match t.match_arrow(&[a, pattern], &a, &no_bounds(), &[int, witness]) {
+            ArrowMatch::Underconstrained { .. } => {}
+            other => panic!("per-node marking is coarse by construction, got {}", render(&t, &other)),
+        }
+    }
+
+    /// fz-kdt.210, KNOWN-WRONG. `collect_map_match` skips a pattern key the
+    /// witness does not name -- and raises no `Invalid` when the witness
+    /// carries variables, precisely the case where the key might yet appear --
+    /// WITHOUT recursing. A sibling key that IS read leaves the node's merged
+    /// outcome `Known`, so the one marking site never fires and `a` reaches a
+    /// `Known` result on a join that is missing its `:missing` term.
+    ///
+    /// `f(a, %{:k => c, :missing => a}) :: a` at `(int, α | %{:k => int})`
+    /// answers `Known int`. It SHOULD withhold the result. The hole is latent:
+    /// no `@spec` in the shipped runtime library declares a map-typed
+    /// parameter, so nothing on the corpus reaches it. fz-kdt.218 owns it.
+    #[test]
+    fn p5_a_skipped_map_key_is_a_partial_join_the_node_rule_misses() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let pattern_map = t.map(&[
+            (MapKey::Atom("k".to_string()), c),
+            (MapKey::Atom("missing".to_string()), a),
+        ]);
+        let witness_map = t.map(&[(MapKey::Atom("k".to_string()), int)]);
+        let free = t.type_var(TypeVarId(901));
+        let witness = t.union(witness_map, free);
+        match t.match_arrow(&[a, pattern_map], &a, &no_bounds(), &[int, witness]) {
+            ArrowMatch::Known { result, .. } => {
+                assert!(
+                    t.is_equivalent(&result, &int),
+                    "known-wrong: the `:missing` term was never read"
+                );
+            }
+            other => panic!(
+                "the known-wrong hole has closed -- re-cut this pin, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    /// fz-kdt.210, KNOWN-WRONG, the same hole in a second collector.
+    /// `collect_arrow_match` skips a pattern clause no witness clause matches
+    /// on arity without recursing, so that clause's covariant result variable
+    /// gets no term and no mark; a sibling clause that DID match keeps the
+    /// node `Known`.
+    ///
+    /// `f(c, ((any) -> b) | ((any, any) -> c)) :: c` at `(int, (any) -> int)`
+    /// answers `Known int`. Weaker than the map case -- the skipped clause is
+    /// uninhabited by this witness, so the skip is arguably principled -- and
+    /// latent for the same reason: the shipped library declares no
+    /// multi-clause `@spec`. fz-kdt.218 owns it.
+    #[test]
+    fn p10_a_skipped_arrow_clause_is_a_partial_join_the_node_rule_misses() {
+        let mut t = Types::new();
+        let b = t.param_alpha(1);
+        let c = t.param_alpha(2);
+        let int = t.int();
+        let any = t.any();
+        let unary = t.arrow(&[any], b);
+        let binary_clause = t.arrow(&[any, any], c);
+        let pattern = t.union(unary, binary_clause);
+        let witness = t.arrow(&[any], int);
+        match t.match_arrow(&[c, pattern], &c, &no_bounds(), &[int, witness]) {
+            ArrowMatch::Known { result, .. } => {
+                assert!(
+                    t.is_equivalent(&result, &int),
+                    "known-wrong: the arity-2 clause was never read"
+                );
+            }
+            other => panic!(
+                "the known-wrong hole has closed -- re-cut this pin, got {}",
+                render(&t, &other)
+            ),
+        }
+    }
+
+    /// fz-kdt.210 meets fz-f98.16, and why 210 lands before fz-kdt.120. The
+    /// exception this rule leans on is "not in `Sigma`", and the empty-list
+    /// cleaner is what decides membership: a variable whose ONLY binding came
+    /// through an exact `[]` witness is dropped from `Sigma`, so it routes into
+    /// the observed-nowhere exception although the walk DID observe it.
+    /// `each([a], (a) -> a) :: [a] when a: binary` at `([], <opaque>)` marks
+    /// `a` from the opaque reducer, finds no `a` in `Sigma`, and answers the
+    /// DECLARED `[binary]`. Deleting the cleaner (fz-kdt.120) leaves the `[]`
+    /// binding in `Sigma` and this becomes `Underconstrained` -- a flip 120
+    /// must make deliberately, and the reason it cannot be made before this
+    /// rule exists.
+    #[test]
+    fn the_empty_list_cleaner_decides_which_exception_applies() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let str_t = t.str_t();
+        let a_id = t.param_alpha_id(0);
+        let empty = t.empty_list();
+        let list_a = t.list(a);
+        let list_str = t.list(str_t);
+        let arrow_a = t.arrow(&[a], a);
+        let opaque = unanalyzed_arrow(&mut t, 1);
+        let mut bounds = HashMap::new();
+        bounds.insert(a_id, str_t);
+        match t.match_arrow(&[list_a, arrow_a], &list_a, &bounds, &[empty, opaque]) {
+            ArrowMatch::Known { result, .. } => {
+                assert!(
+                    t.is_equivalent(&result, &list_str),
+                    "the declared bound answered, not the `[]`"
+                );
+            }
+            other => panic!(
+                "the cleaner still routes an `[]`-only binding out of Sigma, got {}",
+                render(&t, &other)
+            ),
+        }
     }
 
     // A8. `f(a, a, a) :: a` at `(int, [], <unanalyzed arrow>)`.

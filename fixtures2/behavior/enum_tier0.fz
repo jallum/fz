@@ -2,9 +2,7 @@
 # purpose: "Enum tier-0 functions return Elixir-style public values across List, Range, and Map"
 # oracle: oracle.exs
 # timeout.interp_secs: 15
-# defer.build: two live blockers: Enum.reduce/2 over Map (fz-bfh.3) then fz-k22 (unbound backend value)
-# defer.interp: two live blockers: Enum.reduce/2 over Map (fz-bfh.3) then fz-k22 (unbound backend value)
-# defer.run: two live blockers: Enum.reduce/2 over Map (fz-bfh.3) then fz-k22 (unbound backend value)
+# timeout.run_secs: 15
 #---
 #
 # Exercises the reduce-based public `Enum` surface that later Enum functions build
@@ -13,21 +11,24 @@
 # Range, and Map so the "across List, Range, and Map" claim is exercised, not just
 # asserted.
 #
-# ## Why this is still deferred (re-triaged 2026-08-24)
+# `Enum.reduce/2` -- the no-accumulator form -- seeds the fold with `:first` and
+# the reducer returns `{:acc, a}`, so the declared accumulator is `:first |
+# {:acc, a}` and the seed is a member of it. The stdout expectation holds on all
+# three paths; `expected.diagnostics` carries one library warning.
+
+# The `run` budget matches `interp`'s because this program compiles 259
+# executables, and `run` starts its clock at execution-ready, so JIT lowering of
+# all of them sits inside the measured window: `fz2 run` takes 3.1-3.9s here
+# against a 3s default. `build` needs no override -- `fz2 build` itself is
+# untimed and only the produced binary's execution is measured.
 #
-# Two of the four originally-cited blockers are CLOSED (fz-bfh.1 reduce/3 over
-# Range, fz-bfh.4 range+map storm) and fz-bfh.2's two symptoms both pass in
-# isolation at HEAD. What actually stops this fixture now, in order:
-#
-#   1. `Enum.reduce(map, fn ...)` -- reduce/2 with no accumulator over a Map --
-#      raises `Enum.EmptyError`. Elixir yields `{3, :one}`. reduce/3 over Map
-#      works, so this is the remaining half of fz-bfh.3.
-#   2. With that one line skipped the fixture prints eight more correct values
-#      and then dies with `backend value 0 is unbound`, which is fz-k22's
-#      signature.
-#
-# So this is two bugs from green, and both are named. Do not re-triage from the
-# original four-ticket list.
+# THE COMMENT BLOCK ABOVE THE BLANK LINE IS 17 LINES AND THE DIAGNOSTICS GOLDEN
+# DEPENDS ON THAT COUNT. `fixture_matrix`'s `normalize_gutter_line_ref`
+# subtracts a fixture's leading-comment-line count from EVERY gutter number it
+# renumbers, including one rendered from `runtime:Enum.fz`, so
+# `expected.diagnostics` stores `250 |` for the line `fz2 interp` renders as
+# `267 |`. Prose that needs to grow goes HERE, below the blank line where the
+# normaliser's `take_while` has already stopped. fz-kdt.19 owns the defect.
 
 fn main() do
   xs = [1, 2, 3, 4]

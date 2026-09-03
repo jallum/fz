@@ -68,6 +68,22 @@ Compiler2 owns the active contract path:
   meet(uppers)` is a necessary condition (over the variables both bounds reached,
   over observed lowers, before bound closure) for a solution to exist. A variable
   with only upper bounds stays free (`Underconstrained`).
+- A contract RESULT is a fact only when the joins behind its variables are
+  finished. A lower bound is the join of a variable's covariant occurrences;
+  where the walk reaches a NODE it cannot read — the witness carries variables,
+  or names no structure of the pattern's kind — every covariant variable beneath
+  it is owed a term it did not get, and what `Sigma` holds is a PARTIAL join.
+  (The unit is the node's merged outcome, not the individual occurrence; see
+  [`addressed-arrow`](addressed-arrow.md) for the two collectors that skip an
+  occurrence without marking it.) The parameter surface still refines from it
+  (it is a sound lower bound), but the verdict is `Underconstrained`, so
+  `FunctionContract::apply` publishes no result for that clause. `reduce_cont`'s
+  accumulator variable occurs at the SEED and inside the reducer arrow's RESULT;
+  `Enumerable` hands the reducer over as a bare address var, so a `[]`-seeded
+  fold over `[int]` reads the seed alone and `{:done, []}` would be a claim that
+  the fold returns what it started with. A variable the walk observed NOWHERE
+  keeps its fact: it never enters `Sigma` and `close_bounds` fills it from its
+  declared bound (`@spec f(integer) :: a when a: binary` is `Known binary`).
 - Fatal `spec/violation` diagnostics fire only at USER callsites
   (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). Library
   (bootstrap) callsites are validated for refinement but never diagnosed:

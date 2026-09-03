@@ -134,7 +134,13 @@ so the intersection clamped every later call back onto the initial
 specialization: the accumulator's ascent stopped one rung short, the grown
 accumulator got no specialization and no construction member, and the values on
 that rung reached a body that never named them (fz-kdt.132 — the whole
-268-escape surface-membership census). `refine_observed_return` refuses the
+268-escape surface-membership census). A declared `@spec` return reaches the
+same seam through `refine_call_return`, and it only ever OFFERS one the
+calculator called a fact: a contract clause whose result names a
+partially-joined variable answers `Underconstrained` and publishes no result at
+all (see [`addressed-arrow`](addressed-arrow.md)), so the join a `[]`-seeded
+fold observes is never met with the seed's own type. `refine_observed_return`
+refuses the
 kindred narrowing on the return side only where the arrow's type is a strict
 subtype of the observed; the argument-side rule here is UNCONDITIONAL -- the
 arrow's parameters never refine an observed argument -- which is the stronger

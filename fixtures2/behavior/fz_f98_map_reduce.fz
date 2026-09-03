@@ -1,15 +1,10 @@
 #---
 # purpose: "fz-f98: Enum.reduce/2 and reduce/3 over Map do not materialize absent values"
-# defer.build: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-bfh.3)
-# defer.interp: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-bfh.3)
-# defer.run: one live blocker: Enum.reduce/2 over Map raises Enum.EmptyError (fz-bfh.3)
 #---
 #
-# Regression target for fz-bfh.3, re-triaged 2026-08-24: ONE bug from green.
-# The reduce/3 line below is correct at HEAD (prints 3); only reduce/2 -- the
-# no-accumulator form, which must take the first element as the seed -- still
-# fails, and it fails as `Enum.EmptyError` rather than by dropping value
-# evidence. Elixir yields `{3, :one}`.
+# `Enum.reduce/2` over a Map takes the first element as the seed and yields
+# `{3, :one}`, as Elixir does; `reduce/3` over the same Map yields `3`. Both
+# lines are exact on all three paths.
 fn main() do
   map = %{2 => :two, 1 => :one}
 

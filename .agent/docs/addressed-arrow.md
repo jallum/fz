@@ -204,7 +204,8 @@ the reason contract matching is this calculator rather than that one:
 4. the same for map-key presence and tuple arity;
 5. ambiguous empty-list witnesses (`drop_ambiguous_empty_list_bindings`): `[]`
    is a member of every list type, so a binding it pins is noise and is dropped;
-6. the POLARITY of a variable's occurrences (below).
+6. the POLARITY of a variable's occurrences (below);
+7. whether the JOIN behind a variable's lower bound is FINISHED (below).
 
 ## Polarity: lowers instantiate, the meet of uppers is the check
 
@@ -234,6 +235,61 @@ the check, because an upper read from in-flight evidence could ratchet the meet
 to a false `Invalid` a later revision revokes. A variable with only upper bounds
 has no lower to publish and stays free (`Underconstrained`) — an observable loss
 on `f((a) -> nil) :: [a]`, traded for the soundness and precision wins above.
+
+## A partial join is not a fact
+
+A variable's lower bound is the JOIN of its covariant occurrences, and a join
+needs every term. Where the walk reaches a NODE it cannot read — every collector
+answers `MatchWitness::Unknown`, because the witness carries variables or names
+no structure of the pattern's kind — the terms the covariant variables beneath
+that node were owed are UNKNOWN, not `none`. `collect_match_subst` records those
+variables (`collect_lower_occurrences`, which mirrors the collectors and flips at
+an arrow's parameters exactly as they do) into `MatchBounds::undetermined`.
+What `Sigma` holds for such a variable is a PARTIAL join: still a sound lower
+bound, so the instantiated PARAMETER surface keeps refining the call's inputs,
+but not the solution. `Known` claims a runtime FACT, so a result naming a
+partially-joined variable answers `Underconstrained` instead, and
+`FunctionContract::apply` drops an `Underconstrained` clause's result while
+keeping its parameters.
+
+The unit is the NODE, and that is what a `Known` verdict delivers: no node the
+walk visited was wholly unreadable. It is not the stronger claim that every
+covariant occurrence was individually read. Two collectors skip a single unread
+occurrence while a sibling keeps the node's merged outcome `Known`, so the one
+marking site never fires: `collect_map_match` skips a pattern key the witness
+does not name, and `collect_arrow_match` skips a pattern clause no witness clause
+matches on arity. Both are pinned KNOWN-WRONG in `arrow_match.rs`
+(`p5_a_skipped_map_key_…`, `p10_a_skipped_arrow_clause_…`); neither is reachable
+from the shipped runtime library, which declares no map-typed and no
+multi-clause `@spec`, and fz-kdt.218 owns closing them.
+
+The node unit is coarse in the other direction too: an unreadable node names
+every covariant variable beneath it, including one another position already
+determined (`an_uninhabited_arrow_clause_still_marks`). That costs precision,
+never soundness, and it is measured free — the corpus loses 1189 `Known`
+verdicts, and at the consumer that reads them 447 become ABSENT and 817 NOOP.
+Only 4 were narrowing a published return, and all 4 were the defect this rule
+removes.
+
+One interaction to hold in view: `FunctionContract::apply` unions the results of
+a contract's `Known` clauses, so a clause moving `Known → Underconstrained`
+REMOVES a term from a multi-clause contract's published result, which
+`refine_call_return` then meets into the observed return. That is fz-kdt.190's
+half-(a) mechanism. It does not fire on the corpus: no contract loses a term and
+no new narrowing of a published return appears.
+
+The fold declares the shape. `reduce_cont([a], b | c, (a, b | c) -> {:cont,
+b | c} | ..) :: {:done, b | c} | ..` gives `b | c` two covariant occurrences:
+the SEED, and the reducer arrow's RESULT — the occurrence that says what the
+accumulator BECOMES. `Enumerable` hands the reducer over as a bare address var,
+so only the seed is readable; reading it alone and calling the answer a fact
+publishes `{:done, []}` for a fold that has already walked a `[int]`, and a
+`[]`-typed value entering a type-dispatched consumer selects the empty clause.
+
+A variable the walk observed NOWHERE is a different case and stays a fact: it
+never enters `Sigma`, `close_bounds` fills it from its DECLARED bound, and a
+declaration is not a partial observation. `@spec f(integer) :: a when a: binary`
+still answers `Known binary`.
 
 A witness is an OBSERVATION. The alternative — the pattern instantiated by
 whatever the argument happened to pin — is not a smaller observation but a

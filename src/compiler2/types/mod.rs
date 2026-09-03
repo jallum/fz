@@ -3229,7 +3229,7 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
 /// is the third case: the two sides describe the same thing rather than
 /// standing in a constraint, so every position binds and no flip applies
 /// (fz-kdt.184).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum BindingSide {
     Unify,
     Lower,
