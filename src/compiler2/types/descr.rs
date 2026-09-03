@@ -26,6 +26,7 @@ type AtomSet = FiniteSet<String>;
 type VarSet = FiniteSet<TypeVarId>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) struct Descr {
     pub(super) basic: BasicBits,
     pub(super) atoms: AtomSet,

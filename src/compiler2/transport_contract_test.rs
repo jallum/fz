@@ -4819,6 +4819,7 @@ fn main(), do: caller(1)
         phantom_caller,
         HashMap::from([(id_exec.clone(), RuntimeDemand::ignore())]),
         &HashSet::new(),
+        world.types(),
     );
     pull_product_until_produced_with_fact_waits(
         &mut driver,
@@ -5757,7 +5758,7 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
         })
         .filter(|pair| {
             types
-                .cmp_tys(
+                .cmp_activation_tys(
                     &pair[0].position.executable().activation.input,
                     &pair[1].position.executable().activation.input,
                 )

@@ -36,6 +36,7 @@ use super::bus::ConfiguredTelemetry;
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
+use crate::compiler2::SemanticOrd;
 
 #[cfg(test)]
 thread_local! {
@@ -592,7 +593,7 @@ impl JsonlBackend {
             },
         );
         let stall_backend = Rc::clone(backend);
-        telemetry.attach_raw_event2::<u64, std::collections::HashSet<crate::compiler2::FactKey>, _>(
+        telemetry.attach_raw_event2::<u64, Vec<crate::compiler2::FactKey>, _>(
             &["fz", "compiler2", "drive", "demand_on_stall"],
             move |name, span_id, parent_span_id, producer_pokes, demanded_facts| {
                 stall_backend.handle_raw_event(
@@ -1189,7 +1190,7 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
             return;
         };
         let mut activations = completion.activation_input_changed.iter().collect::<Vec<_>>();
-        activations.sort_by_key(|activation| format!("{activation:?}"));
+        activations.sort_by(|left, right| left.semantic_cmp(right, world.types()));
         out.push_str(",\"semantic\":{\"activations\":[");
         for (index, activation) in activations.into_iter().enumerate() {
             if index > 0 {
@@ -1220,17 +1221,15 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         else {
             return;
         };
-        // `reads` comes from `deps`' `HashSet`, so presentation-sort the
-        // rendered identities rather than trusting iteration order.
         let job_reads = world.work_graph.reads(&completion.job);
-        let mut reads = job_reads.iter().map(render_fact_use_identity).collect::<Vec<_>>();
-        reads.sort();
+        let mut reads = job_reads.iter().collect::<Vec<_>>();
+        reads.sort_by(|left, right| left.semantic_cmp(right, world.types()));
         out.push_str(",\"semantic\":{\"reads\":[");
         for (index, entry) in reads.iter().enumerate() {
             if index > 0 {
                 out.push(',');
             }
-            out.push_str(entry);
+            write_fact_use_identity(out, entry);
         }
         out.push_str("]}");
         return;
@@ -1753,11 +1752,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "value");
         out.push(':');
         write_str_lit(out, &format!("{summary:?}"));
-    } else if let Some(facts) = opaque.downcast_ref::<std::collections::HashSet<crate::compiler2::FactKey>>() {
-        // The stall pass's cumulative demand set (`demand_on_stall`'s
-        // `stall_demanded`, drive.rs). It is a `HashSet`, so its iteration
-        // order is a `RandomState` artifact — presentation-sort the
-        // rendered identities, same as `write_blocked`/`render_movement`.
+    } else if let Some(facts) = opaque.downcast_ref::<Vec<crate::compiler2::FactKey>>() {
         out.push(',');
         write_str_lit(out, "count");
         out.push(':');
@@ -1766,13 +1761,14 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "facts");
         out.push(':');
         out.push('[');
-        let mut rendered = facts.iter().map(render_fact_identity).collect::<Vec<_>>();
-        rendered.sort();
-        for (index, entry) in rendered.iter().enumerate() {
+        for (index, fact) in facts.iter().enumerate() {
             if index > 0 {
                 out.push(',');
             }
-            out.push_str(entry);
+            out.push_str("{\"kind\":");
+            write_str_lit(out, fact_kind(fact));
+            write_fact_identity(out, fact);
+            out.push('}');
         }
         out.push(']');
     }
@@ -2061,31 +2057,16 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
     }
 }
 
-/// One blocked-wait entry as a self-contained `{"kind":...,...}` string, so
-/// callers can sort the *rendered identities* (a presentation-boundary sort,
-/// deterministic — not a sort over `FactKey` itself) rather than the bare
-/// kind strings the old rendering compared.
-fn render_fact_identity(fact: &crate::compiler2::FactKey) -> String {
-    let mut rendered = String::new();
-    rendered.push_str("{\"kind\":");
-    write_str_lit(&mut rendered, fact_kind(fact));
-    write_fact_identity(&mut rendered, fact);
-    rendered.push('}');
-    rendered
-}
-
 fn write_blocked(out: &mut String, blocked: &[crate::compiler2::FactUse<crate::compiler2::FactKey>]) {
     out.push_str(",\"blocked\":[");
-    let mut rendered = blocked
-        .iter()
-        .map(|wait| render_fact_identity(wait.fact()))
-        .collect::<Vec<_>>();
-    rendered.sort();
-    for (index, entry) in rendered.iter().enumerate() {
+    for (index, wait) in blocked.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        out.push_str(entry);
+        out.push_str("{\"kind\":");
+        write_str_lit(out, fact_kind(wait.fact()));
+        write_fact_identity(out, wait.fact());
+        out.push('}');
     }
     out.push(']');
 }
@@ -2114,30 +2095,11 @@ fn write_fact_use_identity(out: &mut String, fact_use: &crate::compiler2::FactUs
     out.push('}');
 }
 
-/// A `FactUse<FactKey>` identity as a self-contained string, for callers
-/// that need to presentation-sort a batch of them (their source is a
-/// `HashSet`, so iteration order is a `RandomState` artifact).
-fn render_fact_use_identity(fact_use: &crate::compiler2::FactUse<crate::compiler2::FactKey>) -> String {
-    let mut rendered = String::new();
-    write_fact_use_identity(&mut rendered, fact_use);
-    rendered
-}
-
 fn write_optional_u64(out: &mut String, value: Option<u64>) {
     match value {
         Some(n) => push_u64(out, n),
         None => out.push_str("null"),
     }
-}
-
-/// One `FactChange<FactKey>` as a full identity object: the changed fact's
-/// own identity plus its before/after revision and settledness. Emission
-/// order (the order `AppliedStep::changed` already carries) is preserved —
-/// it is not a `HashSet` source, so no presentation sort is needed.
-fn render_fact_change_identity(change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) -> String {
-    let mut rendered = String::new();
-    write_fact_change_identity(&mut rendered, change);
-    rendered
 }
 
 fn write_fact_change_identity(out: &mut String, change: &crate::compiler2::FactChange<crate::compiler2::FactKey>) {
@@ -2180,20 +2142,15 @@ fn write_wake(out: &mut String, wake: &crate::compiler2::Wake<crate::compiler2::
     out.push('}');
 }
 
-/// One `FactMovement<FactKey>` as a self-contained string, for
-/// presentation-sorting a batch (`AppliedStep::movements`' source is a
-/// `HashSet`, so its iteration order is a `RandomState` artifact).
-fn render_movement(movement: &crate::compiler2::FactMovement<crate::compiler2::FactKey>) -> String {
-    let mut rendered = String::new();
-    rendered.push_str("{\"kind\":");
-    write_str_lit(&mut rendered, fact_kind(&movement.key));
-    write_fact_identity(&mut rendered, &movement.key);
-    rendered.push_str(",\"revision\":");
-    write_optional_u64(&mut rendered, movement.state.revision);
-    rendered.push_str(",\"settled\":");
-    rendered.push_str(if movement.state.settled { "true" } else { "false" });
-    rendered.push('}');
-    rendered
+fn write_movement(out: &mut String, movement: &crate::compiler2::FactMovement<crate::compiler2::FactKey>) {
+    out.push_str("{\"kind\":");
+    write_str_lit(out, fact_kind(&movement.key));
+    write_fact_identity(out, &movement.key);
+    out.push_str(",\"revision\":");
+    write_optional_u64(out, movement.state.revision);
+    out.push_str(",\"settled\":");
+    out.push_str(if movement.state.settled { "true" } else { "false" });
+    out.push('}');
 }
 
 /// The shared applied-step body: `"changed"`, `"wakes"`, `"movements"`, and
@@ -2205,17 +2162,12 @@ fn write_applied_step_body(
     out: &mut String,
     step: &crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
 ) {
-    // `changed` batches arrive in publish order, which for the arbiter's
-    // steps reflects the waiter index's iteration; sorted here like
-    // `movements` below, so the array is a presentation-stable set.
     out.push_str(",\"changed\":[");
-    let mut changed = step.changed.iter().map(render_fact_change_identity).collect::<Vec<_>>();
-    changed.sort();
-    for (index, entry) in changed.iter().enumerate() {
+    for (index, change) in step.changed.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        out.push_str(entry);
+        write_fact_change_identity(out, change);
     }
     out.push(']');
 
@@ -2229,13 +2181,11 @@ fn write_applied_step_body(
     out.push(']');
 
     out.push_str(",\"movements\":[");
-    let mut movements = step.movements.iter().map(render_movement).collect::<Vec<_>>();
-    movements.sort();
-    for (index, entry) in movements.iter().enumerate() {
+    for (index, movement) in step.movements.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        out.push_str(entry);
+        write_movement(out, movement);
     }
     out.push(']');
 

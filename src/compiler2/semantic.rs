@@ -4,10 +4,12 @@
 //! the work graph owns: observed input shapes, reachable callsites, settled
 //! return types, and the semantic closure each root has reached.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
+use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::types::{Ty, Types};
 
@@ -762,44 +764,51 @@ pub struct ActivationMap {
     slots: HashMap<ActivationKey, ActivationSlot>,
 }
 
-/// A publisher identity rendered deterministically for fold-order tie-breaks,
-/// without leaking a bare interned `Ty`'s first-intern-order number. `Job`
-/// embeds `ActivationKey.arrow` (`types/mod.rs::Ty(u32)`) in `SeedActivation`/
-/// `AnalyzeActivation`; sorting those by `{:?}` would fold two runs' equal-but-
-/// differently-interned arrows in different orders, reintroducing exactly the
-/// order-dependence the determinism-pinning work (`ContributionMap::apply`)
-/// exists to remove. `Ctx` carries whatever the rendering needs — the shared
-/// type store, so `arrow` renders through `Types::display`, the interner's own
-/// canonical renderer, not a second hand-rolled one.
-pub trait StableSortKey<Ctx> {
-    fn stable_sort_key(&self, ctx: &Ctx) -> String;
+/// A total, owner-aware semantic order for identities that cannot derive
+/// `Ord`: activation arrows contain World-local intern handles, so only the
+/// owning `Types` can compare what they mean.
+pub trait SemanticOrd<Ctx> {
+    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering;
 }
 
-impl StableSortKey<Types> for ActivationKey {
-    /// `root`/`function` are ids assigned by deterministic parse/scope
-    /// traversal; `arrow` is the one field that is a bare interned `Ty`, so it
-    /// renders through `Types::display` (the same idiom `Job` uses for its
-    /// `SeedActivation`/`AnalyzeActivation` variants) instead of `{:?}`.
-    fn stable_sort_key(&self, types: &Types) -> String {
-        format!(
-            "ActivationKey {{ root: {:?}, function: {:?}, arrow: {} }}",
-            self.root,
-            self.function,
-            types.display(&self.arrow)
-        )
+impl<Ctx, F> SemanticOrd<Ctx> for FactUse<F>
+where
+    F: SemanticOrd<Ctx>,
+{
+    fn semantic_cmp(&self, other: &Self, ctx: &Ctx) -> Ordering {
+        let readiness_rank = |fact: &FactUse<F>| match fact {
+            FactUse::Current(_) => 0,
+            FactUse::Settled(_) => 1,
+            FactUse::SettledPresence(_) => 2,
+        };
+        self.fact()
+            .semantic_cmp(other.fact(), ctx)
+            .then_with(|| readiness_rank(self).cmp(&readiness_rank(other)))
     }
 }
 
-impl StableSortKey<Types> for ExecutableKey {
-    /// `need` carries no `Ty` (`ExecutableNeed` is `Value` or
-    /// `TupleFields(usize)`), so only `activation` needs the `Ty`-blind
-    /// rendering above.
-    fn stable_sort_key(&self, types: &Types) -> String {
-        format!(
-            "ExecutableKey {{ activation: {}, need: {:?} }}",
-            self.activation.stable_sort_key(types),
-            self.need
-        )
+impl SemanticOrd<Types> for ActivationKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.root
+            .cmp(&other.root)
+            .then_with(|| self.function.cmp(&other.function))
+            .then_with(|| types.cmp_activation_ty(self.arrow, other.arrow))
+    }
+}
+
+impl SemanticOrd<Types> for CallSiteKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.activation
+            .semantic_cmp(&other.activation, types)
+            .then_with(|| self.callsite.cmp(&other.callsite))
+    }
+}
+
+impl SemanticOrd<Types> for ExecutableKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.activation
+            .semantic_cmp(&other.activation, types)
+            .then_with(|| self.need.cmp(&other.need))
     }
 }
 
@@ -1007,13 +1016,12 @@ impl ActivationInputAlternatives {
         self.rows.push(row);
     }
 
-    /// Restore the canonical form: rows in a deterministic, representative-
-    /// stable order (the same `Types::display` idiom `StableSortKey` uses, so
-    /// two runs that intern equal types under different ids fold identically),
-    /// the budget widening applied, and the joined projection recomputed.
+    /// Restore the row-set form: surviving incomparable rows in the type
+    /// store's semantic order, the budget widening applied, and the joined
+    /// projection recomputed.
     fn rebuild(&mut self, types: &mut Types) {
         self.rows
-            .sort_by_cached_key(|row| row.columns.iter().map(|ty| types.display(ty)).collect::<Vec<_>>());
+            .sort_by(|left, right| types.cmp_activation_tys(&left.columns, &right.columns));
         let mut joined = Vec::new();
         for row in &self.rows {
             joined.join_assign(&row.columns, types);
@@ -1192,8 +1200,8 @@ impl ActivationMap {
 
 impl<K, P, V> ContributionMap<K, P, V>
 where
-    K: Clone + Eq + Hash,
-    P: Clone + Eq + Hash + std::fmt::Debug + StableSortKey<V::Ctx>,
+    K: Clone + Eq + Hash + SemanticOrd<V::Ctx>,
+    P: Clone + Eq + Hash + SemanticOrd<V::Ctx>,
     V: JoinContribution,
 {
     pub fn new() -> Self {
@@ -1230,11 +1238,14 @@ where
         rebased: bool,
     ) -> ContributionReplace<K> {
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
-        let touched = previous_output_keys
+        let mut touched = previous_output_keys
             .iter()
             .cloned()
             .chain(next_output_keys.iter().cloned())
-            .collect::<HashSet<_>>();
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        touched.sort_by(|left, right| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
         for key in touched {
             let entry = match next.get(&key) {
@@ -1262,10 +1273,12 @@ where
         previous_output_keys: HashSet<K>,
         next: HashMap<K, V>,
     ) -> ContributionReplace<K> {
+        let mut ordered_next = next.into_iter().collect::<Vec<_>>();
+        ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut output_keys = previous_output_keys;
-        output_keys.extend(next.keys().cloned());
+        output_keys.extend(ordered_next.iter().map(|(key, _)| key.clone()));
         let mut changed_keys = HashSet::new();
-        for (key, value) in next {
+        for (key, value) in ordered_next {
             if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
                 changed_keys.insert(key);
             }
@@ -1284,8 +1297,10 @@ where
             return ContributionReplace::default();
         }
         let next_output_keys = next.keys().cloned().collect::<HashSet<_>>();
+        let mut ordered_next = next.into_iter().collect::<Vec<_>>();
+        ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut changed_keys = HashSet::new();
-        for (key, value) in next {
+        for (key, value) in ordered_next {
             if self.apply(ctx, &key, &publisher, SlotEntry::Upsert(value), true) {
                 changed_keys.insert(key);
             }
@@ -1323,18 +1338,13 @@ where
         // same contributor set in a different order can settle on
         // equivalent-but-differently-interned `Ty`s — so pin the fold order
         // itself to a deterministic, publisher-identity-derived key.
-        // `StableSortKey` (not raw `Debug`) is load-bearing here: `Job` embeds
+        // `SemanticOrd` (not raw `Debug`) is load-bearing here: `Job` embeds
         // `ActivationKey.arrow`, a bare interned `Ty`, and two runs can settle
         // on an equal-but-differently-numbered arrow for the same activation —
         // sorting by its raw id would reintroduce the very order-dependence
         // this fold order exists to remove.
-        // On a sort-key collision the (stable) sort preserves `HashMap`
-        // iteration order — nondeterministic — so the key is relied on to be
-        // injective over live publishers (proven by
-        // `types_display_distinguishes_structurally_close_types`); a genuine
-        // collision would need a secondary structural discriminator here.
         let mut ordered_contributors = slot.contributors.iter().collect::<Vec<_>>();
-        ordered_contributors.sort_by_cached_key(|(publisher, _)| publisher.stable_sort_key(&*ctx));
+        ordered_contributors.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let joined = join_contributions(ctx, ordered_contributors.into_iter().map(|(_, value)| value));
         let moved = !old_joined.as_ref().is_some_and(|old| old.equivalent(&joined, ctx));
         if !slot.contributors.is_empty() {
@@ -1901,6 +1911,67 @@ mod tests {
             "preserving an unchanged frontier should not mark the activation input dirty"
         );
         assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
+    }
+
+    #[test]
+    fn contribution_key_waves_allocate_identically_across_reverse_insertion() {
+        let run = |reverse: bool| {
+            let mut world = World::new();
+            let root = RootId::for_test(92);
+            let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "contribution_order", 1);
+            let int = world.types_mut().int();
+            let float = world.types_mut().float();
+            let atom_a = world.types_mut().atom_lit("a");
+            let atom_b = world.types_mut().atom_lit("b");
+            let list = world.types_mut().list(int);
+            let non_empty = world.types_mut().non_empty_list(int);
+            let list_key = ActivationKey::from_inputs(root, function, &[list], world.types_mut());
+            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], world.types_mut());
+            let mut map = ActivationInputMap::new();
+            let publisher_a = Job::SeedRoot(root);
+            let publisher_b = Job::AnalyzeActivation(list_key.clone());
+            let first = HashMap::from([
+                (list_key.clone(), ActivationInputAlternatives::from_row(vec![int])),
+                (
+                    non_empty_key.clone(),
+                    ActivationInputAlternatives::from_row(vec![float]),
+                ),
+            ]);
+            map.conclude(world.types_mut(), publisher_a, HashSet::new(), first, false);
+            let second = if reverse {
+                [
+                    (
+                        non_empty_key.clone(),
+                        ActivationInputAlternatives::from_row(vec![atom_b]),
+                    ),
+                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
+                ]
+                .into_iter()
+                .collect()
+            } else {
+                HashMap::from([
+                    (list_key.clone(), ActivationInputAlternatives::from_row(vec![atom_a])),
+                    (
+                        non_empty_key.clone(),
+                        ActivationInputAlternatives::from_row(vec![atom_b]),
+                    ),
+                ])
+            };
+            map.conclude(
+                world.types_mut(),
+                publisher_b,
+                HashSet::from([list_key.clone(), non_empty_key.clone()]),
+                second,
+                false,
+            );
+            (
+                map.get(&list_key).expect("list contribution").rows()[0].columns()[0],
+                map.get(&non_empty_key).expect("non-empty contribution").rows()[0].columns()[0],
+                world.types().identity_inventory(),
+            )
+        };
+
+        assert_eq!(run(false), run(true));
     }
 
     #[test]

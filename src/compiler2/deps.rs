@@ -3,6 +3,7 @@ use std::hash::Hash;
 
 use super::facts::{DerivationId, FactUse, Publisher};
 use super::ordered_set::OrderedSet;
+use super::semantic::SemanticOrd;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedWait<J, F> {
@@ -203,18 +204,60 @@ where
         keys
     }
 
-    pub fn subscribers(&self, fact_use: &FactUse<F>) -> Vec<Publisher<J>> {
-        self.subscribers
+    pub fn subscribers<Ctx>(&self, fact_use: &FactUse<F>, ctx: &Ctx) -> Vec<Publisher<J>>
+    where
+        J: SemanticOrd<Ctx>,
+    {
+        let mut publishers: Vec<_> = self
+            .subscribers
             .get(fact_use)
             .map(|publishers| publishers.iter().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        publishers.sort_by(|left, right| {
+            left.job
+                .semantic_cmp(&right.job, ctx)
+                .then_with(|| left.derivation.0.cmp(&right.derivation.0))
+        });
+        publishers
     }
 
-    pub fn waiters(&self, fact_use: &FactUse<F>) -> Vec<J> {
-        self.waiters
+    pub fn waiters<Ctx>(&self, fact_use: &FactUse<F>, ctx: &Ctx) -> Vec<J>
+    where
+        J: SemanticOrd<Ctx>,
+    {
+        let mut jobs: Vec<_> = self
+            .waiters
             .get(fact_use)
             .map(|jobs| jobs.iter().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        jobs.sort_by(|left, right| left.semantic_cmp(right, ctx));
+        jobs
+    }
+
+    pub fn has_waiter(&self, fact_use: &FactUse<F>) -> bool {
+        self.waiters.get(fact_use).is_some_and(|jobs| !jobs.is_empty())
+    }
+
+    /// Every derivation subscribed to any readiness of `fact`, in typed
+    /// publisher order. Multiplicity across readiness variants is preserved.
+    pub fn readers_of<Ctx>(&self, fact: &F, ctx: &Ctx) -> Vec<Publisher<J>>
+    where
+        J: SemanticOrd<Ctx>,
+    {
+        let mut readers = [
+            FactUse::current(fact.clone()),
+            FactUse::settled(fact.clone()),
+            FactUse::settled_presence(fact.clone()),
+        ]
+        .into_iter()
+        .flat_map(|fact_use| self.subscribers.get(&fact_use).into_iter().flatten().cloned())
+        .collect::<Vec<_>>();
+        readers.sort_by(|left, right| {
+            left.job
+                .semantic_cmp(&right.job, ctx)
+                .then_with(|| left.derivation.0.cmp(&right.derivation.0))
+        });
+        readers
     }
 
     pub fn waits_for(&self, job: &J) -> HashSet<FactUse<F>> {
@@ -249,34 +292,13 @@ where
             .collect()
     }
 
-    /// Every standing wait, ordered by data (fz-kdt.109).
-    ///
-    /// The `waiters` map is the one unordered thing here: each fact's job list
-    /// is an `OrderedSet`, and the facts themselves are minted deterministically,
-    /// so the only run-to-run variation in this list was `HashMap` iteration
-    /// order — a per-process `RandomState` artifact. That order reached a
-    /// user-facing error message (`no_ready_producer` renders this vec), so one
-    /// binary printed different text run to run.
-    ///
-    /// Ordering once here is the whole cure: every caller either presents this
-    /// list or pokes the producers it names, and the two pokers were each
-    /// pinning the order themselves with this same key, which they no longer
-    /// need to. The key is the fact's `Debug` rendering, readiness variant as
-    /// tie-break so two uses of one fact cannot fall back on map order. `Debug`
-    /// over a derived `Ord` bound is a deliberate choice, for two reasons: it
-    /// is byte-for-byte the key both folded callers already used, which is what
-    /// makes the fold provably order-identical, and a derived `Ord` would gain
-    /// no canonicality — `FactKey` variants embedding `ActivationKey.arrow`
-    /// order by the raw interned `Ty` id either way (the fz-k22.21 class;
-    /// within-run use is why that is legal here, see fact-engine.md). The
-    /// dedup a poking caller runs downstream relies on this rendering being
-    /// injective over live facts: `FactKey` is derived `Debug` to primitive
-    /// fields throughout, and if that ever broke, `Vec::dedup` compares by
-    /// `PartialEq` so the worst case is a duplicated poke, never a merged or
-    /// dropped fact.
-    pub fn unresolved(&self) -> Vec<UnresolvedWait<J, F>>
+    /// Every standing wait in caller-defined semantic fact/use order. This
+    /// inventory is a terminal diagnostic view; generic dependency storage
+    /// cannot interpret owner-specific identities such as World-local types.
+    pub fn unresolved<Ctx>(&self, ctx: &Ctx) -> Vec<UnresolvedWait<J, F>>
     where
-        F: std::fmt::Debug,
+        J: SemanticOrd<Ctx>,
+        F: SemanticOrd<Ctx>,
     {
         let mut waits = self
             .waiters
@@ -286,14 +308,10 @@ where
                 jobs: jobs.iter().cloned().collect(),
             })
             .collect::<Vec<_>>();
-        waits.sort_by_cached_key(|wait| {
-            let readiness = match wait.fact {
-                FactUse::Current(_) => 0_u8,
-                FactUse::Settled(_) => 1,
-                FactUse::SettledPresence(_) => 2,
-            };
-            (format!("{:?}", wait.fact.fact()), readiness)
-        });
+        waits.sort_by(|left, right| left.fact.semantic_cmp(&right.fact, ctx));
+        for wait in &mut waits {
+            wait.jobs.sort_by(|left, right| left.semantic_cmp(right, ctx));
+        }
         waits
     }
 }

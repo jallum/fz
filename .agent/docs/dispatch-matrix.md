@@ -158,16 +158,15 @@ wrapper's members AND its selection plan from that one list, and a selection
 row's `body_id` is welded to its member's index, so the list itself is the only
 place either can be reordered. **fz-kdt.108** made the SETTLED order canonical
 there: `callable_flow_resolution_edges_product` (`jobs/runtime_demand.rs`) now
-sorts the edges by `Types::cmp_tys` over each surface's inputs BEFORE the members,
+sorts the edges by `Types::cmp_activation_tys` over each surface's inputs BEFORE the members,
 the selection plan, the boundary resolutions, the flow's resolution list AND the
 `activation_key` `Ty`s all derive from them — one ordering authority, inherited
 by everything downstream, so a re-ordered pull produces the same artifact. The
 direct half (`callable_flow_edges_for_targets`, a `BTreeSet<CallableTarget>`) is
-ordered by the same key for the same reason. `cmp_tys` is total up to the two
-residuals `types::order` documents (free-var ties, lambda byte-span labels);
-those fall back to mint order and are the only construction-order gap left across
-schedules (`00277_enum_tier0_fixture`'s `(int, list(int | :tail))` surfaces are
-one). The stress knob still owns the order for testing: `wrappers:<seed>`
+ordered by the same typed activation relation for the same reason. The relation
+walks addressed arrows and stable callable labels directly; raw type handles and
+rendered strings never establish construction order. The stress knob still owns
+the order for testing: `wrappers:<seed>`
 permutes the canonical list AFTER it is sorted (the perturbation wraps
 `callable_flow_resolution_edges_product`'s result), so the fz-kdt.141 gate that
 proves the perturbation reseats the members stays honest.

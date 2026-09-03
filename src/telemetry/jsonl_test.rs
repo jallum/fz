@@ -372,6 +372,125 @@ fn pull_product_settled_renders_the_value_authority() {
 }
 
 #[test]
+fn opposite_mint_histories_render_byte_identical_multi_element_owner_batches() {
+    use crate::compiler2::SemanticOrd as _;
+    use crate::compiler2::{ActivationKey, FactChange, FactKey, FactMovement, FactState, FactUse, FunctionId, RootId};
+
+    fn canonicalize_arrows(
+        value: &serde_json::Value,
+        arrows: &std::collections::HashMap<u64, &'static str>,
+        field: Option<&str>,
+    ) -> serde_json::Value {
+        match (field, value) {
+            (Some("arrow"), serde_json::Value::Number(id)) => serde_json::Value::String(
+                arrows
+                    .get(&id.as_u64().expect("arrow id is an integer"))
+                    .expect("test dictionary covers every activation arrow")
+                    .to_string(),
+            ),
+            (_, serde_json::Value::Object(fields)) => serde_json::Value::Object(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), canonicalize_arrows(value, arrows, Some(name))))
+                    .collect(),
+            ),
+            (_, serde_json::Value::Array(values)) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(|value| canonicalize_arrows(value, arrows, None))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        }
+    }
+
+    let render = |non_empty_first: bool| {
+        let mut types = crate::compiler2::Types::new();
+        let int = types.int();
+        let root = RootId::for_test(71);
+        let function = FunctionId::for_test(710);
+        let (list, non_empty) = if non_empty_first {
+            let non_empty = types.non_empty_list(int);
+            let non_empty = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            let list = types.list(int);
+            let list = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            (list, non_empty)
+        } else {
+            let list = types.list(int);
+            let list = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            let non_empty = types.non_empty_list(int);
+            let non_empty = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            (list, non_empty)
+        };
+        let raw_order = list.arrow < non_empty.arrow;
+        let mut keys = if non_empty_first {
+            vec![
+                FactKey::ReturnType(non_empty.clone()),
+                FactKey::ReturnType(list.clone()),
+            ]
+        } else {
+            vec![
+                FactKey::ReturnType(list.clone()),
+                FactKey::ReturnType(non_empty.clone()),
+            ]
+        };
+        keys.sort_by(|left, right| left.semantic_cmp(right, &types));
+        let step = crate::compiler2::AppliedStep {
+            changed: keys
+                .iter()
+                .cloned()
+                .map(|key| FactChange {
+                    key,
+                    old_revision: None,
+                    new_revision: Some(1),
+                    old_settled: false,
+                    new_settled: true,
+                })
+                .collect(),
+            movements: keys
+                .iter()
+                .cloned()
+                .map(|key| FactMovement {
+                    key,
+                    state: FactState {
+                        revision: Some(1),
+                        settled: true,
+                    },
+                })
+                .collect(),
+            wakes: Vec::<crate::compiler2::Wake<crate::compiler2::Job, FactKey>>::new(),
+            blocked: keys.into_iter().map(FactUse::settled).collect(),
+        };
+        let mut body = String::new();
+        write_applied_step_body(&mut body, &step);
+        let json = format!(
+            "{{{}}}",
+            body.strip_prefix(',').expect("applied body starts with a field")
+        );
+        let raw: serde_json::Value = serde_json::from_str(&json).expect("applied step JSON");
+        let arrows = std::collections::HashMap::from([
+            (list.arrow.as_u32() as u64, "list-activation"),
+            (non_empty.arrow.as_u32() as u64, "non-empty-list-activation"),
+        ]);
+        (
+            raw_order,
+            serde_json::to_vec(&canonicalize_arrows(&raw, &arrows, None)).expect("canonical batch JSON"),
+        )
+    };
+
+    let list_first = render(false);
+    let non_empty_first = render(true);
+    assert_ne!(
+        list_first.0, non_empty_first.0,
+        "fixture must deterministically reverse raw arrow ids"
+    );
+    assert_eq!(
+        list_first.1, non_empty_first.1,
+        "renderer must preserve the typed owner sequence across opposite mint and insertion histories"
+    );
+}
+
+#[test]
 fn file_backend_flushes_when_telemetry_owner_drops() {
     let path = temp_dir().join(format!(
         "fz_jsonl_flush_{}_{}.jsonl",

@@ -855,10 +855,9 @@ fn no_target_fixture_starts_unsanctioned_work_or_scans_roots() {
 /// (`tests/fz2_cli.rs` runs the cross-PROCESS half, where `RandomState`
 /// reseeds and the ids genuinely drift).
 ///
-/// In-process the WHOLE multiset holds, product cache hits included — measured
-/// stable over eight runs. The cross-process test has to carve out
-/// `callable_construction` cache hits, which is the difference this pair
-/// localizes: the divergence needs two processes to appear.
+/// The whole multiset holds in process and across processes, product cache
+/// hits included. Typed owner publication removed the former
+/// `CallableConstruction` exception.
 #[test]
 fn a_double_compile_produces_one_canonical_work_multiset() {
     let fixture = "fixtures2/behavior/fz_f98_range_map_converges.fz";
@@ -1298,7 +1297,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.127: 539 -> 538. One analysis run fewer: the reducer column
         // that used to arrive as one erased arrow and be re-derived when the
         // second wrapper joined it now arrives already split.
-        analyze_evaluations: 538,
+        // fz-tfn.26: 538 -> 537. Typed activation ordering makes the second
+        // `List.reduce_while_step/3` return ascent and the corresponding
+        // `List.reduce_while_cont/3` input ascent land before one queued
+        // analysis runs. The one run now observes both content movements;
+        // every other formula-family count and the final artifacts stay flat.
+        analyze_evaluations: 537,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -1312,7 +1316,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
         // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
-        total_evaluations: 1351,
+        // fz-tfn.26: 1351 -> 1350, the one coalesced content-caused analysis
+        // above; no other formula family moves.
+        total_evaluations: 1350,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -1346,7 +1352,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // its edge for the round the previous rung is displaced in.
         // fz-kdt.127: 425 -> 434 distinct (441 -> 450 first appearances,
         // retractions flat): the eight new activations bring their edges.
-        callsites: lifecycle(434, 450, 16),
+        // fz-tfn.26: distinct stays 434 while 450/16 -> 449/15. Typed
+        // activation order removes one transient retract/remint of an already
+        // final identity; the final inventory does not move.
+        callsites: lifecycle(434, 449, 15),
         shifts: shifts(6, 10),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
@@ -1369,9 +1378,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // runs for eight new activations, and one FEWER reproduces an answer
         // it already had: the split reducer columns arrive settled instead of
         // being re-derived as the second lambda joins them.
-        analyze_evaluations: 890,
+        // fz-tfn.26: 890 -> 876 and total 2387 -> 2373. Fourteen content
+        // ascents now coalesce before their analyses run. The unchanged-output
+        // count stays 8, every other formula family stays flat, and the final
+        // artifact/runtime gates below remain the authority on coverage.
+        analyze_evaluations: 876,
         analyze_zero_change: 8,
-        total_evaluations: 2387,
+        total_evaluations: 2373,
     },
 ];
 

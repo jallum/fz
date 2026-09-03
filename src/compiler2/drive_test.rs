@@ -10801,10 +10801,10 @@ end
 }
 
 /// fz-kdt.108: the construction wrapper's members carry ONE canonical order --
-/// `Types::cmp_tys` over each member's surface inputs -- so the settled artifact
+/// `Types::cmp_activation_tys` over each member's surface inputs -- so the settled artifact
 /// stops depending on the type interner's mint order (which is the agenda's).
 /// The members and the selection plan's rows both derive positionally from the
-/// same `first_class_edges` list, and that list is ordered by `cmp_tys` where it
+/// same `first_class_edges` list, and that list is ordered by the typed activation relation where it
 /// is built (`callable_flow_resolution_edges_product`), before either derives;
 /// so a monotone member list is the whole construction authority being monotone.
 ///
@@ -10812,11 +10812,11 @@ end
 /// (atoms, binaries, ints), each crossed with the empty and the grown
 /// accumulator, so its wrapper carries a genuinely multi-surface member list --
 /// the shape whose FIFO/LIFO backend-canon gap (1170 lines) this ticket closes.
-/// The order is non-strict: two members whose surfaces are `cmp_tys`-equal (the
+/// The order is non-strict: two members whose surfaces are activation-equal (the
 /// same element with the empty vs the grown accumulator can tie) are `Equal`,
 /// never `Greater`.
 #[test]
-fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
+fn compiler2_construction_members_carry_the_typed_activation_order() {
     use std::cmp::Ordering;
 
     let fixture = "fixtures2/behavior/enum_map_family.fz";
@@ -10844,9 +10844,11 @@ fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
         }
         for pair in wrapper.members.windows(2) {
             assert_ne!(
-                world.types().cmp_tys(&pair[0].surface_inputs, &pair[1].surface_inputs),
+                world
+                    .types()
+                    .cmp_activation_tys(&pair[0].surface_inputs, &pair[1].surface_inputs),
                 Ordering::Greater,
-                "construction members must be non-decreasing under cmp_tys, so the settled artifact \
+                "construction members must be non-decreasing under typed activation order, so the settled artifact \
                  no longer inherits the interner's mint order: {:?} came before {:?}",
                 pair[0].surface_inputs,
                 pair[1].surface_inputs,
@@ -17572,120 +17574,177 @@ fn compiler2_native_program_publishes_construction_owned_callable_wrappers() {
     }
 }
 
-/// fz-k22.21 regression: `ContributionMap::apply` pins its fold order by
-/// sorting contributing publishers on a deterministic key
-/// (`semantic::StableSortKey`). `Job::SeedActivation`/`AnalyzeActivation`
-/// carry an `ActivationKey` whose `arrow` is a bare interned `Ty` --
-/// `types/mod.rs::Ty(u32)`, assigned by first-intern order -- so sorting on
-/// its raw `Debug` text would make the fold order (and therefore which
-/// equivalent-but-differently-interned representative a union settles on) a
-/// function of *which run interned the arrow first*, reintroducing exactly
-/// the nondeterminism this fold order exists to remove. This proves the fix:
-/// two `Types` stores that intern the same semantic arrow to two different
-/// raw ids still produce the identical `stable_sort_key` string, because it
-/// renders `arrow` through `Types::display` (the interner's own canonical
-/// renderer) instead of its numeric id.
 #[test]
-fn job_stable_sort_key_is_immune_to_which_run_interned_the_arrow_first() {
-    use crate::compiler2::semantic::StableSortKey;
+fn activation_jobs_facts_and_uses_share_one_order_across_display_collisions_and_mint_histories() {
+    use crate::compiler2::semantic::SemanticOrd;
 
-    let root = crate::compiler2::RootId::for_test(0);
-    let function = FunctionId::for_test(0);
+    let ordered = |non_empty_first: bool| {
+        let mut types = Types::new();
+        let int = types.int();
+        let root = crate::compiler2::RootId::for_test(0);
+        let function = FunctionId::for_test(0);
+        let (list, non_empty, list_key, non_empty_key) = if non_empty_first {
+            let non_empty = types.non_empty_list(int);
+            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            let list = types.list(int);
+            let list_key = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            (list, non_empty, list_key, non_empty_key)
+        } else {
+            let list = types.list(int);
+            let list_key = ActivationKey::from_inputs(root, function, &[list], &mut types);
+            let non_empty = types.non_empty_list(int);
+            let non_empty_key = ActivationKey::from_inputs(root, function, &[non_empty], &mut types);
+            (list, non_empty, list_key, non_empty_key)
+        };
+        assert_eq!(types.display(&list), types.display(&non_empty));
+        let raw_order = list_key.arrow < non_empty_key.arrow;
 
-    // Store A: intern the activation's own input type first.
-    let mut types_a = Types::new();
-    let int_a = types_a.int();
-    let key_a = ActivationKey::from_inputs(root, function, &[int_a], &mut types_a);
+        let jobs = [
+            Job::AnalyzeActivation(list_key.clone()),
+            Job::AnalyzeActivation(non_empty_key.clone()),
+        ];
+        let facts = [
+            FactKey::ReturnType(list_key.clone()),
+            FactKey::ReturnType(non_empty_key.clone()),
+        ];
+        let uses = [
+            FactUse::settled(FactKey::ReturnType(list_key)),
+            FactUse::settled(FactKey::ReturnType(non_empty_key)),
+        ];
 
-    // Store B: burn a few unrelated ids first, so the same semantic arrow
-    // lands on a different raw `Ty` number than in store A.
-    let mut types_b = Types::new();
-    let _filler_1 = types_b.atom_lit("filler_one");
-    let _filler_2 = types_b.atom_lit("filler_two");
-    let _filler_3 = types_b.none();
-    let int_b = types_b.int();
-    let key_b = ActivationKey::from_inputs(root, function, &[int_b], &mut types_b);
+        let before = types.comparison_cache_stats();
+        let job_order = jobs[0].semantic_cmp(&jobs[1], &types);
+        let after_job = types.comparison_cache_stats();
+        assert_eq!(after_job.semantic_order_misses, before.semantic_order_misses + 1);
+        assert_eq!(after_job.semantic_order_hits, before.semantic_order_hits);
+        let fact_order = facts[0].semantic_cmp(&facts[1], &types);
+        let use_order = uses[0].semantic_cmp(&uses[1], &types);
+        let reverse_order = jobs[1].semantic_cmp(&jobs[0], &types);
+        let after_repeats = types.comparison_cache_stats();
+        assert_eq!(after_repeats.semantic_order_misses, after_job.semantic_order_misses);
+        assert_eq!(after_repeats.semantic_order_hits, after_job.semantic_order_hits + 3);
+        assert_eq!(
+            reverse_order,
+            job_order.reverse(),
+            "the normalized pair must reuse its inverse"
+        );
+        assert_ne!(job_order, std::cmp::Ordering::Equal);
+        assert_ne!(fact_order, std::cmp::Ordering::Equal);
+        assert_ne!(use_order, std::cmp::Ordering::Equal);
+        (raw_order, job_order, fact_order, use_order)
+    };
 
+    let list_first = ordered(false);
+    let non_empty_first = ordered(true);
     assert_ne!(
-        key_a.arrow, key_b.arrow,
-        "the guard fixture must actually exercise two different raw arrow ids"
+        list_first.0, non_empty_first.0,
+        "the fixture must reverse raw activation-arrow order"
     );
-
-    let sort_key_a = Job::SeedActivation(key_a).stable_sort_key(&types_a);
-    let sort_key_b = Job::SeedActivation(key_b).stable_sort_key(&types_b);
     assert_eq!(
-        sort_key_a, sort_key_b,
-        "stable_sort_key must render the same activation identically regardless of which \
-         store interned its arrow to which raw id"
+        (list_first.1, list_first.2, list_first.3),
+        (non_empty_first.1, non_empty_first.2, non_empty_first.3),
+        "Job, FactKey, and FactUse must retain one semantic order"
     );
 }
 
-/// fz-k22.21 companion to the immunity test above: that test proves the SAME
-/// arrow renders the same sort key across intern orders; this one proves the
-/// converse -- DISTINCT types render DISTINCT `Types::display` strings, the
-/// injectivity `ContributionMap::apply`'s fold-order tie-break relies on (a
-/// display collision between two live publisher keys would silently fall
-/// back to `HashMap` iteration order). Each pair is structurally close by
-/// construction, differing in exactly one of the rendering components the
-/// key leans on: a leaf basic type inside an addressed arrow, a closure
-/// literal's capture type or target under one function id, an address-var's
-/// parameter slot (`a0` vs `a1`), the result-position leaf, and a free
-/// (non-address) variable's declaration id.
 #[test]
-fn types_display_distinguishes_structurally_close_types() {
-    use crate::types::ClosureTarget;
+fn shared_fact_readers_and_waiters_use_typed_activation_job_order() {
+    use crate::compiler2::facts::DerivationId;
+    use crate::compiler2::scheduler::{DerivationEffects, Scheduler};
+    use crate::compiler2::semantic::SemanticOrd;
 
     let mut types = Types::new();
+    let int = types.int();
     let root = crate::compiler2::RootId::for_test(0);
     let function = FunctionId::for_test(0);
-
-    let arrow = |types: &mut Types, inputs: &[Ty]| ActivationKey::from_inputs(root, function, inputs, types).arrow;
-
-    // One leaf differs inside the same arrow shape: (int) -> r0 vs (float) -> r0.
-    let int = types.int();
-    let float = types.float();
-    let int_arrow = arrow(&mut types, &[int]);
-    let float_arrow = arrow(&mut types, &[float]);
-
-    // Same function id, closure lits differing only in the capture type.
-    let atom = types.atom_lit("captured");
-    let closure_int_capture = types.closure_lit(ClosureTarget(7), vec![int], 1);
-    let closure_atom_capture = types.closure_lit(ClosureTarget(7), vec![atom], 1);
-
-    // Same shape, different closure target (the `#N` lit suffix).
-    let closure_other_target = types.closure_lit(ClosureTarget(8), vec![int], 1);
-
-    // Arrows differing only in which address-var slot the input names: the
-    // `a0`/`a1` path rendering, not any concrete leaf.
-    let a0 = types.param_alpha(0);
-    let a1 = types.param_alpha(1);
-    let result = types.result_alpha();
-    let a0_arrow = types.arrow(&[a0], result);
-    let a1_arrow = types.arrow(&[a1], result);
-
-    // Arrows differing only in the result position.
-    let int_ret_arrow = types.arrow(&[a0], int);
-    let float_ret_arrow = types.arrow(&[a0], float);
-
-    // Free (non-address) vars differing only in declaration id.
-    let free_var_3 = types.type_var(TypeVarId(3));
-    let free_var_4 = types.type_var(TypeVarId(4));
-
-    let pairs: [(&str, Ty, Ty); 6] = [
-        ("arg leaf int vs float", int_arrow, float_arrow),
-        ("closure capture type", closure_int_capture, closure_atom_capture),
-        ("closure lit target suffix", closure_int_capture, closure_other_target),
-        ("address-var slot a0 vs a1", a0_arrow, a1_arrow),
-        ("result leaf int vs float", int_ret_arrow, float_ret_arrow),
-        ("free var declaration id", free_var_3, free_var_4),
+    let list = types.list(int);
+    let non_empty = types.non_empty_list(int);
+    let mut jobs = vec![
+        Job::AnalyzeActivation(ActivationKey::from_inputs(root, function, &[non_empty], &mut types)),
+        Job::AnalyzeActivation(ActivationKey::from_inputs(root, function, &[list], &mut types)),
     ];
-    for (what, left, right) in pairs {
-        assert_ne!(left, right, "{what}: the fixture pair must be genuinely distinct types");
-        assert_ne!(
-            types.display(&left),
-            types.display(&right),
-            "{what}: distinct types must render distinct display strings, or the \
-             stable sort key degenerates to a hash-order tie"
+    jobs.sort_by(|left, right| left.semantic_cmp(right, &types));
+    let shared = FactKey::CodeIndexed(crate::compiler2::CodeId::ZERO);
+    let writer = Job::IndexCode(crate::compiler2::CodeId::ZERO);
+
+    let complete = |scheduler: &mut Scheduler<Job, FactKey>,
+                    job: &Job,
+                    reads: HashSet<FactUse<FactKey>>,
+                    waits: HashSet<FactUse<FactKey>>,
+                    outputs: Vec<FactKey>,
+                    changed: Vec<FactKey>| {
+        scheduler.complete_ordered(
+            job,
+            waits.clone(),
+            vec![DerivationEffects {
+                derivation: DerivationId::SOLE,
+                reads,
+                outputs,
+                changed,
+                concluded: waits.is_empty(),
+            }],
+            &types,
+        )
+    };
+
+    let reader_run = |registration: &[Job]| {
+        let mut scheduler = Scheduler::new();
+        for job in registration {
+            complete(
+                &mut scheduler,
+                job,
+                HashSet::from([FactUse::current(shared.clone())]),
+                HashSet::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+        let step = complete(
+            &mut scheduler,
+            &writer,
+            HashSet::new(),
+            HashSet::new(),
+            vec![shared.clone()],
+            vec![shared.clone()],
         );
-    }
+        let wakes = step
+            .wakes
+            .into_iter()
+            .map(|wake| (wake.job, wake.disposition))
+            .collect::<Vec<_>>();
+        let popped = std::iter::from_fn(|| scheduler.pop()).collect::<Vec<_>>();
+        (wakes, popped)
+    };
+    assert_eq!(reader_run(&jobs), reader_run(&[jobs[1].clone(), jobs[0].clone()]));
+
+    let waiter_run = |registration: &[Job]| {
+        let mut scheduler = Scheduler::new();
+        for job in registration {
+            complete(
+                &mut scheduler,
+                job,
+                HashSet::new(),
+                HashSet::from([FactUse::current(shared.clone())]),
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+        let unresolved = scheduler.unresolved(&types);
+        let step = complete(
+            &mut scheduler,
+            &writer,
+            HashSet::new(),
+            HashSet::new(),
+            vec![shared.clone()],
+            vec![shared.clone()],
+        );
+        let wakes = step
+            .wakes
+            .into_iter()
+            .map(|wake| (wake.job, wake.disposition))
+            .collect::<Vec<_>>();
+        let popped = std::iter::from_fn(|| scheduler.pop()).collect::<Vec<_>>();
+        (unresolved, wakes, popped)
+    };
+    assert_eq!(waiter_run(&jobs), waiter_run(&[jobs[1].clone(), jobs[0].clone()]));
 }

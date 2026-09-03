@@ -426,7 +426,7 @@ impl super::product_drive::ProductDriveError for String {
             "compiler2 root {} product path waited on {:?} with no ready producer; unresolved={:?}",
             root.as_u32(),
             fact,
-            world.work_graph.unresolved()
+            world.unresolved_waits()
         )
     }
 

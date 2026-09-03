@@ -225,6 +225,10 @@ impl Default for World {
 }
 
 impl World {
+    pub(crate) fn work_graph_and_types(&mut self) -> (&mut WorkGraph, &Types) {
+        (&mut self.work_graph, &self.types)
+    }
+
     #[cfg(test)]
     pub(crate) fn telemetry_query_count(&self) -> u64 {
         self.telemetry_query_count.get()
@@ -494,7 +498,7 @@ impl World {
             changed: dedupe_job_facts(derivation.changed),
             concluded: derivation.concluded,
         }));
-        let step = self.work_graph.complete(&job, waits, derivations);
+        let step = self.work_graph.complete_ordered(&job, waits, derivations, &self.types);
         for key in analyzed_published {
             if self.fact_is_settled(&FactKey::ActivationAnalyzed(key.clone())) {
                 self.activation_frontier.remove(&key);
@@ -1604,6 +1608,13 @@ impl World {
 
     pub fn fact_is_settled(&self, key: &FactKey) -> bool {
         self.work_graph.facts().is_settled(key)
+    }
+
+    /// Terminal standing waits in the same faithful semantic order used by
+    /// every live fact-wait boundary. `FactKey` deliberately has no raw `Ord`:
+    /// only the owning World can interpret activation arrows through `Types`.
+    pub(crate) fn unresolved_waits(&self) -> Vec<UnresolvedWait<Job, FactKey>> {
+        self.work_graph.unresolved(&self.types)
     }
 
     pub(crate) fn root_entry_executable(&mut self, root: RootId) -> ExecutableKey {
