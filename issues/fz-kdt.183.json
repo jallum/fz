@@ -25,11 +25,15 @@
     {
       "text": "Commit rewritten 2e0bb2706 -\u003e 985406f7e (2026-09-03): CI ran `cargo test --workspace --doc` and the derive_input_demand doc comment in jobs/keying.rs carried an indented formula rustdoc treated as a doctest. It is a ```text block now, folded into fz-kdt.183; fz-kdt.198 replayed on top unchanged (tree diff between the two heads is that one doc line). The coordinator gate now runs the doctests.",
       "timestamp": "2026-09-03T13:38:13Z"
+    },
+    {
+      "text": "CORRECTION TO A LANDED LAW, measured by the fz-kdt.199 cold review (2026-09-03, base ca23b676f) and verified independently by its researcher. This ticket's FIRST keying law -- \"freight must key ONE activation\", pinned on `loop(0, junk), do: junk` -- is a COST pin, NOT a correctness one. At base that exact program fails with `error[spec/violation]`: the single shared key publishes the JOIN of both users' returns, and a @spec consumer rejects a legitimate program. `carry/2` (the same shape, but which does NOT return the freight slot) correctly stays at one key, which is what makes the distinction real rather than a blanket retraction.\n\nSo the law as written is safe only for freight the activation does not RETURN. fz-kdt.199 is what makes it safe in general (it keys a position the published return is built from, minus what the recursion supplies). fz-kdt.199 is landing the corrections: the ONE_ACTIVATION_KEYING_LAWS gate failure message still says \"fz-kdt.183 keys a slot on DEMAND, not on structure\" and is being updated to name two axes, and this ticket's body sentence stating the superseded law is corrected by that landing.\n\nAlso from the same review, against this ticket's measurements: the executables figure this ticket's builder reported (6139) does not reproduce under the repo's documented instrument (`grep -c '^  executable '` over the backend dumps), which gives 5282 at accb5cfbe-era bases and 5469/5548 when widened to all 605 fixtures. The number was measured by a different, unstated method. Not a defect in the change -- the behaviour and canon results stand -- but the figure should not be cited as a comparand without its method.",
+      "timestamp": "2026-09-03T18:54:41Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "A recursive activation key keeps a list element wherever demand reaches it -- through forwarding, not everywhere -- so one Enum.reduce/3 user cannot publish another user's return",
   "type": "task",
-  "updated_at": "2026-09-03T18:54:37Z"
+  "updated_at": "2026-09-03T18:54:41Z"
 }
