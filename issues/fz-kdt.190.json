@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T05:49:55Z",
+  "description": "From the fz-kdt.183 research (2026-09-03, d2a5f3510), proven at HEAD with no\nprototype: two independent Enum.with_index statements; swapping their SOURCE\nORDER flips List.reduce_step/3's published ReturnType fact between\n{:done, [binary]} and {:done, [int]} with an identical key and identical\nrow set. Cause: jobs/semantic.rs analyze_activation (:222-229) refines the\nkey-wide joined return by EACH ROW's @spec result in row order, and\nrefine_observed_return (:1884, :1903-1905) returns the observed type\nunchanged when the intersection is empty -- so the first row's contract\nnarrows the join and every later row's contract is silently discarded.\nfz-kdt.183's element-keyed fix removes THIS instance (the two rows become two\nactivations) but the mechanism survives wherever a key still shares rows\n(the callable slot). Fix direction: a contract result may refine an\nactivation's return only when it is a fact about EVERY row the activation\ncarries (the meet over rows of each row's instantiated result, or nothing);\nand an empty intersection is a diagnostic about the row, never a silent\nno-op. Red-first: the swapped-order pair publishes the same fact.",
+  "id": "fz-kdt.190",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "A published return fact is source-order dependent: analyze_activation refines the key-wide join by each row @spec result in row order and refine_observed_return keeps the observed on an empty intersection, so the first row wins",
+  "type": "task",
+  "updated_at": "2026-09-03T05:49:55Z"
+}
