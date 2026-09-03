@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.20"
+  ],
   "created": "2026-08-25T01:39:17Z",
   "description": "`World::demand_function_scope` is the only cross-code duplicate check for top-level functions. At a3a9761d1 (`src/compiler2/world.rs:2887-2918`) it scans `Pending` codes as waits and only `Indexed` codes as possible homes; `Scoped` codes are discarded. A single `Certain` indexed home returns only `CodeScoped(home)`, dropping every pending `CodeIndexed` wait. This makes duplicate diagnosis depend on one transient snapshot instead of persistent definition ownership.\n\n## Public API reproducer\n\n1. Submit `foo_first.fz` containing `fn foo(), do: 1`; submit root `foo/0`; `drive()` returns `Resolved`.\n2. Submit `foo_second.fz` containing `fn foo(), do: 2`; `drive()` returns `Resolved`.\n3. `drive()` again returns `Resolved`.\n\nExpected: `Fatal` with `resolve/duplicate-function`, message ``foo/0` is already defined`. Actual: no diagnostic. The second source is indexed after the first home is already `Scoped`, and no standing demand can anticipate a future `submit_code`.\n\nThe simultaneous-submission regression remains green. Same-file repeated heads are clauses, not cross-code duplicates. The CLI submits one user source and runtime-library files have zero top-level `fn` forms, so this remains a P4 multi-`submit_code` API defect.\n\n## Why the old fix is insufficient\n\nRetaining `pending` beside a certain home's scope wait does not make the late-submission repro correct. The combined wait may wake after A becomes `Scoped` and B becomes `Indexed`, when the scan forgets A and sees B as sole home. After a completed drive, no wait can represent code not yet submitted.\n\n## Required design\n\nMake cross-code global definition ownership persistent and validate it when new source knowledge arrives, not solely while resolving a consumer. Static `fn`/`fnp`/`defmacro` homes can register at indexing; scope publication must cover macro-produced definitions. The owner record must retain CodeId/span provenance, distinguish repeated heads within one code from the same name/arity across codes, and never silently overwrite `PendingFunctionSourceMap`. `demand_function_scope` should consume this durable ownership and may then lose the whole-code transient duplicate scan.\n\n## Checks\n\n- The public API late-submission case diagnoses on the drive after the second submission.\n- Force A to scope, then force B's scope via another demanded name in B; duplicate still diagnoses and A's stash is not silently replaced.\n- Existing simultaneous-submission duplicate test stays green.\n- Same-code multi-clause behavior stays green.\n- Add a macro-produced cross-code duplicate test at the scope-publication boundary.\n- Update `.agent/docs/modules.md` to document global definition ownership/duplicate timing and remove claims that `demand_function_scope` alone owns the invariant.",
   "id": "fz-kdt.24",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "[BUG] Global duplicate ownership is a demand-time snapshot, so later code can redefine an already-scoped function silently",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:18Z"
+  "updated_at": "2026-09-03T08:02:47Z"
 }
