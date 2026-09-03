@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-02T03:54:25Z",
-  "description": "From the fz-kdt.107 step-3 review (2026-09-01): 107.3's degrade rule\nsends ANY negated or multi-positive-sig list clause to shape_only --\nconservative, unmeasured. After landing, census how many corpus list\nclauses degrade and whether any deserve per-clause heads (the\nTupleShapes one-shape-per-clause discipline extends naturally if\nthe population justifies it).",
+  "description": "AUDITED at pinned origin/main `a3a9761d1209165e5230625b9347cf6b0ad09b83`.\n\n## Current state\n\n`Types::runtime_type_predicate_lists` degrades the entire list axis to `shape_only` whenever any clause has more than one positive signature or any negation (`src/compiler2/types/mod.rs:1373-1375`).\n\nA scratch-instrumented `fz2 interp` census over all 597 checked-in fixture sources completed with zero timeouts. The degrade branch fired 104 times, comprising 8 distinct fixture/type-axis signatures and 4 structural signatures in only three fixtures: `fixtures2/00285_enum_sort_stable.fz`, `fixtures2/behavior/enum_sort.fz`, and `fixtures2/behavior/enum_oracle_smoke.fz`.\n\nEvery hit was `list(T) \\ []`; there were no multi-positive clauses and no other negation form. Of the 104 calls, 32 projected the genuine non-empty form directly and 72 projected `list(T) | (list(T) \\ [])`, whose second clause is redundant.\n\nSubtracting exact `[]` changes only the admitted shape; it removes no cons cell and therefore does not invalidate the positive signature's head predicate. The current blanket rule unnecessarily discards usable head precision, while the corpus does not justify a new TupleShapes-like representation.\n\n## Goal\n\nExact-empty subtraction preserves the positive list head, and redundant list clauses do not force a coarse runtime question.\n\n## Strategy\n\n1. Add red unit coverage showing `list(T) \\ []` projects an exact `NonEmpty` list axis with head `T`, and a mixed descriptor cannot erase another clause's valid head merely because it contains exact-empty subtraction.\n2. Normalize/absorb the redundant `list(T) | (list(T) \\ [])` form at the list-DNF persistence boundary if that can be done denotationally; keep genuine `list(T) \\ []` projectable by classifying exact-empty negations as shape-only.\n3. Keep conservative `shape_only` fallback for unmeasured multi-positive clauses and negations that admit cons cells.\n4. Add a corpus census/ratchet for degraded list clauses so any future unsupported form is visible, and update `.agent/docs/dispatch-matrix.md` to state the precise supported boundary.\n\n## Acceptance\n\n- `list(T) \\ []` asks the same head question as `list(T)` while admitting only `NonEmpty`.\n- The measured three-fixture population no longer takes the degrade branch.\n- Unsupported multi-positive/cons-affecting-negation cases remain soundly shape-only and have unit coverage.\n- Full lib, fixture-matrix, CLI, AOT, clippy, and doc gates pass with no warnings.",
   "id": "fz-kdt.146",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
   "status": "open",
-  "title": "How much head precision does the list-clause degrade rule cost?",
+  "title": "Preserve list-head precision across exact-empty subtraction",
   "type": "task",
-  "updated_at": "2026-09-02T03:54:25Z"
+  "updated_at": "2026-09-03T03:11:39Z"
 }
