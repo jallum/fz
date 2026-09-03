@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Multi-target callsite dispatch mints arm tables the runtime predicate cannot decide; question-less arms collapse to arm 0",
   "type": "bug",
-  "updated_at": "2026-09-03T00:02:10Z"
+  "updated_at": "2026-09-03T00:02:11Z"
 }
