@@ -45,8 +45,4 @@ where
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
-
-    pub fn contains(&self, job: &J) -> bool {
-        self.queued.contains(job)
-    }
 }
