@@ -728,13 +728,6 @@ impl Types {
         map_known_keys(self.descr(a))
     }
 
-    /// Identity since numeric literal types left the lattice: there is
-    /// nothing to widen. Kept for the shared `Types` trait until the old
-    /// pipeline (which still carries literal types) retires.
-    pub fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
-        *a
-    }
-
     pub fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
         refine_widen(self, *a, *b)
     }
@@ -1977,10 +1970,6 @@ impl SharedTypes for Types {
 
     fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey> {
         Types::map_known_keys(self, a)
-    }
-
-    fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty {
-        Types::widen_for_recursive_spec_key(self, a)
     }
 
     fn refine_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty {
