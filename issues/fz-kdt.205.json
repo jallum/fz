@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T12:32:54Z",
+  "description": "Found by the fz-kdt.198 refutation (2026-09-03), pre-existing at accb5cfbe: Types::is_disjoint (compiler2/types/mod.rs, trait decl src/types/mod.rs, SharedTypes forward) and differs_only_nominally have zero production callers -- only types_test.rs asserts and each other. The only live disjointness is is_value_disjoint via native_codegen/type_pred.rs (brand-blind, fz-bsx), whose doc comment names is_disjoint as \"the fz-bsx bug\". The set-theoretic-types.md predicate table no longer claims argument checks use it (198 corrected that row). Either delete the surface with its tests restated on is_empty(intersect) / is_subtype, or name the consumer that needs a brand-AWARE disjointness (fz-kdt.127.2 / fz-kdt.169 key erasure is the only candidate). Not 198: not superseded by the refinement encoding.",
+  "id": "fz-kdt.205",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 4,
+  "status": "open",
+  "title": "Types::is_disjoint and differs_only_nominally have no production caller: delete the brand-aware disjointness surface or give it a real user",
+  "type": "task",
+  "updated_at": "2026-09-03T12:32:54Z"
+}
