@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-tfn.11"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete constant backend and native revision fields",
   "type": "task",
-  "updated_at": "2026-09-03T08:06:40Z"
+  "updated_at": "2026-09-03T09:47:40Z"
 }
