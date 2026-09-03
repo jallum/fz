@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T09:40:38Z",
+  "description": "From the fz-kdt.183 rule review (2026-09-03, attacks-r2/w2_whole_union.fz):\nDispatchDemand::Whole =\u003e ty is verbatim in convergence_collapse_ty (types/\nmod.rs:944) -- no collapse at all -- and under 183's transitive demand a\ncallee that pattern-matches a literal (probe(:stop) -\u003e Region::Equal -\u003e\nWhole) raises the FORWARDER's accumulator to Whole: grow/2 [ListShape(Ignore),\nWhole] keys 1 -\u003e 2 activations, and fz-y6w's termination argument for that\nslot is gone -- only the ascent settling on its own bounds it. Corpus census\nat the rule: 713 mask rows FINAL != LOCAL, 344 rows over 174 functions gain a\nforwarding-introduced Whole; 0 behaviour movers, no divergence constructed\n(the pre-existing self-nesting hang, fz-kdt.177's class, dominates at base\nand rule alike). Pre-existing on the LOCAL half (a Whole slot never\ncollapsed); 183 makes it reach across function boundaries and documents it\n(\"a Whole slot has no collapse and forwarding can hand a Whole up\"). Direction:\nWhole should still collapse on the axes clause selection does not read\n(Region::Equal on an atom asks only the atom axis; the list family beside it\nis freight), i.e. Whole is too coarse a demand -- the mask should carry the\nAXES a question reads, not \"everything\". CONCORDANT: fz-y6w (bounded\nspecialization), fz-kdt.65 (the return ladder's budget), fz-kdt.177\n(nesting), fz-kdt.140 (2^arity where the callee reads no position: the tuple\nanalogue of over-broad demand).",
+  "id": "fz-kdt.200",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "A Whole demand at a recursive slot has no convergence collapse, and forwarding now hands a Whole up: an accumulator loses its fz-y6w bound because a callee pattern-matches a literal (344 corpus rows)",
+  "type": "task",
+  "updated_at": "2026-09-03T09:40:38Z"
+}
