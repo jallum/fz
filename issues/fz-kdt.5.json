@@ -15,9 +15,15 @@
   "id": "fz-kdt.5",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "Authorized DAG split: fz-tfn.25 is the prerequisite for stable current-graph search-work telemetry. Exact recursive group membership remains an explicit temporary report dimension until fz-kdt.4 then fz-tfn.2.",
+      "timestamp": "2026-09-03T13:51:55Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Establish cold and incremental product-work causality before optimization",
   "type": "bug",
-  "updated_at": "2026-09-03T13:51:09Z"
+  "updated_at": "2026-09-03T13:51:55Z"
 }
