@@ -3448,7 +3448,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     });
     assert_resolved(
         compiler.drive(),
-        "Enum.reduce should settle runtime protocol dispatch and closure calls in one semantic closure",
+        "Enum.reduce should settle runtime protocol dispatch and closure calls before backend packaging",
     );
 
     let function_records = functions.all();
@@ -3625,7 +3625,7 @@ fn compiler2_return_type_event_reports_only_actual_fact_movement() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_resolved(compiler.drive(), "quicksort should settle to one semantic closure");
+    assert_resolved(compiler.drive(), "quicksort should settle its demanded fact graph");
 
     let main_id = function_id(&functions, "main", 0);
     let records = returns.records_for_function(root_id, main_id);

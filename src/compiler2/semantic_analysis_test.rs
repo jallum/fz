@@ -14,7 +14,7 @@ use crate::telemetry::ConfiguredTelemetry;
 /// The provider index fixes this: scope time records "Mini provides Susp-for-List"
 /// as resolved ids, and the protocol call demands `DefineModule(Mini)` — the real
 /// provider — so the impl registers and the closure settles.
-/// `drive_until_semantic_closure`'s bound trips if it ever spins again.
+/// `drive_backend_product_to_settlement`'s bound trips if it ever spins again.
 ///
 /// Scoped to the closure. fz-hwn.19.2.4.15 proves this shape drives on through
 /// transport: the captured `f`'s direct-call surface is now propagated to `run`'s
@@ -46,7 +46,7 @@ fn main(), do: make(fn x -> x + 1 end)
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root,
@@ -83,7 +83,7 @@ fn main(), do: Greet.hello([1, 2, 3])
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root,
@@ -146,7 +146,7 @@ fn main(), do: Peek.first(Shadow.List.new(1, 2))
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root,
@@ -179,7 +179,7 @@ fn main(), do: Peek.first(Shadow.List.new(1, 2))
     let main_activation = super::identity::ActivationKey::from_inputs(root, main_function, &[], world.types_mut());
     let main_return = world
         .activation_return(&main_activation)
-        .expect("main/0 should have a settled return type at semantic closure");
+        .expect("main/0 should have a settled return type before backend packaging");
     assert!(
         world.types().is_integer(&main_return),
         "Peek.first(l) should resolve through Shadow.List's declared struct field types and \
@@ -337,7 +337,7 @@ fn main(), do: Greet.hello([1, 2, 3])
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root,
@@ -365,7 +365,7 @@ fn main(), do: Greet.hello([1, 2, 3])
 /// (fold_capture_closure, operator-ref reduce) collapses to `Ty(any)` transport
 /// lanes / native fatals downstream.
 ///
-/// This is the minimal, transport-free reproduction: at semantic closure the
+/// This is the minimal, transport-free reproduction: at fixpoint the
 /// root activation's return must be `int`. The `--dump activations` view of this
 /// shape shows the contradiction directly — the wrapper's sole callsite reads
 /// `=> int` while its activation reads `return: any`.
@@ -384,7 +384,7 @@ fn main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root,
@@ -395,7 +395,7 @@ fn main(), do: apply(wrap(fn (x, y) -> x + y end), 1, 2)
     let main_activation = super::identity::ActivationKey::from_inputs(root, main_function, &[], world.types_mut());
     let main_return = world
         .activation_return(&main_activation)
-        .expect("main/0 should have a settled return type at semantic closure");
+        .expect("main/0 should have a settled return type before backend packaging");
     assert!(
         world.types().is_integer(&main_return),
         "a captured callable resolved to an int-returning lambda must keep its int \
@@ -433,7 +433,7 @@ fn main(), do: 1
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root,
@@ -449,7 +449,7 @@ fn main(), do: 1
 /// Drives the root's reachable activation set to settlement through the backend
 /// product. A resolved drive proves every reachable analysis converged before
 /// packaging.
-fn drive_until_semantic_closure(world: &mut World, tel: &ConfiguredTelemetry, root: RootId, message: &str) {
+fn drive_backend_product_to_settlement(world: &mut World, tel: &ConfiguredTelemetry, root: RootId, message: &str) {
     world.demand(Job::BuildBackendProduct(root));
     assert_resolved(super::drive::ExecutionContext::new(world, tel).drive(), message);
 }
@@ -482,7 +482,7 @@ end
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root_id,
@@ -540,7 +540,7 @@ end
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root,
@@ -551,7 +551,7 @@ end
     let main_activation = super::identity::ActivationKey::from_inputs(root, main_function, &[], world.types_mut());
     let main_return = world
         .activation_return(&main_activation)
-        .expect("main/0 should have a settled return type at semantic closure");
+        .expect("main/0 should have a settled return type before backend packaging");
     let displayed = world.types().display(&main_return);
     assert!(
         displayed.contains("int") && displayed.contains("binary"),
@@ -573,7 +573,7 @@ fn compiler2_semantic_callsite_preserves_distinct_function_specializations() {
         include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root_id,
@@ -612,7 +612,7 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
         include_str!("../../fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz").to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    drive_until_semantic_closure(
+    drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root_id,
