@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T04:45:44Z",
+  "description": "From the fz-kdt.120 cold review (2026-09-03, d2a5f3510). At HEAD and under\n120's prototype alike, List.reduce_step/3 is keyed\n  [[a0_e], {:cont, [a1_1_e]}, a2]\n-- free type variables in every position -- so it is ONE activation for every\nuser of Enum.reduce/3, and its return evidence is the JOIN over all of them.\nWhat keeps that join from reaching users today is an accident: the @spec\nresults of List.reduce_cont/3 and Enum.reduce/3 (Known results instantiated\nper callsite) republish a per-activation result and RE-CORRELATE the joined\nevidence on the way out. fz-kdt.120's rule makes those results honestly\nUnderconstrained while a reducer's arrow is var-typed, the accidental repair\ndisappears, and the join propagates: Enum.to_list/1[non_empty_list(binary)]\npublishes `return list(int | binary)` (a FALSE return fact on a correlated\nactivation), Enum.with_index_list/3 collapses from two activations to one\nkeyed list(int | binary), and a user's string lambda is analyzed for ints,\nwhich surfaces as a phantom spec/violation on `+/2`. Two-user reproducer:\n    fn main() do\n      dbg(Enum.with_index([\"a\", \"b\"], fn (x, _index) -\u003e x \u003c\u003e \"!\" end))\n      dbg(Enum.with_index([10, 20], fn (x, index) -\u003e x + index end))\n    end\nThe same blind activation is the Q5 widening-ladder climber (shard-1 max\nreturn changes 2 -\u003e 6 on 00277's reduce_step/3) and part of 00277's\nschedule residual. No gate can mask it: the phantom violation and\n00188_enum_reduce_ill_typed's TRUE violation are structurally identical\n(span in a user callable, library-activation provenance, ground non-any\nargs), and there is no fact recording \"this row was joined across\nuncorrelated users\" (activation_inputs_joined is the blind projection; the\nunion arrives as ONE row from ONE publisher).\nFIX DIRECTION: an activation key must be ground where the body's behaviour\ndepends on the argument (the fz-y6w dispatch-mask idea: key on what the body\nreads); a var-keyed library body must at least carry per-publisher return\ncorrelation (the return of the row a caller contributed, not the join). RED-\nFIRST GATES: reduce_step/3's activation key carries no free type variable;\nEnum.to_list/1[non_empty_list(binary)] returns list(binary) with NO contract\nresult in play; the two-user program prints `[\"a!\", \"b!\"]` / `[10, 21]` on\nthree doors. BLOCKS fz-kdt.120.",
+  "id": "fz-kdt.183",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 1,
+  "status": "open",
+  "title": "List.reduce_step/3 is one activation keyed entirely on free type variables: every Enum.reduce/3 user shares one body and one joined return, and only @spec results re-correlate it",
+  "type": "task",
+  "updated_at": "2026-09-03T04:45:44Z"
+}
