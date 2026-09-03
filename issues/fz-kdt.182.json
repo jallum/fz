@@ -9,7 +9,7 @@
   "parent": "fz-kdt",
   "priority": 3,
   "status": "open",
-  "title": "Types::union(empty_list(), list(int)) interns as : unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
+  "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
   "type": "task",
-  "updated_at": "2026-09-03T04:10:56Z"
+  "updated_at": "2026-09-03T04:11:05Z"
 }
