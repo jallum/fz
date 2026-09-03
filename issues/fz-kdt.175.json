@@ -1,8 +1,6 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [
-    "fz-tfn.24"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "created": "2026-09-03T01:08:47Z",
   "description": "Seen by the fz-kdt.143 cold review (2026-09-02, main a3a9761d1):\nmatrix::polymorphic::build failed once with\n  \"fz2-built binary exceeded 3s; stderr:\"\nduring a full `cargo test --test fixture_matrix -- --test-threads=1` run that\nshared the machine with a parallel corpus dump (xargs -P 6); it passes in\nisolation and in a clean full run (485/0/9). tests/fixture_matrix.rs:75\nFIXTURE_COMMAND_TIMEOUT = 3s is measured from execution-ready (or spawn) on\nwall clock, so any machine contention converts a correct fixture into a red\ngate. Same class as the tripwire fz-f98.23 retired (\"always red on CI\").\nDirection: a budget that measures the fixture's own work (its telemetry\ncounters / reductions, which the matrix already reads for other assertions)\nor a generous hang guard (tens of seconds) that only catches genuine\nnon-termination -- not a 3s wall clock. Not observed to move any answer.",
@@ -13,5 +11,5 @@
   "status": "in_progress",
   "title": "fixture_matrix's FIXTURE_COMMAND_TIMEOUT (3s wall clock) is a contention tripwire: polymorphic::build flaked under a parallel corpus sweep",
   "type": "task",
-  "updated_at": "2026-09-03T11:48:16Z"
+  "updated_at": "2026-09-03T12:20:53Z"
 }
