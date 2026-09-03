@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T08:00:20Z",
+  "description": "## Goal\n\nRemove the debug-only `assert_executable_effects_fresh` pass and make focused dependency/retraction tests own its invariant.\n\n## Evidence\n\nAt the end of every debug product session the auditor recomputes every cached executable's transitive call closure and checks the cached `ExecutableEffects` value. This is diagnostic scaffolding, not semantic calculation. The 00420 main-root product-settled to session-finished bracket is about 3.34 ms; that bracket includes the auditor and final emission, so it is a bound rather than isolated attribution.\n\n## Strategy and proof\n\n1. Run the existing rematerialization and effect-cone invalidation tests.\n2. Add a focused callee-edge removal/retraction regression only if the existing suite does not directly cover it.\n3. Run a temporary old-versus-disabled auditor probe across the full matrix.\n4. Delete the auditor and any data retained solely for it; delete the temporary proof probe.\n5. Prove identical product values, dependency generations, invalidation, artifacts, and causal work outside the removed audit.\n6. Run full tests, formatting, and clippy with warnings denied.\n\nDo not replace it with another end-of-session scan.",
+  "id": "fz-tfn.7",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete the end-of-session executable-effect freshness mini-pass",
+  "type": "task",
+  "updated_at": "2026-09-03T08:00:20Z"
+}
