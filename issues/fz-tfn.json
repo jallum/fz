@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-09-03T00:33:42Z",
@@ -7,8 +7,8 @@
   "id": "fz-tfn",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Compiler2: become a long-lived change-proportional recalculator",
   "type": "epic",
-  "updated_at": "2026-09-03T00:33:42Z"
+  "updated_at": "2026-09-03T00:42:21Z"
 }
