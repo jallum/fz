@@ -13,11 +13,15 @@
     {
       "text": "MEASURED at the fz-kdt.127.1 landing (f34c2aaa3). The one-sided-hazard\nfacet now has a live corpus instance and a name.\n\n`a_mixed`'s callsite carries two arms over one lambda:\n  wide  `closure[Enum.reduce/3#L](closure[Enum.each/2#L](any))`\n  exact `closure[Enum.reduce/3#L](closure[Enum.each/2#L](closure[main/0#L]()))`\nThe wide arm's capture position is `any`, so `erasing_overlap` reports\nthe pair erasing, `covers` demands surface coverage, and the seat puts\nthe WIDE arm first. Sound -- its surface contains the narrow one, output\nis byte-identical on all three doors, and the corpus behaviour sweep\nmoves nothing -- but the exact specialization x23 is still emitted and is\nnow unreachable. Executable count is unchanged at 28, so the cost is a\ndead body, not a lost one.\n\nThis is the exact shape this ticket describes: `erasing_overlap` is\nsymmetric while the hazard (a value passing the NARROW test escaping the\nnarrow surface) is one-sided. A one-sided relation would seat the exact\narm first here and keep the specialization live. Reproducer:\n`fixtures2/behavior/a_mixed.fz`, backend dump, the arm order at the\n`Enum.reduce/3` callsite.",
       "timestamp": "2026-09-02T20:24:17Z"
+    },
+    {
+      "text": "fz-kdt.143 LANDED (d2a5f3510); re-measure before building. (1) The a_mixed instance is STALE: fixtures2/behavior/a_mixed.fz has ZERO call-dispatch sites in the backend artifact at main a3a9761d1 and at 143's head alike (29 executables, 0 dispatch nodes, 0 arm lines; its one dispatch is List.reduce_cont/3's entry pattern dispatch, which callsite_dispatch does not own). The exact-vs-any closure pair named above is no longer a callsite dispatch to re-seat; census the corpus for the shape (a same-callee pair where covers(exact, wide) is false ONLY because erasing_overlap is symmetric) before deciding scope. (2) 143's drop is defined THROUGH covers, so a one-sided erasing_overlap un-drops such an exact arm with NO edit in callsite_dispatch.rs: covers(exact, any) becomes true, seats_before(exact, any) becomes true, the exact arm is kept and seated first (refuter-verified on the unit shape #3closure[#7closure[int]] vs #3closure[any]: dropped today, kept under a one-sided relation). Sequencing confirmed: 143 then 168.",
+      "timestamp": "2026-09-03T02:44:55Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "erasing_overlap is symmetric while the fz-kdt.131 hazard is one-sided: exact-vs-inexact arm pairs lose the exact specialization",
   "type": "task",
-  "updated_at": "2026-09-02T20:24:17Z"
+  "updated_at": "2026-09-03T02:44:55Z"
 }
