@@ -41,11 +41,15 @@
     {
       "text": "fz-kdt.178 (8de517a28): the call-edge population is unchanged (3 at the settled arrival: dispatch_list_head_separates 1, enum_predicate_search 2) but it is no longer the whole census -- 45 reachable readings are wrapper selections owned by fz-kdt.179, and the constants are split so your three stay legible (BLIND_ESCAPE_POPULATION keyed by site). Under arms:6, only ONE of the two extra pairs is reachable (`[int | :ok | :true] with [int]`, executable 203); `[int | :nil] with [int]` at executable 201 is separated at another subject and is fz-kdt.186's fiction. Entry, case and receive plans are the source-order census class (0 over the readable ones) and are excluded from the seat law because clause order is the programmer's.",
       "timestamp": "2026-09-03T07:22:45Z"
+    },
+    {
+      "text": "DECISION NEEDED (fz-kdt.183 rule review, 2026-09-03): under 183's demand-through-forwarding rule the static blind-escape population 48 -\u003e 29 with 0 new; the 19 retired include dispatch_list_head_separates (List.reduce_while_step/3 splits into list(int) / list(:false|:true) / list(int|:ok) / list(int|:ok|:true), so the pair a head cannot separate now separates by KEY) and both enum_predicate_search entries -- i.e. this ticket's only source-level reproducer and both corpus facet-3 pairs leave the census. Either re-home the reproducer on a shape a ground element does not separate (a head overlap with erased tails inside ONE key: a callable-fed accumulator, fz-kdt.165's residue) or record here that facet 3 is measured empty at that landing. Not a silent census edit.",
+      "timestamp": "2026-09-03T09:40:41Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Runtime-dispatch predicates that overlap without covering either body leave representation safety to arrival order",
   "type": "task",
-  "updated_at": "2026-09-03T07:22:45Z"
+  "updated_at": "2026-09-03T09:40:41Z"
 }
