@@ -19,11 +19,15 @@
     {
       "text": "UPDATE from the fz-kdt.192 cold review (2026-09-03): (1) STRIKE fix 2 ('never record an upper bound of none') -- ablation on 184-on-192 is inert (corpus 0/0/0, identical 13 pins); R20 stays Underconstrained under 192 so its witness is gone. (2) R2 (union-of-arrows → Invalid) is already delivered by 192 without polarity machinery, so it is not this ticket's red-first witness; the polarity split's red-first witnesses are A4 (unsound (any)-\u003enil → (int)-\u003enil) and A5 (false Invalid → Known int), A13/A3 the precision wins; the solvability gate itself is justified by the theorem and its ablation on the reduce-at-(binary,int)-\u003eint shape, not by a HEAD-red corpus witness -- say so in the doc. (3) Re-cut on 192: +247/−47 (arrow_match +178/−37, types/mod.rs +69/−10), 13 pin literals, R5/R20 hold, corpus 0/0/0. (4) fix 3 becomes the one-line has_vars guard on the position.",
       "timestamp": "2026-09-03T09:16:57Z"
+    },
+    {
+      "text": "Sequence update (2026-09-03): fz-kdt.183 LANDED (2e0bb2706, independent of this ticket; it does not touch arrow_match.rs), fz-kdt.124 CLOSED as refuted. Live order is now 198 -\u003e 192 -\u003e 184 -\u003e 120. 192 is built and refuted (bcca85148 on wt/kdt192-build, waiting only on 198), so this ticket re-cuts on THAT commit: the builder must re-measure R20 there before deciding whether \"never record an upper bound of none\" is still needed (192 folded D1 and made the witness the raw argument, which changes where a `[]` under an arrow parameter is read from). R2 stays the red-first witness.",
+      "timestamp": "2026-09-03T12:18:18Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A @spec variable collects lower bounds from covariant occurrences and upper bounds from contravariant ones: instantiation is the join of the lowers, the meet of the uppers is the solvability check",
   "type": "task",
-  "updated_at": "2026-09-03T11:05:33Z"
+  "updated_at": "2026-09-03T12:18:18Z"
 }
