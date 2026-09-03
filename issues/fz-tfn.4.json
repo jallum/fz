@@ -4,14 +4,15 @@
     "fz-kdt.5"
   ],
   "blocks": [],
+  "closed_at": "2026-09-03T23:02:30Z",
   "created": "2026-09-03T08:00:18Z",
   "description": "## Goal\n\nRemove `FactUse::SettledPresence` completely. Preserve the live `Current` and `Settled` readiness contracts.\n\n## Evidence\n\nThe variant was introduced for `SealSemanticClosure` and that production consumer was later deleted. There are now zero production constructors; only scheduler and pull tests instantiate it. The 19,046-event 00420 trace contains zero settled-presence uses. Despite that, every relevant fact movement and finality wave still constructs and looks up settled-presence subscriber identities, and telemetry still carries the vocabulary.\n\n## Strategy and proof\n\n1. Run the settled-presence tests once to prove the retired semantics before deletion.\n2. Confirm by repository search and representative causal trace that no production job publishes, reads, waits on, or emits this use.\n3. Delete the enum variant, constructors, readiness/change classification, scheduler wake branches, dependency rendering, pull projection, telemetry schema/vocabulary, causal aggregation, tests, and documentation.\n4. Prove current and settled readers retain identical readiness movements and artifacts.\n5. Run focused fact/scheduler/pull tests, full library, fixture matrix, telemetry tests, formatting, and clippy with warnings denied.\n\nThe proof tests are migration scaffolding and leave with the concept.",
   "id": "fz-tfn.4",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete the retired settled-presence fact-use mode",
   "type": "task",
-  "updated_at": "2026-09-03T22:35:31Z"
+  "updated_at": "2026-09-03T23:02:30Z"
 }
