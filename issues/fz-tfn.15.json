@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.46",
     "fz-tfn.6"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Delete the misleading root-scans telemetry canary",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:45Z"
+  "updated_at": "2026-09-03T08:02:46Z"
 }
