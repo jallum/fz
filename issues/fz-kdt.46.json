@@ -15,6 +15,12 @@
   "id": "fz-kdt.46",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "Cold review exposed a general binder-scoped semantic-order prerequisite now owned by fz-tfn.26. Partition the existing uncommitted diff: .26 gets structural addressing/TyCanon/all observable ordering and its proofs; .46 retains only exact wait edges, settlement/arbitration, causal session accounting, and dependent docs/tests. Rebase .46 on the reviewed .26 commit; no mechanism is deferred or dropped.",
+      "timestamp": "2026-09-03T14:53:42Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Make blocked-wait expansion and settled arbitration edge-triggered",
