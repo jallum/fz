@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.11"
+  ],
   "blocks": [],
   "created": "2026-09-03T08:00:23Z",
   "description": "## Goal\n\nMake JIT/AOT compilation incremental below the whole-root NativeProgram boundary: compile only new or changed native bodies and relink the exact affected root artifact.\n\n## Current defect\n\nEach run/build request constructs a fresh backend and defines every function in the NativeProgram. The 00420 trace records 943 function-definition spans and the native backend compile span is about 3.19 seconds. Whole-root dense `FnId` assignment and fresh backend lifetime prevent reuse even when most bodies are unchanged.\n\n## Strategy\n\n1. Give native bodies stable semantic product identities independent of root-relative dense order.\n2. Publish one immutable native-body product per executable/wrapper plus a root link/entry product.\n3. Persist compiled body generations in the compiler-owned backend cache.\n4. Invalidate only bodies whose native input products move; relink only when membership, symbol, or relocation dependencies move.\n5. Define eviction and target/configuration identity explicitly; never reuse across incompatible codegen settings.\n6. Delete whole-program body walking and fresh-backend recompilation paths once all front doors use the keyed cache.\n\n## Signal\n\n- Same compiler/root twice: zero body lowering and zero function compilation.\n- Unreachable edit: zero native work.\n- Reached leaf edit: only the exact body and relocation/link dependents compile.\n- Equal reproduction preserves generations and performs no work.\n- JIT and AOT output, ABI, symbols, debug behavior, and runtime results remain identical.\n- Causal generation/work counts, not wall-clock thresholds, are the acceptance oracle.\n- Full tests, fixture matrix, cross-process determinism, formatting, and strict clippy pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Reuse native code generation by changed function generation",
   "type": "feature",
-  "updated_at": "2026-09-03T08:00:23Z"
+  "updated_at": "2026-09-03T08:02:39Z"
 }
