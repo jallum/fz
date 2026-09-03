@@ -12,9 +12,15 @@
   "id": "fz-kdt.203",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.198 landed (4c3fa4c63). Your residue is pinned known-wrong in brand_lattice_law::a_union_that_disagrees_on_both_factors_releases_the_brand_slot; the refuter's 29-type battery shows the class is broader than that pin: intersect does not distribute over union at the slot (`int and (binary | Meters(int))` = int, should be Meters(int)); the pin union_distributes_over_intersect_at_the_slot only exercises operands agreeing on the structure factor. Both are the same cure (the slot on each DNF clause). Not reachable from source today: cross-kind narrowing needs a guard and `case` over a \u003c\u003c\u003e\u003e-bound variable with a cross-kind pattern hits a pre-existing crash (fz-kdt.206).\n",
+      "timestamp": "2026-09-03T12:39:46Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A union with a different-kind operand loses the brand: the brand slot is per-DESCRIPTOR, so `utf8 | nil` admits a bare binary -- the descriptor must hold a union of rectangles (the slot on each DNF clause) before a brand can be trusted at a @spec gate",
   "type": "task",
-  "updated_at": "2026-09-03T12:34:52Z"
+  "updated_at": "2026-09-03T12:39:46Z"
 }
