@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T23:11:55Z",
+  "description": "Found by the fz-kdt.210 research and CONFIRMED independently by its cold\nreview (2026-09-03). Reproduces identically at base dd07432db and under\nfz-kdt.210`s prototype, so 210 does not fix it -- it is the natural successor.\n\nfz-kdt.210 fixes the RETURN side of a partial join: a @spec variable whose\ncovariant occurrences include one the walk cannot read (an opaque reducer\narrow arriving as a bare address var, so collect_arrow_match finds no\ncallable_clauses and answers Unknown) was treated as fully joined, so the\nresult was called Known -- a runtime fact -- from a join that never finished.\n\nTHIS TICKET IS THE PARAMETER HALF OF THE SAME ROOT. refine_contract_inputs\ninstantiates the reducer`s ARROW from that same partial join and clamps it to\nthe SEED accumulator, so the ascent stops one rung short and a legitimate\nprogram is rejected with a false error[spec/violation].\n\nREPRODUCER: probe/seed.fz in the fz-kdt.210 research artifacts -- a fold whose\naccumulator seed is an ATOM. Swapping the seed to `[]` makes it compile,\nbecause the fz-f98.16 empty-list cleaner masks the list case; that masking is\nwhy this has been invisible, and fz-kdt.120 deletes that cleaner.\n\nWHY IT IS ITS OWN TICKET: 210 is confined to the calculator\n(types/arrow_match.rs marks a partially joined variable so the RESULT answers\nUnderconstrained). The clamp lives at a different seam -- contract.rs\nrefine_contract_inputs, consuming an instantiation as a refinement of the\nINPUT surface. 210 deliberately leaves the parameter surface alone\n(Underconstrained still publishes `params`), which its review confirms is a\nconscious choice, so the parameter half needs its own rule.\n\nCONCORDANT, and an owner must decide whether to FOLD: fz-kdt.181 (P1, open --\n\"Types::intersect deletes a union member whose surface member carries a free\ntype variable, and refine_contract_inputs consumes the erasure as a\nrefinement\") is the same FUNCTION and the same class of harm, with the erasure\narriving from intersect rather than from a partial instantiation; this\nreproducer is already recorded as a comment there. fz-kdt.132 (closed) is the\nsame CLAMP shape arriving from a closure clause rather than from a @spec.\n\nRED-FIRST: probe/seed.fz compiles and prints on all three doors, with the\nempty-list cleaner both intact and deleted.",
+  "id": "fz-kdt.216",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "The PARAMETER half of a partial join is a false spec/violation: refine_contract_inputs clamps a reducer's arrow to the seed accumulator, so the ascent stops one rung short",
+  "type": "task",
+  "updated_at": "2026-09-03T23:11:55Z"
+}
