@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.46"
+  ],
   "blocks": [],
   "created": "2026-09-01T17:23:28Z",
   "description": "## Goal\n\nAfter blocked-wait producer discovery becomes edge-triggered, prove that no production scheduling path still orders FactKey values by Debug text. Delete this ticket as superseded if the cutover removes every affected path; otherwise repair only the surviving semantic ordering defect.\n\n## Current evidence\n\nThe pre-cutover DependencyIndex::unresolved path sorts waits by Debug-rendered FactKey. Several FactKey variants embed raw interned Ty identities, so that text is not a stable structural order. The same unresolved inventory currently feeds producer-poke scheduling, but fz-kdt.46 owns deletion of those normal-drive scans and poke loops. Building a general structural comparator before that deletion would invest in machinery for a path intended to disappear.\n\n## Strategy and proof\n\n1. Land fz-kdt.46.\n2. Search every remaining normal-drive consumer of unresolved waits and FactKey ordering.\n3. If only terminal diagnostic presentation remains, keep deterministic presentation isolated from execution order and close this ticket with the removal proof.\n4. If a live scheduling consumer remains, add opposite-Ty-mint-order and display-collision regressions, then use an injective structural order whose compare(a,b) == Equal iff a == b.\n5. Do not restore a global producer scan or sort.\n6. Prove byte-identical artifacts, order-independent causal work, complete diagnostics, full tests, fixture matrix, formatting, and strict clippy.\n\nThe expected outcome is deletion, not a comparator.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Audit residual blocked-wait ordering after edge-triggered cutover",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:20Z"
+  "updated_at": "2026-09-03T08:02:44Z"
 }
