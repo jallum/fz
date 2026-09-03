@@ -40,6 +40,14 @@ combinations (fz-9i4.7.10.2). Two compressions run at the insertion point
 (`ActivationInputAlternatives::insert_row`), and they are different
 judgements:
 
+Before that join, one `AnalyzeActivation` conclusion emits each exact
+`(ActivationKey, input row)` contribution once. Several reached paths may
+observe the same callee evidence, but they are one publisher making one claim;
+first-observed order is retained. This boundary compares interned type identity
+only. Distinct rows still reach the antichain below, and another analysis
+conclusion has its own contribution set, so neither evidence nor publisher
+ownership is collapsed.
+
 - whole-row EQUIVALENCE (pointwise `Types::is_equivalent`): the incoming row
   says exactly what a standing row says;
 - whole-row DOMINANCE (`Types::row_dominates`, fz-kdt.106): a dominated
