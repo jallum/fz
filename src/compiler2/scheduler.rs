@@ -22,7 +22,7 @@ use super::semantic::SemanticOrd;
 ///   commanding another job.
 /// - `ChangedRevisionWake`: `Scheduler::complete`'s wake propagation
 ///   (`enqueue_dependents`/`enqueue_step`) re-running a job whose fact
-///   subscription (read, wait, or settled-presence) just changed. This is
+///   subscription (read or wait) just changed. This is
 ///   the core pull mechanism: readers wake because their ground moved, never
 ///   because a producer pushed them by name.
 /// - `ActivationFrontier`: `drive::demand_activation_frontier_analyses`
@@ -555,8 +555,8 @@ where
     /// publisher can invalidate what readers derived.
     ///
     /// A readiness-only change (the finality flips this ticket added, and the
-    /// dirty/clean flips that were always here) reaches `Settled` and
-    /// `SettledPresence` subscribers ONLY. Sending it to `Current` subscribers
+    /// dirty/clean flips that were always here) reaches `Settled` subscribers
+    /// ONLY. Sending it to `Current` subscribers
     /// would recompute a formula whose input content never moved, which is the
     /// one-line "fix" fz-kdt.44 measured and rejected.
     fn dispatch_changes<Ctx>(
@@ -603,15 +603,6 @@ where
                     &mut wakes,
                     ctx,
                 );
-                if change.readiness_changed() {
-                    self.enqueue_dependents(
-                        FactUse::settled_presence(change.key.clone()),
-                        false,
-                        &mut pending_changes,
-                        &mut wakes,
-                        ctx,
-                    );
-                }
             } else {
                 // A cumulative fact's appearance at bottom moves no content,
                 // but it SATISFIES a `Current` wait (presence is the wait's
@@ -629,13 +620,6 @@ where
                 if change.readiness_changed() {
                     self.enqueue_dependents(
                         FactUse::settled(change.key.clone()),
-                        false,
-                        &mut pending_changes,
-                        &mut wakes,
-                        ctx,
-                    );
-                    self.enqueue_dependents(
-                        FactUse::settled_presence(change.key.clone()),
                         false,
                         &mut pending_changes,
                         &mut wakes,

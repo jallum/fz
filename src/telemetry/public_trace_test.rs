@@ -393,7 +393,7 @@ fn raw_product_rows_remain_distinct_while_canonical_multisets_fold_them() {
 }
 
 #[test]
-fn canonical_product_causality_preserves_fact_use_mode() {
+fn canonical_product_causality_distinguishes_live_fact_use_modes() {
     let report = |fact_use| {
         let product = serde_json::json!({"kind": "synthetic", "root_id": 1});
         let mut events = ReplayEvents::default();
@@ -415,10 +415,7 @@ fn canonical_product_causality_preserves_fact_use_mode() {
 
     let current = report("current");
     let settled = report("settled");
-    let settled_presence = report("settled_presence");
     assert_ne!(current, settled);
-    assert_ne!(current, settled_presence);
-    assert_ne!(settled, settled_presence);
 }
 
 fn named(ev: &PublicEvent, name: &[&str]) -> bool {

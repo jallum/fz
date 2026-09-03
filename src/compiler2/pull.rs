@@ -2344,15 +2344,10 @@ impl<'s> ProductReadContext<'s> {
 
     pub fn read_fact(&mut self, world: &World, fact: FactUse<FactKey>) -> bool {
         let state = FactState {
-            revision: match &fact {
-                FactUse::SettledPresence(_) => None,
-                _ => world.fact_revision(fact.fact()),
-            },
-            settled: match &fact {
-                FactUse::Current(_) => false,
-                _ => world.fact_is_settled(fact.fact()),
-            },
-        };
+            revision: world.fact_revision(fact.fact()),
+            settled: world.fact_is_settled(fact.fact()),
+        }
+        .projected(&fact);
         let ready = match fact.readiness() {
             super::facts::FactReadiness::Current => state.revision.is_some(),
             super::facts::FactReadiness::Settled => state.settled,
@@ -2794,10 +2789,8 @@ mod tests {
     };
     use crate::telemetry::{ConfiguredTelemetry, JsonlBackend};
 
-    use super::super::drive::Job;
     use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
-    use super::super::scheduler::DerivationEffects;
     use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
     use super::*;
 
@@ -3958,99 +3951,6 @@ mod tests {
             &fake_types(),
         );
         driver.apply_fact_movements(&[fact_movement(fact, Some(2), true)]);
-
-        let mut producers = FakeProducers::default();
-        assert_eq!(
-            driver.pull(&mut producers, key.clone()),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        assert_eq!(producers.calls, vec![key]);
-    }
-
-    #[test]
-    fn settled_presence_reader_ignores_content_only_movement() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(73);
-        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
-        let mut driver = ProductDriver::new(&tel, root);
-        finish_test_entry(
-            &mut driver.session_mut().memo,
-            &tel,
-            &key,
-            ProductValue::Unit,
-            ProductDependencies {
-                products: HashMap::new(),
-                facts: HashMap::from([(
-                    FactUse::settled_presence(fact.clone()),
-                    FactState {
-                        revision: None,
-                        settled: true,
-                    },
-                )]),
-            },
-            &fake_types(),
-        );
-        driver.apply_fact_movements(&[fact_movement(fact, Some(2), true)]);
-
-        let mut producers = FakeProducers::default();
-        assert_eq!(
-            driver.pull(&mut producers, key),
-            PullOutcome::Produced(ProductValue::Unit)
-        );
-        assert!(producers.calls.is_empty());
-    }
-
-    #[test]
-    fn settled_presence_reader_reproduces_after_same_key_publication_then_dirtying() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(74);
-        let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let missing = FactKey::RootEntry(root);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
-        let mut driver = ProductDriver::new(&tel, root);
-        finish_test_entry(
-            &mut driver.session_mut().memo,
-            &tel,
-            &key,
-            ProductValue::Unit,
-            ProductDependencies {
-                products: HashMap::new(),
-                facts: HashMap::from([(
-                    FactUse::settled_presence(fact.clone()),
-                    FactState {
-                        revision: None,
-                        settled: true,
-                    },
-                )]),
-            },
-            &fake_types(),
-        );
-        let mut scheduler = super::super::scheduler::Scheduler::<Job, FactKey>::new();
-        let job = Job::IndexCode(super::super::CodeId::ZERO);
-        scheduler.complete_ordered(
-            &job,
-            HashSet::new(),
-            vec![DerivationEffects::sole(
-                HashSet::new(),
-                vec![fact.clone()],
-                vec![fact.clone()],
-                true,
-            )],
-            &fake_types(),
-        );
-        let blocked = scheduler.complete_ordered(
-            &job,
-            HashSet::from([FactUse::current(missing)]),
-            vec![DerivationEffects::sole(
-                HashSet::new(),
-                vec![fact.clone()],
-                vec![fact],
-                false,
-            )],
-            &fake_types(),
-        );
-        driver.apply_fact_movements(&blocked.movements);
 
         let mut producers = FakeProducers::default();
         assert_eq!(

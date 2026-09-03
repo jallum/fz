@@ -1332,7 +1332,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
     assert!(
         report.readiness_without_settled_wake.is_empty(),
-        "a readiness cause is only claimable where a Settled/SettledPresence wake carried it"
+        "a readiness cause is only claimable where a Settled wake carried it"
     );
     let _ = remove_file(&telemetry_path);
 }

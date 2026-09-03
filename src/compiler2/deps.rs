@@ -238,20 +238,16 @@ where
         self.waiters.get(fact_use).is_some_and(|jobs| !jobs.is_empty())
     }
 
-    /// Every derivation subscribed to any readiness of `fact`, in typed
-    /// publisher order. Multiplicity across readiness variants is preserved.
+    /// Every derivation subscribed to `fact`, in typed publisher order.
+    /// Multiplicity across use variants is preserved.
     pub fn readers_of<Ctx>(&self, fact: &F, ctx: &Ctx) -> Vec<Publisher<J>>
     where
         J: SemanticOrd<Ctx>,
     {
-        let mut readers = [
-            FactUse::current(fact.clone()),
-            FactUse::settled(fact.clone()),
-            FactUse::settled_presence(fact.clone()),
-        ]
-        .into_iter()
-        .flat_map(|fact_use| self.subscribers.get(&fact_use).into_iter().flatten().cloned())
-        .collect::<Vec<_>>();
+        let mut readers = [FactUse::current(fact.clone()), FactUse::settled(fact.clone())]
+            .into_iter()
+            .flat_map(|fact_use| self.subscribers.get(&fact_use).into_iter().flatten().cloned())
+            .collect::<Vec<_>>();
         readers.sort_by(|left, right| {
             left.job
                 .semantic_cmp(&right.job, ctx)

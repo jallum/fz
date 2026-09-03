@@ -119,10 +119,6 @@ fn settled(fact: &'static str) -> FactUse<&'static str> {
     FactUse::settled(fact)
 }
 
-fn settled_presence(fact: &'static str) -> FactUse<&'static str> {
-    FactUse::settled_presence(fact)
-}
-
 /// One job, one answer: the whole-body derivation every job that does not
 /// split its ownership publishes under. An unblocked run concludes it; a
 /// blocked run did not reach it, which is exactly today's "a blocked
@@ -172,57 +168,6 @@ fn complete_derivations(
         })
         .collect();
     scheduler.complete_ordered(&job, waits, effects, &TestOrder)
-}
-
-#[test]
-fn compiler2_scheduler_settled_presence_ignores_content_revision_bumps() {
-    let mut scheduler = TestScheduler::new();
-    let producer = 1_u32;
-    let waiter = 2_u32;
-
-    complete(
-        &mut scheduler,
-        waiter,
-        HashSet::new(),
-        HashSet::from([settled_presence("summary")]),
-        Vec::new(),
-        Vec::new(),
-    );
-    let appeared = complete(
-        &mut scheduler,
-        producer,
-        HashSet::new(),
-        HashSet::new(),
-        vec!["summary"],
-        vec!["summary"],
-    );
-    assert_eq!(
-        enqueued_jobs(&appeared),
-        vec![waiter],
-        "settled-presence waiters should wake when the fact first settles",
-    );
-    let _ = scheduler.pop();
-    complete(
-        &mut scheduler,
-        waiter,
-        HashSet::from([settled_presence("summary")]),
-        HashSet::new(),
-        Vec::new(),
-        Vec::new(),
-    );
-
-    let moved = complete(
-        &mut scheduler,
-        producer,
-        HashSet::new(),
-        HashSet::new(),
-        vec!["summary"],
-        vec!["summary"],
-    );
-    assert!(
-        !enqueued_jobs(&moved).contains(&waiter),
-        "settled-presence readers are readiness subscribers, not content subscribers",
-    );
 }
 
 #[test]
@@ -982,17 +927,14 @@ fn compiler2_scheduler_cumulative_ascent_wakes_without_rebasing() {
 /// only that someone is now deriving the key. Waking every `Current` reader of
 /// nothing is work with no evidence behind it.
 ///
-/// The other two questions the slot answers still move, and must: the fact is
-/// PRESENT (a `Settled` waiter can now be satisfied by it, and only a present
-/// fact ever settles) and it is SETTLED, so both the settled and the
-/// settled-presence waiters wake on the readiness edge alone.
+/// The other question the slot answers still moves, and must: the fact is
+/// SETTLED, so the settled waiter wakes on the readiness edge alone.
 #[test]
 fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader() {
     let mut scheduler = TestScheduler::new();
     let writer = 1_u32;
     let reader = 2_u32;
     let settled_waiter = 3_u32;
-    let presence_waiter = 4_u32;
 
     complete(
         &mut scheduler,
@@ -1010,15 +952,6 @@ fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader()
         Vec::new(),
         Vec::new(),
     );
-    complete(
-        &mut scheduler,
-        presence_waiter,
-        HashSet::new(),
-        HashSet::from([settled_presence("cum_ret")]),
-        Vec::new(),
-        Vec::new(),
-    );
-
     // The claim lists the key as an output but marks nothing changed: the
     // publisher is deriving it and has reached bottom.
     let step = complete(
@@ -1048,8 +981,8 @@ fn compiler2_scheduler_cumulative_appearance_at_bottom_wakes_no_current_reader()
     );
     assert_eq!(
         enqueued_jobs(&step),
-        vec![settled_waiter, presence_waiter],
-        "presence and settledness DID move, so the settled and settled-presence waiters wake",
+        vec![settled_waiter],
+        "settledness DID move, so the settled waiter wakes",
     );
 }
 

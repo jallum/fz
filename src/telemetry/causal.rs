@@ -513,7 +513,7 @@ pub struct CausalReport {
     /// Evaluations with no moved input, retained with exact formula and
     /// dependency identity rather than hidden in an aggregate.
     pub uncaused: Vec<UncausedEvaluation>,
-    /// Readiness-caused evaluations for which no `Settled`/`SettledPresence`
+    /// Readiness-caused evaluations for which no `Settled`
     /// wake named the formula in the window — a readiness cause claimed
     /// without the wake that carries it.
     pub readiness_without_settled_wake: Vec<UncausedEvaluation>,
@@ -1297,7 +1297,7 @@ impl Replay {
         }
     }
 
-    /// A wake whose cause is `Settled`/`SettledPresence` is the readiness
+    /// A wake whose cause is `Settled` is the readiness
     /// evidence: agenda state no fact movement reconstructs.
     fn record_wakes(&mut self, position: usize, completion: &Json) {
         for wake in array(completion.get("wakes")) {
@@ -1305,7 +1305,7 @@ impl Replay {
                 .get("cause")
                 .and_then(|cause| cause.get("use"))
                 .and_then(Json::as_str)
-                .is_some_and(|marker| marker != "current");
+                == Some("settled");
             if !settled {
                 continue;
             }

@@ -779,7 +779,6 @@ where
         let readiness_rank = |fact: &FactUse<F>| match fact {
             FactUse::Current(_) => 0,
             FactUse::Settled(_) => 1,
-            FactUse::SettledPresence(_) => 2,
         };
         self.fact()
             .semantic_cmp(other.fact(), ctx)
