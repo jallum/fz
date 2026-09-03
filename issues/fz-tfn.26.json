@@ -17,11 +17,15 @@
     {
       "text": "Design correction approved during implementation: canonical/display strings are forbidden as production order keys. Use the existing typed structural Types comparison after complete binder-scoped addressing, and propagate typed comparators through Job/FactKey/FactUse/scheduler consumers. The string-key attempt is rejected and must be deleted before review.",
       "timestamp": "2026-09-03T16:27:58Z"
+    },
+    {
+      "text": "Performance/correctness refinement: interned Ty values are immutable, so the typed World-owned comparison relation must memoize each operation/type-pair outcome. Reversed pairs reuse the inverse where valid. Production sorting consumes typed Ordering from this memo; tests/telemetry prove one miss per unique pair and subsequent hits. Callable labels must be registered and stable before a comparison is cached. No rendered/canonical string is an identity or ordering surrogate.",
+      "timestamp": "2026-09-03T16:32:49Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Give activation facts one binder-scoped semantic order",
   "type": "bug",
-  "updated_at": "2026-09-03T16:27:58Z"
+  "updated_at": "2026-09-03T16:32:49Z"
 }
