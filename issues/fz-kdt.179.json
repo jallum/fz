@@ -27,11 +27,15 @@
     {
       "text": "YOUR REPRODUCER IS NOW A STATIC GATE, PER SITE (fz-kdt.178, 8de517a28). SELECTION_SEAT_ALLOWANCE in drive_test.rs holds 21 rows / 73 findings: 00277 w10 2, w11 2, w13-w19 8 each, w20 2 (62), enum_hof_three_distinct_closures w3/w4/w5 1 each (3), and 00420_enum_take_drop_split + behavior/enum_take_drop_split w21-w24 1 each (8). 28 of the 73 are fz-kdt.186's, not yours -- 00277 w13-w19, four apiece, marked UNREACHABLE-PAIR in the failure text -- so land 186 first and your target is 45. BLIND_ESCAPE_POPULATION names the same sites (45 reachable readings) and INDISTINGUISHABLE_ARM_POPULATION carries 105 one-question groups across 00277 (47), enum_map_family (46) and 00420 (12), all wrapper selections. The body's \"w2\" is wrong and was never measured: w2's members are [], [{any,any}] and their union -- no int, escapes nowhere. Acceptance now has three oracles: the dynamic tripwire (12 -\u003e 0 on 00277), the seat allowance (rows to zero one by one), and the twins ratchet (a drop that runs on member selection dissolves what it can).",
       "timestamp": "2026-09-03T07:22:43Z"
+    },
+    {
+      "text": "fz-kdt.183 rule review (2026-09-03): under the rule your dynamic reproducer (enum_predicate_search under arms:6) reads 0 and the selection seat findings fall 73 -\u003e 29 (after 186: 45 -\u003e ?): the members that differed only in a tail no test reads now differ in a key the seat CAN read. Member selection still never runs the drop or the seat (this ticket's subject); re-measure the reachable population after 186 and 183 land, in that order.",
+      "timestamp": "2026-09-03T09:40:41Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Construction-wrapper member selection bypasses the drop and the covering seat: dispatch_from_callable_flow_edges seats members in interner order",
   "type": "task",
-  "updated_at": "2026-09-03T08:50:40Z"
+  "updated_at": "2026-09-03T09:40:41Z"
 }
