@@ -9,9 +9,15 @@
   "id": "fz-kdt.165",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "FOLDED IN from fz-kdt.189 (2026-09-03, filed from the fz-kdt.183 research before this ticket was checked -- it is this ticket's recursive-key half). Facts: (1) Types::convergence_class_at (types/mod.rs:792-796) turns a pure callable slot of a RECURSIVE key into address_var(path): List.reduce_step/3 keys its reducer as a2 while reduce_cont/3's body CALLS it, so the return depends on a slot the key erased. (2) Keeping the callable verbatim (candidate A) measured 7 fixtures hitting the multi-target-closure arg-floor family pinned at drive_test.rs:16351-16394 (\"backend dispatch call requires semantic argument N value N: backend value N is unbound\" on 00231, 00281, 00285, enum_map_family, enum_reduce_halt_arm_order, opaque_fn_value_join, range_enumerable): a reducer that is a runtime union of targets, specialized per target, stops being materialized (param_reprs [ValueRef, RawInt, RawInt] -\u003e [RawInt, RawInt]) -- the callable half is blocked behind RUNTIME DEMAND, and that pin says the family was fixed; it recurs when a key names a union of targets. (3) On the non-recursive branch erase_closure_identity (types/mod.rs:2926) recurses into captures (:2941): on 00420 Enum.reduce_while/3 (mask all Ignore) collapses seven distinct lambdas into one key `(a2_p0, a2_p1) -\u003e a2_r#?closure[(a1_p0) -\u003e a1_r]`, seven publishers, one return. After fz-kdt.183's element rule 78 blind-shared activations remain, 32 of them Enum.reduce_while/3. (4) body_consumes_callable_identity is one Boolean per body -- exactly this ticket's \"current proof\"; the transitive form (a forwarder that hands its reducer to a body that calls it consumes identity) is the StaticCallees walk derive_call_graph_component already does. fz-kdt.183 (list element through forwarding) and this ticket (callable identity through reachable entries) are ONE derivation; sequence this after 183 on the same machinery.",
+      "timestamp": "2026-09-03T08:19:01Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Derive callable-identity key demand per input and reachable entry",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:41Z"
+  "updated_at": "2026-09-03T08:19:01Z"
 }
