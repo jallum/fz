@@ -7,9 +7,15 @@
   "id": "fz-kdt.161",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CROSS-SESSION WITNESS folded from fz-kdt.174 (2026-09-02): the same base binary (8c3d5ce90) compiled 00277_enum_tier0_fixture to two different backend programs in two sessions/worktrees (md5 cafaf7f6.. 3 dispatch nodes/180 executables vs dc9a2fc7.. 2/181; 571 diff lines: shifted entry id, w6/w7 construction swaps on Enum.reduce/3#lambda, whole vs fields(whole,whole) return demand, an extra Enum.reverse/2#lambda target per row) while 17 same-session runs were stable. This is the 180-vs-181 residue this ticket already owns (free-var tiebreak on TypeVarId mint order + fz-kdt.124's dbg[empty_list()] key): the instability is cross-process, so the fix must be a content-derived key, and the acceptance is cross-process md5 stability of 00277's dump, not same-session.",
+      "timestamp": "2026-09-03T00:02:14Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "00277's confluence needs a schedule-stable free-var tiebreak: cmp_tys falls back to TypeVarId mint order",
   "type": "task",
-  "updated_at": "2026-09-02T15:39:18Z"
+  "updated_at": "2026-09-03T00:02:14Z"
 }
