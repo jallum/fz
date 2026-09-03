@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T05:28:08Z",
+  "description": "From the fz-kdt.178 cold review (2026-09-03, 0889c0b3a). callsite_dispatch.rs\ncovers(early, late) asks every position \"either the tests separate here, or\nearly's surface contains late's here\" with an `all` -- so a pair whose tests\nare DISJOINT at subject 0 (no value can satisfy both arms at all) is still\njudged blind at subject 1 where their list tails overlap, and the seat is\ntold it owes coverage for a routing that routes nothing. The static census\nreader (drive_test.rs blind_escapes / covers) mirrors production exactly and\nso reports the same fiction. Measured once the census walked wrapper\nselection plans: 00277 wrapper w13 arm 4 (s0 = :tail, s1 = [:tail]) vs arm 9\n(s0 = int, s1 = [int] | [int | :tail]) -- :tail and int cannot overlap, yet\n\"arm 9 covers arm 4, seated second\" is reported. ARM_ORDER_CENSUS: 65 blind =\n28 unreachable-pair + 37 reachable; 62 seat findings = 28 + 34; corpus 73 =\n28 + 45. It never showed while the walk saw only single-subject call edges.\nFIX: a pair is a seat question only if some value can satisfy BOTH arms'\ntests -- `overlaps` across all positions (the predicate already exists:\nRuntimeTypePredicate::overlaps) is the precondition; a disjoint pair is\nneither blind nor covering, it is separated, and the seat may leave it as it\narrived. Production and the census reader change together (one relation, two\nreaders). Red-first: the w13 arm 4 / arm 9 pair as a unit CallSiteSummary\n(seats_before must be false both ways and the pair must not count as a\nblind escape); the census constants drop by exactly 28. Sequence: before\nfz-kdt.179 (so 179's reproducer is the 34 reachable seats, not 62).",
+  "id": "fz-kdt.186",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "covers judges each position with an all: a pair whose tests are DISJOINT at one position is still called blind at another, so 28 of 62 selection seat findings on 00277 are pairs no value can reach",
+  "type": "task",
+  "updated_at": "2026-09-03T05:28:08Z"
+}
