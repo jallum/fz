@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T02:51:23Z",
+  "close_reason": "Already fixed/folded into fz-kdt.34.5 in PR #106 (db83fb0c2). The emitter still supplies a HashSet, but the public JSONL boundary renders every complete fact identity and sorts the strings before writing the array; telemetry docs specify that order and both focused stall-event tests pass at a3a9761d1. The separate mint-order FactKey concern remains in fz-kdt.114. File fresh rather than reopen if public bytes become RandomState-dependent again.",
   "created": "2026-09-01T17:23:35Z",
   "description": "Bycatch from the fz-kdt.109 refutation (2026-09-01): drive.rs:~636\nrenders stall_demanded (a HashSet\u003cFactKey\u003e) into the\nfz.compiler2.drive.demand_on_stall telemetry event unordered -- the same\ndefect class fz-kdt.109 fixed on stderr, on the telemetry stream\ninstead. Harmless until stream bytes become a comparand (which this\nepic's canonical-comparand discipline keeps trending toward). Fix =\nthe same packaging sort at the render site; if fz-kdt.114 lands first,\nuse its StableSortKey\u003cTypes\u003e for FactKey.",
   "id": "fz-kdt.115",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "demand_on_stall telemetry renders a HashSet in iteration order",
   "type": "task",
-  "updated_at": "2026-09-01T17:23:35Z"
+  "updated_at": "2026-09-03T02:51:23Z"
 }
