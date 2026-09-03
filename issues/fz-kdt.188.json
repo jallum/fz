@@ -7,9 +7,15 @@
   "id": "fz-kdt.188",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "ADJACENT to fz-kdt.72 (dedup identical callee input contributions before activation-input joins, P1): same emission boundary, different defect (72: identical rows repeated up to 26x; this: a Cartesian row that never existed). Sequence together; whichever lands first states the other's residue in numbers.",
+      "timestamp": "2026-09-03T08:19:06Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "merge_summary_input_vec synthesizes a Cartesian activation-input row from coalesced call targets, the row type ActivationInputRow exists to forbid",
   "type": "task",
-  "updated_at": "2026-09-03T05:49:54Z"
+  "updated_at": "2026-09-03T08:19:06Z"
 }
