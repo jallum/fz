@@ -19,11 +19,15 @@
     {
       "text": "TRIPWIRE IS INERT AS OF fz-kdt.138 (ce6768af4) -- see fz-kdt.144.\n\n138 retired the Scope-A carve-out, so the list-bearing tuple positions the\n`Full` reading existed to look at are now decided by every lowering. Lowered\nand Full are the same function; `escaped()` is `X \u0026\u0026 !X`. The 0 this ticket's\ncensus reports is now true by construction, not by measurement, and a new\nentry cannot appear.\n\nThe env knob, the modes, the RAII census and the doc'd recipe are all\nuntouched and still correct -- what changed is that the reading they compare\nhas no gap left in it. fz-kdt.144's list-TAIL re-ask is what re-arms this.\nThe corpus-sweep integration and triage this ticket still owns should be\nre-based on that reading rather than the tuple one, which is now closed.",
       "timestamp": "2026-09-02T08:46:51Z"
+    },
+    {
+      "text": "FOLDED into fz-kdt.144 (2026-09-02): the tripwire itself landed in fz-kdt.119 (FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP, documented), the tuple reading has no gap left, and the corpus-sweep integration + triage this ticket still owned is the list-tail re-ask that 144 re-arms. One ticket, not two.",
+      "timestamp": "2026-09-03T00:02:17Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A dynamic surface-membership tripwire: the instrument the dispatch class has been missing",
   "type": "task",
-  "updated_at": "2026-09-02T08:46:51Z"
+  "updated_at": "2026-09-03T00:02:17Z"
 }
