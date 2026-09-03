@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.67"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-qon.5"
+  ],
   "closed_at": "2026-09-03T03:23:33Z",
   "close_reason": "Implemented by commit 48b193704 and PR #116 in GitHub stack #112. Deleted the unused shared trait hook, compiler2 identity implementation and forwarder, two no-op tests, and stale documentation. Proof: focused types 109 passed; library 1584 passed with 5 ignored; CLI 24 passed; matrix 485 passed with 9 ignored; workspace checks, strict clippy, formatting, diff, and residue scans passed.",
   "created": "2026-09-03T03:07:27Z",

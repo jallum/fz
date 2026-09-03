@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-qon.4"
+  ],
   "blocks": [],
   "created": "2026-09-03T03:24:44Z",
   "description": "## Goal\n\nRemove the Nominals environment carrier from the shared type API now that compiler2 stores nominal inner structure in each type symbol. Native type-predicate compilation should ask the direct value-disjointness question without allocating empty compatibility maps.\n\n## Current proof\n\nNominals survives only in the shared Types::is_value_disjoint signature, compiler2 reexports/imports, and one native-codegen call. Compiler2 ignores the parameter because its type descriptor owns the necessary nominal structure. The native caller creates two empty HashMaps for every query solely to satisfy the obsolete signature. No second Types implementation remains. differs_only_nominally is another leftover of that migration: its trait default and compiler2 inherent method have zero callers, while documentation falsely says consumers surface it.\n\n## Change\n\n- Remove Nominals and its reexports/imports.\n- Remove the nominal-environment parameter from Types::is_value_disjoint and its compiler2 implementation.\n- Remove the two empty HashMap constructions from native type-predicate compilation.\n- Delete the uncalled differs_only_nominally trait and inherent methods.\n- Rewrite type documentation to describe only the live direct structural predicate.\n- Add no adapter, empty carrier, or compatibility alias.\n\n## Signal\n\nRepository search finds no Nominals or differs_only_nominally. The focused type and native predicate tests, full library suite, CLI suite, single-threaded fixture matrix, workspace all-target/all-feature check, formatting, and strict clippy pass. The native predicate hot path performs no compatibility-map allocation.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Delete the obsolete nominal-environment type carrier",
   "type": "task",
-  "updated_at": "2026-09-03T03:24:44Z"
+  "updated_at": "2026-09-03T03:24:58Z"
 }
