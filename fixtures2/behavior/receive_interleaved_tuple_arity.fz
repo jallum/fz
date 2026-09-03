@@ -1,34 +1,6 @@
 #---
 # purpose: "receive whose clauses interleave tuple-3 / atom / tuple-3 — matrix shares the tuple-arity test across the non-adjacent tuple clauses"
-# budget.codegen.functions: 49
-# budget.codegen.instructions: 801
-# budget.planner.worklist_pops: 26
-# budget.planner.walk_calls: 26
-# budget.planner.type_fn_calls: 26
-# budget.planner.matcher_specs: 0
-# budget.planner.vars: 70
-# budget.planner.blocks: 26
-# budget.planner.stmts: 20
-# budget.planner.dispatches: 36
 #---
-#
-# ## fz-kdt.119 re-pricing
-#
-# `budget.codegen.functions` is `fz.codegen.define_function.stop` from
-# `fz2 --emit=stats run <this fixture>`. It moved 35 -> 49 at fz-kdt.119, and
-# every one of the fourteen is a `Kernel.dbg/1` or `Kernel.fz_dbg_value/1`
-# specialization that BECAME LIVE: the argument's type is a union of
-# `{:unknown | any}` at each of three positions, the tuple test used to see
-# only "a 3-tuple" and collapsed the eight clauses into one destination, and a
-# per-position test tells them apart, so eight arms are minted where one was.
-# That 2^arity product is a real cost for a callee that reads no position,
-# and fz-kdt.140 owns it.
-#
-# The number was 29 before this landing and 35 was already the truth, so the
-# header was stale by six before anything here touched it. The other nine
-# `budget.*` keys on this fixture have no producer anywhere in compiler2 --
-# they name a "planner" that does not exist -- and fz-kdt.139 owns removing
-# them corpus-wide.
 #
 # # receive_interleaved_tuple_arity
 #

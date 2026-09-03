@@ -1,7 +1,7 @@
 use super::fixture_metadata::{
-    BudgetAssertion, EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
-    FixtureMatrixPath, FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout,
-    fixture_matrix_paths_from_filename, parse_fixture_metadata,
+    EdgeAssertion, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata, FixtureMatrixPath,
+    FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout, fixture_matrix_paths_from_filename,
+    parse_fixture_metadata,
 };
 use std::path::Path;
 
@@ -26,7 +26,6 @@ fn fixture_metadata_parser_reads_matrix_and_compiler_keys_together() {
 # defer.build: native tail delivery still red
 # oracle: closure.oracle.exs
 # timeout.interp_secs: 15
-# budget.codegen.instructions: 17
 # root: main/0
 # assert.metric.semantic.callsites: 2
 # assert.edge: main/0[] | @66-71 | closure | main/0::lambda[@14-33]/1
@@ -51,10 +50,6 @@ fn main(), do: 42
                     rationale: "native tail delivery still red".to_string(),
                 }],
                 oracle: Some("closure.oracle.exs".to_string()),
-                budget_assertions: vec![BudgetAssertion {
-                    name: "budget.codegen.instructions".to_string(),
-                    expected: 17,
-                }],
                 path_timeouts: vec![PathTimeout {
                     path: FixtureMatrixPath::Interp,
                     seconds: 15,
@@ -83,26 +78,7 @@ fn main(), do: 42
 }
 
 #[test]
-fn fixture_metadata_participation_rules_are_explicit() {
-    let matrix_only = parse_fixture_metadata(
-        r#"#---
-# purpose: runtime behaviour
-# expect: success
-#---
-fn main(), do: 42
-"#,
-    )
-    .expect("matrix-only frontmatter")
-    .expect("metadata should exist");
-    assert!(
-        matrix_only.participates_in_matrix(),
-        "matrix policy keys make the fixture a behavioural matrix participant"
-    );
-    assert!(
-        !matrix_only.participates_in_compiler_contracts(),
-        "without contract keys it should stay out of compiler snapshot harnesses"
-    );
-
+fn fixture_metadata_compiler_contract_participation_is_explicit() {
     let contract_only = parse_fixture_metadata(
         r#"#---
 # purpose: compiler shape
@@ -114,10 +90,6 @@ fn main(), do: 42
     )
     .expect("contract-only frontmatter")
     .expect("metadata should exist");
-    assert!(
-        !contract_only.participates_in_matrix(),
-        "without matrix keys it should not be run by the behavioural matrix"
-    );
     assert!(
         contract_only.participates_in_compiler_contracts(),
         "compiler keys opt the file into compiler contract checks"

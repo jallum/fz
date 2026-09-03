@@ -233,12 +233,12 @@ The roots the boundary GC traces are exactly the `runnable` closure and the
 
 - `cargo test --test fixture_matrix enum_reduce_suspend` — a runtime-value suspend
   (`Enumerable.reduce` returning `{:suspended, acc, fn () -> … end}`) stays a real
-  heap closure across all four paths, never optimized away. Native JIT/AOT pin
-  `closure_allocs = 1` (`closure_bytes = 48`, `scalar_box_allocs = 1`); interpreter
-  and REPL pin `closure_allocs = 2`.
+  heap closure across `run`, `interp`, and `build`, never optimized away. Native
+  run/build pin `closure_allocs = 1` (`closure_bytes = 48`,
+  `scalar_box_allocs = 1`); the interpreter pins `closure_allocs = 2`.
 - `cargo test --test fixture_matrix receive_selective_refs` — selective receive
   with `^`-pinned matchers and an `after` timeout resumes through the closure entry
-  across all four paths.
+  across `run`, `interp`, and `build`.
 - `cargo test send_probe_hit_projects_only_matched_payload_into_outcome_closure`
   (`src/exec/runtime_test.rs`) — a sender-side hit bypasses the mailbox and
   copies only the projected payload needed by the winning clause into the

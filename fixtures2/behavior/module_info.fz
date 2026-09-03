@@ -1,5 +1,5 @@
 #---
-# purpose: "__info__/1 reflection — a synthesized module fn reports functions, macros, and the module name on all four paths"
+# purpose: "__info__/1 reflection reports functions, macros, and the module name on run, interp, and build"
 #---
 defmodule Shapes do
   fn area(r), do: r * r
