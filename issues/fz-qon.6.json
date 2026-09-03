@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T08:05:29Z",
+  "description": "## Goal\n\nMake northstar and agent-facing type documentation describe only live compiler concepts.\n\n## Evidence\n\nThe code no longer has alpha_normalize_vars, widen_for_recursive_spec_key, FactValue::Inputs(Vec\u003cTy\u003e), or ActivationKey\u003cVec\u003cTy\u003e\u003e. northstar.html and .agent/docs/type-world.md still present some of those retired names or shapes as current architecture. Historical source comments that explicitly record removal remain valid and are out of scope.\n\n## Strategy and proof\n\n1. Search the current code and history to classify each reference as live API, historical record, or stale architecture claim.\n2. Rewrite live documentation around the surviving addressed ActivationInputAlternatives and denotational type/keying model.\n3. Delete retired names and migration-era container shapes; do not add tombstone paragraphs.\n4. Run documentation link/reference checks and repository searches proving no current-facing claim names an absent symbol.\n5. Run formatting and relevant documentation/test checks.\n\nThis is appended to the cleanup stack after the telemetry cutover so the final documentation sweep observes the settled public model.",
+  "id": "fz-qon.6",
+  "labels": [],
+  "parent": "fz-qon",
+  "priority": 2,
+  "status": "open",
+  "title": "Delete retired type-pipeline claims from live architecture docs",
+  "type": "task",
+  "updated_at": "2026-09-03T08:05:29Z"
+}
