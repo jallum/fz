@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.5"
+  ],
   "blocks": [],
   "created": "2026-09-03T08:00:21Z",
   "description": "## Goal\n\nMake large immutable product values shared across producers, the memo, typed consumers, World projections, and cache hits without changing product keys, equality, generations, or dependencies.\n\n## Evidence\n\nOn 00420 there are 206 each of Materialized, ABI, and Backend executable products. Current settle and typed-record paths perform at least 1,854 bookkeeping deep-clone passes, and Materialized-to-ABI, ABI-to-Backend, and Backend-to-root add at least 618 consumer-stage deep clones. Whole root programs are also cloned across World and memo settlement. The canonical backend dump is 1,479,209 bytes, demonstrating payload scale.\n\n## Strategy and proof\n\n1. Add a temporary clone/allocation counter around the large immutable payload boundaries.\n2. Use one shared immutable handle for large `ProductValue` variants and `BackendProgram` / `NativeProgram` storage. Share group dependency maps where all members have the same dependencies.\n3. Return shared values on cache hits; do not reconstruct owned trees merely to observe them.\n4. Make large payloads non-`Clone` where practical so reintroduction fails to compile.\n5. Preserve structural value equality as the generation-change rule and preserve ownership/dependency identity in `ProductKey`.\n6. Prove identical product settlement counts, generations, causal traces, canonical artifacts, and runtime output, while the temporary counter shows no deep clone on settle or cache hit; then delete the counter.\n7. Run full tests and strict clippy.\n\nThis is a representation change, not cache-key deduplication.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Share immutable product payloads instead of deep-cloning artifacts",
   "type": "task",
-  "updated_at": "2026-09-03T08:00:21Z"
+  "updated_at": "2026-09-03T08:02:35Z"
 }
