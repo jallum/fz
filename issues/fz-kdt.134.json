@@ -2,6 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T00:37:14Z",
+  "close_reason": "Completed by fz-kdt.119 in commit 4ca1dc7e7: both native RuntimeTypePredicate emitters were replaced by the shared runtime_test.rs emitter.",
   "created": "2026-09-02T01:44:24Z",
   "description": "From the fz-kdt.119 cold review (2026-09-01): native_codegen/prim.rs\nand native_codegen/receive.rs carry two parallel copies of\nemit_runtime_type_predicate_{scalar,heap,struct,list}_checks under\nidentical names. fz-kdt.119's per-position recursion (per-field\ntests, block scaffolding, OR-of-ANDs over shapes) would double the\nduplication. Fold to one emitter before or in the same motion as 119\n(feedback-fold-concordant-ideas). 119's spec item 4 requires it.",
   "id": "fz-kdt.134",
@@ -14,8 +16,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Fold the two native RuntimeTypePredicate emitters before they double",
   "type": "task",
-  "updated_at": "2026-09-02T02:36:08Z"
+  "updated_at": "2026-09-03T00:37:14Z"
 }
