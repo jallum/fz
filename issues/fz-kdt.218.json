@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T23:26:53Z",
+  "description": "Found by the fz-kdt.210 cold review (probes P5 and P10) and confirmed by the\nbuilder at the fz-kdt.210 commit. LATENT: not reachable from the shipped\nruntime library, which declares no map-typed and no multi-clause @spec.\n\nfz-kdt.210 marks a variable UNDETERMINED at ONE site --\n`collect_match_subst`, when the NODE'S MERGED OUTCOME is `MatchWitness::Unknown`.\nThat delivers \"no node the walk visited was wholly unreadable\". It does NOT\ndeliver the stronger \"every covariant occurrence was individually read\",\nbecause two collectors skip a single occurrence WITHOUT recursing while a\nsibling keeps the node's merged outcome `Known`:\n\n1. `collect_map_match` -- a pattern key the witness does not name is\n   `continue`d, and no `Invalid` is raised when the witness carries variables\n   (precisely the case where the key might yet appear). A sibling key that IS\n   read makes the node `Known`.\n\n2. `collect_arrow_match` -- a pattern clause no witness clause matches on\n   ARITY is skipped. A sibling clause that DID match makes the node `Known`.\n   Weaker than (1): the skipped clause is uninhabited by that witness, so the\n   skip is arguably principled.\n\nREPRODUCERS, both pinned KNOWN-WRONG in src/compiler2/types/arrow_match.rs\n(they assert the wrong answer and say so, and they fail loudly if the hole\ncloses):\n\n  p5_a_skipped_map_key_is_a_partial_join_the_node_rule_misses\n    f(a, %{:k =\u003e c, :missing =\u003e a}) :: a   at  (int, alpha | %{:k =\u003e int})\n    answers `Known int`; `a`'s `:missing` occurrence was never read.\n\n  p10_a_skipped_arrow_clause_is_a_partial_join_the_node_rule_misses\n    f(c, ((any) -\u003e b) | ((any, any) -\u003e c)) :: c   at  (int, (any) -\u003e int)\n    answers `Known int`; the arity-2 clause was never read.\n\nTHE FIX SHAPE (correct-by-construction): mark at the two skip sites, i.e. call\n`collect_lower_occurrences` on the pattern subtree the collector declined to\ndescend into, rather than only on a wholly-unreadable node. Then re-measure the\nmatch_arrow verdict census and the refine_call_return CARVE/FILL census -- the\nfz-kdt.210 commit message records both at its own head.\n\nWHY IT WAS NOT DONE IN fz-kdt.210: neither hole is reachable from the shipped\nlibrary, so it moves no corpus artifact today, and 210's own gate was already\na whole-corpus re-measurement. Deliberately deferred, with the holes pinned so\nthey cannot be forgotten.",
+  "id": "fz-kdt.218",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "A partial join is marked per NODE, so a collector that skips ONE covariant occurrence still answers Known: collect_map_match's absent key and collect_arrow_match's arity-incompatible clause",
+  "type": "bug",
+  "updated_at": "2026-09-03T23:26:53Z"
+}
