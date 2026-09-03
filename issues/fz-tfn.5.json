@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-tfn.6"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete the duplicate standing-root activation scanner",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:33Z"
+  "updated_at": "2026-09-03T10:23:28Z"
 }
