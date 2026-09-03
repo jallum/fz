@@ -423,6 +423,7 @@ fn an_unresolved_callsite_edge_renders_as_itself() {
                 surface_inputs: Vec::new(),
                 activation: None,
                 activation_inputs: None,
+                extern_params: None,
                 return_ty: None,
             }],
             return_ty: None,

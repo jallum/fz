@@ -2222,6 +2222,19 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
         | ProductKey::ExecutableFacts(executable)
         | ProductKey::RuntimeDemand(executable)
         | ProductKey::OutgoingInputEdges(executable) => write_executable_key(out, executable),
+        ProductKey::CallableResolution(key) => {
+            write_executable_key(out, &key.executable);
+            write_id_field(out, "value_id", key.value.as_u32());
+            out.push_str(",\"surface_tys\":[");
+            for (index, ty) in key.surface.inputs.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                note_named_type(*ty);
+                push_u64(out, u64::from(ty.as_u32()));
+            }
+            out.push(']');
+        }
         ProductKey::IncomingInputSlot(slot) => {
             write_executable_key(out, &slot.executable);
             write_semantic_index(out, slot.semantic_index);

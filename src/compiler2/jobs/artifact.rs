@@ -890,7 +890,7 @@ fn read_transport_layouts(
     if waits.is_empty() { Ok(layouts) } else { Err(waits) }
 }
 
-fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
+pub(crate) fn step_result_values(step: &LoweredStep) -> Vec<super::super::body::ValueId> {
     match step {
         LoweredStep::Const { value, .. }
         | LoweredStep::Tuple { value, .. }
@@ -2562,6 +2562,7 @@ mod tests {
                             surface_inputs: vec![int],
                             activation: None,
                             activation_inputs: None,
+                            extern_params: None,
                             return_ty: targets_return.then_some(int),
                         })
                         .collect(),
@@ -2572,6 +2573,7 @@ mod tests {
         let call_returns = evidence.call_returns();
         let result_value = ValueId::from_u32(2);
         let analysis = ActivationAnalysis {
+            input_rows: Vec::new(),
             entry_reachability: EntryReachability::new(Vec::new(), false),
             reachable_entries: Vec::new(),
             callsites: Vec::new(),

@@ -347,8 +347,14 @@ re-settles the affected cone.
 
 Exact products keep retries proportional to movement without changing the
 iterates. `ExecutableFacts(E)` owns the activation analysis, lowered body,
-entry dispatch, and callsite summaries consumed for one executable; exact
-fact movement displaces that product and its readers. Inside the ascent, a
+entry dispatch, callsite summaries, and canonical type projections; exact fact
+movement displaces that product and its readers. `RuntimeDemand(E)` cannot
+intern types or mint identities: local first-class calls instead read exact
+`CallableResolution(E, value, surface)` products. A miss waits and reruns; a
+success consumes the resolved edge. Formula order is only schedule, while
+callable-wrapper surface order remains semantic.
+
+Inside the ascent, a
 round re-derives only the members whose reads moved: a member reads its own joined
 return demand, its cone-edge targets' demands, and (for a lambda producer)
 every executable of the produced function — the two reverse indexes over

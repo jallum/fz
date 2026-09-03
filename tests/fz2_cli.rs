@@ -430,49 +430,92 @@ fn is_callable_construction_cache_hit(key: &str) -> bool {
 /// with `{:#?}`, and on this very fixture two processes write files that differ
 /// at char 59,803 of 98,141 — which is what this test asserts can no longer
 /// happen to the backend dump. Nor is the arena a comparand: a `Ty` is a
-/// position in one `World`.
+/// position in one `World`. The same two process logs prove that product
+/// identities carrying callable surfaces are canonical without requiring a
+/// second compilation just for that observation.
 #[test]
 fn backend_dump_is_byte_identical_across_two_processes() {
-    let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
-    let first_path = unique_temp_path("fz2_backend_canon_a", ".backend");
-    let second_path = unique_temp_path("fz2_backend_canon_b", ".backend");
+    let mut observed_callable_resolutions = 0;
+    for fixture in [
+        "fixtures2/00420_enum_take_drop_split.fz",
+        "fixtures2/behavior/enum_predicate_search.fz",
+        "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    ] {
+        let first_path = unique_temp_path("fz2_backend_canon_a", ".backend");
+        let second_path = unique_temp_path("fz2_backend_canon_b", ".backend");
+        let first_trace = unique_temp_path("fz2_backend_canon_a", ".jsonl");
+        let second_trace = unique_temp_path("fz2_backend_canon_b", ".jsonl");
+        let mut callable_resolutions = Vec::new();
 
-    for path in [&first_path, &second_path] {
-        let spec = format!("backend={}", path.display());
-        let out = run_fz2(&[
-            OsStr::new("interp"),
-            OsStr::new("--dump"),
-            OsStr::new(&spec),
-            OsStr::new(fixture),
-        ]);
-        assert_successful_stdout(&out, &fixture_expected_stdout(fixture), fixture);
+        for (path, trace) in [(&first_path, &first_trace), (&second_path, &second_trace)] {
+            let spec = format!("backend={}", path.display());
+            let out = run_fz2(&[
+                OsStr::new("--log-telemetry"),
+                trace.as_os_str(),
+                OsStr::new("interp"),
+                OsStr::new("--dump"),
+                OsStr::new(&spec),
+                OsStr::new(fixture),
+            ]);
+            assert!(
+                out.status.success() && out.stderr.is_empty(),
+                "{fixture}: backend-dump process failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let log = std::fs::read(trace).expect("read public telemetry log");
+            let report = CausalReport::derive(&parse_public_trace(&log));
+            let identities = report
+                .products
+                .keys()
+                .filter(|identity| identity.contains("\"kind\":\"callable_resolution\""))
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            assert!(
+                identities.iter().all(|identity| !identity.contains("?ty:")),
+                "{fixture}: the public trace must canonicalize every callable-resolution surface type: \
+                 {identities:?}"
+            );
+            callable_resolutions.push(identities);
+        }
+
+        assert_eq!(
+            callable_resolutions[0], callable_resolutions[1],
+            "{fixture}: two processes must publish the same canonical callable-resolution identities"
+        );
+        observed_callable_resolutions += callable_resolutions[0].len();
+
+        let first = read_to_string(&first_path).expect("read first backend dump");
+        let second = read_to_string(&second_path).expect("read second backend dump");
+        assert!(
+            first.len() > 1_000,
+            "{fixture}: the backend dump should describe a whole program, got {} bytes",
+            first.len()
+        );
+        assert!(
+            !first.contains("Ty("),
+            "{fixture}: the canonical backend dump must not carry raw interner ids"
+        );
+        let divergence = first
+            .lines()
+            .zip(second.lines())
+            .position(|(left, right)| left != right);
+        assert!(
+            first == second,
+            "{fixture}: two processes must write one canonical backend dump; they first differ at line \
+             {divergence:?}:\n  first:  {:?}\n  second: {:?}",
+            divergence.and_then(|at| first.lines().nth(at)),
+            divergence.and_then(|at| second.lines().nth(at)),
+        );
+
+        let _ = remove_file(&first_path);
+        let _ = remove_file(&second_path);
+        let _ = remove_file(&first_trace);
+        let _ = remove_file(&second_trace);
     }
-
-    let first = read_to_string(&first_path).expect("read first backend dump");
-    let second = read_to_string(&second_path).expect("read second backend dump");
     assert!(
-        first.len() > 1_000,
-        "the backend dump should describe a whole program, got {} bytes",
-        first.len()
+        observed_callable_resolutions > 0,
+        "the three demand fixtures must exercise a real callable-resolution product path"
     );
-    assert!(
-        !first.contains("Ty("),
-        "the canonical backend dump must not carry raw interner ids"
-    );
-    let divergence = first
-        .lines()
-        .zip(second.lines())
-        .position(|(left, right)| left != right);
-    assert!(
-        first == second,
-        "two processes must write one canonical backend dump; they first differ at line {divergence:?}:\n  \
-         first:  {:?}\n  second: {:?}",
-        divergence.and_then(|at| first.lines().nth(at)),
-        divergence.and_then(|at| second.lines().nth(at)),
-    );
-
-    let _ = remove_file(&first_path);
-    let _ = remove_file(&second_path);
 }
 
 #[test]
@@ -698,12 +741,49 @@ fn main(), do: App.run()
 }
 
 #[test]
+fn runtime_demand_order_fixtures_cross_every_cli_execution_boundary() {
+    for (fixture, golden) in [
+        (
+            "fixtures2/00420_enum_take_drop_split.fz",
+            "fixtures2/behavior/enum_take_drop_split.fz",
+        ),
+        (
+            "fixtures2/behavior/enum_predicate_search.fz",
+            "fixtures2/behavior/enum_predicate_search.fz",
+        ),
+        (
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+            "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        ),
+    ] {
+        let expected = fixture_expected_stdout(golden);
+        for mode in ["interp", "run"] {
+            let out = run_fz2(&[OsStr::new(mode), OsStr::new(fixture)]);
+            assert_successful_stdout(&out, &expected, &format!("fz2 {mode} {fixture}"));
+        }
+        let out_bin = unique_temp_path("fz2_runtime_demand_order", ".bin");
+        let build = run_fz2(&[
+            OsStr::new("build"),
+            OsStr::new(fixture),
+            OsStr::new("-o"),
+            out_bin.as_os_str(),
+        ]);
+        assert_successful_stdout(&build, "", &format!("fz2 build {fixture}"));
+        let run = Command::new(&out_bin)
+            .output()
+            .unwrap_or_else(|error| panic!("run built binary for {fixture}: {error}"));
+        assert_successful_stdout(&run, &expected, &format!("built {fixture}"));
+        let _ = remove_file(&out_bin);
+        let _ = remove_file(out_bin.with_extension("bin.o"));
+    }
+}
+
+#[test]
 fn build_executes_map_struct_bitstring_and_enum_halt_fixtures() {
     for fixture in [
         "fixtures2/behavior/map_three_path_parity.fz",
         "fixtures2/behavior/defstruct_runtime.fz",
         "fixtures2/behavior/utf8_smart_constructor.fz",
-        "fixtures2/behavior/enum_predicate_search.fz",
     ] {
         let expected = fixture_expected_stdout(fixture);
         let out_bin = unique_temp_path("fz2_fixture_build", ".bin");

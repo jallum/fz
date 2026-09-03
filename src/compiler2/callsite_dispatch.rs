@@ -341,20 +341,13 @@ fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], obs
 /// identical `Ty` slices, identical surfaces project to identical questions,
 /// and one question is one group -- so two distinct groups can never tie.
 ///
-/// TWO KEYS, AND THEY ARE DIFFERENT QUANTITIES. This repair orders by
-/// `cmp_tys` over the OBSERVABLE ENVELOPE ([`observable_inputs`], which is
-/// what the plan's rows are built from); fz-kdt.108's gate
-/// `compiler2_construction_members_carry_the_cmp_tys_canonical_order` asserts
-/// `cmp_tys` over the members' `surface_inputs`, which is what the envelope
-/// was projected FROM. On any surface holding a callable the two disagree, so
-/// "concordant with 108" is not free and is not assumed here. It is MEASURED,
-/// at the seam 108 owns: with construction-wrapper member selection running
-/// this repair (fz-kdt.179), 108's own invariant is violated on 20 / 202 / 212
-/// member lists under `wrappers:1` / `:6` / `:reverse` across the 604-fixture
-/// corpus with the repair suppressed, and on 6 / 192 / 198 with it in place.
-/// The repair strictly REDUCES 108's violations and introduces none. At the
-/// settled arrival, where 108's gate actually runs, it takes 0 wrapper swaps
-/// and 234 / 234 member lists are non-decreasing either way.
+/// TWO KEYS, AND THEY ARE DIFFERENT QUANTITIES. This repair orders semantic
+/// destinations by `cmp_tys` over the OBSERVABLE ENVELOPE
+/// ([`observable_inputs`], which is what the plan's rows are built from).
+/// `plan_callable_flows` orders independent `CallableResolutionKey` product
+/// reads by the full surface inputs. That earlier order schedules resolution;
+/// it does not order wrapper destinations. This function alone drops and seats
+/// the finished edges, so no concordance between the two quantities is assumed.
 ///
 /// # The one separation this may be reading off a fiction (fz-kdt.202)
 ///
@@ -868,13 +861,12 @@ pub(crate) struct ConstructionSelection {
 ///
 /// EVERY MEMBER OF ONE WRAPPER IS ONE CALLEE, which is why the stand-in test's
 /// same-callee conjunct is satisfied outright here. A construction wrapper is
-/// one function at one capture layout -- `jobs/runtime_demand.rs`'s
-/// `callable_flow_resolution_edges_product` mints every edge's resolution from
-/// `producer.function` and the producer's capture types, varying only the call
-/// surface -- so two members are two specializations of one body, never two
-/// bodies. That also settles the drop's one open residue in this caller's
-/// favour: fz-kdt.143's group-dissolution reroute is meaning-bearing only
-/// between DIFFERENT callees, and there are none to be had.
+/// one function at one capture layout: each `CallableResolution` product derives
+/// its edge from the same local producer and capture types, varying only the
+/// planned call surface. Two members are therefore two specializations of one
+/// body, never two bodies. That also settles the drop's one open residue in this
+/// caller's favour: fz-kdt.143's group-dissolution reroute is meaning-bearing
+/// only between DIFFERENT callees, and there are none to be had.
 pub(crate) fn construction_member_selection(
     types: &mut Types,
     edges: &[CallableFlowEdge],
@@ -1117,10 +1109,10 @@ fn arrival_order<'a>(types: &mut Types, targets: &'a [CallTargetSummary]) -> Cow
 ///
 /// - a callsite's ARRIVAL order, which is the settled targets' order, which is
 ///   the semantic fixpoint's, which is the agenda's ([`arrival_order`]);
-/// - a callable value's CONSTRUCTION-WRAPPER member order, whose surfaces arrive
-///   as a `BTreeSet<CallableSurface>` walked in interned-id order -- the type
-///   interner's mint order, which is the agenda's again -- before
-///   [`construction_member_selection`] drops and seats them into the member list.
+/// - a callable value's CONSTRUCTION-WRAPPER member order: runtime demand plans
+///   and resolves each surface independently, then
+///   [`construction_member_selection`] drops and seats the finished edges into
+///   the member list.
 ///
 /// Any permutation of either is an order the fixpoint could have delivered, so
 /// an answer that moves under one is an answer a schedule decides.
@@ -1321,37 +1313,11 @@ pub(crate) mod dispatch_stress {
         reversed
     }
 
-    /// The construction-wrapper members and the selection plan's rows, in the
-    /// order this thread's setting asks for.
-    ///
-    /// This is the ONE authority: fz-kdt.108 established that a selection row's
-    /// `body_id` indexes the parallel member list and must increase
-    /// monotonically, so the two are welded and no permutation downstream of
-    /// the weld is representable. Permuting the edges themselves, before either
-    /// derives, keeps the weld and lets members, selection, boundary
-    /// resolutions and the flow's resolution list all inherit one order. It is
-    /// called from `jobs/runtime_demand.rs`, where the edges are built.
-    ///
-    /// WHAT IT CATCHES, measured rather than hoped for (fz-kdt.141). It does
-    /// NOT produce fz-kdt.132's `matched no member`, and no ordering can --
-    /// today for a better reason than when this gate was written: fz-kdt.132
-    /// minted the covering rung, so every value that arrives has a member
-    /// whose key names it, whatever the order. (The original argument leaned
-    /// on the pre-fz-kdt.138 blind tuple test handing everything to the
-    /// first member; that test is exact now, and the 392-run stress matrix
-    /// across all three permutation families re-verified the conclusion
-    /// against the new mechanism.)
-    ///
-    /// It used to decide the whole 268-escape
-    /// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` baseline (268 settled, 68 at
-    /// `wrappers:1`, 20 at `wrappers:6`) where arm seeds moved it by zero.
-    /// fz-kdt.132 emptied that census by minting the accumulator rung whose
-    /// values had no member at all, so the order now decides nothing there:
-    /// every setting reads 0. What this perturbation still holds is the law --
-    /// which member a value reaches must not change an answer -- and
-    /// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members`
-    /// proves it still lands on a moved artifact.
-    pub(crate) fn perturbed_construction_members(edges: Vec<CallableFlowEdge>) -> Vec<CallableFlowEdge> {
+    /// A test-only permutation of resolved construction edges before semantic
+    /// member selection. `finish_callable_flows` applies it to completed product
+    /// answers; `construction_member_selection` may then drop and reseat those
+    /// edges and alone defines the wrapper members and selection rows.
+    pub(crate) fn perturbed_construction_edges(edges: Vec<CallableFlowEdge>) -> Vec<CallableFlowEdge> {
         match wrappers() {
             Perturbation::Settled => edges,
             Perturbation::Reversed => edges.into_iter().rev().collect(),
@@ -1461,6 +1427,7 @@ mod tests {
                     surface_inputs: vec![list],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
                 CallTargetSummary {
@@ -1468,6 +1435,7 @@ mod tests {
                     surface_inputs: vec![range],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
             ],
@@ -1534,6 +1502,7 @@ mod tests {
                 surface_inputs: vec![any],
                 activation: None,
                 activation_inputs: None,
+                extern_params: None,
                 return_ty: None,
             }],
             return_ty: None,
@@ -1591,6 +1560,7 @@ mod tests {
             surface_inputs: vec![list, state],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -1635,6 +1605,7 @@ mod tests {
             surface_inputs: vec![list, state],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -1685,6 +1656,7 @@ mod tests {
             surface_inputs: vec![input],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(narrow_map);
@@ -1743,6 +1715,7 @@ mod tests {
             surface_inputs: vec![input],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(int);
@@ -1806,6 +1779,7 @@ mod tests {
             surface_inputs: vec![list],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(narrow_list);
@@ -1898,6 +1872,7 @@ mod tests {
             surface_inputs: vec![map, atom],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(two, narrow_map, atom_a);
@@ -1979,6 +1954,7 @@ mod tests {
             surface_inputs: vec![state, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -2036,6 +2012,7 @@ mod tests {
             surface_inputs: vec![boxed],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -2090,6 +2067,7 @@ mod tests {
             surface_inputs: vec![boxed],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
 
@@ -2139,6 +2117,7 @@ mod tests {
             surface_inputs: vec![int, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -2186,6 +2165,7 @@ mod tests {
             surface_inputs: vec![input],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let summary = CallSiteSummary {
@@ -2262,6 +2242,7 @@ mod tests {
             surface_inputs: vec![list, state, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(halt_false, empty);
@@ -2329,6 +2310,7 @@ mod tests {
             surface_inputs: vec![list, int, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let bools_arm = target(bool_list, all_one);
@@ -2393,6 +2375,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let atoms_arm = target(atom_list, either);
@@ -2640,6 +2623,7 @@ mod tests {
             surface_inputs: vec![head, list],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let tails_arm = target(tail_atom, tail_list);
@@ -2759,6 +2743,7 @@ mod tests {
             surface_inputs: vec![tagged],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let (arm_a, arm_b, arm_c) = (target(a), target(b), target(c));
@@ -2847,6 +2832,7 @@ mod tests {
             surface_inputs: vec![surface],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arms = [
@@ -2933,6 +2919,7 @@ mod tests {
             surface_inputs: vec![head, second],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(ok, carved);
@@ -3044,6 +3031,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arms = [target(bool_list), target(mixed_list), target(int_list)];
@@ -3135,6 +3123,7 @@ mod tests {
             surface_inputs: vec![list, true_atom, reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let narrow = target(int_list);
@@ -3196,6 +3185,7 @@ mod tests {
             surface_inputs: vec![reducer],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let ints = target(first_fn, over_int);
@@ -3243,6 +3233,7 @@ mod tests {
                     surface_inputs: vec![int, cont],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
                 CallTargetSummary {
@@ -3250,6 +3241,7 @@ mod tests {
                     surface_inputs: vec![int, halt],
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty: None,
                 },
             ],
@@ -3296,6 +3288,7 @@ mod tests {
             },
             capture_semantic_inputs: Box::default(),
             surface_semantic_inputs: Box::from([0, 1]),
+            boundary_input_demands: Box::new([]),
         };
 
         let edges = [edge(atom), edge(tuple)];
@@ -3334,6 +3327,7 @@ mod tests {
             },
             capture_semantic_inputs: Box::default(),
             surface_semantic_inputs: (0..surface.len()).collect(),
+            boundary_input_demands: Box::new([]),
         }
     }
 
@@ -3550,6 +3544,7 @@ mod tests {
                 },
                 capture_semantic_inputs: Box::default(),
                 surface_semantic_inputs: Box::from([0]),
+                boundary_input_demands: Box::new([]),
             },
             CallableFlowEdge {
                 surface: super::super::semantic::CallableSurface {
@@ -3566,6 +3561,7 @@ mod tests {
                 },
                 capture_semantic_inputs: Box::default(),
                 surface_semantic_inputs: Box::from([0]),
+                boundary_input_demands: Box::new([]),
             },
         ];
         let plan = construction_member_selection(world.types_mut(), &edges)
@@ -3640,6 +3636,7 @@ mod tests {
             surface_inputs: vec![atom],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arrived = vec![target(alpha), target(beta), target(gamma)];
@@ -3741,6 +3738,7 @@ mod tests {
             surface_inputs: vec![ty],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let targets = vec![target(int), target(atom)];
@@ -3868,6 +3866,7 @@ mod tests {
             surface_inputs: vec![ty],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         // arrival [P, Q, R]
@@ -4008,6 +4007,7 @@ mod tests {
             surface_inputs: vec![ty],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let seated = |world: &mut World, arrival: &[CallTargetSummary]| {
@@ -4073,6 +4073,7 @@ mod tests {
             surface_inputs: vec![atom],
             activation: None,
             activation_inputs: None,
+            extern_params: None,
             return_ty: None,
         };
         let arrived = vec![target(alpha), target(beta), target(gamma)];

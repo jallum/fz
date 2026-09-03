@@ -296,6 +296,7 @@ pub(super) fn analyze_activation(
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
+            input_rows: alternatives.rows().iter().map(|row| row.columns().to_vec()).collect(),
             entry_reachability,
             reachable_entries: {
                 let mut entries = reachable_entries.into_iter().collect::<Vec<_>>();
@@ -1250,6 +1251,7 @@ fn call_emission_for_function(
                     surface_inputs: input_types,
                     activation: None,
                     activation_inputs: None,
+                    extern_params: None,
                     return_ty,
                 }],
                 return_ty,
@@ -1272,6 +1274,7 @@ fn call_emission_for_function(
                 surface_inputs: input_types.clone(),
                 activation: Some(activation),
                 activation_inputs: Some(input_types),
+                extern_params: callee_extern_params(world, function),
                 return_ty,
             }],
             return_ty,
@@ -1318,6 +1321,7 @@ fn resolve_function_call(
         return Ok((
             CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![call_target_summary(
+                    world,
                     SelectedCallee::ProviderBoundary(function),
                     input_types,
                     None,
@@ -1339,6 +1343,7 @@ fn resolve_function_call(
                 surface_inputs: input_types.clone(),
                 activation: Some(activation.clone()),
                 activation_inputs: Some(input_types.clone()),
+                extern_params: callee_extern_params(world, function),
                 return_ty,
             }],
             return_ty,
@@ -1460,6 +1465,7 @@ fn resolve_protocol_call(
         let target_return = refine_call_return(world, observed_return, contract_return_ty);
         return_ty = join_evidence(world, return_ty, target_return);
         targets.push(call_target_summary(
+            world,
             SelectedCallee::Function(selected.function),
             refined_inputs.clone(),
             Some(activation.clone()),
@@ -1624,6 +1630,7 @@ fn resolve_closure_call(
                 let target_return = refine_call_return(world, target.return_ty, Some(clause.ret));
                 return_ty = join_evidence(world, return_ty, target_return);
                 let rebuilt_target = call_target_summary(
+                    world,
                     target.callee,
                     arg_types.clone(),
                     target.activation,
@@ -1702,7 +1709,14 @@ fn require_callee_prerequisites(
 ) -> bool {
     let contract_ready = require_function_contract(world, function, reads, waits);
     let keying_ready = world.require_activation_key_facts(function, reads, waits);
-    contract_ready && keying_ready
+    let lowered = FactKey::LoweredBody(function);
+    let lowered_ready = world.has_fact(&lowered);
+    if lowered_ready {
+        reads.push(lowered);
+    } else {
+        waits.insert(lowered);
+    }
+    contract_ready && keying_ready && lowered_ready
 }
 
 /// Which call a named callee becomes once its prerequisites are in.
@@ -2066,18 +2080,31 @@ fn refine_protocol_target_inputs(world: &mut World, input_types: &[Ty], receiver
 }
 
 fn call_target_summary(
+    world: &World,
     callee: SelectedCallee,
     surface_inputs: Vec<Ty>,
     activation: Option<ActivationKey>,
     activation_inputs: Option<Vec<Ty>>,
     return_ty: Option<Ty>,
 ) -> CallTargetSummary {
+    let extern_params = match callee {
+        SelectedCallee::Function(function) => callee_extern_params(world, function),
+        SelectedCallee::ProviderBoundary(_) => None,
+    };
     CallTargetSummary {
         callee,
         surface_inputs,
         activation,
         activation_inputs,
+        extern_params,
         return_ty,
+    }
+}
+
+fn callee_extern_params(world: &World, function: FunctionId) -> Option<usize> {
+    match world.lowered_body(function) {
+        LoweredBody::Extern { signature } => Some(signature.params.len()),
+        LoweredBody::Clauses { .. } => None,
     }
 }
 

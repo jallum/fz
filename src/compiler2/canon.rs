@@ -60,12 +60,22 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
     LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, ReceiveAfter, ReceiveClause, ReusableConsCapture, ValueId,
 };
+#[cfg(test)]
+use super::body::{LoweredBody, LoweredStep, LoweredTail};
+#[cfg(test)]
+use super::identity::ExecutableNeed;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId};
+#[cfg(test)]
+use super::jobs::runtime_demand::{
+    ExecutableFacts, RuntimeDemandFormulaSnapshot, RuntimeDemandProductInput, TargetDemandContribution,
+};
 use super::semantic::{
     CallableDemand, CallableFlowEdge, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand,
     RuntimeDemand, ShapeDemand,
 };
 use super::transport::{BoundaryId, CallableId, LaneId, ShapeDescr, ShapeId};
+#[cfg(test)]
+use super::types::{ClosureSurfacePos, decode_closure_surface_var};
 use super::types::{Ty, TyCanon, TypeVarId};
 use super::world::World;
 
@@ -100,6 +110,153 @@ pub(crate) fn canonical_wrapper_numbers(world: &World, program: &BackendProgram)
     inverse(&canon.wrapper_order(program))
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DemandFormulaCanon {
+    pub(crate) input: String,
+    pub(crate) output: String,
+    pub(crate) requests: Vec<(String, bool)>,
+}
+
+#[cfg(test)]
+pub(crate) struct RuntimeDemandFactsCanon {
+    text: String,
+    alpha_names: HashMap<TypeVarId, usize>,
+}
+
+#[cfg(test)]
+pub(crate) fn canon_demand_formula(
+    world: &World,
+    key: &ExecutableKey,
+    facts: &ExecutableFacts,
+    facts_canon: &RuntimeDemandFactsCanon,
+    current: &RuntimeDemandFormulaSnapshot,
+    product_answers: &[RuntimeDemandProductInput],
+    demand: &ExecutableRuntimeDemand,
+    contributions: &HashMap<ExecutableKey, TargetDemandContribution>,
+    requests: &[super::pull::ProductReadObservation],
+) -> DemandFormulaCanon {
+    let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+    let mut canon = ProgramCanon::new(
+        world,
+        TyCanon::with_alpha_names(&labels, facts_canon.alpha_names.clone()),
+    );
+    canon.seed_lowered_body_names(facts.body());
+    canon.strict_formula_names = true;
+    let executable = canon.executable_key(key);
+    let mut input = vec![executable];
+    input.push(facts_canon.text.clone());
+    input.push(format!("own return={}", canon.demand(&current.own.return_demand)));
+    input.push(format!("own inputs={:?}", canon.demands(&current.own.input_demands)));
+    let mut target_inputs = current.target_inputs.iter().collect::<Vec<_>>();
+    target_inputs.sort_by_cached_key(|(key, demands)| {
+        canon.formula_sort_key(|local| format!("{} {:?}", local.executable_key(key), local.demands(demands)))
+    });
+    let mut current_demands = target_inputs
+        .into_iter()
+        .map(|(key, demands)| format!("target {} => {:?}", canon.executable_key(key), canon.demands(demands)))
+        .collect::<Vec<_>>();
+    let mut callable_inputs = current.callable_inputs.iter().collect::<Vec<_>>();
+    callable_inputs.sort_by_cached_key(|(key, demand)| {
+        canon.formula_sort_key(|local| {
+            let frames = local.callable_activation_inputs(&demand.callable_activation_inputs);
+            format!(
+                "{} frames={frames:?} inputs={:?}",
+                local.executable_key(key),
+                local.demands(&demand.input_demands)
+            )
+        })
+    });
+    current_demands.extend(callable_inputs.into_iter().map(|(key, demand)| {
+        let frames = canon.callable_activation_inputs(&demand.callable_activation_inputs);
+        format!(
+            "callable {} => frames={frames:?} inputs={:?}",
+            canon.executable_key(key),
+            canon.demands(&demand.input_demands)
+        )
+    }));
+    current_demands.sort();
+    input.extend(current_demands);
+    let mut ordered_answers = product_answers.iter().collect::<Vec<_>>();
+    ordered_answers.sort_by_cached_key(|product| {
+        canon.formula_sort_key(|local| {
+            let key = local.callable_resolution_key(&product.key);
+            let answer = product
+                .answer
+                .as_ref()
+                .map(|edge| local.callable_flow_edge(edge))
+                .unwrap_or_else(|| "miss".to_string());
+            format!("{key} => {answer}")
+        })
+    });
+    let mut answers = ordered_answers
+        .into_iter()
+        .map(|product| {
+            let key = canon.callable_resolution_key(&product.key);
+            let answer = product
+                .answer
+                .as_ref()
+                .map(|edge| canon.callable_flow_edge(edge))
+                .unwrap_or_else(|| "miss".to_string());
+            format!("product {key} => {answer}")
+        })
+        .collect::<Vec<_>>();
+    answers.sort();
+    input.extend(answers);
+    canon.names = Names::default();
+    canon.seed_lowered_body_names(facts.body());
+    let mut output = canon.runtime_demand(demand);
+    let mut ordered_requests = requests.iter().collect::<Vec<_>>();
+    ordered_requests.sort_by_cached_key(|request| {
+        canon.formula_sort_key(|local| format!("{} {}", local.product_key(&request.key), request.hit))
+    });
+    let mut requests = ordered_requests
+        .into_iter()
+        .map(|request| (canon.product_key(&request.key), request.hit))
+        .collect::<Vec<_>>();
+    requests.sort();
+    let mut ordered_contributions = contributions.iter().collect::<Vec<_>>();
+    ordered_contributions.sort_by_cached_key(|(target, contribution)| {
+        canon.formula_sort_key(|local| local.target_contribution(target, contribution))
+    });
+    let mut rows = ordered_contributions
+        .into_iter()
+        .map(|(target, contribution)| format!("contributes {}", canon.target_contribution(target, contribution)))
+        .collect::<Vec<_>>();
+    rows.sort();
+    output.extend(rows);
+    DemandFormulaCanon {
+        input: input.join("\n"),
+        output: output.join("\n"),
+        requests,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn canon_runtime_demand_facts(world: &World, facts: &ExecutableFacts) -> RuntimeDemandFactsCanon {
+    let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+    let mut canon = ProgramCanon::new(world, TyCanon::alpha_normalized(&labels));
+    canon.seed_lowered_body_names(facts.body());
+    canon.strict_formula_names = true;
+    let text = canon
+        .runtime_demand_formula_facts(&facts.runtime_demand_facts())
+        .join("\n");
+    RuntimeDemandFactsCanon {
+        text,
+        alpha_names: canon.tyc.alpha_names(),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn canon_runtime_demand(world: &World, facts: &ExecutableFacts, demand: &ExecutableRuntimeDemand) -> String {
+    let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+    let facts_canon = canon_runtime_demand_facts(world, facts);
+    let mut canon = ProgramCanon::new(world, TyCanon::with_alpha_names(&labels, facts_canon.alpha_names));
+    canon.seed_lowered_body_names(facts.body());
+    canon.strict_formula_names = true;
+    canon.runtime_demand(demand).join("\n")
+}
+
 /// A function's stable label: `Module.name/arity`.
 ///
 /// Generated lambdas are minted with a name that embeds their OWNER's raw
@@ -117,6 +274,19 @@ pub(crate) fn function_label(world: &World, function: FunctionId) -> String {
         None if module.is_empty() => format!("{name}/{arity}"),
         None => format!("{module}.{name}/{arity}"),
     }
+}
+
+#[cfg(test)]
+fn stable_closure_alpha_label(world: &World, id: TypeVarId) -> Option<String> {
+    let (fn_id, position) = decode_closure_surface_var(id)?;
+    let function = FunctionId::from_fn_id(fn_id);
+    let arity = world.try_function_ref(function)?.arity;
+    let slot = match position {
+        ClosureSurfacePos::Arg(position) if (position as usize) < arity => format!("arg{position}"),
+        ClosureSurfacePos::Ret => "return".to_string(),
+        ClosureSurfacePos::Arg(_) => return None,
+    };
+    Some(format!("closure({}:{slot})", function_label(world, function)))
 }
 
 fn parse_generated_name(name: &str) -> Option<(FunctionId, u32, u32)> {
@@ -173,7 +343,7 @@ impl Out {
 /// values are sparse and carry no meaning. Names are handed out at first
 /// appearance in the body walk, which is the one traversal order the artifact
 /// itself fixes.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Names {
     values: HashMap<ValueId, usize>,
     callsites: HashMap<CallSiteId, usize>,
@@ -213,6 +383,8 @@ struct ProgramCanon<'a> {
     shapes: HashMap<ShapeId, Arc<str>>,
     callables: HashMap<CallableId, Arc<str>>,
     boundaries: HashMap<BoundaryId, Arc<str>>,
+    #[cfg(test)]
+    strict_formula_names: bool,
 }
 
 impl<'a> ProgramCanon<'a> {
@@ -226,7 +398,24 @@ impl<'a> ProgramCanon<'a> {
             shapes: HashMap::new(),
             callables: HashMap::new(),
             boundaries: HashMap::new(),
+            #[cfg(test)]
+            strict_formula_names: false,
         }
+    }
+
+    fn formula_sort_key(&self, render: impl FnOnce(&mut ProgramCanon<'_>) -> String) -> String {
+        let labels = |fn_id| function_label(self.world, FunctionId::from_fn_id(fn_id));
+        #[cfg(test)]
+        let tyc = TyCanon::alpha_normalized(&labels);
+        #[cfg(not(test))]
+        let tyc = TyCanon::new(&labels);
+        let mut canon = ProgramCanon::new(self.world, tyc);
+        canon.names = self.names.clone();
+        #[cfg(test)]
+        {
+            canon.strict_formula_names = self.strict_formula_names;
+        }
+        render(&mut canon)
     }
 
     // ------------------------------------------------------------------
@@ -445,7 +634,458 @@ impl<'a> ProgramCanon<'a> {
 // ----------------------------------------------------------------------
 
 impl ProgramCanon<'_> {
+    #[cfg(test)]
+    fn demands(&mut self, demands: &[RuntimeDemand]) -> Vec<String> {
+        demands.iter().map(|demand| self.demand(demand)).collect()
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_body(&mut self, body: &LoweredBody) -> String {
+        let LoweredBody::Clauses { clauses, entries, .. } = body else {
+            let LoweredBody::Extern { signature } = body else {
+                unreachable!()
+            };
+            return format!("extern params={}", signature.params.len());
+        };
+        let clauses = clauses
+            .iter()
+            .map(|clause| {
+                let params = self.value_list(&clause.params);
+                let steps = clause
+                    .projections
+                    .iter()
+                    .map(|step| self.runtime_demand_step(step))
+                    .collect::<Vec<_>>();
+                format!("params=[{params}] steps={steps:?} entry=e{}", clause.entry.as_u32())
+            })
+            .collect::<Vec<_>>();
+        let entries = entries
+            .iter()
+            .map(|entry| {
+                let origin = entry
+                    .origin
+                    .input_value()
+                    .map(|value| self.names.value(value))
+                    .unwrap_or_else(|| "none".to_string());
+                let params = self.value_list(&entry.params);
+                let captures = self.value_list(&entry.captures);
+                let steps = entry
+                    .steps
+                    .iter()
+                    .map(|step| self.runtime_demand_step(step))
+                    .collect::<Vec<_>>();
+                let tail = self.runtime_demand_tail(&entry.tail);
+                format!("origin={origin} params=[{params}] captures=[{captures}] steps={steps:?} tail={tail}")
+            })
+            .collect::<Vec<_>>();
+        format!("clauses={clauses:?} entries={entries:?}")
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_step(&mut self, step: &LoweredStep) -> String {
+        match step {
+            LoweredStep::Const { .. } => "const".to_string(),
+            LoweredStep::FunctionRef { value, .. } => format!("function_ref {}", self.names.value(*value)),
+            LoweredStep::Tuple { value, items } => {
+                format!("tuple {} [{}]", self.names.value(*value), self.value_list(items))
+            }
+            LoweredStep::List { value, items, tail } => format!(
+                "list {} [{}] tail={}",
+                self.names.value(*value),
+                self.value_list(items),
+                tail.map(|value| self.names.value(value))
+                    .unwrap_or_else(|| "none".to_string())
+            ),
+            LoweredStep::Map { value, entries } => {
+                let entries = entries
+                    .iter()
+                    .map(|(key, field)| format!("{}:{}", self.names.value(key.value), self.names.value(*field)))
+                    .collect::<Vec<_>>();
+                format!("map {} {entries:?}", self.names.value(*value))
+            }
+            LoweredStep::MapUpdate { value, base, entries } => {
+                let entries = entries
+                    .iter()
+                    .map(|(key, field)| format!("{}:{}", self.names.value(key.value), self.names.value(*field)))
+                    .collect::<Vec<_>>();
+                format!(
+                    "map_update {} base={} {entries:?}",
+                    self.names.value(*value),
+                    self.names.value(*base)
+                )
+            }
+            LoweredStep::Struct { value, fields, .. } => {
+                let fields = fields.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+                format!("struct {} [{}]", self.names.value(*value), self.value_list(&fields))
+            }
+            LoweredStep::Bitstring { value, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| {
+                        format!(
+                            "{}:{}",
+                            self.names.value(field.value),
+                            self.runtime_demand_bit_size(&field.spec.size)
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                format!("bitstring {} {fields:?}", self.names.value(*value))
+            }
+            LoweredStep::Lambda {
+                value,
+                function,
+                captures,
+            } => format!(
+                "lambda {} {} [{}]",
+                self.names.value(*value),
+                function_label(self.world, *function),
+                self.value_list(captures)
+            ),
+            LoweredStep::BinaryOp { value, left, right, .. } => format!(
+                "binary {} {} {}",
+                self.names.value(*value),
+                self.names.value(*left),
+                self.names.value(*right)
+            ),
+            LoweredStep::UnaryOp { value, input, .. } => {
+                format!("unary {} {}", self.names.value(*value), self.names.value(*input))
+            }
+            LoweredStep::MapIndex { value, base, key } => format!(
+                "map_index {} {} {}",
+                self.names.value(*value),
+                self.names.value(*base),
+                self.names.value(key.value)
+            ),
+            LoweredStep::FieldAccess { value, base, .. } => {
+                format!("field {} {}", self.names.value(*value), self.names.value(*base))
+            }
+            LoweredStep::AssertLiteral { source, .. } => format!("assert_literal {}", self.names.value(*source)),
+            LoweredStep::AssertStruct { source, .. } => format!("assert_struct {}", self.names.value(*source)),
+            LoweredStep::RequireMapValue { value, source, .. } => {
+                format!("require_map {} {}", self.names.value(*value), self.names.value(*source))
+            }
+            LoweredStep::AssertTuple { source, arity } => {
+                format!("assert_tuple {} {arity}", self.names.value(*source))
+            }
+            LoweredStep::TupleField { value, source, index } => format!(
+                "tuple_field {} {} {index}",
+                self.names.value(*value),
+                self.names.value(*source)
+            ),
+            LoweredStep::AssertEmptyList { source } => format!("assert_empty_list {}", self.names.value(*source)),
+            LoweredStep::AssertSame { source, value } => {
+                format!("assert_same {} {}", self.names.value(*source), self.names.value(*value))
+            }
+            LoweredStep::SplitList { source, head, tail } => format!(
+                "split_list {} {} {}",
+                self.names.value(*source),
+                self.names.value(*head),
+                self.names.value(*tail)
+            ),
+            LoweredStep::BitstringInit { reader, source } => format!(
+                "bitstring_init {} {}",
+                self.names.value(*reader),
+                self.names.value(*source)
+            ),
+            LoweredStep::BitstringRead {
+                ok,
+                value,
+                next_reader,
+                reader,
+                spec,
+                ..
+            } => format!(
+                "bitstring_read {} {} {} {} {}",
+                self.names.value(*ok),
+                self.names.value(*value),
+                self.names.value(*next_reader),
+                self.names.value(*reader),
+                self.runtime_demand_bit_size(&spec.size)
+            ),
+            LoweredStep::AssertBitstringDone { reader } => {
+                format!("assert_bitstring_done {}", self.names.value(*reader))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_tail(&mut self, tail: &LoweredTail) -> String {
+        match tail {
+            LoweredTail::Value { value, dest } => {
+                format!("value {} {}", self.names.value(*value), destination(dest))
+            }
+            LoweredTail::DirectCall {
+                value,
+                callsite,
+                args,
+                dest,
+                ..
+            } => {
+                let args = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
+                format!(
+                    "direct {} {} [{}] {}",
+                    self.names.value(*value),
+                    self.names.callsite(*callsite),
+                    self.value_list(&args),
+                    destination(dest)
+                )
+            }
+            LoweredTail::ClosureCall {
+                value,
+                callsite,
+                callee,
+                args,
+                dest,
+            } => {
+                let args = args.iter().map(|arg| arg.value).collect::<Vec<_>>();
+                format!(
+                    "closure {} {} callee={} [{}] {}",
+                    self.names.value(*value),
+                    self.names.callsite(*callsite),
+                    self.names.value(*callee),
+                    self.value_list(&args),
+                    destination(dest)
+                )
+            }
+            LoweredTail::If {
+                cond,
+                then_entry,
+                else_entry,
+            } => format!(
+                "if {} then=e{} else=e{}",
+                self.names.value(*cond),
+                then_entry.as_u32(),
+                else_entry.as_u32()
+            ),
+            LoweredTail::Dispatch {
+                inputs,
+                bindings,
+                dispatch,
+            } => format!(
+                "dispatch inputs=[{}] pinned=[{}] prepared=[{}] arms={:?} miss=e{}",
+                self.value_list(inputs),
+                self.value_list(&bindings.pinned),
+                self.value_list(&bindings.prepared),
+                dispatch
+                    .arm_entries
+                    .iter()
+                    .map(|entry| entry.as_u32())
+                    .collect::<Vec<_>>(),
+                dispatch.miss_entry.as_u32()
+            ),
+            LoweredTail::Receive(receive) => {
+                let after = receive
+                    .after
+                    .as_ref()
+                    .map(|after| format!("{}:e{}", self.names.value(after.timeout), after.entry.as_u32()));
+                format!(
+                    "receive pinned=[{}] prepared=[{}] clauses={:?} after={after:?}",
+                    self.value_list(&receive.bindings.pinned),
+                    self.value_list(&receive.bindings.prepared),
+                    receive
+                        .clauses
+                        .iter()
+                        .map(|clause| clause.entry.as_u32())
+                        .collect::<Vec<_>>()
+                )
+            }
+            LoweredTail::Halt { .. } => "halt".to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_bit_size(&mut self, size: &Option<LoweredBitSize>) -> String {
+        match size {
+            Some(LoweredBitSize::Value(value)) => format!("value={}", self.names.value(*value)),
+            None | Some(LoweredBitSize::Literal(_)) => "fixed".to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_formula_facts(
+        &mut self,
+        facts: &super::jobs::runtime_demand::RuntimeDemandFacts<'_>,
+    ) -> Vec<String> {
+        let body = self.runtime_demand_body(facts.body);
+        let mut out = vec![format!("facts body={body}")];
+        out.push(format!("facts reachable_clauses={:?}", facts.reachable_clauses));
+        out.push(format!(
+            "facts value_types={:?}",
+            self.keyed_by_value(facts.value_types, |canon, ty| canon.ty(*ty))
+        ));
+        self.tyc.freeze_alpha_names();
+        let mut dispatch_inputs = facts.entry_dispatch_inputs.iter().copied().collect::<Vec<_>>();
+        dispatch_inputs.sort_unstable();
+        out.push(format!("facts entry_dispatch_inputs={dispatch_inputs:?}"));
+        let mut ordered_callsites = facts.callsites.iter().collect::<Vec<_>>();
+        ordered_callsites.sort_by_key(|(callsite, _)| self.names.callsites[callsite]);
+        let callsites = ordered_callsites
+            .into_iter()
+            .map(|(callsite, summary)| {
+                let mut ordered_targets = summary.targets.iter().collect::<Vec<_>>();
+                ordered_targets
+                    .sort_by_cached_key(|target| self.formula_sort_key(|local| local.call_target_summary(target)));
+                let mut targets = ordered_targets
+                    .into_iter()
+                    .map(|target| self.call_target_summary(target))
+                    .collect::<Vec<_>>();
+                targets.sort();
+                let name = self.callsite_ref(*callsite);
+                let need = facts
+                    .callsite_needs
+                    .get(callsite)
+                    .copied()
+                    .unwrap_or(ExecutableNeed::Value);
+                format!("{name} need={need:?} targets={targets:?}")
+            })
+            .collect::<Vec<_>>();
+        out.push(format!("facts callsites={callsites:?}"));
+        let mut ordered_joins = facts.delivered_value_joins.iter().collect::<Vec<_>>();
+        ordered_joins.sort_by_key(|(entry, _)| entry.as_u32());
+        let joins = ordered_joins
+            .into_iter()
+            .map(|(entry, join)| {
+                let mut sources = join
+                    .sources
+                    .iter()
+                    .map(|source| match source {
+                        super::body::DeliveredValueSource::LocalValue(value) => self.value_ref(*value),
+                        super::body::DeliveredValueSource::CallsiteReturn(callsite) => self.callsite_ref(*callsite),
+                    })
+                    .collect::<Vec<_>>();
+                sources.sort();
+                sources.dedup();
+                format!("{}={}<-{sources:?}", entry.as_u32(), self.value_ref(join.value))
+            })
+            .collect::<Vec<_>>();
+        out.push(format!("facts delivered_joins={joins:?}"));
+        let mut ordered_producers = facts.callable_origins.iter().collect::<Vec<_>>();
+        ordered_producers.sort_by_key(|(value, _)| self.names.values[value]);
+        let producers = ordered_producers
+            .into_iter()
+            .map(|(value, producer)| {
+                let captures = producer
+                    .captures
+                    .iter()
+                    .map(|value| self.value_ref(*value))
+                    .collect::<Vec<_>>();
+                format!(
+                    "{}={} captures={captures:?}",
+                    self.value_ref(*value),
+                    function_label(self.world, producer.function)
+                )
+            })
+            .collect::<Vec<_>>();
+        out.push(format!("facts callable_origins={producers:?}"));
+        out.push(format!("facts demand_any={}", self.ty(facts.demand_types.any)));
+        let projections = self.runtime_demand_projections(&facts.demand_types.projections);
+        out.push(format!("facts demand_projections={projections:?}"));
+        let mut ordered_surfaces = facts.demand_types.surfaces.iter().collect::<Vec<_>>();
+        ordered_surfaces.sort_by_cached_key(|(inputs, surface)| {
+            self.formula_sort_key(|local| local.runtime_demand_surface(inputs, surface))
+        });
+        let mut surfaces = ordered_surfaces
+            .into_iter()
+            .map(|(inputs, surface)| self.runtime_demand_surface(inputs, surface))
+            .collect::<Vec<_>>();
+        surfaces.sort();
+        out.push(format!("facts demand_surfaces={surfaces:?}"));
+        let mut ordered_addressed = facts.demand_types.addressed_inputs.iter().collect::<Vec<_>>();
+        ordered_addressed.sort_by_cached_key(|(inputs, outputs)| {
+            self.formula_sort_key(|local| local.runtime_demand_addressed(inputs, outputs))
+        });
+        let mut addressed = ordered_addressed
+            .into_iter()
+            .map(|(inputs, outputs)| self.runtime_demand_addressed(inputs, outputs))
+            .collect::<Vec<_>>();
+        addressed.sort();
+        out.push(format!("facts addressed_inputs={addressed:?}"));
+        let activation_inputs = self.callable_activation_inputs(facts.callable_activation_inputs);
+        out.push(format!("facts callable_activation_inputs={activation_inputs:?}"));
+        out
+    }
+
+    #[cfg(test)]
+    fn call_target_summary(&mut self, target: &super::semantic::CallTargetSummary) -> String {
+        let callee = match target.callee {
+            super::semantic::SelectedCallee::Function(function) => function_label(self.world, function),
+            super::semantic::SelectedCallee::ProviderBoundary(function) => {
+                format!("boundary {}", function_label(self.world, function))
+            }
+        };
+        let surface = target.surface_inputs.iter().map(|ty| self.ty(*ty)).collect::<Vec<_>>();
+        let activation = target.activation.as_ref().map(|key| self.activation_key(key));
+        let inputs = target
+            .activation_inputs
+            .as_ref()
+            .map(|inputs| inputs.iter().map(|ty| self.ty(*ty)).collect::<Vec<_>>());
+        format!(
+            "{callee} surface={surface:?} activation={activation:?} inputs={inputs:?} extern={:?}",
+            target.extern_params
+        )
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_projection(
+        &mut self,
+        ty: Ty,
+        projection: &super::semantic::RuntimeDemandTypeProjection,
+    ) -> String {
+        let callable = projection
+            .callable_value_demand
+            .as_ref()
+            .map(|demand| self.demand(demand))
+            .unwrap_or_else(|| "none".to_string());
+        format!(
+            "{} boundary={} dispatch={} callable={callable}",
+            self.ty(ty),
+            self.demand(&projection.boundary),
+            self.demand(&projection.dispatch)
+        )
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_projections(
+        &mut self,
+        projections: &HashMap<Ty, super::semantic::RuntimeDemandTypeProjection>,
+    ) -> Vec<String> {
+        let mut ordered = projections.iter().collect::<Vec<_>>();
+        ordered.sort_by_cached_key(|(ty, projection)| {
+            self.formula_sort_key(|local| local.runtime_demand_projection(**ty, projection))
+        });
+        let mut projections = ordered
+            .into_iter()
+            .map(|(ty, projection)| self.runtime_demand_projection(*ty, projection))
+            .collect::<Vec<_>>();
+        projections.sort();
+        projections
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_surface(&mut self, inputs: &[Ty], surface: &CallableSurface) -> String {
+        let inputs = inputs.iter().map(|ty| self.ty(*ty)).collect::<Vec<_>>();
+        format!("{inputs:?}={}", self.callable_surface(surface))
+    }
+
+    #[cfg(test)]
+    fn runtime_demand_addressed(&mut self, inputs: &[Ty], outputs: &[Ty]) -> String {
+        let inputs = inputs.iter().map(|ty| self.ty(*ty)).collect::<Vec<_>>();
+        let outputs = outputs.iter().map(|ty| self.ty(*ty)).collect::<Vec<_>>();
+        format!("{inputs:?}={outputs:?}")
+    }
+
+    #[cfg(test)]
+    fn seed_lowered_body_names(&mut self, body: &LoweredBody) {
+        let _ = self.runtime_demand_body(body);
+    }
+
     fn ty(&mut self, ty: Ty) -> String {
+        #[cfg(test)]
+        for id in self.world.types().free_var_ids(&ty) {
+            if let Some(name) = stable_closure_alpha_label(self.world, id) {
+                self.tyc.name_structural_alpha(id, name);
+            }
+        }
         self.tyc.render(self.world.types(), ty).to_string()
     }
 
@@ -555,8 +1195,29 @@ impl ProgramCanon<'_> {
 // ----------------------------------------------------------------------
 
 impl ProgramCanon<'_> {
+    #[cfg(test)]
+    fn target_contribution(&mut self, target: &ExecutableKey, contribution: &TargetDemandContribution) -> String {
+        let return_demand = contribution
+            .return_demand
+            .as_ref()
+            .map(|demand| self.demand(demand))
+            .unwrap_or_else(|| "none".to_string());
+        let mut ordered_inputs = contribution.input_demands.iter().collect::<Vec<_>>();
+        ordered_inputs.sort_by_key(|(index, _)| **index);
+        let inputs = ordered_inputs
+            .into_iter()
+            .map(|(index, demand)| (*index, self.demand(demand)))
+            .collect::<Vec<_>>();
+        format!(
+            "{} return={return_demand} inputs={inputs:?}",
+            self.executable_key(target)
+        )
+    }
+
     fn runtime_demand(&mut self, demand: &ExecutableRuntimeDemand) -> Vec<String> {
         let mut out = Out::default();
+        let activation_inputs = self.callable_activation_inputs(&demand.callable_activation_inputs);
+        out.section("callable_activation_inputs", activation_inputs);
         out.put(&format!("return {}", self.demand(&demand.return_demand)));
         for (index, input) in demand.input_demands.iter().enumerate() {
             out.put(&format!("input {index} {}", self.demand(input)));
@@ -605,11 +1266,22 @@ impl ProgramCanon<'_> {
 
     /// `CallableDemand`'s two sets are `BTreeSet`s ordered by raw `Ty`, so their
     /// iteration order tracks the arena rather than the program. They are
-    /// re-sorted on their rendered form.
+    /// ordered on an entry-local alpha-normalized form before the shared alpha
+    /// environment renders them.
     fn callable_demand(&mut self, demand: &CallableDemand) -> String {
-        let mut resolved: Vec<String> = demand.resolved.iter().map(|s| self.callable_surface(s)).collect();
+        let mut ordered_resolved = demand.resolved.iter().collect::<Vec<_>>();
+        ordered_resolved.sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
+        let mut resolved = ordered_resolved
+            .into_iter()
+            .map(|surface| self.callable_surface(surface))
+            .collect::<Vec<_>>();
         resolved.sort();
-        let mut targets: Vec<String> = demand.targets.iter().map(|t| self.callable_target(t)).collect();
+        let mut ordered_targets = demand.targets.iter().collect::<Vec<_>>();
+        ordered_targets.sort_by_cached_key(|target| self.formula_sort_key(|local| local.callable_target(target)));
+        let mut targets = ordered_targets
+            .into_iter()
+            .map(|target| self.callable_target(target))
+            .collect::<Vec<_>>();
         targets.sort();
         format!(
             "callable(resolved=[{}] targets=[{}] opaque={} escape={})",
@@ -623,6 +1295,27 @@ impl ProgramCanon<'_> {
     fn callable_surface(&mut self, surface: &CallableSurface) -> String {
         let inputs: Vec<String> = surface.inputs.iter().map(|ty| self.ty(*ty)).collect();
         format!("({})", inputs.join(", "))
+    }
+
+    fn callable_activation_input(&mut self, input: &super::semantic::CallableActivationInput) -> String {
+        let captures = input.captures.iter().map(|ty| self.ty(*ty)).collect::<Vec<_>>();
+        format!(
+            "captures=[{}] surface={} own_surface_calls={:?}",
+            captures.join(", "),
+            self.callable_surface(&input.surface),
+            input.capture_called_with_own_surface
+        )
+    }
+
+    fn callable_activation_inputs(&mut self, inputs: &[super::semantic::CallableActivationInput]) -> Vec<String> {
+        let mut ordered = inputs.iter().collect::<Vec<_>>();
+        ordered.sort_by_cached_key(|input| self.formula_sort_key(|local| local.callable_activation_input(input)));
+        let mut inputs = ordered
+            .into_iter()
+            .map(|input| self.callable_activation_input(input))
+            .collect::<Vec<_>>();
+        inputs.sort();
+        inputs
     }
 
     fn callable_target(&mut self, target: &CallableTarget) -> String {
@@ -640,13 +1333,20 @@ impl ProgramCanon<'_> {
         // Named only, never naming: the body walk is the one place a value
         // earns a name, and this fact is read long after that walk is over.
         let captures: Vec<String> = flow.captures.iter().map(|value| self.value_ref(*value)).collect();
-        let mut direct: Vec<String> = flow.direct_surfaces.iter().map(|s| self.callable_surface(s)).collect();
+        let mut direct_surfaces = flow.direct_surfaces.iter().collect::<Vec<_>>();
+        direct_surfaces.sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
+        let mut direct = direct_surfaces
+            .into_iter()
+            .map(|surface| self.callable_surface(surface))
+            .collect::<Vec<_>>();
         direct.sort();
-        let mut first_class: Vec<String> = flow
-            .first_class_surfaces
-            .iter()
-            .map(|s| self.callable_surface(s))
-            .collect();
+        let mut first_class_surfaces = flow.first_class_surfaces.iter().collect::<Vec<_>>();
+        first_class_surfaces
+            .sort_by_cached_key(|surface| self.formula_sort_key(|local| local.callable_surface(surface)));
+        let mut first_class = first_class_surfaces
+            .into_iter()
+            .map(|surface| self.callable_surface(surface))
+            .collect::<Vec<_>>();
         first_class.sort();
         let direct_edges: Vec<String> = flow.direct_edges.iter().map(|e| self.callable_flow_edge(e)).collect();
         let first_class_edges: Vec<String> = flow
@@ -671,16 +1371,66 @@ impl ProgramCanon<'_> {
     }
 
     fn value_ref(&self, value: ValueId) -> String {
-        self.names.known_value(value).unwrap_or_else(|| "v?".to_string())
+        if let Some(name) = self.names.known_value(value) {
+            return name;
+        }
+        #[cfg(test)]
+        assert!(
+            !self.strict_formula_names,
+            "formula canon missing body-local value {value:?}"
+        );
+        "v?".to_string()
+    }
+
+    #[cfg(test)]
+    fn callsite_ref(&self, callsite: CallSiteId) -> String {
+        if let Some(name) = self.names.known_callsite(callsite) {
+            return name;
+        }
+        #[cfg(test)]
+        assert!(
+            !self.strict_formula_names,
+            "formula canon missing body-local callsite {callsite:?}"
+        );
+        "cs?".to_string()
     }
 
     fn callable_flow_edge(&mut self, edge: &CallableFlowEdge) -> String {
+        let boundary = edge
+            .boundary_input_demands
+            .iter()
+            .map(|demand| {
+                demand
+                    .as_ref()
+                    .map(|demand| self.demand(demand))
+                    .unwrap_or_else(|| "none".to_string())
+            })
+            .collect::<Vec<_>>();
         format!(
-            "{}->{} captures={:?} surface={:?}",
+            "{}->{} captures={:?} surface={:?} boundary=[{}]",
             self.callable_surface(&edge.surface),
             self.executable_key(&edge.resolution),
             edge.capture_semantic_inputs,
-            edge.surface_semantic_inputs
+            edge.surface_semantic_inputs,
+            boundary.join(", ")
+        )
+    }
+
+    #[cfg(test)]
+    fn product_key(&mut self, key: &super::pull::ProductKey) -> String {
+        match key {
+            super::pull::ProductKey::CallableResolution(key) => self.callable_resolution_key(key),
+            other => panic!("RuntimeDemand formula made an unexpected product request: {other:?}"),
+        }
+    }
+
+    #[cfg(test)]
+    fn callable_resolution_key(&mut self, key: &super::pull::CallableResolutionKey) -> String {
+        format!(
+            "CallableResolution executable={} value={} surface={}",
+            self.executable_key(&key.executable),
+            self.value_ref(key.value),
+            self.callable_surface(&key.surface)
         )
     }
 
@@ -689,11 +1439,16 @@ impl ProgramCanon<'_> {
     /// position, so they are ordered by their content instead.
     fn keyed_by_value<V>(&mut self, map: &HashMap<ValueId, V>, render: fn(&mut Self, &V) -> String) -> Vec<String> {
         let mut keys: Vec<&ValueId> = map.keys().collect();
-        keys.sort();
+        keys.sort_by_key(|key| (self.names.values.get(key).copied().unwrap_or(usize::MAX), key.as_u32()));
         let mut rows: Vec<(Option<usize>, String)> = Vec::with_capacity(keys.len());
         for key in keys {
             let value = render(self, &map[key]);
             let named = self.names.known_value(*key);
+            #[cfg(test)]
+            assert!(
+                named.is_some() || !self.strict_formula_names,
+                "formula canon missing body-local value {key:?}"
+            );
             rows.push((
                 named.as_ref().map(|_| self.names.values[key]),
                 format!("{} {value}", named.unwrap_or_else(|| "v?".to_string())),
@@ -708,11 +1463,22 @@ impl ProgramCanon<'_> {
         render: fn(&mut Self, &V) -> String,
     ) -> Vec<String> {
         let mut keys: Vec<&CallSiteId> = map.keys().collect();
-        keys.sort_by_key(|key| (key.as_u32(), key.span().start));
+        keys.sort_by_key(|key| {
+            (
+                self.names.callsites.get(key).copied().unwrap_or(usize::MAX),
+                key.as_u32(),
+                key.span().start,
+            )
+        });
         let mut rows: Vec<(Option<usize>, String)> = Vec::with_capacity(keys.len());
         for key in keys {
             let value = render(self, &map[key]);
             let named = self.names.known_callsite(*key);
+            #[cfg(test)]
+            assert!(
+                named.is_some() || !self.strict_formula_names,
+                "formula canon missing body-local callsite {key:?}"
+            );
             rows.push((
                 named.as_ref().map(|_| self.names.callsites[key]),
                 format!("{} {value}", named.unwrap_or_else(|| "cs?".to_string())),
@@ -1692,4 +2458,274 @@ fn inverse(order: &[usize]) -> Vec<usize> {
         inverse[*old] = canonical;
     }
     inverse
+}
+
+#[cfg(test)]
+mod runtime_demand_formula_canon_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::compiler2::body::{CallArg, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep};
+    use crate::compiler2::{Compiler2, ModuleId, types::Ty};
+    use crate::source::Span;
+    use crate::telemetry::ConfiguredTelemetry;
+    use crate::types::ClosureTarget;
+
+    fn body(base: u32, reverse_items: bool) -> LoweredBody {
+        let values = [
+            ValueId::from_u32(base),
+            ValueId::from_u32(base + 7),
+            ValueId::from_u32(base + 19),
+        ];
+        let mut items = values[..2].to_vec();
+        if reverse_items {
+            items.reverse();
+        }
+        LoweredBody::Clauses {
+            clauses: vec![LoweredClause {
+                span: Span::DUMMY,
+                params: values[..2].to_vec(),
+                projections: Vec::new(),
+                entry: ControlEntryId::from_u32(0),
+            }],
+            entries: vec![LoweredEntry {
+                span: Span::DUMMY,
+                origin: ControlEntryOrigin::Clause,
+                params: Vec::new(),
+                captures: Vec::new(),
+                reusable_cons_captures: Vec::new(),
+                steps: vec![LoweredStep::Tuple {
+                    value: values[2],
+                    items,
+                }],
+                tail: LoweredTail::DirectCall {
+                    value: values[2],
+                    callsite: CallSiteId::from_u32(base + 31),
+                    callee: FunctionId::for_test(999),
+                    args: vec![CallArg {
+                        value: values[0],
+                        ascription: None,
+                    }],
+                    dest: ControlDestination::Return,
+                },
+            }],
+            generated: vec![FunctionId::for_test(base + 100)],
+        }
+    }
+
+    fn render(world: &World, body: &LoweredBody, value_types: &HashMap<ValueId, Ty>) -> String {
+        let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+        let mut canon = ProgramCanon::new(world, TyCanon::alpha_normalized(&labels));
+        canon.seed_lowered_body_names(body);
+        canon.strict_formula_names = true;
+        format!(
+            "{}\n{:?}",
+            canon.runtime_demand_body(body),
+            canon.keyed_by_value(value_types, |canon, ty| canon.ty(*ty))
+        )
+    }
+
+    #[test]
+    fn formula_body_canon_ignores_raw_ids_and_map_insertion_order_but_preserves_operands() {
+        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+        let (int, atom) = {
+            let types = compiler.types_mut_for_test();
+            (types.int(), types.atom())
+        };
+        let world = compiler.world();
+        let left_body = body(3, false);
+        let right_body = body(103, false);
+        let distinct_body = body(203, true);
+        let mut left_types = HashMap::new();
+        left_types.insert(ValueId::from_u32(3), int);
+        left_types.insert(ValueId::from_u32(10), atom);
+        let left_iteration = left_types.keys().map(|value| value.as_u32() - 3).collect::<Vec<_>>();
+        let mut right_types = HashMap::new();
+        for _ in 0..64 {
+            right_types = HashMap::new();
+            right_types.insert(ValueId::from_u32(110), atom);
+            right_types.insert(ValueId::from_u32(103), int);
+            let iteration = right_types.keys().map(|value| value.as_u32() - 103).collect::<Vec<_>>();
+            if iteration != left_iteration {
+                break;
+            }
+        }
+        let mut distinct_types = HashMap::new();
+        distinct_types.insert(ValueId::from_u32(203), int);
+        distinct_types.insert(ValueId::from_u32(210), atom);
+
+        let expected = render(world, &left_body, &left_types);
+        let right_iteration = right_types.keys().map(|value| value.as_u32() - 103).collect::<Vec<_>>();
+        assert_ne!(
+            left_iteration, right_iteration,
+            "the regression must exercise differing HashMap iteration"
+        );
+        assert_eq!(render(world, &right_body, &right_types), expected);
+        assert_ne!(render(world, &distinct_body, &distinct_types), expected);
+        assert!(!expected.contains("ValueId(") && !expected.contains("CallSiteId("));
+    }
+
+    fn render_alpha_type(world: &World, ty: Ty) -> String {
+        let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+        TyCanon::alpha_normalized(&labels).render(world.types(), ty).to_string()
+    }
+
+    #[test]
+    fn formula_type_canon_alpha_renames_free_vars_and_preserves_correlations() {
+        let mut left = World::new();
+        let left_ty = {
+            let types = left.types_mut();
+            let a = types.type_var(TypeVarId(7));
+            let b = types.type_var(TypeVarId(91));
+            types.tuple(&[a, a, b])
+        };
+        let mut renamed = World::new();
+        let renamed_ty = {
+            let types = renamed.types_mut();
+            let a = types.type_var(TypeVarId(401));
+            let b = types.type_var(TypeVarId(3));
+            types.tuple(&[a, a, b])
+        };
+        let mut distinct = World::new();
+        let distinct_ty = {
+            let types = distinct.types_mut();
+            let a = types.type_var(TypeVarId(401));
+            let b = types.type_var(TypeVarId(3));
+            types.tuple(&[a, b, b])
+        };
+
+        let expected = render_alpha_type(&left, left_ty);
+        assert_eq!(render_alpha_type(&renamed, renamed_ty), expected);
+        assert_ne!(render_alpha_type(&distinct, distinct_ty), expected);
+        assert!(
+            !expected.contains('α'),
+            "formula proof must not expose a raw free-var id: {expected}"
+        );
+    }
+
+    fn render_named_closure(dummy_functions: usize) -> String {
+        let mut world = World::new();
+        for index in 0..dummy_functions {
+            world.reference_function(ModuleId::GLOBAL, format!("dummy_{index}"), 0);
+        }
+        let target = world.reference_function(ModuleId::GLOBAL, "same_target", 1);
+        let ty = world.types_mut().fn_ref_lit(ClosureTarget(target.as_u32()), 1);
+        render_alpha_type(&world, ty)
+    }
+
+    #[test]
+    fn formula_type_canon_ignores_function_registration_ids_in_closure_vars() {
+        assert_eq!(render_named_closure(0), render_named_closure(5));
+    }
+
+    fn render_projection_section(
+        world: &World,
+        labelled_types: [(ValueId, Ty); 2],
+        projections: &HashMap<Ty, super::super::semantic::RuntimeDemandTypeProjection>,
+        later: Ty,
+    ) -> String {
+        let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+        let mut canon = ProgramCanon::new(world, TyCanon::alpha_normalized(&labels));
+        for &(value, _) in &labelled_types {
+            canon.names.value(value);
+        }
+        let labelled_types = labelled_types.into_iter().collect::<HashMap<_, _>>();
+        let seed = canon.keyed_by_value(&labelled_types, |canon, ty| canon.ty(*ty));
+        canon.tyc.freeze_alpha_names();
+        format!(
+            "seed={seed:?}\n{:?}\nlater={}",
+            canon.runtime_demand_projections(projections),
+            canon.ty(later)
+        )
+    }
+
+    #[test]
+    fn formula_unordered_type_map_ties_use_stable_preseeded_alpha_names() {
+        let projection = || super::super::semantic::RuntimeDemandTypeProjection {
+            boundary: RuntimeDemand::ignore(),
+            dispatch: RuntimeDemand::ignore(),
+            callable_value_demand: None,
+        };
+        let mut left = World::new();
+        let (left_a, left_b, left_later) = {
+            let types = left.types_mut();
+            let a = types.type_var(TypeVarId(7));
+            let b = types.type_var(TypeVarId(91));
+            (a, b, types.tuple(&[a, b]))
+        };
+        let mut left_map = HashMap::new();
+        left_map.insert(left_a, projection());
+        left_map.insert(left_b, projection());
+        let left_iteration = left_map.keys().map(|ty| *ty == left_a).collect::<Vec<_>>();
+
+        let mut renamed = World::new();
+        let (renamed_a, renamed_b, renamed_later, renamed_distinct) = {
+            let types = renamed.types_mut();
+            let a = types.type_var(TypeVarId(401));
+            let b = types.type_var(TypeVarId(3));
+            (a, b, types.tuple(&[a, b]), types.tuple(&[b, a]))
+        };
+        let mut renamed_map = HashMap::new();
+        for _ in 0..64 {
+            renamed_map = HashMap::new();
+            renamed_map.insert(renamed_a, projection());
+            renamed_map.insert(renamed_b, projection());
+            if renamed_map.keys().map(|ty| *ty == renamed_a).collect::<Vec<_>>() != left_iteration {
+                break;
+            }
+        }
+        assert_ne!(
+            renamed_map.keys().map(|ty| *ty == renamed_a).collect::<Vec<_>>(),
+            left_iteration,
+            "the regression must reverse actual HashMap traversal"
+        );
+
+        let expected = render_projection_section(
+            &left,
+            [(ValueId::from_u32(3), left_a), (ValueId::from_u32(10), left_b)],
+            &left_map,
+            left_later,
+        );
+        assert_eq!(
+            render_projection_section(
+                &renamed,
+                [(ValueId::from_u32(103), renamed_a), (ValueId::from_u32(110), renamed_b),],
+                &renamed_map,
+                renamed_later,
+            ),
+            expected
+        );
+        assert_ne!(
+            render_projection_section(
+                &renamed,
+                [(ValueId::from_u32(103), renamed_a), (ValueId::from_u32(110), renamed_b),],
+                &renamed_map,
+                renamed_distinct,
+            ),
+            expected,
+            "the later section must preserve which fixed projection label shares each variable"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "formula canon missing body-local value")]
+    fn formula_canon_rejects_an_unseeded_local_identity() {
+        let compiler = Compiler2::new(ConfiguredTelemetry::new());
+        let world = compiler.world();
+        let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+        let mut canon = ProgramCanon::new(world, TyCanon::new(&labels));
+        canon.strict_formula_names = true;
+        let _ = canon.value_ref(ValueId::from_u32(9));
+    }
+
+    #[test]
+    #[should_panic(expected = "formula canon missing body-local callsite")]
+    fn formula_canon_rejects_an_unseeded_callsite_identity() {
+        let compiler = Compiler2::new(ConfiguredTelemetry::new());
+        let world = compiler.world();
+        let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+        let mut canon = ProgramCanon::new(world, TyCanon::new(&labels));
+        canon.strict_formula_names = true;
+        let _ = canon.callsite_ref(CallSiteId::from_u32(9));
+    }
 }

@@ -1384,7 +1384,11 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // rung erased. Executables are FLAT at 237 and interp and run stdout
         // are byte-identical to base, so this is compile work rising on the
         // arc's slowest fixture and nothing else; retractions stay 0.
-        activations: lifecycle(271, 271, 0),
+        // fz-kdt.47: 271 -> 270. Creating typed callable resolutions before
+        // wrapper seating means the transient `Enum.drop_positive_finish/1`
+        // specialization at `({empty_list, int})` is never minted. This is a
+        // strict work deletion; no standing key is withdrawn.
+        activations: lifecycle(270, 270, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -1413,13 +1417,18 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // withdrawing for a round while a widened key is in flight. Fewer
         // first appearances alongside more distinct rows is the same fact --
         // rows that used to be minted, withdrawn and re-minted are minted once.
-        callsites: lifecycle(460, 471, 11),
+        // fz-kdt.47: 460 -> 459 distinct and 471 -> 470 first appearances.
+        // The transient activation removed above takes its one callsite with
+        // it; retractions stay flat.
+        callsites: lifecycle(459, 470, 11),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
         // withdrawing a narrowed parameter surface changes which activation
         // keys exist, not how often `InputDemand` moves under them.
-        shifts: shifts(25, 77),
+        // fz-kdt.47: rebased completions 77 -> 76. The transient activation
+        // removed above never needs its rebase.
+        shifts: shifts(25, 76),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -1472,9 +1481,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // more run reproduces an answer it already had, retractions FALL 18 ->
         // 11, executables are flat at 237, and stdout is byte-identical on
         // interp and run.
-        analyze_evaluations: 935,
+        // fz-kdt.47: 935 -> 933. The removed transient activation had two
+        // analysis passes; zero-change stays flat at 15.
+        analyze_evaluations: 933,
         analyze_zero_change: 15,
-        total_evaluations: 2458,
+        // The same two deleted analysis passes are the whole-run fall.
+        total_evaluations: 2456,
     },
 ];
 

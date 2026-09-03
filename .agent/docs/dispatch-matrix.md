@@ -229,27 +229,28 @@ A callsite's **arrival order** is the settled targets' order, which is the
 semantic fixpoint's, which is the agenda's. A callable value's
 **construction-wrapper member order** starts from the same free order: a
 `BTreeSet<CallableSurface>` walked in interned-id order — the type interner's
-mint order, which is the agenda's again. **fz-kdt.108** made the SETTLED order
-canonical there: `callable_flow_resolution_edges_product`
-(`jobs/runtime_demand.rs`) sorts the edges by `Types::cmp_tys` over each
-surface's inputs BEFORE the boundary resolutions, the flow's resolution list AND
-the `activation_key` `Ty`s derive from them — one ordering authority, inherited
-by everything downstream, so a re-ordered pull produces the same artifact. The
-member list and the selection plan derive one step further removed: **fz-kdt.179**
-routes the edges through `construction_member_selection`, which drops the members
-no seat would route to and seats the rest, and `jobs/transport.rs` builds the
-member list by walking exactly that seated order. So the fz-kdt.108 weld — a
-selection row's `body_id` equals its member's index — is re-derived from the seat
-as a data dependency (member `i` was PUT there by the same walk) rather than
-inherited from the edge list's content order. The direct half
+mint order, which is the agenda's again. `plan_callable_flows`
+(`jobs/runtime_demand.rs`) removes that schedule channel by sorting
+`CallableResolutionKey`s with `Types::cmp_tys` over each surface's inputs. That
+order schedules product reads only: each `CallableResolution` independently
+constructs its activation identity from authoritative facts, so no preceding
+resolution or shared interner mutation is an input to the next one.
+`finish_callable_flows` reassembles the resolved edges in key order and applies
+the test perturbation. The semantic ordering authority comes afterwards:
+**fz-kdt.179** routes those edges through `construction_member_selection`, which
+drops the members no seat would route to and seats the rest, and
+`jobs/transport.rs` builds the member list by walking exactly that seated order.
+So the fz-kdt.108 weld — a selection row's `body_id` equals its member's index —
+is re-derived from the seat as a data dependency (member `i` was PUT there by
+the same walk), never inherited from resolution-product completion order. The direct half
 (`callable_flow_edges_for_targets`, a `BTreeSet<CallableTarget>`) is ordered by
 the same key for the same reason. `cmp_tys` is total up to the two
 residuals `types::order` documents (free-var ties, lambda byte-span labels);
 those fall back to mint order and are the only construction-order gap left across
 schedules (`00277_enum_tier0_fixture`'s `(int, list(int | :tail))` surfaces are
 one). The stress knob still owns the order for testing: `wrappers:<seed>`
-permutes the canonical list AFTER it is sorted (the perturbation wraps
-`callable_flow_resolution_edges_product`'s result), so the fz-kdt.141 gate that
+permutes the resolved edge list in `finish_callable_flows`, before
+`construction_member_selection` drops and seats it, so the fz-kdt.141 gate that
 proves the perturbation reseats the members stays honest.
 
 Any permutation of either order is one the fixpoint could have delivered, so an
@@ -657,7 +658,7 @@ groups say. Three properties carry it:
   identical surfaces project to identical questions, and one question is one
   group — so two distinct groups can never tie. It inherits `types::order`'s
   two residuals (free-var ties, lambda byte-span labels), which are the same
-  ones fz-kdt.108's construction order inherits.
+  ones the earlier resolution-key order inherits.
 - **It removes the axis exactly where the axis was free, and nowhere else.**
   `Separated` is symmetric but NOT transitive: `A|B` and `B|C` separated says
   nothing about `A|C`. The repair settles a run only where the run is pairwise
@@ -671,18 +672,12 @@ groups say. Three properties carry it:
   the honest claim is the narrow one, and this repair does not make the
   artifact a function of the arm set.
 
-**Two keys, and they are different quantities.** This repair orders by
-`cmp_tys` over the OBSERVABLE ENVELOPE; fz-kdt.108's
-`compiler2_construction_members_carry_the_cmp_tys_canonical_order` asserts
-`cmp_tys` over the members' `surface_inputs`, which is what the envelope was
-projected from. The two disagree on any surface holding a callable, so the
-concordance is measured and not assumed: with the repair suppressed, 108's own
-invariant is violated on **20 / 202 / 212** wrapper member lists under
-`wrappers:1` / `:6` / `:reverse` over the 604-fixture corpus, and on
-**6 / 192 / 198** with the repair in place. It strictly REDUCES 108's
-violations and introduces none. At the settled arrival, which is where 108's
-gate runs, the repair takes 0 wrapper swaps and both readings are 234 / 234
-non-decreasing.
+**Two keys, and they are different quantities.** This repair orders semantic
+destinations by `cmp_tys` over the OBSERVABLE ENVELOPE. Earlier,
+`plan_callable_flows` orders independent `CallableResolutionKey` product reads
+by the full surface inputs. That order schedules resolution; it does not order
+wrapper destinations. `construction_member_selection` alone drops and seats
+the finished edges, so no concordance between the two quantities is assumed.
 
 **Under this rule, `Separated` means "may reorder" and not merely "leave
 alone",** which raises the bar on the one separation `seating` can read off a

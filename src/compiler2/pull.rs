@@ -22,7 +22,7 @@ use super::facts::{FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, RootId};
 use super::jobs::runtime_demand::ExecutableFacts;
 use super::scheduler::WorkStartTally;
-use super::semantic::{ExecutableRuntimeDemand, RuntimeDemand};
+use super::semantic::{CallableFlowEdge, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand};
 use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
 use super::world::World;
@@ -31,6 +31,14 @@ use super::world::World;
 pub struct InputSlot {
     pub executable: ExecutableKey,
     pub semantic_index: usize,
+}
+
+/// Exact resolved edge for a local callable producer and canonical surface.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallableResolutionKey {
+    pub executable: ExecutableKey,
+    pub value: ValueId,
+    pub surface: CallableSurface,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -42,6 +50,7 @@ pub enum ProductKey {
     ExecutableEffects(ExecutableKey),
     ExecutableFacts(ExecutableKey),
     RuntimeDemand(ExecutableKey),
+    CallableResolution(CallableResolutionKey),
     OutgoingEdgeFrontier(RootId),
     OutgoingInputEdges(ExecutableKey),
     IncomingInputRelations(RootId),
@@ -60,6 +69,7 @@ impl ProductKey {
             Self::ExecutableEffects(_) => "executable_effects",
             Self::ExecutableFacts(_) => "executable_facts",
             Self::RuntimeDemand(_) => "runtime_demand",
+            Self::CallableResolution(_) => "callable_resolution",
             Self::OutgoingEdgeFrontier(_) => "outgoing_edge_frontier",
             Self::OutgoingInputEdges(_) => "outgoing_input_edges",
             Self::IncomingInputRelations(_) => "incoming_input_relations",
@@ -78,6 +88,7 @@ impl ProductKey {
             | Self::ExecutableFacts(executable)
             | Self::RuntimeDemand(executable)
             | Self::OutgoingInputEdges(executable) => Some(executable),
+            Self::CallableResolution(key) => Some(&key.executable),
             Self::IncomingInputSlot(slot) => Some(&slot.executable),
             Self::RootBackendProduct(_)
             | Self::OutgoingEdgeFrontier(_)
@@ -117,6 +128,7 @@ pub enum ProductValue {
     ExecutableEffects(EffectSummary),
     ExecutableFacts(Rc<ExecutableFacts>),
     RuntimeDemand(Box<ExecutableRuntimeDemand>),
+    CallableResolution(CallableFlowEdge),
     OutgoingEdgeFrontier(Rc<HashSet<ExecutableKey>>),
     OutgoingInputEdges(Rc<HashMap<InputSlot, HashSet<IncomingInputSource>>>),
     IncomingInputRelations(Rc<HashMap<InputSlot, HashSet<IncomingInputSource>>>),
@@ -418,6 +430,7 @@ impl ProductMemo {
                 | ProductValue::MaterializedExecutable(_)
                 | ProductValue::ExecutableEffects(_)
                 | ProductValue::ExecutableFacts(_)
+                | ProductValue::CallableResolution(_)
                 | ProductValue::OutgoingEdgeFrontier(_)
                 | ProductValue::OutgoingInputEdges(_)
                 | ProductValue::IncomingInputRelations(_)
@@ -1455,6 +1468,7 @@ impl PullSession {
             ProductKey::RootBackendProduct(_)
             | ProductKey::ExecutableFacts(_)
             | ProductKey::RuntimeDemand(_)
+            | ProductKey::CallableResolution(_)
             | ProductKey::OutgoingEdgeFrontier(_)
             | ProductKey::OutgoingInputEdges(_)
             | ProductKey::IncomingInputRelations(_)
@@ -1560,6 +1574,15 @@ pub struct ProductReadContext<'s> {
     session: &'s mut PullSession,
     dependencies: ProductDependencies,
     finished_group: bool,
+    #[cfg(test)]
+    product_reads: Vec<ProductReadObservation>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProductReadObservation {
+    pub(crate) key: ProductKey,
+    pub(crate) hit: bool,
 }
 
 impl<'s> ProductReadContext<'s> {
@@ -1568,7 +1591,19 @@ impl<'s> ProductReadContext<'s> {
             session,
             dependencies: ProductDependencies::default(),
             finished_group: false,
+            #[cfg(test)]
+            product_reads: Vec::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn product_read_checkpoint(&self) -> usize {
+        self.product_reads.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn product_reads_since(&self, checkpoint: usize) -> Vec<ProductReadObservation> {
+        self.product_reads[checkpoint..].to_vec()
     }
 
     pub fn read_product(&mut self, tel: &impl Telemetry, key: ProductKey) -> Option<&ProductValue> {
@@ -1681,11 +1716,18 @@ impl<'s> ProductReadContext<'s> {
         if let Some(stale) = self.session.memo.stale_dependency(&key) {
             self.session.memo.prepare_stale_for_reproduction(tel, &stale);
             let generation = self.session.memo.generation(&key);
-            self.dependencies.products.insert(key, generation);
+            self.dependencies.products.insert(key.clone(), generation);
+            #[cfg(test)]
+            self.product_reads.push(ProductReadObservation { key, hit: false });
             return None;
         }
         let generation = self.session.memo.generation(&key);
         self.dependencies.products.insert(key.clone(), generation);
+        #[cfg(test)]
+        self.product_reads.push(ProductReadObservation {
+            key: key.clone(),
+            hit: self.session.memo.get(&key).is_some(),
+        });
         self.session.memo.get(&key)
     }
 
@@ -1792,6 +1834,13 @@ pub trait ProductProducers {
         context: &mut ProductReadContext<'_>,
         executable: &ExecutableKey,
     ) -> PullOutcome;
+    fn produce_callable_resolution(
+        &mut self,
+        _context: &mut ProductReadContext<'_>,
+        _key: &CallableResolutionKey,
+    ) -> PullOutcome {
+        panic!("callable resolution producer is not installed")
+    }
     fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
     fn produce_outgoing_input_edges(
         &mut self,
@@ -1876,6 +1925,14 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
         executable: &ExecutableKey,
     ) -> PullOutcome {
         super::jobs::runtime_demand::produce_runtime_demand_product(self.world, self.telemetry, context, executable)
+    }
+
+    fn produce_callable_resolution(
+        &mut self,
+        context: &mut ProductReadContext<'_>,
+        key: &CallableResolutionKey,
+    ) -> PullOutcome {
+        super::jobs::runtime_demand::produce_callable_resolution_product(self.world, self.telemetry, context, key)
     }
 
     fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, _root: RootId) -> PullOutcome {
@@ -2022,6 +2079,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             ProductKey::ExecutableEffects(executable) => producers.produce_executable_effects(&mut context, executable),
             ProductKey::ExecutableFacts(executable) => producers.produce_executable_facts(&mut context, executable),
             ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(&mut context, executable),
+            ProductKey::CallableResolution(key) => producers.produce_callable_resolution(&mut context, key),
             ProductKey::OutgoingEdgeFrontier(root) => producers.produce_outgoing_edge_frontier(&mut context, *root),
             ProductKey::OutgoingInputEdges(executable) => {
                 producers.produce_outgoing_input_edges(&mut context, executable)

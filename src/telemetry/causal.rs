@@ -824,7 +824,7 @@ impl References {
                     match (key.as_str(), field) {
                         ("arrow", Json::Number(id)) => self.types.extend(id.as_u64()),
                         ("function_id", Json::Number(id)) => self.functions.extend(id.as_u64()),
-                        ("input", Json::Array(tys)) => {
+                        ("input" | "surface_tys", Json::Array(tys)) => {
                             self.types.extend(tys.iter().filter_map(Json::as_u64));
                         }
                         _ => self.walk(field),
@@ -889,7 +889,7 @@ fn identity_field(key: &str, field: &Json, canon: Option<&CanonTables>) -> Json 
     match (canon, key, field) {
         (Some(canon), "arrow", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
         (Some(canon), "function_id", Json::Number(id)) => Json::String(canon.function(id.as_u64().unwrap_or_default())),
-        (Some(canon), "input", Json::Array(tys)) => Json::Array(
+        (Some(canon), "input" | "surface_tys", Json::Array(tys)) => Json::Array(
             tys.iter()
                 .map(|ty| Json::String(canon.ty(ty.as_u64().unwrap_or_default())))
                 .collect(),
