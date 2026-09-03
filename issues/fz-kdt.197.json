@@ -7,9 +7,15 @@
   "id": "fz-kdt.197",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.192 landed (343f3a134): pinned as x2_var_carrying_union_member_is_ignored_and_the_verdict_is_known and x2b_...wider_domain in arrow_match.rs -- a union-of-arrows argument with a free-variable member answers Known, a runtime fact claimed from an observation that is not ground. Unchanged by 192, and 192 makes it the ONLY remaining way groundness is manufactured; three corpus rows (Range.reduce_while_cont's 6th argument) moved Invalid -\u003e Known through this door.\n",
+      "timestamp": "2026-09-03T14:15:42Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A @spec instantiation answers Known from a NON-GROUND observation: a union-of-arrows argument carrying a free variable grounds the result through its ground members while the var-carrying member contributes nothing",
   "type": "task",
-  "updated_at": "2026-09-03T09:16:54Z"
+  "updated_at": "2026-09-03T14:15:42Z"
 }
