@@ -2207,7 +2207,6 @@ fn fact_use_marker<F>(fact_use: &crate::compiler2::FactUse<F>) -> &'static str {
     match fact_use {
         FactUse::Current(_) => "current",
         FactUse::Settled(_) => "settled",
-        FactUse::SettledPresence(_) => "settled_presence",
     }
 }
 
