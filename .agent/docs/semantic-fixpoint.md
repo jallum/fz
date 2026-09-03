@@ -477,6 +477,18 @@ pin, and `callable_union_capture_containment`, rehomed on that same dynamic
 shape because the key answered its old static body outright (fz-kdt.171).
 Stdout is byte-identical on all three doors on every one of them.
 
+Identity-consuming bodies still split into distinct semantic activations. That
+semantic split is not, by itself, a claim that the native machine code must be
+distinct. `NativeProgram` retains an `ExecutableKey -> FnId` entry for every
+activation and shares physical sibling CPS graphs only after native lowering
+has made the observable distinction explicit. In particular, a captured
+callable carried as `ValueRef` and used only as the callee word of an indirect
+call may differ in rich semantic `Ty` while producing the same native graph.
+The graph comparison does not erase direct callees, closure-construction words,
+ABI layouts, effects, captures, or any type attached to another use. Thus
+grounded direct calls remain specialized while boxed calls can share code
+without merging activation or construction identity (fz-kdt.163).
+
 The split is by capture TUPLE, so it separates two lambdas with different
 capture tuples as readily as one lambda at two capture types --
 `spawn/1` keys `closure[?](pid)` apart from `closure[?](pid, int)`, and the

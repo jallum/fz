@@ -699,7 +699,7 @@ questions at that rung:
 | Old shared-native input | Compiler2-native answer |
 | --- | --- |
 | prepared `Module` | `NativeProgram.module` |
-| executable / helper inventory | `NativeProgram.entry` plus `NativeProgram.bodies[*].fn_id` and `origin` |
+| semantic executable / physical helper inventory | `NativeProgram.executable_entries`, `entry`, and `bodies[*].fn_id` / `origin` |
 | `ModulePlan.effective_returns` and `fn_effects` | `NativeBody.return_ty`, `return_reprs`, and `effects` |
 | `SpecPlan.vars` type queries | `NativeBody.value_types` |
 | `PlannedProgram.callable_entries` | `NativeProgram.callable_boundaries` |
@@ -726,6 +726,34 @@ runtime-observable predicate model the runtime can actually answer below it.
 Shared `ExternDecl` carries only ABI-facing metadata after `NativeProgram(root)`.
 Semantic extern facts stay in compiler2-owned structures: `LoweredExtern`,
 backend program facts, and `NativeBody.extern_marshals`.
+
+The native projection also owns the final semantic-to-physical distinction.
+`NativeProgram.executable_entries` preserves every settled `ExecutableKey` but
+allows equivalent sibling keys to name one physical `FnId`. Lowering reaches a
+fixed point over complete executable/clause/continuation graphs before codegen:
+programs with no sibling semantic entries do no sharing work; otherwise each
+pass indexes the remaining body inventory once, then compares siblings by
+their canonical ownership roles (executable root, clause index, and
+completed-IR continuation path). The path is derived from deterministic IR
+control-edge order, so helper allocation and inventory order never become
+semantic identity. A graph containing an owned continuation that is not
+reachable through those edges is ineligible for sharing. Such helpers are
+genuinely dead emission in the current corpus and are removed at their emitter
+by fz-tfn.27; the sharing pass neither guesses a role nor hides them. This makes
+comparison order and work deterministic without repeatedly scanning every body
+for each candidate pair.
+It alpha-renames only graph-owned function IDs, diagnostic names, and
+same-source callsite allocation identities. External direct targets,
+construction identities, ABI and representation facts, effects, captures, and
+codegen-relevant value types compare exactly. The sole type normalization is a
+`ValueRef` variable proven by an exhaustive IR-use census to occur only as the
+callee operand of an indirect closure call. This keeps direct specialization
+and construction identity observable while preventing codegen from compiling
+identical boxed-call CPS graphs more than once (fz-kdt.163).
+The executable-entry map participates in native-program equality: a
+recomputation that changes semantic-to-physical routing is content movement
+and wakes `NativeProgram(root)` dependents even when the normalized physical
+module is otherwise identical.
 
 The same rule applies to native return delivery. `NativeBody.return_reprs` is
 the published result contract for a native body. Native lowering consumes the
