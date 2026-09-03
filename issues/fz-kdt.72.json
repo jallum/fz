@@ -13,11 +13,15 @@
     {
       "text": "ADJACENT (2026-09-03): fz-kdt.188 names a different bad row at the same join -- not identical duplicates but a CARTESIAN row synthesized by merge_summary_input_vec (jobs/semantic.rs:2074) from coalesced targets that share a callee+activation (column-wise union of their inputs), contributed by rebuild_coalesced_call_emission (:1245) beside the walked rows; it fires exactly when the callee key is blind. Deleting the blend measured 0 behaviour movers / +48 executables. This ticket dedups identical rows at the same boundary; 188 deletes a fabricated one. Land on one pass over the emission boundary.",
       "timestamp": "2026-09-03T08:19:05Z"
+    },
+    {
+      "text": "TDD proof on branch fz-kdt.72/deduplicate-activation-inputs: temporary census reproduced exact duplicate multiplicities 26/3/12 on enum_take_drop_split/range_map/predicate; attempted downstream rows 3425/330/1982 vs 2076/280/1488 distinct. Conclusion-local exact identity dedup at AnalyzeActivation emission makes max multiplicity 1 and attempted==distinct, preserving first occurrence, distinct rows, and publisher scope. Temporary census/probe metadata removed. A/B: canonical backend, CLIF, and runtime stdout byte-identical on all three fixtures; public causal dimensions/products unchanged, uncaused and undefined-first-use zero. Raw native debug dumps are intentionally non-canonical and differ even base-vs-base, so CLIF is the stable native artifact proof. Gates: focused tests green; cargo test --lib 1596 passed/5 ignored; fixture_matrix serial 485/9; fz2_cli 25/0; workspace all-target/all-feature check green; clippy -D warnings green; fmt/diff checks green. Two-file uncommitted diff (semantic.rs + semantic-fixpoint docs) is ready for cold review.",
+      "timestamp": "2026-09-03T09:18:05Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "Deduplicate identical callee input contributions before activation-input joins",
   "type": "bug",
-  "updated_at": "2026-09-03T08:50:28Z"
+  "updated_at": "2026-09-03T09:18:05Z"
 }
