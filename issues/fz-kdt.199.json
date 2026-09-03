@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.183"
+  ],
   "blocks": [],
   "created": "2026-09-03T09:40:37Z",
   "description": "From the fz-kdt.183 rule review (2026-09-03, attacks-r2/g0n.fz, g0_direct.fz):\na mutually-recursive step/cont pair modelled on the library's own protocol.\nUnder 183's demand-through-forwarding rule step/2's LIST slot grounds\ncorrectly ([{:cont, list(a0_1_e)}, list(binary)] and [.., list(int)] split),\nbut its {:done, acc} slot is masked TupleFields({0: Whole}) -- the tag only --\nwhile the body's RETURN is acc, field 1, which the key erases. Both users\nreach the one {:done, list(a0_1_e)}, empty_list() activation and its joined\nreturn blends [binary] | [int]; g0_direct.fz fails identically at base and\nunder the rule. It does not fire in the library only because\nEnum.reduce_finish/1 is NON-recursive (its key carries evidence). The class\nis neither fz-kdt.183's element axis nor fz-kdt.165's callable axis: demand\nthat reaches a RETURNED tuple field. 183's invariant (\"an activation's\npublished return may depend only on what its key names\") is therefore a\nstructural over-approximation fitting the library's shape, not a proof --\n183's text says so now. Direction: the same demand derivation, with \"the\nbody returns this position (or a projection of it)\" as a demand source\nbeside clause selection and forwarding -- i.e. return-flow demand on the\ninput-demand fact (InputDemand gains a `returned` axis or the forwarded axis\nlearns to see the return). Red-first: g0n.fz keys two {:done, ..}\nactivations and g0_direct.fz prints each user's own list on three doors.\nCONCORDANT: fz-kdt.183 (the derivation to extend), fz-kdt.165 (the callable\naxis on the same walk), fz-kdt.190 (a joined return published as a fact).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A returned tuple FIELD at a recursive key is freight: a {:done, acc} slot masked TupleFields({0: Whole}) keys only the tag while the return IS acc, so two users still share one joined return",
   "type": "task",
-  "updated_at": "2026-09-03T09:40:37Z"
+  "updated_at": "2026-09-03T09:40:39Z"
 }
