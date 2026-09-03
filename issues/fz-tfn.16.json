@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.15"
+  ],
   "blocks": [],
   "created": "2026-09-03T08:00:25Z",
   "description": "## Goal\n\nStore scheduler work-start counts in the existing fixed-field `WorkStartTally` representation and delete per-enqueue hash-map accounting.\n\n## Evidence\n\nThe scheduler has a closed `WorkStartReason` enum but stores six counters in `HashMap\u003cWorkStartReason, u64\u003e`. Every successful enqueue hashes a fixed enum, and every snapshot performs one lookup per reason. `WorkStartTally` already exactly represents the public fixed fields. The 00420 session records roughly 2,400 starts.\n\n## Strategy and proof\n\n1. Finish removal of obsolete work-start reasons so the fixed schema is stable.\n2. Store and increment `WorkStartTally` directly, with exhaustive matching over live reasons.\n3. Preserve snapshot/delta semantics across persistent product sessions.\n4. Delete the hash map and lookup closure.\n5. Prove byte-identical public traces and identical per-reason/session totals on representative fixtures.\n6. Run scheduler, telemetry, library, fixture, formatting, and strict clippy checks.\n\nNo fidelity is traded for the representation change.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Replace fixed work-start HashMap accounting with fixed fields",
   "type": "task",
-  "updated_at": "2026-09-03T08:00:25Z"
+  "updated_at": "2026-09-03T08:02:46Z"
 }
