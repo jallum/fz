@@ -1141,8 +1141,8 @@ end
 /// formula stands on settled `ActivationAnalyzed` and `CallSiteSummary` facts.
 /// Their finality flips therefore wake that exact producer. Product waits are
 /// still polled by the pull driver; the newly live readiness cause comes from
-/// this direct scheduler fact boundary, before the standing-root scanner is
-/// removed.
+/// this direct scheduler fact boundary, independent of how root analysis is
+/// ignited.
 #[test]
 fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation() {
     let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";

@@ -161,13 +161,16 @@ pub struct World {
     reported_unresolved: HashSet<UnresolvedIssueKey>,
     reported_warnings: HashSet<WarningDiagnosticKey>,
     warning_diagnostics: Vec<Diagnostic>,
-    /// Discovered callee activations whose `ActivationAnalyzed` fact is not
-    /// yet settled: the standing demand `drive::demand_activation_frontier_analyses`
-    /// expands, the non-root analogue of the roots' own standing demand.
+    /// Published activations whose `ActivationAnalyzed` fact is not yet
+    /// settled: the standing demand `drive::demand_activation_frontier_analyses`
+    /// expands. Root entries and caller-discovered callees share this one
+    /// frontier.
     /// `complete_job` is the sole maintenance site — it inserts a key when a
     /// job outputs `Activation(key)` (unless already settled) and removes it
     /// once `ActivationAnalyzed(key)` settles.
     activation_frontier: HashSet<ActivationKey>,
+    #[cfg(test)]
+    activation_frontier_starts: Vec<ActivationKey>,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
@@ -274,6 +277,8 @@ impl World {
             reported_warnings: HashSet::new(),
             warning_diagnostics: Vec::new(),
             activation_frontier: HashSet::new(),
+            #[cfg(test)]
+            activation_frontier_starts: Vec::new(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -296,11 +301,7 @@ impl World {
     }
 
     pub(crate) fn telemetry_counts(&self) -> (usize, usize, usize) {
-        (
-            self.code.len(),
-            self.roots.ids().count(),
-            self.activation_frontier.len(),
-        )
+        (self.code.len(), self.roots.len(), self.activation_frontier.len())
     }
 
     pub(crate) fn types_mut(&mut self) -> &mut Types {
@@ -543,8 +544,8 @@ impl World {
     }
 
     /// The activations `drive::demand_activation_frontier_analyses` still
-    /// owes a first-run demand. Order carries no meaning — demanding
-    /// producers is commutative — so no sort applies.
+    /// owes a first-run demand. The set has no order; its reader sorts the
+    /// snapshot before those demands enter the ordered agenda.
     pub(crate) fn activation_frontier_keys(&self) -> Vec<ActivationKey> {
         self.activation_frontier.iter().cloned().collect()
     }
@@ -572,6 +573,16 @@ impl World {
     /// whole-fact-table-scan count. See `WorkStartReason` for the taxonomy.
     pub fn work_start_tally(&self) -> WorkStartTally {
         self.work_graph.work_start_tally()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn activation_frontier_starts(&self) -> &[ActivationKey] {
+        &self.activation_frontier_starts
+    }
+
+    #[cfg(test)]
+    pub(crate) fn note_activation_frontier_start(&mut self, key: ActivationKey) {
+        self.activation_frontier_starts.push(key);
     }
 
     pub(crate) fn clear_unresolved_diagnostics(&mut self) {
@@ -609,10 +620,6 @@ impl World {
 
     pub fn root_entry(&self, id: RootId) -> RootEntry {
         self.roots.get(id).clone()
-    }
-
-    pub(crate) fn root_ids(&self) -> impl Iterator<Item = RootId> + use<> {
-        self.roots.ids()
     }
 
     pub(crate) fn activation_key(&mut self, root: RootId, function: FunctionId, inputs: &[Ty]) -> ActivationKey {

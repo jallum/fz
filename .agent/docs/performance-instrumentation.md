@@ -54,13 +54,19 @@ product that settles a recursive group publishes its members atomically and
 reports the group id on each.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
-`WorkStartTally`: `ignition`, `changed_revision_wake`, `standing_root_frontier`,
-`activation_frontier`, `blocked_waiter_expansion`, plus `unsanctioned_work_starts`
+`WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_frontier`,
+`blocked_waiter_expansion`, plus `unsanctioned_work_starts`
 and `root_scans`. This is the pull-only guard's evidence — every job on the
 agenda must name a sanctioned reason. `unsanctioned_work_starts` and `root_scans`
 are zero, and `compiler2::work_start_reason_test` holds them there: a
 reintroduced job-pushes-job path lands in `Unclassified` by construction, and a
 producer that discovers work by scanning the fact table shows up in `root_scans`.
+`activation_frontier` counts root-entry and caller-discovered-callee analyses
+ignited from their published `Activation` edges. The typed regression pairs
+`SeedRoot`'s claimed activation with the exact accepted frontier key and pins
+the combined fixture population: 3 root plus 265 callee starts become 268
+starts on the shared frontier, so compensating aggregate counts cannot hide a
+second root path.
 
 **Demand cones** — `fz.compiler2.demand.cone.settled` carries `members`,
 `external_members`, `rounds`, `derivations`. `RuntimeDemand(E)` is settled by a

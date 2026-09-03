@@ -267,16 +267,18 @@ Executable(callee_key, need)
 ```
 
 That publication is how executable demand grows. No separate sweep discovers
-reachable callees. Publishing `Activation(callee_key)` is also the record site
+reachable callees. Publishing any `Activation(key)` is also the record site
 for `World`'s activation frontier: `World::complete_job` folds the key into
-`activation_frontier` unless `ActivationAnalyzed(callee_key)` has already
-settled, and `World::demand_activation_frontier_analyses` — the non-root
-analogue of `demand_root_entry_analyses` — demands the callee's own
-`AnalyzeActivation` the next time the agenda drains. `analyze_activation`
+`activation_frontier` unless `ActivationAnalyzed(key)` has already settled,
+and `World::demand_activation_frontier_analyses` demands its
+`AnalyzeActivation` the next time the agenda drains. Root entries published by
+`SeedRoot` and caller-discovered callees published by `analyze_activation` use
+this one path.
+`analyze_activation`
 itself never schedules the callee directly: `prepare_function_call` only
 `reads` the callee's `ReturnType` (so mutual recursion cannot deadlock), so
 nothing about discovering a callee blocks on its analysis, and the frontier is
-the only thing that ignites a callee's first analysis pass.
+the ignition path for that caller-discovered callee's first analysis pass.
 `ActivationInputs(a)` is cumulative for semantic-analysis
 publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
 the publisher keeps its prior activation-input frontier and only adds/widens new
@@ -511,14 +513,10 @@ the basis for the remaining type-system tickets.
 - `SeedRoot` owns `RootEntry(root)` and seeds the entry `Activation` and
   `Executable` demand facts.
 - `SeedActivation(a)` owns `Activation(a)`/`ActivationInputs(a)` for the
-  activations nothing else describes: a root's own entry, or one the
-  runtime-demand frontier minted from a callable surface which no analysis
-  walked and no caller claimed. (A root entry thus has two possible minters
-  today, `SeedRoot` and `SeedActivation`, whose reconstructions agree -- the
-  measured 4 lib-suite cases -- see the fz-kdt ticket on collapsing that to
-  one producer.) It reconstructs the
-  input row from the key's own arrow, so `World::demand_fact_producer` routes
-  a demand to it only while `ActivationInputs(a)` has no publisher
+  activations the runtime-demand frontier minted from a callable surface which
+  no analysis walked and no caller claimed. It reconstructs the input row from
+  the key's own arrow, so `World::demand_fact_producer` routes a demand to it
+  only while `ActivationInputs(a)` has no publisher
   (`World::seed_activation_producer`). A key a caller discovered is the
   caller's to publish and to withdraw.
 - `AnalyzeActivation(a)` owns `ActivationAnalyzed(a)`, `ReturnType(a)`,

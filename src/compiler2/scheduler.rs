@@ -24,12 +24,10 @@ use super::ordered_set::OrderedSet;
 ///   subscription (read, wait, or settled-presence) just changed. This is
 ///   the core pull mechanism: readers wake because their ground moved, never
 ///   because a producer pushed them by name.
-/// - `StandingRootFrontier`: `drive::demand_root_entry_analyses` expanding a
-///   submitted root's standing entry-analysis demand through the
-///   fact->producer map.
 /// - `ActivationFrontier`: `drive::demand_activation_frontier_analyses`
-///   expanding a discovered callee activation's standing analysis demand
-///   through the same map.
+///   expanding a published activation's standing analysis demand through the
+///   fact->producer map. Root entries and caller-discovered callees use this
+///   one path.
 /// - `BlockedWaiterExpansion`: the fact->producer map
 ///   (`World::demand_fact_producer`) expanding a blocked waiter's missing
 ///   fact to its single producer at a drain/stall point — both the bare
@@ -46,7 +44,6 @@ use super::ordered_set::OrderedSet;
 pub enum WorkStartReason {
     Ignition,
     ChangedRevisionWake,
-    StandingRootFrontier,
     ActivationFrontier,
     BlockedWaiterExpansion,
     #[default]
@@ -63,7 +60,6 @@ pub enum WorkStartReason {
 pub struct WorkStartTally {
     pub ignition: u64,
     pub changed_revision_wake: u64,
-    pub standing_root_frontier: u64,
     pub activation_frontier: u64,
     pub blocked_waiter_expansion: u64,
     pub unclassified: u64,
@@ -235,7 +231,6 @@ where
         WorkStartTally {
             ignition: count(WorkStartReason::Ignition),
             changed_revision_wake: count(WorkStartReason::ChangedRevisionWake),
-            standing_root_frontier: count(WorkStartReason::StandingRootFrontier),
             activation_frontier: count(WorkStartReason::ActivationFrontier),
             blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
             unclassified: count(WorkStartReason::Unclassified),
