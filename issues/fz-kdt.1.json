@@ -7,9 +7,15 @@
   "id": "fz-kdt.1",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RE-TEST AFTER fz-kdt.120 (2026-09-03): fixtures2/behavior/fz_f98_map_reduce.fz -- whose three matrix doors were deferred with the reason \"Enum.reduce/2 over Map raises Enum.EmptyError\" -- turns GREEN on interp, run and build under 120's prototype (measured by two independent reviews). If that fixture is this ticket's reproducer, 120 fixes the interp half (the empty-list @spec binding produced the phantom EmptyError path); the JIT/AOT fz_ref_load_atom tag mismatch must be re-tested separately.",
+      "timestamp": "2026-09-03T08:19:09Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Enum.reduce/2 over a non-empty Map fails: interp raises Enum.EmptyError; JIT/AOT abort on the seed-state tag",
   "type": "bug",
-  "updated_at": "2026-09-03T00:27:57Z"
+  "updated_at": "2026-09-03T08:19:09Z"
 }
