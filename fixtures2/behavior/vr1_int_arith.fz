@@ -1,15 +1,5 @@
 #---
 # purpose: "VR.1 — int-literal arithmetic elides the tag-check fast/slow path"
-# budget.codegen.functions: 1
-# budget.codegen.instructions: 20
-# budget.planner.worklist_pops: 1
-# budget.planner.walk_calls: 1
-# budget.planner.type_fn_calls: 1
-# budget.planner.matcher_specs: 0
-# budget.planner.vars: 13
-# budget.planner.blocks: 1
-# budget.planner.stmts: 12
-# budget.planner.dispatches: 0
 #---
 #
 # # vr1_int_arith

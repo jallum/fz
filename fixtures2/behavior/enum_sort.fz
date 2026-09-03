@@ -1,5 +1,5 @@
 #---
-# purpose: "runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and default-sorter closure erasure"
+# purpose: "runtime-library Enum.sort allocation contract pins interp/native parity and default-sorter closure erasure"
 #---
 #
 # # enum_sort

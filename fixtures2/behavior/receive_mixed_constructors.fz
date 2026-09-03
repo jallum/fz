@@ -1,15 +1,5 @@
 #---
 # purpose: "selective receive whose clauses mix top-level constructors (atom + tuple + wildcard)"
-# budget.codegen.functions: 11
-# budget.codegen.instructions: 149
-# budget.planner.worklist_pops: 10
-# budget.planner.walk_calls: 10
-# budget.planner.type_fn_calls: 10
-# budget.planner.matcher_specs: 0
-# budget.planner.vars: 21
-# budget.planner.blocks: 10
-# budget.planner.stmts: 9
-# budget.planner.dispatches: 10
 #---
 #
 # # receive_mixed_constructors

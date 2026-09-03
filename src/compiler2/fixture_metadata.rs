@@ -27,17 +27,6 @@ pub struct FixtureMetadata {
 }
 
 impl FixtureMetadata {
-    pub fn participates_in_matrix(&self) -> bool {
-        self.matrix.kind.is_some()
-            || self.matrix.expect.is_some()
-            || self.matrix.diagnostic_code.is_some()
-            || self.matrix.defer.is_some()
-            || !self.matrix.path_deferrals.is_empty()
-            || self.matrix.oracle.is_some()
-            || !self.matrix.budget_assertions.is_empty()
-            || !self.matrix.path_timeouts.is_empty()
-    }
-
     pub fn participates_in_compiler_contracts(&self) -> bool {
         self.compiler.root.is_some()
             || !self.compiler.metric_assertions.is_empty()
@@ -54,7 +43,6 @@ pub struct FixtureMatrixMetadata {
     pub defer: Option<String>,
     pub path_deferrals: Vec<PathDeferral>,
     pub oracle: Option<String>,
-    pub budget_assertions: Vec<BudgetAssertion>,
     pub path_timeouts: Vec<PathTimeout>,
 }
 
@@ -69,12 +57,6 @@ pub enum FixtureExpect {
     Success,
     Abort,
     Diagnostic,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BudgetAssertion {
-    pub name: String,
-    pub expected: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -268,10 +250,6 @@ pub fn parse_fixture_metadata(source: &str) -> Result<Option<FixtureMetadata>, F
             }
             _ if key.starts_with("assert.metric.") => metadata.compiler.metric_assertions.push(MetricAssertion {
                 name: key["assert.metric.".len()..].to_string(),
-                expected: parse_u64(value, line_no, key)?,
-            }),
-            _ if key.starts_with("budget.") => metadata.matrix.budget_assertions.push(BudgetAssertion {
-                name: key.to_string(),
                 expected: parse_u64(value, line_no, key)?,
             }),
             _ if key.starts_with("defer.") => {

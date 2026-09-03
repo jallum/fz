@@ -1,5 +1,5 @@
 #---
-# purpose: "nested destructure mixing tuple arity and list cons — `{[h | t], y} = make()` across all four legs"
+# purpose: "nested destructure mixing tuple arity and list cons across run, interp, and build"
 #---
 fn make(), do: {[1, 2, 3], 99}
 
