@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.183",
-    "fz-kdt.184"
+    "fz-kdt.184",
+    "fz-kdt.210"
   ],
   "blocks": [],
   "created": "2026-09-01T19:20:33Z",
@@ -28,5 +29,5 @@
   "status": "open",
   "title": "A @spec variable is a lower bound and a fact only when every positive occurrence contributed: the empty-list ambiguity drop goes, dbg([]) is [], and dead_closure_capture_empty_list converges",
   "type": "task",
-  "updated_at": "2026-09-03T18:17:42Z"
+  "updated_at": "2026-09-03T18:17:43Z"
 }
