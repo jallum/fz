@@ -7,9 +7,15 @@
   "id": "fz-kdt.190",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CONCORDANT with fz-kdt.65 (return-widening ladder resets only on rebase; join-only ascent) -- this is its join-only side made order-dependent by contract refinement. Also with fz-kdt.33 (spec enforcement waits for correlation-sound evidence). fz-kdt.183 removes the instance on List.reduce_step/3; the mechanism survives on any shared key.",
+      "timestamp": "2026-09-03T08:19:08Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A published return fact is source-order dependent: analyze_activation refines the key-wide join by each row @spec result in row order and refine_observed_return keeps the observed on an empty intersection, so the first row wins",
   "type": "task",
-  "updated_at": "2026-09-03T05:49:55Z"
+  "updated_at": "2026-09-03T08:19:08Z"
 }
