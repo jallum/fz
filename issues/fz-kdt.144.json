@@ -17,11 +17,15 @@
     {
       "text": "ABSORBS fz-kdt.135 (2026-09-02): the corpus-sweep integration and the triage of the surface-membership tripwire's findings are re-based on the list-TAIL reading, which is exactly what this ticket re-arms once heads carry predicates. The tuple reading has no gap left (119/138), so 135's original ten findings are closed; whatever the tail re-ask surfaces is triaged here.",
       "timestamp": "2026-09-03T00:02:17Z"
+    },
+    {
+      "text": "Baseline note from fz-kdt.143's landing (d2a5f3510). The list-TAIL re-ask this ticket arms will find a SMALLER population than the pre-143 tree carried: every arm whose tail no test reads and whose stand-in the seat would never let it pass is gone from every callsite (corpus arm lines 126 -\u003e 106 on 4 fixtures), so the tail-blind traffic left is exactly fz-kdt.131's facet 3 -- five pairs under the widest legal arrival, three at the settled one (enumerated on 131 today). dispatch_list_head_separates still carries a written-down reproducer, but its callsite now offers two arms ([:false | :true] and [int | :ok | :true]) rather than four; the [int] and [int | :ok] specializations remain in the artifact, reached by direct call edges from the callable-flow path. The tripwire will see [1, :ok] arriving at the [int | :ok | :true] body through the surviving arm, not at a [int] body through a dropped one.",
+      "timestamp": "2026-09-03T02:44:56Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A list-element surface-membership tripwire becomes possible once heads carry predicates",
   "type": "task",
-  "updated_at": "2026-09-03T00:02:17Z"
+  "updated_at": "2026-09-03T02:44:56Z"
 }
