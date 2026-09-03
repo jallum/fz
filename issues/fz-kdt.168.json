@@ -4,6 +4,8 @@
     "fz-kdt.127.1"
   ],
   "blocks": [],
+  "closed_at": "2026-09-03T04:10:07Z",
+  "close_reason": "Closed as a non-live speculative concern at origin/main a3a9761d1. The named a_mixed fixture runs correctly, contains zero callsite dispatches, and its allegedly dead exact specialization is directly reached. Symmetric callable erasing_overlap remains an abstract concern, but the required post-127 characterization found no current program/corpus instance. File fresh evidence if a real callsite witness appears or losslessness-aware projection becomes independently justified.",
   "created": "2026-09-02T18:52:39Z",
   "description": "From the fz-kdt.127 cold review (2026-09-02, F4; pre-existing law,\nobserved under the (B) prototype on a_mixed). With the callable axis\nPerPosition and recursing into captures, the covering seat reorders\na_mixed's arms wide-first (sound: output identical) and the grounded\nspecialization x23 becomes DEAD -- because `erasing_overlap` is\nsymmetric: an exact arm and an inexact (any-capture) arm are treated as\nmutually erasing, so the exact arm can never be seated ahead even though\nthe hazard (routing a value into a body whose surface never named it)\nonly runs one way: wide-body-receives-narrow-value is safe, narrow-body-\nreceives-wide-value is not. A one-sided relation would keep exact\nspecializations live where the exact test is sufficient. fz-kdt.131\nfacet; characterize corpus-wide after fz-kdt.127 (B) lands (count exact\nspecializations made dead by symmetric erasing-overlap).",
   "id": "fz-kdt.168",
@@ -24,8 +26,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "erasing_overlap is symmetric while the fz-kdt.131 hazard is one-sided: exact-vs-inexact arm pairs lose the exact specialization",
   "type": "task",
-  "updated_at": "2026-09-03T02:47:48Z"
+  "updated_at": "2026-09-03T04:10:07Z"
 }
