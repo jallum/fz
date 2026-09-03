@@ -7,9 +7,15 @@
   "id": "fz-kdt.19",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Fresh reproducer from the fz-kdt.183 build (2026-09-03, 2f4b6ebe0 on wt/kdt183-build): fixtures2/behavior/with_index_users_key_apart_by_element.fz carries a runtime:Enum.fz:320 diagnostic in its golden; adding four comment lines to the fixture header moved the golden gutter 296 -\u003e 293 while the caret header kept saying runtime:Enum.fz:320. Same mechanism as this ticket (normalize_gutter_line_ref subtracts the fixture leading_comment_lines from a gutter that belongs to a runtime: source). The builder first read it as a renderer bug; it is the matrix normalisation. Any golden carrying a runtime-library excerpt is brittle against edits to its own header until this lands; fz-kdt.185 pins one such golden.",
+      "timestamp": "2026-09-03T11:31:58Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fixture_matrix renumbers gutters from foreign-source diagnostic snippets",
   "type": "bug",
-  "updated_at": "2026-09-03T03:38:21Z"
+  "updated_at": "2026-09-03T11:31:58Z"
 }
