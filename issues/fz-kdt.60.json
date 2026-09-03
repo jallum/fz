@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T03:06:21Z",
+  "close_reason": "Deletion rejected by a temporary abort probe: seven library scenarios exercised the branch (1579 passed, 7 expected probe failures, 5 ignored). The probe was removed and no production code changed.",
   "created": "2026-08-29T03:13:39Z",
   "description": "## Finding\n\nThe proposed deletion is unsafe. The bare agenda drive still admits scheduler jobs that wait on settled facts, especially SeedRoot. When drain arbitration settles a quiesced fact, quiescence_woke_work detects the resulting wake and continues the drive so that job can run. The product driver has a separate movement-based loop, but it does not replace this behavior for Compiler2::drive callers.\n\n## Disproof\n\nA temporary probe aborted whenever the branch would fire. The full library suite reached it in seven scenarios: both return-widening corpus shards 2 and 3, two item-macro splicing tests, multiple test blocks, and passing and failing assert-macro compilation. The run completed with 1579 passed, 7 probe failures, and 5 ignored.\n\n## Resolution\n\nKeep the branch and helper. Remove the temporary probe after recording the result. Any future deletion must first eliminate or migrate the agenda-level settled waiters and prove that Compiler2::drive no longer depends on drain-arbiter wakes. No code tombstone is required; this ticket is the durable record.",
   "id": "fz-kdt.60",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Keep the live drive-loop arbiter branch",
   "type": "task",
-  "updated_at": "2026-09-03T03:06:20Z"
+  "updated_at": "2026-09-03T03:06:21Z"
 }
