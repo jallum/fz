@@ -8,11 +8,14 @@ use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// The demand fact a body that forwards NOTHING publishes: what its own
-/// clauses ask about its inputs is the whole of what anything asks about them,
-/// so both halves of `InputDemand` carry the same mask (fz-kdt.183).
+/// The demand fact a body that forwards NOTHING and returns none of its own
+/// inputs publishes: what its own clauses ask about its inputs is the whole of
+/// what anything asks about them, so both dispatch halves of `InputDemand`
+/// carry the same mask (fz-kdt.183) and the `returned` axis is empty
+/// (fz-kdt.199).
 fn unforwarded_demand(mask: Vec<DispatchDemand>) -> InputDemand {
     InputDemand {
+        returned: vec![DispatchDemand::Ignore; mask.len()],
         local_dispatch: mask.clone(),
         forwarded_dispatch: mask,
     }

@@ -1905,7 +1905,9 @@ impl World {
         // demands widen to their convergence class so the ascent settles. Key
         // != evidence is intentional; the precise arrow stays in
         // `ActivationInputs`.
-        let arrow = self.types.convergence_collapse(key.arrow, &demand.forwarded_dispatch);
+        let arrow = self
+            .types
+            .convergence_collapse(key.arrow, &demand.forwarded_dispatch, &demand.returned);
         super::identity::ActivationKey { arrow, ..key }
     }
 

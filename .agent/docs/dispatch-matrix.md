@@ -1001,6 +1001,21 @@ not name published whichever return the schedule delivered first — and the one
 that remains is the empty-list ambiguity: `list_element_type([])` is `none`,
 so an accumulator seeded with `[]` publishes no element evidence of its own.
 
+Re-measured at fz-kdt.199 on a REFRESHED corpus — all 604 `.fz` files under
+`fixtures2/` that exist at its base, 475 backend dumps; the 597-file list that
+reading used had drifted eight fixtures behind the tree. Over that corpus the
+returned axis leaves the schedule reading exactly where it was: TWO canon
+movers before the landing and the SAME two after
+(`dead_closure_capture_empty_list` and
+`with_index_users_keep_nested_list_elements`, the second of which is one of the
+eight the older list was missing), zero `run` stdout+stderr movers either side,
+and the emitted executable count schedule-independent at both — 5,469 under
+FIFO and LIFO alike before, 5,536 under both after. The `+67` between those two
+totals is the returned axis's own cost, and it is the same under either
+schedule, which is the point of reading it here: the axis adds keys, it does
+not add order-dependence. On the older 597-file list the same two builds read
+5,282 -> 5,357 with one mover, because the second mover is not in that list.
+
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`
 carries the existing impl `CallTarget`, return flow, and extern marshal facts

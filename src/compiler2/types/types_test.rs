@@ -1121,7 +1121,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let int = t.int();
                 let list_int = t.list(int.clone());
                 let arrow = t.arrow(&[list_int.clone(), list_int.clone()], int.clone());
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore]);
+                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::Whole, DispatchDemand::Ignore], &[]);
 
                 let params = t.arrow_params(&collapsed);
                 let ret = t.arrow_join_return(&collapsed);
@@ -1142,6 +1142,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let collapsed = t.convergence_collapse(
                     arrow,
                     &[DispatchDemand::ListShape(Box::new(DispatchDemand::Whole))],
+                    &[],
                 );
 
                 let expected = t.arrow(&[list_int], sentinel);
@@ -1162,7 +1163,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let arrow = t.arrow(&[state], sentinel);
                 let mut fields = BTreeMap::new();
                 fields.insert(0, DispatchDemand::Whole);
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)]);
+                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
 
                 // The dispatch tag (field 0) is preserved exactly; the ignored
                 // payload (field 1) collapses to its ADDRESSED class — the list
@@ -1203,7 +1204,7 @@ macro_rules! semantic_helper_conformance_tests {
                 let arrow = t.arrow(&[union], sentinel);
                 let mut fields = BTreeMap::new();
                 fields.insert(0, DispatchDemand::Whole); // tag dispatches, payload ignored
-                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)]);
+                let collapsed = t.convergence_collapse(arrow, &[DispatchDemand::TupleFields(fields)], &[]);
 
                 let params = t.arrow_params(&collapsed);
                 let readdressed = t.address_inputs(&params);

@@ -9031,54 +9031,26 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
 /// specializations keyed on a blind list element. With the element in the key
 /// most of those members are one member, so there is nothing left to be
 /// indistinguishable from. fz-kdt.179 then dissolved the last groups a stand-in
-/// could reach (`00277` `w15`/`w18`/`w19` went 2 -> 1), leaving the 44 groups
-/// fz-kdt.107 owns.
-const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w2 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w3 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w4 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w7 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w8 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w9 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w15 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w16 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w17 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w18 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w34 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w35 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w36 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w37 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w38 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w39 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w40 selection", 1),
-    ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w41 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w12 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w13 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w14 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w15 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w16 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w17 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w18 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w19 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w20 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w21 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w22 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w23 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w24 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w25 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w26 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w27 selection", 1),
-];
+/// could reach (`00277` `w15`/`w18`/`w19` went 2 -> 1), and fz-kdt.199 drove
+/// the remainder to ZERO on every fixture the gate reads. The 44 groups this
+/// constant held -- 16 on `00277_enum_tier0_fixture`, 12 on
+/// `00420_enum_take_drop_split`, 16 on `enum_map_family`, each at group
+/// count 1 -- were construction-wrapper member selections whose members no
+/// runtime predicate told apart: two members carrying the same joined
+/// accumulator type. Keying a returned accumulator position gives each member
+/// its own type, so the selections discriminate and the groups dissolve.
+///
+/// The emptiness is a CURE and not vacuity, and the ratchet is its own proof:
+/// this constant is compared against what the walk FINDS, so the green tree at
+/// fz-kdt.199's base is the same walk over the same 13 fixtures reading
+/// exactly those 44 groups. The walk did not stop looking; the cause stopped
+/// existing.
+///
+/// But zero here is the strongest thing THIS gate can say, and it reads 13
+/// named fixtures -- it is not a proof that no such group exists anywhere.
+/// fz-kdt.107 is therefore UNMEASURABLE by this instrument rather than
+/// retired, and stays open.
+const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[];
 
 /// The question that clears the last of them, in the program that names it.
 ///
@@ -9756,8 +9728,14 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// specializations apart, and every one of them asks a `Region::List`
 /// question, which this walk does not read -- so the readable denominator is
 /// unchanged and the zero above still speaks for exactly what it did.
+/// fz-kdt.199: `entry` 153 -> 169 plans, 146 -> 162 unreadable. Sixteen more
+/// entry plans exist because a returned accumulator keys its seed apart from
+/// its ascent, and every one of them asks a `Region::List` or
+/// `Region::TupleArity` question, which this walk does not read -- so the
+/// READABLE denominator is 7 either way and the zero above still speaks for
+/// exactly what it did.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 153, 146), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 169, 162), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -10444,18 +10422,19 @@ fn backend_canon(fixture: &str) -> String {
 /// is built (`callable_flow_resolution_edges_product`), before either derives;
 /// so a monotone member list is the whole construction authority being monotone.
 ///
-/// `enum_map_family` is the subject: its reducer flows to three element families
-/// (atoms, binaries, ints), each crossed with the empty and the grown
-/// accumulator, so its wrapper carries a genuinely multi-surface member list --
-/// the shape whose FIFO/LIFO backend-canon gap (1170 lines) this ticket closes.
-/// The order is non-strict: two members whose surfaces are `cmp_tys`-equal (the
-/// same element with the empty vs the grown accumulator can tie) are `Equal`,
-/// never `Greater`.
+/// `enum_take_drop_split` is the subject. `enum_map_family` was, and it stopped
+/// carrying a multi-surface member list at all under fz-kdt.199: its wrapper's
+/// members were one element family crossed with the empty and the grown
+/// accumulator, and keying the returned accumulator gives each cross its own
+/// activation, so every wrapper there is now single-member. The gate is aimed
+/// at a fixture that still exercises the order rather than re-blessed to
+/// nothing. The order is non-strict: two members whose surfaces are
+/// `cmp_tys`-equal are `Equal`, never `Greater`.
 #[test]
 fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
     use std::cmp::Ordering;
 
-    let fixture = "fixtures2/behavior/enum_map_family.fz";
+    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.to_string()),
@@ -11610,10 +11589,23 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
         "deriving recursion should inspect the generated lambda body instead of peeking only at build/2",
     );
 
-    // Recursive UNDEMANDED inputs collapse to ONE build/2 activation key, and
-    // it still carries the recursive accumulator slot. Read off the settled
-    // per-activation `activation_analysis.defined` frontier, keeping only keys that
-    // earned a converged return (dropping mid-convergence intermediates).
+    // `build/2` RETURNS its accumulator (the `n == 0` branch is `acc`), and the
+    // recursion that rebuilds it runs inside a generated lambda rather than in
+    // `build/2`'s own entries -- which fz-kdt.199's self-call exclusion cannot
+    // see. So the accumulator is keyed and its seed `[]` stands apart from the
+    // ascended `list(int)`: TWO keys, one ascent rung, both bodies identical.
+    // That is a cost this ticket does not buy anything with (the seed
+    // activation is shared by every caller either way), and closing it needs
+    // the strong component rather than one body. It is the same class as the
+    // 91 corpus executables the returned axis adds that gain no distinct
+    // published return (against 36 that do), dominated by `List.reduce_*`
+    // minting fz-kdt.182 `empty_list()`/`list(tau)` rungs across the
+    // cont<->step cycle: fz-kdt.213 owns removing it, so the 2 below is a
+    // RECORD of a known-unbought split and not a law. What the test is FOR is
+    // unchanged: recursion is seen through the generated lambda at all. Read
+    // off the settled per-activation `activation_analysis.defined` frontier,
+    // keeping only keys that earned a converged return (dropping
+    // mid-convergence intermediates).
     let settled_returns = returns.settled_activations(root_id);
     let build_activations = analyzed
         .keys_for_root(root_id)
@@ -11622,8 +11614,9 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
         .collect::<HashSet<_>>();
     assert_eq!(
         build_activations.len(),
-        1,
-        "recursive undemanded inputs should collapse to one build/2 activation key",
+        2,
+        "a returned accumulator whose rebuild hides inside a generated lambda keys its seed apart \
+         from its ascent -- a known-unbought split fz-kdt.213 owns, pinned so it cannot grow",
     );
     assert!(
         build_activations
@@ -17320,12 +17313,12 @@ const ASCENT_RUNG_FIXTURES: &[&str] = &[
 /// keys the accumulator's first call apart from every later one. That is
 /// fz-kdt.124's ladder and fz-kdt.182 owns the duplicate executables it mints.
 ///
-/// What THIS gate holds is the boundary fz-kdt.183 drew. A slot the forwarded
-/// demand leaves at `Ignore` is FREIGHT: the collapse maps every list family
-/// reaching it to one addressed class, so `[]` and `list(τ)` cannot key apart
-/// there, and a rung on such a slot would mean the collapse did not run. The
-/// measured count is 0 and it is 0 by construction, which is why the assertion
-/// is an emptiness and not a number.
+/// What THIS gate holds is the boundary fz-kdt.183 drew and fz-kdt.199 widened
+/// by one axis. A slot BOTH axes leave at `Ignore` is FREIGHT: the collapse
+/// maps every list family reaching it to one addressed class, so `[]` and
+/// `list(τ)` cannot key apart there, and a rung on such a slot would mean the
+/// collapse did not run. The measured count is 0 and it is 0 by construction,
+/// which is why the assertion is an emptiness and not a number.
 ///
 /// The six rungs fz-kdt.183 ADDED are all on demanded slots and all honest:
 /// `Map.to_list/4` slot 3 and `Map.reverse/2` slot 0 (map.fz's `reverse(acc,
@@ -17379,10 +17372,18 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
                             continue;
                         }
                         readings += 1;
-                        if matches!(
-                            demand.forwarded_dispatch.get(slot),
-                            None | Some(crate::compiler2::keying::DispatchDemand::Ignore)
-                        ) {
+                        let ignored = |axis: &Vec<crate::compiler2::keying::DispatchDemand>| {
+                            matches!(
+                                axis.get(slot),
+                                None | Some(crate::compiler2::keying::DispatchDemand::Ignore)
+                            )
+                        };
+                        // A rung may sit on a slot EITHER axis names: the
+                        // dispatch axis keeps a demanded list's element, and
+                        // the `returned` axis keeps a returned position's
+                        // ground class (fz-kdt.199). Freight is the slot
+                        // neither names.
+                        if ignored(&demand.forwarded_dispatch) && ignored(&demand.returned) {
                             on_freight.push(format!(
                                 "{fixture} {} slot {slot}: `{low}` keys apart from `{high}` on a slot \
                                  nothing demands",
@@ -17497,30 +17498,82 @@ fn split_top_level(text: &str) -> Vec<&str> {
     parts
 }
 
-/// The keying laws fz-kdt.183 must hold in BOTH directions, each as the
-/// smallest program that states one: source, the function the law is about,
-/// and how many activations of it the program may key.
+/// The keying laws fz-kdt.183 and fz-kdt.199 must hold in BOTH directions,
+/// each as the smallest program that states one: source, the function the law
+/// is about, and how many activations of it the program may key.
 ///
-/// The first three are the rule's LOWER bound -- a slot no callee demands is
-/// freight and must not split, which is what makes the rule a demand rule
-/// rather than "keep every element" (measured: keeping every list element
-/// splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies identical).
+/// The first four are the rules' LOWER bound -- a slot nothing demands and
+/// nothing returns is freight and must not split, which is what makes this a
+/// demand rule rather than "keep every element" (measured: keeping every list
+/// element splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies
+/// identical).
 ///
-/// The fourth is fz-6gb's law, and it is why `InputDemand` carries two
-/// halves. `fwd/2` only TRANSPORTS its callable: no clause of `fwd/2` tests
-/// it, so two same-shape lambdas must key one activation. But `apply2/2` --
-/// which `fwd/2` forwards both slots to -- tests slot 0 against `:none`, so
-/// the FORWARDED demand on that slot is `Whole`. Erasing brands against the
-/// forwarded half would un-share `fwd/2` into one activation per lambda;
-/// erasing against the LOCAL half keeps fz-6gb's law intact while the key
-/// collapse still reads the forwarded demand.
+/// `tag/3`'s accumulator states fz-kdt.199's exclusion, and it is a COST law
+/// rather than a precision one. `tag/3` returns its accumulator, so the return
+/// does depend on a slot the key erases -- but the recursion SUPPLIES that
+/// slot, so the seed activation is the one every caller passes through and its
+/// `[]` is the same `[]` for all of them. Keying it mints one activation per
+/// ascent state (measured: three) and the seed still publishes the join, so the
+/// split is cost with nothing bought.
+///
+/// `fwd/2` is fz-6gb's law, and it is why `InputDemand`'s dispatch demand
+/// carries two halves. `fwd/2` only TRANSPORTS its callable: no clause of
+/// `fwd/2` tests it, so two same-shape lambdas must key one activation. But
+/// `apply2/2` -- which `fwd/2` forwards both slots to -- tests slot 0 against
+/// `:none`, so the FORWARDED demand on that slot is `Whole`. Erasing brands
+/// against the forwarded half would un-share `fwd/2` into one activation per
+/// lambda; erasing against the LOCAL half keeps fz-6gb's law intact while the
+/// key collapse still reads the forwarded demand.
+///
+/// The last three are the rules' UPPER bound: a position the activation
+/// RETURNS and the recursion does NOT supply must key its users apart, or one
+/// activation answers for both with the join of their returns (fz-kdt.199).
+/// `loop/2` states it at a whole slot and `walk/2` one tuple field down, where
+/// the key names the tag and the return IS the payload. `walk/2`'s four are two
+/// tags times two payload element types.
+///
+/// `loop/2` is a CORRECTION of a landed law. fz-kdt.183 blessed exactly this
+/// program at ONE activation as its freight law. Measured on the tree that law
+/// landed on: `loop(0, junk), do: junk` keys one activation publishing
+/// `non_empty_list(binary) | non_empty_list(int)`, and a `@spec` consumer
+/// asking `[binary]` for the first user rejects the program with
+/// `error[spec/violation] ([binary] | [int])`. So the blessed row was pinning a
+/// live wrong-typing as correct: it was a COST law, not a correctness one, and
+/// this axis is what makes freight collapse safe. `carry/2` -- the same shape
+/// that does NOT return the slot -- is the true freight statement and stays
+/// at 1.
+///
+/// `go/3` states the exclusion's boundary. It is a pure PERMUTATION: each
+/// self-call hands a slot the value the caller held at the OTHER slot, so the
+/// recursion supplies neither and both stay carried. That is why the exclusion
+/// is a LEAST FIXPOINT over "held nowhere, or held only at supplied positions"
+/// rather than the eager "not held at this same position" -- the eager test
+/// marks both slots supplied here and re-blends the two users into the base's
+/// wrong diagnostic.
+///
+/// What these rows prove, stated exactly: for every shape here the published
+/// return depends only on what the key names. They do NOT prove the invariant
+/// in general. The exclusion reads SELF calls only, so a position supplied
+/// across a mutual cycle or through a generated lambda is keyed anyway (cost,
+/// never unsoundness -- fz-kdt.213), and the axis rides fz-kdt.183's dispatch
+/// edge set, which does not see a reconstructed or projected forwarding
+/// argument (a missed cure -- fz-kdt.214).
 const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
     (
-        "a slot no callee reads is freight",
-        "loop/2",
-        "fn loop(0, junk), do: junk\n\
-         fn loop(n, junk), do: loop(n - 1, junk)\n\
-         fn main() do\n  dbg(loop(3, [1, 2]))\n  dbg(loop(3, [\"a\", \"b\"]))\nend\n",
+        "a slot no callee reads and the body does not return is freight",
+        "carry/2",
+        "fn carry(0, junk), do: 0\n\
+         fn carry(n, junk), do: carry(n - 1, junk)\n\
+         fn main() do\n  dbg(carry(3, [1, 2]))\n  dbg(carry(3, [\"a\", \"b\"]))\nend\n",
+        1,
+    ),
+    (
+        "an accumulator the recursion itself supplies stays collapsed",
+        "tag/3",
+        "fn tag(_f, [], acc), do: acc\n\
+         fn tag(f, [h | t], acc), do: tag(f, t, [f.(h) | acc])\n\
+         fn main() do\n  dbg(tag(fn (_x) -> \"n\" end, [1, 2], []))\n\
+         \x20 dbg(tag(fn (x) -> x + 1 end, [1, 2], []))\nend\n",
         1,
     ),
     (
@@ -17554,6 +17607,31 @@ const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
          fn fwd(f, x), do: apply2(f, x)\n\
          fn main() do\n  dbg(fwd(fn (a) -> a + 1 end, 1))\n  dbg(fwd(fn (a) -> a + 2 end, 1))\nend\n",
         1,
+    ),
+    (
+        "a slot the body RETURNS and the recursion carries keys its users apart",
+        "loop/2",
+        "fn loop(0, junk), do: junk\n\
+         fn loop(n, junk), do: loop(n - 1, junk)\n\
+         fn main() do\n  dbg(loop(3, [1, 2]))\n  dbg(loop(3, [\"a\", \"b\"]))\nend\n",
+        2,
+    ),
+    (
+        "a self-call that PERMUTES two carried slots supplies neither, so a returned one still keys",
+        "go/3",
+        "fn go(0, a, _b), do: a\n\
+         fn go(n, a, b), do: go(n - 1, b, a)\n\
+         fn main() do\n  dbg(go(2, [\"x\"], [\"y\"]))\n  dbg(go(2, [9], [8]))\nend\n",
+        2,
+    ),
+    (
+        "a returned tuple FIELD keys its users apart while the key names the tag",
+        "walk/2",
+        "fn walk({:stop, acc}, _n), do: acc\n\
+         fn walk({:go, acc}, 0), do: walk({:stop, acc}, 0)\n\
+         fn walk({:go, acc}, n), do: walk({:go, acc}, n - 1)\n\
+         fn main() do\n  dbg(walk({:go, [1, 2]}, 2))\n  dbg(walk({:go, [\"a\"]}, 2))\nend\n",
+        4,
     ),
 ];
 
@@ -17598,7 +17676,9 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
     }
     assert!(
         moved.is_empty(),
-        "fz-kdt.183 keys a slot on DEMAND, not on structure: a slot nothing asks about stays collapsed, and \
-         brand erasure keeps asking the local question: {moved:#?}",
+        "a slot is keyed on DEMAND, not on structure, and demand has TWO axes: a dispatch question \
+         reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
+         supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
+         keeps asking the local question: {moved:#?}",
     );
 }

@@ -551,7 +551,7 @@ struct Types {
       </p>
       <ul>
         <li><code>Recursive(function)</code> tells keying whether recursive non-dispatch inputs should collapse by convergence class.</li>
-        <li><code>InputDemand(function)</code> tells keying which inputs the activation's published return depends on: this body's own entry dispatch, joined with the demand of every callee it hands an input to unchanged.</li>
+        <li><code>InputDemand(function)</code> tells keying which inputs the activation's published return depends on, over three axes solved by one Kleene iteration on one forwarding cone. <code>local_dispatch</code> is this body's own entry dispatch — the question closure-brand erasure reads. <code>forwarded_dispatch</code> joins it with the demand of every callee this body hands an input to unchanged, because the value that arrives decides which callee activation is reached (fz-kdt.183). <code>returned</code> is the other way a return depends on an input: not which activation is reached, but that the returned value IS, CONTAINS, or is a PROJECTION of that input position — minus the positions the recursion itself supplies, computed as a least fixpoint over the body's own self-calls (fz-kdt.199). A slot no axis reaches is FREIGHT and collapses, so two callers key one activation there.</li>
       </ul>
       <p>
         Only after both exist does <code>World::activation_key</code> canonicalize inputs through:

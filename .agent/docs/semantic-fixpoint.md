@@ -404,7 +404,10 @@ decide which slots may balloon. `InputDemand` is transitive: a slot this body
 hands unchanged to a callee carries that callee's demand too, because the value
 that arrives decides which callee activation is reached and therefore what this
 activation publishes (fz-kdt.183,
-[`type-specialization`](type-specialization.md)).
+[`type-specialization`](type-specialization.md)). It carries a second axis
+beside that one: a position the body RETURNS, and the recursion does not
+supply, is kept as well, because an activation publishes ONE return and two
+callers sharing a key would share it (fz-kdt.199).
 
 A NON-recursive body is keyed by precise evidence, with one erasure. A body
 that never consumes callable identity -- never calls through a callable, never
@@ -443,7 +446,8 @@ of the thirteen fixtures whose inventory moves are the same-lambda shape this
 erasure exists for; the other seven are that different-lambda population.
 
 List-family convergence is coarse at the key exactly where the slot is
-FREIGHT. On a slot whose `InputDemand::forwarded_dispatch` entry is `Ignore`,
+FREIGHT. On a slot both `InputDemand::forwarded_dispatch` and
+`InputDemand::returned` leave at `Ignore`,
 `Types::convergence_class_at` maps every list family reaching it to one
 addressed class, so `[]`, `[t]` and the joined `[] | [t]` shape share one
 recursive identity there. On a slot demand REACHES,

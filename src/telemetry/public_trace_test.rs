@@ -1228,10 +1228,20 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // stopped being reachable once the demanded list element split its
         // two users apart; nothing new is minted, one thing stops being
         // unminted.
-        activations: lifecycle(72, 74, 4),
+        //
+        // fz-kdt.199: 72 -> 76 distinct, 74 -> 79 first appearances, 4 -> 5
+        // retractions. `Range.reduce_cont/6`'s accumulator is a position the
+        // activation RETURNS, so its seed and its ascended state stop sharing
+        // a key: four more keys, and one more key that is minted before its
+        // demand has finished climbing and withdrawn when it does.
+        activations: lifecycle(76, 79, 5),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
-        callsites: lifecycle(74, 76, 2),
+        //
+        // fz-kdt.199: 74 -> 85 distinct, 76 -> 87 first appearances,
+        // retractions flat -- each activation the returned axis splits brings
+        // its own call edges with it.
+        callsites: lifecycle(85, 87, 2),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -1240,13 +1250,24 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // height (a slot rises at most twice) and it buys the split this
         // ticket is for; fz-kdt.196 owns whether the demand can be settled
         // before the first key is minted.
-        shifts: shifts(30, 127),
+        // fz-kdt.199: 30 -> 31 shift wakes and 127 -> 128 rebased completions.
+        // The `returned` axis rides the SAME cone walk on the same reads, so
+        // `DeriveInputDemand` runs exactly as often as before (190 evaluations
+        // on this fixture, base and head alike); the one extra rebase is the
+        // one extra activation minted while its demand was still climbing.
+        shifts: shifts(31, 128),
         // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
         // they already had -- four more runs for the rebasing above, and
         // `uncaused` stays empty, so every one of them names a moved input.
-        analyze_evaluations: 230,
-        analyze_zero_change: 14,
-        total_evaluations: 1009,
+        //
+        // fz-kdt.199: 230 -> 234 evaluations, 14 -> 16 reproducing an answer
+        // they already had -- the four extra activations this fixture keys,
+        // each analysed once, and `uncaused` still empty.
+        analyze_evaluations: 234,
+        analyze_zero_change: 16,
+        // fz-kdt.199: 1009 -> 1013, the four extra analyses above and nothing
+        // else -- no other formula gains an evaluation on this fixture.
+        total_evaluations: 1013,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -1345,7 +1366,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // minted. The two causes are independent and they compose: 183 adds
         // one activation by splitting a joined key, this removes three by not
         // publishing a narrowed surface.
-        activations: lifecycle(256, 256, 0),
+        // fz-kdt.199: 256 -> 267 -- the accumulators of the reduce families
+        // this fixture drives key their seed apart from their ascent.
+        activations: lifecycle(267, 267, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -1363,7 +1386,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.192: 434 -> 430 distinct (450 -> 445 first appearances,
         // 16 -> 15 retractions). The three vanished activations take their
         // edges, and one callsite no longer withdraws an edge for a round.
-        callsites: lifecycle(430, 445, 15),
+        // fz-kdt.199: 430 -> 455 distinct, 445 -> 473 first appearances,
+        // 15 -> 18 retractions -- each split activation brings its call edges,
+        // and three more edges withdraw while a demand is still climbing.
+        callsites: lifecycle(455, 473, 18),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -1398,9 +1424,24 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 16 -> 15. All FALLS, and the same cause as the activation row above:
         // three fewer activations are three fewer analyses to run, and one
         // fewer run reproduces an answer it already had.
-        analyze_evaluations: 889,
-        analyze_zero_change: 15,
-        total_evaluations: 2412,
+        // fz-kdt.199: 889 -> 921 evaluations, 15 -> 14 reproducing an answer
+        // they already had, 2412 -> 2444 total -- one analysis per activation
+        // the returned axis splits, and `uncaused` stays empty.
+        //
+        // This lens UNDERSTATES the cost on this fixture by an order of
+        // magnitude, and the honest number belongs beside it:
+        // `fz.compiler2.pull.product.settled` goes 9815 -> 12406 (+26%) here,
+        // against +32 on the analysis evaluations this row counts. The
+        // formula-evaluation census counts a job RUN; a settle counts a pull
+        // reaching a settled answer, and each extra activation is pulled
+        // through by every consumer that reaches it. Wall clock does not track
+        // it either way: best of 5 `interp` runs on this fixture is 463 ms at
+        // base against 452 ms here, and no claim that the landing is FASTER
+        // survives that spread. The settle count, not the clock, is what this
+        // ticket spends. fz-kdt.213's subtraction is what pays it back.
+        analyze_evaluations: 921,
+        analyze_zero_change: 14,
+        total_evaluations: 2444,
     },
 ];
 

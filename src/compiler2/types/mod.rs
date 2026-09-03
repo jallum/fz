@@ -770,9 +770,13 @@ impl Types {
     /// address (`P_e`, `P`) rather than the `any`/`fun_top` fallback
     /// (fz-f98.14.10.2). Breadth is still one address per position, so the
     /// interner folds same-shape arrows to one key exactly as `list(any)` did and
-    /// fz-y6w termination holds. Depth is capped: past `ADDRESS_COLLAPSE_DEPTH`
-    /// nested addressing steps the element tops out at `any` (the earned depth ⊤)
-    /// so a self-nesting list can never grow the address path without bound.
+    /// fz-y6w termination holds. Depth is capped for LIST families: past
+    /// `ADDRESS_COLLAPSE_DEPTH` nested addressing steps the element tops out at
+    /// `any` (the earned depth ⊤) so a self-nesting list can never grow the
+    /// address path without bound. The cap is checked inside the
+    /// `is_pure_list_family` branch alone; the tuple, resource and map branches
+    /// recurse on the type that arrives, so their depth is bounded by that type
+    /// rather than by this function.
     ///
     /// `keep_elements` says DEMAND reached this position (fz-kdt.183): the value
     /// here is one some body on the forwarding chain asks about, so its own
@@ -869,7 +873,12 @@ impl Types {
     /// variable-addressing `from_inputs` applies. The arrow remains the PRECISE
     /// evidence surface (carried by `ActivationInputs`); the collapse is a derived
     /// dispatch key, and key != evidence is intentional.
-    pub(crate) fn convergence_collapse(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
+    pub(crate) fn convergence_collapse(
+        &mut self,
+        arrow: Ty,
+        mask: &[DispatchDemand],
+        returned: &[DispatchDemand],
+    ) -> Ty {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;
         };
@@ -880,8 +889,9 @@ impl Types {
             .enumerate()
             .map(|(slot, param)| {
                 let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
+                let result = returned.get(slot).unwrap_or(&DispatchDemand::Ignore);
                 let path = [AddrStep::Param(slot as u16)];
-                self.convergence_collapse_ty(*param, demand, &path, true)
+                self.convergence_collapse_ty(*param, demand, result, &path, true)
             })
             .collect::<Vec<_>>();
         self.arrow(&collapsed, ret)
@@ -927,7 +937,12 @@ impl Types {
             .map(|(slot, input)| {
                 let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
                 let path = [AddrStep::Param(slot as u16)];
-                self.convergence_collapse_ty(*input, demand, &path, false)
+                // EVIDENCE reads the dispatch axis alone. The `returned` axis
+                // asks the key to KEEP a position, and evidence already keeps
+                // every ground position verbatim (the `Ignore` arm widens only
+                // what carries variables), so there is nothing for it to say
+                // here (fz-kdt.199).
+                self.convergence_collapse_ty(*input, demand, &DispatchDemand::Ignore, &path, false)
             })
             .collect()
     }
@@ -936,9 +951,19 @@ impl Types {
         &mut self,
         ty: Ty,
         demand: &DispatchDemand,
+        returned: &DispatchDemand,
         path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
+        // The two axes ask for two collapses and the DISPATCH axis wins where
+        // they meet: `Whole` there means a question reads the value itself, so
+        // the key keeps it verbatim, which is at least as precise as the class
+        // the `returned` axis would keep (fz-kdt.199).
+        if !matches!(demand, DispatchDemand::Whole)
+            && let Some(collapsed) = self.convergence_collapse_returned(ty, demand, returned, path)
+        {
+            return collapsed;
+        }
         match demand {
             DispatchDemand::Ignore => {
                 // KEY path (`collapse_concrete_ignored`) collapses an ignored slot
@@ -959,12 +984,63 @@ impl Types {
                 }
             }
             DispatchDemand::Whole => ty,
-            DispatchDemand::TupleFields(fields) => {
-                self.convergence_collapse_tuple_fields(ty, fields, path, collapse_concrete_ignored)
+            DispatchDemand::TupleFields(fields) => self.convergence_collapse_tuple_fields(
+                ty,
+                fields,
+                returned_fields(returned),
+                path,
+                collapse_concrete_ignored,
+            ),
+            DispatchDemand::ListShape(elem_demand) => self.convergence_collapse_list_shape(
+                ty,
+                elem_demand,
+                returned_element(returned),
+                path,
+                collapse_concrete_ignored,
+            ),
+        }
+    }
+
+    /// The `returned` axis's own answer at one position, or `None` when the
+    /// dispatch axis is the only one that has anything to say here.
+    ///
+    /// `Whole` on this axis means "the activation's published return IS this
+    /// value", and the key keeps its ADDRESSED CONVERGENCE CLASS: list families
+    /// normalise to `list(elem)` with the element kept at every depth and
+    /// capped at `ADDRESS_COLLAPSE_DEPTH`, and closure brands still erase to
+    /// their addressed surface -- the same bounded collapse fz-kdt.183 gives a
+    /// demanded list, one axis over. It is deliberately NOT `Whole`'s verbatim
+    /// keep, which has no collapse at all and no fz-y6w termination argument
+    /// (fz-kdt.200). The cap is a LIST-family cap:
+    /// [`Types::convergence_class_at`] checks it only in its
+    /// `is_pure_list_family` branch, so a tuple, map or resource nest at a
+    /// returned position recurses on the type that arrives with no depth bound
+    /// of its own.
+    ///
+    /// Where the two axes descend into DIFFERENT kinds at one position -- a
+    /// union of a tuple and a list, one axis reading each -- the class keeps
+    /// both, which is the same bounded answer and never the verbatim type.
+    fn convergence_collapse_returned(
+        &mut self,
+        ty: Ty,
+        demand: &DispatchDemand,
+        returned: &DispatchDemand,
+        path: &[AddrStep],
+    ) -> Option<Ty> {
+        match (demand, returned) {
+            (_, DispatchDemand::Ignore) => None,
+            (_, DispatchDemand::Whole)
+            | (DispatchDemand::TupleFields(_), DispatchDemand::ListShape(_))
+            | (DispatchDemand::ListShape(_), DispatchDemand::TupleFields(_)) => {
+                Some(self.convergence_class_at(&ty, path, true))
             }
-            DispatchDemand::ListShape(elem_demand) => {
-                self.convergence_collapse_list_shape(ty, elem_demand, path, collapse_concrete_ignored)
+            (DispatchDemand::Ignore, DispatchDemand::TupleFields(fields)) => {
+                Some(self.convergence_collapse_tuple_fields(ty, &BTreeMap::new(), Some(fields), path, true))
             }
+            (DispatchDemand::Ignore, DispatchDemand::ListShape(elem)) => {
+                Some(self.convergence_collapse_list_shape(ty, &DispatchDemand::Ignore, Some(elem), path, true))
+            }
+            (DispatchDemand::TupleFields(_) | DispatchDemand::ListShape(_) | DispatchDemand::Whole, _) => None,
         }
     }
 
@@ -972,6 +1048,7 @@ impl Types {
         &mut self,
         ty: Ty,
         fields: &BTreeMap<u32, DispatchDemand>,
+        returned_fields: Option<&BTreeMap<u32, DispatchDemand>>,
         path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
@@ -1001,12 +1078,15 @@ impl Types {
                 tuple_alternative = tuple_alternative.saturating_add(1);
                 for (index, elem) in sig.elems.iter_mut().enumerate() {
                     let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
+                    let returned = returned_fields
+                        .and_then(|returned| returned.get(&(index as u32)))
+                        .unwrap_or(&DispatchDemand::Ignore);
                     let mut child = path.to_vec();
                     if discriminate_tuple_alternatives {
                         child.push(AddrStep::Variant(alternative));
                     }
                     child.push(AddrStep::Field(index as u16));
-                    *elem = self.convergence_collapse_ty(*elem, demand, &child, collapse_concrete_ignored);
+                    *elem = self.convergence_collapse_ty(*elem, demand, returned, &child, collapse_concrete_ignored);
                 }
             }
         }
@@ -1017,6 +1097,7 @@ impl Types {
         &mut self,
         ty: Ty,
         elem_demand: &DispatchDemand,
+        returned_elem: Option<&DispatchDemand>,
         path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
@@ -1035,17 +1116,25 @@ impl Types {
             // element the demand names further (`ListShape(Whole)`, a tuple
             // field) is still collapsed by that demand; an element it stops at
             // is KEPT.
-            let elem = if matches!(elem_demand, DispatchDemand::Ignore) {
-                self.convergence_class_at(&elem, &child, true)
-            } else {
-                self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored)
-            };
+            let returned_elem = returned_elem.unwrap_or(&DispatchDemand::Ignore);
+            let elem =
+                if matches!(elem_demand, DispatchDemand::Ignore) && matches!(returned_elem, DispatchDemand::Ignore) {
+                    self.convergence_class_at(&elem, &child, true)
+                } else {
+                    self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse_concrete_ignored)
+                };
             return self.list(elem);
         }
         for conj in &mut d.lists {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
                 if let Some(elem) = sig.elem {
-                    sig.elem = Some(self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored));
+                    sig.elem = Some(self.convergence_collapse_ty(
+                        elem,
+                        elem_demand,
+                        returned_elem.unwrap_or(&DispatchDemand::Ignore),
+                        &child,
+                        collapse_concrete_ignored,
+                    ));
                 }
             }
         }
@@ -2256,6 +2345,24 @@ fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -
         }
     }
     Some(Conj { pos, neg })
+}
+
+/// The `returned` axis's per-field demand where it descends into a tuple, and
+/// nothing where it does not (fz-kdt.199).
+fn returned_fields(returned: &DispatchDemand) -> Option<&BTreeMap<u32, DispatchDemand>> {
+    match returned {
+        DispatchDemand::TupleFields(fields) => Some(fields),
+        _ => None,
+    }
+}
+
+/// The `returned` axis's element demand where it descends into a list, and
+/// nothing where it does not (fz-kdt.199).
+fn returned_element(returned: &DispatchDemand) -> Option<&DispatchDemand> {
+    match returned {
+        DispatchDemand::ListShape(elem) => Some(elem),
+        _ => None,
+    }
 }
 
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {

@@ -131,17 +131,27 @@ an already-addressed arrow.
 
 `canonical_activation_key` mints the precise evidence arrow with `from_inputs`,
 then — for recursive functions only — derives the dispatch key with
-`convergence_collapse(arrow, demand)`, where `demand` is
+`convergence_collapse(arrow, demand, returned)`, where `demand` is
 `InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
-what every callee it forwards a slot to asks of that slot (fz-kdt.183). It is a
+what every callee it forwards a slot to asks of that slot (fz-kdt.183) — and
+`returned` is `InputDemand::returned`, the positions this activation's
+published return is built from and the recursion does not supply (fz-kdt.199).
+`demand` is a
 vector of `DispatchDemand`, not a boolean keep/drop bit: UNDEMANDED subtrees
 collapse to their `convergence_class` (`list(τ)`, `[]`, and `[] | [τ]` all key
 as one addressed list class), while demanded structure can keep only the part
 dispatch observes (for example a tuple tag) and collapse the payload. A
 demanded list keeps its ELEMENT at every depth, because the element decides
-which callee activation the forward reaches; only freight collapses. A `Whole`
-slot has no collapse at all, and forwarding can hand a `Whole` up; that slot
-sits outside fz-y6w's termination argument. `ListShape(elem_demand)` is
+which callee activation the forward reaches; only freight collapses. A RETURNED
+position keeps its addressed convergence class on the second axis — list
+families normalise to `list(elem)` with the element kept, brands still erase —
+because an activation publishes one return and a returned position the key
+erased is a position on which two callers' answers blend. `{:done, acc}` is the
+shape: the tag is the question, the payload is the answer, and each axis keeps
+its own half. A `Whole` slot has no collapse at all, and forwarding can hand a
+`Whole` up; that slot sits outside fz-y6w's termination argument. The returned
+axis does not widen that: it never keeps a slot verbatim.
+`ListShape(elem_demand)` is
 still a recursive convergence key: it preserves the demanded element information
 from the whole list-family descriptor, then converges empty/non-empty shape to
 the all-list class, so a tail-recursive list walk does not fork one activation
