@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.9"
+  ],
   "blocks": [],
   "created": "2026-09-03T08:00:26Z",
   "description": "## Goal\n\nReplace whole-root backend assembly scans with exact shared contributions so root packaging work is proportional to changed executable, wrapper, atom, and reachable-schema membership.\n\n## Current defect\n\nRoot production clones every backend executable, repeatedly reallocates and linearly deduplicates callable owners, globally sorts/densifies functions, rescans atoms, and snapshots all settled struct schemas. The last main-root request to settlement bracket on 00420 is about 262 ms; this is a bracket, not isolated attribution. Whole-world schema snapshotting is not an exact product read and can include unrelated settled state.\n\n## Strategy\n\n1. After transport population pruning, expose immutable keyed executable/wrapper contributions and exact reachable schema obligations.\n2. Maintain deterministic root membership/order from stable semantic identities rather than rebuilding/densifying the entire program after every movement.\n3. Incrementally update atom/schema inventories from exact product dependencies.\n4. Preserve canonical symbol/function order and byte-identical artifacts.\n5. Delete `union_boxed` linear dedup, global executable clone assembly, whole-world struct snapshot, repeated atom walk, and temporary counters once the keyed model owns all consumers.\n\n## Signal\n\n- Unchanged request performs no packaging.\n- Unreachable edit changes no root contribution.\n- Reached leaf edit evaluates only exact root-reader contributions.\n- Adding/removing one reachable executable or schema changes only the corresponding membership and deterministic link projection.\n- Same backend/native artifacts and runtime results.\n- Full library, fixture matrix, cross-process determinism, formatting, and strict clippy pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Make root backend packaging react to exact keyed contributions",
   "type": "task",
-  "updated_at": "2026-09-03T08:00:26Z"
+  "updated_at": "2026-09-03T08:02:49Z"
 }
