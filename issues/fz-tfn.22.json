@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T13:40:12Z",
   "created": "2026-09-03T08:04:45Z",
   "description": "## Goal\n\nRemove scheduler/agenda introspection methods left behind by retired push-era orchestration.\n\n## Evidence\n\nScheduler::is_waited has zero callers. It supported manual PublishFunctionSource enqueueing, which was replaced by FunctionSourceStash ownership. Its comment still describes a producer that no longer reads it. Agenda::contains also has zero callers.\n\n## Strategy and proof\n\n1. Confirm zero production and test callers by repository search.\n2. Use history to identify and run the replacement FunctionSourceStash and agenda-coalescing tests.\n3. Delete Scheduler::is_waited, Agenda::contains, stale comments, and tests that exist only for the retired query surface.\n4. Prove identical function-source publication, wait coalescing, work starts, and artifacts.\n5. Run scheduler/source tests, full library, formatting, and strict clippy.\n\nDo not add replacement observation hooks.",
   "id": "fz-tfn.22",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 4,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Delete retired scheduler introspection APIs",
   "type": "task",
-  "updated_at": "2026-09-03T13:24:14Z"
+  "updated_at": "2026-09-03T13:40:12Z"
 }
