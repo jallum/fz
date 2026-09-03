@@ -14,11 +14,15 @@
     {
       "text": "fz-kdt.183 landed (2e0bb2706): unblocked. With proto120.diff stacked on this base, enum_map_family, enum_tier0 and fz_f98_map_reduce are byte-equal to expected and dead_closure_capture_empty_list + 00277 are FIFO/LIFO byte-identical. Handoff hazard: proto120.diff also edits .agent/docs/{externs,semantic-fixpoint,specs}.md and fixtures2/behavior/spec_shared_var_self_composition.fz, so `git checkout -- src` does not revert it. Re-cut on fz-kdt.184 (which re-cuts on 192, which waits on 198) before building.\n",
       "timestamp": "2026-09-03T12:16:44Z"
+    },
+    {
+      "text": "fz-kdt.192 landed (343f3a134): open_vars(params, args) deletes -- instantiate_match already walks (params, args) once, so OpenVars becomes an out-parameter of that walk. This ticket also DELETES the empty-list cleaner, which is the real fix for D3/R20/X6: the per-parameter veto scope is now pinned as a precision loss in two places (r20_cleaner_flip_inside_one_position, x6_one_tuple_parameter_two_fields, against x6b_two_parameters_same_constraint), and 192 widened its corpus exposure from 1 row to 8. Marking ambiguity at the moment of binding removes the scope, the disagreement, and collect_ambiguous_tuple_field_vars with it. Re-cut on 184 (which re-cuts on 192).\n",
+      "timestamp": "2026-09-03T14:15:41Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A @spec variable is a lower bound and a fact only when every positive occurrence contributed: the empty-list ambiguity drop goes, dbg([]) is [], and dead_closure_capture_empty_list converges",
   "type": "task",
-  "updated_at": "2026-09-03T12:16:44Z"
+  "updated_at": "2026-09-03T14:15:41Z"
 }
