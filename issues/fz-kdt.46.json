@@ -19,11 +19,15 @@
     {
       "text": "Cold review exposed a general binder-scoped semantic-order prerequisite now owned by fz-tfn.26. Partition the existing uncommitted diff: .26 gets structural addressing/TyCanon/all observable ordering and its proofs; .46 retains only exact wait edges, settlement/arbitration, causal session accounting, and dependent docs/tests. Rebase .46 on the reviewed .26 commit; no mechanism is deferred or dropped.",
       "timestamp": "2026-09-03T14:53:42Z"
+    },
+    {
+      "text": "Current-base integration RED after fz-tfn.5: exact-edge candidate stalls deterministically on Settled(ActivationAnalyzed(FunctionId(205))) because it assumes the deleted separate root frontier. With the sole activation frontier, a blocked first AnalyzeActivation run is retired and no later exact edge re-ignites it. Any diagnostic restoration of the old scanner is probe-only and forbidden from delivery. Correct the missing publication/wait edge after fz-tfn.26; preserve the one-frontier model.",
+      "timestamp": "2026-09-03T16:43:02Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Make blocked-wait expansion and settled arbitration edge-triggered",
   "type": "bug",
-  "updated_at": "2026-09-03T14:53:42Z"
+  "updated_at": "2026-09-03T16:43:02Z"
 }
