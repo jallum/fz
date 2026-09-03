@@ -11,9 +11,15 @@
   "id": "fz-kdt.213",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.199 landed (dd07432db) and its build/2 gate names this ticket as its removal owner, so the split is recorded as a PIN rather than blessed as a law. Measured at the landing: of the executables 199 adds, 36 buy a distinct return and 91 do not (83 on the cold review's 597-fixture comparand). Top offenders: List.reduce_cont/3 (21), List.reduce_while_cont/3 (18), Range.reduce_while_cont/6 (9), reduce_while_step/3 (6) -- all the mutual reduce cycle the self-only subtraction cannot see. Red-first for you: those fall while the 36 bought ones and every ONE_ACTIVATION_KEYING_LAWS row hold, and quicksort stays at 17.\n",
+      "timestamp": "2026-09-03T19:44:37Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "The returned-axis subtraction is self-only: a mutual cycle it cannot see mints 79 executables that buy no distinct return",
   "type": "task",
-  "updated_at": "2026-09-03T18:54:40Z"
+  "updated_at": "2026-09-03T19:44:37Z"
 }
