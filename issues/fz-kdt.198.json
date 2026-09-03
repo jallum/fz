@@ -20,5 +20,5 @@
   "status": "open",
   "title": "[BUG] The brand lattice is inverted (int \u003c: Meters, Meters ⊄ int): brands become a refinement FACTOR over the kind axes so the documented law `utf8 \u003c: binary` holds by construction",
   "type": "task",
-  "updated_at": "2026-09-03T11:05:24Z"
+  "updated_at": "2026-09-03T11:05:32Z"
 }
