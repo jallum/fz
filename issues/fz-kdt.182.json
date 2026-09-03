@@ -4,14 +4,15 @@
   "blocks": [
     "fz-kdt.48"
   ],
+  "closed_at": "2026-09-03T08:19:04Z",
   "created": "2026-09-03T04:10:56Z",
   "description": "From the fz-kdt.120 research (2026-09-02, d2a5f3510). `t.is_subtype(\u0026empty, \u0026list_int)`\nis true, yet `t.display_for_diag(\u0026t.union(empty, list_int))` is \"[] | [int]\": the\nDNF clause list keeps a clause another clause subsumes. Ty identity drives change\ndetection and activation keys, so two identity-distinct, semantically equal types\ncan key two executables and two return-evidence revisions. fz-kdt.120's rule makes\nthis visible (`reduce` at a ground reducer answers Known { result: [] | [int] }).\nRelated: fz-kdt.48 differently-carved twins, fz-f98.21's widening cure (sorting at\nintern removed ORDER dependence, not subsumption). Direction: subsumption-normalise\nat intern (drop a clause contained in a sibling) where the containment is decidable\nby Types itself; measure the executable inventory delta and confluence.",
   "id": "fz-kdt.182",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:47Z"
+  "updated_at": "2026-09-03T08:19:04Z"
 }
