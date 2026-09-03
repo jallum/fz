@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-qon.2"
   ],
@@ -12,7 +12,7 @@
   "labels": [],
   "parent": "fz-qon",
   "priority": 4,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete the orphaned SemanticClosure data model",
   "type": "task",
   "updated_at": "2026-09-03T02:26:45Z"
