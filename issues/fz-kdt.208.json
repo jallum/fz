@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T15:36:57Z",
+  "description": "Found by the fz-kdt.179 build (2026-09-03, 981e434fd). fz-kdt.179 routes wrapper member selection through the drop, so a member whose surface a sibling stands in for is dropped from the selection plan and nothing dispatches to it. But flow.resolutions and the boundary set are built PRE-drop in jobs/runtime_demand.rs from ALL of the wrapper edges, so the dropped body`s resolution symbol is still recorded and its boundary still published. Native AOT dead-code-eliminates it (measured: 00420 -4,864 B, 00277 -5,024 B at 981e434fd), so it is dead weight on that door; interp and canon keep the executable (corpus executables 6139 = 6139, unchanged). No miscompile -- nothing routes to the dropped symbol at runtime. THE FIX: prune flow.resolutions and boundary publication to the seated member set (selection.members), so the three doors agree with native and the artifact carries only what it dispatches to. Concordant with fz-kdt.196 (the census retirement 179 began) and fz-kdt.58 (prove and prune unnecessary transport-shape and callable-construction products). Reproducer: --dump backend= on 00420 at 179, group executables, find the wrapper member whose key nothing selects.",
+  "id": "fz-kdt.208",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "A construction wrapper's resolutions and boundaries follow its surviving members: a member the drop removes still has its executable compiled and its boundary published",
+  "type": "task",
+  "updated_at": "2026-09-03T15:36:57Z"
+}
