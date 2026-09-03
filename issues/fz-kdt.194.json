@@ -7,9 +7,15 @@
   "id": "fz-kdt.194",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "Confirmed by measurement at fz-kdt.186's landing (accb5cfbe): under FZ_STRESS_PERMUTE_DISPATCH=arms:3 the canonical form differs from the settled build's on 23 of 597 fixtures at base and 25 after 186; the two extras are exactly 00420_enum_take_drop_split and behavior/enum_take_drop_split, whose call-edge plan cs0 the old reading had been pinning to a seat (s2's callable sets are disjoint closure literals). Those two are also the only whole-corpus canon movers of 186 (0 behaviour movers on interp and run). The number to drive down is the arms:3 mover count 25 -\u003e 23 or lower. The residue and the numbers are stated in specificity_order's doc and in dispatch-matrix.md's Seating section.\n",
+      "timestamp": "2026-09-03T10:39:33Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A SEPARATED arm pair keeps arrival order: meaning-free by construction, but one more artifact axis a schedule can move -- a canonical tie-break is provably safe exactly there",
   "type": "task",
-  "updated_at": "2026-09-03T08:28:15Z"
+  "updated_at": "2026-09-03T10:39:33Z"
 }
