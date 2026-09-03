@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T03:53:24Z",
+  "close_reason": "Completed/superseded by fz-kdt.44 on current main. Telemetry docs and the fz2_cli drain-arbiter regression now prove that readiness-only product-pull changes are polled by the driver rather than registered as scheduler waiters, so they wake no formula and Cause::Readiness remains unreachable today; the arm is retained for a future scheduler-waiter case. Fresh fixture telemetry and the focused test confirm the documented contract.",
   "created": "2026-08-28T17:04:55Z",
   "description": "Measured while landing fz-kdt.34.6: the causal replay classifies zero\nevaluations as readiness-caused on all three target fixtures (0/0/0), even\nthough 4 Settled-cause wakes exist on enum_take_drop_split -- in every such\ncase a content movement also lies in the window, and content wins the\nclassification.\n\nEither readiness-only re-runs genuinely cannot happen under the current wake\nrules (then document WHY in .agent/docs/telemetry.md and consider retiring the\nReadiness arm to keep the model honest), or they can and the three fixtures\njust never exercise them (then write the minimal fixture that does, proving the\nclassifier's readiness path against reality).\n\nThe classifier's supporting check (readiness_without_settled_wake) is untested\nby construction until one of these lands.",
   "id": "fz-kdt.59",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Cause::Readiness never observed on the target fixtures: probe or prove impossible",
   "type": "task",
-  "updated_at": "2026-08-28T17:04:55Z"
+  "updated_at": "2026-09-03T03:53:24Z"
 }
