@@ -9,9 +9,15 @@
   "id": "fz-kdt.178",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "THE DYNAMIC HALF IS LIVE (fz-kdt.144, 0889c0b3a), and it confirms this ticket's premise by measurement. 00277_enum_tier0_fixture is in ARM_ORDER_CENSUS, the static blind-escape census reports nothing for it, and the tripwire reads 12 escapes on it at the settled arrival -- values reaching wrapper w2's list(int) member with [1, :tail], [3, 1, :tail], [5, 3, 1, :tail] (4 each), each report naming the element that broke it. That is precisely the surface dispatch_call_edges never walks. Reproducer: FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp fixtures2/00277_enum_tier0_fixture.fz 2\u003e\u00261 \u003e/dev/null | grep -c 'surface-membership escape' -\u003e 12. Use it as the acceptance oracle for the widened static walk: after this ticket the static census must report the same 00277 wrapper-selection escape the dynamic one already sees. .agent/docs/dispatch-matrix.md's static-census section now says the two instruments see different subsets and why.",
+      "timestamp": "2026-09-03T04:54:23Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "The static blind-escape census walks only call-edge dispatches: entry_dispatch and construction-wrapper selection plans are outside every seating gate",
   "type": "task",
-  "updated_at": "2026-09-03T03:31:43Z"
+  "updated_at": "2026-09-03T04:54:23Z"
 }
