@@ -11,9 +11,15 @@
   "id": "fz-kdt.58",
   "labels": [],
   "parent": "fz-tfn",
+  "comments": [
+    {
+      "text": "fz-kdt.208 (filed from the fz-kdt.179 build, 2026-09-03) is a concrete instance of this ticket`s \"prune unnecessary callable-construction products\": a construction wrapper keeps the executable and boundary of a member the dispatch drop removed. Native DCEs it; interp/canon keep it. Linking as related.",
+      "timestamp": "2026-09-03T15:37:04Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Prove and prune unnecessary transport-shape and callable-construction products",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:50Z"
+  "updated_at": "2026-09-03T15:37:04Z"
 }
