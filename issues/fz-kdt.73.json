@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-08-30T17:00:13Z",
-  "description": "Found by fz-kdt.69's cold review. merge_callsite_activation\n(semantic.rs:186-194) and merge_target_activation\n(jobs/semantic.rs:1876-1890) each carry a 'same root+function, different\narrow -\u003e keep current' arm that is UNREACHABLE: every caller matches targets\nwith same_call_target, which compares the full activation key including the\narrow. They read as arrow-coalescing sites and are not; if either went live\nit would silently pin the first arrow observed at a callsite. Delete the arms\nor make the impossibility explicit (match on the full key).",
+  "description": "## Goal\n\nDelete two arrow-coalescing branches that are unreachable under their callers full activation-key match and would silently pin the first arrow if they ever became reachable.\n\n## Proof at a3a9761d1\n\n`merge_callsite_activation` and `merge_target_activation` each contain a branch for equal root and function but different arrow. Every caller selects candidates with `same_call_target`, which compares the complete activation identity including the arrow. The partial-key branch therefore cannot execute.\n\nThe branch is actively misleading: it reads like supported arrow coalescing even though the actual invariant is exact-key equality, and its keep-current behavior would make arrival order semantic if a future caller loosened matching.\n\n## Change\n\n- Express merging against full activation-key equality.\n- Delete the partial root/function-only branches and their keep-first behavior.\n- Prefer a type or function boundary that makes partial-key merging unrepresentable over an explanatory comment.\n- Remove stale documentation or tests that imply arrows coalesce at these sites.\n\n## TDD and checks\n\n- Focused tests prove equal full keys merge and distinct-arrow keys remain distinct before the merge boundary.\n- Schedule order cannot decide which arrow survives.\n- No replacement keep-first branch or assertion-only shim remains.\n- Full semantic tests, target fixture matrix, and clippy with warnings denied pass.",
   "id": "fz-kdt.73",
   "labels": [],
-  "parent": "fz-kdt",
+  "parent": "fz-tfn",
   "priority": 3,
   "status": "open",
-  "title": "Two dead arrow-coalescing branches read as live and would pin first-observed arrows",
+  "title": "Delete unreachable partial-key arrow merge branches",
   "type": "task",
-  "updated_at": "2026-08-30T17:00:20Z"
+  "updated_at": "2026-09-03T00:37:01Z"
 }
