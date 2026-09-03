@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-kdt.90"
-  ],
+  "blocks": [],
   "closed_at": "2026-09-03T01:41:52Z",
   "close_reason": "Closed as no longer applicable on origin/main a3a9761d1. The ticket's proposed carrier conflates facts that the current tree intentionally separates: CallSiteTargets is payload-free membership, while correlated evidence is already owned by ActivationInputAlternatives, read row-wise by analysis and runtime demand. Seven focused correlation/dispatch tests pass, 00183 prints the expected result, and all four production lenses report zero row-budget collapses. The live-edge and cell consumers named by the ticket were refuted and closed (kdt.69.3 and kdt.74). Surviving column-wise CallTargetSummary merges belong to the load-bearing semantic/artifact surface; prior deletion caused a miscompile and is not evidence for adding rows to membership edges. kdt.90 remains separate cleanup. File a fresh correctness ticket only if a production-path test demonstrates a synthetic cross-row contribution from rebuild; kdt.81 has none.",
   "created": "2026-08-30T20:02:56Z",
