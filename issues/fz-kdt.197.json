@@ -11,11 +11,15 @@
     {
       "text": "fz-kdt.192 landed (343f3a134): pinned as x2_var_carrying_union_member_is_ignored_and_the_verdict_is_known and x2b_...wider_domain in arrow_match.rs -- a union-of-arrows argument with a free-variable member answers Known, a runtime fact claimed from an observation that is not ground. Unchanged by 192, and 192 makes it the ONLY remaining way groundness is manufactured; three corpus rows (Range.reduce_while_cont's 6th argument) moved Invalid -\u003e Known through this door.\n",
       "timestamp": "2026-09-03T14:15:42Z"
+    },
+    {
+      "text": "fz-kdt.184 landed (ca23b676f): the polarity split flips the pure-contravariant-variable case (a union-of-arrows argument whose free-variable member sits only under an arrow parameter) from Known to Underconstrained -- the \"gate half\" this ticket was credited with. x2 and x2b pin it. Your own corpus rows (Range.reduce_while_cont's 6th argument) are UNCHANGED (0 canon movers), because their variable also occurs covariantly and so still gets a lower bound; those rows stay Known from a non-ground observation, which is the half this ticket does not fix. Re-measure the remaining population on the 184 base before working it.\n",
+      "timestamp": "2026-09-03T16:25:58Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "A @spec instantiation answers Known from a NON-GROUND observation: a union-of-arrows argument carrying a free variable grounds the result through its ground members while the var-carrying member contributes nothing",
   "type": "task",
-  "updated_at": "2026-09-03T14:15:42Z"
+  "updated_at": "2026-09-03T16:25:58Z"
 }
