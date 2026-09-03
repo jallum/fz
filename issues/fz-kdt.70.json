@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T04:02:07Z",
+  "close_reason": "Superseded by landed fz-kdt.109. DependencyIndex::unresolved now sorts waits before presentation; the opposite-insertion scheduler regression and three-process CLI stderr regression pass. Fresh builds produced one diagnostic hash across 20 processes each for fixtures 00049 and 00050. Remaining mint-dependent scheduling concerns are separately owned by fz-kdt.114.",
   "created": "2026-08-30T16:09:10Z",
   "description": "Found by fz-kdt.13.2's adversarial review, pre-existing: drive.rs sorts\nunresolved() for the demand pass but the ERROR RENDERING path does not, so\nHashMap RandomState order leaks into stderr -- same binary, four runs of\nfixtures2/00049_resolve_spec.fz produce 3 distinct outputs. Caused 6 of 22\napparent diffs in a fixture-output sweep before being isolated. Fix: render\nthe unresolved list through the same FactKey Ord ordering the demand pass\nuses (data sort at the presentation boundary -- sanctioned).",
   "id": "fz-kdt.70",
   "labels": [],
   "parent": "fz-kdt",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Error-path 'no ready producer' message renders waits in RandomState order",
   "type": "bug",
-  "updated_at": "2026-08-30T16:09:10Z"
+  "updated_at": "2026-09-03T04:02:07Z"
 }
