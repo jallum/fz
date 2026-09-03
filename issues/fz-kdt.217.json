@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T23:20:32Z",
+  "description": "Found while landing fz-kdt.187 and fz-kdt.193 (2026-09-03, f986da97e). Same\ndefect CLASS fz-kdt.187 just cured for the dynamic tripwire, in a different\ncensus.\n\nfz-kdt.199 collapsed several fixtures to all-single-member construction\nwrappers: with one member there is no selection plan at all\n(select_construction_member takes the `None if members.len() == 1` branch), so\nnothing dispatches. Measured from --dump backend=: 00277_enum_tier0_fixture\npublishes 5 wrappers and behavior/enum_map_family 12, and NONE of the 17 has a\nselection block; behavior/enum_predicate_search publishes 32, likewise none.\n\nAll three are still listed in WRAPPER_MEMBER_CENSUS (19 fixtures), which\ndrives the wrapper-order stress gates. A fixture with no selection plan cannot\nexercise a WRAPPER-ORDER property, so those three rows compile a program and\nassert nothing about the thing the census is for -- the census reads green\nbecause there is nothing to read, exactly the failure fz-kdt.187 fixed for\nSURFACE_MEMBERSHIP_CENSUS by asserting observations \u003e 0 before pinning a\ncount.\n\nTHE FIX, mirroring fz-kdt.187: give the wrapper-order gates an observation\ncounter (how many selection plans this fixture actually presented) and assert\nit is \u003e 0 per row before pinning anything; then re-home or delete the rows\nthat read zero, recording the reason. Candidate re-homing subjects, measured:\nbehavior/enum_take_drop_split (23 of 38 wrappers multi-member with a selection\nplan) and 00419_enum_take_mixed (4 of 4).\n\nREPRODUCER: `fz2 interp --dump backend=/tmp/x.canon\nfixtures2/behavior/enum_map_family.fz` then count blocks carrying a\n`selection` line -- 0 of 12. Note the flag ORDER: --log-telemetry after the\nsubcommand truncates the fixture (fz-kdt.215).\n\nCONCORDANT: fz-kdt.187 (the same cure, already landed, for the dynamic\ncensus), fz-kdt.199 (the collapse that emptied these fixtures), fz-kdt.78\n(explicit asserted gate ownership per fixtures2 source), fz-kdt.195 (the cost\nof compiling census fixtures repeatedly -- deleting dead rows is also a\nsaving).\n\nRED-FIRST: the three rows report zero selection plans and the gate fails;\ngreen after re-homing or deletion with the reason recorded.",
+  "id": "fz-kdt.217",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "WRAPPER_MEMBER_CENSUS still names three fixtures that publish no selection plan at all, so a wrapper-order census drives subjects that cannot exercise it",
+  "type": "task",
+  "updated_at": "2026-09-03T23:20:32Z"
+}
