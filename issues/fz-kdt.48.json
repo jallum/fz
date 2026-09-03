@@ -4,7 +4,6 @@
     "fz-kdt.182"
   ],
   "blocks": [
-    "fz-kdt.209",
     "fz-tfn.13"
   ],
   "created": "2026-08-26T14:36:12Z",
@@ -22,5 +21,5 @@
   "status": "open",
   "title": "Make Ty identity denotational: mutually-subtype types intern to one ID",
   "type": "bug",
-  "updated_at": "2026-09-03T16:44:56Z"
+  "updated_at": "2026-09-03T21:20:06Z"
 }
