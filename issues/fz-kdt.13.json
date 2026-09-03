@@ -16,11 +16,15 @@
     {
       "text": "FOLDED FROM THREE TICKETS. fz-f98.5 ('telemetry-first convergence audit'), fz-f98.14 ('convergence runaway: drive is 1.3s') and fz-bfh.6 ('demand/analysis re-derivation volume, ~1.8k') were evaluated independently by three different agents, and all three arrived at the same measurement on the same fixture: 1382 AnalyzeActivation spans out of 2593 job spans on enum_take_drop_split.\n\nThey differed only in what they blamed, and each blame was stale in its own way: f98.5 blamed a schedule-dependent Seal\u003c-\u003eDeriveRuntimeDemand\u003c-\u003eTransport cycle (all those job kinds now grep to zero); f98.14 blamed SealSemanticClosure's monolithic reseal (deleted); bfh.6 paired AnalyzeActivation with DeriveRuntimeDemand re-derivation (runtime demand is now a pull product that settles 3 times per drive, not 1.8k).\n\nPer [[feedback_fold_concordant_ideas]] they are one ticket. Keeping three would have had three people measure the same number and re-derive three dead diagnoses.",
       "timestamp": "2026-08-25T01:36:13Z"
+    },
+    {
+      "text": "CLOSED (2026-09-02): the arc this ticket anchored merged to main as PR #107 (a3a9761d1, 'fz-kdt.13 arc: change-proportional activation analysis'). This ticket's body is an outcome LEDGER and its title says superseded: the cell model (fz-kdt.74) was refuted before building and the live proportionality campaign is fz-kdt.83's ascent census; the epic-level acceptance it kept itself open for (evals/distinct ratio on the target fixtures) belongs with 74's re-entry conditions and 83, not with a closed arc. The ledger stays readable here.",
+      "timestamp": "2026-09-03T00:02:16Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Change-proportional activation analysis: landed gains recorded; superseded by fz-kdt.74",
   "type": "bug",
-  "updated_at": "2026-08-30T23:46:01Z"
+  "updated_at": "2026-09-03T00:02:16Z"
 }
