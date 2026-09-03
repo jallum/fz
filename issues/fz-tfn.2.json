@@ -18,11 +18,15 @@
     {
       "text": "Post-fz-kdt.47 evidence: RuntimeDemand formula values, requested products, settled product sets, search-shape totals, and backend artifacts are stable across processes, but the current eager cone/product interaction closes different exact pending SCC member sets (union-typed versus narrower CallableConstruction activations). This is not a Ty alias defect and cannot be repaired by choosing a canonical resolver or folding activation identity. Reactive per-executable RuntimeDemand in fz-kdt.4 must remove the schedule-dependent pending graph before this ticket can require exact stable group membership. The raw causal ledger and focused red subprocess oracle are preserved.",
       "timestamp": "2026-09-03T07:52:11Z"
+    },
+    {
+      "text": "Authorized DAG split: fz-tfn.25 now owns current-graph recursive-search work determinism. This ticket retains exact recursive publication membership only, after fz-kdt.4 removes eager RuntimeDemand cone scheduling.",
+      "timestamp": "2026-09-03T13:51:54Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Make recursive-group publication membership reproducible after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-03T13:51:07Z"
+  "updated_at": "2026-09-03T13:51:54Z"
 }
