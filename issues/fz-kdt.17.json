@@ -7,9 +7,15 @@
   "id": "fz-kdt.17",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.209 (filed 2026-09-03) is the sibling of this ticket on the GATE side: test gates assert types by display() output, which is non-injective (fz-go4.34 recorded arrow display collisions; fz-kdt.183 recorded list/non_empty_list collapse). Same root idea as yours -- a rendering is not an identity.",
+      "timestamp": "2026-09-03T16:44:56Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Rendered closure identity is capture-count schema state; stamp canonical construction identity instead",
   "type": "bug",
-  "updated_at": "2026-09-03T03:38:38Z"
+  "updated_at": "2026-09-03T16:44:56Z"
 }
