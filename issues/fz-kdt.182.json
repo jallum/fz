@@ -17,11 +17,15 @@
     {
       "text": "REOPENED (2026-09-03): the fz-tfn epic sequences this explicitly ('fz-kdt.182 then fz-kdt.48 establish one Ty per denotation'), so it is the concrete first step of 48 (empty-list union subsumption at intern), not a duplicate to close. The closing comment's measurements stand; keep parent fz-tfn.",
       "timestamp": "2026-09-03T08:41:34Z"
+    },
+    {
+      "text": "RESIDUE FROM fz-kdt.183 (rule review, 2026-09-03), owned here by this ticket's own title: (1) the empty-rung census 53/15 -\u003e 58/16 under the rule -- four honest code-different specializations on demanded slots (Map.reverse/2 [empty_list(), ..] compiles clause 0 only; Range.reverse/2; Map.to_list/4 slot 3 and Range.slice_from/5 slot 4 by forwarding) and two on non-recursive dbg/1 / fz_dbg_value/1 keys; the rung generator is list_element_type([]) = none, i.e. empty_list() never converging with list(τ) -- exactly this ticket's union normalisation (`[] | [int]` vs `[int]`). (2) Same-key DUPLICATE executables in one BackendProgram: base 67 extra (key, need) rows over 15 fixtures, 31 byte-identical modulo executable ids (00531: List.delete_first/2[list(int), int] twice, 0 diff lines); the rule amplifies it to 73 / 39 / 17. Bears on fz-f98.21's byte-identical BackendProgram. Both numbers are ratchets to drive down here.",
+      "timestamp": "2026-09-03T09:40:40Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
   "type": "task",
-  "updated_at": "2026-09-03T08:41:34Z"
+  "updated_at": "2026-09-03T09:40:40Z"
 }
