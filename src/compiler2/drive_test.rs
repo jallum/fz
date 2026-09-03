@@ -8927,17 +8927,19 @@ end
 /// narrow one is dead; at LIFO the narrow arm comes first, swallows
 /// `{:halt, _}`, and `Enum.take(xs, 3)` returns the whole list.
 ///
-/// `call_destinations` therefore drops the narrower of two indistinguishable
-/// alternatives when the wider one is the SAME function on a domain that
-/// contains it, and this gate reads the landed artifact back to prove none
-/// survived. It is red at FIFO on today's tree -- no schedule knob needed.
+/// `call_destinations` therefore drops an arm whose stand-in the seat would
+/// never let it pass -- the SAME callee on a strictly wider observable domain
+/// asking a question that admits everything the arm's own admits -- and this
+/// gate reads the landed artifact back to prove no two arms asking one
+/// question survived. It is red at FIFO on today's tree -- no schedule knob
+/// needed.
 ///
 /// The LIFO half is verified by hand, per the fz-kdt.93 precedent: change
 /// `Agenda::pop` (src/compiler2/agenda.rs) to `self.queue.pop_back()` and run
 /// `fz2 run fixtures2/00183_enum_take_list_range.fz`; its first line must be
 /// `[1, 2, 3]`.
 ///
-/// Indistinguishable arms with no stand-in between them -- neither domain
+/// Arms asking one question with no stand-in between them -- neither domain
 /// contains the other, or they are different functions -- are a different,
 /// wider defect: no arm can supply the others' bodies, so the cure is a
 /// runtime predicate that can tell them apart, not a smaller plan
@@ -9242,7 +9244,8 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
     );
 }
 
-/// fz-kdt.131: the seats where no order is escape-free, counted.
+/// fz-kdt.131: the seats where no order is escape-free, counted -- at the
+/// settled arrival AND under every arm perturbation the stress can name.
 ///
 /// A blind escape this gate still finds is one BOTH seats carry -- the gate
 /// next door proves the covering seat was taken wherever one existed -- so
@@ -9252,25 +9255,62 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
 /// rule declines to move such a pair, so it can only ever remove one of these,
 /// never add one.
 ///
-/// These are latent MISCOMPILES, not untidiness. `enum_map_family`'s three
-/// entries are the ones that already abort natively under a reversed arm order
-/// (`compiler2_dispatch_answers_the_same_under_a_permuted_arm_order` names the
-/// reproduction), and `dispatch_seat_element_blind`'s is the one whose fixture
-/// only prints the right answers because arrival happens to seat the atom arm
-/// first. Nothing here is safe by proof; it is safe by arrival.
+/// These are latent MISCOMPILES, not untidiness. Nothing here is safe by
+/// proof; it is safe by arrival.
 ///
-/// The list is a RATCHET, not a target. It goes to zero when the runtime can
+/// WHY IT IS DRIVEN UNDER SEEDS (fz-kdt.143). A census read at the settled
+/// arrival is blind to a seat only a legal permutation produces, and until
+/// fz-kdt.143 the corpus had such seats: an arm the seat would never let past
+/// its stand-in was kept anyway, because fz-kdt.118's drop ran only inside one
+/// question group and every axis refinement since had split those groups.
+/// Under `arms:2` and `arms:3` this census read 5 where the settled order
+/// pinned 3, the two extras being `dispatch_list_head_separates`'s `[int]` arm
+/// seated ahead of the arms that stand in for it. Those arms are dropped now,
+/// so six of the seven settings read the settled population exactly -- with
+/// one named exception below.
+///
+/// PAIRS, NOT SEATS. A perturbation may flip which member of a facet-3 pair
+/// comes first, which is arrival-kept by design and not a new escape, so the
+/// per-setting comparand is the unordered PAIR. The settled reading keeps its
+/// directed form: that is the seat production actually ships.
+///
+/// The lists are a RATCHET, not a target. They go to zero when the runtime can
 /// see what the bodies rely on -- fz-kdt.119's per-position tuple tags and
-/// fz-kdt.107 step 3's list elements -- and not before. A new entry is a new
-/// latent miscompile and wants a ticket, not a re-blessed constant.
-///
-/// SCOPE: measured at the SETTLED arrival only. An escape that only a legal
-/// permutation exposes does not move this constant -- the fz-kdt.107 step-3
-/// refutation measured 5 under `arms:3` where this pins 3, the two extras
-/// being un-dropped narrow arms a split question group re-arms (fz-kdt.143
-/// owns that cure; fz-kdt.141's stress is the instrument that sees them).
+/// fz-kdt.107 step 3's list elements -- and not before. A new entry under ANY
+/// setting is a new latent miscompile and wants a ticket, not a re-blessed
+/// constant.
 #[test]
 fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
+    assert_eq!(
+        seated_escapes(&blind_escape_census()),
+        BLIND_ESCAPE_POPULATION,
+        "the blind-escape population moved at the settled arrival: every entry is a seat where a value the \
+         plan admits reaches a body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 can \
+         retire one",
+    );
+    let mut measured = Vec::new();
+    for (setting, _) in BLIND_ESCAPE_PAIRS_BY_ARM_ORDER {
+        let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+            crate::compiler2::callsite_dispatch::dispatch_stress::setting(setting),
+        );
+        measured.extend(labelled(setting, escaping_pairs(&blind_escape_census())));
+    }
+    let expected = BLIND_ESCAPE_PAIRS_BY_ARM_ORDER
+        .into_iter()
+        .flat_map(|(setting, pairs)| labelled(setting, pairs.iter().map(|pair| (*pair).to_string()).collect()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        measured, expected,
+        "a permuted arrival is an arrival the fixpoint could have delivered, so a blind pair one reaches is \
+         a pair production could ship -- and the only pairs any of them may reach are the ones the settled \
+         census already names",
+    );
+}
+
+/// Every seat in the census fixtures where the arm tested first does not name
+/// what the arm tested second holds, under whatever arrival this thread's
+/// stress setting asks for: where it happens, and the two surfaces that meet.
+fn blind_escape_census() -> Vec<(String, String, String)> {
     let mut escapes = Vec::new();
     for fixture in ARM_ORDER_CENSUS {
         let (compiler, program) = driven_backend_program(fixture);
@@ -9280,9 +9320,8 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
             for early in 0..seated.len() {
                 for late in early + 1..seated.len() {
                     for subject in blind_escapes(types, &seated[early], &seated[late]) {
-                        escapes.push(format!(
-                            "{fixture} subject {}: {} is seated before {}",
-                            subject.0,
+                        escapes.push((
+                            format!("{fixture} subject {}", subject.0),
                             types.display(&seated[early][&subject]),
                             types.display(&seated[late][&subject]),
                         ));
@@ -9291,23 +9330,48 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
             }
         }
     }
-    escapes.sort();
-    assert_eq!(
-        escapes, BLIND_ESCAPE_POPULATION,
-        "the blind-escape population moved: every entry is a seat where a value the plan admits reaches a \
-         body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 can retire one",
-    );
+    escapes
+}
+
+/// The census as SEATS: which surface the plan tests first.
+fn seated_escapes(census: &[(String, String, String)]) -> Vec<String> {
+    let mut seated = census
+        .iter()
+        .map(|(where_, early, late)| format!("{where_}: {early} is seated before {late}"))
+        .collect::<Vec<_>>();
+    seated.sort();
+    seated
+}
+
+/// The census as PAIRS: which two surfaces meet blind, with the seat
+/// forgotten, so an arrival that flips an arrival-kept pair reads the same.
+fn escaping_pairs(census: &[(String, String, String)]) -> Vec<String> {
+    let mut pairs = census
+        .iter()
+        .map(|(where_, early, late)| match early <= late {
+            true => format!("{where_}: {early} with {late}"),
+            false => format!("{where_}: {late} with {early}"),
+        })
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
+/// The pairs one setting reads, each carrying the setting that read it, so
+/// every setting's reading is in one comparand and a failure names all of them
+/// rather than the first.
+fn labelled(setting: &str, pairs: Vec<String>) -> Vec<String> {
+    pairs.into_iter().map(|pair| format!("{setting}  {pair}")).collect()
 }
 
 /// Every position in the census where the arm seated first does not name what
-/// the arm seated second holds -- TWO of them on the fixtures that carried the
-/// 19 over 12 arm pairs at fz-kdt.129's landing, plus one this ticket's own
-/// reproducer contributes by design.
+/// the arm seated second holds, at the arrival production ships.
 ///
 /// Each line reads: at this subject the two arms put ONE question to the
 /// runtime, and the arm seated second holds values the arm seated first does
-/// not name. Every subject here holds a LIST, and every one of the 19 was
-/// fz-kdt.107 step 3's, because a list-shape test could not see elements.
+/// not name. Every subject here holds a LIST, and every one of the 19 this
+/// census carried at fz-kdt.129's landing was fz-kdt.107 step 3's, because a
+/// list-shape test could not see elements.
 ///
 /// The list axis can see them now, and the census reads it: seventeen entries
 /// leave outright (disjoint heads are a real separation, so those pairs never
@@ -9327,15 +9391,52 @@ fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
 /// The third entry is `dispatch_list_head_separates`, the fixture fz-kdt.107
 /// step 3 added, and it is here ON PURPOSE: the same A/B pair, written down as
 /// source, so the population fz-kdt.131 owns has a reproducer of its own
-/// beside the pairs this ticket cured. It is not a regression and it is not a
+/// beside the pairs that ticket cured. It is not a regression and it is not a
 /// new class.
-///
-/// The list is a RATCHET: any OTHER new entry is a new latent miscompile and
-/// wants a ticket, not a re-blessed constant.
 const BLIND_ESCAPE_POPULATION: &[&str] = &[
     "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
     "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int | :nil]",
     "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
+];
+
+/// The same three pairs with the seat forgotten. Five of the six seeds read
+/// exactly this, which is what driving the census under seeds is for: the
+/// pairs a legal permutation reaches are the pairs production ships.
+const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
+    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] with [int | :ok | :true]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] with [int | :nil]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] with [int | :ok | :true]",
+];
+
+/// `arms:6` adds two, and they are fz-kdt.131 FACET 3, not a redundant arm the
+/// drop failed to reach.
+///
+/// Both are `enum_predicate_search`'s `[int]` arm meeting a sibling. That arm
+/// is not dropped for either sibling, and the reason is the SURFACE conjunct
+/// of `stands_in_for`: its callable subject holds more lambdas than the
+/// sibling's, so containment runs one way at subject 0 and the other way at
+/// subject 2, and neither arm's surface is inside the other's. There is no
+/// stand-in, so there is nothing to drop, and the pair is exactly the
+/// overlap-without-containment class fz-kdt.131 owns -- reachable here only
+/// because seed 6 is the arrival that puts these members that way round.
+const BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX: &[&str] = &[
+    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] with [int | :ok | :true]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] with [int | :nil]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] with [int | :ok | :true]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [int | :nil] with [int]",
+    "fixtures2/behavior/enum_predicate_search.fz subject 0: [int | :ok | :true] with [int]",
+];
+
+/// What each arm setting reads, named one by one rather than asserted as an
+/// invariant: a seed is a different set of legal arrivals, and which blind
+/// pairs it reaches is a measurement, not a theorem.
+const BLIND_ESCAPE_PAIRS_BY_ARM_ORDER: [(&str, &[&str]); 6] = [
+    ("arms:1", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
+    ("arms:2", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
+    ("arms:3", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
+    ("arms:4", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
+    ("arms:5", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
+    ("arms:6", BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX),
 ];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
@@ -9458,16 +9559,22 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// the callable-identity shape, and the one fz-kdt.129 added for the seat a
 /// blind list test would otherwise take.
 ///
-/// fz-kdt.107 step 3 adds `dispatch_list_head_separates`, whose three arms are
-/// the trio a head question separates.
+/// fz-kdt.107 step 3 adds `dispatch_list_head_separates`. Its
+/// `List.reduce_while_cont/3` callsite settles FOUR arms and seats TWO of
+/// them: the head question separates the `[:false | :true]` and
+/// `[int | :ok | :true]` arms from each other's values only where their heads
+/// are disjoint, and the other two, `[int]` and `[int | :ok]`, are dropped
+/// because `[int | :ok | :true]` stands in for each and no seat would put
+/// either first (fz-kdt.143). The pair that survives is the fz-kdt.131
+/// facet-3 reproducer this census is here to hold.
 ///
 /// DELIBERATE SUBSET (fz-kdt.141 refutation): the arm perturbation moves 27
 /// fixtures' artifacts; the 13 not listed here (protocol-dispatch, bsx guard,
-/// pipe and receive shapes) move plan content but carry no known
-/// indistinguishable groups -- their coverage is the doc'd sweep recipe with
+/// pipe and receive shapes) move plan content but carry no known arms one
+/// question cannot separate -- their coverage is the doc'd sweep recipe with
 /// the canon comparand, not this in-process gate, which exists to hold the
 /// census population's SEATS specifically. Widen it if any of the 13 ever
-/// gains an indistinguishable group.
+/// gains a pair asking one question.
 const ARM_ORDER_CENSUS: [&str; 15] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/dispatch_list_head_separates.fz",
@@ -9528,11 +9635,13 @@ const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
 ///
 /// `arms:reverse` is the retired knob's exact permutation, kept because the
 /// fixtures and the prose around it were measured under it. The seeds are why
-/// this gate has teeth the reversal did not: at this commit `arms:reverse`
-/// moves 8 fixtures' artifacts and a seed moves 27, and the two seeds here are
-/// the ones whose native movers differ (seed 1 aborts `00277` and
-/// `dispatch_seat_element_blind`; seed 6 aborts `enum_map_family` and
-/// `enum_predicate_search`).
+/// this gate has teeth the reversal did not: measured at fz-kdt.141's landing,
+/// `arms:reverse` moves 8 fixtures' artifacts and a seed moves 27. The two
+/// seeds here are the ones that named the four native aborts fz-kdt.107 step 3
+/// then killed -- seed 1 aborted `00277` and `dispatch_seat_element_blind`,
+/// seed 6 aborted `enum_map_family` and `enum_predicate_search` -- and they
+/// are kept because those are the arrivals that reach the seats, not because
+/// anything still aborts under them.
 const ARM_ORDER_STRESSES: [&str; 3] = ["arms:reverse", "arms:1", "arms:6"];
 
 /// The construction-member settings the in-process gate drives. Two seeds,
@@ -9570,15 +9679,16 @@ const WRAPPER_MEMBER_STRESSES: [&str; 2] = ["wrappers:1", "wrappers:6"];
 /// listed first (fz-kdt.118 fixed it).
 ///
 /// This gate drives the INTERPRETER, which is where every fixture's answer is
-/// defined and where a mis-seated value survives on its dynamic tag. Natively
-/// four fixtures abort under a legal order, all in one class -- three list arms
-/// whose bodies use incompatible element accessors, no one of which covers
-/// another, so `fz_list_head_int_ref` reads non-int elements as ints
-/// (atoms on two census fixtures, bitstrings and structs on the others)
-/// (fz-kdt.107 step 3). They are `enum_map_family` (`arms:reverse`, `6`),
-/// `00277_enum_tier0_fixture` (seeds 1-5), `dispatch_seat_element_blind`
-/// (every seed) and `enum_predicate_search` (`6`). Reproduce one outside the
-/// harness, where an abort cannot take the suite down with it:
+/// defined and where a mis-seated value survives on its dynamic tag. The
+/// native doors agree. Four fixtures USED to abort under a legal arm order --
+/// `enum_map_family`, `00277_enum_tier0_fixture`, `dispatch_seat_element_blind`
+/// and `enum_predicate_search` -- all in one class: three list arms whose
+/// bodies use incompatible element accessors, no one of which covers another,
+/// so `fz_list_head_int_ref` read non-int elements as ints. fz-kdt.107 step 3
+/// gave the list axis a head question and killed the class; measured on the
+/// JIT door at the fz-kdt.143 landing, all 28 combinations of those four
+/// fixtures with `arms:reverse` and seeds 1-6 exit 0. Reproduce outside the
+/// harness, where an abort could not take the suite down with it:
 ///
 ///     FZ_STRESS_PERMUTE_DISPATCH=arms:1 \
 ///       cargo run --bin fz2 -- run fixtures2/behavior/dispatch_seat_element_blind.fz

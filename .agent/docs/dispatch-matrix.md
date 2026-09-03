@@ -52,16 +52,39 @@ a same-fn-id pair differing only in captures projects to one question
 entirely. (Before fz-kdt.107 step 3, ANY two list types were one question --
 a list test read the cons cell and nothing inside it; `[int]` vs `[:ok]` now
 separate by head.)
-Two targets that project to ONE question are not two alternatives — nothing but
-their order would decide which body runs, and that order is the scheduler's. A
-target is therefore dropped when a sibling both (a) is runtime-indistinguishable
-from it and (b) *stands in for* it: names the SAME callee and accepts a strictly
-wider domain. A callsite left with one destination is a `Direct` call rather
-than a one-armed dispatch.
 
-(b) is judged on the OBSERVABLE surfaces — the settled `surface_inputs` run
-through `Types::runtime_type_test_envelope`, which is the same projection the
-plan's rows are built from — not on the settled semantic types. The envelope
+A target is dropped when some sibling W *stands in for* it — names the SAME
+callee, accepts a strictly wider observable domain, and asks a question that
+admits everything its own admits — **and** the seat itself would not put it
+ahead of W:
+
+```text
+    unroutable(N)  ⇔  ∃ W ≠ N :  stands_in_for(W, N)  ∧  ¬ seats_before(N, W)
+```
+
+`seats_before` is the seating relation under *Seating* below, factored into one
+free function that both the seat and the drop call. For a stand-in pair
+`covers(W, N)` holds unconditionally, so the condition reduces to *keep N iff
+`covers(N, W)` and N's test is strictly inside W's*: a redundant arm survives
+exactly where the seat would place it ahead of the arm that stands in for it,
+and nowhere else. A callsite left with one destination is a `Direct` call
+rather than a one-armed dispatch.
+
+All three conjuncts of `stands_in_for` are load-bearing. The same-callee one:
+a multi-target summary normally names one target per selected callee, which is
+exactly what protocol dispatch is, and a wider domain sitting on a different
+function's body is no stand-in at all. Strictness makes the relation a strict
+partial order, so a maximal arm has no stand-in and survives, and arms of equal
+observable surface — alike everywhere the runtime CAN look, different only
+where it cannot — keep each other. And test containment is NOT implied by
+surface containment: `[int | :ok] & not([:ok])` is a strict subtype of
+`[int | :ok]`, but a negated list clause cannot be projected to a head
+question, so its axis degrades to `ListShapes::shape_only` and the narrower
+SURFACE carries the WIDER TEST — it admits `[:zzz]`, which its sibling refuses.
+
+Both containments are judged on the OBSERVABLE surfaces — the settled
+`surface_inputs` run through `Types::runtime_type_test_envelope`, the same
+projection the plan's rows are built from — not on the settled semantic types. The envelope
 erases what no runtime test can read back off a value: a callable argument
 keeps its literal `fn_id` AND the capture types beside it, and loses the arrow
 it was typed at, because a closure object's heap word at `+8` is the address of
@@ -93,50 +116,102 @@ are two observables exactly as `#66(int)` and `#66(float)` are, and
 `fun_top` instead would reproduce the defect above one tuple deep, and leave a
 depth-0/depth-1 seam nothing in the runtime justifies.
 
-Dropping does not decide a routing. Every question an indistinguishable
-group's rows ask projects to one and the same `RuntimeTypePredicate` — the
-rows still carry distinct observable types and the plan still emits a test per
-row, but no test it can emit separates the group, so the member the graph
-reaches first receives every value the group can see — one member was going to
-get them all whatever the arrival order. The rule only decides WHICH: the
-survivors are the maximal elements of the observable containment order,
-computed order-independently. Where one maximal member exists it is the only
-choice complete on every axis a runtime test can see; where two maximal arms
-are incomparable both stay and that pair remains order-decided (this corrects
-fz-kdt.104's inherited "unique maximal survivor" phrasing — uniqueness holds
-per containment CHAIN, not per question class). Every routing reachable after
-the drop is one some legal arm order already produced, which is what makes it
-safe; what it removes is the dependence on that order. Two adjacent facts
-close the loop: a drop to a single destination converts the plan to a
-`Direct` call, which also removes the plan's fail node — a value outside
-every arm's observable domain would have trapped at base and now routes to
-the survivor; that conversion is fz-kdt.104's pre-existing `sole_destination`
-and is fenced by the semantic analysis, not by this rule. And a drop cannot
-ground a call it should not: `call_destinations` has exactly one consumer, at
-artifact materialization — the semantic fixpoint, `RuntimeDemand`, and
-transport never read it, so dropping an arm cannot shrink a
-`CallableDemand.targets` count or manufacture a `CallEdge::Direct`.
+Dropping decides no routing except in the one shape named after this paragraph,
+and the argument is relative to arrival order rather than absolute. Take the
+arrival [survivors in post-drop seated order, then the dropped arms
+widest-first]. It is a permutation of the settled targets, so it is an order
+the fixpoint could have delivered, and the seat reproduces its own output — for
+two arms adjacent in a seated order the later one refuses to pass the earlier,
+either because it stopped there or because the earlier one passed it and
+antisymmetry forbids the reverse — so the first k insertions reproduce the
+survivors' seat and the dropped arms arriving afterwards cannot reach back into
+it. Each dropped N is then inserted and cannot pass its stand-in W: passing it
+needs `seats_before(N, W)`, which the drop condition says is false. So W
+precedes N there and admits everything N admits, N receives nothing, and the
+routing the plan performs after the drop is one that legal arrival already
+produced.
 
-Both halves of (b) are load-bearing. Domain containment alone is not behavioral
-completeness — a multi-target summary normally names one target per selected
-callee, which is exactly what protocol dispatch is, and a wider domain sitting
-on a different function's body is no stand-in at all. And one-way containment is
-not (a): when the questions differ the plan CAN separate the pair, so both
-survive. What separability does not buy is order-independence. A test is coarser
-than the surface it was projected from, so a value can pass an arm's test
-without belonging to the domain that test was projected from, and seating
-decides which arm receives it — order costs meaning wherever two tests overlap,
-and that is fz-kdt.107's subject one rung wider than the arms asking ONE
-question. (fz-kdt.129 corrects the "order costs precision, not meaning"
-phrasing this paragraph inherited; the measurement is under *Seating*.) A
-`:timeout` arm beside an `any` arm is the benign case — the atom test is exact,
-so nothing but a `:timeout` passes it — and the narrower TEST is seated first.
+WHERE THAT STOPS: THE DROP CAN DISSOLVE A GROUP. Every step above assumes the
+survivors group the same way with the dropped arm and without it. The seat
+moves whole question groups and `covers` quantifies over the product, so a
+group is harder to cover than any one member — an arm sharing its question with
+a SURVIVOR is part of what pins that survivor behind a wider arm. Drop it, the
+group dissolves, the survivor is judged alone, and the seat can promote it past
+the arm that used to swallow its values: those values then reach the survivor's
+body, where every arrival of the un-dropped arms sent them to the wider arm. It
+is not a blind escape — `seats_before` demands `covers` before it moves
+anything, so the promoted arm's surface names what it now receives, and the
+escape census does not move — it is a routing the drop decides that arm order
+used to.
+`a_drop_that_dissolves_a_question_group_reseats_the_survivor_it_pinned` builds
+the smallest case, three arms wide, and pins it. The precondition is exactly "a
+dropped arm shares its question with a surviving one", and no callsite on the
+corpus has one: swept over 597 fixtures at the fz-kdt.143 landing the count is
+zero, which is why the corpus reads 0 behaviour movers on both doors. The
+residue is fz-kdt.118's as much as fz-kdt.143's — 118 dropped a member of a
+group, which dissolves one just the same. The re-routed values lie in BOTH
+surfaces, so when the promoted survivor and the wider arm are specializations of
+ONE callee the move is meaning-neutral by construction and the post-drop seat is
+simply the more precise one; it is meaning-bearing only when they are DIFFERENT
+callees, which is the semantic layer offering two callees for one value at one
+callsite — an ambiguity no seat can resolve honestly. **fz-kdt.176** owns that
+invariant (targets of different callees at one callsite have disjoint observable
+surfaces, or the overlap is a diagnostic); with it this residue reduces to a
+statement about precision.
 
-Twins with no stand-in between them (neither observable domain
-contains the other, or two different functions) also survive and stay
-order-decided — including arms alike everywhere the runtime CAN look and
-different only where it cannot, where containment is mutual and strictness
-keeps both.
+The population beyond fz-kdt.118's is named exactly. Where the two arms ask ONE
+question their tests are equal, `strictly_inside` is false, and N is dropped —
+118's rule, decided identically, which is why the generalization is the
+identity on 118's population. Everything the quantifier adds is
+`{N : some W stands in for N and ¬covers(N, W)}`, and `¬covers(N, W)` is by
+definition "seating N ahead of W is a blind escape". So nothing the seat would
+have put first is ever dropped, and what leaves is exactly the arms that were
+either dead behind their stand-in or a blind-escape seat waiting for a legal
+arrival to produce it.
+
+The check's shape carries two facts. The drop asks `seats_before` of two single
+arms while the seat asks it of two question GROUPS; `covers` quantifies over
+the product of the groups, so a group reading can only be falser than the
+singleton one. That mismatch cannot drop an arm the seat would have put ahead
+of its stand-in: reading it group-wise could only turn `covers(W, N)` false,
+which reduces `seats_before(N, W)` to plain `covers(N, W)`, and for the
+singleton check to have refused while that holds the two tests must be equal —
+which puts N and W in ONE group, where no seat separates them at all. What it
+does not cover is the grouping the drop CHANGES, above. And no
+cascade is needed: `stands_in_for` is a strict partial order, the existential
+ranges over every arm rather than the survivors, so an arm dropped only on
+account of another dropped arm is dropped by that one's own stand-in too.
+
+Two adjacent facts close the loop. A drop to a single destination converts the
+plan to a `Direct` call, which also removes the plan's fail node — a value
+outside every arm's observable domain would have trapped and now routes to the
+survivor. That conversion is fz-kdt.104's pre-existing `sole_destination` and
+is fenced by the semantic analysis, not by this rule; what fz-kdt.143 changed
+is that the drop can now reach it across the whole arm set where fz-kdt.118
+reached it only within one question group. Measured at that landing: 51 call
+dispatch sites before and 51 after, so no callsite on the corpus collapsed to
+`Direct` that was not one already. And a drop cannot ground a call it should
+not: `call_destinations` has exactly one consumer, at artifact materialization
+— the semantic fixpoint, `RuntimeDemand`, and transport never read it, so
+dropping an arm cannot shrink a `CallableDemand.targets` count or manufacture a
+`CallEdge::Direct`.
+
+What separability does not buy is order-independence. A test is coarser than
+the surface it was projected from, so a value can pass an arm's test without
+belonging to the domain that test was projected from, and seating decides which
+arm receives it — order costs meaning wherever two tests overlap, and that is
+fz-kdt.107's subject one rung wider than the arms asking ONE question.
+(fz-kdt.129 corrects the "order costs precision, not meaning" phrasing this
+paragraph inherited; the measurement is under *Seating*.) A `:timeout` arm
+beside an `any` arm is the benign case — the atom test is exact, so nothing but
+a `:timeout` passes it, `covers` runs both ways, and the narrower TEST is
+seated first rather than dropped.
+
+Arms with no stand-in between them survive and stay order-decided: neither
+observable domain contains the other, or they are two different functions, or
+the narrower surface carries the wider test. So do arms alike everywhere the
+runtime CAN look and different only where it cannot, where containment is
+mutual and strictness keeps both.
 
 That surviving order-decided residue is a live wrong answer, not a tolerated
 imprecision: a body specialized on a closure literal can ground a DIRECT call
@@ -369,12 +444,26 @@ every lowering must register a schema for; `RuntimeTypePredicate::sub_predicates
 is the ONE walk that reports them, matched exhaustively over the axis table so
 the next nested axis cannot forget to answer (**fz-kdt.145**).
 
-**What the head does not buy.** Group-splitting costs fz-kdt.118's drop: `[int]`
-and `[int | :ok]` used to be one question, so the narrower was dropped as
-unroutable; they are two questions now, both survive, and the extra body is real
-native code. That growth is **fz-kdt.143**'s. And a pair whose heads overlap
-while neither surface contains the other is not reachable by any seat —
-`enum_predicate_search`'s two, which **fz-kdt.131** owns.
+**What the head does not buy.** Splitting a question group does not cost the
+drop any more, and `[int]` beside `[int | :ok]` is why: they are two questions
+now, so fz-kdt.118's group-local drop no longer reaches the pair, but the arm
+rule under *Protocol call dispatch* is quantified over every arm and drops
+`[int]` anyway — their heads overlap, so `covers([int], [int | :ok])` is false,
+the seat would never place `[int]` first, and an arm the seat would never place
+first is no destination (**fz-kdt.143**). What the head DOES leave behind is a
+pair whose heads overlap while neither surface contains the other: no seat is
+escape-free, neither arm stands in for the other, so nothing is dropped and
+arrival stands. `enum_predicate_search` carries the corpus's two, and
+**fz-kdt.131** owns them.
+
+The dropped arm is still a demanded executable wherever something else calls
+it. On `dispatch_list_head_separates` the two arms fz-kdt.143 removes from the
+`List.reduce_while_cont/3` callsite stay in the artifact and stay natively
+defined, reached by direct call edges the callable-flow path grounds:
+`define_function` holds at 111 while the callsite's arms go 4 → 2. Where the
+dropped arms had no other caller the code goes with them — the three receive
+fixtures lose six `Kernel.dbg/1` arms each, `define_function` 46 → 34, 49 → 37,
+49 → 37.
 
 **Every position is asked, at every depth.** A tuple position carries a full
 predicate, so it is decided by the same lattice and the same three lowerings as

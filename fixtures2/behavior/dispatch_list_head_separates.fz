@@ -19,29 +19,46 @@
 # INSIDE it proves nothing about the tail no test reads. Rejection is exact;
 # acceptance is not.
 #
-# The `Enum.all?` lines settle one `List.reduce_while_cont/3` callsite with the
-# three arms that named this ticket:
+# The four `Enum.all?` lines settle FOUR arms at one
+# `List.reduce_while_cont/3` callsite, one per element type:
 #
 #     A   [:false | :true]        Enum.all?([true, false])
 #     B   [int | :ok | :true]     Enum.all?([true, 1, :ok])
 #     C   [int]                   Enum.all?([1, 2])
+#     D   [int | :ok]             Enum.all?([1, :ok])
 #
-# A and C have DISJOINT heads, which is a real separation. B and C OVERLAP at
-# the head (both admit an int) and differ only in a tail, so that pair is
-# erasing and the seat falls back to surface coverage: B holds everything C
-# does, so B is seated first and `[1, :ok]` -- the fourth line -- reaches the
-# body that named it instead of the one that reads every element as an int.
-# Before this (measured at f69c5ea26): the callsite settled FOUR arms and
-# fz-kdt.118's drop removed the two narrower ones -- C was not a destination,
-# so no arrival could seat it first. What DID abort was the settled order and
-# arm seeds 1/2/3/4/6: an int element read by the [:false | :true] body
-# (`fz_unbox_atom`, exit 134 on `run` and `build`). `interp` survived on its
-# dynamic tags, which is why this is a three-path-parity fixture and not a
-# stdout one.
+# The callsite TESTS TWO of them, A and B. C and D are dropped, because B
+# stands in for each -- the same callee, a strictly wider surface, a test that
+# admits everything theirs admits -- and no seat would ever place either ahead
+# of B: their heads overlap B's at an int, so the pair is erasing there, and
+# only B's surface names what theirs hold in the tail no test reads. An arm the
+# seat would never place ahead of its stand-in is no destination at all
+# (fz-kdt.143), so C and D go and `[1, :ok]` -- the fourth line -- reaches B,
+# which is the only body an int-headed list can reach here and the one that
+# named those values.
 #
-# What no head can reach is a pair whose heads overlap and whose surfaces are
-# incomparable; `enum_predicate_search` carries the corpus's two, they keep
-# arrival order, and fz-kdt.131 owns them.
+# Dropping the ARM is not dropping the code. C's and D's specializations are
+# still in the artifact and still natively defined, reached by direct call
+# edges the callable-flow path grounds at the `Enum.all?([1, 2])` and
+# `Enum.all?([1, :ok])` lines; `fz2 --emit=stats run` reads 111
+# `fz.codegen.define_function.stop` either way. Only the callsite's choice
+# between them goes.
+#
+# A and B are what is left, and they are the residue. Their heads overlap at
+# `:true` and neither surface contains the other, so no seat is escape-free,
+# neither stands in for the other, and arrival order decides which is tested
+# first. That is fz-kdt.131's facet 3, this fixture is its written-down
+# reproducer, and 131 owns it; `enum_predicate_search` carries the corpus's
+# other two.
+#
+# History, because the defect is what the fixture is for. Measured at
+# f69c5ea26, before the head question existed, all four arms were one question
+# and fz-kdt.118's drop removed C and D inside that one group -- so neither was
+# a destination and no arrival could seat one first. What DID abort was the
+# settled order and arm seeds 1/2/3/4/6: an int element read by the
+# [:false | :true] body (`fz_unbox_atom`, exit 134 on `run` and `build`).
+# `interp` survived on its dynamic tags, which is why this is a
+# three-path-parity fixture and not a stdout one.
 fn kind(xs :: [integer]), do: 1
 fn kind(xs :: [:ok | :err]), do: 2
 
