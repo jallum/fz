@@ -17,11 +17,15 @@
     {
       "text": "A SECOND, SHARPER REPRODUCER and a corpus consequence, from the fz-kdt.120 re-cut research (2026-09-03, ca23b676f). Your shape is what blocks fz-kdt.120. Enum.reduce/3 finishes through `reduce_finish({:done, a} | ..) :: a`. The first ascent rung's argument is `{:done, []}`, and because the tuple FIELD is freight (masked TupleFields({0: Whole}), keying the tag only) while the return IS that field, `a` binds `[]` and the join-only ladder never re-narrows -- Enum.reverse/1([int]) types as `[]`. Measured consequence: the fz-f98.16 empty-list cleaner in arrow_match.rs is the only thing discarding that stale binding today. Delete the cleaner (which fz-kdt.120 must do, and which fz-kdt.184 deliberately left inert for it) and SEVEN corpus fixtures produce WRONG ANSWERS -- 00276, 00277, 00420, enum_map_family, enum_take_drop_split, fz_f98_range_map_converges, mailbox_closure_enum_hofs -- with Enum.map/to_list/with_index collapsing to []. So this ticket is not only a precision matter: it is load-bearing for correctness the moment the masking cleaner goes. fz-kdt.120 is now marked BLOCKED BY this ticket. Red-first for you should include: with the acc field keyed, `Enum.reverse/1([int])` types as [int] and not [], and the seven fixtures stay correct with the cleaner deleted.",
       "timestamp": "2026-09-03T16:54:31Z"
+    },
+    {
+      "text": "CORRECTION FROM MEASUREMENT -- my earlier comment on this ticket was wrong, and the coordinator withdraws it. I claimed this ticket was fz-kdt.120's blocker, inferring it from the shape of the {:done, acc} rung. The fz-kdt.199 research measured it stacked and REFUTED that: with this ticket's rule applied AND the empty-list cleaner deleted, all seven fixtures still move and Enum.reverse/1([int]) still types as []. The wrong return sits on List.reduce_cont/3[list(int), empty_list(), a2] -- a key with NOTHING collapsed -- so no keying rule can reach it. The real blocker is fz-kdt.210 (a ground seed instantiating a @spec return variable, which refine_call_return then meets into the published return). The `fz-kdt.199 blocks fz-kdt.120` dependency has been removed.\n\nTHIS TICKET STANDS ON ITS OWN, and is wider than its body says. Measured at ca23b676f: `walk({:go, acc}, n)` keys G.walk/2[{:go, list(a0_1_e)}, int] -- field 1 is the address var, the local mask is TupleFields({0: Whole}), and forwarded_inputs finds NO forward edge at all (both self-calls hand slot 0 a Tuple CONSTRUCTION, opaque under fz-kdt.183's rule). That one key publishes non_empty_list(binary) | non_empty_list(int), and a @spec strings([binary]) consumer turns it into error[spec/violation] ([binary] | [int]) -- a real wrong diagnostic on a legitimate program. AND: `loop(0, junk), do: junk` -- fz-kdt.183's OWN first keying law, blessed as \"freight must key ONE activation\" -- has the identical defect at base. So that law is a COST pin, not a correctness one, and this ticket is what makes it safe.",
+      "timestamp": "2026-09-03T18:17:45Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A returned tuple FIELD at a recursive key is freight: a {:done, acc} slot masked TupleFields({0: Whole}) keys only the tag while the return IS acc, so two users still share one joined return",
   "type": "task",
-  "updated_at": "2026-09-03T18:17:42Z"
+  "updated_at": "2026-09-03T18:17:45Z"
 }
