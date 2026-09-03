@@ -34,7 +34,7 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
 macro     BuildMacroExecutable
             one demanded defmacro -> hidden macro root
             -> BackendProgram -> MacroExecutable
-keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveDispatchMask
+keying    DeriveStaticCallees, DeriveCallGraphComponent, DeriveInputDemand
             one body -> StaticCallees, the call graph's out-edges for that function
             stable per-function facts used to canonicalize activation keys:
             DeriveCallGraphComponent walks the StaticCallees facts ONCE and
@@ -111,7 +111,7 @@ submit_root(main/0)
     publishes RootEntry, and once main is defined + key facts exist:
       Activation(root, main, []) , Executable(...)
   ProductDriver pulls RootBackendProduct(root)
-    waits on settled RootEntry(root), Recursive(main), DispatchMask(main)
+    waits on settled RootEntry(root), Recursive(main), InputDemand(main)
     pulls BackendExecutable(entry E)
       pulls AbiExecutable(E)
         pulls MaterializedExecutable(E)
@@ -125,7 +125,7 @@ submit_root(main/0)
 ```
 
 Each fact wait names the exact prerequisite: `LowerFunction` /
-`PlanEntryDispatch` / `DeriveCallGraphComponent` / `DeriveDispatchMask` run
+`PlanEntryDispatch` / `DeriveCallGraphComponent` / `DeriveInputDemand` run
 because a
 product asked for a fact that requires them. New artifact producers must not
 self-schedule or smuggle broad follow-up work into that path.

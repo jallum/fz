@@ -70,10 +70,14 @@ The keying and join logic lean on a few `Types` methods, each with a distinct jo
   to their base and merges list shapes (`[] ⊔ nonempty(t) = list(t)`), so a joined
   slot ascends a bounded chain and the fixpoint terminates. This is the join behind
   activation-input facts and return types.
-- **`convergence_class(a)`** — the coarse identity class for a non-dispatch slot of
+- **`convergence_class(a)`** — the coarse identity class for an UNDEMANDED slot of
   a recursive activation key. The whole list family shares one class, including
   single shapes and joined empty/non-empty shapes; disjoint families (`int` vs a
-  tagged tuple) stay distinct.
+  tagged tuple) stay distinct. "Undemanded" is transitive: a slot is freight only
+  when neither this body nor any callee it forwards the slot to asks about it
+  (`InputDemand::forwarded_dispatch`, fz-kdt.183). A demanded list keeps its
+  element instead, at every depth — see
+  [`type-specialization`](type-specialization.md).
 - **`widen_for_recursive_spec_key(a)`** — the per-slot transform for a recursive
   call key on slots that are *not* collapsed.
 - **`alpha_normalize_vars(a)`** — canonicalizes type-variable ids. Interning

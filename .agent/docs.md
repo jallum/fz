@@ -9,7 +9,7 @@ Read:
 - [guides](docs/guides.md) — writing user-facing `guides/*.html`: voice, shape, callouts, and the compact contract each leaves the reader.
 - [northstar](../northstar.html) — the current world model: lazy `runtime.fz` bootstrap, namespace savepoints, local interned `Types`/`Ty`, joined activation facts, product-keyed pull artifacts, and the worked quicksort / `Enum.reduce` examples.
 - [fact engine](docs/fact-engine.md) — the domain-free fixpoint spine: jobs as rules, reads/waits/owned outputs, the deduped agenda, value-based fact slots with revisions, and the drive loop.
-- [semantic fixpoint](docs/semantic-fixpoint.md) — activation inputs as joined facts, executable demand from local semantic analysis, the key/value split, and the `Recursive`/`DispatchMask` keying facts consumed by product roots.
+- [semantic fixpoint](docs/semantic-fixpoint.md) — activation inputs as joined facts, executable demand from local semantic analysis, the key/value split, and the `Recursive`/`InputDemand` keying facts consumed by product roots.
 - [pipeline](docs/pipeline.md) — source→artifact across direct facts and product keys: demand from a root, lazy runtime code, product-local artifact derivation, final root packaging, and retraction by fact ownership.
 - [compiler2 migration](docs/compiler2-migration.md) — cutover status: compiler2 owns the command-line compiler surface through `fz2`; the old `fz` wrapper/front door is deleted.
 - [canonical form](docs/canonical-form.md) — the id-free comparison form for types and artifacts: why an interned id is never a comparand, the three determinism properties and their three comparands, the type normalization that makes one rendering per type, and the `--dump backend` output.

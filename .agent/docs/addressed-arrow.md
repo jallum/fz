@@ -131,11 +131,17 @@ an already-addressed arrow.
 
 `canonical_activation_key` mints the precise evidence arrow with `from_inputs`,
 then — for recursive functions only — derives the dispatch key with
-`convergence_collapse(arrow, dispatch_mask)`. The mask is a vector of
-`DispatchDemand`, not a boolean keep/drop bit: ignored subtrees collapse to
-their `convergence_class` (`list(τ)`, `[]`, and `[] | [τ]` all key as
-`list(any)`), while demanded structure can keep only the part dispatch observes
-(for example a tuple tag) and collapse the payload. `ListShape(elem_demand)` is
+`convergence_collapse(arrow, demand)`, where `demand` is
+`InputDemand::forwarded_dispatch` — this body's own entry dispatch joined with
+what every callee it forwards a slot to asks of that slot (fz-kdt.183). It is a
+vector of `DispatchDemand`, not a boolean keep/drop bit: UNDEMANDED subtrees
+collapse to their `convergence_class` (`list(τ)`, `[]`, and `[] | [τ]` all key
+as one addressed list class), while demanded structure can keep only the part
+dispatch observes (for example a tuple tag) and collapse the payload. A
+demanded list keeps its ELEMENT at every depth, because the element decides
+which callee activation the forward reaches; only freight collapses. A `Whole`
+slot has no collapse at all, and forwarding can hand a `Whole` up; that slot
+sits outside fz-y6w's termination argument. `ListShape(elem_demand)` is
 still a recursive convergence key: it preserves the demanded element information
 from the whole list-family descriptor, then converges empty/non-empty shape to
 the all-list class, so a tail-recursive list walk does not fork one activation

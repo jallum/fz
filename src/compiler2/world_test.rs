@@ -1,5 +1,5 @@
 use super::facts::FactUse;
-use super::keying::{BodyKeying, DispatchDemand};
+use super::keying::{BodyKeying, DispatchDemand, InputDemand};
 use super::{DriveOutcome, FactKey, Job, ModuleId, ModuleInterface, Namespace, TypeName, Types, World};
 use crate::ast::Attribute;
 use crate::compiler2::drive::JobEffects;
@@ -7,6 +7,16 @@ use crate::telemetry::sink::NullTelemetry;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 use std::cell::Cell;
 use std::rc::Rc;
+
+/// The demand fact a body that forwards NOTHING publishes: what its own
+/// clauses ask about its inputs is the whole of what anything asks about them,
+/// so both halves of `InputDemand` carry the same mask (fz-kdt.183).
+fn unforwarded_demand(mask: Vec<DispatchDemand>) -> InputDemand {
+    InputDemand {
+        local_dispatch: mask.clone(),
+        forwarded_dispatch: mask,
+    }
+}
 
 #[test]
 fn production_telemetry_boundaries_are_raw_and_allocation_free() {
@@ -442,9 +452,9 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Ignore]));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Ignore])));
 
-    // A recursive fn's non-dispatch slot collapses to its convergence class
+    // A recursive fn's UNDEMANDED slot collapses to its convergence class
     // in the KEY (list(int) -> list(any)), while the body-input EVIDENCE
     // keeps the precise type. (Numeric literals no longer exist to widen;
     // the list collapse is the surviving canonicalization.)
@@ -488,14 +498,14 @@ fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(
+    assert!(world.define_input_demand(
         function,
-        vec![
+        unforwarded_demand(vec![
             DispatchDemand::Whole,
             DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
             DispatchDemand::Ignore,
             DispatchDemand::Ignore,
-        ],
+        ]),
     ));
 
     let int = world.types_mut().int();
@@ -530,13 +540,13 @@ fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(
+    assert!(world.define_input_demand(
         function,
-        vec![
+        unforwarded_demand(vec![
             DispatchDemand::ListShape(Box::new(DispatchDemand::Ignore)),
             DispatchDemand::Ignore,
             DispatchDemand::Ignore,
-        ],
+        ]),
     ));
 
     let int = world.types_mut().int();
@@ -582,7 +592,7 @@ fn compiler2_activation_input_join_is_quiet_for_equivalent_list_evidence() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let int = world.types_mut().int();
     let list_int = world.types_mut().list(int);
@@ -647,7 +657,7 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(caller, vec![DispatchDemand::Whole]));
+    assert!(world.define_input_demand(caller, unforwarded_demand(vec![DispatchDemand::Whole])));
     assert!(world.define_body_keying(
         callee,
         BodyKeying {
@@ -655,7 +665,7 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(callee, vec![DispatchDemand::Whole]));
+    assert!(world.define_input_demand(callee, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let int = world.types_mut().int();
     let caller_key = world.activation_key(root, caller, &[int]);
@@ -711,12 +721,12 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(
+    assert!(world.define_input_demand(
         function,
-        vec![
+        unforwarded_demand(vec![
             DispatchDemand::ListShape(Box::new(DispatchDemand::Whole)),
             DispatchDemand::Ignore,
-        ],
+        ]),
     ));
 
     let int = world.types_mut().int();
@@ -745,7 +755,7 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let input_a = world.types_mut().atom_lit("a");
     let input_b = world.types_mut().atom_lit("b");
@@ -799,7 +809,10 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole, DispatchDemand::Whole]));
+    assert!(world.define_input_demand(
+        function,
+        unforwarded_demand(vec![DispatchDemand::Whole, DispatchDemand::Whole])
+    ));
 
     let int = world.types_mut().int();
     let atom = world.types_mut().atom();
@@ -874,7 +887,7 @@ fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let input_a = world.types_mut().atom_lit("a");
     let input_b = world.types_mut().atom_lit("b");
@@ -931,7 +944,7 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let inputs = (0..=super::semantic::ACTIVATION_INPUT_ROW_BUDGET)
         .map(|index| world.types_mut().atom_lit(&format!("row_{index}")))
@@ -975,7 +988,7 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
             consumes_callable_identity: true
         }
     ));
-    assert!(world.define_dispatch_mask(function, vec![DispatchDemand::Whole]));
+    assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
 
     let input = world.types_mut().int_lit(1);
     let key = world.activation_key(root, function, &[input]);
@@ -1037,7 +1050,7 @@ fn compiler2_drive_demands_the_blocked_facts_producer_on_stall() {
     world.demand(Job::LowerFunction(function));
     world.demand(Job::PlanEntryDispatch(function));
     world.demand(Job::DeriveCallGraphComponent(function));
-    world.demand(Job::DeriveDispatchMask(function));
+    world.demand(Job::DeriveInputDemand(function));
     assert_eq!(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         DriveOutcome::Resolved,
@@ -1112,7 +1125,7 @@ fn a_withdrawn_caller_discovered_activation_is_never_reseeded() {
         world.demand(Job::LowerFunction(function));
         world.demand(Job::PlanEntryDispatch(function));
         world.demand(Job::DeriveCallGraphComponent(function));
-        world.demand(Job::DeriveDispatchMask(function));
+        world.demand(Job::DeriveInputDemand(function));
     }
     assert_eq!(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),

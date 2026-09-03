@@ -1,4 +1,13 @@
 //! Stable facts used to canonicalize activation keys.
+//!
+//! `DispatchDemand` is the lattice both halves of [`InputDemand`] live in: what
+//! a body asks about one input, shaped like the type it asks about. `Ignore` is
+//! the bottom (nothing is asked), `Whole` the top (the value itself is the
+//! answer), and `ListShape`/`TupleFields` say the question descends into one
+//! structural position. It is a lattice because a slot can be asked about from
+//! more than one place -- two clauses of one body, and, since fz-kdt.183, every
+//! callee this body hands the slot on to -- and `join_assign` is its least
+//! upper bound.
 
 use std::collections::BTreeMap;
 
@@ -49,8 +58,31 @@ pub(crate) struct BodyKeying {
     pub(crate) consumes_callable_identity: bool,
 }
 
+/// What one function's inputs are DEMANDED for, as `Job::DeriveInputDemand`
+/// publishes it under `FactKey::InputDemand`: both halves live in one value so
+/// a consumer can never observe one without the other, exactly as
+/// [`BodyKeying`] carries two answers behind `FactKey::Recursive`.
+///
+/// The two halves answer two different questions and neither stands in for the
+/// other. `local_dispatch` is "does a clause of THIS body ask about this slot"
+/// -- the question closure-brand erasure has always asked (fz-6gb): a body that
+/// never tests a slot cannot tell two same-shape lambdas apart there.
+/// `forwarded_dispatch` is "does this activation's published RETURN depend on
+/// this slot" -- which includes everything the callees this body hands the slot
+/// to depend on, because the value that arrives decides which callee activation
+/// is reached and therefore what comes back (fz-kdt.183).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct InputDemand {
+    /// This body's own entry dispatch, one demand per semantic input.
+    pub(crate) local_dispatch: Vec<DispatchDemand>,
+    /// `local_dispatch` joined with the demand of every callee this body
+    /// forwards each input to, transitively (fz-kdt.183). Always at least as
+    /// high as `local_dispatch` slot for slot.
+    pub(crate) forwarded_dispatch: Vec<DispatchDemand>,
+}
+
 pub(crate) type BodyKeyingMap = FunctionFactMap<BodyKeying>;
-pub(crate) type DispatchMaskMap = FunctionFactMap<Vec<DispatchDemand>>;
+pub(crate) type InputDemandMap = FunctionFactMap<InputDemand>;
 
 /// The call graph's edge store: the static callees `FactKey::StaticCallees`
 /// publishes for each function, ascending by function id.

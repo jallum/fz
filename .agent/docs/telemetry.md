@@ -584,7 +584,7 @@ own required key clone.
 This schema covers function `defined` and source `stashed`/`noted`/`expanded`,
 function contracts, lowered bodies, guard and entry dispatch, modules, structs,
 types, protocol dispatch, activation analysis, callsite summaries, backend
-programs, native programs, roots, and code submissions. `dispatch_mask.derived`
+programs, native programs, roots, and code submissions. `input_demand.derived`
 and `native_program.reusable_cons` already own their result outside `World`, so
 they carry the raw key and artifact directly. Code submission carries raw
 `World` plus either its `CodeId` or the existing runtime-module registration

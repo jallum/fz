@@ -154,7 +154,7 @@ the detector that makes that disagreement fatal instead of silent.
 A call to a named function needs two things about the CALLEE before it can
 resolve: the `FunctionContract` that refines the surface (only for a function
 that declares one — `World::function_declares_contract`) and the facts its
-activation key is built from (`Recursive`, `DispatchMask`, via
+activation key is built from (`Recursive`, `InputDemand`, via
 `World::require_activation_key_facts`). `require_callee_prerequisites`
 registers both in one pass at each of the three resolve sites, before either
 is consumed, so a caller that holds neither blocks once rather than a rung at
@@ -302,7 +302,7 @@ positions required by the local body. It returns `PullWait::Fact` or
 `PullWait::Product` for those exact prerequisites.
 
 The root product waits on `RootEntry(root)`, `Recursive(entry)`, and
-`DispatchMask(entry)` only so it can key the entry executable, then asks for
+`InputDemand(entry)` only so it can key the entry executable, then asks for
 `BackendExecutable(entry)`. Additional executables enter the request through
 symbolic call edges and callable entries recorded by already demanded products.
 There is no `SemanticClosed(root)` prerequisite on the product path and no
@@ -398,9 +398,13 @@ claims it, so it can never settle.
 ## How recursive convergence works right now
 
 `canonical_activation_key(function, raw_inputs)` still decides activation
-identity. For recursive functions it collapses non-dispatch inputs by
-`convergence_class`, using the `Recursive(fn)` and `DispatchMask(fn)` facts to
-decide which slots may balloon.
+identity. For recursive functions it collapses UNDEMANDED inputs by
+`convergence_class`, using the `Recursive(fn)` and `InputDemand(fn)` facts to
+decide which slots may balloon. `InputDemand` is transitive: a slot this body
+hands unchanged to a callee carries that callee's demand too, because the value
+that arrives decides which callee activation is reached and therefore what this
+activation publishes (fz-kdt.183,
+[`type-specialization`](type-specialization.md)).
 
 A NON-recursive body is keyed by precise evidence, with one erasure. A body
 that never consumes callable identity -- never calls through a callable, never
@@ -438,14 +442,17 @@ capture-free `Enum.all?/1` wrapper apart from the capturing `all?/2` one. Six
 of the thirteen fixtures whose inventory moves are the same-lambda shape this
 erasure exists for; the other seven are that different-lambda population.
 
-List-family convergence is intentionally coarse at the key: `[]`, `[t]`, and
-the joined `[] | [t]` shape share one recursive identity, and a
-`ListShape(elem_demand)` dispatch slot keeps demanded element information while
-converging the shape. The element is derived from the whole list-family
-descriptor, not only from a pure-list singleton, so already-joined list evidence
-does not split recursive keys. The precise caller evidence remains in
-`ActivationInputs(key)`, so clause reachability is decided by evidence, not by
-downstream code rebuilding a more precise key.
+List-family convergence is coarse at the key exactly where the slot is
+FREIGHT. On a slot whose `InputDemand::forwarded_dispatch` entry is `Ignore`,
+`Types::convergence_class_at` maps every list family reaching it to one
+addressed class, so `[]`, `[t]` and the joined `[] | [t]` shape share one
+recursive identity there. On a slot demand REACHES,
+`convergence_collapse_list_shape` keeps the element instead, at every depth, so
+`empty_list()` does not converge with `list(t)` and two callers whose lists
+differ in their element key two activations apart -- which is what stops one
+caller's return from being published as the join of both. The precise caller
+evidence remains in `ActivationInputs(key)`, so clause reachability is decided
+by evidence, not by downstream code rebuilding a more precise key.
 
 So today:
 

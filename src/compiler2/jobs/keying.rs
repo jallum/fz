@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
 use crate::dispatch_matrix::{ListRegion, ProjectionKind, Region, RegionPredicate, Subject, SubjectId, SubjectSource};
 
-use super::super::body::{LoweredBody, LoweredStep, LoweredTail};
+use super::super::body::{CallInputMode, LoweredBody, LoweredStep, LoweredTail, ValueId};
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::FunctionId;
-use super::super::keying::{BodyKeying, DispatchDemand};
+use super::super::keying::{BodyKeying, DispatchDemand, InputDemand};
 use super::super::scheduler::FatalError;
 use super::super::types::Ty;
 use super::super::world::World;
@@ -281,37 +281,300 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
     }
 }
 
-/// Derives which function inputs participate in entry dispatch.
-pub(super) fn derive_dispatch_mask(
+/// One node of the demand cone: a body's OWN dispatch demand, and the
+/// parameters it hands on unchanged.
+#[derive(Debug, Clone, Default)]
+struct DemandNode {
+    local: Vec<DispatchDemand>,
+    forwards: Vec<ForwardEdge>,
+}
+
+/// `slot` of this body is passed, UNCHANGED, as `callee`'s `callee_slot`th
+/// input. Nothing else counts: a projection (`[head | tail]`), a construction
+/// (`[head | acc]`) and a closure call are all opaque, so the value that
+/// arrives at the callee is not the value this slot names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ForwardEdge {
+    slot: usize,
+    callee: FunctionId,
+    callee_slot: usize,
+}
+
+/// Derives which function inputs are DEMANDED -- by this body's own entry
+/// dispatch, or by a callee this body forwards them to, transitively.
+///
+/// Dispatch demand alone answers "what does this body ASK about its inputs",
+/// and that was never the question activation keying needs. The question is
+/// "what does this activation's published return DEPEND on", and a body that
+/// hands a parameter straight to a callee depends on everything that callee's
+/// KEY names at that position: the element decides which callee activation is
+/// reached, and therefore what comes back. `List.reduce_step/3` forwards its
+/// list to `List.reduce_cont/3`, whose key is ground in the element, so the
+/// element is part of `reduce_step/3`'s meaning even though `reduce_step/3`
+/// dispatches only on its accumulator tag -- and without it two `Enum.reduce/3`
+/// users share one activation and one JOINED return (fz-kdt.183, fz-kdt.122).
+///
+/// So the published demand is a JOIN over the `DispatchDemand` lattice
+/// (`Ignore` < `ListShape`/`TupleFields` < `Whole`, `DispatchDemand::join_assign`):
+/// the demand on slot `i` of `f` is `f`'s own local demand on `i` joined with
+/// the demand on every position `g@j` that `f` forwards `i` to.
+///
+/// Forwarding is cyclic (`reduce_cont/3` <-> `reduce_step/3`), so this is a
+/// least fixpoint, computed by Kleene iteration over the cone one walk
+/// discovers -- the same shape `derive_call_graph_component` uses for the
+/// strong component, and terminating for the same reason: the join is monotone
+/// and no join deepens a demand tree past the deepest local mask in the cone,
+/// which is a fixed finite depth once the cone is fixed.
+///
+/// A slot NOT reached this way is freight: the body neither asks about it nor
+/// hands it to anyone who does. It stays collapsed, which is what keeps one
+/// activation for `loop(n, junk)` and one for `partition/4`'s two accumulators.
+///
+/// The LOCAL half publishes beside the forwarded one, because brand erasure
+/// asks the local question and only the local question (see [`InputDemand`]).
+pub(super) fn derive_input_demand(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     function: FunctionId,
 ) -> Result<JobEffects, FatalError> {
-    let dispatch_fact = FactKey::EntryDispatch(function);
-    if !world.has_fact(&dispatch_fact) {
-        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
-        // (`World::demand_fact_producer`).
-        return Ok(JobEffects::wait_on_current(dispatch_fact));
+    let mut reads = Vec::new();
+    let mut waits = HashSet::new();
+    let mut cone = BTreeMap::new();
+    collect_demand_cone(world, function, &mut reads, &mut waits, &mut cone);
+    if !waits.is_empty() {
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            waits: current_uses(waits),
+            ..JobEffects::default()
+        });
     }
 
-    let plan = world.entry_dispatch(function);
-    let mask = dispatch_input_mask(&plan);
-    emit_dispatch_mask_derived(tel, &function, &mask);
-    let changed = world.define_dispatch_mask(function, mask);
+    let demand = InputDemand {
+        local_dispatch: cone.get(&function).map(|node| node.local.clone()).unwrap_or_default(),
+        forwarded_dispatch: solve_forwarded_demand(&cone, function),
+    };
+    emit_input_demand_derived(tel, &function, &demand);
+    let changed = world.define_input_demand(function, demand);
     Ok(JobEffects {
-        reads: current_uses([FactKey::EntryDispatch(function)]),
-        outputs: vec![FactKey::DispatchMask(function)],
-        changed: changed.then_some(FactKey::DispatchMask(function)).into_iter().collect(),
+        reads: current_uses(reads),
+        outputs: vec![FactKey::InputDemand(function)],
+        changed: changed.then_some(FactKey::InputDemand(function)).into_iter().collect(),
         ..JobEffects::default()
     })
 }
 
-fn emit_dispatch_mask_derived(
-    tel: &impl crate::telemetry::Telemetry,
-    function: &FunctionId,
-    mask: &Vec<DispatchDemand>,
+/// Walks the FORWARDING cone from `function`: only a callee that receives one
+/// of this body's parameters unchanged is entered, so the cone is a fraction
+/// of the call cone and a body that forwards nothing reads exactly the facts
+/// the local mask always needed.
+fn collect_demand_cone(
+    world: &World,
+    function: FunctionId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    cone: &mut BTreeMap<FunctionId, DemandNode>,
 ) {
-    tel.raw_event2(&["fz", "compiler2", "dispatch_mask", "derived"], function, mask);
+    if cone.contains_key(&function) {
+        return;
+    }
+    // `StaticCallees` is the fact whose producer scopes a runtime module and
+    // settles the provider-boundary question; waiting on it first means this
+    // walk never has to re-derive either.
+    let callees = FactKey::StaticCallees(function);
+    if !world.has_fact(&callees) {
+        waits.insert(callees);
+        return;
+    }
+    reads.push(callees);
+    if let Some(callback) = world.protocol_callback(function) {
+        collect_protocol_callback_node(world, function, callback.protocol, reads, waits, cone);
+        return;
+    }
+    let lowered = FactKey::LoweredBody(function);
+    if world.function_is_provider_boundary(function) || !world.has_fact(&lowered) {
+        // No body in this program: it asks nothing and forwards nothing. Every
+        // fact that conclusion rests on is READ -- including the module whose
+        // definition dissolves the provider boundary -- so a definition landing
+        // later grows the cone instead of leaving this answer frozen.
+        reads.push(FactKey::FunctionDefined(function));
+        reads.push(FactKey::ModuleDefined(world.function_module(function)));
+        reads.push(lowered);
+        cone.insert(function, DemandNode::default());
+        return;
+    }
+    let dispatch = FactKey::EntryDispatch(function);
+    if !world.has_fact(&dispatch) {
+        // `EntryDispatch`'s sole producer arm is `Job::PlanEntryDispatch`
+        // (`World::demand_fact_producer`).
+        waits.insert(dispatch);
+        return;
+    }
+    reads.push(dispatch);
+    reads.push(lowered);
+    let local = local_dispatch_mask(&world.entry_dispatch(function));
+    let forwards = forwarded_inputs(world, function, local.len());
+    let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
+    cone.insert(function, DemandNode { local, forwards });
+    for callee in next {
+        collect_demand_cone(world, callee, reads, waits, cone);
+    }
+}
+
+/// A protocol callback has no body: it is a NAME for the set of implementations
+/// dispatch can reach. Every input is handed to every implementation unchanged,
+/// so its demand is the join over them -- the same forwarding edge, one per
+/// implementation.
+///
+/// This is a STATIC OVER-APPROXIMATION of a runtime dispatch, and the cost is
+/// anti-monotone in the program: an unrelated `defimpl` that asks more about
+/// its argument raises the demand of every forwarder that reaches the callback,
+/// because the static arm set names it whether or not any value can reach it.
+/// `ProtocolDispatch` is READ, so an implementation landing later grows this
+/// demand rather than leaving the conclusion frozen.
+fn collect_protocol_callback_node(
+    world: &World,
+    function: FunctionId,
+    protocol: super::super::identity::ModuleId,
+    reads: &mut Vec<FactKey>,
+    waits: &mut HashSet<FactKey>,
+    cone: &mut BTreeMap<FunctionId, DemandNode>,
+) {
+    // The same rung order as `semantic::resolve_protocol_call`: `ModuleDefined`
+    // first, because it is the arm-covered wait that can actually be produced;
+    // `ProtocolDispatch` is a co-output of the same `Job::DefineModule` run
+    // (`source_publish::publish_protocol_surface` pushes both into one
+    // `JobEffects`), so it carries no arm of its own in
+    // `World::demand_fact_producer` -- its demand rides `ModuleDefined`'s. A
+    // waiter re-runs only when ALL of its waits are satisfied, so an arm-less
+    // wait must never be the first rung.
+    let protocol_fact = FactKey::ModuleDefined(protocol);
+    if world.module_defined_revision(protocol).is_none() {
+        waits.insert(protocol_fact);
+        return;
+    }
+    reads.push(protocol_fact);
+    let dispatch_fact = FactKey::ProtocolDispatch(protocol);
+    let Some(dispatch) = world.protocol_dispatch(protocol) else {
+        // `ModuleDefined(protocol)` is proven `Some` above, so the run that
+        // claims this fact has already happened; defensive rather than
+        // provably dead, exactly as the twin, and a bare wait rather than an
+        // assert.
+        waits.insert(dispatch_fact);
+        return;
+    };
+    reads.push(dispatch_fact);
+    let arity = world.function_arity(function);
+    let mut forwards = Vec::new();
+    for arm in &dispatch.arms {
+        let Some(implementation) = arm.callbacks.get(&function).map(|target| target.function) else {
+            continue;
+        };
+        for slot in 0..arity.min(world.function_arity(implementation)) {
+            forwards.push(ForwardEdge {
+                slot,
+                callee: implementation,
+                callee_slot: slot,
+            });
+        }
+    }
+    forwards.sort_unstable();
+    forwards.dedup();
+    let next = forwards.iter().map(|edge| edge.callee).collect::<Vec<_>>();
+    cone.insert(
+        function,
+        DemandNode {
+            local: vec![DispatchDemand::Ignore; arity],
+            forwards,
+        },
+    );
+    for callee in next {
+        collect_demand_cone(world, callee, reads, waits, cone);
+    }
+}
+
+/// The parameters this body hands on unchanged, and where they land.
+///
+/// A clause binds each of the function's semantic inputs to one `ValueId`
+/// (`clause.params[i]`), and those ids are function-wide, so a direct call's
+/// argument IS a parameter exactly when its value is one of them. A direct
+/// call's args are its callee's inputs one-for-one (`CallInputMode::Direct`),
+/// which is why the callee slot is the argument index.
+fn forwarded_inputs(world: &World, function: FunctionId, input_count: usize) -> Vec<ForwardEdge> {
+    let body = world.lowered_body(function);
+    let LoweredBody::Clauses { clauses, entries, .. } = &body else {
+        return Vec::new();
+    };
+    let mut slots_of: HashMap<ValueId, Vec<usize>> = HashMap::new();
+    for clause in clauses {
+        for (slot, value) in clause.params.iter().copied().enumerate() {
+            if slot >= input_count {
+                continue;
+            }
+            let slots = slots_of.entry(value).or_default();
+            if !slots.contains(&slot) {
+                slots.push(slot);
+            }
+        }
+    }
+    let mut edges = Vec::new();
+    for entry in entries {
+        let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
+            continue;
+        };
+        let callee_inputs = world.function_arity(*callee);
+        for (arg_index, arg) in args.iter().enumerate() {
+            let Some(callee_slot) = CallInputMode::Direct.semantic_index(callee_inputs, args.len(), arg_index) else {
+                continue;
+            };
+            for slot in slots_of.get(&arg.value).into_iter().flatten().copied() {
+                edges.push(ForwardEdge {
+                    slot,
+                    callee: *callee,
+                    callee_slot,
+                });
+            }
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+}
+
+/// The least fixpoint of the demand system over one cone, projected onto
+/// `function`. Kleene iteration: every round joins each edge's callee demand
+/// into its caller slot and stops when a round changes nothing.
+fn solve_forwarded_demand(cone: &BTreeMap<FunctionId, DemandNode>, function: FunctionId) -> Vec<DispatchDemand> {
+    let mut demand = cone
+        .iter()
+        .map(|(id, node)| (*id, node.local.clone()))
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let mut changed = false;
+        for (id, node) in cone {
+            for edge in &node.forwards {
+                let Some(inherited) = demand
+                    .get(&edge.callee)
+                    .and_then(|callee| callee.get(edge.callee_slot))
+                    .cloned()
+                else {
+                    continue;
+                };
+                let Some(slot) = demand.get_mut(id).and_then(|mine| mine.get_mut(edge.slot)) else {
+                    continue;
+                };
+                let before = slot.clone();
+                slot.join_assign(inherited);
+                changed |= *slot != before;
+            }
+        }
+        if !changed {
+            return demand.remove(&function).unwrap_or_default();
+        }
+    }
+}
+
+fn emit_input_demand_derived(tel: &impl crate::telemetry::Telemetry, function: &FunctionId, demand: &InputDemand) {
+    tel.raw_event2(&["fz", "compiler2", "input_demand", "derived"], function, demand);
 }
 
 /// Walks the reachable static call graph over the `StaticCallees` edge facts.
@@ -448,7 +711,9 @@ enum DemandPathStep {
     BitstringField,
 }
 
-fn dispatch_input_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<DispatchDemand> {
+/// What THIS body's own entry dispatch asks about each of its inputs: the LOCAL
+/// half of `InputDemand`, before any forwarding join.
+fn local_dispatch_mask(plan: &PatternDispatchPlan<Ty>) -> Vec<DispatchDemand> {
     let mut mask = vec![DispatchDemand::Ignore; plan.input_count];
     for arm in &plan.matrix.arms {
         for question in &arm.questions {

@@ -55,6 +55,17 @@ Compiler2 owns the active contract path:
   verdict there would be a false diagnostic with a span inside library source.
   The gate keys on the violation span's code and retires when activation
   evidence becomes correlation-sound.
+
+  Two users of one library reducer no longer share an activation over the
+  ELEMENT their lists carry: the element is part of the key wherever demand
+  reaches it (fz-kdt.183, see [`type-specialization`](type-specialization.md)),
+  so `Enum.reduce([1, 2], …)` and `Enum.reduce(["a", "b"], …)` in one program
+  key two activations and publish two returns. That closed the class of false
+  diagnostics where a USER callsite was diagnosed for a NEIGHBOUR's evidence —
+  `with_index_users_key_apart_by_element.fz` is the reproducer. The CALLABLE
+  slot is still blind and a returned tuple FIELD at a recursive key is still
+  freight, so joined evidence has not gone away; the
+  element axis of it has.
 - Kernel arithmetic (`+ - * / %`) is fully specced in
   `src/modules/runtime_library/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on

@@ -9023,23 +9023,32 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
 /// A ratchet, per site, so either ticket can retire a wrapper at a time. A new
 /// row, or a row on a call edge or an entry dispatch, is a new latent
 /// miscompile and wants a ticket rather than a re-blessed constant.
+///
+/// fz-kdt.183 shrank every moving site and retired none: `enum_map_family`
+/// 3 -> 1 at fifteen wrappers, `00277` 3 -> 1 at five and 4 -> 1 or 2 at
+/// seven. The sites are the same because the wrapper is the same; the GROUPS
+/// fall because the members whose arms asked one question were reducer
+/// specializations keyed on a blind list element. With the element in the key
+/// most of those members are one member, so there is nothing left to be
+/// indistinguishable from. What remains is what fz-kdt.179 and fz-kdt.107
+/// always owned.
 const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 4),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 2),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 2),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 2),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w2 selection", 1),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 1),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w3 selection", 3),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w4 selection", 3),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w7 selection", 3),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w8 selection", 3),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w9 selection", 3),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w3 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w4 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w7 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w8 selection", 1),
+    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w9 selection", 1),
     ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w15 selection", 1),
     ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w16 selection", 1),
     ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w17 selection", 1),
@@ -9052,22 +9061,22 @@ const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[
     ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w39 selection", 1),
     ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w40 selection", 1),
     ("fixtures2/00420_enum_take_drop_split.fz", "wrapper w41 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w12 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w13 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w14 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w15 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w16 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w17 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w18 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w12 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w13 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w14 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w15 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w16 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w17 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w18 selection", 1),
     ("fixtures2/behavior/enum_map_family.fz", "wrapper w19 selection", 1),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w20 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w21 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w22 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w23 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w24 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w25 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w26 selection", 3),
-    ("fixtures2/behavior/enum_map_family.fz", "wrapper w27 selection", 3),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w20 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w21 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w22 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w23 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w24 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w25 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w26 selection", 1),
+    ("fixtures2/behavior/enum_map_family.fz", "wrapper w27 selection", 1),
 ];
 
 /// The question that clears the last of them, in the program that names it.
@@ -9600,14 +9609,20 @@ fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
 ///
 /// A ratchet: a new row is a new latent miscompile and wants a ticket, and a
 /// row that stops reading is a cure and wants deleting.
+///
+/// fz-kdt.183 moved this population in both directions: 21 sites / 27 readings
+/// -> 17 / 29. Four of `00277`'s wrappers -- `w13`, `w14`, `w16`, `w17` --
+/// stop reading entirely, and three -- `w15`, `w18`, `w19` -- go 2 -> 4. Both
+/// halves have one cause: with a demanded list element in the key, a wrapper's
+/// members are keyed on the element they actually carry, so some wrappers lose
+/// the member that was covering-with-escape and others keep two members where
+/// they kept one blended one. Every reading is still a member whose covering
+/// sibling exists and is seated second, which is fz-kdt.179's, and no site
+/// appears that was not here before.
 const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w10 selection", 2),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w11 selection", 2),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w13 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w14 selection", 4),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w15 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w16 selection", 4),
-    ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w17 selection", 4),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w18 selection", 4),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w19 selection", 4),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrapper w20 selection", 2),
@@ -9683,9 +9698,10 @@ const SELECTION_SEAT_ALLOWANCE: &[(&str, &str, usize)] = &[
 /// per-setting comparand is the unordered PAIR. The settled reading keeps its
 /// directed form: that is the seat production actually ships.
 ///
-/// The lists are a RATCHET, not a target. The call-edge ones go to zero when
-/// the runtime can see what the bodies rely on -- fz-kdt.119's per-position
-/// tuple tags and fz-kdt.107 step 3's list elements -- and not before; the
+/// The lists are a RATCHET, not a target. The call-edge ones reached zero at
+/// fz-kdt.183 -- what the runtime can see (fz-kdt.119's per-position tuple
+/// tags, fz-kdt.107 step 3's list elements) was half of it, and the other half
+/// was the KEY naming the element the two arms were specialized on; the
 /// selection ones go when fz-kdt.179 makes member selection run the seat. A
 /// new entry under ANY setting is a new latent miscompile and wants a ticket,
 /// not a re-blessed constant.
@@ -9904,39 +9920,36 @@ fn labelled(setting: &str, pairs: Vec<String>) -> Vec<String> {
 /// INSIDE a fold accumulator's tuple.
 ///
 /// The list axis can see them now, and the census reads it: seventeen entries
-/// leave outright (disjoint heads are a real separation, so those pairs never
-/// meet on an erasing axis at all), and the two that remain are the pairs
-/// whose heads OVERLAP without either surface containing the other --
-/// `[:false | :nil]` against `[int | :nil]` on `:nil`, and `[:false | :true]`
-/// against `[int | :ok | :true]` on `:true`. That is fz-kdt.131's facet 3
-/// exactly: overlap without containment, where no seat is escape-free and
-/// arrival stands. Neither is a head the axis failed to read; both are heads
-/// that genuinely meet, with a tail no test reads behind them.
+/// left outright at fz-kdt.107 step 3 (disjoint heads are a real separation,
+/// so those pairs never meet on an erasing axis at all).
 ///
-/// They are ARRIVAL-KEPT AND PINNED, not fixed. Both are benign today only
-/// because the two arms are specializations of one source function with boxed
-/// element access -- argued, never proven -- and the cure is a repr-level or
-/// minting-level decision, not an ordering rule.
+/// THERE ARE NO CALL-EDGE ENTRIES LEFT. Three stood here until fz-kdt.183:
+/// `[:false | :nil]` against `[int | :nil]` and `[:false | :true]` against
+/// `[int | :ok | :true]` on `enum_predicate_search`, and the same pair written
+/// as source in `dispatch_list_head_separates`. All three were fz-kdt.131's
+/// facet 3 -- heads that overlap with neither surface containing the other --
+/// and all three retired for one reason: the two arms were reducer
+/// specializations sharing ONE activation key over a list element the key did
+/// not name, and with the element in the key they are two keys whose arms no
+/// longer meet blind. That is a cure, not a re-blessing, and it leaves
+/// fz-kdt.131 with no reproducer in this tree: the facet-3 shape is still
+/// constructible and that ticket must decide one.
 ///
-/// The third call-edge entry is `dispatch_list_head_separates`, the fixture
-/// fz-kdt.107 step 3 added, and it is here ON PURPOSE: the same A/B pair,
-/// written down as source, so the population fz-kdt.131 owns has a reproducer
-/// of its own beside the pairs that ticket cured. It is not a regression and
-/// it is not a new class.
-///
-/// THE OTHER FORTY-FIVE ARE WRAPPER SELECTIONS, and they are what fz-kdt.178
-/// made visible: while this walk saw call edges alone, a construction
-/// wrapper's member-selection plan was never read, and the dynamic tripwire
-/// was already reporting twelve real escapes on `00277_enum_tier0_fixture`
-/// that no static gate could see. Thirty-four are 00277's ten escaping
-/// wrappers -- `w10`, `w11`, `w13`-`w19`, `w20` -- where `[int]` is seated
-/// ahead of the member that also names `[int | :tail]`, and the accumulator
-/// `[1, :tail]` passes the first member's head test. The other eleven are the
-/// same shape one level down, where the blind position is the list inside a
-/// `{list, atom}` accumulator tuple: three on
+/// THE REMAINING TWENTY-NINE ARE WRAPPER SELECTIONS, and they are what
+/// fz-kdt.178 made visible: while this walk saw call edges alone, a
+/// construction wrapper's member-selection plan was never read, and the
+/// dynamic tripwire was already reporting real escapes on
+/// `00277_enum_tier0_fixture` that no static gate could see. Eighteen are
+/// 00277's six escaping wrappers -- `w10`, `w11`, `w15`, `w18`, `w19`, `w20`
+/// -- where `[int]` is seated ahead of the member that also names
+/// `[int | :tail]`, and the accumulator `[1, :tail]` passes the first member's
+/// head test. (`w13`, `w14`, `w16` and `w17` were on this list until
+/// fz-kdt.183 keyed their members on the element they carry.) The other
+/// eleven are the same shape one level down, where the blind position is the
+/// list inside a `{list, atom}` accumulator tuple: three on
 /// `enum_hof_three_distinct_closures`, and four apiece on
 /// `00420_enum_take_drop_split` and `enum_take_drop_split` (`w21`-`w24`). All
-/// forty-five are fz-kdt.179's: the covering member exists at every one of
+/// twenty-nine are fz-kdt.179's: the covering member exists at every one of
 /// them and is seated second, because member selection never runs the
 /// covering seat.
 const BLIND_ESCAPE_POPULATION: &[&str] = &[
@@ -9944,26 +9957,10 @@ const BLIND_ESCAPE_POPULATION: &[&str] = &[
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] is seated before [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] is seated before [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] is seated before [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] is seated before [] | [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] is seated before [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] is seated before [] | [int] | [int | :tail]",
@@ -9978,12 +9975,9 @@ const BLIND_ESCAPE_POPULATION: &[&str] = &[
     "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
     "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
     "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/dispatch_list_head_separates.fz callsite 0 (executable 38) subject 0: [:false | :true] is seated before [int | :ok | :true]",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [:false | :nil] is seated before [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [:false | :true] is seated before [int | :ok | :true]",
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} is seated before {[int], :false} | {[] | [int], :true}",
@@ -10014,41 +10008,38 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// A kind that reads zero plans is ABSENT here rather than zero, because the
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
+///
+/// fz-kdt.183: `entry` 144 -> 153 plans, 137 -> 146 unreadable. Nine more
+/// entry plans exist because a demanded list element keys nine more reducer
+/// specializations apart, and every one of them asks a `Region::List`
+/// question, which this walk does not read -- so the readable denominator is
+/// unchanged and the zero above still speaks for exactly what it did.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 144, 137), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 153, 146), ("receive", 2, 0)];
 
-/// The same forty-eight readings with the seat forgotten. Five of the six
-/// seeds read exactly this, which is what driving the census under seeds is
-/// for: the pairs a legal permutation reaches are the pairs production ships.
+/// The same twenty-nine readings with the seat forgotten. ALL SIX seeds read
+/// exactly this, which is what driving the census under seeds is for: the
+/// pairs a legal permutation reaches are the pairs production ships.
 ///
 /// An arm seed cannot move a wrapper's members, so every selection reading is
-/// the same under all six; what a seed can move is a callsite's arms, and
-/// `arms:6` is the one that does.
+/// the same under all six. What a seed CAN move is a callsite's arms, and
+/// until fz-kdt.183 `arms:6` had its own list because it alone reached
+/// `enum_predicate_search`'s `[int | :ok | :true]` against `[int]` at
+/// executable 203 -- fz-kdt.131's facet-3 pair. That callsite is gone: the
+/// two arms were reducer specializations sharing one key over a blind list
+/// element, and with the element in the key they are one arm. So the seed-six
+/// list is not "the same by luck", it is the same because the only reading
+/// that ever distinguished it retired, and folding it away is what says so.
+/// fz-kdt.131 must construct a new reproducer.
 const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [] | [int] | [int | :tail] with [int]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [] | [int] | [int | :tail] with [int]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] | [int | :tail] with [int]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [int] | [int | :tail]",
     "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] | [int | :tail] with [int]",
@@ -10063,82 +10054,9 @@ const BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT: &[&str] = &[
     "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
     "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
     "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/dispatch_list_head_separates.fz callsite 0 (executable 38) subject 0: [:false | :true] with [int | :ok | :true]",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [:false | :nil] with [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [:false | :true] with [int | :ok | :true]",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-];
-
-/// `arms:6` adds ONE, and it is fz-kdt.131 FACET 3, not a redundant arm the
-/// drop failed to reach.
-///
-/// It is `enum_predicate_search`'s `[int]` arm meeting a sibling. That arm is
-/// not dropped for it, and the reason is the SURFACE conjunct of
-/// `stands_in_for`: its callable subject holds more lambdas than the
-/// sibling's, so containment runs one way at subject 0 and the other way at
-/// subject 2, and neither arm's surface is inside the other's. There is no
-/// stand-in, so there is nothing to drop, and the pair is exactly the
-/// overlap-without-containment class fz-kdt.131 owns -- reachable here only
-/// because seed 6 is the arrival that puts these members that way round.
-///
-/// ONE, where the seed used to add two: `[int | :nil]` against `[int]` at
-/// executable 201 is separated outright at another subject -- their callable
-/// questions name disjoint closure sets -- so no value is routed through that
-/// pair and it is not a reading at all (fz-kdt.186). `[int | :ok | :true]`
-/// against `[int]` at executable 203 is the one a value can reach, and it is
-/// fz-kdt.131's facet-3 reproducer under this seed.
-const BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX: &[&str] = &[
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w10 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w11 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w13 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w14 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w15 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w16 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w17 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w18 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [] | [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w19 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [] | [int] | [int | :tail] with [int]",
-    "fixtures2/00277_enum_tier0_fixture.fz wrapper w20 selection subject 1: [int] with [int] | [int | :tail]",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/00420_enum_take_drop_split.fz wrapper w24 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/dispatch_list_head_separates.fz callsite 0 (executable 38) subject 0: [:false | :true] with [int | :ok | :true]",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w3 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w4 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_hof_three_distinct_closures.fz wrapper w5 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
-    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 201) subject 0: [:false | :nil] with [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [:false | :true] with [int | :ok | :true]",
-    "fixtures2/behavior/enum_predicate_search.fz callsite 0 (executable 203) subject 0: [int | :ok | :true] with [int]",
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w21 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w22 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
     "fixtures2/behavior/enum_take_drop_split.fz wrapper w23 selection subject 1: {[], :true} | {[int], :false} with {[int], :false} | {[] | [int], :true}",
@@ -10154,7 +10072,7 @@ const BLIND_ESCAPE_PAIRS_BY_ARM_ORDER: [(&str, &[&str]); 6] = [
     ("arms:3", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
     ("arms:4", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
     ("arms:5", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
-    ("arms:6", BLIND_ESCAPE_PAIRS_UNDER_SEED_SIX),
+    ("arms:6", BLIND_ESCAPE_PAIRS_ARRIVAL_KEPT),
 ];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
@@ -10618,11 +10536,18 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 ///
 /// The wrapper rows are the shape fz-kdt.147 named on the tuple axis, reborn on
 /// the list one: the SETTLED wrapper order is the only order that escapes, and
-/// every legal permutation of it reads 0. The `arms:6` row on
-/// `enum_predicate_search` is fz-kdt.131's facet-3 pair -- two list arms whose
-/// heads overlap and neither of whose surfaces contains the other -- measured
-/// on the production path for the first time, and it is 0 at the settled
-/// arrival, which is why the ticket needs the seed to see it.
+/// every legal permutation of it reads 0.
+///
+/// The `arms:6` row on `enum_predicate_search` was fz-kdt.131's facet-3 pair --
+/// two list arms whose heads overlap and neither of whose surfaces contains the
+/// other -- measured on the production path for the first time. **fz-kdt.183
+/// cured it: 1 -> 0.** The pair existed because one `List.reduce_while_step/3`
+/// key stood for two callers whose list elements differ; with the element in
+/// the key the two arms are two keys and neither is blind to the other's
+/// values. The row stays at 0 so a regression that re-blends them is a
+/// failure here rather than a silent return. fz-kdt.131 now has no reproducer
+/// in this tree and must decide one -- the facet-3 shape is still constructible,
+/// this fixture just no longer builds it.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize); 15] = [
     ("fixtures2/00183_enum_take_list_range.fz", "", 0),
     ("fixtures2/00230_enum_take_chained.fz", "", 0),
@@ -10637,7 +10562,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize); 15] = [
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:6", 0),
     ("fixtures2/00277_enum_tier0_fixture.fz", "wrappers:reverse", 0),
     ("fixtures2/behavior/enum_predicate_search.fz", "", 0),
-    ("fixtures2/behavior/enum_predicate_search.fz", "arms:6", 1),
+    ("fixtures2/behavior/enum_predicate_search.fz", "arms:6", 0),
     // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
     // says why (the fold hands the TAIL to the recursive dispatch, so the
     // mixed list never reaches the `[:false | :true]` arm), and this row is
@@ -11884,7 +11809,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
         "deriving recursion should inspect the generated lambda body instead of peeking only at build/2",
     );
 
-    // Recursive non-dispatch inputs collapse to ONE build/2 activation key, and
+    // Recursive UNDEMANDED inputs collapse to ONE build/2 activation key, and
     // it still carries the recursive accumulator slot. Read off the settled
     // per-activation `activation_analysis.defined` frontier, keeping only keys that
     // earned a converged return (dropping mid-convergence intermediates).
@@ -11897,7 +11822,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
     assert_eq!(
         build_activations.len(),
         1,
-        "recursive non-dispatch inputs should collapse to one build/2 activation key",
+        "recursive undemanded inputs should collapse to one build/2 activation key",
     );
     assert!(
         build_activations
@@ -17315,6 +17240,15 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
     );
 }
 
+/// fz-kdt.183 re-aimed this gate from `enum_predicate_search` at
+/// `enum_take_drop_split`. The old subject stopped building multi-member
+/// callable constructions at all -- its wrappers each carried three reducer
+/// specializations keyed on a list element the key did not name, and with the
+/// element in the key each wrapper has ONE member -- so the gate's own
+/// coverage assertion (`saw_multi_member_construction`) went vacuous. The new
+/// subject still builds sixteen multi-member wrappers with physical captures,
+/// measured over the 469 backend dumps of the corpus, and it is the widest
+/// such fixture that is not one of the two slowest.
 #[test]
 fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     let tel = ConfiguredTelemetry::new();
@@ -17323,8 +17257,8 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+        name: Some("fixtures/behavior/enum_take_drop_split.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_take_drop_split.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -17335,7 +17269,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     demand_backend_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
-        "enum_predicate_search should settle the backend product cleanly",
+        "enum_take_drop_split should settle the backend product cleanly",
     );
 
     let program = backend.last(root_id).program;
@@ -17382,11 +17316,11 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     }
     assert!(
         saw_multi_member_construction,
-        "enum_predicate_search should exercise multi-member callable constructions",
+        "enum_take_drop_split should exercise multi-member callable constructions",
     );
     assert!(
         saw_physical_capture,
-        "enum_predicate_search should exercise callable members with physical captures",
+        "enum_take_drop_split should exercise callable members with physical captures",
     );
 }
 
@@ -17558,4 +17492,312 @@ fn types_display_distinguishes_structurally_close_types() {
              stable sort key degenerates to a hash-order tie"
         );
     }
+}
+
+/// The fixtures whose backend products carry the `[] -> [τ]` ascent ladder,
+/// and how many rung/slot readings each one holds.
+///
+/// The corpus census (the recipe in `.agent/docs/type-specialization.md`, over
+/// `--dump backend=` on all 597 fixtures) reads 58 rungs over 16 fixtures at
+/// fz-kdt.183, up from 53 over 15. These five carry the two runtime modules the
+/// six NEW rungs live in plus the three heaviest ladder fixtures, so the gate
+/// below walks real ladders rather than asserting a vacuous zero.
+const ASCENT_RUNG_FIXTURES: &[&str] = &[
+    "fixtures2/behavior/map_enumerable.fz",
+    "fixtures2/behavior/range_enumerable.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures2/behavior/dead_closure_capture_empty_list.fz",
+];
+
+/// fz-kdt.183 / fz-kdt.124: an ascent rung never climbs a slot nothing demands.
+///
+/// A RUNG is two keys of one function where one is the other with a list
+/// position EMPTIED -- `empty_list()` where the sibling has a list family that
+/// contains it. It exists because `list_element_type([])` is `none`, so `[]`
+/// never converges with `list(τ)`, and a slot that keeps its element therefore
+/// keys the accumulator's first call apart from every later one. That is
+/// fz-kdt.124's ladder and fz-kdt.182 owns the duplicate executables it mints.
+///
+/// What THIS gate holds is the boundary fz-kdt.183 drew. A slot the forwarded
+/// demand leaves at `Ignore` is FREIGHT: the collapse maps every list family
+/// reaching it to one addressed class, so `[]` and `list(τ)` cannot key apart
+/// there, and a rung on such a slot would mean the collapse did not run. The
+/// measured count is 0 and it is 0 by construction, which is why the assertion
+/// is an emptiness and not a number.
+///
+/// The six rungs fz-kdt.183 ADDED are all on demanded slots and all honest:
+/// `Map.to_list/4` slot 3 and `Map.reverse/2` slot 0 (map.fz's `reverse(acc,
+/// [])` forwards the accumulator into `Map.reverse/2`'s dispatch slot),
+/// `Range.slice_from/5` slot 4 and `Range.reverse/2` slot 0 (range.fz the
+/// same), and `Kernel.dbg/1` / `Kernel.fz_dbg_value/1` on
+/// `00277_enum_tier0_fixture`, whose final mask is `[Ignore]` on a
+/// NON-recursive body -- the key is precise evidence there and no mask plays
+/// any part. `Range.reduce/5`'s rung retires in the same motion. One
+/// accumulator per function, not a product: bounded by the rule's own law.
+#[test]
+fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
+    let mut readings = 0_usize;
+    let mut on_freight = Vec::new();
+    for fixture in ASCENT_RUNG_FIXTURES {
+        let (compiler, program) = driven_backend_program(fixture);
+        let world = compiler.world();
+        let types = world.types();
+        // `Types::display` renders `list(int)` and `non_empty_list(int)` alike
+        // (`canon_test`'s display hole), and those two are DISJOINT rather than
+        // a ladder. `TyCanon` is the comparand the `--dump backend=` keys and
+        // the corpus census both read, so the gate reads what they read.
+        let labels = |fn_id| crate::compiler2::canon::function_label(world, FunctionId::from_fn_id(fn_id));
+        let mut canon = crate::compiler2::TyCanon::new(&labels);
+        let mut columns_by_function: HashMap<crate::compiler2::FunctionId, Vec<Vec<String>>> = HashMap::new();
+        for executable in &program.executables {
+            let activation = &executable.key.activation;
+            let columns = activation
+                .inputs(types)
+                .iter()
+                .map(|input| canonical_type_body(&canon.render(types, *input)))
+                .collect::<Vec<_>>();
+            let seen = columns_by_function.entry(activation.function).or_default();
+            if !seen.contains(&columns) {
+                seen.push(columns);
+            }
+        }
+        for (function, columns) in &columns_by_function {
+            if !world.body_keying(*function).is_some_and(|keying| keying.recursive) {
+                // A non-recursive key is precise evidence; no collapse runs and
+                // the demand plays no part in it.
+                continue;
+            }
+            let demand = world
+                .input_demand(*function)
+                .expect("a keyed activation should have published its input demand");
+            for low in columns {
+                for high in columns {
+                    for (slot, (low, high)) in low.iter().zip(high.iter()).enumerate() {
+                        if !is_ascent_rung(low, high) {
+                            continue;
+                        }
+                        readings += 1;
+                        if matches!(
+                            demand.forwarded_dispatch.get(slot),
+                            None | Some(crate::compiler2::keying::DispatchDemand::Ignore)
+                        ) {
+                            on_freight.push(format!(
+                                "{fixture} {} slot {slot}: `{low}` keys apart from `{high}` on a slot \
+                                 nothing demands",
+                                crate::compiler2::canon::function_label(world, *function),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "ascent rung readings over {} fixtures: {readings}",
+        ASCENT_RUNG_FIXTURES.len()
+    );
+    assert!(
+        on_freight.is_empty(),
+        "a freight slot collapses every list family to one addressed class, so a rung there means the \
+         collapse did not run: {on_freight:#?}",
+    );
+    assert!(
+        readings > 0,
+        "the gate proved no rung at all, so it cannot have held anything: re-aim \
+         `ASCENT_RUNG_FIXTURES` at fixtures that still carry the ladder",
+    );
+}
+
+/// Whether `low` is `high` with one or more list positions EMPTIED, at any
+/// structural depth.
+///
+/// The comparand is the one the corpus census recipe in
+/// `.agent/docs/type-specialization.md` reads off `--dump backend=` -- the
+/// canonical type body -- but the relation here is BROADER: this gate asks the
+/// question of each slot independently, where the census counts a sibling pair
+/// only when EVERY column stands in the relation. That is deliberate (a gate
+/// should over-read, not under-read) and it is why the two report different
+/// populations off the same dumps. `non_empty_list` is disjoint from
+/// `empty_list`, so an `empty_list()` beside a `non_empty_list(τ)` is two
+/// clause specializations, not a ladder rung.
+fn is_ascent_rung(low: &str, high: &str) -> bool {
+    fn absorbing_list_element(ty: &str) -> Option<&str> {
+        ty.strip_prefix("list(")?.strip_suffix(')')
+    }
+    fn same_kind_element<'a>(ty: &'a str, kind: &str) -> Option<&'a str> {
+        ty.strip_prefix(kind)?.strip_suffix(')')
+    }
+    fn list_kind(ty: &str) -> Option<&'static str> {
+        if ty.starts_with("list(") {
+            Some("list(")
+        } else if ty.starts_with("non_empty_list(") {
+            Some("non_empty_list(")
+        } else {
+            None
+        }
+    }
+    fn tuple_fields(ty: &str) -> Option<Vec<&str>> {
+        let inner = ty.strip_prefix('{')?.strip_suffix('}')?;
+        Some(split_top_level(inner))
+    }
+    fn walk(low: &str, high: &str) -> Option<usize> {
+        if low == high {
+            return Some(0);
+        }
+        if (low == "[]" || low == "empty_list()") && absorbing_list_element(high).is_some() {
+            return Some(1);
+        }
+        if let (Some(low_fields), Some(high_fields)) = (tuple_fields(low), tuple_fields(high))
+            && low_fields.len() == high_fields.len()
+        {
+            let mut total = 0;
+            for (low, high) in low_fields.iter().zip(high_fields.iter()) {
+                total += walk(low, high)?;
+            }
+            return Some(total);
+        }
+        let (low_kind, high_kind) = (list_kind(low)?, list_kind(high)?);
+        if low_kind != high_kind {
+            return None;
+        }
+        walk(same_kind_element(low, low_kind)?, same_kind_element(high, high_kind)?)
+    }
+    walk(low, high).is_some_and(|depth| depth > 0)
+}
+
+/// A canonical rendering is `<fingerprint> <body>`; the body is the structural
+/// text the ladder is a relation over.
+fn canonical_type_body(rendered: &str) -> String {
+    rendered
+        .split_once(' ')
+        .map(|(_fingerprint, body)| body)
+        .unwrap_or(rendered)
+        .to_string()
+}
+
+/// The comma-separated parts of `text` at bracket depth zero.
+fn split_top_level(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0_i32;
+    let mut start = 0_usize;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '[' | '{' | '(' => depth += 1,
+            ']' | '}' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(text[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts
+}
+
+/// The keying laws fz-kdt.183 must hold in BOTH directions, each as the
+/// smallest program that states one: source, the function the law is about,
+/// and how many activations of it the program may key.
+///
+/// The first three are the rule's LOWER bound -- a slot no callee demands is
+/// freight and must not split, which is what makes the rule a demand rule
+/// rather than "keep every element" (measured: keeping every list element
+/// splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies identical).
+///
+/// The fourth is fz-6gb's law, and it is why `InputDemand` carries two
+/// halves. `fwd/2` only TRANSPORTS its callable: no clause of `fwd/2` tests
+/// it, so two same-shape lambdas must key one activation. But `apply2/2` --
+/// which `fwd/2` forwards both slots to -- tests slot 0 against `:none`, so
+/// the FORWARDED demand on that slot is `Whole`. Erasing brands against the
+/// forwarded half would un-share `fwd/2` into one activation per lambda;
+/// erasing against the LOCAL half keeps fz-6gb's law intact while the key
+/// collapse still reads the forwarded demand.
+const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
+    (
+        "a slot no callee reads is freight",
+        "loop/2",
+        "fn loop(0, junk), do: junk\n\
+         fn loop(n, junk), do: loop(n - 1, junk)\n\
+         fn main() do\n  dbg(loop(3, [1, 2]))\n  dbg(loop(3, [\"a\", \"b\"]))\nend\n",
+        1,
+    ),
+    (
+        "three accumulators built by consing are opaque, not forwarded",
+        "split3/5",
+        "fn split3(_, [], a, b, c), do: {a, b, c}\n\
+         fn split3(p, [h | t], a, b, c) when h < p, do: split3(p, t, [h | a], b, c)\n\
+         fn split3(p, [h | t], a, b, c) when h == p, do: split3(p, t, a, [h | b], c)\n\
+         fn split3(p, [h | t], a, b, c), do: split3(p, t, a, b, [h | c])\n\
+         fn main() do\n  {a, b, c} = split3(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [])\n\
+         \x20 dbg(a)\n  dbg(b)\n  dbg(c)\nend\n",
+        1,
+    ),
+    (
+        "four accumulators do not become a product either",
+        "split4/6",
+        "fn split4(_, [], a, b, c, d), do: {a, b, c, d}\n\
+         fn split4(p, [h | t], a, b, c, d) when h < p, do: split4(p, t, [h | a], b, c, d)\n\
+         fn split4(p, [h | t], a, b, c, d) when h == p, do: split4(p, t, a, [h | b], c, d)\n\
+         fn split4(p, [h | t], a, b, c, d) when h > 6, do: split4(p, t, a, b, [h | c], d)\n\
+         fn split4(p, [h | t], a, b, c, d), do: split4(p, t, a, b, c, [h | d])\n\
+         fn main() do\n  {a, b, c, d} = split4(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [], [])\n\
+         \x20 dbg(a)\n  dbg(b)\n  dbg(c)\n  dbg(d)\nend\n",
+        1,
+    ),
+    (
+        "a transported callable is freight to its forwarder even when a callee tests it",
+        "fwd/2",
+        "fn apply2(:none, x), do: x\n\
+         fn apply2(f, x), do: f.(x)\n\
+         fn fwd(f, x), do: apply2(f, x)\n\
+         fn main() do\n  dbg(fwd(fn (a) -> a + 1 end, 1))\n  dbg(fwd(fn (a) -> a + 2 end, 1))\nend\n",
+        1,
+    ),
+];
+
+#[test]
+fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
+    let mut moved = Vec::new();
+    for (law, label, source, expected) in ONE_ACTIVATION_KEYING_LAWS {
+        let tel = ConfiguredTelemetry::new();
+        let backend = BackendProgramCapture::new();
+        backend.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("{label} keying law")),
+            text: (*source).to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        demand_backend_product(&mut compiler, root_id);
+        assert_resolved(
+            compiler.drive(),
+            &format!("{law}: the program must settle to a backend product"),
+        );
+
+        let program = backend.last(root_id).program;
+        let world = compiler.world();
+        let keyed = program
+            .executables
+            .iter()
+            .filter(|executable| {
+                crate::compiler2::canon::function_label(world, executable.key.activation.function) == *label
+            })
+            .count();
+        if keyed != *expected {
+            moved.push(format!(
+                "{law}: {label} keys {keyed} activations, the law says {expected}"
+            ));
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "fz-kdt.183 keys a slot on DEMAND, not on structure: a slot nothing asks about stays collapsed, and \
+         brand erasure keeps asking the local question: {moved:#?}",
+    );
 }

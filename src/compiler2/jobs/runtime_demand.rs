@@ -3237,13 +3237,13 @@ fn require_activation_key_facts_product(
         waits.insert(PullWait::Fact(FactUse::current(recursive)));
     }
 
-    let dispatch_mask = FactKey::DispatchMask(function);
-    let dispatch_mask_ready = context.read_fact(world, FactUse::current(dispatch_mask.clone()));
-    if !dispatch_mask_ready {
-        waits.insert(PullWait::Fact(FactUse::current(dispatch_mask)));
+    let input_demand = FactKey::InputDemand(function);
+    let input_demand_ready = context.read_fact(world, FactUse::current(input_demand.clone()));
+    if !input_demand_ready {
+        waits.insert(PullWait::Fact(FactUse::current(input_demand)));
     }
 
-    recursive_ready && dispatch_mask_ready
+    recursive_ready && input_demand_ready
 }
 
 fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {

@@ -881,15 +881,20 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
 /// then DeriveStaticCallees (evaluations, blocked) -- the family fz-kdt.56
 /// ADDED. Its cost is pinned alongside the family it shrank so the trade stays
 /// visible: on enum_take_drop_split the recursion-and-component answer costs
-/// 134 + 251 evaluations against 165 before, cheaper per evaluation (fact
+/// 126 + 251 evaluations against 165 before, cheaper per evaluation (fact
 /// reads, not cone re-scans) but more of them. The residual blocked
-/// completions (24/12/34) are the pull's own layered discovery of the edge
+/// completions (24/12/26) are the pull's own layered discovery of the edge
 /// facts, which no formulation avoids: a cone cannot be known before it is
 /// walked.
+///
+/// fz-kdt.183 lowered enum_take_drop_split's component row from (134, 34) to
+/// (126, 26): `derive_input_demand` waits on `StaticCallees` before it walks
+/// anything, so the edge facts a component walk needs are already demanded
+/// when it starts and eight of its restarts never happen.
 const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 3] = [
     ("fixtures2/behavior/fz_f98_range_map_converges.fz", 62, 24, 101, 51),
     ("fixtures2/behavior/enum_predicate_search.fz", 73, 12, 142, 75),
-    ("fixtures2/behavior/enum_take_drop_split.fz", 134, 34, 251, 129),
+    ("fixtures2/behavior/enum_take_drop_split.fz", 126, 26, 251, 129),
 ];
 
 /// fz-kdt.56: recursion is answered from the call graph's edge facts, so
@@ -1218,12 +1223,30 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        activations: lifecycle(71, 74, 5),
-        callsites: lifecycle(73, 75, 2),
-        shifts: shifts(17, 19),
-        analyze_evaluations: 226,
-        analyze_zero_change: 13,
-        total_evaluations: 907,
+        // fz-kdt.183: 71 -> 72 distinct with one FEWER retraction (5 -> 4),
+        // first appearances flat. The withdrawn key was a joined one that
+        // stopped being reachable once the demanded list element split its
+        // two users apart; nothing new is minted, one thing stops being
+        // unminted.
+        activations: lifecycle(72, 74, 4),
+        // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
+        // retractions flat -- the recovered activation brings its call edge.
+        callsites: lifecycle(74, 76, 2),
+        // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
+        // The RISING row of this landing, and the cause is that `InputDemand`
+        // is now a fact that MOVES: the forwarded demand of a function whose
+        // cone is still filling in climbs the lattice, and every activation
+        // keyed off it rebases when it does. It is bounded by the lattice
+        // height (a slot rises at most twice) and it buys the split this
+        // ticket is for; fz-kdt.196 owns whether the demand can be settled
+        // before the first key is minted.
+        shifts: shifts(30, 127),
+        // fz-kdt.183: 226 -> 230 evaluations, 13 -> 14 reproducing an answer
+        // they already had -- four more runs for the rebasing above, and
+        // `uncaused` stays empty, so every one of them names a moved input.
+        analyze_evaluations: 230,
+        analyze_zero_change: 14,
+        total_evaluations: 1009,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -1234,14 +1257,25 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // so the `reduce_while/3` chain keys the capture-free `Enum.all?/1`
         // and `any?/1` wrappers apart from the capture-bearing `all?/2` and
         // `any?/2` ones. Two more activations, no retractions.
-        activations: lifecycle(175, 175, 0),
+        // fz-kdt.183: 175 -> 179. The demanded list element splits four
+        // reducer activations that used to share one joined key; no
+        // retractions, so nothing stopped being published.
+        activations: lifecycle(179, 179, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
         // fz-kdt.127: 212 -> 215 distinct (245 -> 248 first appearances,
         // retractions flat): the two new activations bring their edges.
-        callsites: lifecycle(215, 248, 33),
-        shifts: shifts(1, 2),
+        // fz-kdt.183: 215 -> 219 distinct (248 -> 252 first appearances,
+        // retractions flat): the four new activations bring their edges.
+        callsites: lifecycle(219, 252, 33),
+        // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
+        // `InputDemand` is a fact that MOVES -- a function whose forwarding
+        // cone is still filling in publishes a demand that climbs the lattice,
+        // and every activation keyed off it rebases when it does. Bounded by
+        // the lattice height; fz-kdt.196 owns settling the demand before the
+        // first key is minted.
+        shifts: shifts(5, 22),
         // fz-kdt.105: 553 -> 552. Canonical clause order at the interner
         // makes one more re-derived union reproduce its previous id instead
         // of minting a permuted twin, so one AnalyzeActivation run that used
@@ -1253,7 +1287,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.127: 539 -> 538. One analysis run fewer: the reducer column
         // that used to arrive as one erased arrow and be re-derived when the
         // second wrapper joined it now arrives already split.
-        analyze_evaluations: 538,
+        // fz-kdt.183: 538 -> 549 evaluations. Eleven runs for four new
+        // activations and the rebasing above; `uncaused` stays empty, so every
+        // one of them names a moved input.
+        analyze_evaluations: 549,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -1263,11 +1300,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // See the header: one formula's ascent shortened 18 -> 9 runs and
         // its last run reproduces the answer.
         // fz-kdt.106: 6 -> 1, against a denominator that fell 552 -> 539.
-        analyze_zero_change: 1,
+        // fz-kdt.183: 1 -> 3, against a denominator that rose 538 -> 549.
+        analyze_zero_change: 3,
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
         // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
-        total_evaluations: 1349,
+        // fz-kdt.183: 1349 -> 1381.
+        total_evaluations: 1381,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -1286,7 +1325,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // the same chain: capture-free `take_positive`/`drop_positive` key
         // apart from `take_every`/`drop_every`, which close over the step.
         // Eight more activations, no retractions.
-        activations: lifecycle(258, 258, 0),
+        // fz-kdt.183: 258 -> 259. One reducer activation splits off the
+        // joined key; no retractions.
+        activations: lifecycle(259, 259, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -1302,7 +1343,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.127: 425 -> 434 distinct (441 -> 450 first appearances,
         // retractions flat): the eight new activations bring their edges.
         callsites: lifecycle(434, 450, 16),
-        shifts: shifts(6, 10),
+        // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
+        // the moving `InputDemand` fact, same cause as on
+        // `enum_predicate_search` above.
+        shifts: shifts(25, 77),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
         // the same change bought: the accumulator that used to widen to
@@ -1324,9 +1368,12 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // runs for eight new activations, and one FEWER reproduces an answer
         // it already had: the split reducer columns arrive settled instead of
         // being re-derived as the second lambda joins them.
-        analyze_evaluations: 890,
-        analyze_zero_change: 8,
-        total_evaluations: 2385,
+        // fz-kdt.183: 890 -> 900 evaluations, 8 -> 16 reproducing an answer
+        // they already had, total 2385 -> 2423. The rebasing above is the
+        // whole of it; `uncaused` is empty.
+        analyze_evaluations: 900,
+        analyze_zero_change: 16,
+        total_evaluations: 2423,
     },
 ];
 
@@ -1417,7 +1464,7 @@ const CONTRACT_CALLEE_SOURCE: &str =
 
 /// The function-keyed facts a completion reports itself blocked on, as
 /// `"Kind(function_id)"` — kind plus `function_id` is the whole identity the
-/// public stream renders for `FunctionContract`/`Recursive`/`DispatchMask`.
+/// public stream renders for `FunctionContract`/`Recursive`/`InputDemand`.
 fn blocked_function_facts(completion: &serde_json::Value) -> std::collections::HashSet<String> {
     let Some(blocked) = completion.get("blocked").and_then(|v| v.as_array()) else {
         return std::collections::HashSet::new();
@@ -1447,7 +1494,7 @@ fn function_id_named(trace: &PublicTrace, label: &str) -> u64 {
 ///
 /// Before a call to `M.helper/1` can resolve, the callee's contract must be
 /// applied to the surface AND the facts that key its activation
-/// (`Recursive`, `DispatchMask`) must exist. When the analysis first reaches
+/// (`Recursive`, `InputDemand`) must exist. When the analysis first reaches
 /// the callsite none of the three is there yet. Waits are AND-satisfied, so
 /// naming all three in one completion costs exactly one block and one wake;
 /// asking for the contract alone and reaching the keying facts only on the
@@ -1466,7 +1513,7 @@ fn an_analysis_asks_for_a_callees_contract_and_keying_facts_in_one_block() {
     );
 
     let helper = function_id_named(&trace, "M.helper/1");
-    let prerequisites = ["FunctionContract", "Recursive", "DispatchMask"]
+    let prerequisites = ["FunctionContract", "Recursive", "InputDemand"]
         .into_iter()
         .map(|kind| format!("{kind}({helper})"))
         .collect::<std::collections::HashSet<_>>();

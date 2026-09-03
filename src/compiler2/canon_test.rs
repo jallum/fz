@@ -401,12 +401,12 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
             include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-            59,
+            60,
         ),
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            206,
+            166,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",

@@ -874,6 +874,35 @@ three schedule-movers (`00277_enum_tier0_fixture`, `enum_map_family`,
 Re-measured at fz-kdt.107 step 3: the four lenses are byte-identical still, and
 the census is unchanged at three.
 
+**The schedule sweep recipe.** The perturbation above permutes ARM order; the
+agenda's own order is a second axis, and it is measured by rebuilding with
+`Agenda::pop` flipped from `pop_front` to `pop_back` (`compiler2/agenda.rs`) and
+comparing the two builds' canon dumps over the corpus (`fz2-fifo` is the
+unpatched binary, `fz2-lifo` the one built with `pop_back`):
+
+    for fixture in fixtures2/*.fz fixtures2/behavior/*.fz; do
+      fz2-fifo interp --dump backend=fifo/$(basename $fixture).canon "$fixture" >/dev/null 2>&1
+      fz2-lifo interp --dump backend=lifo/$(basename $fixture).canon "$fixture" >/dev/null 2>&1
+    done
+    for f in fifo/*.canon; do cmp -s "$f" "lifo/$(basename $f)" || echo "MOVER $f"; done
+    grep -c '^ *key ' fifo/*.canon | awk -F: '{s+=$2} END {print "executables", s}'
+
+A fixture that moves is one whose artifact the agenda decided; a total
+executable count that differs between the two is the same finding read program-
+wide. Both are answers no schedule may choose.
+
+Re-measured at fz-kdt.183 (597 fixtures, 469 backend dumps, FIFO against a build
+with `Agenda::pop` flipped to `pop_back`): TWO movers before the landing
+(`00277_enum_tier0_fixture` and `dead_closure_capture_empty_list`; the
+`enum_map_family` reading had already retired), ONE after
+(`dead_closure_capture_empty_list` alone). The emitted executable count stops
+depending on the schedule with it: 5,297 under FIFO against 5,298 under LIFO
+before, 5,282 under both after. Both readings have the same cause — a
+`List.reduce_*` activation that stood for two users over an element its key did
+not name published whichever return the schedule delivered first — and the one
+that remains is the empty-list ambiguity: `list_element_type([])` is `none`,
+so an accumulator seeded with `[]` publishes no element evidence of its own.
+
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`
 carries the existing impl `CallTarget`, return flow, and extern marshal facts

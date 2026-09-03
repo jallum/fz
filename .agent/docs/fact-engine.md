@@ -137,7 +137,7 @@ Every ask a run can already name belongs in the same pass.
 `require_callee_prerequisites` (`jobs/semantic.rs`) is that shape: before a
 call surface is refined, the callee's `FunctionContract` (when it declares
 one) and the facts its activation key is built from (`Recursive`,
-`DispatchMask`) register in one pass, so a caller holding none of them blocks
+`InputDemand`) register in one pass, so a caller holding none of them blocks
 once. Registering them a rung apart cost 65/30/33 of the 72/43/37 zero-change
 `AnalyzeActivation` evaluations on the three measured fixtures; folding the
 ask left 6/13/4 and moved no emitted byte (fz-kdt.86).
@@ -389,7 +389,7 @@ ascent; the drain is where it is discharged.
 demand-driven: it answers the exact settled questions something is actually
 asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`),
 a product pull's awaited fact (`product_drive::drive_product_fact_wait`), and
-the root-entry gate's direct `Recursive`/`DispatchMask` queries
+the root-entry gate's direct `Recursive`/`InputDemand` queries
 (`demand_root_entry_analyses`). Nothing else is arbitrated. One arbitrated
 fact discharges a whole quiesced cycle, because clearing it makes it quiet and
 the ordinary wave carries that through every publisher that was only waiting on

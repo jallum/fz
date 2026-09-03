@@ -777,7 +777,14 @@ impl Types {
     /// fz-y6w termination holds. Depth is capped: past `ADDRESS_COLLAPSE_DEPTH`
     /// nested addressing steps the element tops out at `any` (the earned depth ⊤)
     /// so a self-nesting list can never grow the address path without bound.
-    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep]) -> Ty {
+    ///
+    /// `keep_elements` says DEMAND reached this position (fz-kdt.183): the value
+    /// here is one some body on the forwarding chain asks about, so its own
+    /// structure decides which callee activation -- and therefore which return
+    /// -- this key names, and a ground element is the key's meaning rather than
+    /// freight. It is set only under a demanded list's element; every other
+    /// caller passes `false` and gets the freight collapse unchanged.
+    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], keep_elements: bool) -> Ty {
         const ADDRESS_COLLAPSE_DEPTH: usize = 8;
         let descr = self.descr(a).clone();
         if descr.is_pure_list_family() {
@@ -787,7 +794,13 @@ impl Types {
             }
             let mut child = path.to_vec();
             child.push(AddrStep::Elem);
-            let elem = self.address_var(&child);
+            let elem = if keep_elements {
+                let elem_descr = list_element_type(self.ctx(), &descr);
+                let elem = self.intern(elem_descr);
+                self.convergence_class_at(&elem, &child, true)
+            } else {
+                self.address_var(&child)
+            };
             self.list(elem)
         } else if descr.is_pure_callable() {
             // A clause-less `fun_top` is the unresolvable fallback; the address
@@ -802,7 +815,7 @@ impl Types {
                 .map(|(j, elem)| {
                     let mut child = path.to_vec();
                     child.push(AddrStep::Field(j as u16));
-                    self.convergence_class_at(elem, &child)
+                    self.convergence_class_at(elem, &child, keep_elements)
                 })
                 .collect::<Vec<_>>();
             self.tuple(&elems)
@@ -810,7 +823,7 @@ impl Types {
             let payload = resource.payload;
             let mut child = path.to_vec();
             child.push(AddrStep::Payload);
-            let payload = self.convergence_class_at(&payload, &child);
+            let payload = self.convergence_class_at(&payload, &child, keep_elements);
             self.resource(payload)
         } else if let Some(map) = descr.pure_map() {
             let fields = map
@@ -820,20 +833,38 @@ impl Types {
                 .map(|(j, (key, value))| {
                     let mut child = path.to_vec();
                     child.push(AddrStep::MapField(j as u16));
-                    (key.clone(), self.convergence_class_at(value, &child))
+                    (key.clone(), self.convergence_class_at(value, &child, keep_elements))
                 })
                 .collect::<Vec<_>>();
             self.map(&fields)
+        } else if keep_elements && self.has_vars(a) {
+            // A kept leaf that still carries a free variable is replaced by the
+            // canonical address var for its position, never kept verbatim: the
+            // collapsed arrow must be canonically ADDRESSED so re-addressing it
+            // through `address_inputs` is the identity (fz-hwn.27,
+            // fz-go4.18.3.2.1). Ground leaves are the key's meaning and survive.
+            self.address_var(path)
         } else {
             *a
         }
     }
 
-    /// Derive a recursive activation's dispatch KEY from its precise evidence
-    /// arrow by widening every non-dispatch subtree to its convergence class, so
-    /// the recursive ascent settles (fz-y6w bounded specialization:
-    /// `list(int)` and `list(any)` share one recursive key). Dispatch demand is
-    /// type-shaped: a tuple tag can remain precise while its payload collapses.
+    /// Derive a recursive activation's KEY from its precise evidence arrow by
+    /// widening every UNDEMANDED subtree to its convergence class, so the
+    /// recursive ascent settles (fz-y6w bounded specialization). The mask is
+    /// `InputDemand::forwarded_dispatch`: what this body asks about a slot,
+    /// joined with what every callee it forwards the slot to asks (fz-kdt.183).
+    /// Demand is type-shaped: a tuple tag can remain precise while its payload
+    /// collapses.
+    ///
+    /// `list(int)` and `list(any)` share one recursive key only where the list
+    /// is FREIGHT -- nothing on the forwarding chain reads it. A list some body
+    /// downstream splits into head and tail keeps its element, because the
+    /// element decides which callee activation is reached and therefore what
+    /// this activation publishes as its return. A `Whole` slot has no collapse
+    /// at all, and forwarding can hand a `Whole` up from a callee that tests a
+    /// literal; fz-y6w's termination argument does not cover a slot with no
+    /// collapse.
     ///
     /// This is ONE whole-arrow operation on the interned arrow (fz-hwn.27.7) — it
     /// replaces a per-input `convergence_class` pre-pass run before the inputs
@@ -871,6 +902,11 @@ impl Types {
     /// [`convergence_collapse`], no slot becomes an address var: this erasure
     /// is value-language throughout, so nothing key-shaped can leak into
     /// evidence.
+    ///
+    /// The mask is `InputDemand::local_dispatch`, never the forwarded half: the
+    /// question is "does a clause of THIS body test this slot", and a body that
+    /// merely hands a callable to a callee that tests it still cannot tell two
+    /// same-shape lambdas apart itself (fz-kdt.183).
     pub(crate) fn erase_transported_closure_identities(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;
@@ -919,7 +955,7 @@ impl Types {
                 // The EVIDENCE path keeps a var-bearing pure callable verbatim and
                 // collapses every other var-bearing type to its (path-blind) class.
                 if collapse_concrete_ignored {
-                    self.convergence_class_at(&ty, path)
+                    self.convergence_class_at(&ty, path, false)
                 } else if self.has_vars(&ty) && !self.descr(&ty).is_pure_callable() {
                     self.convergence_class(&ty)
                 } else {
@@ -997,7 +1033,17 @@ impl Types {
         if collapse_concrete_ignored {
             let elem_descr = list_element_type(self.ctx(), &d);
             let elem = self.intern(elem_descr);
-            let elem = self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored);
+            // Demand reached this list's SHAPE, so the element is meaning, not
+            // freight -- at every depth, because nothing here can say how far
+            // down the forwarding chain that reads it looks (fz-kdt.183). An
+            // element the demand names further (`ListShape(Whole)`, a tuple
+            // field) is still collapsed by that demand; an element it stops at
+            // is KEPT.
+            let elem = if matches!(elem_demand, DispatchDemand::Ignore) {
+                self.convergence_class_at(&elem, &child, true)
+            } else {
+                self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored)
+            };
             return self.list(elem);
         }
         for conj in &mut d.lists {
@@ -1015,7 +1061,7 @@ impl Types {
     /// path-blind class (its earned ⊤).
     fn convergence_collapse_ignored_leaf(&mut self, ty: &Ty, path: &[AddrStep], collapse_concrete_ignored: bool) -> Ty {
         if collapse_concrete_ignored {
-            self.convergence_class_at(ty, path)
+            self.convergence_class_at(ty, path, false)
         } else {
             self.convergence_class(ty)
         }
