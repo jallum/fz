@@ -4,7 +4,6 @@
     "fz-tfn.7"
   ],
   "blocks": [
-    "fz-tfn.1",
     "fz-tfn.10"
   ],
   "created": "2026-09-03T08:00:21Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Replace the executable-effect cone mini-compiler with reactive formulas",
   "type": "task",
-  "updated_at": "2026-09-03T08:06:18Z"
+  "updated_at": "2026-09-03T08:06:29Z"
 }
