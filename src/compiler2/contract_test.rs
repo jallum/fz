@@ -892,3 +892,151 @@ fn ground_union_input_with_an_uncovered_member_still_violates() {
         "a union member no arrow covers is a violation, set coverage must not mask it"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PINNED VERDICTS at the CONTRACT level (fz-kdt.192). `ArrowMatch::Invalid`
+// is a per-CLAUSE verdict; whether the CALL is legal is decided by
+// `FunctionContract::apply` over the clause SET. These record what apply()
+// does with the rows a witness that is the argument sends to the fallback.
+// ---------------------------------------------------------------------------
+
+fn clause(
+    params: Vec<crate::compiler2::types::Ty>,
+    result: crate::compiler2::types::Ty,
+) -> ResolvedSpecDecl<crate::compiler2::types::Ty> {
+    ResolvedSpecDecl {
+        params,
+        result,
+        constraints: HashMap::new(),
+    }
+}
+
+/// C1. A two-clause POLYMORPHIC contract whose clause domains carry a
+/// variable, applied to an argument covered member-by-member across the two
+/// clauses. `f({int, a}) :: a` and `f({binary, a}) :: a` at
+/// `{int | binary, int}`: every runtime value of that argument type is
+/// accepted by exactly one clause, so the call is legal and must be
+/// SATISFIED. Neither clause accepts the whole argument, so both answer
+/// `Invalid` once a witness is the argument and only arrow-SET coverage can
+/// rescue the row — which it does by reading each var-carrying clause domain
+/// at `any` (fz-kdt.192). The refinement rows are empty: the fallback narrows
+/// each argument into a clause domain and a var-carrying position narrows to
+/// nothing, so the call learns that it is legal and learns no input type from
+/// it. `.kdt192/fx/c1c.fz`, promoted to `fixtures2/behavior/`, is this shape
+/// end to end.
+///
+/// The same source at the pattern-derived witness answered satisfied through
+/// a different door: each clause restated the argument into its own domain
+/// and matched vacuously, reporting `rows=[{int, int} | {binary, int}]
+/// result=int` — refinement bought with an unsound per-clause accept.
+#[test]
+fn kdt192_c1_polymorphic_clause_set_coverage() {
+    let mut types = Types::new();
+    let a = types.type_var(TypeVarId(0));
+    let int = types.int();
+    let str_t = types.str_t();
+    let int_row = types.tuple(&[int, a]);
+    let str_row = types.tuple(&[str_t, a]);
+    let c1 = clause(vec![int_row], a);
+    let c2 = clause(vec![str_row], a);
+    let contract = FunctionContract::from_resolved(&mut types, vec![c1, c2]);
+
+    let mixed = types.union(int, str_t);
+    let arg = types.tuple(&[mixed, int]);
+    let applied = contract.apply(&mut types, &[arg]);
+    let rows: Vec<String> = applied
+        .matched_arrows
+        .iter()
+        .map(|row| row.iter().map(|ty| types.display(ty)).collect::<Vec<_>>().join(", "))
+        .collect();
+    assert_eq!(
+        format!(
+            "enforceable={} satisfied={} enforceable_satisfied={} rows=[{}] result={}",
+            applied.enforceable,
+            applied.satisfied,
+            applied.enforceable_satisfied,
+            rows.join(" | "),
+            applied.result.map(|r| types.display(&r)).unwrap_or("-".to_string())
+        ),
+        "enforceable=true satisfied=true enforceable_satisfied=true rows=[] result=-",
+        "C1 polymorphic clause-set coverage"
+    );
+}
+
+/// C2. C1's control: the SAME shape with GROUND clause domains, where the
+/// fallback always could rescue the call. A ground row narrows positionally,
+/// so unlike C1 this one also learns both refinement rows.
+#[test]
+fn kdt192_c2_ground_clause_set_coverage() {
+    let mut types = Types::new();
+    let int = types.int();
+    let str_t = types.str_t();
+    let int_row = types.tuple(&[int, int]);
+    let str_row = types.tuple(&[str_t, int]);
+    let c1 = clause(vec![int_row], int);
+    let c2 = clause(vec![str_row], int);
+    let contract = FunctionContract::from_resolved(&mut types, vec![c1, c2]);
+
+    let mixed = types.union(int, str_t);
+    let arg = types.tuple(&[mixed, int]);
+    let applied = contract.apply(&mut types, &[arg]);
+    assert_eq!(
+        format!(
+            "satisfied={} enforceable_satisfied={} rows={}",
+            applied.satisfied,
+            applied.enforceable_satisfied,
+            applied.matched_arrows.len()
+        ),
+        "satisfied=true enforceable_satisfied=true rows=2",
+        "C2 ground clause-set coverage"
+    );
+}
+
+/// C3. An UNINHABITED argument at a polymorphic contract. `none` is a row no
+/// runtime call can supply -- dead code -- and every clause answers `Invalid`.
+/// The empty product is a subset of every domain, so arrow-SET coverage
+/// accepts it and no violation is diagnosed for code that cannot run. Before
+/// arrow_set_covers read var-carrying domains at `any` this answered
+/// UNSATISFIED while its ground twin C4 answered satisfied: whether dead code
+/// was diagnosed depended on whether the spec was polymorphic (fz-kdt.192).
+#[test]
+fn kdt192_c3_none_argument_polymorphic_contract() {
+    let mut types = Types::new();
+    let a = types.type_var(TypeVarId(0));
+    let list_a = types.list(a);
+    let c1 = clause(vec![list_a], a);
+    let contract = FunctionContract::from_resolved(&mut types, vec![c1]);
+
+    let none = types.none();
+    let applied = contract.apply(&mut types, &[none]);
+    assert_eq!(
+        format!(
+            "satisfied={} enforceable_satisfied={}",
+            applied.satisfied, applied.enforceable_satisfied
+        ),
+        "satisfied=true enforceable_satisfied=true",
+        "C3 none argument, polymorphic contract"
+    );
+}
+
+/// C4. The same uninhabited argument at a GROUND contract: C3's control. The
+/// two must agree, and do.
+#[test]
+fn kdt192_c4_none_argument_ground_contract() {
+    let mut types = Types::new();
+    let int = types.int();
+    let list_int = types.list(int);
+    let c1 = clause(vec![list_int], int);
+    let contract = FunctionContract::from_resolved(&mut types, vec![c1]);
+
+    let none = types.none();
+    let applied = contract.apply(&mut types, &[none]);
+    assert_eq!(
+        format!(
+            "satisfied={} enforceable_satisfied={}",
+            applied.satisfied, applied.enforceable_satisfied
+        ),
+        "satisfied=true enforceable_satisfied=true",
+        "C4 none argument, ground contract"
+    );
+}

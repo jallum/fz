@@ -40,6 +40,16 @@ Compiler2 owns the active contract path:
   their result is the union of per-clause results on positionally narrowed
   arguments — `(int | float, int)` satisfies `+/2`'s `(int, int)` and
   `(float, int)` arrows jointly and yields `int | float`.
+- Coverage reads a VAR-CARRYING clause domain at `any`. A clause variable
+  still free after its bounds are closed accepts anything, so that is the
+  clause's domain: `pick({integer, a})` covers `{integer, any}`. Together with
+  `pick({binary, a})` it covers every member of `{binary, int} | {int, int}`,
+  which no single clause accepts — a witness is the argument, so neither clause
+  accepts a union spanning both. A polymorphic clause set that could rescue no
+  row at all would diagnose that legal program as a spec violation
+  (`fixtures2/behavior/spec_polymorphic_clause_set_coverage.fz`). Narrowing a
+  covered row into a clause domain leaves a var-carrying position untouched, so
+  such a call learns that it is legal and learns no input refinement from it.
 - Arrow matching (`Types::match_arrow`) handles union parameters structurally:
   a union of tuples with DIFFERENT arities matches a witness against the
   alternative of the witness's own width, and a kind collector (tuple, list,

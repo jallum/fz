@@ -177,12 +177,14 @@ foo(x, y, z)  vs  foo(a, {b, c}, d):
   yes — y binds the tuple, a1_0/a1_1 stay free → Underconstrained
 ```
 
-`match_arrow` first computes per-parameter `overlapping_witnesses` (arity
-mismatch or a disjoint parameter → `Invalid`), then `instantiate_match` collects
-a substitution `Sigma` **one position at a time**, cleans that position, and
-unions it in. Five behaviors live here that the boolean subsumption surface
-(`key_subsumes_with`) cannot express, and are the reason contract matching is
-this calculator rather than that one:
+`match_arrow` checks arity and then `instantiate_match` walks `(params, args)`
+**once**, collecting a substitution `Sigma` one position at a time, cleaning
+that position, and unioning it in. A position's WITNESS is its ARGUMENT: what
+the call actually supplied there, never the pattern restated. An uninhabited
+argument is a row no call can supply and is `Invalid`; ground disjointness is
+the structural gate's job, at the end of the walk. Five behaviors live here that
+the boolean subsumption surface (`key_subsumes_with`) cannot express, and are
+the reason contract matching is this calculator rather than that one:
 
 1. the `Known`/`Underconstrained`/`Invalid` trichotomy, not a bool;
 2. union-on-rebind (`merge_subst_union`) — a variable binding several witnesses
@@ -192,9 +194,32 @@ this calculator rather than that one:
 5. ambiguous empty-list witnesses (`drop_ambiguous_empty_list_bindings`): `[]`
    is a member of every list type, so a binding it pins is noise and is dropped.
 
+A witness is an OBSERVATION. The alternative — the pattern instantiated by
+whatever the argument happened to pin — is not a smaller observation but a
+different object, and it is wrong in both directions. It writes the pattern's
+own unbound variables back in: `(a, b) -> b` observing `(binary, int) -> int`
+comes back as `(a, int) -> int` and `binary` is unrecoverable by anything
+downstream. And it replaces whatever the argument said wherever the pattern is
+ground: `{int, a}` observing `{int | binary, binary}` comes back as
+`{int, binary}`, so the per-position check `witness ⊆ instantiate(pattern,
+closed)` compares `{int, binary}` against `{int, binary}` and accepts a call
+that must be rejected. The check means `W ⊆ σ(P)` only because `W` is the
+argument, so a witness is never narrowed toward its pattern, and a var-carrying
+argument cannot arm the check because the observation carries its variables
+honestly. Narrowing into a clause domain is a decision one level up, at
+`FunctionContract::apply`'s coverage fallback.
+
 The ambiguity in (5) belongs to the **witness**, not to the variable, which is
 why the substitution is collected and cleaned per position before (2) unions it
-in. `([a], [a])` applied to `([int], [])` learns `a = int` from the first
+in. The cleaner asks the COLLECTOR which variables one `[]` bound rather than
+re-deriving them, because `[]` has no element for `collect_instantiation_subst`
+while `list_element_type` reads it as `none`: two readings of one fact is one
+reading too many, and they disagreed. It descends a tuple position through the
+same positive alternatives the collector pairs, so a mixed-arity tuple union
+(`{:done, a} | {:suspended, a, cont}` observing `{:done, []}`) is descended
+rather than skipped for being narrower than the pattern's widest arity.
+
+`([a], [a])` applied to `([int], [])` learns `a = int` from the first
 parameter and nothing from the second, and answers `Known` with both parameters
 `[int]`. A variable *every* position leaves ambiguous simply never enters
 `Sigma`, so it stays free and the verdict is honestly `Underconstrained` — the
@@ -202,6 +227,15 @@ parameter and nothing from the second, and answers `Known` with both parameters
 discard what another position proved: `[a]` would collapse to `[]`, and a good
 `[int]` argument would be narrowed to the empty list by `refine_contract_inputs`
 (whose empty-intersection fallback does not fire, because `[]` is not empty).
+
+The veto's scope is the **parameter**, so folding the same constraint into one
+tuple parameter loses precision that spreading it over two keeps: `([a], [a])`
+at `([], [int])` answers `Known [int]`, while `{[a], [a]}` at `{[], [int]}`
+answers `Underconstrained` — one `[]` inside the tuple vetoes `a` for the whole
+position, including the sibling field that proved `int`. The two shapes state
+the same constraint and give different answers. The cleaner is what carries the
+scope; marking ambiguity at the moment of binding removes both the scope and the
+disagreement.
 
 `ContractArrow::apply` is then a thin loop: for each clause, read
 `arrow_params`/`arrow_result`, call `match_arrow` with the bounds sidecar, and

@@ -1327,7 +1327,25 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // Eight more activations, no retractions.
         // fz-kdt.183: 258 -> 259. One reducer activation splits off the
         // joined key; no retractions.
-        activations: lifecycle(259, 259, 0),
+        // fz-kdt.192: 259 -> 256. A FALL. A parameter position now observes
+        // its ARGUMENT rather than the pattern restated, so the empty-list
+        // veto reads the `[]` the call really supplied. On this fixture
+        // exactly eight callsite rows change verdict and every one falls
+        // `Known` -> `Underconstrained`; no row rises. Four are
+        // `List.reduce_while_step/3`, whose `{:cont, b} | {:halt, c}`
+        // accumulator arrives as `{:cont, [int]} | {:halt, []}`: that `[]`
+        // used to pin `c = []` and the row claimed `result = [] | [int]` as a
+        // runtime fact, and `c` is now honestly free. Four are tuple
+        // parameters -- `{[a], [a]}` twice, `{[a], [a], int}` once and
+        // `{[a], :false | :true}` once -- where the `[]` one field or one
+        // union alternative supplies vetoes `a` for the WHOLE position and
+        // discards the `[int]` its sibling proved (fz-f98.16's D3, a precision
+        // loss). A row that no longer reports a narrowed parameter surface
+        // refines no caller input, so three fewer distinct activation keys are
+        // minted. The two causes are independent and they compose: 183 adds
+        // one activation by splitting a joined key, this removes three by not
+        // publishing a narrowed surface.
+        activations: lifecycle(256, 256, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -1342,10 +1360,15 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // its edge for the round the previous rung is displaced in.
         // fz-kdt.127: 425 -> 434 distinct (441 -> 450 first appearances,
         // retractions flat): the eight new activations bring their edges.
-        callsites: lifecycle(434, 450, 16),
+        // fz-kdt.192: 434 -> 430 distinct (450 -> 445 first appearances,
+        // 16 -> 15 retractions). The three vanished activations take their
+        // edges, and one callsite no longer withdraws an edge for a round.
+        callsites: lifecycle(430, 445, 15),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
-        // `enum_predicate_search` above.
+        // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
+        // withdrawing a narrowed parameter surface changes which activation
+        // keys exist, not how often `InputDemand` moves under them.
         shifts: shifts(25, 77),
         // fz-kdt.105: 787 -> 805, zero-change 8 -> 13, total 2282 -> 2300. The
         // one RISING row in this landing, and it is the price of the precision
@@ -1371,9 +1394,13 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.183: 890 -> 900 evaluations, 8 -> 16 reproducing an answer
         // they already had, total 2385 -> 2423. The rebasing above is the
         // whole of it; `uncaused` is empty.
-        analyze_evaluations: 900,
-        analyze_zero_change: 16,
-        total_evaluations: 2423,
+        // fz-kdt.192: 900 -> 889 evaluations, total 2423 -> 2412, zero-change
+        // 16 -> 15. All FALLS, and the same cause as the activation row above:
+        // three fewer activations are three fewer analyses to run, and one
+        // fewer run reproduces an answer it already had.
+        analyze_evaluations: 889,
+        analyze_zero_change: 15,
+        total_evaluations: 2412,
     },
 ];
 
