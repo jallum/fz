@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T20:18:51Z",
+  "description": "## Proven problem\\n\\nDuring the fz-tfn.26 current-base 502-test fixture matrix, matrix::spec_violation::run failed once because its temporary telemetry file was missing under parallel execution. The isolated test passed unchanged and all later cases continued green. This is a test-harness file lifecycle race, not compiler semantics.\\n\\n## Goal\\n\\nMake every parallel fixture invocation the sole owner of a unique telemetry path from creation through final read and cleanup.\\n\\n## Strategy\\n\\nTrace path generation, child completion, telemetry flush/read, and cleanup. Encode uniqueness and lifetime at the harness boundary; do not mask missing files with retries or optional reads. Consider the existing parallel AOT archive race ticket only for shared patterns, not as ownership of this distinct telemetry failure.\\n\\n## TDD\\n\\nRun many concurrent spec_violation fixture invocations with asserted unique paths and complete readable telemetry after child completion, then stress the full parallel fixture matrix.\\n\\n## Acceptance\\n\\nNo missing, reused, prematurely removed, or partially read telemetry file under repeated parallel stress. No sleep, timeout increase, retry, ignored error, or compiler behavior change. Document the temp-artifact ownership contract.",
+  "id": "fz-tfn.29",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 4,
+  "status": "open",
+  "title": "Give parallel fixture telemetry files collision-free lifecycle ownership",
+  "type": "bug",
+  "updated_at": "2026-09-03T20:18:51Z"
+}
