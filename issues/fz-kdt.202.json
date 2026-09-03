@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T10:30:32Z",
+  "description": "From the fz-kdt.186 refutation (2026-09-03, accb5cfbe). types/mod.rs:2432\nruntime_type_predicate_tuple_arities removes a negated signature's ARITY\noutright, where the list axis (runtime_type_predicate_list_shapes) removes a\nshape only for an exact-empty / exact-non-empty negation. So the surface\n`{any, any} \u0026 not({int, int})` -- non-empty, it holds {:ok, :ok} -- projects\nto a RuntimeTypePredicate that admits nothing (`!p.overlaps(\u0026p)`), and since\nall three lowerings read one projection, an arm compiled for that surface\nemits a test that always fails: a live arm that never fires (a value in the\nsurface falls through to later arms or the fail node). Reproducer:\n    let carved = t.difference(t.tuple(\u0026[any, any]), t.tuple(\u0026[int, int]));\n    assert!(!t.is_empty(\u0026carved));\n    let p = t.runtime_type_predicate(\u0026carved);\n    assert!(!p.overlaps(\u0026p));       // admits NOTHING\nSame family: a ListShapes axis whose only head is `none` (the fz-kdt.186\nreview's P2), and brand_of(\"Z\") projecting to the all-none predicate\n(requires_any widens only cofinite brand sets; no production caller today).\nThis was the root of the hole the 186 refuter closed in the seat (an\nuntested self-blind position could separate a pair); the seat is now robust\nto it, the PROJECTION is not fixed. FIX: a same-arity negation must subtract\nper POSITION into the shape (the way the list axis subtracts only exact\nshapes), degrading to arity-only (over-approximate) when it cannot; never\nto empty. Red-first: the reproducer as a unit pin, and a three-door fixture\nwith a clause over a carved tuple surface. Also correct the stale\nfinite_set.rs:112-114 sentence (\"never to drop an arm or to justify a\nseat\" -- contained_in feeds test_inside, a drop conjunct since 143).\nCONCORDANCE: fz-kdt.146 (the list-clause degrade rule -- the honest\nprecedent this axis should follow), fz-kdt.107/119 (the tuple axis's\norigin), fz-kdt.186 (the seat made robust to it).",
+  "id": "fz-kdt.202",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] runtime_type_predicate_tuple_arities drops an arity for ANY same-arity negation: `{any, any} \u0026 not({int, int})` (non-empty) projects to the empty predicate, so a live arm compiles to a test that never fires",
+  "type": "task",
+  "updated_at": "2026-09-03T10:30:32Z"
+}
