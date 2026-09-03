@@ -13,11 +13,15 @@
     {
       "text": "fz-kdt.203 (2026-09-03): the brand slot is per-descriptor, so `utf8 | nil` loses the brand under fz-kdt.198. Checking a @spec RETURN that names a brand (the only interesting return check for brands) cannot be trusted until 203 puts the slot on each DNF clause. The non-brand half of 201 (a declared return whose kind the body does not meet) does not wait on 203.",
       "timestamp": "2026-09-03T11:05:25Z"
+    },
+    {
+      "text": "fz-kdt.198 landed (4c3fa4c63): the lattice now says `utf8 \u003c: binary`, so a checked return would be meaningful for the single-brand case; the union case still waits on fz-kdt.203. Related finding from the refutation, at base and here: callable DOMAINS are not checked at a @spec ARGUMENT position either -- `(integer) -\u003e int` is accepted where `(binary) -\u003e int` is declared, and so is the reverse (probes s9/s10 in the 198 research archive). That is the argument-side sibling of this ticket's return-side gap; filed as fz-kdt.207.\n",
+      "timestamp": "2026-09-03T12:39:46Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "[BUG] A @spec's declared RETURN is never checked against the body: `@spec pick(binary) :: integer; fn pick(b), do: b` is accepted and prints \"hi\"",
   "type": "task",
-  "updated_at": "2026-09-03T11:05:25Z"
+  "updated_at": "2026-09-03T12:39:46Z"
 }
