@@ -10,9 +10,15 @@
   "id": "fz-kdt.121",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "CLOSED-AS-REFUTED (2026-09-02), per its own text: fz-kdt.125 landed (the identity axis), and fz-kdt.127.1 went further -- the callable axis now names the construction (function + capture types), so the observable form of a closure column is its full literal, not an erasure. 00277's Range.reduce pair with different captured inner closures re-measured under the axis: two constructions, two questions, correct not to absorb. Nothing to build.",
+      "timestamp": "2026-09-03T00:02:09Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "REFUTED BY SEQUENCE: comparing callable columns through their runtime erasure inverts once the erasure itself is refuted",
   "type": "task",
-  "updated_at": "2026-09-01T20:59:53Z"
+  "updated_at": "2026-09-03T00:02:09Z"
 }
