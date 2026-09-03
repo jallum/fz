@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [
     "fz-kdt.4",
     "fz-kdt.47"
@@ -21,8 +21,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "[BUG] Make recursive-group discovery work reproducible across process hash seeds",
   "type": "bug",
-  "updated_at": "2026-09-03T07:52:13Z"
+  "updated_at": "2026-09-03T07:52:14Z"
 }
