@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.178"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.196"
+  ],
   "created": "2026-09-03T03:31:42Z",
   "description": "From the fz-kdt.144 cold review (2026-09-02, d2a5f3510) -- the largest\nfinding of the arc close. callsite_dispatch.rs dispatch_from_callable_flow_\nedges (~:484) builds PatternRows straight from flow.first_class_edges (the\nfz-kdt.108 canonical cmp_tys order, which is a CONTENT order, not a safety\norder) and calls pattern_dispatch_from_source; it never calls\nroutable_alternatives, so neither fz-kdt.143's drop (unroutable_\nalternatives) nor fz-kdt.129/131's covering seat (specificity_order) runs on\na wrapper's member selection. specificity_order has exactly two callers,\nboth in callsite_dispatch.rs (:107 the callsite path, :1505 a gate).\nMEASURED: 00277_enum_tier0_fixture, Enum.reverse(1..7//2, [:tail]) --\nwrapper w2's selection for Enum.reduce/3#lambda@439-517/2 tests\n  n8 empty_list() -\u003e n6 list(int) -\u003e n4 list(int | :tail) -\u003e n2 list(int | :tail)\nso the accumulator [1, :tail] passes list(int)'s head test and runs the body\ncompiled for [integer]. stdout is right on every door only because the\naccumulator lane is ValueRef in both bodies (boxed element access -- the\nfz-kdt.131 'correlation never proved', measured). The covering member exists\n(x23/x24 keyed list(int | :tail)); it is seated second. Under\nFZ_STRESS_PERMUTE_DISPATCH=wrappers:1/6/reverse the escape count is 0: the\nsettled order is the only escaping one (fz-kdt.147's shape on the list\naxis). Reproducer: FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP=1 fz2 interp\nfixtures2/00277_enum_tier0_fixture.fz 2\u003e\u00261 \u003e/dev/null | grep -c\n'surface-membership escape'  -\u003e 12 (after fz-kdt.144 lands).\nCURE: member selection is a dispatch like any other -- route the wrapper's\nmembers through routable_alternatives (drop + seat) with the member's\nobservable surface, and delete the direct row construction; the\nfz-kdt.108 body_id weld (selection row index == member index) must be\nre-derived from the seated order, not assumed. Acceptance: tripwire 0 on\n00277 at settled AND under every wrappers:/arms: setting; the widened static\ncensus (see the instrument ticket) green; canon movers classified; 0\nbehaviour movers on three doors.",
   "id": "fz-kdt.179",
@@ -31,5 +33,5 @@
   "status": "open",
   "title": "Construction-wrapper member selection bypasses the drop and the covering seat: dispatch_from_callable_flow_edges seats members in interner order",
   "type": "task",
-  "updated_at": "2026-09-03T07:22:43Z"
+  "updated_at": "2026-09-03T08:50:40Z"
 }

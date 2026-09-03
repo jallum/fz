@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.179"
+  ],
   "blocks": [],
   "created": "2026-09-03T08:50:39Z",
   "description": "Owner question (2026-09-03): is the static census a necessary evil to keep\nafter the fz-kdt arc? No, not in its current shape. The seating law -- no arm\nseated ahead of one whose surface it does not cover -- is a debug_assert\ninside specificity_order (every_inversion_covers), and the fixture matrix\ndrives every fixture through a debug build, so every call-edge plan is\nalready checked in production on every matrix run. The seat gate over\nARM_ORDER_CENSUS (22 fixtures) is redundant for call-edge plans TODAY and is\nnot redundant for wrapper member selection only because\ndispatch_from_callable_flow_edges bypasses specificity_order (fz-kdt.179).\nThe census gates cost ~120 s of every lib run (lib ~100 s -\u003e 221 s at\nfz-kdt.178; fz-kdt.195 counts the recompiles).\n\nAFTER fz-kdt.179 LANDS (members seated by the same relation, so the\nproduction debug_assert covers every plan kind the seat owns):\n1. DELETE compiler2_dispatch_seats_the_covering_arm_where_one_covers and\n   SELECTION_SEAT_ALLOWANCE (the allowance is 179's reproducer and empties\n   with it); the law's gate is the debug_assert plus the matrix.\n2. DELETE the corpus walk in compiler2_dispatch_lists_its_bodies_in_the_\n   graphs_first_match_order; keep the property as ONE unit test over a\n   constructed PatternDispatchPlan (it is a fact about compile_dispatch_\n   matrix, not about fixtures).\n3. COLLAPSE compiler2_dispatch_blind_escape_census_is_the_known_population\n   and compiler2_dispatch_offers_no_runtime_indistinguishable_arm into one\n   RESIDUE ratchet: the named pairs no seat can decide (fz-kdt.131 facet 3;\n   twins that survive 179), each compiled ONCE (fz-kdt.195's cache or a\n   fixture list that contains only residue carriers), with the arrival-\n   permutation drive (fz-kdt.141) run as an instrument when a dispatch rule\n   changes -- not on every lib run.\n4. KEEP the dynamic tripwire (env-gated, zero production cost) and its\n   15-row census; keep SOURCE_ORDER_PLANS_ON_THE_CENSUS only until fz-kdt.187\n   makes the entry class readable, then fold it into the residue ratchet.\n5. When fz-kdt.131's residue is cured, the ratchet asserts EMPTINESS on one\n   fixture per class or is deleted.\nCONCORDANCE: fz-kdt.195 (compile once per arrival -- a cost fix this ticket\nmostly makes unnecessary), fz-kdt.141 (the stress instrument stays), fz-\nkdt.131 (owns the residue the ratchet names), fz-kdt.78 (explicit gate\nownership per fixture), fz-kdt.179 (the prerequisite). Acceptance: lib wall\nclock back near its pre-178 figure with every law still held, and the\nmatrix's debug build stated as the seat law's gate in dispatch-matrix.md.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Retire the static seat census once member selection runs through the seat: the law lives in specificity_order's debug_assert, the census keeps only the named residue",
   "type": "task",
-  "updated_at": "2026-09-03T08:50:39Z"
+  "updated_at": "2026-09-03T08:50:40Z"
 }
