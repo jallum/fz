@@ -7,9 +7,15 @@
   "id": "fz-kdt.186",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "MEASURED AND PINNED (fz-kdt.178, 8de517a28). BLIND_ESCAPE_UNREACHABLE_PAIRS holds all 28 on 00277 w13-w19 (4 each): subject 0 asks a :tail head against an int head, which no value answers both ways, while subject 1 is the list behind it that no test reads. The census reader's separated_somewhere uses RuntimeTypePredicate::overlaps and mirrors production's covers exactly, so both readers change together. Two more facts for the fix: (a) under arms:6, enum_predicate_search's `[int | :nil] with [int]` at executable 201 is ALSO an unreachable pair, so one of fz-kdt.131's two seed-6 facet-3 pairs is fiction and only the executable-203 pair is real; (b) the refuter measured 00420_enum_take_drop_split and behavior/enum_take_drop_split at 0 unreachable-pair readings (the first cut's \"215\" did not exist); they are in the census with 4 reachable seat findings each, so the corpus's 45 reachable seat findings are all pinned. Sequence: before fz-kdt.179.",
+      "timestamp": "2026-09-03T07:22:44Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "covers judges each position with an all: a pair whose tests are DISJOINT at one position is still called blind at another, so 28 of 62 selection seat findings on 00277 are pairs no value can reach",
   "type": "task",
-  "updated_at": "2026-09-03T05:28:08Z"
+  "updated_at": "2026-09-03T07:22:44Z"
 }
