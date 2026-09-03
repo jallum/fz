@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T18:27:58Z",
+  "description": "Found by the fz-kdt.194 cold review (2026-09-03, base ca23b676f) while trying\nto verify a claim that AOT executable byte size was unchanged.\n\nTWO FACTS, measured over 23 AOT fixtures:\n1. The emitted executable EMBEDS THE COMPILING BINARY`S OWN PATH -- five\n   `N_OSO` entries in the string table. So two compilers built from different\n   worktrees (a base binary under `.kdt/base` and a head binary) emit\n   executables that differ in bytes for a fixture whose canonical form is\n   IDENTICAL. Any base-vs-head comparand over executable bytes or size is a\n   false mover by construction, and this bit several agents in this arc.\n2. AOT output is not byte-reproducible from ONE binary either.\n\nOn the path-independent comparand (excluding those entries) 2 of 23 `__text`\nsizes moved by +116 and +24 bytes, both on fixtures that were already settled\ncanon movers and both absorbed by page padding -- i.e. the real signal is tiny\nand was buried under the path noise. stdout and exit code md5 ARE identical on\nall 23.\n\nWHY IT MATTERS: the arc`s standing comparand is the `--dump backend=` canonical\nform (fz-f98.21), which is path-independent and faithful, and that is what\nevery gate should use. But reviewers reach for executable size as a\ncross-check, and today it silently lies. Either make the emitted executable\npath-independent (drop or normalise the N_OSO entries) or document that\nexecutable bytes are not a comparand and give the path-independent recipe.\n\nCONCORDANT: fz-kdt.54 (dump native/fnir are {:#?}, non-reproducible across\nprocesses -- the same family: an artifact rendering that is not a stable\ncomparand); fz-kdt.174 (closed: one binary emitted two different backend\nprograms cross-session); fz-f98.21 (the canonical form that IS the right\ncomparand).\n\nREPRODUCER: build the same commit in two worktrees at different paths, AOT-\ncompile any fixture with each, and diff the executables -- they differ; strip\nthe five N_OSO string-table entries and they agree except on genuine movers.",
+  "id": "fz-kdt.211",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "[BUG] The AOT executable is not byte-reproducible and embeds the compiler build path: 5 N_OSO string-table entries make any executable-size or byte comparand a false mover",
+  "type": "task",
+  "updated_at": "2026-09-03T18:27:58Z"
+}
