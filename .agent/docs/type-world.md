@@ -74,8 +74,6 @@ The keying and join logic lean on a few `Types` methods, each with a distinct jo
   a recursive activation key. The whole list family shares one class, including
   single shapes and joined empty/non-empty shapes; disjoint families (`int` vs a
   tagged tuple) stay distinct.
-- **`widen_for_recursive_spec_key(a)`** — the per-slot transform for a recursive
-  call key on slots that are *not* collapsed.
 - **`alpha_normalize_vars(a)`** — canonicalizes type-variable ids. Interning
   canonicalizes structure, not variable names, so inputs are alpha-normalized before
   they are stored, and alpha-equivalent shapes land on one id.

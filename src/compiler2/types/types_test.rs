@@ -1346,23 +1346,6 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
-            fn widen_for_recursive_spec_key_preserves_list_element_shape() {
-                let mut t = $ctor;
-                let one = t.int_lit(1);
-                let two = t.int_lit(2);
-                let elems = t.union(one, two);
-                let list = t.non_empty_list(elems);
-                let widened = t.widen_for_recursive_spec_key(&list);
-                let int = t.int();
-                let expected = t.non_empty_list(int);
-                assert!(
-                    t.is_equivalent(&widened, &expected),
-                    "recursive-spec widening should keep the list axis while widening element literals, got {}",
-                    t.display(&widened),
-                );
-            }
-
-            #[test]
             fn numeric_literals_in_type_position_mean_their_kind() {
                 // The lattice cannot express a numeric singleton: a literal
                 // constructor yields the kind itself, and no singleton is
@@ -1379,43 +1362,6 @@ macro_rules! semantic_helper_conformance_tests {
                 assert!(!t.is_singleton_lit(&one));
                 let ok = t.atom_lit("ok");
                 assert!(t.is_singleton_lit(&ok));
-            }
-
-            #[test]
-            fn widen_for_recursive_spec_key_preserves_callable_surface_shape() {
-                let mut t = $ctor;
-                let entries = {
-                    let one = t.int_lit(1);
-                    let two = t.int_lit(2);
-                    t.union(one, two)
-                };
-                let zero = t.int_lit(0);
-                let callable = {
-                    let lit = t.fn_ref_lit(ClosureTarget(19), 2);
-                    let surface = t.arrow(&[entries, zero], zero);
-                    t.intersect(lit, surface)
-                };
-                let widened = t.widen_for_recursive_spec_key(&callable);
-                let clauses = t
-                    .callable_value_clauses(&widened)
-                    .expect("widened callable clauses");
-                let clause = clauses.into_iter().next().expect("widened callable clause");
-                let int = t.int();
-                assert!(
-                    t.is_equivalent(&clause.args[0], &int),
-                    "recursive-spec widening should widen callable arg literals to integer, got {}",
-                    t.display(&clause.args[0]),
-                );
-                assert!(
-                    t.is_equivalent(&clause.args[1], &int),
-                    "recursive-spec widening should widen the accumulator literal to integer, got {}",
-                    t.display(&clause.args[1]),
-                );
-                assert!(
-                    t.is_equivalent(&clause.ret, &int),
-                    "recursive-spec widening should widen the callable return literal to integer, got {}",
-                    t.display(&clause.ret),
-                );
             }
         }
     };

@@ -190,11 +190,6 @@ pub trait Types {
     /// `map_field_lookup` to obtain the set-theoretic field type.
     fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey>;
 
-    /// fz-rh5.6 — transform `a` for use as a recursive-call spec key.
-    /// The planner owns the policy for when this is applied; the type
-    /// implementation owns the concrete widening transform.
-    fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty;
-
     /// Binary least-upper-bound in the **refinement lattice** — the
     /// finite-height widening join the specialization worklist uses to settle a
     /// recursive slot (`.agent/docs/type-specialization.md`). Distinct from
