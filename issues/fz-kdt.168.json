@@ -17,11 +17,15 @@
     {
       "text": "fz-kdt.143 LANDED (d2a5f3510); re-measure before building. (1) The a_mixed instance is STALE: fixtures2/behavior/a_mixed.fz has ZERO call-dispatch sites in the backend artifact at main a3a9761d1 and at 143's head alike (29 executables, 0 dispatch nodes, 0 arm lines; its one dispatch is List.reduce_cont/3's entry pattern dispatch, which callsite_dispatch does not own). The exact-vs-any closure pair named above is no longer a callsite dispatch to re-seat; census the corpus for the shape (a same-callee pair where covers(exact, wide) is false ONLY because erasing_overlap is symmetric) before deciding scope. (2) 143's drop is defined THROUGH covers, so a one-sided erasing_overlap un-drops such an exact arm with NO edit in callsite_dispatch.rs: covers(exact, any) becomes true, seats_before(exact, any) becomes true, the exact arm is kept and seated first (refuter-verified on the unit shape #3closure[#7closure[int]] vs #3closure[any]: dropped today, kept under a one-sided relation). Sequencing confirmed: 143 then 168.",
       "timestamp": "2026-09-03T02:44:55Z"
+    },
+    {
+      "text": "CENSUS at fz-kdt.143's head (d2a5f3510, 2026-09-02), whole corpus (597 fixtures, interp door), every OBLIGATION seat post-drop -- a pair of question groups where covers(y, x) holds and covers(x, y) does not -- with the position that forces it: SIX lines on THREE fixtures, and none is this ticket's shape.\n  enum_take_drop_split + 00420 twin: x = {:cont, {[int], int}} forced behind y = {:cont | :halt, {[int], int}} at positions 1 and 4 (tuple payload carrying a LIST, so the narrow test is lossy at the tail); the pair survives 143's drop because a callable position separates them (different reducer literals), so x is LIVE behind y and no one-sided relation changes that.\n  enum_predicate_search: x = [int] forced behind [int | :nil] and behind [int | :ok | :true] at position 0 -- list heads, lossy tails, and the seat is right to refuse ([1, :ok] would escape).\nSo a one-sided erasing_overlap would flip ZERO seats on the corpus today: no exact-narrow-vs-inexact-wide pair exists at any callsite (the callable exact-vs-any shape has no instance; a_mixed has 0 callsite dispatches). The principle stands (the hazard runs one way; CE-4 of the 143 review shows a unit-level exact closure arm dropped only for want of it) but it is UNMEASURABLE on the corpus and cannot move fz-kdt.131's five facet-3 pairs, which are all list-tail lossy on the narrow side. Removed from the arc-closing sequence; build when a corpus instance exists or when the projection learns to report losslessness (the cleaner cure: runtime_type_predicate returning whether the test admits anything outside the surface it was projected from, so covers(early, late) can skip the surface check wherever early is lossless).",
+      "timestamp": "2026-09-03T02:47:48Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "erasing_overlap is symmetric while the fz-kdt.131 hazard is one-sided: exact-vs-inexact arm pairs lose the exact specialization",
   "type": "task",
-  "updated_at": "2026-09-03T02:44:55Z"
+  "updated_at": "2026-09-03T02:47:48Z"
 }
