@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-09-03T08:44:59Z",
+  "close_reason": "Deleted AppliedStep output aggregation; tests now observe the scheduler claim ledger, with docs and full gates updated.",
   "created": "2026-09-03T08:00:18Z",
   "description": "## Goal\n\nDelete `AppliedStep.outputs` and the production work performed solely to populate it.\n\n## Evidence\n\n`Scheduler::complete` currently allocates an `OrderedSet` and clones every reported output into it on every completion. Production telemetry does not serialize or consume the field. The only reader is `drive_test::OutputCapture`. The representative 00420 trace contains 2,381 applied completions, so this test affordance is paid on the hot path thousands of times.\n\n## Strategy and proof\n\n1. Pin the existing output-observation tests against the authoritative standing claims in `World`.\n2. Move `OutputCapture` to that test-only observation boundary.\n3. Delete `AppliedStep.outputs`, its aggregation, and documentation claiming the completion owns an output-key set.\n4. Prove identical changed facts, wakes, movements, blocked uses, causal traces, semantic answers, and artifacts.\n5. Run focused scheduler/drive tests, the full library suite, fixture matrix, formatting, and clippy with warnings denied.\n\nDo not add a replacement production carrier. The surviving authority is the scheduler claim ledger.",
   "id": "fz-tfn.3",
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Stop rebuilding test-only output sets on every scheduler completion",
   "type": "task",
-  "updated_at": "2026-09-03T08:09:08Z"
+  "updated_at": "2026-09-03T08:44:59Z"
 }
