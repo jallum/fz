@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.34",
-    "fz-tfn.25"
+    "fz-tfn.25",
+    "fz-tfn.26"
   ],
   "blocks": [
     "fz-tfn.1",
@@ -29,5 +30,5 @@
   "status": "in_progress",
   "title": "Establish cold and incremental product-work causality before optimization",
   "type": "bug",
-  "updated_at": "2026-09-03T14:17:37Z"
+  "updated_at": "2026-09-03T16:39:49Z"
 }
