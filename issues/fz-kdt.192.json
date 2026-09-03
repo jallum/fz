@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.184"
+  ],
   "created": "2026-09-03T06:31:28Z",
   "description": "Found by the fz-kdt.120 cold review (defect 4) and paid for twice, by the\nfz-kdt.120 prototype (open_vars(params, args): a second walk over the raw\narguments to decide openness) and by the fz-kdt.184 prototype (upper bounds\ncollected from args while lower bounds come from the witnesses). types/\narrow_match.rs match_witness returns the PATTERN instantiated by what the\nargument pinned, so an unbound pattern variable reappears inside the witness\nand compares against itself, and anything the argument said at a\ncontravariant position is gone: match_arrow([[a], b, (a,b)-\u003eb], b, {},\n[[int], int, (binary,int)-\u003eint]) hands the third witness back as\n(a,int)-\u003eint -- `binary`, the upper bound on a, is unrecoverable from it. Any\nanalysis that asks \"was this ground?\" or \"what did the argument say here?\" of\na witness answers wrongly. Direction: a witness is the OBSERVATION (the\nargument, possibly narrowed by the pattern's ground parts), never a restated\npattern; instantiate_match then reads lower AND upper bounds and openness\nfrom ONE walk over (params, args), and both second walks (120's open_vars,\n184's args pass) collapse. Sequence: it can land before 184 (184 then loses\nits two-input asymmetry) or after both; measure the corpus either way (0\nmovers expected -- the projection is redundant on the corpus today).",
   "id": "fz-kdt.192",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "overlapping_witnesses returns pattern-derived witnesses, not observations: an unbound pattern variable is written back into the witness and contravariant content is erased, so two tickets each needed a second walk over the raw arguments",
   "type": "task",
-  "updated_at": "2026-09-03T06:31:28Z"
+  "updated_at": "2026-09-03T07:13:38Z"
 }
