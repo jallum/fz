@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T19:45:00Z",
+  "description": "Found by the fz-kdt.199 build (2026-09-03) the hard way -- it destroyed three\ncorpus fixtures mid-run before the signature was recognised.\n\n`--log-telemetry` takes a path. Written AFTER the subcommand, as in\n\n    fz2 interp --log-telemetry fixtures2/behavior/some_fixture.fz\n\nthe parser binds the FIXTURE PATH as the log target, opens it for writing, and\ntruncates it to zero. The program then has no source to compile, so the symptom\nis a \"stall\" or an empty-source error that REPRODUCES AT BASE -- exactly the\nfz-go4.18.40 signature (an empty fixture -\u003e undefined root -\u003e deterministic\nstall) that has already cost this project one long misdiagnosis. The user`s own\nsource file is destroyed in the process; only `git checkout` recovers it, and\nonly if the file is tracked and unmodified.\n\nThis is a destructive default. A flag that names an OUTPUT path must never\nsilently accept, and truncate, a path that was meant as an input. Options, in\norder of preference: refuse to open a log target that already exists unless an\nexplicit overwrite flag is given; refuse a log target whose extension is `.fz`;\nrequire the flag before the subcommand and diagnose it after; or at minimum\nopen the log O_EXCL and report the collision.\n\nREPRODUCER (on a COPY -- this deletes the file):\n    cp fixtures2/00002_types_top_level.fz /tmp/victim.fz\n    fz2 interp --log-telemetry /tmp/victim.fz\n    wc -c /tmp/victim.fz     # 0\n\nCONCORDANT: fz-go4.18.40 / fz-go4.18.42 (both closed) are the prior art on\n\"a truncated fixture masquerades as nondeterminism\"; the memory note from that\nsaga says to check `wc -c` on the fixture FIRST. This ticket removes the way\nthe truncation happens in the first place.\n\nRED-FIRST: the command above leaves /tmp/victim.fz byte-identical and reports a\nusage error naming the flag.",
+  "id": "fz-kdt.215",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 2,
+  "status": "open",
+  "title": "[BUG] `interp --log-telemetry \u003cfixture\u003e` silently TRUNCATES the fixture: a misplaced flag makes the source file the log target",
+  "type": "task",
+  "updated_at": "2026-09-03T19:45:00Z"
+}
