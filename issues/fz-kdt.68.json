@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.13.2",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Scope satisfied-wait dirtiness to unreached analysis answers, and land the split only if it pays",
   "type": "task",
-  "updated_at": "2026-09-03T08:04:49Z"
+  "updated_at": "2026-09-03T13:41:01Z"
 }
