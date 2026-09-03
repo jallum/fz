@@ -9,6 +9,12 @@
   "id": "fz-kdt.192",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "PROMOTED TO THE HEAD OF THE CONFLUENCE CHAIN by the fz-kdt.184 cold review (2026-09-03): land this FIRST (192 -\u003e 184 -\u003e 124 -\u003e 183 -\u003e 120). Scope confirmed by measurement: 184's prototype pays for this defect with instantiate_match(params, result, bounds, witnesses, args) -- two full walks per position of which position.upper and observed.lower are discarded and the args walk's MatchWitness is dropped without a `let _`; 120's prototype pays with open_vars(params, args). With witnesses as OBSERVATIONS (the argument, narrowed by the pattern's ground parts, never a restated pattern) one walk over (params, args) yields lower bounds, upper bounds and openness. Reproducer stays: match_arrow([[a], b, (a,b)-\u003eb], b, {}, [[int], int, (binary,int)-\u003eint]) hands the third witness back as (a,int)-\u003eint. Acceptance: 0 corpus movers (interp/run/canon), the R-series and A-series verdict tables from the 184 review unchanged at HEAD (they are the pins), and a test that the witness of a pattern position carrying an unbound variable is the raw argument.",
+      "timestamp": "2026-09-03T07:13:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "overlapping_witnesses returns pattern-derived witnesses, not observations: an unbound pattern variable is written back into the witness and contravariant content is erased, so two tickets each needed a second walk over the raw arguments",
