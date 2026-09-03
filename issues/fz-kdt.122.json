@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-kdt.183"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "created": "2026-09-01T19:20:48Z",
   "description": "## Goal\n\nTwo valid `Enum.reduce/3` calls must keep each reducer closure correlated with the enumerable element family that supplied its arguments, even when both calls start from the underconstrained `[]` accumulator.\n\n## Current state\n\nAt origin/main `a3a9761d1209165e5230625b9347cf6b0ad09b83`, this valid program is rejected by interp, JIT, and AOT compilation:\n\n```fz\nfn main() do\n  dbg(Enum.reduce([1, 2], [], fn (x, acc) -\u003e [x + 10 | acc] end))\n  dbg(Enum.reduce([\"a\", \"b\"], [], fn (x, acc) -\u003e [x \u003c\u003e \"!\" | acc] end))\nend\n```\n\nElixir 1.19.4 accepts and executes the equivalent program. Each reduce call also succeeds when compiled alone.\n\nTogether, FZ reports at the integer reducer:\n\n```text\nerror[spec/violation]: call to `+/2` violates its @spec for arguments (binary, int)\n```\n\nSwapping source order does not remove the failure.\n\n`Enum.reduce/3` wraps the supplied reducer at `runtime:Enum.fz:14-16`. Public telemetry names the two user lambdas separately, but later derives crossed wrapper activations such as:\n\n```text\nclosure[binary reducer](), int, list(int)\nclosure[integer reducer](), binary, empty_list()\n```\n\nThat second crossed activation invokes the integer reducer with `(binary, empty_list())`, manufacturing the false `+/2` violation. The problem is correlation loss in activation/call evidence, not a wrong `+/2` contract and not an invalid reducer.\n\n## Strategy\n\nTrace the crossed activation backward from the `Enum.reduce/3` wrapper through closure-call resolution and activation-input joining. Preserve the relationship between the captured reducer identity and the element/accumulator row instead of suppressing diagnostics in user reducer bodies. Do not special-case `+/2`, binary concatenation, or `Enum.reduce/3` syntax.\n\n## Signal / acceptance\n\n1. Add a red-first three-door behavioral fixture for the reproducer, with an Elixir oracle. `interp`, `run`, and the built executable all exit 0 and produce the two correct reduced lists.\n2. Add a semantic/telemetry regression proving neither user lambda receives an activation containing the sibling call's element family.\n3. Keep the integer-only and binary-only controls green.\n4. Keep genuine invalid arithmetic diagnostics green; the fix must remove the manufactured argument row, not weaken `spec/violation`.\n5. Re-run the dispatch stress relevant to the original bycatch: `arms:reverse`, `arms:1`, `arms:6`, `wrappers:1`, `wrappers:6`, `1`, and `6`. The fixed fixture must retain identical success/output.\n6. Update the applicable semantic/type-specialization documentation and run formatting, clippy with warnings denied, focused tests, full library/CLI tests, and the fixture matrix.",
@@ -19,5 +17,5 @@
   "status": "open",
   "title": "Enum.reduce/3 cross-pairs reducer identity and element type across calls sharing an [] accumulator",
   "type": "task",
-  "updated_at": "2026-09-03T08:18:58Z"
+  "updated_at": "2026-09-03T08:33:07Z"
 }
