@@ -652,10 +652,6 @@ impl Types {
         self.intern(Descr::opaque_of(name))
     }
 
-    pub fn brand_of(&mut self, name: &str) -> Ty {
-        self.intern(Descr::brand_of(name))
-    }
-
     pub fn list_element_type(&mut self, a: &Ty) -> Ty {
         let d = {
             let cx = self.ctx();
@@ -1091,12 +1087,6 @@ impl Types {
         self.intern(d)
     }
 
-    #[cfg(test)]
-    pub fn complement(&mut self, a: Ty) -> Ty {
-        let d = self.descr(&a).neg();
-        self.intern(d)
-    }
-
     pub fn difference(&mut self, a: Ty, b: Ty) -> Ty {
         let d = self.descr(&a).diff(self.descr(&b));
         self.intern(d)
@@ -1238,10 +1228,6 @@ impl Types {
         }
         let key = Self::symmetric_key(ComparisonKey::Equivalent, *a, *b);
         self.cached_comparison(key, |types| types.is_subtype(a, b) && types.is_subtype(b, a))
-    }
-
-    pub fn kinds_overlap(&self, a: &Ty, b: &Ty) -> bool {
-        self.descr(a).kinds_overlap(self.descr(b))
     }
 
     pub fn opaque_singleton(&self, a: &Ty) -> Option<String> {
@@ -1773,7 +1759,7 @@ impl Types {
                     captures: Vec::new(),
                 }),
             })],
-            ..Descr::none()
+            ..Descr::unbranded()
         })
     }
 
@@ -1793,7 +1779,7 @@ impl Types {
                     captures,
                 }),
             })],
-            ..Descr::none()
+            ..Descr::unbranded()
         })
     }
 
@@ -1976,10 +1962,6 @@ impl SharedTypes for Types {
         Types::opaque_of(self, name)
     }
 
-    fn brand_of(&mut self, name: &str) -> Self::Ty {
-        Types::brand_of(self, name)
-    }
-
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty {
         Types::list_element_type(self, a)
     }
@@ -2045,11 +2027,6 @@ impl SharedTypes for Types {
         Types::intersect(self, a, b)
     }
 
-    #[cfg(test)]
-    fn complement(&mut self, a: Self::Ty) -> Self::Ty {
-        Types::complement(self, a)
-    }
-
     fn difference(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty {
         Types::difference(self, a, b)
     }
@@ -2081,10 +2058,6 @@ impl SharedTypes for Types {
 
     fn key_subsumes_with(&self, query: &Self::Ty, key: &Self::Ty, sigma: &mut Sigma<Self::Ty>) -> bool {
         Types::key_subsumes_with(self, query, key, sigma)
-    }
-
-    fn kinds_overlap(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
-        Types::kinds_overlap(self, a, b)
     }
 
     fn opaque_singleton(&self, a: &Self::Ty) -> Option<String> {
@@ -2203,7 +2176,7 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
     let only_vars = d.basic.is_empty()
         && d.atoms.is_none()
         && d.opaques.is_none()
-        && d.brands.is_none()
+        && d.brands.is_any()
         && d.tuples.is_empty()
         && d.lists.is_empty()
         && d.resources.is_empty()
@@ -2445,7 +2418,6 @@ fn runtime_type_predicate_requires_any(descr: &Descr) -> bool {
     const STRUCT_PREFIX: &str = "impl-target::";
     descr.opaques.cofinite
         || descr.opaques.values.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
-        || descr.brands.cofinite
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }
@@ -3070,7 +3042,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
             let ret = refine_widen(t, l.ret, r.ret);
             return t.intern(Descr {
                 funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
-                ..Descr::none()
+                ..Descr::unbranded()
             });
         }
     }

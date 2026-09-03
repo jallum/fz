@@ -742,6 +742,7 @@ fn dependent_contract_bounds_are_stable_across_fresh_type_worlds() {
 #[test]
 fn function_contract_ignores_protocol_markers_inside_nested_complements() {
     let mut types = Types::new();
+    let any = types.any();
     let domain = types.opaque_of("protocol::Enumerable.t");
     let int = types.int();
     let tuple = types.tuple(&[domain]);
@@ -752,7 +753,7 @@ fn function_contract_ignores_protocol_markers_inside_nested_complements() {
     let map = types.map(&[(map_key, domain)]);
     let negated_nested_shapes = [tuple, list, resource, fun, map]
         .into_iter()
-        .map(|ty| types.complement(ty))
+        .map(|ty| types.difference(any, ty))
         .map(|param| ResolvedSpecDecl {
             params: vec![param],
             result: int,

@@ -2173,9 +2173,9 @@ mod tests {
         let map_one = t.map(&[]);
         let brand_x = t.mint_brand(int, "X");
         let brand_y = t.mint_brand(int, "Y");
-        let not_ok = t.complement(ok);
-        let not_int = t.complement(int);
-        let not_lam_int = t.complement(lam_int);
+        let not_ok = t.difference(any, ok);
+        let not_int = t.difference(any, int);
+        let not_lam_int = t.difference(any, lam_int);
         let battery = [
             any,
             int,

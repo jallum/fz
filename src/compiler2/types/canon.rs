@@ -33,6 +33,7 @@ use super::bits::{BASIC_NAMES, BasicBits};
 use super::conj::Conj;
 use super::descr::Descr;
 use super::emptiness::{self, Memo};
+use super::format::brand_refinement;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
 
@@ -122,7 +123,6 @@ impl<'a> TyCanon<'a> {
         let mut parts: Vec<String> = basic_names(d.basic);
         push_set(&mut parts, &d.atoms, "atom", |name| format!(":{name}"));
         push_set(&mut parts, &d.opaques, "opaque", Clone::clone);
-        push_set(&mut parts, &d.brands, "brand", Clone::clone);
         push_set(&mut parts, &d.vars, "var", |id| cx.render_var(*id));
         parts.extend(sorted(axes.tuple_rects.iter().map(|rect| self.rect_text(cx, rect))));
         parts.extend(sorted(
@@ -140,7 +140,7 @@ impl<'a> TyCanon<'a> {
             self.clause_texts(cx, &axes.funcs, Self::func_clause).into_iter(),
         ));
         parts.extend(sorted(self.clause_texts(cx, &axes.maps, Self::map_clause).into_iter()));
-        parts.join(" | ")
+        brand_refinement(&d.brands, parts.join(" | "))
     }
 
     fn rect_text(&mut self, cx: TyCtx<'_>, rect: &Rect) -> String {
@@ -433,9 +433,9 @@ fn saturate<T: Clone>(cx: TyCtx<'_>, clauses: Vec<Conj<T>>, install: fn(&mut Des
     if clauses.is_empty() || matches!(clauses.as_slice(), [c] if c.pos.is_empty() && c.neg.is_empty()) {
         return clauses;
     }
-    let mut mine = Descr::none();
+    let mut mine = Descr::unbranded();
     install(&mut mine, clauses.clone());
-    let mut top = Descr::none();
+    let mut top = Descr::unbranded();
     install(&mut top, vec![Conj::top()]);
     if top.is_subtype(cx, &mine) {
         return vec![Conj::top()];
@@ -556,9 +556,9 @@ fn drop_subsumed<T: Clone>(
         if others.is_empty() {
             continue;
         }
-        let mut mine = Descr::none();
+        let mut mine = Descr::unbranded();
         install(&mut mine, vec![clauses[index].clone()]);
-        let mut rest = Descr::none();
+        let mut rest = Descr::unbranded();
         install(&mut rest, others);
         if mine.is_subtype(cx, &rest) {
             keep[index] = false;
@@ -587,12 +587,14 @@ fn retain_kept<T>(items: Vec<T>, keep: Vec<bool>) -> Vec<T> {
 
 /// Every component here is provably invariant under type equivalence.
 ///
-/// The axes are independent: membership on one axis is decided by that axis
-/// alone (`Descr::intersect`/`diff` are pointwise and `is_empty` requires every
-/// axis empty). So `a ≡ b` forces `a \ b = ∅` on each axis separately, which
-/// for the scalar axes means equal `BasicBits` and equal finite/cofinite sets —
-/// their universes are infinite, so a finite set never denotes what a cofinite
-/// one does.
+/// The KIND axes are independent: membership on one is decided by that axis
+/// alone (`Descr::intersect`/`diff` are pointwise and a descriptor is empty
+/// when every kind axis is). So `a ≡ b` forces `a \ b = ∅` on each axis
+/// separately, which for the scalar axes means equal `BasicBits` and equal
+/// finite/cofinite sets — their universes are infinite, so a finite set never
+/// denotes what a cofinite one does. `brands` is not a kind but a REFINEMENT
+/// factor over all of them, so it is recorded the same way and read the same
+/// way, with the unconstrained slot (the unbranded case) omitted.
 ///
 /// For the structural axes only INHABITED-ness survives: clause counts do not,
 /// since the whole point of the normalization elsewhere in this module is that
@@ -615,7 +617,9 @@ fn descr_fingerprint(cx: TyCtx<'_>, d: &Descr) -> String {
     let mut parts = basic_names(d.basic);
     push_key(&mut parts, "a", &d.atoms, |name| format!(":{name}"));
     push_key(&mut parts, "o", &d.opaques, Clone::clone);
-    push_key(&mut parts, "n", &d.brands, Clone::clone);
+    if !d.brands.is_any() {
+        push_key(&mut parts, "n", &d.brands, Clone::clone);
+    }
     push_key(&mut parts, "v", &d.vars, |id| cx.render_var(*id));
     let structural: String = [
         (inhabited(cx, &d.tuples, emptiness::tuple_clause_empty), "T"),

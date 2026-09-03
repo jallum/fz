@@ -55,6 +55,18 @@ impl Descr {
         }
     }
 
+    /// The builder base for a VALUE constructor: no structural content yet,
+    /// and the brand slot unconstrained. `brands` is a conjunctive REFINEMENT
+    /// factor, not a kind of value — an unbranded `int` admits a branded int
+    /// (`Meters <: int`), so its slot is top, and `Descr::none()`'s bottom slot
+    /// is what makes `none` the union identity on that axis.
+    pub(super) fn unbranded() -> Self {
+        Self {
+            brands: FiniteSet::any(),
+            ..Self::none()
+        }
+    }
+
     pub(super) fn none() -> Self {
         Self {
             basic: BasicBits::NONE,
@@ -71,19 +83,13 @@ impl Descr {
     }
 
     pub(super) fn opaque_of(name: impl Into<String>) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.opaques = FiniteSet::lit(name.into());
         d
     }
 
-    pub(super) fn brand_of(name: impl Into<String>) -> Self {
-        let mut d = Self::none();
-        d.brands = FiniteSet::lit(name.into());
-        d
-    }
-
     pub(super) fn var(id: TypeVarId) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.vars = VarSet::lit(id);
         d
     }
@@ -93,13 +99,13 @@ impl Descr {
     }
 
     pub(super) fn bool_t() -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.atoms = AtomSet::lit("true".to_string()).union(&AtomSet::lit("false".to_string()));
         d
     }
 
     pub(super) fn atom_top() -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.atoms = AtomSet::any();
         d
     }
@@ -109,13 +115,13 @@ impl Descr {
     /// runtime layout is one word (a code pointer or a closure ref) regardless of
     /// signature or identity, so every callable shares this one lane.
     pub(super) fn fun_top() -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.funcs = vec![Conj::top()];
         d
     }
 
     pub(super) fn atom_lit(name: impl Into<String>) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.atoms = AtomSet::lit(name.into());
         d
     }
@@ -133,7 +139,7 @@ impl Descr {
     }
 
     fn from_basic(basic: BasicBits) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.basic = basic;
         d
     }
@@ -142,13 +148,13 @@ impl Descr {
         if cx.descr(&payload).is_empty(cx) {
             return Self::none();
         }
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.resources = vec![Conj::pos_of(ResourceSig { payload })];
         d
     }
 
     pub(super) fn tuple_of(elems: impl IntoIterator<Item = Ty>) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.tuples.push(Conj::pos_of(TupleSig {
             elems: elems.into_iter().collect(),
         }));
@@ -156,7 +162,7 @@ impl Descr {
     }
 
     pub(super) fn list_sig(sig: ListSig) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.lists.push(Conj::pos_of(sig));
         d
     }
@@ -166,11 +172,9 @@ impl Descr {
     }
 
     pub(super) fn non_empty_list_of(cx: TyCtx<'_>, elem: Ty) -> Self {
-        let mut d = Self::none();
-        if let Some(sig) = ListSig::non_empty(&cx, elem) {
-            d.lists.push(Conj::pos_of(sig));
-        }
-        d
+        ListSig::non_empty(&cx, elem)
+            .map(Self::list_sig)
+            .unwrap_or_else(Self::none)
     }
 
     pub(super) fn empty_list() -> Self {
@@ -178,7 +182,7 @@ impl Descr {
     }
 
     pub(super) fn arrow(args: impl IntoIterator<Item = Ty>, ret: Ty) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.funcs.push(Conj::pos_of(ArrowSig {
             args: args.into_iter().collect(),
             ret,
@@ -188,13 +192,13 @@ impl Descr {
     }
 
     pub(super) fn map_top() -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.maps.push(Conj::top());
         d
     }
 
     pub(super) fn map_of(fields: impl IntoIterator<Item = (MapKey, Ty)>) -> Self {
-        let mut d = Self::none();
+        let mut d = Self::unbranded();
         d.maps.push(Conj::pos_of(MapSig {
             fields: fields.into_iter().collect(),
         }));
@@ -229,7 +233,7 @@ impl Descr {
         if self.basic.is_empty()
             && self.atoms.is_none()
             && self.opaques.is_none()
-            && self.brands.is_none()
+            && self.brands.is_any()
             && self.vars.is_none()
             && self.lists.is_empty()
             && self.resources.is_empty()
@@ -262,19 +266,6 @@ impl Descr {
             .flat_map(|c| c.pos.iter().map(|sig| sig.elems.len()))
             .max()
             .unwrap_or(0)
-    }
-
-    pub(super) fn kinds_overlap(&self, other: &Descr) -> bool {
-        (!self.basic.intersect(other.basic).is_empty())
-            || (!self.atoms.is_none() && !other.atoms.is_none())
-            || (!self.opaques.is_none() && !other.opaques.is_none())
-            || (!self.brands.is_none() && !other.brands.is_none())
-            || (!self.vars.is_none() && !other.vars.is_none())
-            || (!self.tuples.is_empty() && !other.tuples.is_empty())
-            || (!self.lists.is_empty() && !other.lists.is_empty())
-            || (!self.resources.is_empty() && !other.resources.is_empty())
-            || (!self.funcs.is_empty() && !other.funcs.is_empty())
-            || (!self.maps.is_empty() && !other.maps.is_empty())
     }
 
     pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Descr {
@@ -334,7 +325,7 @@ impl Descr {
                     .iter()
                     .cloned()
                     .map(|clause| {
-                        let mut alternative = Descr::none();
+                        let mut alternative = Descr::unbranded();
                         alternative.tuples.push(clause);
                         alternative
                     })
@@ -347,7 +338,7 @@ impl Descr {
                     .iter()
                     .cloned()
                     .map(|clause| {
-                        let mut alternative = Descr::none();
+                        let mut alternative = Descr::unbranded();
                         alternative.lists.push(clause);
                         alternative
                     })
@@ -411,17 +402,28 @@ impl Descr {
         self.basic.is_empty()
             && self.atoms.is_none()
             && self.opaques.is_none()
-            && self.brands.is_none()
+            && self.brands.is_any()
             && self.vars.is_none()
     }
 
-    pub(super) fn looks_empty(&self) -> bool {
-        self.axis_free()
+    /// The structural union carries nothing — the descriptor denotes the empty
+    /// set however its brand slot reads.
+    fn structure_looks_empty(&self) -> bool {
+        self.basic.is_empty()
+            && self.atoms.is_none()
+            && self.opaques.is_none()
+            && self.vars.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
             && self.resources.is_empty()
             && self.funcs.is_empty()
             && self.maps.is_empty()
+    }
+
+    /// A refinement of nothing is nothing, and a value carries at most one
+    /// brand, so an empty brand slot (`Meters and Feet`) is empty too.
+    pub(super) fn looks_empty(&self) -> bool {
+        self.brands.is_none() || self.structure_looks_empty()
     }
 
     pub(super) fn looks_full(&self) -> bool {
@@ -437,7 +439,34 @@ impl Descr {
             && is_dnf_top(&self.maps)
     }
 
+    /// The brand slot joins pointwise, which is exact whenever the operands
+    /// agree on one factor (`Meters | int = int`, `Meters | Feet` = the two
+    /// brands over one inner) and a hull when they differ on both
+    /// (`Meters | utf8` widens to "int or binary, any brand").
+    ///
+    /// A BOTTOM is the identity first, before any of that. Bottom no longer
+    /// has one shape — a structural meet (`int and binary`) empties the kind
+    /// axes and leaves the slot at top, a brand meet (`Meters and Feet`)
+    /// empties the slot and leaves the kind axes inhabited — so a pointwise
+    /// hull would read an EMPTY operand's factors as constraints and widen the
+    /// other side by them: `nothing | Meters(int)` would answer `int`.
+    /// [`looks_empty`](Self::looks_empty) is the one bottom test, and asking
+    /// it here is what keeps `∅ ∪ x = x` a law rather than a property of one
+    /// interned identity.
     pub(super) fn union(&self, _cx: TyCtx<'_>, other: &Descr) -> Descr {
+        if self.looks_empty() {
+            // A join of two nothings is THE nothing: answering with either
+            // operand would make the join non-commutative in the interned id
+            // it produces, for no gain.
+            return if other.looks_empty() {
+                Descr::none()
+            } else {
+                other.clone()
+            };
+        }
+        if other.looks_empty() {
+            return self.clone();
+        }
         Descr {
             basic: self.basic.union(other.basic),
             atoms: self.atoms.union(&other.atoms),
@@ -452,6 +481,9 @@ impl Descr {
         }
     }
 
+    /// Exact on every axis: a rectangle meets a rectangle. Two brands over one
+    /// inner meet at an EMPTY slot, which is what makes `Meters and Feet`
+    /// empty — a value carries at most one brand.
     pub(super) fn intersect(&self, other: &Descr) -> Descr {
         Descr {
             basic: self.basic.intersect(other.basic),
@@ -467,12 +499,21 @@ impl Descr {
         }
     }
 
-    pub(super) fn neg(&self) -> Descr {
+    /// The complement of the STRUCTURAL union alone, with the brand slot left
+    /// unconstrained — the factor [`diff`](Self::diff) subtracts on its own.
+    ///
+    /// There is deliberately no whole-descriptor `neg`: the complement of a
+    /// refinement is `¬structure` OR `structure with another brand`, two
+    /// rectangles this representation cannot hold at once, so it could only
+    /// widen to `any` — a "negation" that forgets the brand entirely. `diff`
+    /// subtracts the two factors separately instead and stays exact, so
+    /// difference, not complement, is the primitive callers get.
+    fn neg_structure(&self) -> Descr {
         Descr {
+            brands: FiniteSet::any(),
             basic: self.basic.neg(),
             atoms: self.atoms.neg(),
             opaques: self.opaques.neg(),
-            brands: self.brands.neg(),
             vars: self.vars.neg(),
             tuples: dnf_neg(&self.tuples),
             lists: dnf_neg(&self.lists),
@@ -482,8 +523,62 @@ impl Descr {
         }
     }
 
+    /// `(S, B) \ (S', B') = (S \ S', B) union (S and S', B \ B')` — a union of
+    /// two rectangles, of which this representation holds one. Three cases
+    /// collapse it to one and are EXACT, and they are the cases a brand model
+    /// actually produces:
+    ///
+    /// - the subtrahend's slot covers ours: the second rectangle is empty, so
+    ///   the structural subtraction alone answers. `Meters \ int` is empty (a
+    ///   brand is inside its inner);
+    /// - the slots are disjoint: the subtrahend removes nothing, so `Meters \
+    ///   Feet` is `Meters`;
+    /// - the structures are equal — a brand beside its own inner, which is how
+    ///   `mint_brand` builds one: the first rectangle is empty, so the slot
+    ///   subtraction alone answers. `int \ Meters` is "an int not branded
+    ///   Meters", which keeps `int` inhabited without swallowing `Meters`.
+    ///
+    /// What is left over-approximates: partial slot overlap across DIFFERENT
+    /// structures (`(Meters | utf8) \ Meters`) is two rectangles that no
+    /// single descriptor holds, so the whole minuend is returned. Every
+    /// consumer asks `diff(..).is_empty()`, where a too-big difference can only
+    /// answer `is_subtype = false`.
     pub(super) fn diff(&self, other: &Descr) -> Descr {
-        self.intersect(&other.neg())
+        if other.brands.contains_all(&self.brands) {
+            let mut d = self.intersect(&other.neg_structure());
+            d.brands = self.brands.clone();
+            return d;
+        }
+        if !self.brands.overlaps(&other.brands) {
+            return self.clone();
+        }
+        if self.same_structure_by_construction(other) {
+            let mut d = self.clone();
+            d.brands = self.brands.intersect(&other.brands.neg());
+            return d;
+        }
+        self.clone()
+    }
+
+    /// SYNTACTICALLY equal on every kind axis — the two descriptors differ, if
+    /// at all, only in their brand slot. It is exact where it matters BY
+    /// CONSTRUCTION: `mint_brand` builds a refinement by cloning its inner's
+    /// structure, so a brand and its inner are literally equal here. It stays
+    /// syntactic on purpose — asking whether the two structures are
+    /// EQUIVALENT would call `is_equiv` -> `is_subtype` -> `diff` -> here, a
+    /// recursion the emptiness `Memo` does not guard. Interned children
+    /// compare by id, so two ids denoting one type answer `false` and cost
+    /// precision, never soundness.
+    fn same_structure_by_construction(&self, other: &Descr) -> bool {
+        self.basic == other.basic
+            && self.atoms == other.atoms
+            && self.opaques == other.opaques
+            && self.vars == other.vars
+            && self.tuples == other.tuples
+            && self.lists == other.lists
+            && self.resources == other.resources
+            && self.funcs == other.funcs
+            && self.maps == other.maps
     }
 
     pub(super) fn is_empty(&self, cx: TyCtx<'_>) -> bool {
@@ -496,16 +591,16 @@ impl Descr {
             return true;
         }
         memo.in_flight.insert(self.clone());
-        let result = self.basic.is_empty()
-            && self.atoms.is_none()
-            && self.opaques.is_none()
-            && self.brands.is_none()
-            && self.vars.is_none()
-            && self.tuples.iter().all(|c| tuple_clause_empty(cx, c, memo))
-            && self.lists.iter().all(|c| list_clause_empty(cx, c, memo))
-            && self.resources.iter().all(|c| resource_clause_empty(cx, c, memo))
-            && self.funcs.iter().all(|c| func_clause_empty(cx, c, memo))
-            && self.maps.iter().all(|c| map_clause_empty(cx, c, memo));
+        let result = self.brands.is_none()
+            || self.basic.is_empty()
+                && self.atoms.is_none()
+                && self.opaques.is_none()
+                && self.vars.is_none()
+                && self.tuples.iter().all(|c| tuple_clause_empty(cx, c, memo))
+                && self.lists.iter().all(|c| list_clause_empty(cx, c, memo))
+                && self.resources.iter().all(|c| resource_clause_empty(cx, c, memo))
+                && self.funcs.iter().all(|c| func_clause_empty(cx, c, memo))
+                && self.maps.iter().all(|c| map_clause_empty(cx, c, memo));
         memo.in_flight.remove(self);
         result
     }
@@ -523,15 +618,21 @@ impl Descr {
     }
 
     fn erase_nominal(&self, cx: TyCtx<'_>) -> Descr {
-        let mut d = self.clone();
-        let brands = std::mem::replace(&mut d.brands, FiniteSet::none());
-        let opaques = std::mem::replace(&mut d.opaques, FiniteSet::none());
-        // Finite brands: mint_brand embeds the inner's structural axes directly in the
-        // descriptor (replacing the inner's own brand axis), so clearing suffices.
-        // Cofinite brands (e.g. from any()): we cannot enumerate inners; widen to any.
-        if brands.cofinite {
-            d = d.union(cx, &Descr::any());
+        // Erasure drops a REFINEMENT, so it can only ever keep or widen the
+        // set — except at the bottom whose emptiness IS the empty slot
+        // (`Meters and Feet`), where releasing the slot would resurrect the
+        // inner as a live `int` and tell the brand-blind runtime question
+        // (`is_value_disjoint`) that an uninhabited type shares values.
+        if self.looks_empty() {
+            return Descr::none();
         }
+        let mut d = self.clone();
+        // A brand refines the structure held in this same descriptor, so
+        // dropping the refinement — releasing the slot to top — is the whole
+        // erasure: the inner is already the structural axes, whatever the slot
+        // said. `utf8` erases to `binary`, and `binary` erases to itself.
+        d.brands = FiniteSet::any();
+        let opaques = std::mem::replace(&mut d.opaques, FiniteSet::none());
         // Opaques carry no embedded inner (opaque_of sets only the tag axis); erase conservatively.
         if !opaques.is_none() {
             d = d.union(cx, &Descr::any());

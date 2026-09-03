@@ -138,11 +138,6 @@ pub trait Types {
     /// @type alias resolver for `opaque T` declarations).
     fn opaque_of(&mut self, name: &str) -> Self::Ty;
 
-    /// Nominal brand tagged `name`, with no inner structural overlay.
-    /// Distinct from `mint_brand` (which carries the inner type along
-    /// with the brand label).
-    fn brand_of(&mut self, name: &str) -> Self::Ty;
-
     /// Project `a`'s list-axis element type. Returns `any` if `a` has
     /// no list axis or the list axis is unconstrained.
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
@@ -217,8 +212,6 @@ pub trait Types {
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
     fn intersect(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
-    #[cfg(test)]
-    fn complement(&mut self, a: Self::Ty) -> Self::Ty;
     fn difference(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
 
     // ---- predicates ----------------------------------------------------
@@ -269,15 +262,6 @@ pub trait Types {
     }
 
     // ---- introspection -------------------------------------------------
-
-    /// Coarser than `is_disjoint`: true iff `a` and `b` share at least
-    /// one populated axis (basic kind, atoms, ints, floats, tuples,
-    /// lists, arrows, maps, opaques, brands, vars). Used by the dead-binop
-    /// lint to flag cross-kind comparisons (`x == :ok` when `x: int`)
-    /// without firing on within-axis literal-disjoint cases (`1 == 2`,
-    /// `:ok == :err`). Pair with `is_value_disjoint` to also stay quiet on
-    /// brand-vs-underlying pairs (which overlap once brands are erased).
-    fn kinds_overlap(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
 
     /// If `a` is a pure opaque-nominal type — a singleton on the
     /// `opaques` axis with every other axis empty — return the opaque

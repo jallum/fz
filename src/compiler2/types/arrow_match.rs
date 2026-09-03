@@ -274,7 +274,7 @@ impl Types {
     fn witness_escapes_kind(&mut self, pattern: &Ty, witness: &Ty, clear: fn(&mut Descr)) -> bool {
         let mut residual = self.descr(pattern).clone();
         clear(&mut residual);
-        if residual == Descr::none() {
+        if residual.looks_empty() {
             return false;
         }
         let residual = self.intern(residual);

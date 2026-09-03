@@ -24,14 +24,39 @@ pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
     }
     append_axis(&mut parts, &d.atoms, "atom", |s| format!(":{}", s));
     append_axis(&mut parts, &d.opaques, "opaque", Clone::clone);
-    append_axis(&mut parts, &d.brands, "brand", Clone::clone);
     append_axis(&mut parts, &d.vars, "var", |id| cx.render_var(*id));
     parts.extend(d.tuples.iter().map(|c| format_tuple_clause(cx, c)));
     parts.extend(d.lists.iter().map(|c| format_list_clause(cx, c)));
     parts.extend(d.resources.iter().map(|c| format_resource_clause(cx, c)));
     parts.extend(d.funcs.iter().map(|c| format_arrow_clause(cx, c)));
     parts.extend(d.maps.iter().map(|c| format_map_clause(cx, c)));
-    parts.join(" | ")
+    brand_refinement(&d.brands, parts.join(" | "))
+}
+
+/// A brand is a REFINEMENT of the structure beside it, not another member of
+/// the union: `utf8(binary)` says "one of the binaries", where `binary | utf8`
+/// would read as a supertype of `binary`. An unconstrained slot is the
+/// unbranded case and adds nothing.
+///
+/// The one renderer for the slot: `display` here and `TyCanon`'s body both
+/// call it, so the two surfaces cannot drift. `brands.values` is a `BTreeSet`,
+/// so the name order is already deterministic.
+pub(super) fn brand_refinement(brands: &FiniteSet<String>, body: String) -> String {
+    if brands.is_any() {
+        return body;
+    }
+    if brands.is_none() {
+        // A refinement by no brand at all denotes nothing. Both callers render
+        // `none` for an empty descriptor before reaching here.
+        return "none".to_string();
+    }
+    let names: Vec<&str> = brands.values.iter().map(String::as_str).collect();
+    let joined = names.join(" | ");
+    match (brands.cofinite, names.len()) {
+        (true, _) => format!("not({joined})({body})"),
+        (false, 1) => format!("{joined}({body})"),
+        (false, _) => format!("({joined})({body})"),
+    }
 }
 
 pub(crate) fn display_for_diag(cx: TyCtx<'_>, d: &Descr) -> String {

@@ -2059,10 +2059,19 @@ mod smoke {
         assert!(t.is_equivalent(&x, &i));
     }
 
+    /// There is no `complement`: the lattice's primitive is `difference`,
+    /// because the complement of a branded type is not representable (see
+    /// `Descr::neg_structure`). Subtracting from `any` is the complement of an
+    /// UNBRANDED type, which is what these smoke laws are about.
+    fn complement(t: &mut Types, a: Ty) -> Ty {
+        let any = t.any();
+        t.difference(any, a)
+    }
+
     fn smoke_complement_involution(t: &mut Types) {
         let i = t.int();
-        let once = t.complement(i);
-        let twice = t.complement(once);
+        let once = complement(t, i);
+        let twice = complement(t, once);
         assert!(t.is_equivalent(&twice, &i));
     }
 
@@ -2070,9 +2079,9 @@ mod smoke {
         let i = t.int();
         let f = t.float();
         let u = t.union(i, f);
-        let lhs = t.complement(u);
-        let ni = t.complement(i);
-        let nf = t.complement(f);
+        let lhs = complement(t, u);
+        let ni = complement(t, i);
+        let nf = complement(t, f);
         let rhs = t.intersect(ni, nf);
         assert!(t.is_equivalent(&lhs, &rhs));
     }
@@ -2382,6 +2391,538 @@ mod union_clause_order {
             forward_key, backward_key,
             "the specialization a callee gets must be a function of the type it is passed, \
              not of which branch the scheduler ran first"
+        );
+    }
+}
+
+/// fz-kdt.198 — the documented brand law, as pins.
+///
+/// `.agent/docs/set-theoretic-types.md` states it in one line: `utf8 <:
+/// binary` because a brand is a nominal REFINEMENT of its inner — the same
+/// structure, with the `brands` slot narrowed — while a plain `binary` is not
+/// a `utf8` because its slot is unconstrained. Every consumer of the lattice
+/// inherits the direction: a `@spec` position declared `binary` must accept a
+/// `utf8` argument, and a position declared `utf8` must reject a bare
+/// `binary`.
+mod brand_lattice_law {
+    use super::*;
+
+    fn meters(t: &mut Types) -> Ty {
+        let int = t.int();
+        t.mint_brand(int, "Meters")
+    }
+
+    fn feet(t: &mut Types) -> Ty {
+        let int = t.int();
+        t.mint_brand(int, "Feet")
+    }
+
+    fn utf8(t: &mut Types) -> Ty {
+        let bin = t.str_t();
+        t.mint_brand(bin, "utf8")
+    }
+
+    #[test]
+    fn a_brand_is_a_subtype_of_its_inner() {
+        let mut t = Types::new();
+        let int = t.int();
+        let meters = meters(&mut t);
+        assert!(
+            t.is_subtype(&meters, &int),
+            "Meters refines int, so it is inside int; got Meters = {}",
+            t.display(&meters)
+        );
+    }
+
+    #[test]
+    fn the_inner_is_not_a_subtype_of_the_brand() {
+        let mut t = Types::new();
+        let int = t.int();
+        let meters = meters(&mut t);
+        assert!(
+            !t.is_subtype(&int, &meters),
+            "a bare int lacks the tag, so it is NOT a Meters; got Meters = {}",
+            t.display(&meters)
+        );
+    }
+
+    #[test]
+    fn utf8_is_a_subtype_of_binary() {
+        let mut t = Types::new();
+        let bin = t.str_t();
+        let utf8 = utf8(&mut t);
+        assert!(t.is_subtype(&utf8, &bin), "utf8 = {}", t.display(&utf8));
+    }
+
+    #[test]
+    fn binary_is_not_a_subtype_of_utf8() {
+        let mut t = Types::new();
+        let bin = t.str_t();
+        let utf8 = utf8(&mut t);
+        assert!(!t.is_subtype(&bin, &utf8), "utf8 = {}", t.display(&utf8));
+    }
+
+    /// One value carries at most one brand — the language rule — so two brands
+    /// over one inner are lattice-disjoint. `Positive and Even` is never,
+    /// silently; there is no intersection type expression to write it with.
+    #[test]
+    fn two_brands_of_one_inner_are_disjoint() {
+        let mut t = Types::new();
+        let meters = meters(&mut t);
+        let feet = feet(&mut t);
+        let met = t.intersect(meters, feet);
+        assert!(t.is_empty(&met), "Meters and Feet met at {}", t.display(&met));
+        assert!(t.is_disjoint(&meters, &feet));
+    }
+
+    /// Subtracting a brand from its inner leaves the un-branded ints (and
+    /// every OTHER brand of int) — it must not empty the inner.
+    #[test]
+    fn subtracting_a_brand_from_its_inner_leaves_the_inner() {
+        let mut t = Types::new();
+        let int = t.int();
+        let meters = meters(&mut t);
+        let rest = t.difference(int, meters);
+        assert!(
+            !t.is_empty(&rest),
+            "int minus Meters must still hold a bare int; got {}",
+            t.display(&rest)
+        );
+    }
+
+    #[test]
+    fn a_brand_is_equivalent_only_to_itself() {
+        let mut t = Types::new();
+        let int = t.int();
+        let a = meters(&mut t);
+        let b = meters(&mut t);
+        assert_eq!(a, b, "one brand over one inner interns once");
+        assert!(t.is_equivalent(&a, &b));
+        assert!(!t.is_equivalent(&a, &int), "Meters is strictly inside int");
+        let feet = feet(&mut t);
+        assert!(!t.is_equivalent(&a, &feet));
+    }
+
+    /// A refinement is not a union: `Meters` denotes SOME ints, so rendering
+    /// it as `int | Meters` reads as a supertype of `int`.
+    #[test]
+    fn a_brand_renders_as_a_refinement_not_a_union() {
+        let mut t = Types::new();
+        let meters = meters(&mut t);
+        let shown = t.display(&meters);
+        assert_eq!(shown, "Meters(int)", "a refinement wraps its inner");
+    }
+
+    /// The union of a brand and its inner is the inner: nothing is added.
+    #[test]
+    fn joining_a_brand_with_its_inner_is_the_inner() {
+        let mut t = Types::new();
+        let int = t.int();
+        let meters = meters(&mut t);
+        let joined = t.union(meters, int);
+        assert!(
+            t.is_equivalent(&joined, &int),
+            "Meters | int = int; got {}",
+            t.display(&joined)
+        );
+    }
+
+    /// The law has to survive a structural position, because that is where a
+    /// call's argument tuple meets a declared parameter tuple.
+    #[test]
+    fn the_law_holds_inside_a_tuple() {
+        let mut t = Types::new();
+        let int = t.int();
+        let meters = meters(&mut t);
+        let branded_pair = t.tuple(&[meters, int]);
+        let plain_pair = t.tuple(&[int, int]);
+        assert!(
+            t.is_subtype(&branded_pair, &plain_pair),
+            "{{Meters, int}} <: {{int, int}}; got {}",
+            t.display(&branded_pair)
+        );
+        assert!(
+            !t.is_subtype(&plain_pair, &branded_pair),
+            "{{int, int}} is not {{Meters, int}}; got {}",
+            t.display(&plain_pair)
+        );
+    }
+
+    /// Typing is brand-aware; the runtime is brand-blind (fz-bsx). Both still
+    /// hold with the refinement direction fixed.
+    #[test]
+    fn the_runtime_stays_brand_blind() {
+        let mut t = Types::new();
+        let bin = t.str_t();
+        let int = t.int();
+        let utf8 = utf8(&mut t);
+        assert!(!t.is_value_disjoint(&utf8, &bin), "== between a utf8 and a binary runs");
+        assert!(t.is_value_disjoint(&utf8, &int));
+        assert!(
+            !t.is_disjoint(&bin, &utf8),
+            "typing keeps them overlapping: a utf8 IS one of the binaries"
+        );
+        assert!(!t.differs_only_nominally(&utf8, &int));
+    }
+
+    /// fz-kdt.198 / fz-kdt.192 probe X5 — the arrow matcher at a branded
+    /// argument.
+    ///
+    /// `({int, a}) :: a` applied to `{Meters, int}` must answer `Known` with
+    /// `a := int`: `Meters` is inside `int`, so the first coordinate fits and
+    /// the second binds the variable. Under the refinement law the verdict
+    /// follows from the lattice rather than from an overlap accident, which is
+    /// what lets fz-kdt.192 replace the pattern-derived witness with the raw
+    /// argument and keep this answer.
+    #[test]
+    fn the_arrow_matcher_admits_a_branded_coordinate_at_its_inner() {
+        let mut t = Types::new();
+        let int = t.int();
+        let meters = t.mint_brand(int, "Meters");
+        let var = t.type_var(TypeVarId(0));
+        let param = t.tuple(&[int, var]);
+        let arg = t.tuple(&[meters, int]);
+
+        let outcome = t.match_arrow(&[param], &var, &HashMap::new(), &[arg]);
+        let ArrowMatch::Known { result, .. } = outcome else {
+            panic!("expected Known for {{Meters, int}} at ({{int, a}}) :: a, got {outcome:?}");
+        };
+        assert_eq!(result, int, "a := int; got {}", t.display(&result));
+    }
+
+    /// KNOWN-WRONG PIN — the one place this encoding is not exact, owned by
+    /// fz-kdt.203.
+    ///
+    /// A descriptor holds ONE (structure, brand-slot) rectangle and `union` is
+    /// the pointwise hull of both factors. That is exact whenever the operands
+    /// agree on one factor (`Meters | int = int`, `Meters | Feet`), but ANY
+    /// union whose operands disagree on BOTH factors releases the slot to top
+    /// and loses the brand entirely. It takes only ONE brand to reach:
+    /// `utf8 | nil` is the shape every optional `@spec` is written in, and it
+    /// admits a bare binary. HEAD admits the same program, so this is strictly
+    /// smaller than the inverted order it replaces, and it is a missed
+    /// diagnostic rather than a miscompile (brands are erased before the
+    /// backend). The cure is a descriptor holding a union of rectangles — the
+    /// slot pushed down onto the per-axis DNF clauses — which is a data-model
+    /// change, not a patch: see fz-kdt.203, where these two `is_subtype`
+    /// answers flipping to `false` is the red-first signal.
+    #[test]
+    fn a_union_that_disagrees_on_both_factors_releases_the_brand_slot() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let meters = t.mint_brand(int, "Meters");
+        let utf8 = t.mint_brand(bin, "utf8");
+
+        // ONE brand is enough: `@spec take(utf8 | nil)` accepts a bare binary.
+        let nil = t.nil();
+        let optional = t.union(utf8, nil);
+        assert_eq!(t.display(&optional), "binary | :nil", "the slot is released to top");
+        assert!(
+            t.is_subtype(&bin, &optional),
+            "KNOWN-WRONG (fz-kdt.203): a bare binary is inside {}",
+            t.display(&optional)
+        );
+
+        // Two brands widen the same way, pairing each slot with each structure.
+        let joined = t.union(meters, utf8);
+        assert_eq!(
+            t.display(&joined),
+            "(Meters | utf8)(int | binary)",
+            "the hull pairs both slots with both structures"
+        );
+        assert!(t.is_subtype(&meters, &joined));
+        assert!(t.is_subtype(&utf8, &joined));
+        assert!(!t.is_subtype(&int, &joined));
+        assert!(!t.is_subtype(&bin, &joined));
+        let branded_binary = t.mint_brand(bin, "Meters");
+        assert!(
+            t.is_subtype(&branded_binary, &joined),
+            "KNOWN-WRONG (fz-kdt.203): Meters(binary) is admitted by Meters(int) | utf8(binary)"
+        );
+    }
+}
+
+/// fz-kdt.198 — the rectangle algebra the refinement law rests on.
+///
+/// A `Descr` denotes `S x B`: the kind axes it always had, times a brand slot
+/// over "brand names, plus the unbranded case". The unbranded case is the
+/// element every COFINITE `FiniteSet<String>` contains and no finite one
+/// names, so `FiniteSet` itself needs no change and an unbranded `int` is
+/// simply a top slot. These pin the algebra's laws, the two bases
+/// (`Descr::none()` vs `Descr::unbranded()`), and the places precision is
+/// deliberately traded for termination.
+mod brand_lattice_algebra {
+    use super::super::canon::TyCanon;
+    use super::*;
+    use crate::fz_ir::FnId;
+
+    fn meters(t: &mut Types) -> Ty {
+        let int = t.int();
+        t.mint_brand(int, "Meters")
+    }
+
+    fn feet(t: &mut Types) -> Ty {
+        let int = t.int();
+        t.mint_brand(int, "Feet")
+    }
+
+    fn utf8(t: &mut Types) -> Ty {
+        let bin = t.str_t();
+        t.mint_brand(bin, "utf8")
+    }
+
+    /// The slot is a finite/cofinite set lattice and every kind axis is a set
+    /// lattice, so the product distributes componentwise.
+    #[test]
+    fn union_distributes_over_intersect_at_the_slot() {
+        let mut t = Types::new();
+        let a = meters(&mut t);
+        let b = feet(&mut t);
+        let c = t.int();
+        let bc = t.intersect(b, c);
+        let lhs = t.union(a, bc);
+        let ab = t.union(a, b);
+        let ac = t.union(a, c);
+        let rhs = t.intersect(ab, ac);
+        assert!(
+            t.is_equivalent(&lhs, &rhs),
+            "A|(B&C) = {} but (A|B)&(A|C) = {}",
+            t.display(&lhs),
+            t.display(&rhs)
+        );
+    }
+
+    /// Disjoint slots subtract nothing: `Meters(int) \ utf8(binary)` is the
+    /// whole `Meters(int)`.
+    #[test]
+    fn a_brand_survives_subtracting_a_brand_over_another_inner() {
+        let mut t = Types::new();
+        let m = meters(&mut t);
+        let u = utf8(&mut t);
+        let d = t.difference(m, u);
+        assert!(t.is_equivalent(&d, &m), "got {}", t.display(&d));
+    }
+
+    /// The refinement law is not a top-level special case: it survives
+    /// arbitrary nesting, which is where a call's argument meets a spec.
+    #[test]
+    fn the_law_survives_a_map_of_a_list_of_a_tuple() {
+        let mut t = Types::new();
+        let int = t.int();
+        let m = meters(&mut t);
+        let branded_pair = t.tuple(&[m, int]);
+        let plain_pair = t.tuple(&[int, int]);
+        let branded_list = t.list(branded_pair);
+        let plain_list = t.list(plain_pair);
+        let key = MapKey::Atom("k".to_string());
+        let branded_map = t.map(&[(key.clone(), branded_list)]);
+        let plain_map = t.map(&[(key, plain_list)]);
+        assert!(
+            t.is_subtype(&branded_map, &plain_map),
+            "branded {} must be inside plain {}",
+            t.display(&branded_map),
+            t.display(&plain_map)
+        );
+        assert!(
+            !t.is_subtype(&plain_map, &branded_map),
+            "the bare map is NOT the branded one; got {}",
+            t.display(&plain_map)
+        );
+    }
+
+    /// Two cofinite slots meet at a cofinite slot naming both brands, and the
+    /// result still holds every unbranded int. One wrapping, not two.
+    #[test]
+    fn cofinite_slots_meet() {
+        let mut t = Types::new();
+        let int = t.int();
+        let m = meters(&mut t);
+        let f = feet(&mut t);
+        let not_m = t.difference(int, m);
+        let not_f = t.difference(int, f);
+        let both = t.intersect(not_m, not_f);
+        assert!(!t.is_empty(&both), "got {}", t.display(&both));
+        assert_eq!(t.display(&both), "not(Feet | Meters)(int)");
+        assert!(t.is_subtype(&both, &int));
+        assert!(t.is_disjoint(&both, &m));
+        assert!(t.is_disjoint(&both, &f));
+    }
+
+    /// A refinement of nothing is nothing; a refinement of everything is
+    /// inside everything, and strictly.
+    #[test]
+    fn brands_on_the_two_bases() {
+        let mut t = Types::new();
+        let none = t.none();
+        let any = t.any();
+        let branded_none = t.mint_brand(none, "X");
+        let branded_any = t.mint_brand(any, "X");
+        assert!(t.is_empty(&branded_none), "got {}", t.display(&branded_none));
+        assert!(t.is_equivalent(&branded_none, &none));
+        assert!(t.is_subtype(&branded_any, &any));
+        assert!(!t.is_subtype(&any, &branded_any));
+    }
+
+    /// `mint_brand` REBRANDS — it overwrites the slot, so there is no
+    /// Meters-of-Feet and no nesting. One brand per value, at the constructor.
+    #[test]
+    fn minting_twice_rebrands_rather_than_nesting() {
+        let mut t = Types::new();
+        let m = meters(&mut t);
+        let refeet = t.mint_brand(m, "Feet");
+        let f = feet(&mut t);
+        assert_eq!(refeet, f, "minting over a brand replaces the slot");
+    }
+
+    /// A brand over a UNION inner is still ONE rectangle — "an X whose
+    /// structure is an int or a binary".
+    #[test]
+    fn minting_over_a_union_inner() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let both = t.union(int, bin);
+        let x = t.mint_brand(both, "X");
+        assert!(t.is_subtype(&x, &both));
+        assert!(!t.is_subtype(&both, &x));
+        assert_eq!(t.display(&x), "X(int | binary)");
+    }
+
+    /// THE TWO BASES, observed. `Descr::none()` keeps an EMPTY slot (it is the
+    /// union identity), while a meet of two disjoint kinds leaves the slot at
+    /// top — so the empty type now has more than one interned identity, and
+    /// `looks_empty()`, never `== Descr::none()`, is the bottom test.
+    #[test]
+    fn bottom_has_more_than_one_interned_identity() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let met = t.intersect(int, bin);
+        let none = t.none();
+        assert!(t.is_empty(&met));
+        assert!(t.is_empty(&none));
+        assert_ne!(met, none, "int and binary meet at a SECOND bottom id");
+    }
+
+    /// `TyCanon::fingerprint` promises "equivalent types always share it". The
+    /// several bottoms would refute it, except `descr_fingerprint` and
+    /// `descr_body` both answer on emptiness first, so every bottom collapses
+    /// to `fp[none]` / `none` whatever its slot says. This pins the one thing
+    /// the base split could have broken silently.
+    #[test]
+    fn the_canon_collapses_every_bottom_to_one_form() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let met = t.intersect(int, bin);
+        let none = t.none();
+        assert!(t.is_equivalent(&met, &none));
+        let labels = |_: FnId| String::new();
+        let mut canon = TyCanon::new(&labels);
+        let a = canon.fingerprint(&t, met);
+        let b = canon.fingerprint(&t, none);
+        assert_eq!(a, b, "both bottoms fingerprint as fp[none]");
+        let ra = canon.render(&t, met);
+        let rb = canon.render(&t, none);
+        assert!(
+            ra.ends_with("none") && rb.ends_with("none"),
+            "both bodies render `none`: {ra} / {rb}"
+        );
+        assert_eq!(ra, rb, "one denotation, one canonical form");
+    }
+
+    /// A bottom is the UNION IDENTITY however it was reached.
+    ///
+    /// The empty type no longer has one interned identity: a structural meet
+    /// (`int and binary`) empties the kind axes and leaves the slot at TOP,
+    /// while a brand meet (`Meters and Feet`) empties the slot and leaves the
+    /// kind axes inhabited. A pointwise hull would read the top slot of the
+    /// first as "any brand" and erase the other operand's brand — `nothing |
+    /// Meters(int)` would answer `int`. `union` answers on `looks_empty()`
+    /// first, which is the one bottom test, so every bottom is the identity.
+    #[test]
+    fn every_bottom_is_the_union_identity() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let nil = t.nil();
+        let m = meters(&mut t);
+        let f = feet(&mut t);
+        let structural_bottom = t.intersect(int, bin);
+        let slot_bottom = t.intersect(m, f);
+        assert!(t.is_empty(&structural_bottom));
+        assert!(t.is_empty(&slot_bottom));
+        for bottom in [structural_bottom, slot_bottom] {
+            for inhabited in [m, nil, int] {
+                let joined = t.union(bottom, inhabited);
+                assert_eq!(
+                    t.display(&joined),
+                    t.display(&inhabited),
+                    "nothing | {} must be {}",
+                    t.display(&inhabited),
+                    t.display(&inhabited)
+                );
+                let flipped = t.union(inhabited, bottom);
+                assert_eq!(flipped, joined, "and the join commutes");
+            }
+        }
+        let none = t.none();
+        for a in [structural_bottom, slot_bottom, none] {
+            for b in [structural_bottom, slot_bottom, none] {
+                assert_eq!(
+                    t.union(a, b),
+                    none,
+                    "a join of two nothings is THE nothing, whichever bottoms they are"
+                );
+            }
+        }
+    }
+
+    /// Erasing the refinement must not RESURRECT an empty type. `Meters and
+    /// Feet` is empty BECAUSE its slot is, so releasing the slot to top would
+    /// hand `is_value_disjoint` — the live brand-blind runtime question
+    /// (fz-bsx) — a fully inhabited `int`.
+    #[test]
+    fn erasing_a_brand_keeps_an_empty_type_empty() {
+        let mut t = Types::new();
+        let int = t.int();
+        let m = meters(&mut t);
+        let f = feet(&mut t);
+        let bottom = t.intersect(m, f);
+        assert!(t.is_empty(&bottom));
+        assert!(
+            t.is_value_disjoint(&bottom, &int),
+            "an empty type shares no runtime value with int"
+        );
+        assert!(t.is_value_disjoint(&bottom, &bottom));
+    }
+
+    /// `diff`'s equal-structures case is SYNTACTIC. It is exact for every
+    /// shape `mint_brand` builds — the constructor clones its inner — and
+    /// falls back to returning the whole minuend otherwise, which is the
+    /// over-approximating side. Sound, deliberately imprecise, and the reason
+    /// there is no `is_equiv` call inside `diff`.
+    #[test]
+    fn the_equal_structures_case_is_syntactic() {
+        let mut t = Types::new();
+        let int = t.int();
+        let bin = t.str_t();
+        let carved = t.union(int, bin);
+        let branded = t.mint_brand(carved, "X");
+        let exact = t.difference(carved, branded);
+        assert_eq!(
+            t.display(&exact),
+            "not(X)(int | binary)",
+            "the brand's own inner subtracts exactly"
+        );
+        let float = t.float();
+        let wider = t.union(carved, float);
+        let widened = t.difference(wider, branded);
+        assert_eq!(
+            t.display(&widened),
+            t.display(&wider),
+            "a structurally different minuend gets no slot subtraction at all"
         );
     }
 }

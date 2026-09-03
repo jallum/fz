@@ -114,7 +114,9 @@ impl RuntimeTestAxis {
             Self::Callables => AxisPrecision::PerPosition,
             // Numbers are PRESENCE BITS here, never value sets: the projection
             // records "INT is present" and drops literals and brands alike
-            // (`Types::runtime_type_predicate`). So the reason this axis is
+            // (`Types::runtime_type_predicate`, which never reads the brand
+            // slot -- a refinement narrows WHICH ints a type admits, and this
+            // axis only asks whether an int arrives). So the reason this axis is
             // safe to seat across is NOT that the surface names the value --
             // two arms whose surfaces are `brand X of int` and `brand Y of
             // int` put the SAME question and hold incomparable surfaces. It is

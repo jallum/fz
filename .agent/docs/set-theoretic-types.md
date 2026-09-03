@@ -9,13 +9,16 @@ operations are literal set operations:
 A <: B        <=>  ⟦A⟧ ⊆ ⟦B⟧
 A and B       =    ⟦A⟧ ∩ ⟦B⟧        (intersect)
 A or  B       =    ⟦A⟧ ∪ ⟦B⟧        (union)
-not A         =    domain \ ⟦A⟧     (complement)
+A \ B         =    ⟦A⟧ \ ⟦B⟧        (difference)
 A is empty    <=>  ⟦A⟧ = ∅          (the decision procedure)
 A, B disjoint <=>  ⟦A⟧ ∩ ⟦B⟧ = ∅
 ```
 
 Everything reduces to deciding emptiness: `is_subtype(a, b)` asks whether
-`(a and not b)` is empty; `is_disjoint(a, b)` asks whether `(a and b)` is empty.
+`(a \ b)` is empty; `is_disjoint(a, b)` asks whether `(a and b)` is empty.
+Difference, not complement, is the primitive: a descriptor cannot hold the
+complement of a branded type (see "Brands carry their inner" below), so
+`Descr::diff` subtracts factor by factor rather than meeting with a negation.
 
 `is_subtype` is NOT a safe "covers everything the other says" test for a
 closure-literal column. `emptiness.rs::func_clause_empty` decides `P \ N` for a
@@ -50,13 +53,21 @@ disjunctive normal form (DNF). A `Descr` is that union:
 basic      presence bits: int, float, binary (str is the binary bit)
 atoms      finite-or-cofinite set of atom names   (:ok, :error, nil, true, …)
 opaques    finite-or-cofinite set of opaque-type names   (nominal)
-brands     finite-or-cofinite set of brand names         (nominal)
 vars       finite-or-cofinite set of type-variable ids
 tuples     DNF of tuple shapes (nested type per element)
 lists      DNF of list shapes  (nested elem type, empty/non-empty flag)
 resources  DNF of resource shapes (nested payload type)
 funcs      DNF of arrow shapes (arg types + ret type, optional closure lit)
 maps       DNF of map shapes   (nested value types)
+```
+
+One slot is NOT a kind. `brands` is a finite-or-cofinite set of brand names
+that REFINES every kind above it at once — a conjunctive factor, not another
+member of the union:
+
+```text
+brands     which brand a value carries: top = "no constraint" (the unbranded
+           case and every brand), a finite set = a nominal refinement
 ```
 
 `nil`, `true`, and `false` live on the `atoms` axis, not on `basic` (`bool_lit` is
@@ -73,10 +84,16 @@ means its kind and emits the `type/numeric-literal-widened` warning
 unions are the language's backbone. Compiler2's `int_lit` and
 `as_int_singleton` trait methods are documented degenerates for the shared
 trait surface.
-A value belongs to a type if it belongs to the axis for its kind. `any()` is every
-axis at top, `none()` every axis at bottom, and `is_empty` holds when every axis is
-empty (structural clauses checked recursively, with a coinductive memo for recursive
-shapes).
+A value belongs to a type if it belongs to the axis for its kind AND its brand is
+one the slot admits. `any()` is every axis at top, `none()` every axis at bottom,
+and a descriptor is empty when its brand slot is empty (`Meters and Feet`) or every
+kind axis is (structural clauses checked recursively, with a coinductive memo for
+recursive shapes). `Descr::none()` alone carries the empty slot; every value
+constructor starts from `Descr::unbranded()`, whose slot is top. Because a bottom
+therefore has more than one shape, `union` asks `looks_empty()` before it joins
+anything, so a bottom is the identity however it was reached — a pointwise hull
+would read an empty operand's top slot as "any brand" and widen the other side by
+it.
 
 DNF construction keeps clause lists hygienic by boolean identity. One clause-
 product skeleton (`dnf.rs::dnf_intersect_with`) serves both intersections —
@@ -218,42 +235,97 @@ model described in [`specs`](specs.md).
 
 ## Brands carry their inner; opaques are nominal tags
 
-`brands` and `opaques` are **nominal refinements** over structural representations,
-carried as their own axes. A brand carries its inner representation **in the same
-`Descr`**, alongside the tag: a brand `B` declared `@type B :: refines U` is the
-structural type `U` with the `brands` axis also set. An opaque is a pure nominal
-tag: `opaque_of("T")` sets only the `opaques` axis, so the tag is not a subtype of
-the plain representation it hides.
+`brands` and `opaques` are **nominal refinements** over structural representations.
+They are carried differently because they mean different things. A brand `B`
+declared `@type B :: refines U` is the structural type `U` with the `brands` slot
+ALSO narrowed to `{B}` — the same values, fewer of them. An opaque is a pure
+nominal tag on its own kind axis: `opaque_of("T")` sets only the `opaques` axis, so
+the tag is not a subtype of the plain representation it hides.
 
 ```text
-mint_brand(binary, "utf8")  : { brands = {utf8}, basic = binary }
-plain binary                : { basic  = binary }
-opaque_of("T")              : { opaques = {T} }
+mint_brand(binary, "utf8")  : { basic = binary, brands = {utf8} }
+plain binary                : { basic = binary, brands = any     }
+opaque_of("T")              : { opaques = {T},  brands = any     }
 ```
 
-`utf8` is the canonical brand: `utf8 <: binary` because dropping the `brands` axis
-leaves a structural `binary`, while a plain `binary` is not a `utf8` because the
-unbranded type lacks the tag. Opaque tags make two distinct opaque names
-lattice-disjoint, and disjoint from plain structural values unless a consumer
-explicitly combines the tag with structural axes.
+An unbranded type's slot is TOP, not empty: `binary` constrains nothing about
+brands, so `utf8 <: binary` — dropping the refinement leaves a structural
+`binary` — while a plain `binary` is NOT a `utf8`, because `any ⊄ {utf8}`. The
+direction is the whole point: a `@spec` position declared `binary` accepts a
+`utf8` argument, and a position declared `utf8` rejects a bare `binary`
+(`spec/violation`). Opaque tags make two distinct opaque names lattice-disjoint,
+and disjoint from plain structural values unless a consumer explicitly combines
+the tag with structural axes.
+
+A value carries at most ONE brand. That is a rule of the LANGUAGE, not an
+artefact: there is no intersection type expression, so `Positive and Even` is
+unwritable, and the lattice reads the meet of two brands over one inner as
+EMPTY. `Meters or int` is `int`, and `Meters and Feet` is `none`.
+
+There is no complement operation on a descriptor, and that is by construction:
+`not Meters` is "not an int" OR "an int under another brand", two rectangles
+where a descriptor holds one, so any `neg` would have to widen to `any` and
+forget the brand. Difference is the primitive instead — `Descr::diff` subtracts
+the two factors separately. It is EXACT in the three shapes a brand model
+produces at one structure: the subtrahend's slot covers ours (`Meters \ int` is
+empty), the slots are disjoint (`Meters \ Feet` is `Meters`), and the structures
+are syntactically equal (`int \ Meters` is `not(Meters)(int)`). It
+OVER-approximates when the slots partly overlap across DIFFERENT structures —
+`(int | binary) \ Meters(int)` is the whole `int | binary`, because the exact
+answer is two rectangles and a descriptor holds one. That is the safe direction:
+every consumer asks `diff(..).is_empty()`, so a too-big difference can only
+answer `is_subtype = false` or leave a narrowed branch too wide.
+`Descr::neg_structure` is its private helper, the complement of the kind axes
+alone.
+
+The empty type therefore has more than one interned identity: `Descr::none()`
+carries an empty slot, while `int and binary` meets at empty kind axes with the
+slot still at top. `Descr::looks_empty()` is the bottom test; `== Descr::none()`
+is not, and `union` and `erase_nominal` both ask it first so that no bottom
+widens or resurrects. The canonical form is unaffected — `TyCanon` answers on
+emptiness first, so every bottom renders `none` and fingerprints `fp[none]`.
+
+A refinement renders as a refinement, never as a union: `utf8(binary)`,
+`not(Meters)(int)`, `(Feet | Meters)(int)`. Rendering it `binary | utf8` would
+read as a SUPERTYPE of `binary`, which is the lattice inverted. `display` and
+`TyCanon` share the one renderer (`format::brand_refinement`), so the two
+surfaces cannot drift.
+
+**Where the encoding is not exact.** A descriptor holds ONE rectangle, and
+`union` is the pointwise hull of both factors. That is exact whenever the
+operands agree on one factor (`Meters | int`, `Meters | Feet`), but ANY union
+whose operands disagree on BOTH factors releases the slot to top and loses the
+brand entirely. It takes only one brand to reach: `utf8 | nil` — the shape every
+optional `@spec` is written in — admits a bare binary, and so does `utf8 |
+integer`. `TypeExpr::Union` is the language's only type combinator, so a brand
+cannot yet be trusted at a `@spec` gate beyond the single-brand case. This is a
+missed diagnostic, never a miscompile: no runtime test reads the slot, so a
+program that slips through the gate runs exactly as the unbranded one would. The
+cure is a descriptor holding a union of rectangles — the slot pushed down onto
+the per-axis DNF clauses — which is a data-model change; it is a known-wrong pin
+in `brand_lattice_law`, see fz-kdt.203.
 
 Because brand inners live in the symbol, **brand questions are answered from the
 symbol's own structure** — there is no side map and nothing about a name is
 looked up. `mint_brand(inner, name)` is the constructor that establishes a
 brand; it is called once, where the name is defined (see
-[`type-naming`](type-naming.md)), so the symbol is complete from birth. Opaque
-source definitions publish the tag itself; places that need structure, such as a
-struct value, model it as the opaque tag intersected with the relevant structural
-shape.
+[`type-naming`](type-naming.md)), so the symbol is complete from birth. There is
+no constructor for a bare tag with no inner: a refinement of nothing denotes
+nothing. Opaque source definitions publish the tag itself; places that need
+structure, such as a struct value, model it as the opaque tag intersected with
+the relevant structural shape.
 
 **Brands carry no runtime witness.** There is no brand `ValueKind` (the runtime
 kinds are Bitstring/ProcBin/Struct/…; see [`any-value`](any-value.md)), and the
 runtime compares structure and bytes, so a `utf8` value is indistinguishable from
 the binary it wraps. `erase_nominal` is the type-level expression of that fact: it
-drops the `brands` and `opaques` axes and keeps the structural axes that remain,
-recursing through every structural position, so a brand nested inside a tuple is
-discharged too. A pure tag with no structural axes over-approximates to `any()` so
-the erased set is never too small.
+releases the `brands` slot to top and drops the `opaques` axis, keeping the
+structural axes that remain and recursing through every structural position, so a
+brand nested inside a tuple is discharged too. Releasing the slot IS the whole
+brand erasure, because the inner is already the structural axes beside it. A pure
+opaque tag with no structural axes over-approximates to `any()` so the erased set
+is never too small. The runtime type predicate reads the same way: it never
+consults the brand slot.
 
 ## Two models: typing vs runtime
 
@@ -291,15 +363,19 @@ broken, so consumers surface it rather than fold the comparison away.
 The choice of predicate follows the question, not the call site:
 
 ```text
-== / != fold, pattern-literal match, guard ==   ->  is_value_disjoint   (value)
-parameter / argument checks, FFI marshalling    ->  is_disjoint         (typing)
-runtime type test (`x is T`)                    ->  is_subtype/disjoint (typing)
+== / != fold, pattern-literal match, guard, runtime type test
+    ->  is_value_disjoint / runtime_type_predicate   (value; the slot is never read)
+@spec argument coverage (arrow_set_covers), extern contracts, dispatch planning
+    ->  is_subtype                                   (typing; the slot is compared)
 ```
 
 There is one runtime-equality relation, `is_value_disjoint`, and every value site
 consults it; a literal/guard comparison and a pattern-arm prune lower to that same
-brand-blind question. A type test asks the typing question, so `x is utf8`
-distinguishes a branded value from a bare binary.
+brand-blind question. The brand slot is a TYPING fact only: a runtime test is
+built by `Types::runtime_type_predicate`, which never reads the slot, so no
+runtime test can separate a `utf8` from the binary it wraps. A brand is checked
+where types are checked — spec positions, dispatch, boundaries — and nowhere
+else.
 
 ## Struct field types
 
@@ -324,9 +400,13 @@ same identity protocol dispatch uses (see [`protocols`](protocols.md)) and keeps
 ```text
 cargo test --lib compiler2::types   # the interned implementation
 cargo test --lib dispatch_matrix    # shared generic dispatch/type-region model
+cargo test --lib brand_lattice_law  # the refinement direction, by construction
 cargo test value_disjoint_soundness_table
 cargo test value_disjoint_nested_in_tuple_is_false
 ```
 
 The fixture corpus pins that `==`, `case`-match, and guard agree across the execution
-paths on branded values (`bsx_nested_eq`, `bsx_nested_match`, `bsx_guard_eq`).
+paths on branded values (`bsx_nested_eq`, `bsx_nested_match`, `bsx_guard_eq`), and
+that the typing side is brand-AWARE in both directions: `brand_refines_its_inner`
+passes a branded value to an inner-typed `@spec`, and `brand_rejects_a_bare_inner`
+is a `spec/violation` for the bare inner at a brand-typed one.

@@ -1,0 +1,17 @@
+#---
+# purpose: "fz-kdt.198 — a bare inner is rejected at a brand-typed @spec position"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+#
+# # brand_rejects_a_bare_inner
+#
+# The other half of the refinement law. `Utf8.to_bytes/1` declares `@spec
+# to_bytes(utf8) :: binary`; a raw byte literal has not been through
+# `Utf8.from_bytes!/1`, so it carries no tag and the call is a `spec/violation`
+# on every path. Nothing at runtime could tell the two values apart — this is a
+# TYPING verdict, which is exactly why the brand axis has to be brand-aware
+# while equality stays brand-blind.
+fn main() do
+  dbg(Utf8.to_bytes(<<104, 105>>))
+end
