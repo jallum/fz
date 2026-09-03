@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T08:28:16Z",
+  "description": "From the fz-kdt.186 cold review (2026-09-03). driven_backend_program is\ncalled once per fixture per gate (seat gate, twins gate, order-agreement\ngate, census gate) and six more times per fixture inside the census gate's\nstress loop, so compiler2_dispatch_blind_escape_census_is_the_known_\npopulation alone runs 160-230 s (run-to-run spread +/-40%), the lib suite\nwent ~100 s -\u003e 221 s at fz-kdt.178's landing (22 fixtures x 7 arrivals), and\nthe cost of the RELATION under test (one `overlaps` per pair per subject\nagainst ~20 s of compilation) cannot be measured at all. CONCORDANCE: fz-\nkdt.175 is the matrix's wall-clock tripwire (a different gate); fz-kdt.141\nowns the stress knob these gates drive. Direction: one per-(fixture, arrival)\nbackend product cache shared by the gates in a test run (the artifact is\nimmutable once driven), so each fixture compiles once per arrival; then\nreport the gates' own wall clock as a number. Proportional compilation applies\nto the test suite too.",
+  "id": "fz-kdt.195",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "The static dispatch gates recompile the same 22 census fixtures per gate and per stress setting: 160-230 s of the 221 s lib run is repeated compilation, and no relation change can be timed",
+  "type": "task",
+  "updated_at": "2026-09-03T08:28:16Z"
+}
