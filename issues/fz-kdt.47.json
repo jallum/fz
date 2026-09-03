@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.34"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Make RuntimeDemand derivation read-only and prove per-executable order independence",
   "type": "bug",
-  "updated_at": "2026-09-03T02:41:54Z"
+  "updated_at": "2026-09-03T02:43:30Z"
 }
