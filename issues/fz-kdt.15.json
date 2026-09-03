@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-qon.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.73"
+  ],
   "closed_at": "2026-09-03T02:35:05Z",
   "close_reason": "Implemented by commit 26acf14e9 and PR #113 in GitHub stack #112. Deleted the orphaned SemanticClosure model and public re-export; restated current product settlement without a replacement abstraction. Proof: focused semantic 13 passed; library 1586 passed with 5 ignored; fixture matrix 485 passed with 9 ignored; workspace checks, strict clippy, formatting, diff, and residue scans passed.",
   "created": "2026-08-25T01:36:37Z",
