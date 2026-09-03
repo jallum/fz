@@ -11,11 +11,15 @@
     {
       "text": "PARAMETER-SIDE REPRODUCER from the fz-kdt.210 research (2026-09-03, base dd07432db), possibly the same defect as yours or a close sibling -- your owner should decide.\n\nfz-kdt.210 fixes the RETURN side of a partial join: a @spec variable whose covariant occurrences include one the walk cannot read (an opaque reducer arrow handed over as a bare address var, so collect_arrow_match finds no callable_clauses and answers Unknown) was being treated as fully joined, so instantiate_match called the result Known -- a runtime fact -- from a join that never finished.\n\nThe PARAMETER half of that same root is a FALSE spec/violation, present at base AND under 210s prototype: refine_contract_inputs instantiates the reducers arrow from the same partial join and clamps it to the SEED accumulator, so the ascent stops one rung short. Reproducer is `.kdt210/probe/seed.fz` in the fz-kdt.210 research artifacts (a fold whose accumulator seed is an atom); swapping the seed to `[]` makes it compile, because the fz-f98.16 empty-list cleaner masks the list case -- which is why this has been invisible.\n\nThat is the same shape your body describes -- refine_contract_inputs consuming an erasure as a refinement -- with the erasure arriving from a partial instantiation rather than from intersect deleting a var-carrying union member. If they are one defect, fold; if two, this is the sibling and wants its own ticket. Related: fz-kdt.132 (closed -- the clamp this resembles, arriving from a @spec rather than a closure clause), fz-kdt.210.",
       "timestamp": "2026-09-03T22:37:08Z"
+    },
+    {
+      "text": "fz-kdt.216 has been filed for the partial-join parameter clamp described in my previous comment, because the fz-kdt.210 cold review independently judged that no ticket owned it. If you decide it is the same defect as this one, fold 216 into this ticket and close it: the two share refine_contract_inputs and the harm, and differ only in where the erasure comes from (intersect deleting a var-carrying union member here, a partial instantiation there).",
+      "timestamp": "2026-09-03T23:12:00Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Types::intersect deletes a union member whose surface member carries a free type variable, and refine_contract_inputs consumes the erasure as a refinement",
   "type": "task",
-  "updated_at": "2026-09-03T22:37:08Z"
+  "updated_at": "2026-09-03T23:12:00Z"
 }
