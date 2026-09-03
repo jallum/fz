@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.67"
+  ],
   "blocks": [],
   "created": "2026-09-03T03:07:27Z",
   "description": "## Goal\n\nRemove widen_for_recursive_spec_key from the shared type vocabulary. Compiler2 has no numeric literal types to widen for recursive keys, so its implementation is identity. The former type pipeline that required the hook has no remaining Types implementation.\n\n## Current proof\n\nRepository search finds exactly one trait declaration, one compiler2 inherent identity method, one forwarding trait implementation, and two unit tests that only prove the identity behavior. There are no production call sites and no second implementation of the shared Types trait.\n\n## Change\n\nDelete the trait method, the inherent method, the forwarding implementation, and the two identity-only tests. Do not add a replacement hook or compatibility alias. Existing refine_widen and convergence_class remain because they implement live compiler2 convergence policy.\n\n## Signal\n\nRepository search finds no widen_for_recursive_spec_key or recursive-spec-key widening documentation. The focused type suite, full library suite, CLI suite, single-threaded fixture matrix, workspace all-target/all-feature check, formatting, and strict clippy pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Delete the retired recursive-spec-key widening hook",
   "type": "task",
-  "updated_at": "2026-09-03T03:07:27Z"
+  "updated_at": "2026-09-03T03:07:47Z"
 }
