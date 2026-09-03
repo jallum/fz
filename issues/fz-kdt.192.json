@@ -15,11 +15,15 @@
     {
       "text": "PROMOTED TO THE HEAD OF THE CONFLUENCE CHAIN by the fz-kdt.184 cold review (2026-09-03): land this FIRST (192 -\u003e 184 -\u003e 124 -\u003e 183 -\u003e 120). Scope confirmed by measurement: 184's prototype pays for this defect with instantiate_match(params, result, bounds, witnesses, args) -- two full walks per position of which position.upper and observed.lower are discarded and the args walk's MatchWitness is dropped without a `let _`; 120's prototype pays with open_vars(params, args). With witnesses as OBSERVATIONS (the argument, narrowed by the pattern's ground parts, never a restated pattern) one walk over (params, args) yields lower bounds, upper bounds and openness. Reproducer stays: match_arrow([[a], b, (a,b)-\u003eb], b, {}, [[int], int, (binary,int)-\u003eint]) hands the third witness back as (a,int)-\u003eint. Acceptance: 0 corpus movers (interp/run/canon), the R-series and A-series verdict tables from the 184 review unchanged at HEAD (they are the pins), and a test that the witness of a pattern position carrying an unbound variable is the raw argument.",
       "timestamp": "2026-09-03T07:13:38Z"
+    },
+    {
+      "text": "fz-kdt.198 landed (4c3fa4c63); this ticket now rebases onto it. Measured pin flips (refuter, on 198's calculator): x5_branded_argument_at_a_ground_pattern_field -- display \"int | Meters\" -\u003e \"Meters(int)\"; is_subtype(branded, int) TRUE; is_subtype(int, branded) FALSE; the `t.brand_of(\"Meters\")` line and its assertion must be DELETED (Types::brand_of no longer exists; there is no bare-tag constructor); verdict Invalid -\u003e accepting (198's match_arrow answers Known params=[\"{int, binary}\"] result=\"binary\"). x5b_bare_argument_at_a_branded_pattern_field: 198 ALONE does not flip it (still Known params=[\"{Meters(int), binary}\"] -- HEAD's overlapping_witnesses intersects); the verdict flips to rejecting only by this ticket's raw-argument gate, so X5B is YOUR red-first signal, not a consequence of 198. Rewrite both pins' comments as facts of the lattice, not as \"moves when 198 lands\".\n",
+      "timestamp": "2026-09-03T12:39:45Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A witness is the raw argument: overlapping_witnesses and match_witness go, the structural gate compares what the call supplied, and arrow-set coverage reads polymorphic clause domains at any",
   "type": "task",
-  "updated_at": "2026-09-03T11:05:33Z"
+  "updated_at": "2026-09-03T12:39:45Z"
 }
