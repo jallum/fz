@@ -9,9 +9,15 @@
   "id": "fz-kdt.183",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "RESEARCH DONE (2026-09-03, prototype + corpus; report + proto183.diff in the coordinator's scratchpad, being cold-reviewed). THE MECHANISM: Types::convergence_class_at (types/mod.rs:780-796) turns a pure list slot into list(address_var) and a pure callable into address_var on the RECURSIVE key branch (World::canonical_activation_key :1884 -\u003e convergence_collapse :845 -\u003e Ignore arm :1016-1032) -- fz-y6w bounded specialization as documented (\"list(int) and list(any) share one recursive key\"). reduce_cont/3 escapes only because its mask is ListShape(Ignore) and the descent reaches the element; nest the element one list deeper and it collapses too. THE DEFECT IS LIVE AT HEAD, not only under 120: repro183.fz (dbg(Enum.with_index([[\"a\"], [\"b\"]], fn (x, _i) -\u003e M.strings(x) end)) beside an independent int with_index) fails with error[spec/violation]: strings/1 ... ([binary] | [int]) on interp, run AND build; delete the neighbour and it prints [1, 1]. Also proven at HEAD: swapping two independent statements flips reduce_step/3's published return FACT (fz-kdt.190). POPULATION: 146 blind-shared activations (free var in key AND \u003e=2 publishers with different evidence) over 30 functions / 46 fixtures; Enum.reduce_while/3 32, List.reduce_cont/3 20, ... CANDIDATES measured: keep the callable in the key -\u003e 7 fixtures hit the multi-target-closure arg-floor (fz-kdt.189, blocked behind runtime demand); per-row/per-publisher return correlation -\u003e quicksort prints [3] (rows are the caller's own ASCENT HISTORY as well as publishers; the cross-row join IS the fixpoint); stop the coalesce blend -\u003e sound but does not cure (fz-kdt.188). RECOMMENDED E': convergence_class_at keeps the list ELEMENT (18 lines): repro green on three doors, corpus FIFO/LIFO canon movers 2 -\u003e 0 (dead_closure AND 00277 byte-identical), enum_predicate_search's blind-escape census empties, blind-shared 146 -\u003e 78; cost executables 5297 -\u003e 5383 (+1.6%) and the fz-y6w quicksort frontier bound moves (partition/4 1 -\u003e 4; convergence still identical on every schedule) -- the bound must be RE-DERIVED, not re-pinned, which is the cold review's first question. With fz-kdt.120's prototype on top: enum_map_family GREEN, enum_tier0 + fz_f98_map_reduce oracle-exact. Gate 2 as written (\"no free type variable\") is not met by E' -- the callable slot stays a2 (fz-kdt.189); restate to the list and accumulator positions.",
+      "timestamp": "2026-09-03T05:49:56Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "List.reduce_step/3 is one activation keyed entirely on free type variables: every Enum.reduce/3 user shares one body and one joined return, and only @spec results re-correlate it",
   "type": "task",
-  "updated_at": "2026-09-03T04:45:46Z"
+  "updated_at": "2026-09-03T05:49:56Z"
 }
