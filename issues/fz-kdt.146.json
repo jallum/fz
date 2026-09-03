@@ -7,9 +7,15 @@
   "id": "fz-kdt.146",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "INVISIBILITY QUANTIFIED (fz-kdt.144, 0889c0b3a). The tripwire's Full reading asks a list clause's element question of every element -- but only where the clause HAS one. A shape_only degrade asks no head, so it has no Full content and the instrument reports nothing on it by construction (matches_list_elements returns true under both scopes; unit gate a_list_axis_that_asks_no_head_reports_nothing_rather_than_guessing). The blind population is the one this ticket audits: the 144 cold review's instrumented census counted 34,177 list projections, 104 (0.30%) degrading to shape_only on 3 fixtures (00285_enum_sort_stable, enum_oracle_smoke, enum_sort), all pos=1 neg=1 (negated clauses, `list(T) \\ []`); the multi-positive branch fires 0 times; heads=1 32,886 / heads=2 1,180 / heads=3 2. So this ticket has a second payoff beyond seat precision: every clause it un-degrades becomes visible to the dynamic tripwire. Re-run the census recipe in .agent/docs/dispatch-matrix.md on landing -- a new escape appearing there is a find, not a regression.",
+      "timestamp": "2026-09-03T04:54:22Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Preserve list-head precision across exact-empty subtraction",
   "type": "task",
-  "updated_at": "2026-09-03T03:11:39Z"
+  "updated_at": "2026-09-03T04:54:22Z"
 }
