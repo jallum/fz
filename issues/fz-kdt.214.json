@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.183"
+  ],
   "blocks": [],
   "created": "2026-09-03T18:54:14Z",
   "description": "Found by the fz-kdt.199 cold review (2026-09-03, base ca23b676f), with three\nreproducers; named in that ticket as the owner of its edge-set gap.\n\nfz-kdt.199`s `returned` axis is solved over the SAME forwarding cone as\nfz-kdt.183`s `forwarded_dispatch`, i.e. over `forwarded_inputs`. That edge set\nhas three holes, and the returned axis inherits all of them:\n\n1. It ignores `LoweredTail::DirectCall`s `dest`. Reproducer deliver2.fz (a body\n   that returns the constant `0`): keys go 7 -\u003e 9 executables, a split that\n   buys nothing, purely because the delivery edge is invisible.\n2. A RECONSTRUCTED argument is not a forward edge. Reproducer hops.fz: `outer/2`\n   stays collapsed while `inner/2` and `mid/2` split, so two keys naming\n   `list(binary)` and `list(int)` BOTH publish the join -- 2 executables for 0\n   precision, and the wrong diagnostic survives.\n3. A PROJECTED argument is not a forward edge, so the protocol-callback case\n   stays broken. Reproducer proto_cb.fz.\n\nThese are the same class fz-kdt.183 left behind (a Tuple CONSTRUCTION handed to\na self-call is opaque to the rule), now inherited by the return side. The cure\nis one edge-set improvement serving both axes: teach the cone about a\nDirectCall dest, a reconstruction whose fields trace to clause params, and a\nprojection.\n\nCONCORDANT: fz-kdt.183 (the cone this extends), fz-kdt.199 (the axis that\ninherits the holes), fz-kdt.165 (the identity axis planned on the SAME cone\nwalk -- it will inherit them too, so fixing the edge set once serves three\naxes).\n\nRED-FIRST: deliver2.fz keys 7 not 9; hops.fz`s outer/2 splits so neither key\npublishes a join; proto_cb.fz gets the correct per-implementation return.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The returned axis reuses forwarded_inputs, which ignores a DirectCall dest and does not see reconstructed or projected arguments",
   "type": "task",
-  "updated_at": "2026-09-03T18:54:14Z"
+  "updated_at": "2026-09-03T18:54:37Z"
 }
