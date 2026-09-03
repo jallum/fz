@@ -9,9 +9,15 @@
   "id": "fz-kdt.204",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.198 landed (4c3fa4c63) with its doc corrected: brands are a TYPING fact compared by is_subtype at @spec coverage, extern contracts and dispatch planning, and never read by a runtime predicate -- but they are NOT erased before the key seam, which is your defect. Neighbours on the board: fz-kdt.127.2 (the forwarder key DOES erase the brand -- brand-only forwarder erasure) and fz-kdt.169 (brand-erased forwarder keys duplicating across capture tuples). Your case is the plain parameter that is not a forwarder; the fix shape is erase_nominal at the activation-key seam for every input, which 127.2's erasure already does for one class. Fold there if the seam is the same function.\n",
+      "timestamp": "2026-09-03T12:39:47Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A brand fragments the activation key: pass/1 compiles twice for utf8(binary) and binary, one layout and one runtime test",
   "type": "bug",
-  "updated_at": "2026-09-03T12:34:53Z"
+  "updated_at": "2026-09-03T12:39:47Z"
 }
