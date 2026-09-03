@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-kdt.46"
+  ],
   "blocks": [],
   "created": "2026-08-26T14:36:53Z",
   "description": "## Goal\n\nMake product-pull wait handling independent of iteration order and delete Debug-text scheduling order. Blocked scheduler-wait discovery is owned and removed first by fz-kdt.46.\n\n## Current defect\n\nproduct_drive sorts Vec\u003cPullWait\u003e by raw Debug text before demanding work. PullWait identities can embed ActivationKey arrows containing raw interned Ty ids, so the sort is neither a semantic input nor a cross-process structural order. It currently controls request order and can expose downstream order-sensitive joins.\n\n## Strategy\n\n1. After fz-kdt.46 removes the scheduler unresolved-wait ordering path, confirm no normal-drive FactKey Debug sort remains there.\n2. Add a product-pull harness that presents identical waits in forward, reverse, and multiple seeded orders.\n3. Compare settled products, canonical product identities, causal work multisets, BackendProgram bytes, and runtime output.\n4. If order changes an answer, trace the first differing product/fact and repair the owning join or identity rule.\n5. Delete the product-drive Debug sort once every tested order agrees.\n6. Keep deterministic diagnostic presentation separate from scheduler execution.\n\n## Acceptance\n\n- Equivalent product-wait orders settle identical values, generations, dependency edges, causal work, and artifacts.\n- No production execution order is derived from Debug or rendered type text.\n- Target fixtures pass across separate processes and interp/run/build.\n- Full library, fixture matrix, determinism gates, documentation, formatting, and clippy with warnings denied are green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Remove product-pull wait sorting after proving order independence",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:21Z"
+  "updated_at": "2026-09-03T08:02:44Z"
 }
