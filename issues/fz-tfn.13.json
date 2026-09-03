@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.163",
+    "fz-kdt.165",
     "fz-kdt.48",
     "fz-tfn.11"
   ],
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Reuse native code generation by changed function generation",
   "type": "feature",
-  "updated_at": "2026-09-03T08:02:40Z"
+  "updated_at": "2026-09-03T08:02:41Z"
 }
