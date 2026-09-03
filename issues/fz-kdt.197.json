@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-03T09:16:54Z",
+  "description": "From the fz-kdt.192 cold review (2026-09-03, probes X2/X2B), PRE-EXISTING at\n8de517a28 and unchanged by 192: match_arrow(((a)-\u003eb)::b, [(int)-\u003eint |\n(v999)-\u003ev999]) answers Known (int)-\u003eint / int although has_vars(arg) is true.\ncollect_arrow_match descends per union clause; the var-carrying member\ncontributes nothing, the ground members ground everything, and the verdict\nclaims a runtime FACT from an observation still carrying in-flight variables.\n192 makes it reachable on three more corpus rows (Range.reduce_while_cont's\n6th argument, a union of three arrows with a free a5_p1: base Invalid by a\nfalse negative, 192 Known). The principle the calculator already applies to\nthe solvability GATE (fz-kdt.184's fix 3: a var-carrying argument cannot arm\na check) and to OPENNESS (fz-kdt.120: a position whose argument is not ground\ncontributes nothing) says the verdict must be capped at Underconstrained\nwhenever any member of the observation at a bound position is not ground.\nDo not fold into 192 (a second, unmeasured behaviour change). Measure the\ncorpus verdict census before/after (base K 21,039 / U 2,951 / I 13,946) and\nwhether any published return sharpens or widens. CONCORDANT: fz-kdt.184\n(the gate half), fz-kdt.120 (the openness half), fz-kdt.190 (the contract\nresult consumed as a fact).",
+  "id": "fz-kdt.197",
+  "labels": [],
+  "parent": "fz-kdt",
+  "priority": 3,
+  "status": "open",
+  "title": "A @spec instantiation answers Known from a NON-GROUND observation: a union-of-arrows argument carrying a free variable grounds the result through its ground members while the var-carrying member contributes nothing",
+  "type": "task",
+  "updated_at": "2026-09-03T09:16:54Z"
+}
