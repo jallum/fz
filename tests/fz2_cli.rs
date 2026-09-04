@@ -189,6 +189,13 @@ fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
     temp_dir().join(format!("{}_{}_{}{}", prefix, id(), nonce, suffix))
 }
 
+fn sum_reporting_counts(counts: impl IntoIterator<Item = (String, u64)>) -> BTreeMap<String, u64> {
+    counts.into_iter().fold(BTreeMap::new(), |mut sums, (identity, count)| {
+        *sums.entry(identity).or_default() += count;
+        sums
+    })
+}
+
 fn run_fz2(args: &[&OsStr]) -> Output {
     Command::new(FZ2_BIN).args(args).output().expect("invoke fz2 binary")
 }
@@ -320,6 +327,14 @@ fn produce_target_observations<T, E>(
             })
         })
         .collect()
+}
+
+#[test]
+fn reporting_counts_add_canonical_equivalent_rows() {
+    assert_eq!(
+        sum_reporting_counts([("same identity".to_string(), 1), ("same identity".to_string(), 2)]),
+        BTreeMap::from([("same identity".to_string(), 3)])
+    );
 }
 
 #[test]
@@ -1695,6 +1710,11 @@ end
 /// still polled by the pull driver; the newly live readiness cause comes from
 /// this direct scheduler fact boundary, independent of how root analysis is
 /// ignited.
+///
+/// fz-tfn.8 made executable effects ordinary product formulas. The mutually
+/// recursive `List.reduce_cont/3` and `List.reduce_step/3` formulas settle as
+/// one group; their two suspended stack requests then read the values that
+/// group just published without evaluating either producer again.
 #[test]
 fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation() {
     let fixture = "fixtures2/00181_enum_reduce_operator_ref.fz";
@@ -1863,6 +1883,37 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         "{fixture}: causal or output work moved outside the readiness reclassification"
     );
     let products = report.product_totals();
+    let effect_cache_hits = sum_reporting_counts(
+        report
+            .products
+            .iter()
+            .filter(|(product, work)| product.kind() == Some("executable_effects") && work.cache_hits > 0)
+            .map(|(product, work)| (product.canonical_identity(&report.canon), work.cache_hits)),
+    );
+    let effect_identity = |function_id, arrow| {
+        serde_json::json!({
+            "arrow": arrow,
+            "function_id": function_id,
+            "kind": "executable_effects",
+            "need": "value",
+            "root_id": 0,
+        })
+        .to_string()
+    };
+    assert_eq!(
+        effect_cache_hits,
+        BTreeMap::from([
+            (
+                effect_identity("List.reduce_cont/3", "fp[F] (list(int), int, a2) -> r0"),
+                1,
+            ),
+            (
+                effect_identity("List.reduce_step/3", "fp[F] (list(int), {:cont, int}, a2) -> r0",),
+                1,
+            ),
+        ]),
+        "{fixture}: the reactive effect group must leave one cache-only suspended request per member"
+    );
     assert_eq!(
         (
             products.settlements,
@@ -1872,7 +1923,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        (408, 408, 408, 0, 18, 0),
+        (408, 408, 408, 0, 19, 0),
         "{fixture}: established product settlement work moved while pinning direct-fact readiness"
     );
     assert!(
