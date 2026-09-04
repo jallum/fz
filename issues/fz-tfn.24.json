@@ -4,7 +4,8 @@
     "fz-kdt.4",
     "fz-tfn.27",
     "fz-tfn.28",
-    "fz-tfn.29"
+    "fz-tfn.29",
+    "fz-tfn.30"
   ],
   "blocks": [],
   "created": "2026-09-03T11:37:33Z",
@@ -16,5 +17,5 @@
   "status": "in_progress",
   "title": "Restore range-map work budget after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-03T20:19:00Z"
+  "updated_at": "2026-09-04T00:00:34Z"
 }
