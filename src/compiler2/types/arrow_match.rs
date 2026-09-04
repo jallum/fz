@@ -15,13 +15,12 @@
 //! This is the authoritative calculator behind direct-call contract
 //! application. It is the home — per "Types is the calculator" — of the
 //! substitution/witness logic that previously lived hand-rolled in
-//! `contract.rs`. Seven behaviors the boolean subsumption surface
+//! `contract.rs`. Six behaviors the boolean subsumption surface
 //! (`key_subsumes_with`) cannot express live here: the Known/Underconstrained/
 //! Invalid trichotomy; union-on-rebind when one variable binds several
 //! witnesses; structural-mismatch -> Invalid for arrow arity; the same for
-//! map-key presence and tuple arity; ambiguous empty-list witnesses; the
-//! POLARITY of a variable's occurrences; and whether the JOIN behind a
-//! variable's lower bound is FINISHED.
+//! map-key presence and tuple arity; the POLARITY of a variable's occurrences;
+//! and whether the JOIN behind a variable's lower bound is FINISHED.
 //!
 //! A PARTIAL JOIN IS NOT A FACT (fz-kdt.210). A variable's lower bound is the
 //! JOIN of its covariant occurrences, and a join needs every term. Where the
@@ -121,11 +120,27 @@
 //! because the witness is the argument; narrowing a witness toward its pattern
 //! erases the very evidence the gate reads (fz-kdt.192).
 //!
-//! Ambiguity is a property of a WITNESS, not of a variable. `[]` is a member of
-//! every list type, so a binding it pins is noise — but only for the position
-//! that observed it. `([a], [a])` applied to `([int], [])` learns `a = int`
-//! from the first parameter and nothing from the second, so the substitution is
-//! collected per position, cleaned there, and only then unioned in.
+//! `[]` NEEDS NO SPECIAL CASE, and the fz-f98.16 cleaner that gave it one is
+//! gone (fz-kdt.120). That cleaner dropped, per position, every variable the
+//! position had bound through an exact `[]` witness, reasoning that `[]` is a
+//! member of every list type so a binding it pins is noise. The lattice already
+//! says that, and says it better. Through a LIST PATTERN, `[]`'s element reads
+//! as `none`, so `[a]` at `[]` binds `a = none` — the BOTTOM lower bound, true
+//! (`[none]` is the empty list) and absorbed by the join the instant any other
+//! occurrence contributes: `([a], [a])` at `([int], [])` is `[int]` because
+//! `join(int, none) = int`, not because anything was vetoed. What the veto
+//! actually reached was the other shape, where a variable IS the argument.
+//! `f(a) :: a` at `[]` observes the whole empty list, and the whole argument is
+//! a fact about the call, so `dbg([])` is `[]` and not `any`. The two shapes
+//! are pinned side by side (`empty_list_binding_is_a_fact`,
+//! `an_empty_list_pins_the_bottom_element_through_a_list_pattern`).
+//!
+//! The veto lasted because it also hid the partial join above: an `{:done, []}`
+//! rung binds a fold's accumulator variable to the seed's own type, and
+//! dropping the binding suppressed the claim without naming why it was wrong.
+//! The partial-join rule marks that rung — and every occurrence the walk cannot
+//! read, not only the `[]`-shaped one — so nothing is left for a witness-shaped
+//! veto to do.
 
 use std::collections::{HashMap, HashSet};
 
@@ -230,7 +245,6 @@ impl Types {
             if self.collect_match_subst(pattern, witness, BindingSide::Lower, &mut position) == MatchWitness::Invalid {
                 return ArrowMatch::Invalid;
             }
-            self.drop_ambiguous_empty_list_bindings(pattern, witness, &mut position.lower);
             solution.undetermined.extend(position.undetermined);
             self.merge_subst_union(&mut solution.lower, position.lower);
             // A var-carrying argument's evidence is still in flight: an upper
@@ -270,7 +284,7 @@ impl Types {
                 if closed.contains_key(&var) {
                     continue;
                 }
-                let (params, result) = self.instantiated_match(params, result, &sigma);
+                let (params, result) = self.instantiated_clause(params, result, &sigma);
                 return ArrowMatch::Underconstrained { params, result };
             };
             let bound = self.instantiate(&bounds[&var], &closed);
@@ -287,7 +301,7 @@ impl Types {
         }
 
         let result_is_a_fact = self.result_variables_are_determined(result, &sigma, &solution.undetermined);
-        let (params, result) = self.instantiated_match(params, result, &closed);
+        let (params, result) = self.instantiated_clause(params, result, &closed);
         if params.iter().any(|param| self.has_vars(param)) || self.has_vars(&result) || !result_is_a_fact {
             ArrowMatch::Underconstrained { params, result }
         } else {
@@ -334,7 +348,7 @@ impl Types {
             .all(|var| !undetermined.contains(var) || !sigma.contains_key(var))
     }
 
-    fn instantiated_match(&mut self, params: &[Ty], result: &Ty, sigma: &Sigma<Ty>) -> (Vec<Ty>, Ty) {
+    fn instantiated_clause(&mut self, params: &[Ty], result: &Ty, sigma: &Sigma<Ty>) -> (Vec<Ty>, Ty) {
         let params = params.iter().map(|param| self.instantiate(param, sigma)).collect();
         let result = self.instantiate(result, sigma);
         (params, result)
@@ -737,152 +751,6 @@ impl Types {
         }
     }
 
-    /// Drop the bindings ONE position collected through an exact `[]` witness.
-    ///
-    /// `[]` is a member of every list type, so a variable it pins could be a
-    /// list of anything: the binding is noise, not evidence. The drop is scoped
-    /// to the position that observed the `[]` because ambiguity belongs to the
-    /// witness, not to the variable — `([a], [a])` applied to `([int], [])`
-    /// learns `a = int` at the first parameter and nothing at the second, and
-    /// vetoing `a` outright would throw the first parameter's proof away
-    /// (fz-f98.16).
-    fn drop_ambiguous_empty_list_bindings(&mut self, pattern: &Ty, witness: &Ty, position: &mut Sigma<Ty>) {
-        let mut ambiguous = HashSet::new();
-        let mut seen = HashSet::new();
-        self.collect_ambiguous_empty_list_vars(pattern, witness, &mut ambiguous, &mut seen);
-        position.retain(|var, _| !ambiguous.contains(var));
-    }
-
-    fn collect_ambiguous_empty_list_vars(
-        &mut self,
-        pattern: &Ty,
-        witness: &Ty,
-        ambiguous_vars: &mut HashSet<TypeVarId>,
-        seen: &mut HashSet<(Ty, Ty)>,
-    ) {
-        if !self.has_vars(pattern) || !seen.insert((*pattern, *witness)) {
-            return;
-        }
-
-        if self.is_exact_empty_list(witness) {
-            // Ask the COLLECTOR what it bound here. `[]` has no element for
-            // `collect_instantiation_subst` while `list_element_type` reads it
-            // as `none`, so a second reader of the same fact disagreed with the
-            // collector about what `[a]` observing `[]` pinned, and the cleaner
-            // went blind on the raw argument. One reading of `[]`, one place.
-            //
-            // Ambiguity is about the LOWER bindings the position instantiates
-            // from -- an `[]` under an arrow parameter records only an upper
-            // bound, which the cleaner never touches -- so this walk stays
-            // polarity-blind and reads the lower side (fz-kdt.184).
-            let mut direct = MatchBounds::default();
-            self.collect_match_subst(pattern, witness, BindingSide::Lower, &mut direct);
-            ambiguous_vars.extend(direct.lower.into_keys());
-            return;
-        }
-
-        self.collect_ambiguous_tuple_field_vars(pattern, witness, ambiguous_vars, seen);
-
-        if self.has_list_shape(pattern) && self.has_list_shape(witness) {
-            let pattern_elem = self.list_element_type(pattern);
-            let witness_elem = self.list_element_type(witness);
-            self.collect_ambiguous_empty_list_vars(&pattern_elem, &witness_elem, ambiguous_vars, seen);
-        }
-
-        if let (Some(pattern_payload), Some(witness_payload)) =
-            (self.resource_payload_type(pattern), self.resource_payload_type(witness))
-        {
-            self.collect_ambiguous_empty_list_vars(&pattern_payload, &witness_payload, ambiguous_vars, seen);
-        }
-
-        let witness_keys = self.map_known_keys(witness);
-        for key in self.map_known_keys(pattern) {
-            let Some(pattern_field) = self.map_field_lookup(pattern, &key) else {
-                continue;
-            };
-            if !witness_keys.contains(&key) {
-                continue;
-            }
-            if let Some(witness_field) = self.map_field_lookup(witness, &key) {
-                self.collect_ambiguous_empty_list_vars(&pattern_field, &witness_field, ambiguous_vars, seen);
-            }
-        }
-
-        let Some(pattern_clauses) = self.callable_clauses(pattern) else {
-            return;
-        };
-        let Some(witness_clauses) = self.callable_clauses(witness) else {
-            return;
-        };
-        for pattern_clause in &pattern_clauses {
-            for witness_clause in &witness_clauses {
-                if pattern_clause.args.len() != witness_clause.args.len() {
-                    continue;
-                }
-                for (pattern_arg, witness_arg) in pattern_clause.args.iter().zip(witness_clause.args.iter()) {
-                    self.collect_ambiguous_empty_list_vars(pattern_arg, witness_arg, ambiguous_vars, seen);
-                }
-                self.collect_ambiguous_empty_list_vars(&pattern_clause.ret, &witness_clause.ret, ambiguous_vars, seen);
-            }
-        }
-    }
-
-    /// Descend a tuple position the way the COLLECTOR descends it, so the
-    /// cleaner sees every `[]` the collector could have bound through.
-    ///
-    /// A union of tuples is a union of alternatives with their own arities, and
-    /// the collector pairs each pattern alternative with the witness
-    /// alternative of the same width that it overlaps
-    /// (`collect_correlated_tuple_match`). Projecting both sides onto the
-    /// pattern's widest arity instead cannot see inside a mixed-arity union —
-    /// `{:done, a} | {:halted, a} | {:suspended, a, () -> any}` observing
-    /// `{:done, []}` projects the witness at arity 3, finds it narrower, and
-    /// walks away — so the `[]` binding survived the cleaner and the calculator
-    /// claimed the result was the empty list as a runtime fact (fz-kdt.192).
-    /// Only a type that is not a plain positive product falls back to the
-    /// arity projection.
-    fn collect_ambiguous_tuple_field_vars(
-        &mut self,
-        pattern: &Ty,
-        witness: &Ty,
-        ambiguous_vars: &mut HashSet<TypeVarId>,
-        seen: &mut HashSet<(Ty, Ty)>,
-    ) {
-        if let (Some(pattern_alternatives), Some(witness_alternatives)) = (
-            self.tuple_positive_alternatives(pattern),
-            self.tuple_positive_alternatives(witness),
-        ) {
-            for pattern_fields in &pattern_alternatives {
-                for witness_fields in &witness_alternatives {
-                    if !self.tuple_fields_overlap(pattern_fields, witness_fields) {
-                        continue;
-                    }
-                    for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-                        self.collect_ambiguous_empty_list_vars(pattern_field, witness_field, ambiguous_vars, seen);
-                    }
-                }
-            }
-            return;
-        }
-
-        let arity = self.max_tuple_arity(pattern);
-        if arity != 0 && self.max_tuple_arity(witness) >= arity {
-            let pattern_fields = self.tuple_projections(pattern, arity);
-            let witness_fields = self.tuple_projections(witness, arity);
-            for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-                self.collect_ambiguous_empty_list_vars(pattern_field, witness_field, ambiguous_vars, seen);
-            }
-        }
-    }
-
-    fn is_exact_empty_list(&mut self, witness: &Ty) -> bool {
-        if !self.has_list_shape(witness) {
-            return false;
-        }
-        let empty = self.empty_list();
-        self.is_equivalent(witness, &empty)
-    }
-
     /// Meet a directly-collected UPPER bound into the running one: a variable
     /// bounded from above by two positions is bounded by their intersection --
     /// a callee that must accept both an `(int) -> nil` and a `(binary) -> nil`
@@ -1010,30 +878,69 @@ mod tests {
         assert_eq!(t.match_arrow(&[pat], &a, &no_bounds(), &[witness]), ArrowMatch::Invalid);
     }
 
-    // Behavior 5: a variable pinned only by [] is ambiguous -> stays free
-    // (Underconstrained). f(a) :: a applied to [] would bind a = [], but [] could
-    // be a list of anything, so the binding is dropped and a stays free.
+    // A variable that IS the argument is bound to the argument, and `[]` is no
+    // exception. `f(a) :: a` at `[]` -- the shape of `dbg([])` -- observes the
+    // whole empty list at a bare variable, so `a = []` is a fact about the
+    // call and the result is `[]`, not `any` and not free.
+    //
+    // The retired fz-f98.16 cleaner dropped exactly this binding, reasoning
+    // that `[]` is a member of every list type so a binding it pins is noise.
+    // The reasoning describes a DIFFERENT shape -- `[a]` observing `[]`, where
+    // the collectors bind nothing at all because `[]` has no element (see
+    // `an_empty_list_pins_nothing_through_a_list_pattern`) -- and there the
+    // cleaner had nothing to drop. Its only reach was here, where the binding
+    // is evidence (fz-kdt.120).
     #[test]
-    fn empty_list_binding_is_ambiguous() {
+    fn empty_list_binding_is_a_fact() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let empty = t.empty_list();
         match t.match_arrow(&[a], &a, &no_bounds(), &[empty]) {
-            ArrowMatch::Underconstrained { result, .. } => {
-                assert!(t.has_vars(&result), "a must stay free when pinned only by []");
+            ArrowMatch::Known { result, .. } => {
+                assert!(
+                    t.is_equivalent(&result, &empty),
+                    "a bare variable observing `[]` is bound to `[]`"
+                );
             }
-            other => panic!("expected Underconstrained for empty-list binding, got {other:?}"),
+            other => panic!("expected Known [] for an empty-list binding, got {other:?}"),
         }
     }
 
-    // The ambiguity of `[]` belongs to the POSITION that observed it, not to
-    // the variable. `List.reverse/2` is spec'd `([a], [a]) :: [a]`, so a call
-    // like `List.reverse([1, 2, 3], [])` pins `a = int` at the first parameter
-    // and learns nothing at the second. The empty-list position must not veto
-    // what the other position proved: vetoing it collapses `[a]` to `[]` and
-    // the caller's good `[int]` argument gets narrowed to the empty list.
+    // The other half of the same fact, and the reason no cleaner was ever
+    // needed for it: through a LIST PATTERN, `[]` pins the BOTTOM of the
+    // lower-bound lattice. `[]`'s element reads as `none`, so `[a]` at `[]`
+    // binds `a = none` -- the least solution, and a true one: `[none]` IS the
+    // empty list. A bottom lower bound is absorbed the instant any other
+    // occurrence contributes, which is why `([a], [a])` at `([int], [])`
+    // answers `[int]` with no veto in sight (the sibling pin below).
     #[test]
-    fn empty_list_position_does_not_veto_a_variable_another_position_pins() {
+    fn an_empty_list_pins_the_bottom_element_through_a_list_pattern() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let list_a = t.list(a);
+        let empty = t.empty_list();
+        match t.match_arrow(&[list_a], &a, &no_bounds(), &[empty]) {
+            ArrowMatch::Known { params, result } => {
+                assert!(t.is_empty(&result), "`[]`'s element is the bottom lower bound");
+                assert!(
+                    t.is_equivalent(&params[0], &empty),
+                    "and instantiating `[a]` with it gives back the empty list"
+                );
+            }
+            other => panic!("expected Known none for `[a]` at `[]`, got {other:?}"),
+        }
+    }
+
+    // fz-f98.16's own shape, and the JOIN is what answers it.
+    // `List.reverse/2` is spec'd `([a], [a]) :: [a]`, so
+    // `List.reverse([1, 2, 3], [])` bounds `a` from below at `int` from the
+    // first parameter and at `none` from the second, and `join(int, none)` is
+    // `int`. The empty-list position must not throw away what the other
+    // position proved: when the fz-f98.16 cleaner vetoed `a` for the whole
+    // position, `[a]` collapsed to `[]` and the caller's good `[int]` argument
+    // was narrowed to the empty list.
+    #[test]
+    fn a_bottom_bound_from_an_empty_list_is_absorbed_by_the_join() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let list_a = t.list(a);
@@ -1687,8 +1594,9 @@ mod pinned_verdicts {
         );
     }
 
-    // R15. An `[]` witness UNDER an arrow parameter — the empty-list cleaner's
-    // `side` flip. `f([a], (a) -> nil) :: [a]` at `([int], ([]) -> nil)`.
+    // R15. An `[]` witness UNDER an arrow parameter, where the polarity flip
+    // makes it an UPPER bound. `f([a], (a) -> nil) :: [a]` at
+    // `([int], ([]) -> nil)`.
     #[test]
     fn r15_empty_list_under_an_arrow_parameter() {
         let mut t = Types::new();
@@ -1702,7 +1610,7 @@ mod pinned_verdicts {
         let empty_fn = t.arrow(&[empty], nil);
         let v = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, empty_fn]);
         assert_eq!(render(&t, &v), "Invalid", "R15 [] under a parameter");
-        // And the shape where the [] is the ONLY thing that could veto `a`:
+        // And the shape where the `[]` is the parameter itself:
         // `f([a], ([a]) -> nil) :: [a]` at `([int], ([]) -> nil)`.
         let list_a_inner = t.list(a);
         let pat_fn2 = t.arrow(&[list_a_inner], nil);
@@ -1754,11 +1662,11 @@ mod pinned_verdicts {
         assert_eq!(render(&t, &v), "Invalid", "R17 return-lower vs param-upper");
     }
 
-    // R18. `[]` observed at a CONTRAVARIANT position. fz-f98.16's whole point is
-    // that `[]` is a member of every list type, so it is not evidence — the
-    // cleaner drops such bindings on the LOWER side. Nothing drops them on the
-    // UPPER side, so `f([a], ([a]) -> nil) :: [a]` at `([int], ([]) -> nil)`
-    // reads `a ⊆ none` and the list's `int` escapes it.
+    // R18. `[]` observed at a CONTRAVARIANT position, where it bounds from
+    // ABOVE. `f([a], ([a]) -> nil) :: [a]` at `([int], ([]) -> nil)` reads
+    // `a >= int` from the list and `a <= none` from the callable the caller
+    // supplied, no `a` satisfies both, and the row is `Invalid`. R19 is the
+    // same law one level up and R20 the same law with a tuple around it.
     #[test]
     fn r18_empty_list_as_a_contravariant_witness() {
         let mut t = Types::new();
@@ -1794,22 +1702,20 @@ mod pinned_verdicts {
         assert_eq!(render(&t, &v), "Invalid", "R19 [] as the contravariant element");
     }
 
-    // R20. MOVED, and it is a PRECISION LOSS. One TUPLE parameter carrying
-    // both a lower-bound list and a `[]` under an arrow's parameter. At the
-    // pattern-derived witness this answered `Known [int]`, but only because
-    // the restatement had already erased the `[]` before the cleaner looked;
-    // the `[]` the call really supplied vetoes `a` for the whole parameter,
-    // and the answer is now `Underconstrained`.
+    // R20. One TUPLE parameter carrying both a lower-bound list and a `[]`
+    // under an arrow's PARAMETER, which is the solvability check's own shape.
+    // The first field gives `a >= int`; the second reverses polarity, so
+    // `([a]) -> :nil` accepting a `([]) -> :nil` needs `[a] <: []`, i.e.
+    // `a <= none`. `int` is not a subtype of `none`, no `a` satisfies both,
+    // and the row is `Invalid` -- consistent with R18 and R19, which state
+    // the same law without a tuple around it.
     //
-    // The veto's scope is the PARAMETER, so this DISAGREES with its
-    // two-parameter sibling X6B: the same constraint (`a` observed at `[]`
-    // once and at `[int]` once) answers `Known [int]` spread over two
-    // parameters and `Underconstrained` folded into one tuple. That is
-    // fz-f98.16's per-position scoping seen from inside a single position --
-    // a real loss, not a consistency win. It dies with the cleaner in
-    // fz-kdt.120, which marks ambiguity at the moment of binding.
+    // The veto had MASKED it: it dropped the position's lower binding
+    // whenever an exact `[]` appeared anywhere inside, so `a` had no lower
+    // bound left for the check to compare and the contradiction went
+    // unreported (fz-kdt.120).
     #[test]
-    fn r20_cleaner_flip_inside_one_position() {
+    fn r20_a_contravariant_empty_list_contradicts_a_covariant_lower_bound() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let int = t.int();
@@ -1825,8 +1731,8 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &list_a, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[{[a0], ([a0]) -> :nil}] result=[a0]",
-            "R20 cleaner flip in one position"
+            "Invalid",
+            "R20 contravariant [] against a covariant lower bound"
         );
     }
 
@@ -1882,6 +1788,14 @@ mod pinned_verdicts {
 
     // A3. The reducer shape: `reduce([a], b, (a, b) -> b) :: b` at
     // `([int], [], (any, [int]) -> [int])`.
+    //
+    // `b` has TWO readable covariant occurrences here -- the seed `[]` and the
+    // GROUND reducer's result `[int]` -- so the join is complete and the answer
+    // is `[] | [int]`. That is the same SET as `[int]` (`[] <: [int]`), and the
+    // pin asserts so; the union interns as a distinct `Ty` only because
+    // `Types::union` does not absorb a subsumed member, which is fz-kdt.182 and
+    // predates this. Before fz-kdt.120 the veto dropped `b`'s `[]` occurrence
+    // and the join read `[int]` alone, which is why the literal moves.
     #[test]
     fn a3_reducer_parameter_widening() {
         let mut t = Types::new();
@@ -1897,8 +1811,15 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, b, reducer], &b, &no_bounds(), &[list_int, empty, ground]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], [int], (int, [int]) -> [int]] result=[int]",
+            "Known params=[[int], [] | [int], (int, [] | [int]) -> [] | [int]] result=[] | [int]",
             "A3"
+        );
+        let ArrowMatch::Known { result, .. } = &v else {
+            unreachable!("A3 answers Known");
+        };
+        assert!(
+            t.is_equivalent(result, &list_int),
+            "the joined result is the SAME SET as [int]; only the interning differs (fz-kdt.182)"
         );
     }
 
@@ -2274,19 +2195,26 @@ mod pinned_verdicts {
         }
     }
 
-    /// fz-kdt.210 meets fz-f98.16, and why 210 lands before fz-kdt.120. The
-    /// exception this rule leans on is "not in `Sigma`", and the empty-list
-    /// cleaner is what decides membership: a variable whose ONLY binding came
-    /// through an exact `[]` witness is dropped from `Sigma`, so it routes into
-    /// the observed-nowhere exception although the walk DID observe it.
-    /// `each([a], (a) -> a) :: [a] when a: binary` at `([], <opaque>)` marks
-    /// `a` from the opaque reducer, finds no `a` in `Sigma`, and answers the
-    /// DECLARED `[binary]`. Deleting the cleaner (fz-kdt.120) leaves the `[]`
-    /// binding in `Sigma` and this becomes `Underconstrained` -- a flip 120
-    /// must make deliberately, and the reason it cannot be made before this
-    /// rule exists.
+    /// The "observed nowhere" exception means exactly that, and `[]` is an
+    /// observation like any other. `each([a], (a) -> a) :: [a] when a: binary`
+    /// at `([], <opaque>)` DID observe `a`: the empty list's element pins the
+    /// bottom bound, so `a` is in `Sigma` at `none`. The opaque reducer's
+    /// return is an occurrence the walk cannot read, so the join is partial and
+    /// the verdict is `Underconstrained` -- the declared `binary` does not step
+    /// in, because a declared bound answers only where the call said nothing.
+    ///
+    /// This pin USED to answer `Known [binary]`, and only because the
+    /// fz-f98.16 veto had removed the `[]` binding from `Sigma`, routing an
+    /// observed variable into the exception for unobserved ones. That is the
+    /// interaction that made the veto's deletion (fz-kdt.120) wait for this
+    /// rule (fz-kdt.210) rather than the other way round.
+    ///
+    /// The reported PARAMETER surface clamps the reducer to `(none) -> none`,
+    /// which is a partial join instantiating the clause domain. That half is
+    /// KNOWN-WRONG and fz-kdt.216 owns it; the RESULT half, which is what
+    /// `FunctionContract::apply` publishes, is correct here.
     #[test]
-    fn the_empty_list_cleaner_decides_which_exception_applies() {
+    fn an_observed_empty_list_does_not_fall_back_to_a_declared_bound() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let str_t = t.str_t();
@@ -2299,20 +2227,31 @@ mod pinned_verdicts {
         let mut bounds = HashMap::new();
         bounds.insert(a_id, str_t);
         match t.match_arrow(&[list_a, arrow_a], &list_a, &bounds, &[empty, opaque]) {
-            ArrowMatch::Known { result, .. } => {
+            ArrowMatch::Underconstrained { result, .. } => {
                 assert!(
-                    t.is_equivalent(&result, &list_str),
-                    "the declared bound answered, not the `[]`"
+                    !t.is_equivalent(&result, &list_str),
+                    "the declared bound must not answer for a variable the call observed"
+                );
+                assert!(
+                    t.is_equivalent(&result, &empty),
+                    "what it observed was the empty list's bottom element"
                 );
             }
             other => panic!(
-                "the cleaner still routes an `[]`-only binding out of Sigma, got {}",
+                "an observed `[]` still routes into the observed-nowhere exception, got {}",
                 render(&t, &other)
             ),
         }
     }
 
-    // A8. `f(a, a, a) :: a` at `(int, [], <unanalyzed arrow>)`.
+    // A8. `f(a, a, a) :: a` at `(int, [], <unanalyzed arrow>)`. This was a
+    // FALSE `Invalid`, and deleting the veto FIXES it: the veto dropped the
+    // second position's `a = []`, leaving `a = int`, and then the structural
+    // gate asked `[] <: int` about an argument the call really supplied and
+    // ruled the legal row out. With both observations kept, `a` joins to
+    // `int | []` and every position passes the gate. The third position is an
+    // unanalyzed arrow the walk cannot read, so the join is partial and the
+    // verdict is honestly `Underconstrained` (fz-kdt.210) rather than `Known`.
     #[test]
     fn a8_three_positions_one_variable() {
         let mut t = Types::new();
@@ -2321,7 +2260,11 @@ mod pinned_verdicts {
         let empty = t.empty_list();
         let unanalyzed = unanalyzed_arrow(&mut t, 1);
         let v = t.match_arrow(&[a, a, a], &a, &no_bounds(), &[int, empty, unanalyzed]);
-        assert_eq!(render(&t, &v), "Invalid", "A8");
+        assert_eq!(
+            render(&t, &v),
+            "Underconstrained params=[int | [], int | [], int | []] result=int | []",
+            "A8"
+        );
     }
 
     // A9. A declared bound answering a var-carrying argument: `dbg(t) :: t when t: any`.
@@ -2580,15 +2523,21 @@ mod pinned_verdicts {
         assert_eq!(render(&t, &v), "Invalid", "X3B");
     }
 
-    // X4. Behavior 5 of this module -- "a variable pinned only by [] is noise
-    // and is dropped" -- through a MIXED-ARITY tuple union, where the cleaner
-    // once went blind. Projecting both sides onto the pattern's widest arity
-    // found the witness narrower and walked away, so `a` kept the `[]` the
-    // collector pinned and the verdict claimed as a runtime FACT that the
-    // result is the empty list. The cleaner now descends the alternatives the
-    // way the collector does, so this agrees with X4B.
+    // X4. The `{:done, []}` rung through a MIXED-ARITY tuple union. `a`
+    // occupies the union's payload field and the argument supplies exactly
+    // `[]` there, so `a = []` is what THIS call observed and `Known []` is the
+    // least solution. It agrees with its same-arity control X4B.
+    //
+    // This is the rung whose published `{:done, []}` used to reach a fold's
+    // return, and it was never this verdict that was wrong: read on its own,
+    // the row says only what the argument said. What was wrong was
+    // `refine_call_return` MEETING a contract return derived from a rung whose
+    // reducer arrow the walk could not read into an already-observed return.
+    // The partial-join rule (fz-kdt.210) marks that unreadable occurrence at
+    // the fold's own row, so this row no longer needs a veto standing in for
+    // it; the veto is gone (fz-kdt.120).
     #[test]
-    fn x4_mixed_arity_tuple_union_drops_the_empty_list_binding() {
+    fn x4_mixed_arity_tuple_union_binds_the_payload_the_argument_supplied() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let done = t.atom_lit("done");
@@ -2606,7 +2555,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[{:done, a0} | {:halted, a0} | {:suspended, a0, () -> any}] result=a0",
+            "Known params=[{:done, []} | {:halted, []} | {:suspended, [], () -> any}] result=[]",
             "X4"
         );
     }
@@ -2614,7 +2563,7 @@ mod pinned_verdicts {
     // X4B. The SAME question with a SAME-arity tuple union, which the arity
     // projection could always descend: X4's control. The two must agree.
     #[test]
-    fn x4b_same_arity_tuple_union_drops_the_empty_list_binding() {
+    fn x4b_same_arity_tuple_union_binds_the_payload_the_argument_supplied() {
         let mut t = Types::new();
         let a = t.param_alpha(0);
         let done = t.atom_lit("done");
@@ -2627,7 +2576,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[{:done, a0} | {:halted, a0}] result=a0",
+            "Known params=[{:done, []} | {:halted, []}] result=[]",
             "X4B"
         );
     }
@@ -2687,9 +2636,12 @@ mod pinned_verdicts {
         assert_eq!(render(&t, &v), "Invalid", "X5B");
     }
 
-    // X6. R20's shape stripped bare, and the same precision loss: ONE TUPLE
-    // PARAMETER carrying the same variable twice, one field observing `[]`
-    // and the other `[int]`. Compare X6B.
+    // X6. ONE TUPLE PARAMETER carrying the same variable twice, one field
+    // observing `[]` and the other `[int]`. It now AGREES with its
+    // two-parameter control X6B, and the disagreement was the veto's: its
+    // scope was the POSITION, so one `[]` anywhere inside a tuple threw away
+    // what a sibling field had proved. Nothing replaces it, because the
+    // lattice never needed it -- `join(none, int) = int` (fz-kdt.120).
     #[test]
     fn x6_one_tuple_parameter_two_fields() {
         let mut t = Types::new();
@@ -2703,15 +2655,14 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &pat, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[{[a0], [a0]}] result={[a0], [a0]}",
+            "Known params=[{[int], [int]}] result={[int], [int]}",
             "X6 one tuple parameter"
         );
     }
 
-    // X6B. TWO PARAMETERS carrying the same variable, same observations. The
-    // scope of the empty-list veto is the PARAMETER, so this answers Known
-    // while X6 answers Underconstrained -- the same constraint, two shapes,
-    // two answers.
+    // X6B. TWO PARAMETERS carrying the same variable, same observations. X6's
+    // control: the same constraint written two ways must give one answer, and
+    // since fz-kdt.120 it does.
     #[test]
     fn x6b_two_parameters_same_constraint() {
         let mut t = Types::new();
@@ -2728,8 +2679,11 @@ mod pinned_verdicts {
         );
     }
 
-    // X7. The cleaner reads `[]` through a NESTED list. `[[a]]` at `[[]]`:
-    // one `[]` one level down.
+    // X7. `[]` one level down: `[[a]]` at `[[]]`. The inner `[]` reads its
+    // element as `none`, so `a = none` -- the BOTTOM lower bound, and the
+    // least solution, since instantiating the pattern with it gives back
+    // `[[]]`, the argument itself. Sound, and absorbed by the join the moment
+    // any other occurrence contributes.
     #[test]
     fn x7_empty_list_one_level_down() {
         let mut t = Types::new();
@@ -2739,7 +2693,14 @@ mod pinned_verdicts {
         let empty = t.empty_list();
         let list_empty = t.list(empty);
         let v = t.match_arrow(&[list_list_a], &list_a, &no_bounds(), &[list_empty]);
-        assert_eq!(render(&t, &v), "Underconstrained params=[[[a0]]] result=[a0]", "X7");
+        assert_eq!(render(&t, &v), "Known params=[[[none]]] result=[none]", "X7");
+        let ArrowMatch::Known { params, .. } = &v else {
+            unreachable!("X7 answers Known");
+        };
+        assert!(
+            t.is_equivalent(&params[0], &list_empty),
+            "the least solution instantiates the pattern back to the argument"
+        );
     }
 
     // X8. A map field observing a strict supertype under a ground sibling

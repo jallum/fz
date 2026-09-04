@@ -157,6 +157,19 @@ and the callsite ends up holding two disagreeing facts — a precisely-resolved
 `CallSiteSummary` and an `any` value type. The fz-f98.14.11 artifact guard is
 the detector that makes that disagreement fatal instead of silent.
 
+A declared bound is one way that stale `any` used to be manufactured, and
+fz-kdt.120 closed it. `close_bounds` fills a variable the walk observed NOWHERE
+from its declaration, and the fz-f98.16 empty-list cleaner turned an OBSERVED
+variable into an unobserved one by deleting its `[]` binding — so at an early
+revision, while a fold's accumulator was still `[]`, `@spec dbg(t) :: t when
+t: any` answered `any`, that `any` joined into the callsite's cumulative return,
+and it never retracted once the accumulator grew. Fourteen corpus fixtures
+published a `return fp[any] any` this way and twelve of those are `main/0`
+itself, `00032_lambda_recursion` among them, where the same dump typed the
+returned value `fp[L] list(int)` two lines above. With the cleaner gone the
+contract answers `[]` at that revision and `list(int)` at the next, and the two
+facts agree.
+
 A call to a named function needs two things about the CALLEE before it can
 resolve: the `FunctionContract` that refines the surface (only for a function
 that declares one — `World::function_declares_contract`) and the facts its

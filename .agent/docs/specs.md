@@ -84,6 +84,15 @@ Compiler2 owns the active contract path:
   the fold returns what it started with. A variable the walk observed NOWHERE
   keeps its fact: it never enters `Sigma` and `close_bounds` fills it from its
   declared bound (`@spec f(integer) :: a when a: binary` is `Known binary`).
+- The empty list gets no rule of its own. Through a list pattern `[]` reads its
+  element as `none`, the bottom lower bound, which the join absorbs — so
+  `([a], [a])` at `([int], [])` is `[int]` — and at a bare variable it is the
+  whole argument, which is a fact: `@spec dbg(t) :: t when t: any` applied to
+  `[]` publishes `[]`, not the declared `any`. The fz-f98.16 cleaner that used
+  to drop `[]`-pinned bindings per position is gone (fz-kdt.120); it split those
+  two shapes apart and it masked the partial join above, since dropping a
+  `{:done, []}` rung's binding suppressed the claim without saying why it was
+  wrong.
 - Fatal `spec/violation` diagnostics fire only at USER callsites
   (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). Library
   (bootstrap) callsites are validated for refinement but never diagnosed:

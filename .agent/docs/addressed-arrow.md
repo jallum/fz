@@ -189,23 +189,21 @@ foo(x, y, z)  vs  foo(a, {b, c}, d):
 
 `match_arrow` checks arity and then `instantiate_match` walks `(params, args)`
 **once**, collecting a two-sided solution (`MatchBounds { lower, upper }`) one
-position at a time, cleaning that position's LOWER bindings, and merging it in —
-lowers by union, uppers by meet. A position's WITNESS is its ARGUMENT: what
-the call actually supplied there, never the pattern restated. An uninhabited
-argument is a row no call can supply and is `Invalid`; ground disjointness is
-the structural gate's job, at the end of the walk. Six behaviors live here that
-the boolean subsumption surface (`key_subsumes_with`) cannot express, and are
-the reason contract matching is this calculator rather than that one:
+position at a time and merging it in — lowers by union, uppers by meet. A
+position's WITNESS is its ARGUMENT: what the call actually supplied there, never
+the pattern restated. An uninhabited argument is a row no call can supply and is
+`Invalid`; ground disjointness is the structural gate's job, at the end of the
+walk. Five behaviors live here that the boolean subsumption surface
+(`key_subsumes_with`) cannot express, and are the reason contract matching is
+this calculator rather than that one:
 
 1. the `Known`/`Underconstrained`/`Invalid` trichotomy, not a bool;
 2. union-on-rebind (`merge_subst_union`) — a variable binding several witnesses
    across positions takes their union, not the first;
 3. structural-mismatch → `Invalid` for arrow arity;
 4. the same for map-key presence and tuple arity;
-5. ambiguous empty-list witnesses (`drop_ambiguous_empty_list_bindings`): `[]`
-   is a member of every list type, so a binding it pins is noise and is dropped;
-6. the POLARITY of a variable's occurrences (below);
-7. whether the JOIN behind a variable's lower bound is FINISHED (below).
+5. the POLARITY of a variable's occurrences (below);
+6. whether the JOIN behind a variable's lower bound is FINISHED (below).
 
 ## Polarity: lowers instantiate, the meet of uppers is the check
 
@@ -229,10 +227,9 @@ is a NECESSARY condition (over the variables both bounds reached, over the
 OBSERVED lowers, before `close_bounds`) for an instantiation to exist —
 `merge_subst_meet` intersects an upper bounded by two positions, so folding
 `[int]` with a `(binary, int) -> int` reducer has `int ⊄ binary` and is
-`Invalid`. Only the LOWER side is cleaned (an `[]` under an arrow parameter is
-an upper bound, which no cleaner touches); a var-carrying argument does not arm
-the check, because an upper read from in-flight evidence could ratchet the meet
-to a false `Invalid` a later revision revokes. A variable with only upper bounds
+`Invalid`. A var-carrying argument does not arm the check, because an upper read
+from in-flight evidence could ratchet the meet to a false `Invalid` a later
+revision revokes. A variable with only upper bounds
 has no lower to publish and stays free (`Underconstrained`) — an observable loss
 on `f((a) -> nil) :: [a]`, traded for the soundness and precision wins above.
 
@@ -306,33 +303,35 @@ argument cannot arm the check because the observation carries its variables
 honestly. Narrowing into a clause domain is a decision one level up, at
 `FunctionContract::apply`'s coverage fallback.
 
-The ambiguity in (5) belongs to the **witness**, not to the variable, which is
-why the substitution is collected and cleaned per position before (2) unions it
-in. The cleaner asks the COLLECTOR which variables one `[]` bound rather than
-re-deriving them, because `[]` has no element for `collect_instantiation_subst`
-while `list_element_type` reads it as `none`: two readings of one fact is one
-reading too many, and they disagreed. It descends a tuple position through the
-same positive alternatives the collector pairs, so a mixed-arity tuple union
-(`{:done, a} | {:suspended, a, cont}` observing `{:done, []}`) is descended
-rather than skipped for being narrower than the pattern's widest arity.
+## The empty list is not a special case
 
-`([a], [a])` applied to `([int], [])` learns `a = int` from the first
-parameter and nothing from the second, and answers `Known` with both parameters
-`[int]`. A variable *every* position leaves ambiguous simply never enters
-`Sigma`, so it stays free and the verdict is honestly `Underconstrained` — the
-`f(a) :: a` applied to `[]` case. Vetoing such a variable globally instead would
-discard what another position proved: `[a]` would collapse to `[]`, and a good
-`[int]` argument would be narrowed to the empty list by `refine_contract_inputs`
-(whose empty-intersection fallback does not fire, because `[]` is not empty).
+`[]` gets no rule of its own. The fz-f98.16 empty-list cleaner gave it one — it
+dropped, per position, every variable that position had bound through an exact
+`[]` witness, on the reasoning that `[]` is a member of every list type so a
+binding it pins is noise — and it is gone (fz-kdt.120). The lattice already says
+what it was trying to say, and says it in one place.
 
-The veto's scope is the **parameter**, so folding the same constraint into one
-tuple parameter loses precision that spreading it over two keeps: `([a], [a])`
-at `([], [int])` answers `Known [int]`, while `{[a], [a]}` at `{[], [int]}`
-answers `Underconstrained` — one `[]` inside the tuple vetoes `a` for the whole
-position, including the sibling field that proved `int`. The two shapes state
-the same constraint and give different answers. The cleaner is what carries the
-scope; marking ambiguity at the moment of binding removes both the scope and the
-disagreement.
+Through a LIST PATTERN, `[]`'s element reads as `none`, so `[a]` at `[]` binds
+`a = none`. That is the BOTTOM lower bound and it is true — `[none]` IS the
+empty list — and the join absorbs it the moment any other occurrence
+contributes. `([a], [a])` at `([int], [])` is `Known [int]` because
+`join(int, none) = int`, not because anything was vetoed. Because the join is
+per OCCURRENCE and the veto was per POSITION, the two shapes that used to
+disagree now agree: `{[a], [a]}` at `{[], [int]}` and `([a], [a])` at
+`([], [int])` both answer `Known [int]`, where the veto let one `[]` inside a
+tuple throw away what a sibling field had proved.
+
+Where a variable IS the argument, the binding is evidence and always was. `f(a)
+:: a` at `[]` — which is `dbg([])` — observes the whole empty list, and the
+whole argument is a fact about the call, so the answer is `Known []` and not the
+declared `any`. That was the veto's only real reach, and it was the case where
+it was wrong.
+
+It lasted because it also masked the partial join above: a `{:done, []}` rung
+binds a fold's accumulator to the seed's own type, and dropping the binding
+suppressed the claim without naming why it was wrong. The partial-join rule
+marks that rung, and every occurrence the walk cannot read with it, so nothing
+is left for a witness-shaped veto to do.
 
 `ContractArrow::apply` is then a thin loop: for each clause, read
 `arrow_params`/`arrow_result`, call `match_arrow` with the bounds sidecar, and

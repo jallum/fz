@@ -85,7 +85,9 @@ The body calls `fz_dbg_value(any) :: any`, so the argument is boxed and the
 result is a boxed `AnyValueRef`; reached for an `integer`, the wrapper's return
 unboxes that word back to an `i64`. A repeated type variable means "same type",
 not "same object" — boundary correctness is the marshal class on the way in plus
-this coercion on the way out.
+this coercion on the way out. The declared bound answers only where the call
+pinned nothing, so `t` is whatever the caller passed, the empty list included:
+`dbg([])` is typed `[]` and not `any` (`types::arrow_match`, fz-kdt.120).
 
 ## Runtime variadic dispatchers
 

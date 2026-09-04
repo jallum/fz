@@ -1368,7 +1368,23 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // publishing a narrowed surface.
         // fz-kdt.199: 256 -> 267 -- the accumulators of the reduce families
         // this fixture drives key their seed apart from their ascent.
-        activations: lifecycle(267, 267, 0),
+        // fz-kdt.120: 267 -> 271, a RISE, and it is fz-kdt.192's FALL being
+        // repaid rather than a new cost. 192 booked 259 -> 256 with the reason
+        // written above: four tuple parameters -- `{[a], [a]}` twice,
+        // `{[a], [a], int}` once, `{[a], :false | :true}` once -- where one
+        // field's `[]` vetoed `a` for the WHOLE position and discarded the
+        // `[int]` a sibling field had proved, so those rows published no
+        // narrowed parameter surface and three fewer keys were minted. The veto
+        // is gone, the join absorbs `[]` instead of vetoing on it (`join(none,
+        // int) = int`, pinned as X6 agreeing with X6B), and those positions
+        // publish their narrowed surface again. What the four extra keys BUY is
+        // on the artifact: `List.reduce_while_step/3` now keys on the
+        // accumulator the fold really carries, `{:cont | :halt, []} |
+        // {:cont, [int]}`, instead of the veto's `{:cont, [int]}` with the seed
+        // rung erased. Executables are FLAT at 237 and interp and run stdout
+        // are byte-identical to base, so this is compile work rising on the
+        // arc's slowest fixture and nothing else; retractions stay 0.
+        activations: lifecycle(271, 271, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -1389,7 +1405,15 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fz-kdt.199: 430 -> 455 distinct, 445 -> 473 first appearances,
         // 15 -> 18 retractions -- each split activation brings its call edges,
         // and three more edges withdraw while a demand is still climbing.
-        callsites: lifecycle(455, 473, 18),
+        // fz-kdt.120: 455 -> 460 distinct, 473 -> 471 first appearances, and
+        // retractions FALL 18 -> 11. The four extra activations bring their
+        // edges, and seven fewer edges withdraw: a `List.reduce_while_step/3`
+        // key that names the fold's seed rung from the start is not displaced
+        // as the accumulator climbs, so the callsites that name it stop
+        // withdrawing for a round while a widened key is in flight. Fewer
+        // first appearances alongside more distinct rows is the same fact --
+        // rows that used to be minted, withdrawn and re-minted are minted once.
+        callsites: lifecycle(460, 471, 11),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -1439,9 +1463,18 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // base against 452 ms here, and no claim that the landing is FASTER
         // survives that spread. The settle count, not the clock, is what this
         // ticket spends. fz-kdt.213's subtraction is what pays it back.
-        analyze_evaluations: 921,
-        analyze_zero_change: 14,
-        total_evaluations: 2444,
+        // fz-kdt.120: 921 -> 935 evaluations, zero-change 14 -> 15, and
+        // `uncaused` stays 0 -- no wake was lost. Fourteen runs for four new
+        // activations, because an activation is analyzed once per consumer
+        // that pulls it through and the widened
+        // `List.reduce_while_step/3` accumulator has several. This is the same
+        // spend the row already books for 105 and 199 and it is bounded: one
+        // more run reproduces an answer it already had, retractions FALL 18 ->
+        // 11, executables are flat at 237, and stdout is byte-identical on
+        // interp and run.
+        analyze_evaluations: 935,
+        analyze_zero_change: 15,
+        total_evaluations: 2458,
     },
 ];
 

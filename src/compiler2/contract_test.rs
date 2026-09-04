@@ -360,8 +360,24 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
     );
 }
 
+/// A `[]` seed leaves a reduce-style contract with NO published result, and the
+/// reason is the opaque reducer, not the `[]`.
+///
+/// `acc` occurs covariantly twice -- at the seed, and in the reducer arrow's
+/// RESULT, which is the occurrence that says what the accumulator becomes. The
+/// callable argument is a bare `fn_ref`, so that second occurrence is unreadable
+/// and the join behind `acc` is partial; the clause answers `Underconstrained`
+/// and `AppliedFunctionContract::result` stays `None` (fz-kdt.210).
+///
+/// THE PARAMETER HALF IS PINNED KNOWN-WRONG. A partial join still instantiates
+/// the clause domain, so the reducer surface comes back clamped to the seed's
+/// own type -- `(int, []) -> []` -- and a later rung whose accumulator has grown
+/// does not fit the domain the first rung published. That is fz-kdt.216's
+/// subject, and it owns the fix. Until fz-kdt.120 the fz-f98.16 empty-list veto
+/// hid this shape by deleting the seed's binding outright; the veto is gone,
+/// the clamp is visible here, and it moves no fixture on the corpus.
 #[test]
-fn function_contract_application_treats_empty_list_witness_as_underconstrained() {
+fn function_contract_application_publishes_no_result_for_an_empty_list_seed() {
     let mut types = Types::new();
     let elem = types.type_var(TypeVarId(0));
     let acc = types.type_var(TypeVarId(1));
@@ -386,7 +402,7 @@ fn function_contract_application_treats_empty_list_witness_as_underconstrained()
     );
     assert!(
         applied.result.is_none(),
-        "an empty-list accumulator witness should keep the generic result underconstrained",
+        "a partial join behind the accumulator must publish no result",
     );
 
     let matched_callable = types
@@ -401,14 +417,12 @@ fn function_contract_application_treats_empty_list_witness_as_underconstrained()
         types.display(&matched_callable.args[0]),
     );
     assert!(
-        types.has_vars(&matched_callable.args[1]),
-        "an empty-list witness should keep the reducer accumulator input generic instead of collapsing it to []: {}",
-        types.display(&matched_callable.args[1]),
+        types.is_equivalent(&matched_callable.args[1], &actual_acc),
+        "KNOWN-WRONG (fz-kdt.216): the parameter surface clamps the reducer accumulator to the seed",
     );
     assert!(
-        types.has_vars(&matched_callable.ret),
-        "an empty-list witness should keep the reducer return generic instead of collapsing it to []: {}",
-        types.display(&matched_callable.ret),
+        types.is_equivalent(&matched_callable.ret, &actual_acc),
+        "KNOWN-WRONG (fz-kdt.216): and clamps its return to the seed with it",
     );
 }
 

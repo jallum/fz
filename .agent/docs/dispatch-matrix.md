@@ -1051,6 +1051,17 @@ schedule, which is the point of reading it here: the axis adds keys, it does
 not add order-dependence. On the older 597-file list the same two builds read
 5,282 -> 5,357 with one mover, because the second mover is not in that list.
 
+Re-measured at fz-kdt.120 (605 `.fz` files under `fixtures2/`, 476 backend
+dumps): the reading goes to ZERO. TWO canon movers before the landing — the same
+`dead_closure_capture_empty_list` and `with_index_users_keep_nested_list_elements`
+— and NONE after, with zero `interp` and zero `run` stdout movers either side and
+the emitted executable count schedule-independent at 5,755 under FIFO and LIFO
+both, before and after. The cause named above is what went: the empty-list
+ambiguity was the fz-f98.16 cleaner dropping a `[]`-pinned binding, which left an
+accumulator seeded with `[]` publishing no evidence of its own, so whichever
+return the schedule delivered first stood. The cleaner is deleted; the binding is
+a fact; there is nothing left for the schedule to pick between.
+
 The artifact rung materializes a `CallEdge::Dispatch` for the `::Dispatch`
 answer: the plan is the runtime type-test graph, while each `DispatchCallArm`
 carries the existing impl `CallTarget`, return flow, and extern marshal facts

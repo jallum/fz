@@ -9794,8 +9794,18 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `Region::TupleArity` question, which this walk does not read -- so the
 /// READABLE denominator is 7 either way and the zero above still speaks for
 /// exactly what it did.
+/// fz-kdt.120: `entry` 169 -> 171 plans, 162 -> 164 unreadable, and both new
+/// plans are `Region::TupleArity` (25 -> 27; every other variant is flat). The
+/// two are one apiece on `00420_enum_take_drop_split` and
+/// `behavior/enum_take_drop_split`: with the fz-f98.16 empty-list veto gone,
+/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
+/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
+/// rung and left `{:cont, [int]}` alone -- so each fixture's artifact gains two
+/// dispatch plans and its `tuple_arity` questions go 21 -> 28. The READABLE
+/// denominator is 7 either way and the zero above still speaks for exactly what
+/// it did.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 3, 3), ("entry", 169, 162), ("receive", 2, 0)];
+    &[("case", 3, 3), ("entry", 171, 164), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -10328,20 +10338,34 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// new latent miscompile, a cure, or a fixture that stopped exercising the
 /// property, and all three want the table edited deliberately rather than a
 /// number re-blessed.
+///
+/// fz-kdt.120: `enum_take_drop_split` reads 375 -> 373 OBSERVATIONS at all six
+/// of its arrivals, escapes flat at 0. The denominator moved because the plan
+/// shape did. With the fz-f98.16 empty-list veto gone,
+/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
+/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
+/// rung; the body's two rungs must then be told apart, so the artifact grows an
+/// entry clause dispatch asking `tuple_arity(2)` and `equal(:cont)`/
+/// `equal(:halt)`. Measured on the `--dump backend=` canon: +2 dispatch plans,
+/// `tuple_arity` questions 21 -> 28, `equal` +2, `Region::Type` questions FLAT
+/// at 62, executables flat at 237, and interp and run stdout byte-identical.
+/// Two evaluations that used to reach a matched `Region::Type` question are
+/// settled by that clause dispatch instead, which is the denominator changing
+/// under the row and not the escape count moving.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     ("fixtures2/00183_enum_take_list_range.fz", "", 36, 0),
     ("fixtures2/00230_enum_take_chained.fz", "", 36, 0),
     ("fixtures2/00418_enum_count_range.fz", "", 6, 0),
     ("fixtures2/00419_enum_take_mixed.fz", "", 36, 0),
-    ("fixtures2/00420_enum_take_drop_split.fz", "", 375, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "", 375, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 373, 0),
     ("fixtures2/behavior/unused_range_binding.fz", "", 6, 0),
     // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
     // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 375, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 375, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 375, 0),
-    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 375, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 373, 0),
     // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
     // fixture whose list arms still differ at the element.
     ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 36, 0),
