@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.46",
+    "fz-tfn.30",
     "fz-tfn.5"
   ],
   "blocks": [
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Ignite activation analysis from exact activation-appearance edges",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:45Z"
+  "updated_at": "2026-09-04T00:00:41Z"
 }
