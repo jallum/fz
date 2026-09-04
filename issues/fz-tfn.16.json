@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-tfn.15"
+    "fz-tfn.15",
+    "fz-tfn.30"
   ],
   "blocks": [],
   "created": "2026-09-03T08:00:25Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Replace fixed work-start HashMap accounting with fixed fields",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:46Z"
+  "updated_at": "2026-09-04T00:00:49Z"
 }
