@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.5"
+    "fz-kdt.5",
+    "fz-tfn.30"
   ],
   "blocks": [
     "fz-tfn.8"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Delete the end-of-session executable-effect freshness mini-pass",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:34Z"
+  "updated_at": "2026-09-04T00:00:42Z"
 }
