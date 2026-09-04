@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.4",
-    "fz-kdt.47"
+    "fz-kdt.47",
+    "fz-tfn.30"
   ],
   "blocks": [],
   "created": "2026-09-03T01:53:56Z",
@@ -28,5 +29,5 @@
   "status": "open",
   "title": "Make recursive-group publication membership reproducible after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-03T13:51:54Z"
+  "updated_at": "2026-09-04T00:00:41Z"
 }
