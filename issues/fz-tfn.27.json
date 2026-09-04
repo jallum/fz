@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.4"
+    "fz-kdt.4",
+    "fz-tfn.30"
   ],
   "blocks": [
     "fz-tfn.24"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Delete unreachable native branch and resume helpers at their emitter",
   "type": "bug",
-  "updated_at": "2026-09-03T17:27:25Z"
+  "updated_at": "2026-09-04T00:00:46Z"
 }
