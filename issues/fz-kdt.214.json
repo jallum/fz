@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.183",
-    "fz-kdt.199"
+    "fz-kdt.199",
+    "fz-tfn.30"
   ],
   "blocks": [],
   "created": "2026-09-03T18:54:14Z",
@@ -20,5 +21,5 @@
   "status": "open",
   "title": "Define one exact typed path-aware InputDemand flow relation",
   "type": "task",
-  "updated_at": "2026-09-04T10:53:13Z"
+  "updated_at": "2026-09-04T10:53:19Z"
 }
