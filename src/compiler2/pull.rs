@@ -1604,10 +1604,6 @@ impl PullSession {
         self.executable_effects.get(executable).copied()
     }
 
-    pub fn executable_effects_inventory(&self) -> &HashMap<ExecutableKey, EffectSummary> {
-        &self.executable_effects
-    }
-
     pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&AbiReadyExecutable> {
         self.abi_executables.get(executable).map(Rc::as_ref)
     }
@@ -2126,37 +2122,6 @@ impl PullSession {
         self.memo.invalidate_products(tel, products, types);
         for current in seen {
             self.executable_effects.remove(&current);
-        }
-    }
-
-    /// End-of-session freshness audit (debug builds): every cached
-    /// ExecutableEffects value must equal the effects recomputed from scratch
-    /// -- the union of local effect summaries over the transitive closure of
-    /// the current effect-relevant projections. Any under-invalidation that
-    /// leaves a stale summary standing fails loudly here instead of lingering
-    /// as a schedule-protected latent hole.
-    #[cfg(debug_assertions)]
-    fn assert_executable_effects_fresh(&self) {
-        for (key, cached) in &self.executable_effects {
-            let mut expected = EffectSummary::default();
-            let mut stack = vec![key.clone()];
-            let mut seen = HashSet::new();
-            let mut complete = true;
-            while let Some(current) = stack.pop() {
-                if !seen.insert(current.clone()) {
-                    continue;
-                }
-                let Some((local, callees)) = self.latest_effect_inputs.get(&current) else {
-                    complete = false;
-                    break;
-                };
-                expected.union_with(*local);
-                stack.extend(callees.iter().cloned());
-            }
-            assert!(
-                !complete || *cached == expected,
-                "stale ExecutableEffects at session finish for {key:?}: cached {cached:?}, recomputed {expected:?}"
-            );
         }
     }
 
@@ -2738,8 +2703,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     pub fn finish_session(&self) {
-        #[cfg(debug_assertions)]
-        self.session.assert_executable_effects_fresh();
         self.emit_finished_once();
     }
 
@@ -2876,6 +2839,13 @@ mod tests {
     };
     use crate::telemetry::{ConfiguredTelemetry, JsonlBackend};
 
+    use super::super::artifact::{
+        CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
+        MaterializedExecutableTransport,
+    };
+    use super::super::body::{
+        ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
+    };
     use super::super::facts::FactReadiness;
     use super::super::identity::{ExecutableNeed, FunctionId};
     use super::super::transport::{BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol};
@@ -4798,14 +4768,6 @@ mod tests {
         // standing (no re-production); only a projection change (a new local
         // effect or callee) may wipe the executable's effects and its caller
         // cone's.
-        use super::super::artifact::{
-            CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
-            MaterializedExecutableTransport,
-        };
-        use super::super::body::{ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredTail};
-        use super::super::transport::ExecutableSymbol;
-        use crate::source::Span;
-
         let tel = ConfiguredTelemetry::new();
         let capture = ProductTelemetryCapture::install(&tel);
         let root = RootId::for_test(90);
@@ -4821,27 +4783,37 @@ mod tests {
         record_materialized_product(
             driver.session_mut(),
             caller.clone(),
-            fake_materialized(
+            fake_effect_materialized(
                 caller_symbol.clone(),
-                Some(fake_edge(callee.clone(), caller_symbol.clone(), callee_symbol.clone())),
-                EffectSummary::default(),
+                Some(fake_effect_edge(
+                    callee.clone(),
+                    caller_symbol.clone(),
+                    callee_symbol.clone(),
+                )),
+                false,
             ),
         );
-        let callee_materialized = fake_materialized(
+        let callee_materialized = fake_effect_materialized(
             callee_symbol.clone(),
-            Some(fake_edge(caller.clone(), callee_symbol, caller_symbol)),
-            EffectSummary::default(),
+            Some(fake_effect_edge(
+                caller.clone(),
+                callee_symbol.clone(),
+                caller_symbol.clone(),
+            )),
+            false,
         );
         record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized.clone());
         let mut world = World::new();
         let mut producers = WorldProductProducers::new(&mut world, &tel);
-        assert!(matches!(
-            driver.pull(&mut producers, effects_key.clone()),
-            PullOutcome::Produced(ProductValue::ExecutableEffects(_))
-        ));
+        let PullOutcome::Produced(ProductValue::ExecutableEffects(effects)) =
+            driver.pull(&mut producers, effects_key.clone())
+        else {
+            panic!("effect fixture should produce its body-derived summary")
+        };
+        assert_eq!(effects, EffectSummary::default());
         let produced_after_settle = capture.produced.get();
 
-        record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized.clone());
+        record_materialized_product(driver.session_mut(), callee.clone(), callee_materialized);
 
         assert!(
             driver.session().executable_effects(&callee).is_some()
@@ -4858,11 +4830,11 @@ mod tests {
             "an unchanged effect projection must not re-produce the effects product"
         );
 
-        let mut changed = callee_materialized;
-        changed.effects = EffectSummary {
-            scheduler_visible: true,
-            ..EffectSummary::default()
-        };
+        let changed = fake_effect_materialized(
+            callee_symbol.clone(),
+            Some(fake_effect_edge(caller.clone(), callee_symbol, caller_symbol)),
+            true,
+        );
         record_materialized_product(driver.session_mut(), callee.clone(), changed);
 
         assert!(
@@ -4873,118 +4845,33 @@ mod tests {
             driver.session().executable_effects(&caller).is_none(),
             "a changed local effect summary must invalidate the caller cone's effects"
         );
-        assert!(matches!(
-            driver.pull(&mut producers, effects_key),
-            PullOutcome::Produced(ProductValue::ExecutableEffects(_))
-        ));
+        let PullOutcome::Produced(ProductValue::ExecutableEffects(effects)) = driver.pull(&mut producers, effects_key)
+        else {
+            panic!("changed effect fixture should produce its body-derived summary")
+        };
+        assert_eq!(
+            effects,
+            EffectSummary {
+                allocates: true,
+                ..EffectSummary::default()
+            }
+        );
         assert!(
             capture.produced.get() > produced_after_settle,
             "a changed effect projection must re-produce the effects product"
         );
-
-        fn fake_materialized(
-            executable: ExecutableSymbol,
-            edge: Option<MaterializedCallEdge>,
-            effects: EffectSummary,
-        ) -> MaterializedExecutable {
-            let return_position = TransportPosition::ExecutableReturn {
-                executable: executable.clone(),
-            };
-            MaterializedExecutable {
-                entry_dispatch: None,
-                return_ty: fake_ty(),
-                runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
-                transport: MaterializedExecutableTransport {
-                    executable,
-                    position_layouts: Vec::new(),
-                    input_positions: Vec::new(),
-                    return_position,
-                    resume_positions: Vec::new(),
-                    return_payload_positions: Vec::new(),
-                    entry_capture_positions: Vec::new(),
-                    call_arg_positions: Vec::new(),
-                    value_positions: Vec::new(),
-                },
-                original_entry_ids: Vec::new(),
-                value_types: HashMap::new(),
-                effects,
-                body: super::super::LoweredBody::Clauses {
-                    clauses: vec![LoweredClause {
-                        span: Span::DUMMY,
-                        params: Vec::new(),
-                        projections: Vec::new(),
-                        entry: ControlEntryId::from_u32(0),
-                    }],
-                    entries: vec![LoweredEntry {
-                        span: Span::DUMMY,
-                        origin: ControlEntryOrigin::Clause,
-                        params: Vec::new(),
-                        captures: Vec::new(),
-                        reusable_cons_captures: Vec::new(),
-                        steps: Vec::new(),
-                        tail: LoweredTail::Halt {
-                            atom: "done".to_string(),
-                        },
-                    }],
-                    generated: Vec::new(),
-                },
-                call_edges: edge
-                    .map(|edge| HashMap::from([(CallSiteId::from_u32(0), edge)]))
-                    .unwrap_or_default(),
-            }
-        }
-
-        fn fake_edge(
-            callee: ExecutableKey,
-            caller_symbol: ExecutableSymbol,
-            callee_symbol: ExecutableSymbol,
-        ) -> MaterializedCallEdge {
-            MaterializedCallEdge {
-                target: CallEdge::Direct(DirectCallEdge {
-                    callee: CallTarget::Local(callee),
-                    return_flow: CallReturnFlow::Tail {
-                        source: TransportPosition::ExecutableReturn {
-                            executable: callee_symbol,
-                        },
-                        payload: TransportPosition::ReturnPayload {
-                            executable: caller_symbol.clone(),
-                            callsite: CallSiteId::from_u32(0),
-                        },
-                        caller_return: TransportPosition::ExecutableReturn {
-                            executable: caller_symbol,
-                        },
-                    },
-                    extern_marshals: None,
-                }),
-                return_ty: fake_ty(),
-            }
-        }
-
-        fn fake_ty() -> super::super::Ty {
-            let mut types = super::super::Types::new();
-            types.none()
-        }
     }
 
     #[test]
-    fn effect_cone_invalidation_reaches_dependents_without_runtime_demand_edges() {
+    fn effect_cone_invalidation_tracks_materialized_edges_exactly() {
         // Closure/boundary-resolved call edges materialize as ordinary local
         // call edges WITHOUT ever registering a runtime-demand dependency
         // (that graph carries CallSiteSummary direct targets only). When such
         // a callee's effect projection changes after its dependents settled,
         // the whole caller cone's effects must still be invalidated -- the
         // effect-dependents graph is derived from the materialized call edges
-        // themselves, so no edge here is hand-registered.
-        use super::super::artifact::{
-            CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, MaterializedCallEdge, MaterializedExecutable,
-            MaterializedExecutableTransport,
-        };
-        use super::super::body::{
-            ControlEntryId, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep, LoweredTail,
-        };
-        use super::super::transport::ExecutableSymbol;
-        use crate::source::Span;
-
+        // themselves, so no edge here is hand-registered. Removing the edge
+        // must also remove that dependency before the callee moves again.
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(93);
         let grand = fake_executable_with_function(root, 93);
@@ -4997,25 +4884,25 @@ mod tests {
         record_materialized_product(
             driver.session_mut(),
             grand.clone(),
-            fake_materialized(
+            fake_effect_materialized(
                 grand_symbol.clone(),
-                Some(fake_edge(caller.clone(), grand_symbol, caller_symbol.clone())),
-                EffectSummary::default(),
+                Some(fake_effect_edge(caller.clone(), grand_symbol, caller_symbol.clone())),
+                false,
             ),
         );
         record_materialized_product(
             driver.session_mut(),
             caller.clone(),
-            fake_materialized(
+            fake_effect_materialized(
                 caller_symbol.clone(),
-                Some(fake_edge(callee.clone(), caller_symbol, callee_symbol.clone())),
-                EffectSummary::default(),
+                Some(fake_effect_edge(callee.clone(), caller_symbol, callee_symbol.clone())),
+                false,
             ),
         );
         record_materialized_product(
             driver.session_mut(),
             callee.clone(),
-            fake_materialized(callee_symbol, None, EffectSummary::default()),
+            fake_effect_materialized(callee_symbol, None, false),
         );
         let mut world = World::new();
         let mut producers = WorldProductProducers::new(&mut world, &tel);
@@ -5026,14 +4913,7 @@ mod tests {
             ));
         }
 
-        let changed = fake_materialized(
-            executable_symbol_for_test(&callee),
-            None,
-            EffectSummary {
-                allocates: true,
-                ..EffectSummary::default()
-            },
-        );
+        let changed = fake_effect_materialized(executable_symbol_for_test(&callee), None, true);
         record_materialized_product(driver.session_mut(), callee.clone(), changed);
 
         assert!(
@@ -5054,7 +4934,7 @@ mod tests {
                 PullOutcome::Produced(ProductValue::ExecutableEffects(_))
             ));
         }
-        let outcome = driver.pull(&mut producers, ProductKey::ExecutableEffects(grand));
+        let outcome = driver.pull(&mut producers, ProductKey::ExecutableEffects(grand.clone()));
         let PullOutcome::Produced(ProductValue::ExecutableEffects(effects)) = outcome else {
             panic!("re-pulled effects should re-produce, got {outcome:?}")
         };
@@ -5062,102 +4942,55 @@ mod tests {
             effects.allocates,
             "the transitive dependent must observe the callee's new effect projection"
         );
+
+        record_materialized_product(
+            driver.session_mut(),
+            caller.clone(),
+            fake_effect_materialized(executable_symbol_for_test(&caller), None, false),
+        );
+        assert_eq!(
+            (
+                driver.session().executable_effects(&caller),
+                driver.session().executable_effects(&grand),
+                driver.session().executable_effects(&callee),
+            ),
+            (None, None, Some(effects)),
+            "removing a callee edge invalidates its former caller cone, not the callee"
+        );
+        for key in [&caller, &grand] {
+            assert!(matches!(
+                driver.pull(&mut producers, ProductKey::ExecutableEffects(key.clone())),
+                PullOutcome::Produced(ProductValue::ExecutableEffects(_))
+            ));
+        }
+        assert_eq!(
+            (
+                driver.session().executable_effects(&caller),
+                driver.session().executable_effects(&grand),
+            ),
+            (Some(EffectSummary::default()), Some(EffectSummary::default())),
+            "the re-settled caller cone must retract the removed callee's effect"
+        );
+
+        record_materialized_product(
+            driver.session_mut(),
+            callee.clone(),
+            fake_effect_materialized(executable_symbol_for_test(&callee), None, false),
+        );
+        assert_eq!(
+            (
+                driver.session().executable_effects(&callee),
+                driver.session().executable_effects(&caller),
+                driver.session().executable_effects(&grand),
+            ),
+            (None, Some(EffectSummary::default()), Some(EffectSummary::default()),),
+            "later callee movement invalidates itself but not the former caller cone"
+        );
+        assert!(matches!(
+            driver.pull(&mut producers, ProductKey::ExecutableEffects(callee)),
+            PullOutcome::Produced(ProductValue::ExecutableEffects(_))
+        ));
         driver.finish_session();
-
-        // The body is kept consistent with the requested local effect summary
-        // (an allocating step iff `allocates`) the way production
-        // materialization derives `effects` from the body, so the effects
-        // producer's recompute and the recorded projection agree.
-        fn fake_materialized(
-            executable: ExecutableSymbol,
-            edge: Option<MaterializedCallEdge>,
-            effects: EffectSummary,
-        ) -> MaterializedExecutable {
-            let projections = if effects.allocates {
-                vec![LoweredStep::Tuple {
-                    value: ValueId::from_u32(0),
-                    items: Vec::new(),
-                }]
-            } else {
-                Vec::new()
-            };
-            let return_position = TransportPosition::ExecutableReturn {
-                executable: executable.clone(),
-            };
-            MaterializedExecutable {
-                entry_dispatch: None,
-                return_ty: fake_ty(),
-                runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
-                transport: MaterializedExecutableTransport {
-                    executable,
-                    position_layouts: Vec::new(),
-                    input_positions: Vec::new(),
-                    return_position,
-                    resume_positions: Vec::new(),
-                    return_payload_positions: Vec::new(),
-                    entry_capture_positions: Vec::new(),
-                    call_arg_positions: Vec::new(),
-                    value_positions: Vec::new(),
-                },
-                original_entry_ids: Vec::new(),
-                value_types: HashMap::new(),
-                effects,
-                body: super::super::LoweredBody::Clauses {
-                    clauses: vec![LoweredClause {
-                        span: Span::DUMMY,
-                        params: Vec::new(),
-                        projections,
-                        entry: ControlEntryId::from_u32(0),
-                    }],
-                    entries: vec![LoweredEntry {
-                        span: Span::DUMMY,
-                        origin: ControlEntryOrigin::Clause,
-                        params: Vec::new(),
-                        captures: Vec::new(),
-                        reusable_cons_captures: Vec::new(),
-                        steps: Vec::new(),
-                        tail: LoweredTail::Halt {
-                            atom: "done".to_string(),
-                        },
-                    }],
-                    generated: Vec::new(),
-                },
-                call_edges: edge
-                    .map(|edge| HashMap::from([(CallSiteId::from_u32(0), edge)]))
-                    .unwrap_or_default(),
-            }
-        }
-
-        fn fake_edge(
-            callee: ExecutableKey,
-            caller_symbol: ExecutableSymbol,
-            callee_symbol: ExecutableSymbol,
-        ) -> MaterializedCallEdge {
-            MaterializedCallEdge {
-                target: CallEdge::Direct(DirectCallEdge {
-                    callee: CallTarget::Local(callee),
-                    return_flow: CallReturnFlow::Tail {
-                        source: TransportPosition::ExecutableReturn {
-                            executable: callee_symbol,
-                        },
-                        payload: TransportPosition::ReturnPayload {
-                            executable: caller_symbol.clone(),
-                            callsite: CallSiteId::from_u32(0),
-                        },
-                        caller_return: TransportPosition::ExecutableReturn {
-                            executable: caller_symbol,
-                        },
-                    },
-                    extern_marshals: None,
-                }),
-                return_ty: fake_ty(),
-            }
-        }
-
-        fn fake_ty() -> super::super::Ty {
-            let mut types = super::super::Types::new();
-            types.none()
-        }
     }
 
     #[test]
@@ -5341,6 +5174,103 @@ mod tests {
             ProductDependencies::default(),
             &fake_types(),
         );
+    }
+
+    /// Build production-consistent effect inputs: the stored projection and
+    /// the body from which the effect product derives it always agree.
+    fn fake_effect_materialized(
+        executable: ExecutableSymbol,
+        edge: Option<MaterializedCallEdge>,
+        allocates: bool,
+    ) -> MaterializedExecutable {
+        let effects = EffectSummary {
+            allocates,
+            ..EffectSummary::default()
+        };
+        let projections = if allocates {
+            vec![LoweredStep::Tuple {
+                value: ValueId::from_u32(0),
+                items: Vec::new(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let return_position = TransportPosition::ExecutableReturn {
+            executable: executable.clone(),
+        };
+        MaterializedExecutable {
+            entry_dispatch: None,
+            return_ty: effect_test_ty(),
+            runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
+            transport: MaterializedExecutableTransport {
+                executable,
+                position_layouts: Vec::new(),
+                input_positions: Vec::new(),
+                return_position,
+                resume_positions: Vec::new(),
+                return_payload_positions: Vec::new(),
+                entry_capture_positions: Vec::new(),
+                call_arg_positions: Vec::new(),
+                value_positions: Vec::new(),
+            },
+            original_entry_ids: Vec::new(),
+            value_types: HashMap::new(),
+            effects,
+            body: super::super::LoweredBody::Clauses {
+                clauses: vec![LoweredClause {
+                    span: crate::source::Span::DUMMY,
+                    params: Vec::new(),
+                    projections,
+                    entry: ControlEntryId::from_u32(0),
+                }],
+                entries: vec![LoweredEntry {
+                    span: crate::source::Span::DUMMY,
+                    origin: ControlEntryOrigin::Clause,
+                    params: Vec::new(),
+                    captures: Vec::new(),
+                    reusable_cons_captures: Vec::new(),
+                    steps: Vec::new(),
+                    tail: LoweredTail::Halt {
+                        atom: "done".to_string(),
+                    },
+                }],
+                generated: Vec::new(),
+            },
+            call_edges: edge
+                .map(|edge| HashMap::from([(CallSiteId::from_u32(0), edge)]))
+                .unwrap_or_default(),
+        }
+    }
+
+    fn fake_effect_edge(
+        callee: ExecutableKey,
+        caller_symbol: ExecutableSymbol,
+        callee_symbol: ExecutableSymbol,
+    ) -> MaterializedCallEdge {
+        MaterializedCallEdge {
+            target: CallEdge::Direct(DirectCallEdge {
+                callee: CallTarget::Local(callee),
+                return_flow: CallReturnFlow::Tail {
+                    source: TransportPosition::ExecutableReturn {
+                        executable: callee_symbol,
+                    },
+                    payload: TransportPosition::ReturnPayload {
+                        executable: caller_symbol.clone(),
+                        callsite: CallSiteId::from_u32(0),
+                    },
+                    caller_return: TransportPosition::ExecutableReturn {
+                        executable: caller_symbol,
+                    },
+                },
+                extern_marshals: None,
+            }),
+            return_ty: effect_test_ty(),
+        }
+    }
+
+    fn effect_test_ty() -> super::super::Ty {
+        let mut types = super::super::Types::new();
+        types.none()
     }
 
     fn executable_symbol_for_test(executable: &ExecutableKey) -> super::super::transport::ExecutableSymbol {

@@ -700,6 +700,13 @@ type-inference questions after that line, the product contract is incomplete or
 the consumer is violating it. The fix is to publish or pull the missing named
 fact/product, not to scan semantic state.
 
+Executable-effect freshness is maintained where a materialized executable's
+local effect or callee projection moves. That update replaces its reverse
+callee edges and invalidates exactly its dependent effect cone; removing an
+edge removes the dependency before later callee movement. Focused preservation,
+invalidation, and retraction tests own this invariant. Finishing a pull session
+does not recompute cached effect closures.
+
 ## Native codegen contract
 
 `NativeProgram(root)` is the last Compiler2-owned artifact before JIT/AOT
