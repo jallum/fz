@@ -110,14 +110,16 @@ far from members that re-derive too often; a wall-clock number cannot.
 **Recursive-group searches** —
 `fz.compiler2.pull.recursive_group.searched` carries the current product, the
 prospective dependency, and one `RecursiveGroupSearch`. `candidate_inventory`
-counts reachable unsettled products of the publishing kind; `vertex_visits`
-counts all reached pending products, including cross-kind bridges; and
+counts reachable products with freshly evaluated pending snapshots of the
+publishing kind; `vertex_visits` counts all reached pending products, including
+cross-kind bridges; and
 `edge_scans` counts their pending dependency edges. `cycle_closed` says the
 component contains the current product, and `group_members` counts only its
 same-kind members. One dependency-rooted Tarjan traversal supplies all six
 values. The prospective edge is recorded before borrowing the dependency map;
 there is no graph copy, separate early-exit reachability pass, or repeated scan
-per candidate. Causal replay compares both these totals and the exact current-graph
+per candidate. Displaced dependency history cannot participate in the search.
+Causal replay compares both these totals and the exact current-graph
 publisher/member identities. Search events are query work; successful
 `pull.recursive_group.published` events separately report exact actual members.
 After `fz-kdt.4` changes the RuntimeDemand graph, `fz-tfn.2` re-establishes this
@@ -206,9 +208,27 @@ executables + construction wrappers:
 
 | fixture | cold | unchanged request | population |
 | --- | ---: | ---: | ---: |
-| `fz_f98_range_map_converges` | 2924 / 2147 / 2082 / 12 | 2725 / 2065 / 2000 / 12 | 62 + 0 |
-| `enum_predicate_search` | 7461 / 5430 / 5046 / 30 | 7154 / 5348 / 4964 / 30 | 168 + 32 |
-| `00420_enum_take_drop_split` | 15841 / 12309 / 11806 / 27 | 15476 / 12227 / 11724 / 27 | 239 + 38 |
+| `fz_f98_range_map_converges` | 2986 / 2147 / 2086 / 15 | 2786 / 2065 / 2004 / 15 | 62 + 0 |
+| `enum_predicate_search` | 7584 / 5430 / 5056 / 35 | 7277 / 5348 / 4974 / 35 | 168 + 32 |
+| `00420_enum_take_drop_split` | 16028 / 12309 / 11815 / 40 | 15655 / 12227 / 11733 / 40 | 239 + 38 |
+
+`ExecutableEffects(E)` is now an ordinary formula over its local materialized
+effect and the exact `ExecutableEffects(callee)` products. That makes 62/123/187
+additional cold producer evaluations and 4/10/9 additional demanded product
+keys visible for the three fixtures above. The settlements, distinct
+generations, first productions, formula evaluations, backend artifacts, and
+runtime outputs do not change. Before this cutover, one effect producer hid a
+transitive materialized-executable walk and a private SCC fixpoint behind a
+single evaluation and co-published the other answers. Ordinary member
+evaluations now perform their local joins over recorded dependency edges. The
+evaluation that closes a recursive group joins the already-recorded member-local
+and external inputs once, then publishes the group's common idempotent answer.
+
+The additional 3/5/13 unexplained product evaluations are recursive effect
+members retried from an `ExecutableEffects(callee)` wait without an intervening
+product movement. `fz-tfn.32` owns finding and correcting that generic
+product-wait retry cause; it must not become an effect-specific path or a
+causality exception.
 
 The unchanged request does zero scheduler-formula evaluations, yet starts a
 fresh product session and reproduces 2065, 5141 and 11971 first-generation

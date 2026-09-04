@@ -338,7 +338,7 @@ Those exact dependencies grow artifact membership; no root-wide scan decides
 it.
 
 `RuntimeDemand(E)` is a product that settles its whole demand SCC inside one
-producer, the same pattern `ExecutableEffects` uses. Demand dependencies run
+producer. Demand dependencies run
 both ways along every call edge (callers read callee input demands; callee
 return demands join caller contributions), so the demand SCC containing `E` is
 `E`'s call cone, discovered from settled facts only: `CallSiteSummary` direct

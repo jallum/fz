@@ -204,9 +204,8 @@ pub enum CallEdge<T, F = CallReturnFlow> {
 
 impl<T, F> CallEdge<T, F> {
     /// Every local callee the edge can reach: the direct target, or all
-    /// dispatch arms. This is the single callee-extraction both the effects
-    /// producer's cone traversal and the session's effect-dependents reverse
-    /// edges are derived from, so the two stay in agreement by construction.
+    /// dispatch arms. Product formulas use this one projection to name their
+    /// exact callee dependencies.
     pub fn local_callees(&self) -> Vec<&T> {
         match self {
             Self::Direct(direct) => direct.callee.local().into_iter().collect(),

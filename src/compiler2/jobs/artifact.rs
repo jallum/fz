@@ -31,7 +31,8 @@ use super::super::executable_facts::ExecutableFacts;
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
 use super::super::pull::{
-    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, RecursiveProductRead, TransportCarrier,
+    TransportLayout,
 };
 use super::super::scheduler::FatalError;
 #[cfg(test)]
@@ -169,183 +170,75 @@ pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>
     executable: &ExecutableKey,
     types: &Types,
 ) -> PullOutcome {
-    let graph = match collect_effect_cone(tel, context, executable, types) {
-        Ok(graph) => graph,
-        Err(waits) => return PullOutcome::Waiting(waits),
+    let materialized_key = ProductKey::MaterializedExecutable(executable.clone());
+    let materialized = match context.read_product(tel, materialized_key.clone(), types) {
+        Some(ProductValue::MaterializedExecutable(materialized)) => Rc::clone(materialized),
+        Some(other) => panic!("materialized executable product produced unexpected value {other:?}"),
+        None => return PullOutcome::wait_on_product(materialized_key),
     };
-    let scc = effect_scc_containing(executable, &graph.edges);
-    let (waits, external_effects) = effect_scc_external_waits(tel, context, &scc, &graph.edges, types);
+    let current = ProductKey::ExecutableEffects(executable.clone());
+    let mut effects = materialized.effects;
+    let mut waits = Vec::new();
+    let mut recursive_group: Option<Vec<ProductKey>> = None;
+    let mut callees = materialized
+        .call_edges
+        .values()
+        .flat_map(|edge| edge.target.local_callees())
+        .cloned()
+        .collect::<Vec<_>>();
+    callees.sort_by(|left, right| left.semantic_cmp(right, types));
+    callees.dedup();
+    for callee in callees {
+        let key = ProductKey::ExecutableEffects(callee);
+        match context.read_recursive_product(tel, key.clone(), &current, types) {
+            RecursiveProductRead::Ready(ProductValue::ExecutableEffects(callee_effects)) => {
+                effects.union_with(*callee_effects);
+            }
+            RecursiveProductRead::Ready(other) => {
+                panic!("executable effects product produced unexpected value {other:?}")
+            }
+            RecursiveProductRead::Waiting => waits.push(PullWait::Product(key)),
+            RecursiveProductRead::Group(members) => {
+                if let Some(previous) = &recursive_group {
+                    assert!(
+                        previous.iter().all(|member| members.contains(member)),
+                        "recording another read cannot shrink a recursive group"
+                    );
+                }
+                recursive_group = Some(members);
+            }
+        }
+    }
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let settled = settle_effect_scc(&scc, &graph, &external_effects);
-    for (key, effects) in &settled {
-        if key != executable {
-            context.publish_product(
-                ProductKey::ExecutableEffects(key.clone()),
-                ProductValue::ExecutableEffects(*effects),
-            );
-        }
-        context.session_mut().record_executable_effects(key.clone(), *effects);
-    }
-    let effects = settled
-        .get(executable)
-        .copied()
-        .expect("requested executable should belong to its effects SCC");
-    PullOutcome::Produced(ProductValue::ExecutableEffects(effects))
-}
-
-struct EffectGraph {
-    local: HashMap<ExecutableKey, EffectSummary>,
-    edges: HashMap<ExecutableKey, Vec<ExecutableKey>>,
-}
-
-fn collect_effect_cone(
-    tel: &impl crate::telemetry::Telemetry,
-    context: &mut ProductReadContext<'_>,
-    executable: &ExecutableKey,
-    types: &Types,
-) -> Result<EffectGraph, Vec<PullWait>> {
-    let mut local = HashMap::new();
-    let mut edges = HashMap::new();
-    let mut seen = HashSet::new();
-    let mut stack = vec![executable.clone()];
-    let mut waits = Vec::new();
-    while let Some(current) = stack.pop() {
-        if !seen.insert(current.clone()) {
-            continue;
-        }
-        let key = ProductKey::MaterializedExecutable(current.clone());
-        let Some(value) = context.read_product(tel, key.clone(), types) else {
-            waits.push(PullWait::Product(key));
-            continue;
-        };
-        let ProductValue::MaterializedExecutable(materialized) = value else {
-            panic!("materialized executable product produced unexpected value {value:?}");
-        };
-        local.insert(
-            current.clone(),
-            local_effects(&materialized.body, &materialized.call_edges),
-        );
-        let callees = materialized
-            .call_edges
-            .values()
-            .flat_map(|edge| edge.target.local_callees())
-            .cloned()
-            .collect::<Vec<_>>();
-        for callee in &callees {
-            if context.session().executable_effects(callee).is_none() {
-                stack.push(callee.clone());
+    let Some(members) = recursive_group else {
+        return PullOutcome::Produced(ProductValue::ExecutableEffects(effects));
+    };
+    let mut external_waits = Vec::new();
+    for (key, value) in context.recorded_recursive_group_inputs(&current, &members, types) {
+        match (key.clone(), value) {
+            (ProductKey::MaterializedExecutable(_), Some(ProductValue::MaterializedExecutable(materialized))) => {
+                effects.union_with(materialized.effects);
             }
+            (ProductKey::ExecutableEffects(_), Some(ProductValue::ExecutableEffects(callee_effects))) => {
+                effects.union_with(callee_effects);
+            }
+            (ProductKey::ExecutableEffects(_), None) => external_waits.push(PullWait::Product(key)),
+            (ProductKey::MaterializedExecutable(_), None) => {
+                panic!("a recursive effect member must have its local materialized product")
+            }
+            (key, value) => panic!("an executable-effects group recorded unexpected input {key:?}: {value:?}"),
         }
-        edges.insert(current, callees);
     }
-    if waits.is_empty() {
-        Ok(EffectGraph { local, edges })
-    } else {
-        Err(waits)
+    if !external_waits.is_empty() {
+        return PullOutcome::Waiting(external_waits);
     }
-}
-
-fn effect_scc_containing(
-    executable: &ExecutableKey,
-    edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
-) -> HashSet<ExecutableKey> {
-    let mut forward = HashSet::new();
-    collect_effect_reachable(executable, edges, &mut forward);
-    forward
+    let values = members
         .iter()
-        .filter(|candidate| {
-            let mut reaches_entry = HashSet::new();
-            collect_effect_reachable(candidate, edges, &mut reaches_entry);
-            reaches_entry.contains(executable)
-        })
-        .cloned()
-        .collect()
-}
-
-fn collect_effect_reachable(
-    executable: &ExecutableKey,
-    edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
-    out: &mut HashSet<ExecutableKey>,
-) {
-    if !out.insert(executable.clone()) {
-        return;
-    }
-    for callee in edges.get(executable).into_iter().flatten() {
-        collect_effect_reachable(callee, edges, out);
-    }
-}
-
-fn effect_scc_external_waits(
-    tel: &impl crate::telemetry::Telemetry,
-    context: &mut ProductReadContext<'_>,
-    scc: &HashSet<ExecutableKey>,
-    edges: &HashMap<ExecutableKey, Vec<ExecutableKey>>,
-    types: &Types,
-) -> (Vec<PullWait>, HashMap<ExecutableKey, EffectSummary>) {
-    let mut waits = Vec::new();
-    let mut effects = HashMap::new();
-    for executable in scc {
-        for callee in edges.get(executable).into_iter().flatten() {
-            if scc.contains(callee) {
-                continue;
-            }
-            let key = ProductKey::ExecutableEffects(callee.clone());
-            let effect = match context.read_product(tel, key.clone(), types) {
-                Some(ProductValue::ExecutableEffects(value)) => Some(*value),
-                Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
-                None => None,
-            };
-            match effect {
-                Some(value) => {
-                    effects.insert(callee.clone(), value);
-                }
-                None if !context.session().product_is_in_progress(&key) => waits.push(PullWait::Product(key)),
-                None => {}
-            }
-        }
-    }
-    (waits, effects)
-}
-
-fn settle_effect_scc(
-    scc: &HashSet<ExecutableKey>,
-    graph: &EffectGraph,
-    external_effects: &HashMap<ExecutableKey, EffectSummary>,
-) -> HashMap<ExecutableKey, EffectSummary> {
-    let mut settled = scc
-        .iter()
-        .map(|key| (*key).clone())
-        .map(|key| {
-            let effects = graph.local.get(&key).copied().unwrap_or_default();
-            (key, effects)
-        })
-        .collect::<HashMap<_, _>>();
-    loop {
-        let snapshot = settled.clone();
-        let mut changed = false;
-        for key in scc {
-            let mut effects = graph.local.get(key).copied().unwrap_or_default();
-            for callee in graph.edges.get(key).into_iter().flatten() {
-                if let Some(callee_effects) = snapshot
-                    .get(callee)
-                    .copied()
-                    .or_else(|| external_effects.get(callee).copied())
-                {
-                    effects.union_with(callee_effects);
-                }
-            }
-            if settled.get(key).copied() != Some(effects) {
-                settled.insert(key.clone(), effects);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    settled
+        .map(|_| ProductValue::ExecutableEffects(effects))
+        .collect();
+    PullOutcome::Produced(context.stage_recursive_group(&current, &members, values))
 }
 
 pub(crate) fn produce_abi_executable_product(

@@ -502,14 +502,13 @@ their exact typed waits; no generic `produced`, `waited`, or `finished` alias
 exists.
 
 `settled` is the memo's own act of installing a value, not the driver's: it
-fires once per PRODUCT that actually settles, from inside `ProductMemo::finish`
-and `ProductMemo::finish_group` -- the single authority for both. A group
-settle (`finish_group`, e.g. a callable-construction or transport-shape SCC)
-fires once per member, not once for the anchor `ProductDriver::pull` happened
-to be pulling; `ProductReadContext::publish_product`'s co-published members
-(a demand cone's non-anchor executables, an effect SCC's non-anchor
-executables) settle through the same `finish` authority and are equally
-visible. The event carries the raw `ProductKey`, the authoritative
+fires once per product that actually settles, from the one
+`ProductMemo::finish_completion` authority. A recursive group settle (for
+example executable effects or callable construction) fires once per member,
+not once for the anchor `ProductDriver::pull` happened to be pulling;
+`ProductReadContext::publish_product`'s ordinary co-published members (such as
+a demand product's non-anchor executables) settle through the same authority
+and are equally visible. The event carries the raw `ProductKey`, the authoritative
 `ProductValue`, and a stack-built `ProductSettlement { generation, changed,
 group }`: `generation` and `changed` are the memo's own bookkeeping (no
 longer discarded after computation), and `group` is `Some(id)` for every

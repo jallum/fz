@@ -397,14 +397,14 @@ fn produce_generic_callable_owner(
         };
         let mut evidence = TransportFactsBuilder::default();
         evidence.merge(&builder);
-        for owner in context.recursive_group_callable_owners(&members, world.types()) {
+        for owner in context.recursive_group_callable_owners(&current, &members, world.types()) {
             evidence.merge_owner(&owner);
         }
         let values = members
             .iter()
             .map(|member| project_group_member_owner(world, context, &evidence, member))
             .collect();
-        let value = context.stage_callable_construction_group(&current, &members, values);
+        let value = context.stage_recursive_group(&current, &members, values);
         return PullOutcome::Produced(value);
     }
     PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(project_owner_answer(

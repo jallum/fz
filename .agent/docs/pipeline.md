@@ -58,7 +58,7 @@ product   RootBackendProduct(root)
             one pruned body, selected call edges, local return/value types, and local
             transport positions
           ExecutableEffects(E)
-            effect summary over the symbolic call-edge closure demanded by E
+            local materialized effects joined with exact callee effect products
           CallableResolution(E, value, surface)
             exact request-local first-class callable resolutions
           RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
@@ -575,8 +575,9 @@ scans.
 
 The next products narrow the contract:
 
-- `ExecutableEffects(E)` derives local effects over symbolic call edges already
-  present in the request-local session.
+- `ExecutableEffects(E)` joins the local effect already materialized for `E`
+  with the exact `ExecutableEffects(callee)` products named by its symbolic
+  call edges.
 - `AbiExecutable(E)` reads `MaterializedExecutable(E)`,
   `ExecutableEffects(E)`, and the exact transport products for executable
   inputs, returns, entry captures, resumes, local backend values, and callable
@@ -684,8 +685,8 @@ requested product.
 - `MaterializedExecutable(E)` may consume only settled local semantic facts for
   `E`, `RuntimeDemand(E)`, `OutgoingInputEdges(E)`, and local transport shape
   products.
-- `ExecutableEffects(E)` may consume only materialized executables reachable
-  through symbolic call edges already recorded in the request-local session.
+- `ExecutableEffects(E)` may consume only `MaterializedExecutable(E)` and the
+  exact `ExecutableEffects(callee)` products its local symbolic call edges name.
 - `AbiExecutable(E)` may consume only `MaterializedExecutable(E)`,
   `ExecutableEffects(E)`, exact transport products, and the world-owned type
   store.
@@ -700,12 +701,12 @@ type-inference questions after that line, the product contract is incomplete or
 the consumer is violating it. The fix is to publish or pull the missing named
 fact/product, not to scan semantic state.
 
-Executable-effect freshness is maintained where a materialized executable's
-local effect or callee projection moves. That update replaces its reverse
-callee edges and invalidates exactly its dependent effect cone; removing an
-edge removes the dependency before later callee movement. Focused preservation,
-invalidation, and retraction tests own this invariant. Finishing a pull session
-does not recompute cached effect closures.
+Executable-effect freshness is ordinary product dependency tracking. A moved
+materialized executable re-evaluates its local formula; a changed effect value
+invalidates only recorded readers, while an equal value retains its generation
+and leaves them quiet. Re-evaluation replaces the formula's callee reads, so a
+removed edge stops later movement of that former callee at the removed reader.
+Finishing a pull session does not recompute cached effects.
 
 ## Native codegen contract
 

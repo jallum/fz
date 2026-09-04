@@ -573,10 +573,15 @@ session-local id, and the producer-running request carries that same id on
 make overlapping pulls impossible; cache requests do not invent evaluations.
 Recursive search inside a producer stays within that exact request boundary.
 Causality is never inferred from an aggregate or merely adjacent log lines.
-Cyclic products settle their SCC inside one producer: `ExecutableEffects(E)`
-and `RuntimeDemand(E)` discover executable dependency groups from settled
-call-edge facts; recursive `CallableConstruction(position)` products settle
-their position groups from external anchors. `TransportShape(position)` has no
+Cyclic products use the same pending-product graph. `ExecutableEffects(E)` is
+one ordinary formula over `MaterializedExecutable(E)` and the exact
+`ExecutableEffects(callee)` products named by its local call edges. A pending
+back-edge lets the generic group query identify the members; idempotent effect
+union gives every member the join of the group's local and settled external
+inputs without another traversal or fixpoint. `RuntimeDemand(E)` still settles
+its richer executable dependency group from settled call-edge facts, and
+recursive `CallableConstruction(position)` products settle their position
+groups from external anchors. `TransportShape(position)` has no
 group: it cuts its own recursion from `CallGraphComponent` and `StaticCallees`
 facts at recipe construction, so its evaluation is a function of settled facts
 and of products that can settle without it. Component membership answers
@@ -585,12 +590,18 @@ static edge of its own. The group query records the prospective
 `current -> dependency` read before borrowing the dependency map, so no graph
 copy precedes the one Tarjan traversal that both detects a cycle and returns
 the component containing the dependency. It follows the dependencies
-of unsettled products only and visits each reachable product once. Hash order
-may change visitation order, but not the search counts or component selected
-from one graph. A settled product answers a read with the value it already
-holds, so it waits on
-nothing and no cycle of waits runs through it — and a settled product never
-depends on an unsettled one, so nothing is missed by not stepping into it.
+of freshly evaluated formulas that completed with unresolved waits and visits
+each reachable product once. The current evaluation supplies its reads
+directly; every non-current group member therefore has a pending snapshot by
+construction. A displaced product's last settled dependencies are retained for
+reproduction, not treated as evidence that its new formula is waiting in the
+cycle. As an executable-effects formula records its direct callee reads, its
+pending component can only grow; it stages the last detected group after the
+complete local read set. Hash order may change visitation order, but not the
+search counts or component selected from one graph. A settled product answers
+a read with the value it already holds, so it waits on nothing and no cycle of
+waits runs through it — and a settled product never depends on an unsettled
+one, so nothing is missed by not stepping into it.
 Graph traversal establishes component membership only. `ProductReadContext`
 stages every peer value and dependency snapshot produced by one invocation;
 `ProductDriver` adds the requested key, and `ProductMemo` typed-sorts and
@@ -602,8 +613,8 @@ carries its immutable value, generation, exact product generations, and exact
 fact-use states. `pull.recursive_group.searched` reports the traversal as query work; successful
 `pull.recursive_group.published` events separately report exact actual members.
 Both group-search and demand-cone measurements name their exact anchor
-`ProductKey`; cone `members`/`rounds`/`derivations` measure fixpoint ascent, not
-group discovery.
+`ProductKey`; demand-cone `members`/`rounds`/`derivations` measure its private
+fixpoint ascent, not generic group discovery.
 Large product answers are single-threaded `Rc` values: the producer, typed
 session inventory, memo entry, downstream product, World projection, and cache
 hit retain one immutable allocation. `PullSession` and `World` already contain
@@ -621,8 +632,10 @@ Every member of a settled group retains the union of the
 group's external product and fact dependencies when every duplicate dependency
 state agrees; a mixed-generation or mixed-fact-state snapshot publishes nothing
 and retries from fresh reads. Internal back-edges disappear only after that
-concordance check. Product or fact movement discards pending reader snapshots
-and unregisters their edges before retry. Equal reproduction preserves its
+concordance check. Product or fact movement, including dirtiness propagated
+through a still-produced dependency, discards pending reader snapshots and
+unregisters their edges before retry. Settled readers remain memoized and carry
+that dirtiness lazily until requested. Equal reproduction preserves its
 generation. Settled demand retracts
 when re-materialization resolves a call edge outside the settlement's callee
 inventory, or when a settlement's own publication grows the join of an

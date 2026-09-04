@@ -334,15 +334,14 @@ impl CallableFlowBuilder {
     }
 }
 
-/// Settle the demand SCC containing `executable` as one monotone fixpoint — the
-/// ExecutableEffects pattern generalized to the richer demand lattice.
+/// Settle the demand SCC containing `executable` as one monotone fixpoint.
 ///
 /// Demand dependencies run BOTH ways along every call edge (a caller reads its
 /// callees' input demands; a callee's return demand joins its callers'
 /// contributions), so the demand dependency graph is symmetric and the SCC
 /// containing the anchor is exactly the anchor's call cone (stopping at
-/// executables whose demand is already settled — those are external inputs,
-/// like effects treats already-settled callee effects). The cone starts from
+/// executables whose demand is already settled — those are external inputs).
+/// The cone starts from
 /// `CallSiteSummary` direct targets and previously materialized call edges. A
 /// settled ascent then closes it over the callable-flow edges that demand
 /// actually derived before any result is published.

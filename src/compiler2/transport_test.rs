@@ -151,7 +151,6 @@ fn production_activation_order_has_one_typed_nontextual_authority() {
         "display_with_callable_labels",
         "publish_product_ordered_by",
         "publish_product_ordered",
-        "ordered_effect_scc_members",
         "compare_products",
         "compare_executable_keys",
         "compare_transport_positions",
