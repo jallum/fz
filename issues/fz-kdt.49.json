@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.46"
+    "fz-kdt.46",
+    "fz-tfn.30"
   ],
   "blocks": [],
   "created": "2026-08-26T14:36:53Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Remove product-pull wait sorting after proving order independence",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:44Z"
+  "updated_at": "2026-09-04T00:00:46Z"
 }
