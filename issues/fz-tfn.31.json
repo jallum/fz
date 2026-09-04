@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-04T10:53:18Z",
+  "description": "## Goal\n\nCompile each fixture/configuration observation once, then fan immutable results into every permanent corpus ratchet that asks the same question. Reduce validation work without weakening non-vacuity, failure attribution, determinism, or configuration isolation.\n\n## Current signal\n\nThe combined stack has multiple cross-process and corpus tests that independently compile the same three target fixtures to prove causal work, backend identity, and public-trace bounds. The existing duplicate three-fixture paths perform six compilations where one observation per fixture can serve every pure assertion: 6 -\u003e 3 compiles.\n\nThe ignored native corpus already demonstrates the useful model: one deterministic fixture selection and compilation pass supplies semantic population, physical sharing, body/byte, exclusion, and work counters. This ticket generalizes that ownership without moving the expensive ignored corpus into ordinary CI.\n\n## Correct model\n\n- Inventory only byte-for-byte identical fixture + compiler configuration + front-door observations.\n- One harness call owns setup, process lifecycle, timeout, output cleanup, and compilation, and returns an immutable typed observation bundle.\n- Pure named ratchets consume that bundle; none silently recompiles or mutates it.\n- A compile-count oracle proves one production per unique observation key.\n- Every ratchet keeps its own explicit non-vacuity checks and diagnostic context. One failure identifies the fixture, door/configuration, producer phase, and exact ratchet.\n- Configuration, feature, environment, telemetry subscription, target door, and process-boundary differences remain separate observations.\n\n## TDD\n\n1. Convert the duplicate three-fixture tests and pin exactly three compiles instead of six with identical causal/backend/public results.\n2. Deliberately fail each consumer in a harness test and prove attribution remains specific.\n3. Preserve expected-fatal, panic, timeout, and filter classifications; no skipped/empty population can satisfy a ratchet.\n4. Prove deterministic result order and collision-free temporary/output ownership under parallel tests.\n\n## Required deletion and acceptance\n\nDelete superseded per-ratchet compilation loops, duplicate fixture filters, temporary adapters, and redundant cleanup. Add no global mutable cache and never reuse across distinct configurations. Focused harness/process tests, affected cross-process ratchets, full library/integration tests, formatting, check, and strict clippy pass. The permanent ordinary-CI compile count falls from 6 to 3 for the current duplicate three-fixture coverage.",
+  "id": "fz-tfn.31",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 2,
+  "status": "open",
+  "title": "Compile each fixture observation once and fan permanent ratchets over it",
+  "type": "task",
+  "updated_at": "2026-09-04T10:53:18Z"
+}
