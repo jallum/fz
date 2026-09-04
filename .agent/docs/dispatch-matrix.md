@@ -83,6 +83,13 @@ surface containment: `[int | :ok] & not([:ok])` is a strict subtype of
 question, so its axis degrades to `ListShapes::shape_only` and the narrower
 SURFACE carries the WIDER TEST — it admits `[:zzz]`, which its sibling refuses.
 
+The observable envelope is also the static projection surface. Plain-map
+fields remain in it so map patterns can project and bind their values, although
+the emitted `RuntimeTypePredicate::maps` question observes only map kind. Named
+structs take the other branch: the envelope preserves the atomic schema tag and
+clears positive fields because schema identity is the runtime question and the
+settled schema/lowered struct operation owns field storage.
+
 Both containments are judged on the OBSERVABLE surfaces — the settled
 `surface_inputs` run through `Types::runtime_type_test_envelope`, the same
 projection the plan's rows are built from — not on the settled semantic types. The envelope

@@ -3,8 +3,9 @@
 //! This module packages product-keyed symbolic backend executables into the
 //! backend-owned program consumed by the interpreter and native lowering.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Duration;
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -34,6 +35,7 @@ use super::super::pull::{
     SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportCarrier,
     TransportLayout,
 };
+use super::super::scheduler::DriveOutcome;
 use super::super::scheduler::FatalError;
 use super::super::semantic::SemanticOrd;
 use super::super::transport::{
@@ -47,19 +49,228 @@ use super::artifact::compare_codegen_seam_facts;
 const UNREACHABLE_CONTROL_ATOM: &str = "compiler2_unreachable_control";
 
 pub(crate) fn build_backend_product(
-    world: &mut World,
-    tel: &impl crate::telemetry::RawSpanTelemetry,
+    context: &mut super::super::drive::ExecutionContext<'_, impl crate::telemetry::RawSpanTelemetry>,
     root_id: RootId,
 ) -> Result<JobEffects, FatalError> {
+    if context.root_product_is_active(root_id) {
+        return Ok(JobEffects::wait_on_current(FactKey::BackendProgram(root_id)));
+    }
+    let (program, completion_authority) = drive_backend_product(context, root_id)?;
+    Ok(define_backend_projection(context, root_id, program, completion_authority).1)
+}
+
+pub(crate) fn complete_backend_product<
+    T: crate::telemetry::RawSpanTelemetry,
+    E: super::super::product_drive::ProductDriveError,
+>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root_id: RootId,
+) -> Result<Rc<BackendProgram>, E> {
+    let (program, completion_authority) = drive_backend_product(context, root_id)?;
     let backend_fact = FactKey::BackendProgram(root_id);
-    let (_program, driver) =
-        super::super::product_drive::drive_root_backend_product::<_, FatalError>(world, tel, root_id)?;
-    driver.finish_session();
-    Ok(JobEffects {
-        outputs: vec![backend_fact.clone()],
-        changed: vec![backend_fact],
-        ..JobEffects::default()
-    })
+    if context.world.has_fact(&backend_fact) && context.world.backend_program_is(root_id, &program) {
+        return Ok(program);
+    }
+    let (program, effects) = define_backend_projection(context, root_id, program, completion_authority);
+    if !effects.changed.is_empty() || !context.world.has_fact(&backend_fact) {
+        context.complete_job(Job::BuildBackendProduct(root_id), effects);
+    }
+    Ok(program)
+}
+
+pub(crate) fn complete_backend_product_for_request<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root_id: RootId,
+    timeout: Option<Duration>,
+) -> Result<Rc<BackendProgram>, String> {
+    with_backend_product_for_request(context, root_id, timeout, |_, program| Ok(program))
+}
+
+pub(super) fn with_backend_product_for_request<T, R>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root_id: RootId,
+    timeout: Option<Duration>,
+    consume: impl FnOnce(&mut super::super::drive::ExecutionContext<'_, T>, Rc<BackendProgram>) -> Result<R, String>,
+) -> Result<R, String>
+where
+    T: crate::telemetry::RawSpanTelemetry,
+{
+    let super::super::drive::ExecutionContext {
+        world,
+        telemetry,
+        product_sessions,
+    } = context;
+    let sessions = product_sessions
+        .as_deref_mut()
+        .expect("production backend requests require Compiler2-owned retained sessions");
+    super::super::product_drive::with_retained_root_request(
+        world,
+        *telemetry,
+        sessions,
+        root_id,
+        |world, telemetry, sessions, driver, retained| {
+            reconcile_request(world, telemetry, sessions, root_id, timeout, retained)?;
+            let (program, projection) = super::super::product_drive::drive_active_root_backend_product::<_, String>(
+                world, telemetry, sessions, root_id, driver,
+            )?;
+            let complete_build = world.take_pending_root_backend_product(root_id);
+            sessions.mark_backend_projected(root_id);
+            let mut context = super::super::drive::ExecutionContext::with_product_sessions(world, telemetry, sessions);
+            let program = publish_backend_projection(&mut context, root_id, program, projection, complete_build);
+            context.world.unpark_root_artifact_jobs(root_id);
+            drain_request_context(&mut context, root_id, timeout)?;
+            let consumed = consume(&mut context, program)?;
+            drain_request_context(&mut context, root_id, timeout)?;
+            Ok(consumed)
+        },
+    )
+}
+
+fn reconcile_request<T: crate::telemetry::RawSpanTelemetry>(
+    world: &mut World,
+    telemetry: &T,
+    sessions: &mut super::super::pull::ProductSessions,
+    root: RootId,
+    timeout: Option<Duration>,
+    retained: bool,
+) -> Result<(), String> {
+    if timeout == Some(Duration::ZERO) {
+        let outcome = super::super::drive::ExecutionContext::with_product_sessions(world, telemetry, sessions)
+            .drain_pending_for_root(root, timeout);
+        if let DriveOutcome::TimedOut { jobs_ran, pending_jobs } = outcome {
+            return Err(format!(
+                "compiler2 root {} exceeded 0 ms drive limit after {} jobs with {} pending",
+                root.as_u32(),
+                jobs_ran,
+                pending_jobs,
+            ));
+        }
+    }
+    if world.work_graph.runnable_jobs() == 0
+        || !retained
+            && !world.work_graph.pending(&Job::BuildBackendProduct(root))
+            && !world.work_graph.pending(&Job::LowerNativeProgram(root))
+    {
+        return Ok(());
+    }
+    let outcome = super::super::drive::ExecutionContext::with_product_sessions(world, telemetry, sessions)
+        .drain_pending_for_root(root, timeout);
+    interpret_request_drain(root, outcome)
+}
+
+fn drain_request_context<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root: RootId,
+    timeout: Option<Duration>,
+) -> Result<(), String> {
+    if context.world.work_graph.runnable_jobs() == 0 {
+        return Ok(());
+    }
+    let outcome = context.drain_pending_for(timeout);
+    interpret_request_drain(root, outcome)
+}
+
+fn interpret_request_drain(root: RootId, outcome: DriveOutcome<Job, FactKey>) -> Result<(), String> {
+    match outcome {
+        DriveOutcome::Resolved => Ok(()),
+        DriveOutcome::Fatal { job } => Err(format!(
+            "compiler2 root {} failed while applying queued work at {job:?}",
+            root.as_u32()
+        )),
+        DriveOutcome::TimedOut { jobs_ran, pending_jobs } => Err(format!(
+            "compiler2 root {} exceeded its drive limit after {} jobs with {} pending",
+            root.as_u32(),
+            jobs_ran,
+            pending_jobs
+        )),
+        DriveOutcome::Unresolved { waits } => Err(format!(
+            "compiler2 root {} could not apply queued work; unresolved={waits:?}",
+            root.as_u32()
+        )),
+    }
+}
+
+fn publish_backend_projection<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root_id: RootId,
+    program: Rc<BackendProgram>,
+    projection: Option<super::super::pull::ProductProjection>,
+    complete_build: bool,
+) -> Rc<BackendProgram> {
+    let backend_fact = FactKey::BackendProgram(root_id);
+    if context.world.has_fact(&backend_fact) && context.world.backend_program_is(root_id, &program) {
+        if complete_build {
+            context.complete_job(
+                Job::BuildBackendProduct(root_id),
+                JobEffects {
+                    outputs: vec![backend_fact],
+                    completion_authority: super::super::drive::CompletionAuthority::ProductProjection(projection),
+                    ..JobEffects::default()
+                },
+            );
+        }
+        return program;
+    }
+    let (program, effects) = define_backend_projection(
+        context,
+        root_id,
+        program,
+        super::super::drive::CompletionAuthority::ProductProjection(projection),
+    );
+    if !effects.changed.is_empty() || !context.world.has_fact(&backend_fact) {
+        context.complete_job(Job::BuildBackendProduct(root_id), effects);
+    }
+    program
+}
+
+fn drive_backend_product<T: crate::telemetry::RawSpanTelemetry, E: super::super::product_drive::ProductDriveError>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root_id: RootId,
+) -> Result<(Rc<BackendProgram>, super::super::drive::CompletionAuthority), E> {
+    let super::super::drive::ExecutionContext {
+        world,
+        telemetry,
+        product_sessions,
+    } = context;
+    let (program, completion_authority) = if let Some(sessions) = product_sessions.as_deref_mut() {
+        let (program, projection) = super::super::product_drive::drive_retained_root_backend_product::<_, E>(
+            world, *telemetry, sessions, root_id,
+        )?;
+        (
+            program,
+            super::super::drive::CompletionAuthority::ProductProjection(projection),
+        )
+    } else {
+        #[cfg(not(test))]
+        unreachable!("production backend products require Compiler2-owned retained sessions");
+        #[cfg(test)]
+        {
+            let (program, driver) =
+                super::super::product_drive::drive_root_backend_product::<_, E>(world, *telemetry, root_id)?;
+            driver.finish_session();
+            (program, super::super::drive::CompletionAuthority::Formula)
+        }
+    };
+    Ok((program, completion_authority))
+}
+
+fn define_backend_projection<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root_id: RootId,
+    program: Rc<BackendProgram>,
+    completion_authority: super::super::drive::CompletionAuthority,
+) -> (Rc<BackendProgram>, JobEffects) {
+    let backend_fact = FactKey::BackendProgram(root_id);
+    let changed = context.define_backend_program(root_id, program);
+    (
+        context.world.backend_program(root_id),
+        JobEffects {
+            outputs: vec![backend_fact.clone()],
+            changed: changed.then_some(backend_fact).into_iter().collect(),
+            completion_authority,
+            ..JobEffects::default()
+        },
+    )
 }
 
 /// Reports `RootBackendProduct` pull-drive failures as `FatalError`,
@@ -190,6 +401,30 @@ pub(crate) fn produce_root_backend_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
+    let struct_modules = backends
+        .values()
+        .flat_map(|backend| backend.abi.materialized.struct_modules.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let mut struct_schemas = BTreeMap::new();
+    for module in struct_modules {
+        let fact = FactKey::StructDefined(module);
+        if !context.read_fact(world, FactUse::settled(fact.clone())) {
+            waits.push(PullWait::Fact(FactUse::settled(fact)));
+            continue;
+        }
+        let name = world
+            .module_name(module)
+            .expect("a reachable struct module must have a name")
+            .to_string();
+        let fields = world
+            .struct_def_fields(module)
+            .expect("a settled reachable struct fact must have a schema")
+            .to_vec();
+        struct_schemas.insert(name, fields);
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
     let owners = backends.values().flat_map(|backend| {
         backend
             .abi
@@ -248,14 +483,13 @@ pub(crate) fn produce_root_backend_product(
     let program = Rc::new(BackendProgram {
         entry: entry_index,
         atom_names: collect_backend_atom_names(world, &executables),
-        struct_schemas: world.struct_def_schemas(),
+        struct_schemas,
         executables,
         construction_wrappers,
     });
     verify_boxed_apply_seam_return_convention(tel, root, &program)
         .expect("root backend product should compile one return convention across the boxed apply seam");
-    super::super::drive::ExecutionContext::new(world, tel).define_backend_program(root, Rc::clone(&program));
-    let program = world.backend_program(root);
+    let program = world.retain_equal_backend_program(root, program);
     PullOutcome::Produced(ProductValue::RootBackendProduct(Rc::new(RootBackendProductAnswer {
         program,
         transport,

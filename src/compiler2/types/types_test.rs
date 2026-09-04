@@ -262,25 +262,153 @@ fn runtime_type_predicate_projects_named_structs_and_widens_unknown_opaques() {
 
     let mystery = t.opaque_of("mystery");
     let widened = t.runtime_type_predicate(&mystery);
-    assert_eq!(widened, RuntimeTypePredicate::any());
+    assert_eq!(widened.named_structs, FiniteSet::none());
+    assert!(!widened.allow_other_structs);
+    let mut every_non_struct = RuntimeTypePredicate::any();
+    every_non_struct.named_structs = FiniteSet::none();
+    every_non_struct.allow_other_structs = false;
+    assert_eq!(widened, every_non_struct);
+}
+
+#[test]
+fn runtime_type_predicate_preserves_typed_struct_exclusions_without_narrowing_generic_opaques() {
+    use crate::compiler2::identity::ModuleId;
+
+    let mut t = Types::new();
+    let int = t.int();
+    let foo = t.struct_map(ModuleId::GLOBAL, "Pkg.Foo", &[(MapKey::Atom("value".to_string()), int)]);
+    let foo_envelope = t.runtime_type_test_envelope(foo);
+    let any = t.any();
+    let not_foo = t.difference(any, foo_envelope);
+    assert_eq!(
+        t.runtime_type_predicate(&not_foo).named_structs,
+        FiniteSet::cofinite(["Pkg.Foo".to_string()]),
+        "a negative struct predicate must retain the exact typed schema exclusion"
+    );
+    assert_eq!(
+        t.struct_modules([not_foo]),
+        [ModuleId::GLOBAL].into_iter().collect(),
+        "schema extraction must retain the named exclusion as an exact dependency"
+    );
+
+    let generic_opaque_complement = t.intern(Descr {
+        opaques: FiniteSet::cofinite(["known".to_string()]),
+        ..Descr::unbranded()
+    });
+    let generic = t.runtime_type_predicate(&generic_opaque_complement);
+    let mut every_non_struct = RuntimeTypePredicate::any();
+    every_non_struct.named_structs = FiniteSet::none();
+    every_non_struct.allow_other_structs = false;
+    assert_eq!(
+        generic, every_non_struct,
+        "a generic opaque widens every unrepresentable non-struct kind without overriding typed struct identity"
+    );
+}
+
+#[test]
+fn runtime_type_predicate_preserves_plain_maps_in_real_struct_complements_and_unions() {
+    let mut world = crate::compiler2::World::new();
+    let foo = world.reference_module("Pkg.Foo");
+    let int = world.types_mut().int();
+    let foo_value = world.struct_value_ty(foo, &["value".to_string()], &[int]);
+    let foo_envelope = world.types_mut().runtime_type_test_envelope(foo_value);
+    let any = world.types_mut().any();
+    let not_foo = world.types_mut().difference(any, foo_envelope);
+    let not_foo_predicate = world.types().runtime_type_predicate(&not_foo);
+    assert!(
+        not_foo_predicate.maps,
+        "the complement of a struct still admits every plain map"
+    );
+    assert_eq!(
+        not_foo_predicate.named_structs,
+        FiniteSet::cofinite(["Pkg.Foo".to_string()]),
+        "subtracting the observable struct envelope rejects Foo and admits every other struct"
+    );
+
+    let raw_not_foo = world.types_mut().difference(any, foo_value);
+    assert_eq!(
+        world.types().runtime_type_predicate(&raw_not_foo).named_structs,
+        FiniteSet::any(),
+        "a shaped subtraction cannot reject the whole Foo family before runtime enveloping"
+    );
+
+    let shaped_map = world.types_mut().map(&[(MapKey::Atom("value".to_string()), int)]);
+    let not_shaped_map = world.types_mut().difference(any, shaped_map);
+    assert!(
+        world.types().runtime_type_predicate(&not_shaped_map).maps,
+        "subtracting one shaped plain-map region still admits other plain maps"
+    );
+
+    let map = world.types_mut().map_top();
+    let foo_or_map = world.types_mut().union(foo_value, map);
+    let foo_or_map_predicate = world.types().runtime_type_predicate(&foo_or_map);
+    assert!(
+        foo_or_map_predicate.maps,
+        "an explicit struct-or-map union admits plain maps"
+    );
+    assert_eq!(
+        foo_or_map_predicate.named_structs,
+        FiniteSet::lit("Pkg.Foo".to_string())
+    );
+    assert!(
+        !world.types().runtime_type_predicate(&foo_value).maps,
+        "a struct's tagged record must not classify as a plain map"
+    );
+}
+
+#[test]
+fn typed_struct_identity_survives_the_type_algebra_even_when_runtime_names_match() {
+    use super::sigs::StructTag;
+    use crate::compiler2::identity::ModuleId;
+
+    let mut t = Types::new();
+    let left_module = ModuleId::for_test(1);
+    let right_module = ModuleId::for_test(2);
+    let left = t.struct_map(left_module, "Pkg.Same", &[]);
+    let right = t.struct_map(right_module, "Pkg.Same", &[]);
+    assert_ne!(left, right, "distinct ModuleIds must intern as distinct struct types");
+    assert!(t.is_disjoint(&left, &right));
+    let meet = t.intersect(left, right);
+    assert!(t.is_empty(&meet));
+    let union = t.union(left, right);
+    assert_eq!(
+        t.struct_modules([union]),
+        [left_module, right_module].into_iter().collect(),
+        "union and recursive schema extraction must preserve both typed identities"
+    );
+    let difference = t.difference(left, right);
+    assert!(t.is_equivalent(&difference, &left));
+
+    assert_eq!(
+        StructTag {
+            module: left_module,
+            name: "display one".to_string(),
+        },
+        StructTag {
+            module: left_module,
+            name: "display two".to_string(),
+        },
+        "the derived runtime/display name must not participate in semantic identity"
+    );
 }
 
 #[test]
 fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
+    use crate::compiler2::identity::ModuleId;
+
     let mut t = Types::new();
-    let named = t.opaque_of("impl-target::Range");
-    let any = t.any();
-    let tuple = t.tuple(&[any, any, any]);
     let first = t.atom_lit("first");
     let last = t.atom_lit("last");
     let step = t.atom_lit("step");
-    let structural_map = t.map(&[
-        (MapKey::Atom("first".to_string()), first),
-        (MapKey::Atom("last".to_string()), last),
-        (MapKey::Atom("step".to_string()), step),
-    ]);
-    let structural = t.union(tuple, structural_map);
-    let range_value = t.union(named, structural);
+    let range_value = t.struct_map(
+        ModuleId::GLOBAL,
+        "Range",
+        &[
+            (MapKey::Atom("first".to_string()), first),
+            (MapKey::Atom("last".to_string()), last),
+            (MapKey::Atom("step".to_string()), step),
+        ],
+    );
     let range_predicate = t.runtime_type_predicate(&range_value);
     let map_top = t.map_top();
     let map_predicate = t.runtime_type_predicate(&map_top);
@@ -292,11 +420,88 @@ fn runtime_type_predicate_keeps_named_struct_identity_out_of_plain_map_kind() {
     );
     assert!(
         !range_predicate.maps,
-        "a named struct's structural map evidence must not make it a plain runtime map predicate",
+        "a tagged map is one nominal record leaf, not a union with a plain structural map",
     );
     assert!(
         !range_predicate.overlaps(&map_predicate),
         "protocol matching must not select the Map implementation for a Range struct value",
+    );
+}
+
+#[test]
+fn tagged_map_identity_and_fields_remain_atomic_through_the_algebra() {
+    use crate::compiler2::identity::ModuleId;
+
+    let mut t = Types::new();
+    let int = t.int();
+    let key = MapKey::Atom("value".to_string());
+    let foo = t.struct_map(ModuleId::for_test(1), "Pkg.Foo", &[(key.clone(), int)]);
+    let plain = t.map(&[(key.clone(), int)]);
+    let joined = t.union(foo, plain);
+
+    assert!(t.is_disjoint(&foo, &plain));
+    let meet = t.intersect(foo, plain);
+    assert!(t.is_empty(&meet));
+    let without_plain = t.difference(joined, plain);
+    assert!(t.is_equivalent(&without_plain, &foo));
+    assert_eq!(t.map_field_lookup(&foo, &key), Some(int));
+    let extra = MapKey::Atom("extra".to_string());
+    let refined = t.refine_map_field(&foo, &extra, &int);
+    assert_eq!(t.map_field_lookup(&refined, &extra), Some(int));
+    assert_eq!(
+        t.runtime_type_predicate(&refined).named_structs,
+        FiniteSet::lit("Pkg.Foo".to_string()),
+        "field refinement must preserve the record's nominal tag"
+    );
+    assert_eq!(
+        t.struct_modules([refined]),
+        [ModuleId::for_test(1)].into_iter().collect(),
+        "schema extraction must read the same tag that field projection preserves"
+    );
+    assert_eq!(
+        t.max_tuple_arity(&foo),
+        0,
+        "tuple storage is a derived runtime view, not a type summand"
+    );
+
+    let map_top = t.map_top();
+    assert!(t.is_subtype(&plain, &map_top));
+    assert!(
+        t.is_disjoint(&foo, &map_top),
+        "plain-map top excludes every tagged struct family"
+    );
+    let any = t.any();
+    let non_plain = t.difference(any, map_top);
+    assert!(t.is_disjoint(&non_plain, &map_top));
+    assert!(
+        t.is_subtype(&foo, &non_plain),
+        "record-axis top still ranges over every tagged struct family"
+    );
+}
+
+#[test]
+fn substitution_descends_only_through_equal_record_tags() {
+    use crate::compiler2::identity::ModuleId;
+
+    let mut t = Types::new();
+    let key = MapKey::Atom("value".to_string());
+    let alpha = t.type_var(TypeVarId(0));
+    let int = t.int();
+    let foo_pattern = t.struct_map(ModuleId::for_test(1), "Pkg.Foo", &[(key.clone(), alpha)]);
+    let foo_witness = t.struct_map(ModuleId::for_test(1), "Pkg.Foo", &[(key.clone(), int)]);
+    let other_witness = t.struct_map(ModuleId::for_test(2), "Pkg.Bar", &[(key, int)]);
+
+    let mut sigma = HashMap::new();
+    t.collect_instantiation_subst(&foo_pattern, &foo_witness, &mut sigma);
+    assert_eq!(sigma.get(&TypeVarId(0)), Some(&int));
+    let instantiated = t.instantiate(&foo_pattern, &sigma);
+    assert!(t.is_equivalent(&instantiated, &foo_witness));
+
+    let mut mismatched = HashMap::new();
+    t.collect_instantiation_subst(&foo_pattern, &other_witness, &mut mismatched);
+    assert!(
+        mismatched.is_empty(),
+        "different nominal records cannot bind each other's fields"
     );
 }
 

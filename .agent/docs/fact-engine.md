@@ -567,8 +567,8 @@ names the exact waits it returned, `settled` means a memo value was published,
 `recursive_group.published` identifies every actual member of a successfully
 settled recursive group. A repeated evaluation retains its prior exact waits
 and the positions of the fact movement, settlement/cache hit, displacement, or
-other exact event that triggered it. Each request has a checked, nonzero,
-session-local id, and the producer-running request carries that same id on
+other exact event that triggered it. Each product pull has a checked, nonzero
+id allocated monotonically by its retained session, and the producer-running pull carries that same id on
 `evaluated`. Exclusive driver ownership and the producer's context-only API
 make overlapping pulls impossible; cache requests do not invent evaluations.
 Recursive search inside a producer stays within that exact request boundary.
@@ -648,8 +648,8 @@ waits are satisfied at the Compiler2 front door by driving only the direct fact
 producer needed for that exact fact, while deferring forbidden root artifact
 jobs for the submitted root.
 
-`PullSession` owns the request-local product memo and scheduling relations used
-to reproduce moved products. A `TransportShape(position)` answer remains in its
+`PullSession` owns one root's retained product memo and scheduling relations
+for that root's lifetime in `Compiler2`. A `TransportShape(position)` answer remains in its
 memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
 positioned layout answers it consumed. A closure callee's carrier selects its
 physical invocation: `ValueRef` uses the public wrapper, while `Absent` permits
@@ -697,37 +697,70 @@ When one settles to a changed value, only those recorded dependents are
 invalidated; if a product is invalidated while in progress, the pull driver
 rejects that stale result and returns an explicit product wait for the same key.
 
-Today every backend request constructs a fresh `PullSession`; scheduler facts
-live in `Compiler2`, but product generations and dependency edges do not cross
-that request boundary. `backend_request.started` / `finished` bracket the
-external request independently of nested sessions. One lifecycle gate emits
-both boundaries with the same typed payload shape; finish records either final
-population or failure, including when only one boundary has a direct
-subscriber. Request-scoped causal replay therefore reports an unchanged or
-unreachable-edit request's first-generation products as cross-request
-recomputation rather than retained cache hits. This is the baseline the
-long-lived-session work changes; the report survives as its work-count
-regression signal. Each pull session also has a balanced
-`pull.session.started` / `finished` lifecycle carrying one exact id. Replay keys
-evaluation and movement history by that id, so a nested macro session neither
-inherits nor clears its outer session's history; the same model already permits
-one retained session to span multiple backend requests.
+`Compiler2` retains one `PullSession` per root. Its memo emits a subscription
+change exactly when the first reader of a fact appears or the last disappears.
+A Compiler2-owned `FactKey -> roots` index routes each job-completion or
+quiescence movement only to those roots. Dormant sessions receive it directly;
+roots paused around a nested macro drive receive it once in an active inbox.
+Repeated movements of one fact coalesce to the final `FactState` before the
+next pull. This path scans neither roots, facts, products, nor dependencies,
+and equal final state leaves readers settled.
 
-`BackendProgram(root)` is a co-output-only fact (no arm in
-`World::demand_fact_producer`): its sole producer is this bounded product-pull
-drive, `drive_root_backend_product`, never an agenda job. A job that needs a
-root's `BackendProgram` as an ordinary prerequisite of its own conclusion --
-`Job::BuildMacroExecutable` (`jobs/macro_runtime.rs`, building the executable
-for a macro's hidden compile-time root) and `Job::LowerNativeProgram`
-(`jobs/native.rs`, lowering a root's backend program to native) -- runs this
-same bounded drive inline when the fact is absent and registers its result
-through `complete_job`, exactly as `product_drive::drive_product_fact_wait`
-already does for jobs it runs inside its own bounded fact-wait loop. This is
-the second sanctioned non-wait work-start alongside `submit_root`'s `SeedRoot`
-ignition: `submit_root` starts work because the root does not exist yet to be
-waited on, while this starts work because the fact it needs has no producer a
-wait could ever name -- both are bounded, self-contained drives invoked
-directly rather than a job commanding another job to run.
+Before reconciling queued movements, an empty agenda returns in O(1). A root
+request parks its own queued backend, native, and mapped macro artifact jobs in
+the existing agenda: they still coalesce duplicate demands, but are not
+runnable until the one retained product request has projected its answer.
+Parking preserves FIFO position, nests by active `RootId`, and is always undone
+before the request restores its session, including every error exit. When other
+work is queued, the request applies only that runnable agenda and its exact wakes;
+it does not expand another root's standing activation or wait frontier. An
+unrelated unresolved root therefore cannot poison a retained cache hit. Fatal
+or timed-out work still rejects the request because the agenda did not drain
+and edit visibility is incomplete. Quiescent questions remain exactly indexed;
+if the requested product needs settled readiness, its fact wait arbitrates and
+publishes that exact movement. The ordinary full drive checks the exact
+activation-frontier and waiter indexes for emptiness before constructing either
+ordered discovery inventory.
+
+`backend_request.started` / `finished` bracket one external request. The
+balanced `pull.session.started` / `finished` pair brackets a retained session's
+activation for that request: later activations carry the same session id, while
+their product-pull ids continue increasing and never alias. Nested macro-root
+activations use their own retained session ids. An unchanged or irrelevant-edit
+request therefore reports one retained root cache hit, zero product producer
+evaluations, zero settlements, and zero cross-request recomputations.
+Reconciliation, projection, and post-projection artifact consumption all live
+inside that one activation, including fatal and timed-out exits. Producer-poke
+and work-start tallies are activation-local: the retained-session store
+partitions monotone World counters across nested activations, while each
+standalone `Compiler2::drive` owns the scheduler delta across its balanced
+boundary. Finished sessions therefore reproduce product-request work without
+inheriting standalone work or
+replaying an earlier snapshot.
+`Compiler2::retire_root_products` consumes that root's forward subscription set
+to remove its reverse edges without scanning either index. Dropping the
+compiler drops both indexes and all remaining sessions together.
+
+`RootBackendProduct(root)` construction never mutates the World's backend
+projection. It first constructs the complete candidate; if that candidate is
+equal to the existing projection it retains the projection's immutable handle,
+so a retired-and-recreated session does not split ownership. One
+`BuildBackendProduct` boundary drives the retained product, defines
+`World::BackendProgram(root)`, and completes the matching fact claim only when
+that projection changed (or the claim is first established).
+Interp, native, and macro consumers share that projection boundary, so a
+retained hit cannot republish or move the backend fact, while a changed
+artifact publishes one product-owned movement before those consumers proceed.
+The completion carries its product authority through the ordinary completion
+boundary; the public `pull.product.projected` step therefore carries that
+movement even when `BuildBackendProduct` entered through the agenda, without
+inventing a scheduler-formula evaluation. If artifact jobs for the same root
+are already queued, agenda parking leaves them under their original scheduler
+ownership while the product is active. The projection consumes the exact
+parked `BuildBackendProduct(root)` job even when the retained answer is equal,
+then unparks native and macro consumers for the ordinary post-projection drive.
+They consume the authoritative World handle without recursively opening a
+second session.
 
 Freshness stays on those owners: the fact slot revision records published
 `BackendProgram(root)` movement, and product generations reject stale pull
@@ -736,57 +769,37 @@ second revision field; their equality compares artifact content directly.
 `MacroExecutable.backend_revision` is deliberately different: it snapshots the
 live backend fact revision used to build a compile-time executable.
 
-### Whole-program struct-schema completeness
+### Root-local struct schemas
 
-`World::struct_def_schemas()` snapshots the *entire* shared `StructDefMap` fact
-store (every published `defstruct`, source-written or macro-emitted) at the
-moment a root's `BackendProgram` is packaged (`jobs/backend.rs`,
-`produce_root_backend_product`). That snapshot feeds `struct_schemas` on the
-`BackendProgram`, which the interpreter and native codegen read for the
-cofinite `is_named_struct`/`matches_runtime_struct` check ("is this runtime
-value NOT one of the known named structs") — a check that needs completeness
-over every struct name that could appear as a runtime value anywhere in the
-program, not just ones the checking root's own reachable graph literally
-constructs.
+Each pruned `MaterializedExecutable` carries the typed `ModuleId`s of structs
+its surviving construction/assertion steps or retained runtime type surfaces
+name. A struct is one map-DNF leaf whose `MapTag::Struct(ModuleId, name)` and
+fields remain conjunctive through every type operation. It is not recovered
+from `Ty` display/canonical text or the old `impl-target::` string convention.
+The artifact also drops `value_types`
+for values removed by control pruning before it walks those surfaces, so dead
+types cannot overpackage a schema.
+`RootBackendProduct` unions those sets across its exact reachable executable
+closure, reads each `StructDefined(module)` through `ProductReadContext`, and
+only then materializes the runtime name-to-fields map. The map remains the
+single interpreter/native/AOT schema input, but its membership and invalidation
+are root-local and fact-tracked. No product snapshots `StructDefMap`, and a
+struct reached only by another root cannot make retained and fresh calculations
+disagree. `ModuleMap::reference_named` interns one `ModuleId` per fully
+qualified name; the map tag compares that id, while runtime registration and
+artifact rendering keep the full stable name (so `A.Item` and `B.Item` cannot
+collide).
+Record-axis top ranges over plain maps and every struct family; `map_top` is the
+distinct positive `Plain {}` leaf. Runtime test envelopes preserve a struct tag
+while erasing its unobservable positive field predicates, so `not Foo` rejects
+a registered `Foo` while admitting a plain map and other values. Shaped raw
+negatives conservatively keep the untestable family residue. An explicit `Foo
+| map` admits both.
 
-A `World` can hold more than one independently-driven `RootId` at once — every
-`defmacro` mints its own hidden compile-time root (`World::macro_root`, driven
-through `Job::BuildMacroExecutable`) alongside the program's one runtime root.
-`struct_def_schemas()` is order-dependent in principle: it only contains what
-has *settled so far*, and different roots settle their own backend products at
-different times. Whole-program completeness nonetheless holds today, by
-construction of two facts about the current architecture:
-
-- **Per-root completeness is structural.** A root's `BackendProgram` cannot
-  settle until every `BackendExecutable` its own reachable call graph needs has
-  been packaged, and a `MakeStruct`/`StructField`/`AssertStruct` step cannot
-  package until the struct it names has a settled `StructDefined` fact
-  (`produce_root_backend_executable_product`'s waits). So whichever root reads
-  `struct_def_schemas()` already has every struct *it itself* can construct or
-  match against.
-- **No struct value ever crosses between two independently-driven roots at
-  runtime.** One `fz2 run`/`interp`/`build` invocation submits exactly one
-  runtime root (`Compiler2::submit_root`, `RootKind::Runtime`); `fz2 test`
-  spawns one fresh OS subprocess (and therefore one fresh `Compiler2`/`World`,
-  with its own one runtime root) per discovered test via `run-test-root`; the
-  fixture matrix likewise drives each fixture/path as its own child process.
-  Spawned actor processes (`fz_spawn`) reuse the *same* `BackendProgram` their
-  spawning root already produced — spawning mints a new runtime `Process`, not
-  a new `RootId`. Macro roots run on a separate compile-time process
-  (`QuotedSourceRoot::lend_process`) over AST-shaped values, never over the
-  running program's own struct instances, and their product is never read by
-  the main root's interpreter/codegen. So the one root whose reachable graph
-  can construct a given struct is always the same root whose product is
-  consulted when a value from that construction is later struct-checked.
-
-Together these mean today's single-runtime-root-per-program execution model
-makes the cofinite predicate sound by construction, even though
-`struct_def_schemas()` itself has no barrier forcing it to wait for every
-`defstruct` in the `World`. A future feature that lets one `World` drive
-*multiple runtime roots* whose values can flow into each other at runtime (a
-REPL, a multi-submission session, cross-program message passing) would break
-this invariant and must add the coarser barrier this section describes instead
-of relying on it implicitly.
+The cofinite named-struct predicates remain complete for the values a root can
+observe: spawned processes use the same root program, while macro roots execute
+separately over quoted values. If runtime values later cross independently
+compiled roots, that feature must explicitly compose their schema sets.
 
 ## Tiny walkthrough
 

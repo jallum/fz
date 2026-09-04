@@ -93,10 +93,10 @@ mechanism the union-receiver fixtures sit at:
 - `range_enumerable` — green on all three paths.
 - `enum_map_family` — green on all three paths.
 - `map_enumerable` — green on `run`/`build`; red on `interp`.
-- `enum_tier0`, `enumerable_protocol_dispatch` — deferred on all three paths
-  (`enum_tier0` on the shared `Enum.reduce*` bridge over non-List Enumerables;
-  `enumerable_protocol_dispatch` pending nominal struct-vs-map
-  protocol-dispatch tests).
+- `enumerable_protocol_dispatch` — green on all three paths; its mixed
+  List/Range/Map receiver preserves the independent runtime families.
+- `enum_tier0` — green on all three paths, including the shared `Enum.reduce*`
+  bridge over List, Range, and Map.
 - `membership_operator` — green on all three paths.
 
 `enum_take_drop_split` runs as a full run/interp/build matrix fixture. The
@@ -217,17 +217,16 @@ materialization retry or whole-program projection.
 
 ## Compiler2 Struct Type Invariant
 
-A compiler2 struct value type carries one shape: nominal impl-target identity
-plus ordered structural field evidence. The nominal arm preserves protocol
-identity (`impl-target::<Struct>`); the tuple arm preserves positional field
-evidence used by lowered struct patterns; the map arm preserves named field
-evidence used by field access and struct specs.
+A compiler2 struct value type is one atomic tagged-record shape. Its typed
+`ModuleId` and named fields occupy the same map-DNF leaf, so set operations
+cannot peel nominal identity away from field evidence or let a plain map satisfy
+a struct arm. Positional runtime storage is derived from the settled schema and
+lowered struct operation; it is not an independent tuple type summand.
 
 Source struct expressions, `%Struct{}` type expressions, and protocol impl-target
 selection all derive this shape through `World::struct_value_ty`. User structs
-must not collapse to opaque-only impl targets, because intersecting an opaque-only
-target with a concrete struct value erases the field evidence that downstream
-semantic analysis needs.
+must not collapse to opaque-only impl targets, because field projection and
+schema packaging need the same typed record identity that dispatch observes.
 
 ## Deletion Rule
 

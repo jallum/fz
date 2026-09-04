@@ -34,7 +34,7 @@ use super::conj::Conj;
 use super::descr::Descr;
 use super::emptiness::{self, Memo};
 use super::format::brand_refinement;
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
 
 /// Renders types in their canonical external form, memoized by `Ty`.
@@ -369,7 +369,10 @@ impl<'a> TyCanon<'a> {
             .iter()
             .map(|(key, value)| format!("{} => {}", map_key(key), self.body(cx, *value)))
             .collect();
-        format!("%{{{}}}", fields.join(", "))
+        match &sig.tag {
+            MapTag::Plain => format!("%{{{}}}", fields.join(", ")),
+            MapTag::Struct(tag) => format!("%{}{{{}}}", tag.name, fields.join(", ")),
+        }
     }
 
     // ------------------------------------------------------------------

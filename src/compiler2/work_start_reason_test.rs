@@ -5,8 +5,8 @@
 //!
 //! Each case drives one fixture through the real front door (`submit_code` +
 //! `submit_root`, exactly the CLI/product path) to its backend product and
-//! reads the finished pull session's `WorkStartTally` through the session's
-//! own accessor. The guard asserts three things:
+//! reads the World's cumulative `WorkStartTally`. The guard asserts three
+//! things:
 //!
 //! - `unsanctioned_work_starts() == 0` — no job entered the agenda under
 //!   `WorkStartReason::Unclassified`. A future enqueue call site that forgets
@@ -74,6 +74,11 @@ fn assert_pull_only(name: &str, source: &str) {
         "{name}: {} whole-fact-table scan(s) were taken -- a root-scan discovered work instead of \
          following a named dependency",
         tally.root_scans,
+    );
+    assert_eq!(
+        tally.drain_discovery_sweeps, 0,
+        "{name}: {} global drain-discovery sweep(s) were taken instead of following exact pending indexes",
+        tally.drain_discovery_sweeps,
     );
     assert_eq!(
         tally.ignition, EXTERNAL_IGNITIONS,
@@ -158,6 +163,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             blocked_waiter_expansion: 1140,
             unclassified: 0,
             root_scans: 0,
+            drain_discovery_sweeps: 0,
         },
         "the parent's 3 root and 265 callee starts must become 268 shared-frontier starts; typed ordering may only remove causally redundant wakes",
     );

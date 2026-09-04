@@ -7,6 +7,7 @@
 //! shared codegen.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::diag::Diagnostic;
@@ -32,7 +33,7 @@ use super::super::artifact::{
     ReusableConsCapture, required_dispatch_input_ordinals,
 };
 use super::super::body::{ControlDestination, ControlEntryId, LoweredExtern, ValueId};
-use super::super::drive::{FactKey, Job, JobEffects, settled_uses};
+use super::super::drive::{FactKey, JobEffects, settled_uses};
 use super::super::identity::RootId;
 use super::super::scheduler::FatalError;
 use super::super::semantic::{RuntimeDemand, ShapeDemand};
@@ -55,20 +56,54 @@ fn callable_return_reprs(form: BackendCallableReturn) -> Vec<AbiValueRepr> {
 /// stores. It introduces CPS/native bodies and side facts, but it does not
 /// reopen semantic closure, type inference, or planner discovery.
 pub(super) fn lower_native_program(
-    world: &mut World,
-    tel: &impl crate::telemetry::RawSpanTelemetry,
+    context: &mut super::super::drive::ExecutionContext<'_, impl crate::telemetry::RawSpanTelemetry>,
     root_id: RootId,
 ) -> Result<JobEffects, FatalError> {
-    let backend_fact = FactKey::BackendProgram(root_id);
-    if !world.has_fact(&backend_fact) {
-        let effects = super::backend::build_backend_product(world, tel, root_id)?;
-        super::super::drive::ExecutionContext::new(world, tel).complete_job(Job::BuildBackendProduct(root_id), effects);
+    if context.root_product_is_active(root_id) && !context.root_backend_is_projected(root_id) {
+        return Ok(JobEffects::wait_on_current(FactKey::BackendProgram(root_id)));
     }
+    let backend = if context.root_backend_is_projected(root_id) {
+        context.world.backend_program(root_id)
+    } else {
+        super::backend::complete_backend_product(context, root_id)?
+    };
+    lower_native_program_with_backend(context, root_id, backend)
+}
 
-    let backend = world.backend_program(root_id);
-    let program = std::rc::Rc::new(NativeLowerer::new(world, tel, root_id, &backend)?.lower()?);
-    let changed = super::super::drive::ExecutionContext::new(world, tel).define_native_program(root_id, program);
-    emit_reusable_cons(tel, &root_id, &backend);
+pub(super) fn lower_native_program_for_request<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut super::super::drive::ExecutionContext<'_, T>,
+    root_id: RootId,
+    timeout: Option<std::time::Duration>,
+) -> Result<Rc<NativeProgram>, String> {
+    super::backend::with_backend_product_for_request(context, root_id, timeout, |context, backend| {
+        let job = super::super::drive::Job::LowerNativeProgram(root_id);
+        if context.world.has_fact(&FactKey::NativeProgram(root_id))
+            && !context.world.work_graph.pending(&job)
+            && !context.world.work_graph.blocked(&job)
+            && !context.world.work_graph.rebased(&job)
+        {
+            return Ok(context.world.native_program(root_id));
+        }
+        let effects = lower_native_program_with_backend(context, root_id, backend).map_err(|_| {
+            format!(
+                "compiler2 root {} native lowering failed before backend execution",
+                root_id.as_u32()
+            )
+        })?;
+        context.complete_job(job, effects);
+        Ok(context.world.native_program(root_id))
+    })
+}
+
+fn lower_native_program_with_backend(
+    context: &mut super::super::drive::ExecutionContext<'_, impl crate::telemetry::RawSpanTelemetry>,
+    root_id: RootId,
+    backend: Rc<BackendProgram>,
+) -> Result<JobEffects, FatalError> {
+    let backend_fact = FactKey::BackendProgram(root_id);
+    let program = std::rc::Rc::new(NativeLowerer::new(context.world, context.telemetry, root_id, &backend)?.lower()?);
+    let changed = context.define_native_program(root_id, program);
+    emit_reusable_cons(context.telemetry, &root_id, &backend);
     Ok(JobEffects {
         reads: settled_uses([backend_fact]),
         outputs: vec![FactKey::NativeProgram(root_id)],
@@ -1319,8 +1354,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 BackendStep::AssertStruct { source, module_name } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let predicate =
-                        RuntimeTypePredicate::named_struct(module_name.rsplit('.').next().unwrap_or(module_name));
+                    let predicate = RuntimeTypePredicate::named_struct(module_name);
                     let (matches, _) = ctx.emit_let(Prim::RuntimeTypeTest(source, Box::new(predicate)));
                     ctx.assert_truthy(matches, self.atom_id("match_error"));
                 }

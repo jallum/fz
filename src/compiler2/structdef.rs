@@ -10,8 +10,8 @@
 //!
 //! This store is the single source of truth for struct schemas: every
 //! consumer (type resolution, struct-literal/pattern lowering,
-//! protocol-impl-target classification, and the backend's whole-program
-//! schema inventory) reads it, directly or through
+//! protocol-impl-target classification, and root-local backend packaging)
+//! reads it, directly or through
 //! [`super::world::World::struct_def_fields`]. There is no source-form scan
 //! left to fall back to — a struct defined through a macro-emitted
 //! `defstruct` is visible here exactly like a source-written one.
@@ -66,13 +66,6 @@ impl StructDefMap {
 
     pub(crate) fn get(&self, module: ModuleId) -> Option<&StructDef> {
         self.slots.get(&module)
-    }
-
-    /// Every `defstruct` published so far, for the backend's whole-program
-    /// schema inventory — the fact-backed sibling of the deleted
-    /// `ModuleStore::named_struct_schemas` source scan.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (ModuleId, &StructDef)> {
-        self.slots.iter().map(|(module, def)| (*module, def))
     }
 }
 

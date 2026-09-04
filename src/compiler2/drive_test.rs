@@ -1407,7 +1407,7 @@ fn compiler2_struct_type_expression_waits_for_struct_defined_and_resolves_precis
         .cloned()
         .expect("t/0 should resolve once Point's defstruct publishes");
     let int_ty = world.types_mut().int();
-    let expected = world.struct_value_ty("Point", &["x".to_string(), "y".to_string()], &[int_ty, int_ty]);
+    let expected = world.struct_value_ty(point, &["x".to_string(), "y".to_string()], &[int_ty, int_ty]);
     assert_eq!(
         def.ty, expected,
         "resolved struct-record type should use Point's schema order (x, y), not the reversed literal order (y, x)"
@@ -2402,12 +2402,9 @@ fn compiler2_dotted_call_to_a_name_a_settled_module_does_not_export_diagnoses_at
 
 #[test]
 fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_scan() {
-    // The last struct-facts consumer migration: `BackendProgram.struct_schemas`
-    // now reads `World::struct_def_schemas` (the fact-backed `StructDefMap`),
-    // not the deleted `World::struct_schemas`/`ModuleStore::named_struct_schemas`
-    // source scan. Two structs, reached through the two different backend
-    // consumers of the map, prove it is genuinely populated from published
-    // `StructDefined` facts rather than vacuously empty or a stale literal:
+    // Two structs reached through different backend consumers prove the root
+    // product packages exact `StructDefined` dependencies rather than a source
+    // or World inventory:
     // `Point` is only ever dot-field-accessed (`Prim::StructField`'s named
     // lookup), and its schema field ORDER must match the `defstruct`
     // declaration (x, y), not construction-site literal order (the literal
@@ -2471,33 +2468,52 @@ fn compiler2_backend_struct_schemas_are_fed_from_struct_def_facts_not_a_source_s
 }
 
 #[test]
-fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driven_macro_root() {
-    // fz-l59: a `defmacro` mints its own hidden compile-time `RootId`
-    // (`World::macro_root`), driven through `Job::BuildMacroExecutable` --
-    // independently of the program's runtime root and its own
-    // `BuildBackendProduct` drive. That is exactly the "multiple
-    // independently-driven RootIds sharing one World" shape the struct-schema
-    // completeness concern named: `struct_def_schemas()` snapshots the
-    // shared `StructDefMap` at whichever moment a root's own backend product
-    // settles, so if one root's snapshot could observe less than the whole
-    // program's struct inventory, this is where it would show.
-    //
-    // `Widget` is declared after the macro and is never touched by the
-    // macro's own body (the macro only multiplies an integer) -- the macro
-    // root's executable is built and driven to completion touching zero
-    // structs. The main root still constructs and dot-accesses `Widget`.
-    // Because struct-schema completeness is a per-root property (a root's
-    // `BackendProgram` cannot settle until every backend executable ITS OWN
-    // reachable call graph needs has packaged, which in turn cannot package a
-    // `MakeStruct`/`StructField` step until that struct's `StructDefined`
-    // fact has settled), the main root's snapshot is complete regardless of
-    // the macro root's presence, drive order, or that it touches no structs
-    // at all. This pins the invariant that makes the cofinite
-    // `is_named_struct`/`matches_runtime_struct` predicate sound today: one
-    // program (`fz2 run`/`interp`/`build`, and each `fz2 test` subprocess)
-    // mints exactly one *runtime* root, so no struct value ever has to cross
-    // from one independently-driven root's product into another's cofinite
-    // check.
+fn compiler2_backend_keeps_a_struct_named_only_by_a_retained_type_predicate() {
+    let tel = ConfiguredTelemetry::new();
+    let backend = BackendProgramCapture::new();
+    backend.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("struct_schema_from_type_predicate.fz".to_string()),
+        text: concat!(
+            "defmodule Packet do\n",
+            "  defstruct [:value]\n",
+            "  @type t :: %Packet{value: integer}\n",
+            "  fn pass(x :: t), do: x\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: Some("Packet".to_string()),
+        name: "pass".to_string(),
+        arity: 1,
+        need: ExecutableNeed::Value,
+    });
+    demand_backend_product(&mut compiler, root);
+    assert_resolved(
+        compiler.drive(),
+        "a typed root whose body never constructs or destructures Packet should still settle",
+    );
+
+    assert_eq!(
+        backend
+            .last(root)
+            .program
+            .struct_schemas
+            .get("Packet")
+            .map(Vec::as_slice),
+        Some(["value".to_string()].as_slice()),
+        "the retained entry predicate must carry Packet's typed schema dependency even without a Struct step"
+    );
+}
+
+#[test]
+fn compiler2_main_root_keeps_its_struct_schema_independent_of_a_macro_root() {
+    // A macro owns an independent compile-time root. Its integer-only product
+    // must neither contribute to nor suppress the runtime root's exact Widget
+    // dependency; the runtime root packages Widget because its own pruned body
+    // constructs and reads it.
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -2538,8 +2554,8 @@ fn compiler2_main_root_struct_schema_is_complete_alongside_an_independently_driv
     assert_eq!(
         program.struct_schemas.get("Widget").map(Vec::as_slice),
         Some(["label".to_string(), "count".to_string()].as_slice()),
-        "the main root's struct-schema inventory must be complete (declared defstruct order) even though \
-         an independently-driven macro root -- which touches no structs at all -- shares this World",
+        "the runtime root must retain its exact Widget schema (in declaration order) even though an \
+         independently driven macro root touches no structs in the shared World",
     );
 }
 

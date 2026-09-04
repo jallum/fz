@@ -26,17 +26,17 @@
 //! the right `root`/`fact`/`job` arguments, not just that the hook formats
 //! them correctly in isolation. `fact_wait_budget_exceeded` and
 //! `did_not_settle` go through `drive_root_backend_product_with_budgets`, a
-//! test-only budget seam (`product_drive.rs`) — the production entry point
-//! always calls it with the real 50,000-job budget for both parameters, so
-//! this changes no production behavior.
+//! test-only budget seam (`product_drive.rs`). The retained production drive
+//! calls the same inner loop with the real 50,000-job budgets.
 
 use super::World;
 use super::drive::FactKey;
 use super::drive::Job;
+use super::dump::DumpStage;
 use super::facts::FactUse;
 use super::identity::{ExecutableNeed, RootId};
 use super::product_drive::ProductDriveError;
-use super::pull::{ProductKey, PullOutcome, PullWait, WorldProductProducers};
+use super::pull::{ProductKey, ProductProjection, PullOutcome, PullSession, PullWait, WorldProductProducers};
 use super::scheduler::{DriveOutcome, FatalError};
 use super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -51,6 +51,1001 @@ fn diagnostic_message(event: &crate::telemetry::capture::OwnedEvent) -> &str {
 
 fn some_fact() -> FactUse<FactKey> {
     FactUse::settled(FactKey::BackendProgram(RootId::for_test(7)))
+}
+
+#[test]
+fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_retirement() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_initial.fz".to_string()),
+        text: "fn leaf(), do: 1\n\
+               fn other(), do: leaf()\n\
+               fn main(), do: leaf()\n\
+               fn unused(), do: 0\n"
+            .to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let other = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "other".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(compiler.run_root_interp(main), Ok(1));
+    let cold_main = compiler.retained_backend_program(main);
+    let discovery_sweeps = compiler.world().work_start_tally().drain_discovery_sweeps;
+    let (sessions, subscriptions) = compiler.retained_product_counts();
+    assert!(
+        sessions >= 1,
+        "the requested root and any demanded macro roots are retained"
+    );
+    assert!(subscriptions > 0, "a settled root must retain exact fact subscriptions");
+
+    assert_eq!(compiler.run_root_interp(main), Ok(1));
+    assert!(
+        std::rc::Rc::ptr_eq(&cold_main, &compiler.retained_backend_program(main)),
+        "an unchanged request must return the memo-owned backend handle"
+    );
+    assert_eq!(
+        compiler.world().work_start_tally().drain_discovery_sweeps,
+        discovery_sweeps,
+        "an unchanged retained request must not enter global scheduler discovery"
+    );
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_irrelevant.fz".to_string()),
+        text: "fn unused(), do: 99\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(1));
+    assert!(
+        std::rc::Rc::ptr_eq(&cold_main, &compiler.retained_backend_program(main)),
+        "an irrelevant queued edit must leave the retained answer standing"
+    );
+    assert_eq!(
+        compiler.world().work_start_tally().drain_discovery_sweeps,
+        discovery_sweeps,
+        "an irrelevant edit must drain its exact queued work without a global discovery sweep"
+    );
+
+    assert_eq!(compiler.run_root_interp(other), Ok(1));
+    let cold_other = compiler.retained_backend_program(other);
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_relevant.fz".to_string()),
+        text: "fn leaf(), do: 2\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(other), Ok(2));
+    assert_eq!(compiler.run_root_interp(main), Ok(2));
+    let moved_main = compiler.retained_backend_program(main);
+    let moved_other = compiler.retained_backend_program(other);
+    assert!(!std::rc::Rc::ptr_eq(&cold_main, &moved_main));
+    assert!(!std::rc::Rc::ptr_eq(&cold_other, &moved_other));
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_equal.fz".to_string()),
+        text: "fn unused(), do: 99\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(2));
+    assert_eq!(compiler.run_root_interp(other), Ok(2));
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_main,
+        &compiler.retained_backend_program(main)
+    ));
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_other,
+        &compiler.retained_backend_program(other)
+    ));
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_replacement.fz".to_string()),
+        text: "fn replacement(), do: 3\nfn main(), do: replacement()\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(3));
+    let inventory = compiler
+        .product_executable_inventory(main)
+        .expect("replacement root inventory");
+    let names = inventory
+        .iter()
+        .map(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.activation.function)
+                .name
+                .as_str()
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert!(names.contains("main") && names.contains("replacement"));
+    assert!(
+        !names.contains("leaf"),
+        "the replaced callee must leave the root artifact"
+    );
+
+    let (sessions_before_retirement, subscriptions_before_retirement) = compiler.retained_product_counts();
+    assert!(compiler.retire_root_products(main));
+    let (sessions, subscriptions_after_retirement) = compiler.retained_product_counts();
+    assert_eq!(sessions + 1, sessions_before_retirement);
+    assert!(subscriptions_after_retirement < subscriptions_before_retirement);
+    assert!(!compiler.retire_root_products(main));
+    assert_eq!(compiler.run_root_interp(main), Ok(3));
+    assert_eq!(compiler.retained_product_counts().0, sessions_before_retirement);
+    assert!(std::rc::Rc::ptr_eq(
+        &compiler.retained_backend_program(main),
+        &compiler.world().backend_program(main),
+    ));
+}
+
+#[test]
+fn nested_retained_activations_partition_work_without_replaying_it_on_a_cache_hit() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed
+                .borrow_mut()
+                .push((session.root(), session.producer_pokes(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures2/00111_macro_quote_unquote.fz".to_string()),
+        text: include_str!("../../fixtures2/00111_macro_quote_unquote.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.run_root_interp(root).expect("nested macro request");
+    let cold_sessions = finished.borrow().len();
+    assert!(cold_sessions > 1, "the fixture must exercise nested retained roots");
+    let mut cold_work = super::WorkStartTally::default();
+    for (_, _, work) in finished.borrow().iter().copied() {
+        cold_work.add(work);
+    }
+    assert_eq!(cold_work, compiler.world().work_start_tally());
+
+    compiler.run_root_interp(root).expect("unchanged nested-macro request");
+    let finished = finished.borrow();
+    let unchanged = &finished[cold_sessions..];
+    assert!(!unchanged.is_empty());
+    assert!(
+        unchanged
+            .iter()
+            .all(|(_, pokes, work)| { *pokes == 0 && *work == super::WorkStartTally::default() })
+    );
+}
+
+#[test]
+fn standalone_drive_work_is_not_charged_to_the_next_retained_request() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed.borrow_mut().push(session.work_starts()),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_before_standalone_drive.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let cold_events = finished.borrow().len();
+    let before_drive = compiler.world().work_start_tally();
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_standalone_drive.fz".to_string()),
+        text: "fn unrelated(), do: 9\n".to_string(),
+    });
+    assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
+    let bare_drive_delta = compiler.world().work_start_tally().delta_since(before_drive);
+    assert_ne!(bare_drive_delta, super::WorkStartTally::default());
+    assert_eq!(finished.borrow().len(), cold_events);
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(finished.borrow().len(), cold_events + 1);
+    assert_eq!(
+        finished.borrow()[cold_events],
+        super::WorkStartTally::default(),
+        "a retained cache hit must not inherit work consumed by a standalone drive"
+    );
+}
+
+#[test]
+fn standalone_drive_owns_the_prefix_before_a_nested_root_product_session() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed.borrow_mut().push((session.root(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_before_nested_standalone_drive.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let cold_events = finished.borrow().len();
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_before_nested_product.fz".to_string()),
+        text: "fn unrelated(), do: 9\n".to_string(),
+    });
+    assert!(compiler.demand(Job::BuildBackendProduct(root)));
+    assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
+    assert_eq!(finished.borrow().len(), cold_events + 1);
+    assert_eq!(
+        finished.borrow()[cold_events],
+        (root, super::WorkStartTally::default()),
+        "a root session nested in standalone drive must not inherit its owner's prefix"
+    );
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(finished.borrow().len(), cold_events + 2);
+    assert_eq!(
+        finished.borrow()[cold_events + 1],
+        (root, super::WorkStartTally::default()),
+        "the next direct cache hit must not inherit completed standalone work"
+    );
+}
+
+#[test]
+fn reconciliation_failure_is_attributed_to_the_failed_retained_request_only() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed
+                .borrow_mut()
+                .push((session.root(), session.producer_pokes(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_reconcile_failure.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let cold_events = finished.borrow().len();
+    let before_failure = compiler.world().work_start_tally();
+    assert!(compiler.demand(Job::BuildBackendProduct(root)));
+    assert!(compiler.demand(Job::LowerNativeProgram(root)));
+    compiler.submit_code(CodeSubmission {
+        name: Some("fatal_reconcile_edit.fz".to_string()),
+        text: "fn broken(\n".to_string(),
+    });
+    assert!(compiler.run_root_interp(root).is_err());
+    let after_failure = compiler.world().work_start_tally();
+    let failed_delta = after_failure.delta_since(before_failure);
+    let after_failure_events = finished.borrow().len();
+    assert_eq!(after_failure_events, cold_events + 1);
+    assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
+    assert_ne!(failed_delta, super::WorkStartTally::default());
+    assert!(compiler.world().work_graph.pending(&Job::BuildBackendProduct(root)));
+    assert!(compiler.world().work_graph.pending(&Job::LowerNativeProgram(root)));
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(finished.borrow().len(), after_failure_events + 1);
+    assert_eq!(
+        finished.borrow()[after_failure_events],
+        (root, 0, super::WorkStartTally::default()),
+        "the next successful request must not inherit failed reconciliation work"
+    );
+    assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
+}
+
+#[test]
+fn zero_timeout_is_a_balanced_retained_activation_and_does_not_leak_work() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| {
+            observed
+                .borrow_mut()
+                .push((session.root(), session.producer_pokes(), session.work_starts()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_zero_timeout.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    let before_failure = compiler.world().work_start_tally();
+    let cold_events = finished.borrow().len();
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_zero_timeout.fz".to_string()),
+        text: "fn main(), do: 8\n".to_string(),
+    });
+    compiler.set_drive_timeout(std::time::Duration::ZERO);
+    assert!(compiler.run_root_interp(root).is_err());
+    let after_failure = compiler.world().work_start_tally();
+    let failed_delta = after_failure.delta_since(before_failure);
+    let after_failure_events = finished.borrow().len();
+    assert_eq!(after_failure_events, cold_events + 1);
+    assert_eq!(finished.borrow()[cold_events], (root, 0, failed_delta));
+    assert_ne!(failed_delta, super::WorkStartTally::default());
+
+    compiler.set_drive_timeout(std::time::Duration::from_secs(30));
+    assert_eq!(compiler.run_root_interp(root), Ok(8));
+    let success = finished.borrow()[after_failure_events];
+    assert_ne!(success.2, failed_delta);
+    assert_eq!(
+        success.2.ignition, 0,
+        "the edit's ignition belongs to the failed request, not its retry"
+    );
+}
+
+#[test]
+fn an_unresolved_unrelated_root_does_not_poison_a_retained_root_hit() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluations = std::rc::Rc::new(std::cell::Cell::new(0));
+    let evaluated = std::rc::Rc::clone(&evaluations);
+    tel.attach_raw_event1::<ProductKey, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, _| evaluated.set(evaluated.get() + 1),
+    );
+    let displacements = std::rc::Rc::new(std::cell::Cell::new(0));
+    let displaced = std::rc::Rc::clone(&displacements);
+    tel.attach_raw_event1::<ProductKey, _>(
+        &["fz", "compiler2", "pull", "product", "displaced"],
+        move |_, _, _, _| displaced.set(displaced.get() + 1),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_root_isolation.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    evaluations.set(0);
+    displacements.set(0);
+    let discovery_sweeps = compiler.world().work_start_tally().drain_discovery_sweeps;
+
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "missing".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(evaluations.get(), 0, "the retained product must remain a cache hit");
+    assert_eq!(
+        displacements.get(),
+        0,
+        "the unrelated wait must displace no root product"
+    );
+    assert_eq!(
+        compiler.world().work_start_tally().drain_discovery_sweeps,
+        discovery_sweeps,
+        "the unrelated wait must not enter global scheduler discovery"
+    );
+}
+
+#[test]
+fn a_root_backend_contains_only_struct_schemas_its_reachable_program_needs() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("reachable_struct_schemas.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(7));
+    assert!(compiler.retained_backend_program(main).struct_schemas.is_empty());
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("unrelated_struct_root.fz".to_string()),
+        text: "defmodule Spare do\n  defstruct [:value]\nend\n\
+               fn other() do\n  spare = %Spare{value: 9}\n  spare.value\nend\n"
+            .to_string(),
+    });
+    let other = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "other".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(other), Ok(9));
+    assert_eq!(compiler.run_root_interp(main), Ok(7));
+    let retained = compiler.retained_backend_program(main);
+    assert!(
+        retained.struct_schemas.is_empty(),
+        "an independently reached struct must not enter an unrelated retained root"
+    );
+
+    assert!(compiler.retire_root_products(main));
+    assert_eq!(compiler.run_root_interp(main), Ok(7));
+    let fresh = compiler.retained_backend_program(main);
+    assert!(
+        std::rc::Rc::ptr_eq(&retained, &fresh),
+        "retirement must not split the canonical root handle when its reachable schema inventory is equal"
+    );
+    assert_eq!(
+        retained.struct_schemas, fresh.struct_schemas,
+        "retained and fresh calculations must derive the same root-reachable schema inventory"
+    );
+    assert!(fresh.struct_schemas.is_empty());
+}
+
+#[test]
+fn a_newly_reached_callee_adds_its_exact_struct_schema() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("schema_callee_initial.fz".to_string()),
+        text: concat!(
+            "defmodule Added do\n",
+            "  defstruct [:value]\n",
+            "end\n",
+            "fn leaf(), do: 1\n",
+            "fn main(), do: leaf()\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+    assert!(compiler.retained_backend_program(root).struct_schemas.is_empty());
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("schema_callee_replacement.fz".to_string()),
+        text: concat!(
+            "fn replacement(), do: %Added{value: 2}\n",
+            "fn main() do\n",
+            "  added = replacement()\n",
+            "  added.value\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    assert_eq!(
+        compiler
+            .retained_backend_program(root)
+            .struct_schemas
+            .get("Added")
+            .map(Vec::as_slice),
+        Some(["value".to_string()].as_slice()),
+        "the retained root must gain the schema carried by its newly reached callee"
+    );
+}
+
+#[test]
+fn root_backend_memo_depends_on_exactly_its_packaged_struct_facts() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("exact_struct_dependencies.fz".to_string()),
+        concat!(
+            "defmodule Needed do\n",
+            "  defstruct [:value]\n",
+            "end\n",
+            "defmodule Spare do\n",
+            "  defstruct [:other]\n",
+            "end\n",
+            "fn main(), do: %Needed{value: 3}.value\n",
+        )
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_program, driver) = super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the exact struct dependency fixture should settle");
+    let dependencies = driver
+        .session()
+        .memo()
+        .fact_dependencies(&ProductKey::RootBackendProduct(root))
+        .expect("the root product should retain its fact dependencies");
+    let needed = world.reference_module("Needed");
+    let spare = world.reference_module("Spare");
+    let structs = dependencies
+        .keys()
+        .filter(|dependency| matches!(dependency.fact(), FactKey::StructDefined(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        structs,
+        vec![FactUse::settled(FactKey::StructDefined(needed))],
+        "root memo dependencies must equal the schemas it packages"
+    );
+    assert!(!structs.contains(&FactUse::settled(FactKey::StructDefined(spare))));
+}
+
+#[test]
+fn nested_structs_with_the_same_leaf_name_keep_distinct_runtime_schemas() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("same_leaf_struct_schemas.fz".to_string()),
+        text: concat!(
+            "defmodule A do\n",
+            "  defmodule Item do\n",
+            "    defstruct [:left]\n",
+            "    fn new(value), do: %Item{left: value}\n",
+            "  end\n",
+            "end\n",
+            "defmodule B do\n",
+            "  defmodule Item do\n",
+            "    defstruct [:right]\n",
+            "    fn new(value), do: %Item{right: value}\n",
+            "  end\n",
+            "end\n",
+            "fn main() do\n",
+            "  a = A.Item.new(2)\n",
+            "  b = B.Item.new(3)\n",
+            "  a.left + b.right\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(5));
+    let schemas = &compiler.retained_backend_program(root).struct_schemas;
+    assert_eq!(
+        schemas.get("A.Item").map(Vec::as_slice),
+        Some(["left".to_string()].as_slice())
+    );
+    assert_eq!(
+        schemas.get("B.Item").map(Vec::as_slice),
+        Some(["right".to_string()].as_slice())
+    );
+    assert!(
+        !schemas.contains_key("Item"),
+        "runtime schema keys must remain fully qualified"
+    );
+}
+
+#[test]
+fn a_struct_used_only_by_pruned_control_does_not_enter_the_root_artifact() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("pruned_struct_schema.fz".to_string()),
+        text: concat!(
+            "defmodule Spare do\n",
+            "  defstruct [:value]\n",
+            "  @type t :: %Spare{value: integer}\n",
+            "end\n",
+            "fn choose(x :: integer), do: x + 6\n",
+            "fn choose(x :: Spare.t), do: x.value\n",
+            "fn main(), do: choose(1)\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert!(
+        compiler.retained_backend_program(root).struct_schemas.is_empty(),
+        "a struct present only in an eliminated typed clause must not survive through unpruned value types"
+    );
+}
+
+#[test]
+fn queued_artifact_jobs_do_not_reenter_a_cold_root_product_session() {
+    let tel = ConfiguredTelemetry::new();
+    let finished_sessions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let finished = std::rc::Rc::clone(&finished_sessions);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| finished.borrow_mut().push(session.root()),
+    );
+    let projections = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let projected = std::rc::Rc::clone(&projections);
+    tel.attach_raw_event3::<ProductKey, ProductProjection, super::AppliedStep<Job, FactKey>, _>(
+        &["fz", "compiler2", "pull", "product", "projected"],
+        move |_, _, _, product, _, step| projected.borrow_mut().push((product.clone(), step.movements.len())),
+    );
+    let formula_completions = std::rc::Rc::new(std::cell::Cell::new(0));
+    let applied = std::rc::Rc::clone(&formula_completions);
+    let native_completions = std::rc::Rc::new(std::cell::Cell::new(0));
+    let native_applied = std::rc::Rc::clone(&native_completions);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if matches!(completion.job, Job::BuildBackendProduct(_)) {
+                applied.set(applied.get() + 1);
+            }
+            if matches!(completion.job, Job::LowerNativeProgram(_)) {
+                native_applied.set(native_applied.get() + 1);
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("queued_artifact_jobs.fz".to_string()),
+        text: "fn main(), do: 1\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(compiler.demand(Job::BuildBackendProduct(root)));
+    assert!(compiler.demand(Job::LowerNativeProgram(root)));
+
+    assert_eq!(compiler.run_root_interp(root), Ok(1));
+    assert!(compiler.world().has_fact(&FactKey::NativeProgram(root)));
+    assert_eq!(
+        projections
+            .borrow()
+            .iter()
+            .filter(|(product, movements)| { product == &ProductKey::RootBackendProduct(root) && *movements == 1 })
+            .count(),
+        1,
+        "the queued backend job must publish the requested root exactly once"
+    );
+    assert_eq!(
+        formula_completions.get(),
+        0,
+        "a queued retained product projection is not a scheduler formula"
+    );
+    assert_eq!(
+        finished_sessions
+            .borrow()
+            .iter()
+            .filter(|finished_root| **finished_root == root)
+            .count(),
+        1,
+        "queued artifact consumers must share the requested root's one activation"
+    );
+    assert_eq!(native_completions.get(), 1, "the queued native consumer completes once");
+    assert!(!compiler.world().work_graph.pending(&Job::BuildBackendProduct(root)));
+    assert!(!compiler.world().work_graph.blocked(&Job::BuildBackendProduct(root)));
+    assert!(!compiler.world().work_graph.pending(&Job::LowerNativeProgram(root)));
+    assert!(!compiler.world().work_graph.blocked(&Job::LowerNativeProgram(root)));
+}
+
+#[test]
+fn queued_artifact_waits_coalesce_on_an_equal_retained_projection() {
+    let tel = ConfiguredTelemetry::new();
+    let evaluations = std::rc::Rc::new(std::cell::Cell::new(0));
+    let evaluated = std::rc::Rc::clone(&evaluations);
+    tel.attach_raw_event1::<ProductKey, _>(
+        &["fz", "compiler2", "pull", "product", "evaluated"],
+        move |_, _, _, _| evaluated.set(evaluated.get() + 1),
+    );
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed.borrow_mut().push(session.root()),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("queued_equal_artifacts.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.compile_root_jit(root).expect("initial native artifact");
+    let backend_revision = compiler.world().fact_revision(&FactKey::BackendProgram(root));
+    let native_revision = compiler.world().fact_revision(&FactKey::NativeProgram(root));
+    evaluations.set(0);
+    let prior_sessions = finished.borrow().len();
+    assert!(compiler.demand(Job::BuildBackendProduct(root)));
+    assert!(compiler.demand(Job::LowerNativeProgram(root)));
+
+    assert_eq!(compiler.run_root_interp(root), Ok(7));
+    assert_eq!(
+        evaluations.get(),
+        0,
+        "the equal retained answer stays an O(1) product hit"
+    );
+    assert_eq!(
+        finished.borrow()[prior_sessions..]
+            .iter()
+            .filter(|finished_root| **finished_root == root)
+            .count(),
+        1
+    );
+    assert!(compiler.world().has_fact(&FactKey::NativeProgram(root)));
+    assert!(!compiler.world().work_graph.blocked(&Job::BuildBackendProduct(root)));
+    assert!(!compiler.world().work_graph.blocked(&Job::LowerNativeProgram(root)));
+    assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
+    assert_eq!(
+        compiler.world().fact_revision(&FactKey::BackendProgram(root)),
+        backend_revision,
+        "parking must not retract or republish the equal backend fact"
+    );
+    assert_eq!(
+        compiler.world().fact_revision(&FactKey::NativeProgram(root)),
+        native_revision,
+        "parking leaves the prior native conclusion standing until its equal replacement"
+    );
+}
+
+#[test]
+fn direct_native_front_door_uses_one_root_activation_and_one_completion() {
+    let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed.borrow_mut().push(session.root()),
+    );
+    let native_completions = std::rc::Rc::new(std::cell::Cell::new(0));
+    let completed = std::rc::Rc::clone(&native_completions);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if matches!(completion.job, Job::LowerNativeProgram(_)) {
+                completed.set(completed.get() + 1);
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("one_native_request.fz".to_string()),
+        text: "fn main(), do: 7\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler.compile_root_jit(root).expect("direct native request");
+    assert_eq!(
+        finished
+            .borrow()
+            .iter()
+            .filter(|finished_root| **finished_root == root)
+            .count(),
+        1
+    );
+    assert_eq!(native_completions.get(), 1);
+    assert_eq!(compiler.world().work_graph.pending_jobs(), 0);
+    assert!(!compiler.world().work_graph.blocked(&Job::LowerNativeProgram(root)));
+}
+
+#[test]
+fn interp_refresh_projects_the_latest_backend_before_the_next_native_request() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("cross_door_backend.fz".to_string()),
+        text: "fn leaf(), do: 1\nfn main(), do: leaf()\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("cold native request");
+    let cold_backend_revision = compiler
+        .world()
+        .fact_revision(&FactKey::BackendProgram(root))
+        .expect("cold backend fact");
+    let cold_native = compiler.world().native_program(root);
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("unchanged native request");
+    assert_eq!(
+        compiler.world().fact_revision(&FactKey::BackendProgram(root)),
+        Some(cold_backend_revision),
+        "an unchanged backend request must not move its fact"
+    );
+    assert!(
+        std::rc::Rc::ptr_eq(&cold_native, &compiler.world().native_program(root)),
+        "an unchanged backend request must not replace the native artifact"
+    );
+
+    compiler.submit_code(CodeSubmission {
+        name: Some("cross_door_backend.fz".to_string()),
+        text: "fn leaf(), do: 2\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+    assert!(
+        compiler
+            .world()
+            .fact_revision(&FactKey::BackendProgram(root))
+            .expect("refreshed backend fact")
+            > cold_backend_revision,
+        "interp must publish its changed backend projection"
+    );
+
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("warm native request");
+    assert!(
+        !std::rc::Rc::ptr_eq(&cold_native, &compiler.world().native_program(root)),
+        "the backend movement must invalidate and replace the native artifact"
+    );
+
+    let interp_backend_revision = compiler
+        .world()
+        .fact_revision(&FactKey::BackendProgram(root))
+        .expect("interp-refreshed backend fact");
+    let interp_native = compiler.world().native_program(root);
+    compiler.submit_code(CodeSubmission {
+        name: Some("cross_door_backend.fz".to_string()),
+        text: "fn leaf(), do: 3\n".to_string(),
+    });
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("native-only refresh");
+    assert!(
+        compiler
+            .world()
+            .fact_revision(&FactKey::BackendProgram(root))
+            .expect("native-refreshed backend fact")
+            > interp_backend_revision,
+        "native must request the retained backend before accepting its own cache"
+    );
+    assert!(!std::rc::Rc::ptr_eq(
+        &interp_native,
+        &compiler.world().native_program(root)
+    ));
+}
+
+#[test]
+fn product_projection_only_telemetry_still_carries_exact_session_request_and_generation() {
+    let tel = ConfiguredTelemetry::new();
+    let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = std::rc::Rc::clone(&observed);
+    tel.attach_raw_event3::<ProductKey, ProductProjection, super::AppliedStep<Job, FactKey>, _>(
+        &["fz", "compiler2", "pull", "product", "projected"],
+        move |_, _, _, product, projection, step| {
+            sink.borrow_mut().push((product.clone(), *projection, step.clone()));
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("projection_identity.fz".to_string()),
+        text: "fn main(), do: 1\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("native request");
+
+    let observed = observed.borrow();
+    assert!(!observed.is_empty());
+    for (product, projection, step) in observed.iter() {
+        let ProductKey::RootBackendProduct(projected_root) = product else {
+            panic!("only root backend products may be projected: {product:?}");
+        };
+        assert!(projection.session().get() > 0);
+        assert!(projection.request().get() > 0);
+        assert_eq!(projection.generation(), 1);
+        assert_eq!(step.movements.len(), 1);
+        assert_eq!(step.movements[0].key, FactKey::BackendProgram(*projected_root));
+    }
+    let (_, projection, _) = observed
+        .iter()
+        .find(|(product, _, _)| product == &ProductKey::RootBackendProduct(root))
+        .expect("requested root projection");
+    assert!(projection.session().get() > 0);
+    assert!(projection.request().get() > 0);
+}
+
+#[test]
+fn retained_projection_is_not_reported_as_formula_work_when_only_applied_is_observed() {
+    let tel = ConfiguredTelemetry::new();
+    let applied_backend_products = std::rc::Rc::new(std::cell::Cell::new(0));
+    let sink = std::rc::Rc::clone(&applied_backend_products);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if matches!(completion.job, Job::BuildBackendProduct(_)) {
+                sink.set(sink.get() + 1);
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("projection_classification.fz".to_string()),
+        text: "fn main(), do: 1\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+
+    compiler
+        .drive_root_to_dump_stage(root, DumpStage::Native)
+        .expect("native request");
+
+    assert_eq!(applied_backend_products.get(), 0);
 }
 
 #[test]
@@ -619,6 +1614,12 @@ fn string_error_end_to_end_did_not_settle_on_a_real_drive() {
 #[test]
 fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
     let tel = ConfiguredTelemetry::new();
+    let finished = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&finished);
+    tel.attach_raw_event1::<PullSession, _>(
+        &["fz", "compiler2", "pull", "session", "finished"],
+        move |_, _, _, session| observed.borrow_mut().push(session.work_starts()),
+    );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_only_root.fz".to_string()),
@@ -655,6 +1656,16 @@ fn string_error_end_to_end_job_failed_from_runtime_root_targeting_a_macro() {
             job
         ),
         "the String path should report the RootEntry fact-wait's SeedRoot job failure, got: {error}"
+    );
+    let mut finished_work = super::WorkStartTally::default();
+    for work in finished.borrow().iter().copied() {
+        finished_work.add(work);
+    }
+    assert_eq!(finished_work, compiler.world().work_start_tally());
+    assert_eq!(
+        compiler.retained_product_counts().0,
+        finished.borrow().len(),
+        "every failed nested activation must finish and restore its retained session"
     );
 }
 
@@ -1023,7 +2034,7 @@ fn settled_prerequisite_readiness_movement_reproduces_equal_executable_facts_wit
     driver.apply_fact_movements(&prerequisite_settled.movements);
 
     let mut settled = None;
-    while let Some(ready) = world.next_ready_job() {
+    while let Some(ready) = world.next_ready_job(None) {
         if ready == observer {
             continue;
         }

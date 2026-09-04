@@ -7,6 +7,14 @@
 use super::drive::{ExecutionContext, Job, JobEffects};
 use super::scheduler::FatalError;
 
+pub(crate) fn lower_native_program_for_request<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut ExecutionContext<'_, T>,
+    root: super::identity::RootId,
+    timeout: Option<std::time::Duration>,
+) -> Result<std::rc::Rc<super::NativeProgram>, String> {
+    native::lower_native_program_for_request(context, root, timeout)
+}
+
 pub(crate) mod artifact;
 pub(crate) mod backend;
 mod body;
@@ -29,7 +37,13 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     context: &mut ExecutionContext<'_, T>,
     job: &Job,
 ) -> Result<JobEffects, FatalError> {
-    let ExecutionContext { world, telemetry } = context;
+    match job {
+        Job::BuildMacroExecutable(function_id) => return macro_runtime::build_macro_executable(context, *function_id),
+        Job::BuildBackendProduct(root_id) => return backend::build_backend_product(context, *root_id),
+        Job::LowerNativeProgram(root_id) => return native::lower_native_program(context, *root_id),
+        _ => {}
+    }
+    let ExecutionContext { world, telemetry, .. } = context;
     let tel = *telemetry;
     match job {
         Job::IndexCode(code_id) => source::index_code(world, tel, *code_id),
@@ -44,7 +58,9 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::LowerFunction(function_id) => body::lower_function(world, tel, *function_id),
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, tel, *function_id),
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, tel, *function_id),
-        Job::BuildMacroExecutable(function_id) => macro_runtime::build_macro_executable(world, tel, *function_id),
+        Job::BuildMacroExecutable(_) | Job::BuildBackendProduct(_) | Job::LowerNativeProgram(_) => {
+            unreachable!("context-owning jobs return before the ordinary dispatch")
+        }
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, tel, *function_id),
         Job::DeriveCallGraphComponent(function_id) => keying::derive_call_graph_component(world, *function_id),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
@@ -52,7 +68,5 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, tel, activation),
         Job::DeriveExecutableFacts(executable) => executable_facts::derive_executable_facts(world, executable),
-        Job::BuildBackendProduct(root_id) => backend::build_backend_product(world, tel, *root_id),
-        Job::LowerNativeProgram(root_id) => native::lower_native_program(world, tel, *root_id),
     }
 }

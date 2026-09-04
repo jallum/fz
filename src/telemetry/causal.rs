@@ -179,6 +179,7 @@ const PRODUCT_DISPLACED: &[&str] = &["fz", "compiler2", "pull", "product", "disp
 const PRODUCT_REQUESTED: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
 const PRODUCT_EVALUATED: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
 const PRODUCT_COPUBLISHED: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
+const PRODUCT_PROJECTED: &[&str] = &["fz", "compiler2", "pull", "product", "projected"];
 const SESSION_STARTED: &[&str] = &["fz", "compiler2", "pull", "session", "started"];
 const SESSION_FINISHED: &[&str] = &["fz", "compiler2", "pull", "session", "finished"];
 const BACKEND_REQUEST_STARTED: &[&str] = &["fz", "compiler2", "backend_request", "started"];
@@ -470,6 +471,7 @@ pub struct SessionWork {
     pub blocked_waiter_expansion: u64,
     pub unsanctioned_work_starts: u64,
     pub root_scans: u64,
+    pub drain_discovery_sweeps: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -675,6 +677,7 @@ impl CausalReport {
             ("blocked_waiter_expansion", session.blocked_waiter_expansion),
             ("unsanctioned_work_starts", session.unsanctioned_work_starts),
             ("root_scans", session.root_scans),
+            ("drain_discovery_sweeps", session.drain_discovery_sweeps),
         ] {
             put_count(&mut multiset, format!("session\u{1}{dimension}"), count);
         }
@@ -946,6 +949,8 @@ struct Replay {
     history: HashMap<RawIdentity, FormulaHistory>,
     formula_work: HashMap<RawIdentity, FormulaWork>,
     sessions: Vec<SessionReplay>,
+    product_requests: HashMap<(u64, u64), RawProductKey>,
+    product_generations: HashMap<(u64, RawProductKey), u64>,
     request_open: bool,
     has_completed_request: bool,
     prior_request_products: HashSet<RawProductKey>,
@@ -965,6 +970,8 @@ impl Replay {
             history: HashMap::new(),
             formula_work: HashMap::new(),
             sessions: Vec::new(),
+            product_requests: HashMap::new(),
+            product_generations: HashMap::new(),
             request_open: false,
             has_completed_request: false,
             prior_request_products: HashSet::new(),
@@ -1024,7 +1031,9 @@ impl Replay {
         } else if event.named(APPLIED) {
             self.apply(position, event);
         } else if event.named(QUIESCED) {
-            self.quiesce(position, event);
+            self.record_non_formula_step(position, event);
+        } else if event.named(PRODUCT_PROJECTED) {
+            self.project_product(position, event);
         } else if event.named(PRODUCT_SETTLED) {
             self.settle_product(position, event);
         } else if event.named(PRODUCT_CACHE_HIT) {
@@ -1169,18 +1178,36 @@ impl Replay {
         history.blocked = blocked;
     }
 
-    /// The drain arbiter's step (fz-kdt.44). No formula ran, so there is
-    /// nothing to classify — but the readiness movements it published and the
-    /// settled wakes it caused are exactly the evidence a waiter woken here
-    /// will name at its next evaluation, so both go into the same indexes a
-    /// job completion feeds.
-    fn quiesce(&mut self, position: usize, event: &PublicEvent) {
+    /// A drain-arbiter or product-projection step. No scheduler formula ran,
+    /// so there is nothing to classify, but its movements and wakes are exact
+    /// evidence for later formula evaluations.
+    fn record_non_formula_step(&mut self, position: usize, event: &PublicEvent) {
         let Some(step) = event.metadata.get("step") else {
             return;
         };
         self.record_movements(position, step);
         self.record_wakes(position, step);
         self.record_ground_shifts(step);
+    }
+
+    fn project_product(&mut self, position: usize, event: &PublicEvent) {
+        let product = RawProductKey::new(event.metadata.get("product").expect("projected product identity"));
+        assert_eq!(product.kind(), Some("root_backend_product"));
+        let projection = event.metadata.get("projection").expect("product projection identity");
+        let session = projection["session_id"].as_u64().expect("projection session id");
+        let request = projection["request_id"].as_u64().expect("projection request id");
+        let generation = projection["generation"].as_u64().expect("projection generation");
+        assert_eq!(
+            self.product_requests.get(&(session, request)),
+            Some(&product),
+            "projection must name the exact request that returned its root product"
+        );
+        assert_eq!(
+            self.product_generations.get(&(session, product)),
+            Some(&generation),
+            "projection must name the root product's current settled generation"
+        );
+        self.record_non_formula_step(position, event);
     }
 
     /// The step's own ground-shift accounting: what each `changed` entry did
@@ -1372,12 +1399,19 @@ impl Replay {
             return;
         };
         let session = self.sessions.last_mut().expect("product request outside a session");
+        let session_id = session.id;
         let key = RawProductKey::new(product);
         let request = event.metadata["request_id"].as_u64().expect("product request identity");
         assert!(
             session.requests.insert(request, (key.clone(), position)).is_none(),
             "session {} reused product request {request}",
             session.id
+        );
+        assert!(
+            self.product_requests
+                .insert((session_id, request), key.clone())
+                .is_none(),
+            "session {session_id} reused product request {request} across activations"
         );
         self.report.products.entry(key).or_default().requests += 1;
     }
@@ -1398,6 +1432,10 @@ impl Replay {
             return;
         };
         let key = RawProductKey::new(product);
+        let session = self.sessions.last().expect("product settlement outside a session").id;
+        if let Some(generation) = generation {
+            self.product_generations.insert((session, key.clone()), generation);
+        }
         let cross_request = self.has_completed_request
             && generation == Some(1)
             && changed
@@ -1617,6 +1655,7 @@ impl Replay {
         tally.blocked_waiter_expansion += count("work_starts_blocked_waiter_expansion");
         tally.unsanctioned_work_starts += count("unsanctioned_work_starts");
         tally.root_scans += count("root_scans");
+        tally.drain_discovery_sweeps += count("drain_discovery_sweeps");
     }
 }
 

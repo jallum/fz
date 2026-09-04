@@ -6,7 +6,7 @@ use super::TyCtx;
 use super::bits::BASIC_NAMES;
 use super::conj::Conj;
 use super::descr::Descr;
-use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ListSig, MapSig, MapTag, ResourceSig, TupleSig};
 use crate::finite_set::FiniteSet;
 
 pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
@@ -150,7 +150,10 @@ fn format_map_clause(cx: TyCtx<'_>, c: &Conj<MapSig>) -> String {
             .iter()
             .map(|(k, v)| format!("{}: {}", format_map_key(k), display(cx, cx.descr(v))))
             .collect();
-        format!("%{{{}}}", fields.join(", "))
+        match &sig.tag {
+            MapTag::Plain => format!("%{{{}}}", fields.join(", ")),
+            MapTag::Struct(tag) => format!("%{}{{{}}}", tag.name, fields.join(", ")),
+        }
     })
 }
 

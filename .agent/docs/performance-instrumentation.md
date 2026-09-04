@@ -56,7 +56,8 @@ reports the group id on each.
 **Product requests and evaluations** — `pull.product.requested` fires for
 every stack pull, including requests answered from the memo;
 `pull.product.evaluated` fires only when the producer body actually runs and
-shares the request's session-local `ProductRequestId`. Exclusive driver
+shares the request's session-owned `ProductRequestId`. The allocator remains
+with a retained session, so ids increase across request activations. Exclusive driver
 ownership and the producer's context-only API make overlapping pulls
 impossible; cache requests have no evaluation. The evaluation
 also carries its structured outcome plus exact product/fact waits. A producer
@@ -76,19 +77,46 @@ finish says either `success` with final population or `failure`, so partial
 subscriptions and errors cannot leave the public lifecycle structurally
 unbalanced. `pull.session.started` / `finished` carry the same exact
 numeric session id; nested sessions therefore have balanced lifecycles without
-erasing the outer session's replay history. Request and session are separate
-identities, so successive requests in one `Compiler2` cannot be conflated and a
-future retained session may span request boundaries without changing the report
-model.
+erasing the outer session's replay history. Backend request, retained session,
+and product request are separate identities: successive backend requests
+reactivate the same root session id, while nested roots use different session
+ids and product request ids never repeat within a retained session.
+The finished session's producer-poke and work-start fields are activation-local
+deltas. `ProductSessions` partitions the World's monotone work-start counters
+across its nested activation stack and gives standalone `Compiler2::drive` its
+own balanced owner boundary, so nested sessions neither overlap the standalone
+prefix nor charge a later cache hit for work performed outside its request.
+When an interp, native, or macro consumer needs the World projection,
+`pull.product.projected` carries the exact structured root product, retained
+session id, product request id, settled generation, and fact movement. Causal
+replay matches all three identities before accepting that movement. This is a
+product projection, not another scheduler-formula evaluation; the three cold
+fixture totals consequently contain two fewer formula evaluations than the
+pre-retention baseline (1215, 1885, and 3169).
+That classification travels with `JobEffects`, so an explicitly queued
+`BuildBackendProduct` cannot silently become formula work at the shared
+completion boundary.
+Same-root artifact jobs stay in the agenda while the retained request
+reconciles edits. The agenda's root-scoped pop parks only matching jobs it
+encounters on the FIFO walk; it does not rescan the whole queue after every
+completion. Parked jobs still coalesce duplicate demand, are excluded from the
+runnable length, and are restored on every request exit. Total pending-job
+counts still include them, so timeout diagnostics do not hide queued work. The projection takes
+the one parked backend job directly, so an equal retained hit adds neither a
+producer evaluation nor an artifact retraction/republication.
 
 **Work starts** — `fz.compiler2.pull.session.finished` carries the
 `WorkStartTally`: `ignition`, `changed_revision_wake`, `activation_frontier`,
-`blocked_waiter_expansion`, plus `unsanctioned_work_starts`
-and `root_scans`. This is the pull-only guard's evidence — every job on the
-agenda must name a sanctioned reason. `unsanctioned_work_starts` and `root_scans`
+`blocked_waiter_expansion`, plus `unsanctioned_work_starts`, `root_scans`, and
+`drain_discovery_sweeps`. This is the pull-only guard's evidence — every job on
+the agenda must name a sanctioned reason. All three scan/unsanctioned counters
 are zero, and `compiler2::work_start_reason_test` holds them there: a
 reintroduced job-pushes-job path lands in `Unclassified` by construction, and a
 producer that discovers work by scanning the fact table shows up in `root_scans`.
+`drain_discovery_sweeps` counts the narrower empty-agenda pass that clones and
+orders the activation-frontier and unresolved-wait inventories; exact nonempty
+indexes guard that work, so unchanged and irrelevant retained requests do not
+increment it.
 `activation_frontier` counts root-entry and caller-discovered-callee analyses
 ignited from their published `Activation` edges. The typed regression pairs
 `SeedRoot`'s claimed activation with the exact accepted frontier key and pins
@@ -208,9 +236,9 @@ executables + construction wrappers:
 
 | fixture | cold | unchanged request | population |
 | --- | ---: | ---: | ---: |
-| `fz_f98_range_map_converges` | 2986 / 2147 / 2086 / 15 | 2786 / 2065 / 2004 / 15 | 62 + 0 |
-| `enum_predicate_search` | 7584 / 5430 / 5056 / 35 | 7277 / 5348 / 4974 / 35 | 168 + 32 |
-| `00420_enum_take_drop_split` | 16028 / 12309 / 11815 / 40 | 15655 / 12227 / 11733 / 40 | 239 + 38 |
+| `fz_f98_range_map_converges` | 2986 / 2147 / 2086 / 15 | 0 / 0 / 1 / 0 | 62 + 0 |
+| `enum_predicate_search` | 7584 / 5430 / 5056 / 35 | 0 / 0 / 1 / 0 | 168 + 32 |
+| `00420_enum_take_drop_split` | 16028 / 12309 / 11815 / 40 | 0 / 0 / 1 / 0 | 239 + 38 |
 
 `ExecutableEffects(E)` is now an ordinary formula over its local materialized
 effect and the exact `ExecutableEffects(callee)` products. That makes 62/123/187
@@ -240,11 +268,15 @@ product movement. `fz-tfn.32` owns finding and correcting that generic
 product-wait retry cause; it must not become an effect-specific path or a
 causality exception.
 
-The unchanged request does zero scheduler-formula evaluations, yet starts a
-fresh product session and reproduces 2065, 5141 and 11971 first-generation
-products respectively. Those are `cross_request_recomputations`, not retained
-hits; the baseline reports zero retained cache hits. This is the work the next
-retention ticket removes.
+The retained unchanged request does zero scheduler-formula evaluations, zero
+product evaluations, zero settlements, and zero cross-request recomputations.
+It makes one request for `RootBackendProduct`, records one retained cache hit,
+and does not enter the scheduler drive or move `BackendProgram`. An unreachable
+edit has the same product profile and zero displacements; only its two
+source-processing formula evaluations run. Once that exact agenda drains, an
+O(1) check of the activation-frontier and waiter indexes avoids cloning or
+ordering either empty inventory. Reached edits evaluate only the displaced
+dependency closure.
 
 Cold, unchanged, and unreachable-edit requests have zero unexplained formula
 evaluations on all three fixtures. Reached-leaf and callee-replacement requests

@@ -10,7 +10,7 @@ use std::any::Any;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use crate::FunctionSurface;
 use crate::diag::diagnostic::Severity;
@@ -554,6 +554,13 @@ impl World {
         self.activation_frontier.iter().cloned().collect()
     }
 
+    /// Whether an empty agenda still has standing demand to discover. Both
+    /// sources maintain exact nonempty indexes, so the common drained case is
+    /// O(1) and does not clone or order either inventory.
+    pub(crate) fn has_drain_demand(&self) -> bool {
+        !self.activation_frontier.is_empty() || self.work_graph.has_unresolved()
+    }
+
     /// Drops a key `demand_activation_frontier_analyses` has determined no
     /// longer needs first-run ignition (already analyzed at least once, or
     /// settled).
@@ -570,6 +577,28 @@ impl World {
     /// submission.
     pub fn demand(&mut self, job: Job) -> bool {
         self.work_graph.enqueue(job, WorkStartReason::Unclassified)
+    }
+
+    /// Pops the next runnable job while leaving this active root's artifact
+    /// consumers in their original agenda positions. `macro_roots.get` is a
+    /// read-only classification: reconciliation must not mint a macro root.
+    pub(crate) fn pop_root_request_job(&mut self, root: RootId) -> Option<Job> {
+        let macro_roots = &self.macro_roots;
+        self.work_graph.pop_or_park_pending(root.as_u32(), |job| match job {
+            Job::BuildBackendProduct(job_root) | Job::LowerNativeProgram(job_root) => *job_root == root,
+            Job::BuildMacroExecutable(function) => macro_roots.get(function) == Some(&root),
+            _ => false,
+        })
+    }
+
+    /// Transfers the exact queued backend job to the product projection that
+    /// publishes its conclusion, whether the answer changed or stayed equal.
+    pub(crate) fn take_pending_root_backend_product(&mut self, root: RootId) -> bool {
+        self.work_graph.take_for(root.as_u32(), &Job::BuildBackendProduct(root))
+    }
+
+    pub(crate) fn unpark_root_artifact_jobs(&mut self, root: RootId) {
+        self.work_graph.unpark(root.as_u32());
     }
 
     /// The cumulative work-start attribution snapshot for this world: how many
@@ -788,6 +817,12 @@ impl World {
             .get(root)
             .cloned()
             .expect("backend programs should only be read after their fact is defined")
+    }
+
+    pub(crate) fn backend_program_is(&self, root: RootId, program: &std::rc::Rc<BackendProgram>) -> bool {
+        self.backend
+            .get(root)
+            .is_some_and(|projected| std::rc::Rc::ptr_eq(projected, program))
     }
 
     pub(crate) fn macro_root(&mut self, function: FunctionId) -> RootId {
@@ -1018,8 +1053,7 @@ impl World {
     /// This store is the single source of truth for struct schemas:
     /// `resolve.rs`'s `TypeExpr::StructRecord` path (via `struct_def_fields`),
     /// struct-literal/pattern lowering, protocol-impl-target classification,
-    /// `struct_assertion_ty`, and the backend's whole-program schema
-    /// inventory (`struct_def_schemas`) all read it.
+    /// `struct_assertion_ty`, and root packaging all read it.
     /// The precise, durable reader over `defstruct`'s ordered fields:
     /// `resolve.rs`'s `TypeExpr::StructRecord` classification reads this once
     /// it needs the schema. This never has an opinion when the fact has not
@@ -1419,25 +1453,6 @@ impl World {
 
     pub(crate) fn module_name(&self, module: ModuleId) -> Option<&str> {
         self.modules.name(module)
-    }
-
-    /// Every `defstruct` published so far, named by module, for the
-    /// backend's whole-program schema inventory (`Prim::MakeStruct`'s schema
-    /// registration and the interpreter's `AssertStruct`/`is_named_struct`
-    /// checks both need every struct that might be constructed or matched
-    /// against, not just the ones a single executable happens to construct
-    /// literally). Fact-backed: this reads `StructDefMap` directly, replacing
-    /// the old `ModuleStore::named_struct_schemas` source scan — a struct
-    /// declared through a macro-emitted `defstruct` now appears here exactly
-    /// like a source-written one.
-    pub(crate) fn struct_def_schemas(&self) -> BTreeMap<String, Vec<String>> {
-        self.struct_defs
-            .iter()
-            .filter_map(|(module, def)| {
-                self.module_name(module)
-                    .map(|name| (name.to_string(), def.fields.clone()))
-            })
-            .collect()
     }
 
     pub fn finish_code_index(&mut self, id: CodeId, source: QuotedCodeSource) -> bool {
@@ -1972,23 +1987,22 @@ impl World {
         self.module_impl_target_ty_with(module, reads)
     }
 
-    pub(crate) fn struct_value_ty(&mut self, module_name: &str, field_names: &[String], field_tys: &[Ty]) -> Ty {
+    pub(crate) fn struct_value_ty(&mut self, module: ModuleId, field_names: &[String], field_tys: &[Ty]) -> Ty {
         debug_assert_eq!(
             field_names.len(),
             field_tys.len(),
             "struct type fields must be ordered against their schema"
         );
-        let tag = format!("impl-target::{}", module_name.rsplit('.').next().unwrap_or(module_name));
-        let nominal = self.types.opaque_of(&tag);
-        let tuple = self.types.tuple(field_tys);
+        let module_name = self
+            .module_name(module)
+            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
+            .to_string();
         let map_fields = field_names
             .iter()
             .zip(field_tys.iter().copied())
             .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
             .collect::<Vec<_>>();
-        let map = self.types.map(&map_fields);
-        let structural = self.types.union(tuple, map);
-        self.types.union(nominal, structural)
+        self.types.struct_map(module, &module_name, &map_fields)
     }
 
     pub(crate) fn resolve_module_name(
@@ -2098,11 +2112,7 @@ impl World {
     /// type inference (schema read from the lowered field list, already
     /// ordered against `struct_def_fields` by body lowering).
     pub(crate) fn struct_module_value_ty(&mut self, module: ModuleId, field_names: &[String], field_tys: &[Ty]) -> Ty {
-        let name = self
-            .module_name(module)
-            .unwrap_or_else(|| panic!("named struct module {} should have a reverse lookup", module.as_u32()))
-            .to_string();
-        self.struct_value_ty(&name, field_names, field_tys)
+        self.struct_value_ty(module, field_names, field_tys)
     }
 
     fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {
@@ -2464,7 +2474,7 @@ fn module_name_segments(name: &str) -> Vec<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImplTargetKind {
     /// `StructDefined(module)` published a schema: the dispatch target is
-    /// this struct's nominal identity plus tuple/map field evidence.
+    /// one tagged-record leaf carrying both nominal identity and fields.
     Struct,
     /// One of the compiler's built-in ground value families. These carry no
     /// module facts at all — the name is their entire identity.
@@ -2658,6 +2668,14 @@ impl World {
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: std::rc::Rc<BackendProgram>) -> bool {
         self.backend.define(root, program)
+    }
+
+    pub(crate) fn retain_equal_backend_program(
+        &self,
+        root: RootId,
+        program: std::rc::Rc<BackendProgram>,
+    ) -> std::rc::Rc<BackendProgram> {
+        self.backend.retain_equal(root, program)
     }
 
     pub(crate) fn define_macro_executable(

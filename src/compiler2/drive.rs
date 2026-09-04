@@ -11,6 +11,7 @@ use crate::telemetry::{RawSpanGuard, RawSpanStop1 as _, RawSpanStop2, RawSpanTel
 use super::code::CodeId;
 use super::facts::{ClaimShape, DerivationId, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
+use super::pull::ProductKey;
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
 use super::semantic::{CallSiteKey, SemanticOrd};
 use super::types::Types;
@@ -19,17 +20,79 @@ use super::world::World;
 pub(crate) struct ExecutionContext<'a, T: crate::telemetry::Telemetry> {
     pub(crate) world: &'a mut World,
     pub(crate) telemetry: &'a T,
+    pub(crate) product_sessions: Option<&'a mut super::pull::ProductSessions>,
 }
 
 impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
     pub(crate) fn new(world: &'a mut World, telemetry: &'a T) -> Self {
-        Self { world, telemetry }
+        Self::with_optional_product_sessions(world, telemetry, None)
+    }
+
+    pub(crate) fn with_product_sessions(
+        world: &'a mut World,
+        telemetry: &'a T,
+        product_sessions: &'a mut super::pull::ProductSessions,
+    ) -> Self {
+        Self::with_optional_product_sessions(world, telemetry, Some(product_sessions))
+    }
+
+    pub(crate) fn with_optional_product_sessions(
+        world: &'a mut World,
+        telemetry: &'a T,
+        product_sessions: Option<&'a mut super::pull::ProductSessions>,
+    ) -> Self {
+        Self {
+            world,
+            telemetry,
+            product_sessions,
+        }
+    }
+
+    pub(crate) fn root_product_is_active(&self, root: RootId) -> bool {
+        self.product_sessions
+            .as_deref()
+            .is_some_and(|sessions| sessions.is_active(root))
+    }
+
+    pub(crate) fn root_backend_is_projected(&self, root: RootId) -> bool {
+        self.product_sessions
+            .as_deref()
+            .is_some_and(|sessions| sessions.backend_is_projected(root))
     }
 
     pub(crate) fn complete_job(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
-        let completion = self.world.complete_job(job, effects);
-        self.emit_job_completion(&completion);
+        let authority = effects.completion_authority;
+        let completion = self.apply_completion(job, effects);
+        match authority {
+            CompletionAuthority::Formula => self.emit_job_completion(&completion),
+            CompletionAuthority::ProductProjection(projection) => {
+                let root = match completion.job {
+                    Job::BuildBackendProduct(root) => root,
+                    ref job => panic!("product projection completion carried by {job:?}"),
+                };
+                if self
+                    .telemetry
+                    .is_raw_event_enabled(&["fz", "compiler2", "pull", "product", "projected"])
+                {
+                    let projection = projection.expect("an observed backend projection must name its product request");
+                    self.telemetry.raw_event3(
+                        &["fz", "compiler2", "pull", "product", "projected"],
+                        &ProductKey::RootBackendProduct(root),
+                        &projection,
+                        &completion.step,
+                    );
+                }
+            }
+        }
         self.emit_activation_input_budget_collapses();
+        completion
+    }
+
+    fn apply_completion(&mut self, job: Job, effects: JobEffects) -> super::JobCompletion {
+        let completion = self.world.complete_job(job, effects);
+        if let Some(sessions) = self.product_sessions.as_deref_mut() {
+            sessions.publish(&completion.step.movements);
+        }
         completion
     }
 
@@ -319,6 +382,14 @@ pub(crate) struct JobEffects {
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
     pub(crate) derivations: Vec<JobDerivation>,
+    pub(crate) completion_authority: CompletionAuthority,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum CompletionAuthority {
+    #[default]
+    Formula,
+    ProductProjection(Option<super::pull::ProductProjection>),
 }
 
 impl JobEffects {
@@ -596,31 +667,63 @@ impl World {
     /// loop (the bare drive and the product fact-wait loops) pulls through this,
     /// so first-run ignition is owned by the scheduler boundary, not by any
     /// job's follow-up.
-    pub(crate) fn next_ready_job(&mut self) -> Option<Job> {
-        if let Some(job) = self.work_graph.pop() {
+    pub(crate) fn next_ready_job(&mut self, parked_root: Option<RootId>) -> Option<Job> {
+        if let Some(job) = self.pop_ready_job(parked_root) {
             return Some(job);
         }
         self.settle_quiescent_waits();
-        if let Some(job) = self.work_graph.pop() {
+        if let Some(job) = self.pop_ready_job(parked_root) {
             return Some(job);
         }
         let ignited = self.demand_activation_frontier_analyses();
         if ignited > 0
-            && let Some(job) = self.work_graph.pop()
+            && let Some(job) = self.pop_ready_job(parked_root)
         {
             return Some(job);
         }
         if self.demand_blocked_wait_producers() > 0 {
-            return self.work_graph.pop();
+            return self.pop_ready_job(parked_root);
         }
         None
+    }
+
+    fn pop_ready_job(&mut self, parked_root: Option<RootId>) -> Option<Job> {
+        match parked_root {
+            Some(root) => self.pop_root_request_job(root),
+            None => self.work_graph.pop(),
+        }
     }
 }
 
 impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
     pub(crate) fn drive_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
         let deadline = timeout.map(|limit| Instant::now() + limit);
-        self.drive_until(deadline, timeout)
+        self.drive_until(deadline, timeout, true, None)
+    }
+
+    /// Applies only work already on the agenda (including exact wakes it
+    /// causes). Root-product reconciliation uses this boundary to publish
+    /// queued edits without expanding unrelated standing demand. It leaves
+    /// quiescent questions indexed, not half-arbitrated: the requested
+    /// product's exact fact wait settles and immediately publishes any
+    /// readiness movement it needs. Fatal or timed-out execution still exits
+    /// before the queue is drained, so the caller cannot assume edit
+    /// visibility and must reject the request.
+    pub(crate) fn drain_pending_for(&mut self, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
+        let deadline = timeout.map(|limit| Instant::now() + limit);
+        self.drive_until(deadline, timeout, false, None)
+    }
+
+    /// The same queued-work drain while one retained root request owns backend
+    /// production. Its root-aware pop parks only same-root artifact consumers;
+    /// every other queued job keeps normal FIFO execution.
+    pub(crate) fn drain_pending_for_root(
+        &mut self,
+        root: RootId,
+        timeout: Option<Duration>,
+    ) -> DriveOutcome<Job, FactKey> {
+        let deadline = timeout.map(|limit| Instant::now() + limit);
+        self.drive_until(deadline, timeout, false, Some(root))
     }
 
     /// Runs queued jobs until the work graph has no ready work.
@@ -631,11 +734,21 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
     /// its span, closes the drive span as fatal, and stops the loop.
     #[cfg(test)]
     pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
-        self.drive_until(None, None)
+        self.drive_until(None, None, true, None)
     }
 
-    fn drive_until(&mut self, deadline: Option<Instant>, timeout: Option<Duration>) -> DriveOutcome<Job, FactKey> {
-        let ExecutionContext { world, telemetry } = self;
+    fn drive_until(
+        &mut self,
+        deadline: Option<Instant>,
+        timeout: Option<Duration>,
+        discover_standing_demand: bool,
+        parked_root: Option<RootId>,
+    ) -> DriveOutcome<Job, FactKey> {
+        let ExecutionContext {
+            world,
+            telemetry,
+            product_sessions,
+        } = self;
         let tel = *telemetry;
         world.clear_reported_warnings();
         let span = tel.raw_span0_1::<DriveOutcome<Job, FactKey>>(&["fz", "compiler2", "drive"]);
@@ -648,7 +761,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
         let mut changed_since_stall = true;
         let outcome = 'outcome: {
             'drive: loop {
-                while world.work_graph.pending_jobs() > 0 {
+                while world.work_graph.runnable_jobs() > 0 {
                     if deadline.is_some_and(|limit| Instant::now() >= limit) {
                         let pending_jobs = world.work_graph.pending_jobs();
                         emit_drive_timed_out(tel, &timeout);
@@ -656,15 +769,27 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                         ExecutionContext::new(world, tel).flush_reported_warnings();
                         break 'outcome DriveOutcome::TimedOut { jobs_ran, pending_jobs };
                     }
-                    let Some(job) = world.work_graph.pop() else {
+                    let Some(job) = world.pop_ready_job(parked_root) else {
                         break;
                     };
                     let job_span = start_job_span(tel, &job);
-                    let result = super::jobs::run(&mut ExecutionContext::new(world, tel), &job);
+                    let result = super::jobs::run(
+                        &mut ExecutionContext::with_optional_product_sessions(
+                            world,
+                            tel,
+                            product_sessions.as_deref_mut(),
+                        ),
+                        &job,
+                    );
                     match result {
                         Ok(effects) => {
                             jobs_ran += 1;
-                            let completion = ExecutionContext::new(world, tel).complete_job(job, effects);
+                            let completion = ExecutionContext::with_optional_product_sessions(
+                                world,
+                                tel,
+                                product_sessions.as_deref_mut(),
+                            )
+                            .complete_job(job, effects);
                             stop_job_span(job_span, world, &completion);
                             changed_since_stall |= !completion.changed.is_empty();
                         }
@@ -675,6 +800,11 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                             break 'outcome DriveOutcome::Fatal { job };
                         }
                     }
+                }
+                if !discover_standing_demand {
+                    world.clear_unresolved_diagnostics();
+                    ExecutionContext::new(world, tel).flush_reported_warnings();
+                    break 'outcome DriveOutcome::Resolved;
                 }
                 // The agenda drained. Two standing demand sources remain, both
                 // pulls: every published activation not yet analyzed demands its
@@ -690,6 +820,10 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 // a keep-first merge, so the order this loop pokes producers in
                 // is still observable downstream — which is why `unresolved()`
                 // orders its waits by data rather than by map order.
+                if !world.has_drain_demand() {
+                    break 'drive;
+                }
+                world.work_graph.note_drain_discovery_sweep();
                 if std::mem::take(&mut changed_since_stall) {
                     stall_demanded.clear();
                 }
@@ -716,6 +850,11 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                     );
                 }
                 let quiesced = flush_quiescence(world, tel);
+                if let Some(sessions) = product_sessions.as_deref_mut() {
+                    for step in &quiesced {
+                        sessions.publish(&step.movements);
+                    }
+                }
                 if quiescence_woke_work(&quiesced) {
                     // The arbiter satisfied a standing settled wait: real work
                     // is queued, so this drain is not a stall however few

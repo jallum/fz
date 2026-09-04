@@ -25,6 +25,11 @@ impl ModuleId {
     pub fn is_global(self) -> bool {
         self == Self::GLOBAL
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

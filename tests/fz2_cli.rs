@@ -1870,12 +1870,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            evaluations: 324,
-            initial: 166,
+            // The two retained backend projections are product completions,
+            // not scheduler-formula evaluations.
+            evaluations: 322,
+            initial: 164,
             content_caused: 140,
             readiness_caused: 18,
             uncaused: 0,
-            changed_outputs: 191,
+            changed_outputs: 189,
             unchanged_outputs: 133,
             wakes: 141,
             blocked_completions: 145,

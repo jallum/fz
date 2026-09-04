@@ -162,6 +162,46 @@ fn nested_product_session_restores_outer_exact_evaluation_history() {
 }
 
 #[test]
+fn product_projection_replay_requires_its_exact_request_and_generation() {
+    let product = serde_json::json!({"kind": "root_backend_product", "root_id": 1});
+    let mut events = ReplayEvents::default();
+    events.session("started", 7);
+    let request = events.request(&product);
+    events.evaluate(&product, &[]);
+    events.settle(&product, 3, true);
+    events.session("finished", 7);
+    events.push(
+        &["pull", "product", "projected"],
+        serde_json::json!({
+            "product": product,
+            "projection": {"session_id": 7, "request_id": request, "generation": 3},
+            "step": {
+                "changed": [{
+                    "kind": "backend_program",
+                    "root_id": 1,
+                    "old_revision": null,
+                    "new_revision": 1,
+                    "old_settled": false,
+                    "new_settled": true
+                }],
+                "movements": [{
+                    "kind": "backend_program",
+                    "root_id": 1,
+                    "revision": 1,
+                    "settled": true
+                }],
+                "wakes": [],
+                "blocked": []
+            }
+        }),
+    );
+
+    let report = CausalReport::derive(&events.0);
+    assert_eq!(report.formula_totals().evaluations, 0);
+    assert_eq!(report.lifecycles["backend_program"].first_appearances, 1);
+}
+
+#[test]
 fn failed_backend_request_is_a_balanced_public_lifecycle() {
     let telemetry = ConfiguredTelemetry::new();
     let (buf, writer) = vec_writer();
@@ -423,8 +463,8 @@ fn named(ev: &PublicEvent, name: &[&str]) -> bool {
 }
 
 /// The public trace tells the causal story of a compile: code is indexed,
-/// jobs run to close the root, and the root's backend program is defined
-/// before the pull session that drove it reports finished. This test proves
+/// jobs run to close the root, and a settled root product is projected with
+/// its exact session/request/generation identity. This test proves
 /// that story is readable from the *public* stream alone — the same stream
 /// `fz2 --log-telemetry` writes in production.
 #[test]
@@ -444,14 +484,6 @@ fn compile_reports_resolved_and_an_ordered_causal_chain() {
             .position(|ev| named(ev, name))
             .unwrap_or_else(|| panic!("expected an event named {name:?} in the public stream"))
     };
-    let last_index = |name: &[&str]| {
-        trace
-            .events()
-            .iter()
-            .rposition(|ev| named(ev, name))
-            .unwrap_or_else(|| panic!("expected an event named {name:?} in the public stream"))
-    };
-
     let first_job_start = trace
         .events()
         .iter()
@@ -459,12 +491,12 @@ fn compile_reports_resolved_and_an_ordered_causal_chain() {
         .expect("expected at least one fz.compiler2.job span_start");
     let first_product_settled = first_index(&["fz", "compiler2", "pull", "product", "settled"]);
     let first_backend_program_defined = first_index(&["fz", "compiler2", "backend_program", "defined"]);
-    let last_session_finished = last_index(&["fz", "compiler2", "pull", "session", "finished"]);
+    let first_product_projected = first_index(&["fz", "compiler2", "pull", "product", "projected"]);
 
     // The causal shape the public stream must preserve: the drive opens a
-    // job before it can settle any product, the root's backend program is
-    // defined only once the product graph is settled, and the pull session
-    // that drove the whole compile reports finished last.
+    // job before it can settle any product, and the root's backend program is
+    // defined only once the product graph is settled and before its exact
+    // projection movement is published.
     assert!(
         first_job_start < first_product_settled,
         "a job must start before any product settles"
@@ -474,9 +506,11 @@ fn compile_reports_resolved_and_an_ordered_causal_chain() {
         "products must settle before the backend program they compose is defined"
     );
     assert!(
-        first_backend_program_defined <= last_session_finished,
-        "the backend program must be defined no later than the session that produced it finishing"
+        first_backend_program_defined < first_product_projected,
+        "the backend program must be defined before its projection movement"
     );
+    let report = CausalReport::derive(trace.events());
+    assert_eq!(report.formula_totals().uncaused, 0);
 }
 
 /// Every `span_start` in the public stream has a matching `span_stop` with
@@ -1044,6 +1078,35 @@ fn product_sessions_publish_balanced_identity_lifecycles() {
     assert!(stack.is_empty(), "every started session must finish");
 }
 
+#[test]
+fn retained_session_work_is_reported_per_request_instead_of_replaying_the_cold_snapshot() {
+    let trace = PublicTrace::compile_requests("fn main(), do: 1\n", &[None]);
+    let requests = CausalReport::derive_requests(trace.events());
+    assert_eq!(requests.len(), 2);
+
+    let cold = &requests[0].sessions;
+    let unchanged = &requests[1].sessions;
+    assert_eq!(unchanged.sessions, 1);
+    assert_eq!(unchanged.producer_pokes, 0);
+    assert_eq!(unchanged.ignition, 0);
+    assert_eq!(unchanged.changed_revision_wake, 0);
+    assert_eq!(unchanged.activation_frontier, 0);
+    assert_eq!(unchanged.blocked_waiter_expansion, 0);
+    assert_eq!(unchanged.unsanctioned_work_starts, 0);
+    assert_eq!(unchanged.root_scans, 0);
+    assert_eq!(unchanged.drain_discovery_sweeps, 0);
+
+    let run = CausalReport::derive(trace.events());
+    assert_eq!(run.sessions.producer_pokes, cold.producer_pokes);
+    assert_eq!(run.sessions.ignition, cold.ignition);
+    assert_eq!(run.sessions.changed_revision_wake, cold.changed_revision_wake);
+    assert_eq!(run.sessions.activation_frontier, cold.activation_frontier);
+    assert_eq!(run.sessions.blocked_waiter_expansion, cold.blocked_waiter_expansion);
+    assert_eq!(run.sessions.unsanctioned_work_starts, cold.unsanctioned_work_starts);
+    assert_eq!(run.sessions.root_scans, cold.root_scans);
+    assert_eq!(run.sessions.drain_discovery_sweeps, cold.drain_discovery_sweeps);
+}
+
 /// fz-kdt.34.5: `demand_on_stall`'s aggregate tally (`pull.session.finished`'s
 /// `work_starts_blocked_waiter_expansion`) says how many work starts were a
 /// blocked-waiter expansion, but never which fact drove any one of them.
@@ -1143,25 +1206,25 @@ const SCENARIOS: [&str; 5] = [
 type RequestBaseline = (u64, u64, usize, u64, u64, u64, u64, u64, u64);
 const REQUEST_BASELINES: [[RequestBaseline; 5]; 3] = [
     [
-        (2986, 2147, 2086, 2147, 2147, 0, 15, 1217, 0),
-        (2786, 2065, 2004, 2065, 2065, 2065, 15, 0, 0),
-        (2786, 2065, 2004, 2065, 2065, 2065, 15, 2, 0),
-        (2814, 2065, 2004, 2065, 2065, 2065, 15, 116, 39),
-        (2815, 2065, 2004, 2065, 2065, 2055, 15, 179, 45),
+        (2986, 2147, 2086, 2147, 2147, 0, 15, 1215, 0),
+        (0, 0, 1, 0, 0, 0, 0, 0, 0),
+        (0, 0, 1, 0, 0, 0, 0, 2, 0),
+        (320, 280, 245, 4, 0, 0, 0, 116, 39),
+        (373, 332, 300, 26, 12, 2, 0, 179, 45),
     ],
     [
-        (7584, 5430, 5056, 5269, 5223, 0, 35, 1887, 0),
-        (7277, 5348, 4974, 5187, 5141, 5141, 35, 0, 0),
-        (7277, 5348, 4974, 5187, 5141, 5141, 35, 2, 0),
-        (7342, 5348, 4974, 5187, 5141, 5141, 35, 265, 90),
-        (7343, 5348, 4974, 5187, 5141, 5131, 35, 461, 122),
+        (7584, 5430, 5056, 5269, 5223, 0, 35, 1885, 0),
+        (0, 0, 1, 0, 0, 0, 0, 0, 0),
+        (0, 0, 1, 0, 0, 0, 0, 2, 0),
+        (745, 699, 581, 4, 0, 0, 0, 265, 90),
+        (1210, 1196, 1099, 26, 12, 2, 0, 461, 122),
     ],
     [
-        (16028, 12309, 11815, 12147, 12053, 0, 40, 3171, 0),
-        (15655, 12227, 11733, 12065, 11971, 11971, 40, 0, 0),
-        (15655, 12227, 11733, 12065, 11971, 11971, 40, 2, 0),
-        (15796, 12227, 11733, 12065, 11971, 11971, 40, 463, 156),
-        (15797, 12227, 11733, 12065, 11971, 11961, 40, 643, 185),
+        (16028, 12309, 11815, 12147, 12053, 0, 40, 3169, 0),
+        (0, 0, 1, 0, 0, 0, 0, 0, 0),
+        (0, 0, 1, 0, 0, 0, 0, 2, 0),
+        (1657, 1376, 1372, 4, 0, 0, 0, 463, 156),
+        (2540, 2292, 2307, 26, 12, 2, 0, 643, 185),
     ],
 ];
 
@@ -1243,6 +1306,40 @@ fn value_names_function(value: &serde_json::Value, function: u64) -> bool {
     }
 }
 
+fn root_session_requests(trace: &PublicTrace) -> Vec<(u64, u64)> {
+    let mut request_open = false;
+    let mut session_depth = 0_usize;
+    let mut roots = Vec::<(u64, Option<u64>)>::new();
+    for event in trace.events() {
+        if named(event, &["fz", "compiler2", "backend_request", "started"]) {
+            assert!(!request_open);
+            request_open = true;
+        } else if named(event, &["fz", "compiler2", "backend_request", "finished"]) {
+            assert!(request_open && session_depth == 0);
+            request_open = false;
+        } else if request_open && named(event, &["fz", "compiler2", "pull", "session", "started"]) {
+            if session_depth == 0 {
+                roots.push((event.metadata["session_id"].as_u64().expect("root session id"), None));
+            }
+            session_depth += 1;
+        } else if request_open
+            && session_depth == 1
+            && named(event, &["fz", "compiler2", "pull", "product", "requested"])
+            && roots.last().is_some_and(|(_, request)| request.is_none())
+        {
+            roots.last_mut().expect("open root session").1 =
+                Some(event.metadata["request_id"].as_u64().expect("root product request id"));
+        } else if request_open && named(event, &["fz", "compiler2", "pull", "session", "finished"]) {
+            session_depth = session_depth.checked_sub(1).expect("balanced nested session");
+        }
+    }
+    assert!(!request_open && session_depth == 0);
+    roots
+        .into_iter()
+        .map(|(session, request)| (session, request.expect("root session must request a product")))
+        .collect()
+}
+
 #[test]
 fn target_fixture_reports_exercise_all_five_request_scenarios() {
     for (fixture_index, fixture) in TARGET_FIXTURES.into_iter().enumerate() {
@@ -1250,19 +1347,45 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
         let trace = PublicTrace::compile_requests(&source, &[None, Some(edits[0]), Some(edits[1]), Some(edits[2])]);
         let reports = CausalReport::derive_requests(trace.events());
         assert_eq!(reports.len(), SCENARIOS.len(), "{fixture}");
+        let root_requests = root_session_requests(&trace);
+        assert_eq!(
+            root_requests.len(),
+            SCENARIOS.len(),
+            "{fixture}: one root session per request"
+        );
+        assert!(
+            root_requests.windows(2).all(|pair| pair[0].0 == pair[1].0),
+            "{fixture}: request boundaries must reactivate one stable retained root session"
+        );
+        assert!(
+            root_requests.windows(2).all(|pair| pair[0].1 < pair[1].1),
+            "{fixture}: one retained session must never reuse a product request identity"
+        );
         let cold = reports[0].product_totals();
         let unchanged = reports[1].product_totals();
         assert!(cold.first_productions > 0, "{fixture}: cold population");
         assert_eq!(cold.cross_request_recomputations, 0, "{fixture}: cold request");
         assert_eq!(
-            unchanged.cross_request_recomputations, unchanged.first_productions,
-            "{fixture}: unchanged request exposes fresh-session repopulation"
+            unchanged.evaluations, 0,
+            "{fixture}: an unchanged retained root must evaluate no product producers"
+        );
+        assert_eq!(unchanged.settlements, 0, "{fixture}: unchanged retained settlement");
+        assert_eq!(unchanged.retained_cache_hits, 1, "{fixture}: retained root answer");
+        assert_eq!(
+            unchanged.cross_request_recomputations, 0,
+            "{fixture}: retained root answer"
         );
         let irrelevant = reports[2].product_totals();
         assert_eq!(
-            irrelevant.cross_request_recomputations, irrelevant.first_productions,
-            "{fixture}: an unreachable edit must expose the same fresh-session repopulation"
+            irrelevant.evaluations, 0,
+            "{fixture}: an unreachable edit must not evaluate a product producer"
         );
+        assert_eq!(irrelevant.settlements, 0, "{fixture}: unreachable edit settlement");
+        assert_eq!(
+            irrelevant.retained_cache_hits, 1,
+            "{fixture}: unreachable edit retained answer"
+        );
+        assert_eq!(irrelevant.displacements, 0, "{fixture}: unreachable edit displacement");
         assert_eq!(
             reports[1].formula_totals().evaluations,
             0,
@@ -1287,13 +1410,6 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 .keys()
                 .any(|product| value_names_function(&product.raw, new_callee)),
             "{fixture}: replacement request must introduce the new callee"
-        );
-        assert!(
-            !reports[4]
-                .products
-                .keys()
-                .any(|product| value_names_function(&product.raw, old_callee)),
-            "{fixture}: replacement request must withdraw the old callee"
         );
         for (scenario, ((name, report), expected)) in SCENARIOS
             .iter()
@@ -1806,8 +1922,10 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         analyze_zero_change: 17,
         // fz-kdt.199: 1009 -> 1013, the four extra analyses above and nothing
         // else. fz-kdt.45 adds the two exact-executable fact producers.
-        // fz-tfn.26 adds the one reproduced analysis above.
-        total_evaluations: 1016,
+        // fz-tfn.26 adds the one reproduced analysis above. fz-tfn.1 then
+        // classifies the two retained backend projections as product work,
+        // not scheduler formulas.
+        total_evaluations: 1014,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_predicate_search.fz",
@@ -1875,7 +1993,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fact producers.
         // fz-tfn.26: 1383 -> 1382, the one coalesced content-caused analysis
         // above; no other formula family moves.
-        total_evaluations: 1382,
+        // fz-tfn.1 removes the two retained backend projections that were
+        // previously misclassified as scheduler formulas.
+        total_evaluations: 1380,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures2/behavior/enum_take_drop_split.fz",
@@ -2043,7 +2163,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // The deleted analysis passes are the .47 whole-run fall; fz-kdt.45's
         // two exact-executable fact producers bring the total to 2458 before
         // typed ordering removes the fifteen analyses above.
-        total_evaluations: 2443,
+        // fz-tfn.1 removes the two retained backend projections that were
+        // previously misclassified as scheduler formulas.
+        total_evaluations: 2441,
     },
 ];
 

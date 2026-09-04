@@ -53,10 +53,10 @@ pub enum WorkStartReason {
 
 /// A snapshot of a scheduler's cumulative work-start attribution: how many
 /// jobs entered the agenda under each `WorkStartReason`, plus how many
-/// whole-fact-table scans (`Scheduler::fact_keys`) were taken. Carried out of
-/// the scheduler as a single value so the pull session can record and emit the
-/// full per-reason breakdown (`pull.session.finished`) without reaching back
-/// into the world.
+/// whole-fact-table scans (`Scheduler::fact_keys`) and drain-time global
+/// discovery sweeps were taken. Carried out of the scheduler as a single value
+/// so the pull session can record and emit the full breakdown
+/// (`pull.session.finished`) without reaching back into the world.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WorkStartTally {
     pub ignition: u64,
@@ -65,6 +65,7 @@ pub struct WorkStartTally {
     pub blocked_waiter_expansion: u64,
     pub unclassified: u64,
     pub root_scans: u64,
+    pub drain_discovery_sweeps: u64,
 }
 
 impl WorkStartTally {
@@ -74,6 +75,33 @@ impl WorkStartTally {
     /// construction, since `WorkStartReason` defaults to `Unclassified`.
     pub fn unsanctioned_work_starts(&self) -> u64 {
         self.unclassified
+    }
+
+    pub(crate) fn delta_since(self, earlier: Self) -> Self {
+        let delta = |current: u64, previous: u64| {
+            current
+                .checked_sub(previous)
+                .expect("cumulative work-start counters cannot move backwards")
+        };
+        Self {
+            ignition: delta(self.ignition, earlier.ignition),
+            changed_revision_wake: delta(self.changed_revision_wake, earlier.changed_revision_wake),
+            activation_frontier: delta(self.activation_frontier, earlier.activation_frontier),
+            blocked_waiter_expansion: delta(self.blocked_waiter_expansion, earlier.blocked_waiter_expansion),
+            unclassified: delta(self.unclassified, earlier.unclassified),
+            root_scans: delta(self.root_scans, earlier.root_scans),
+            drain_discovery_sweeps: delta(self.drain_discovery_sweeps, earlier.drain_discovery_sweeps),
+        }
+    }
+
+    pub(crate) fn add(&mut self, other: Self) {
+        self.ignition += other.ignition;
+        self.changed_revision_wake += other.changed_revision_wake;
+        self.activation_frontier += other.activation_frontier;
+        self.blocked_waiter_expansion += other.blocked_waiter_expansion;
+        self.unclassified += other.unclassified;
+        self.root_scans += other.root_scans;
+        self.drain_discovery_sweeps += other.drain_discovery_sweeps;
     }
 }
 
@@ -224,6 +252,10 @@ pub struct Scheduler<J, F> {
     /// must stay zero in production (`root_executable_frontier`, the one
     /// production caller, was deleted in fz-go4.18.4-fix).
     root_scans: u64,
+    /// Empty-agenda passes that constructed the ordered activation-frontier
+    /// and unresolved-wait inventories. The exact nonempty indexes guard this
+    /// work, so an unchanged or irrelevant retained request does not increment.
+    drain_discovery_sweeps: u64,
 }
 
 impl<J, F> Default for Scheduler<J, F>
@@ -250,6 +282,7 @@ where
             unfinal_reads: HashMap::new(),
             work_starts: HashMap::new(),
             root_scans: 0,
+            drain_discovery_sweeps: 0,
         }
     }
 
@@ -265,7 +298,12 @@ where
             blocked_waiter_expansion: count(WorkStartReason::BlockedWaiterExpansion),
             unclassified: count(WorkStartReason::Unclassified),
             root_scans: self.root_scans,
+            drain_discovery_sweeps: self.drain_discovery_sweeps,
         }
+    }
+
+    pub(crate) fn note_drain_discovery_sweep(&mut self) {
+        self.drain_discovery_sweeps += 1;
     }
 
     /// Whether `job`'s ground has shifted since it last concluded.
@@ -275,6 +313,26 @@ where
 
     pub fn pending_jobs(&self) -> usize {
         self.agenda.len()
+    }
+
+    pub(crate) fn runnable_jobs(&self) -> usize {
+        self.agenda.runnable_len()
+    }
+
+    pub(crate) fn pending(&self, job: &J) -> bool {
+        self.agenda.contains(job)
+    }
+
+    pub(crate) fn pop_or_park_pending(&mut self, token: u32, should_park: impl FnMut(&J) -> bool) -> Option<J> {
+        self.agenda.pop_or_park_where(token, should_park)
+    }
+
+    pub(crate) fn take_for(&mut self, token: u32, job: &J) -> bool {
+        self.agenda.take_for(token, job)
+    }
+
+    pub(crate) fn unpark(&mut self, token: u32) {
+        self.agenda.unpark(token);
     }
 
     pub fn facts(&self) -> &FactTable<Publisher<J>, F> {
@@ -649,10 +707,10 @@ where
     /// they describe is simply wrong once nothing is left to run.
     ///
     /// So at a drain, and only at a drain, the agenda itself decides. With no
-    /// pending job, the only publisher that could still move a fact is one
-    /// paused on a wait, and a paused publisher cannot run until something
-    /// wakes it — at which point its claims dirty and its readers unfinalize
-    /// through the ordinary path. So `Settled(F)` at a drain is exactly
+    /// runnable job, the only publisher that could still move a fact is one
+    /// paused on a wait or parked by an active root request. Neither can run
+    /// in this drain; waking or unparking it later dirties its claims and
+    /// unfinalizes its readers through the ordinary path. So `Settled(F)` at a drain is exactly
     /// `locally settled`, which is what it meant everywhere before this
     /// ticket. The transitive rule is what holds DURING the ascent; the drain
     /// is where it is discharged.
@@ -669,7 +727,7 @@ where
         F: SemanticOrd<Ctx>,
     {
         let mut changes = Vec::new();
-        if self.agenda.is_empty() {
+        if self.agenda.runnable_is_empty() {
             for fact in facts {
                 self.settle_quiescent_fact(fact, &mut changes, ctx);
             }

@@ -475,6 +475,27 @@ impl JsonlBackend {
                 );
             },
         );
+        let projected_product_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event3::<
+            crate::compiler2::pull::ProductKey,
+            crate::compiler2::pull::ProductProjection,
+            crate::compiler2::AppliedStep<crate::compiler2::Job, crate::compiler2::FactKey>,
+            _,
+        >(
+            &["fz", "compiler2", "pull", "product", "projected"],
+            move |name, span_id, parent_span_id, product, projection, step| {
+                projected_product_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        product: crate::telemetry::opaque(product),
+                        projection: crate::telemetry::opaque(projection),
+                        step: crate::telemetry::opaque(step),
+                    },
+                );
+            },
+        );
         let product_backend = Rc::clone(&backend);
         telemetry.attach_raw_event3::<
             crate::compiler2::pull::ProductKey,
@@ -1209,6 +1230,7 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "product", "requested"]
             | ["fz", "compiler2", "pull", "product", "evaluated"]
             | ["fz", "compiler2", "pull", "product", "copublished"]
+            | ["fz", "compiler2", "pull", "product", "projected"]
             | ["fz", "compiler2", "pull", "recursive_group", "published"]
             | ["fz", "compiler2", "backend_request", ..]
             | ["fz", "compiler2", "pull", "recursive_group", "searched"]
@@ -1665,6 +1687,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             ),
             ("unsanctioned_work_starts", work_starts.unclassified),
             ("root_scans", work_starts.root_scans),
+            ("drain_discovery_sweeps", work_starts.drain_discovery_sweeps),
         ] {
             out.push(',');
             write_str_lit(out, name);
@@ -1759,6 +1782,13 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
             Some(group) => push_u64(out, group),
             None => out.push_str("null"),
         }
+    } else if let Some(projection) = opaque.downcast_ref::<crate::compiler2::pull::ProductProjection>() {
+        out.push_str(",\"session_id\":");
+        push_u64(out, projection.session().get());
+        out.push_str(",\"request_id\":");
+        push_u64(out, projection.request().get());
+        out.push_str(",\"generation\":");
+        push_u64(out, projection.generation());
     } else if let Some(search) = opaque.downcast_ref::<crate::compiler2::pull::RecursiveGroupSearch>() {
         for (name, value) in [
             ("candidate_inventory", search.candidate_inventory),

@@ -523,17 +523,23 @@ position-owned answer directly. There is no parallel projection, component, or
 solve event.
 
 `[fz, compiler2, pull, session, finished]` (`pull.rs::PullSession::emit_finished`,
-called from `ProductDriver::finish_session`) fires once per pull session, when
-the driving front door finishes demanding the session's products. It carries
-the raw `PullSession`, from which handlers derive its root and demanded
-set cardinalities, `producer_pokes`, per-reason work-start breakdown,
-`unsanctioned_work_starts`, and `root_scans` during the callback. The emitter
-does not duplicate those values into measurements. This is the root-level
-authority a handler reads to assert product-path work stayed bounded, and
-`work_start_reason_test`'s
+called from `ProductDriver::finish_session`) fires once per retained-session
+activation, when the driving front door finishes that request's product demand.
+Later activations reuse the same session id and allocate fresh monotone request
+ids. Producer pokes and work starts are reset for each activation; nested
+sessions partition the World's cumulative work-start changes rather than each
+repeating the same snapshot. Standalone `Compiler2::drive` owns the work across
+its balanced boundary, so a nested session excludes the drive's prefix and the
+next retained request cannot inherit it. The event carries the raw
+`PullSession`, from which handlers derive its root and demanded set cardinalities,
+`producer_pokes`, per-reason work-start breakdown,
+`unsanctioned_work_starts`, `root_scans`, and `drain_discovery_sweeps` during
+the callback. The emitter does not duplicate those values into measurements.
+The separate World-cumulative guard in `work_start_reason_test` asserts the
+whole production path: its
 `pull_only_guard_holds_for_*` cases assert `unsanctioned_work_starts == 0`,
-`root_scans == 0`, AND `ignition == 2` (the true external front-door count)
-for every fixture they drive.
+`root_scans == 0`, `drain_discovery_sweeps == 0`, AND `ignition == 2` (the true
+external front-door count) for every fixture they drive.
 
 ### Work-Start Attribution (`WorkStartReason`)
 

@@ -36,6 +36,7 @@ const SESSION_FINISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "session", 
 const PRODUCT_REQUESTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
 const PRODUCT_EVALUATED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "evaluated"];
 const PRODUCT_COPUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "copublished"];
+const PRODUCT_PROJECTED_EVENT: &[&str] = &["fz", "compiler2", "pull", "product", "projected"];
 const RECURSIVE_GROUP_PUBLISHED_EVENT: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
 
 fn causal_product_events_enabled(tel: &impl Telemetry) -> bool {
@@ -64,6 +65,27 @@ pub struct ProductRequestId(NonZeroU64);
 impl ProductRequestId {
     pub(crate) fn get(self) -> u64 {
         self.0.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProductProjection {
+    session: PullSessionId,
+    request: ProductRequestId,
+    generation: u64,
+}
+
+impl ProductProjection {
+    pub(crate) fn session(self) -> PullSessionId {
+        self.session
+    }
+
+    pub(crate) fn request(self) -> ProductRequestId {
+        self.request
+    }
+
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
     }
 }
 
@@ -439,6 +461,7 @@ pub struct ProductMemo {
     dirty_descendants: HashSet<ProductKey>,
     in_progress: HashSet<ProductKey>,
     invalidated_in_progress: HashSet<ProductKey>,
+    fact_subscription_changes: Vec<(FactKey, bool)>,
     /// Monotone counter stamping each settled group with a distinct id. The
     /// first group settled gets id 1 (the field itself starts at the
     /// `Default` zero and is pre-incremented before use).
@@ -1046,10 +1069,13 @@ impl ProductMemo {
             }
         }
         for fact in dependencies.facts.keys() {
-            self.fact_readers
-                .entry(fact.fact().clone())
-                .or_default()
-                .insert(reader.clone());
+            let fact = fact.fact().clone();
+            let readers = self.fact_readers.entry(fact.clone()).or_default();
+            let was_empty = readers.is_empty();
+            readers.insert(reader.clone());
+            if was_empty {
+                self.fact_subscription_changes.push((fact, true));
+            }
         }
     }
 
@@ -1072,9 +1098,15 @@ impl ProductMemo {
                 readers.is_empty()
             });
             if remove_entry {
-                self.fact_readers.remove(fact.fact());
+                let fact = fact.fact().clone();
+                self.fact_readers.remove(&fact);
+                self.fact_subscription_changes.push((fact, false));
             }
         }
+    }
+
+    fn take_fact_subscription_changes(&mut self) -> Vec<(FactKey, bool)> {
+        std::mem::take(&mut self.fact_subscription_changes)
     }
 
     fn take_pending_dependencies(&mut self, reader: &ProductKey) -> Option<ProductDependencies> {
@@ -1344,6 +1376,7 @@ type DemandContributionTransaction = (
 #[derive(Debug)]
 pub struct PullSession {
     id: Option<PullSessionId>,
+    request_ids: ProductRequestIds,
     root: RootId,
     memo: ProductMemo,
     outgoing_edge_request_set: HashSet<ExecutableKey>,
@@ -1380,12 +1413,9 @@ pub struct PullSession {
     input_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>>,
     input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
+    // Request-local counters reset whenever this retained session is
+    // reactivated. The memo and dependency indexes above remain durable.
     producer_pokes: u64,
-    /// The world's cumulative work-start attribution snapshot, recorded by the
-    /// caller that has `World` in scope at `finish_session` time (mirrors
-    /// `record_producer_pokes`'s pattern for the same reason: the session
-    /// itself never touches `World`). `unsanctioned_work_starts()` must be zero
-    /// on every production-driven path; see `WorkStartReason::Unclassified`.
     work_starts: WorkStartTally,
     pending_fact_states: HashMap<FactKey, FactState>,
 }
@@ -1394,6 +1424,7 @@ impl PullSession {
     pub fn new(root: RootId) -> Self {
         Self {
             id: None,
+            request_ids: ProductRequestIds::new(),
             root,
             memo: ProductMemo::default(),
             outgoing_edge_request_set: HashSet::new(),
@@ -1597,19 +1628,18 @@ impl PullSession {
         self.producer_pokes
     }
 
-    /// The recorded work-start attribution snapshot (per-reason agenda-entry
-    /// counts plus whole-fact-table scans). Zero until `record_work_starts`
-    /// runs at finish time.
+    /// This activation's work-start attribution (per-reason agenda-entry
+    /// counts plus whole-fact-table scans and global drain-discovery sweeps).
     pub fn work_starts(&self) -> WorkStartTally {
         self.work_starts
     }
 
-    /// Records the world's cumulative work-start attribution snapshot
-    /// (`World::work_start_tally`) so `emit_finished` and the guard can read
-    /// it. The caller is the pull-drive site that still has `World` in scope
-    /// (`ProductDriver::finish_session` cannot -- `PullSession` never holds a
-    /// `World` reference).
-    pub fn record_work_starts(&mut self, tally: WorkStartTally) {
+    fn begin_activation(&mut self) {
+        self.producer_pokes = 0;
+        self.work_starts = WorkStartTally::default();
+    }
+
+    fn finish_activation(&mut self, tally: WorkStartTally) {
         self.work_starts = tally;
     }
 
@@ -1963,6 +1993,219 @@ impl PullSession {
 
     fn emit_finished(&self, tel: &impl Telemetry) {
         tel.raw_event1(&["fz", "compiler2", "pull", "session", "finished"], self);
+    }
+}
+
+/// Compiler-owned retained product sessions and their exact fact-movement
+/// routing index. `World` owns facts; this store owns every root's product
+/// spreadsheet and only the reverse routing needed to deliver a moved fact to
+/// sessions that currently read it.
+#[derive(Debug, Default)]
+pub(crate) struct ProductSessions {
+    sessions: HashMap<RootId, PullSession>,
+    subscriptions_by_root: HashMap<RootId, HashSet<FactKey>>,
+    roots_by_fact: HashMap<FactKey, HashSet<RootId>>,
+    active_roots: HashMap<RootId, ActiveRootProduct>,
+    work_start_cursor: WorkStartTally,
+    active_work_starts: Vec<WorkStartOwner>,
+}
+
+#[derive(Debug, Default)]
+struct ActiveRootProduct {
+    movements: HashMap<FactKey, FactState>,
+    backend_projected: bool,
+}
+
+#[derive(Debug)]
+enum WorkStartOwner {
+    StandaloneDrive,
+    Root(RootId, WorkStartTally),
+}
+
+impl ProductSessions {
+    pub(crate) fn begin_standalone_drive(&mut self, work_starts: WorkStartTally) {
+        assert!(
+            self.active_work_starts.is_empty() && self.active_roots.is_empty(),
+            "a standalone drive cannot begin inside a root product activation"
+        );
+        let _ = self.take_work_start_delta(work_starts);
+        self.active_work_starts.push(WorkStartOwner::StandaloneDrive);
+    }
+
+    pub(crate) fn finish_standalone_drive(&mut self, work_starts: WorkStartTally) {
+        let _ = self.take_work_start_delta(work_starts);
+        match self.active_work_starts.pop() {
+            Some(WorkStartOwner::StandaloneDrive) => {}
+            Some(WorkStartOwner::Root(..)) => panic!("a root product activation outlived its standalone drive"),
+            None => panic!("finishing a standalone drive that never began"),
+        }
+        assert!(
+            self.active_roots.is_empty(),
+            "a root product activation outlived its standalone drive"
+        );
+    }
+
+    pub(crate) fn is_active(&self, root: RootId) -> bool {
+        self.active_roots.contains_key(&root)
+    }
+
+    pub(crate) fn backend_is_projected(&self, root: RootId) -> bool {
+        self.active_roots
+            .get(&root)
+            .is_some_and(|active| active.backend_projected)
+    }
+
+    pub(crate) fn mark_backend_projected(&mut self, root: RootId) {
+        self.active_roots
+            .get_mut(&root)
+            .expect("projecting a backend outside its root request")
+            .backend_projected = true;
+    }
+
+    pub(crate) fn take(&mut self, root: RootId, work_starts: WorkStartTally) -> (PullSession, bool) {
+        assert!(
+            self.active_roots.insert(root, ActiveRootProduct::default()).is_none(),
+            "one root product session cannot be driven recursively"
+        );
+        let delta = self.take_work_start_delta(work_starts);
+        let initial = match self.active_work_starts.last_mut() {
+            Some(WorkStartOwner::StandaloneDrive) => WorkStartTally::default(),
+            Some(WorkStartOwner::Root(_, outer)) => {
+                outer.add(delta);
+                WorkStartTally::default()
+            }
+            None => delta,
+        };
+        self.active_work_starts.push(WorkStartOwner::Root(root, initial));
+        let retained = self.sessions.contains_key(&root);
+        let mut session = self.sessions.remove(&root).unwrap_or_else(|| PullSession::new(root));
+        session.begin_activation();
+        (session, retained)
+    }
+
+    pub(crate) fn finish_activation(&mut self, root: RootId, session: &mut PullSession, work_starts: WorkStartTally) {
+        let delta = self.take_work_start_delta(work_starts);
+        let (active_root, mut tally) = match self.active_work_starts.pop() {
+            Some(WorkStartOwner::Root(active_root, tally)) => (active_root, tally),
+            Some(WorkStartOwner::StandaloneDrive) => {
+                panic!("finishing a root without an active root work tally")
+            }
+            None => panic!("finishing a root without an active work tally"),
+        };
+        assert_eq!(active_root, root, "root product activations must finish in stack order");
+        tally.add(delta);
+        session.finish_activation(tally);
+    }
+
+    fn take_work_start_delta(&mut self, current: WorkStartTally) -> WorkStartTally {
+        let delta = current.delta_since(self.work_start_cursor);
+        self.work_start_cursor = current;
+        delta
+    }
+
+    pub(crate) fn sync_subscriptions(&mut self, root: RootId, session: &mut PullSession) {
+        for (fact, subscribe) in session.memo.take_fact_subscription_changes() {
+            if subscribe {
+                let inserted = self.subscriptions_by_root.entry(root).or_default().insert(fact.clone());
+                if inserted {
+                    self.roots_by_fact.entry(fact).or_default().insert(root);
+                }
+            } else {
+                let removed = self
+                    .subscriptions_by_root
+                    .get_mut(&root)
+                    .is_some_and(|facts| facts.remove(&fact));
+                if removed {
+                    let remove_fact = self.roots_by_fact.get_mut(&fact).is_some_and(|roots| {
+                        roots.remove(&root);
+                        roots.is_empty()
+                    });
+                    if remove_fact {
+                        self.roots_by_fact.remove(&fact);
+                    }
+                }
+                if self.subscriptions_by_root.get(&root).is_some_and(HashSet::is_empty) {
+                    self.subscriptions_by_root.remove(&root);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn publish(&mut self, movements: &[FactMovement<FactKey>]) {
+        let Self {
+            sessions,
+            roots_by_fact,
+            active_roots,
+            ..
+        } = self;
+        for movement in movements {
+            for root in roots_by_fact.get(&movement.key).into_iter().flatten() {
+                if let Some(session) = sessions.get_mut(root) {
+                    session.apply_fact_movements(std::slice::from_ref(movement));
+                } else if let Some(active) = active_roots.get_mut(root) {
+                    active.movements.insert(movement.key.clone(), movement.state);
+                } else {
+                    panic!("fact subscription names neither a retained nor active root session");
+                }
+            }
+        }
+    }
+
+    pub(crate) fn drain_active_movements(&mut self, root: RootId, session: &mut PullSession) {
+        let pending = self
+            .active_roots
+            .get_mut(&root)
+            .map(|active| &mut active.movements)
+            .expect("draining a root that is not active");
+        if !pending.is_empty() {
+            session.pending_fact_states.extend(std::mem::take(pending));
+        }
+    }
+
+    pub(crate) fn restore(&mut self, mut session: PullSession) {
+        let root = session.root();
+        self.drain_active_movements(root, &mut session);
+        self.sync_subscriptions(root, &mut session);
+        self.active_roots
+            .remove(&root)
+            .expect("restoring a root that is not active");
+        assert!(
+            self.sessions.insert(root, session).is_none(),
+            "root session restored twice"
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(&self, root: RootId) -> Option<&PullSession> {
+        self.sessions.get(&root)
+    }
+
+    pub(crate) fn retire(&mut self, root: RootId) -> bool {
+        assert!(
+            !self.active_roots.contains_key(&root),
+            "cannot retire an active root session"
+        );
+        let Some(_session) = self.sessions.remove(&root) else {
+            return false;
+        };
+        for fact in self.subscriptions_by_root.remove(&root).unwrap_or_default() {
+            let remove_fact = self.roots_by_fact.get_mut(&fact).is_some_and(|roots| {
+                roots.remove(&root);
+                roots.is_empty()
+            });
+            if remove_fact {
+                self.roots_by_fact.remove(&fact);
+            }
+        }
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (
+            self.sessions.len(),
+            self.subscriptions_by_root.values().map(HashSet::len).sum(),
+        )
     }
 }
 
@@ -2500,14 +2743,15 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
 
 pub struct ProductDriver<'a, T: Telemetry> {
     tel: &'a T,
-    session: PullSession,
+    session: Option<PullSession>,
     emit_causal_products: bool,
     emit_session_lifecycle: bool,
-    request_ids: ProductRequestIds,
+    last_request: Option<ProductRequestId>,
     finished: Cell<bool>,
 }
 
 impl<'a, T: Telemetry> ProductDriver<'a, T> {
+    #[cfg(test)]
     pub fn new(tel: &'a T, root: RootId) -> Self {
         Self::with_session(tel, PullSession::new(root))
     }
@@ -2526,8 +2770,9 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         mut session: PullSession,
         allocate_session_id: impl FnOnce() -> PullSessionId,
     ) -> Self {
-        let emit_session_lifecycle =
-            tel.is_raw_event_enabled(SESSION_STARTED_EVENT) || tel.is_raw_event_enabled(SESSION_FINISHED_EVENT);
+        let emit_session_lifecycle = tel.is_raw_event_enabled(SESSION_STARTED_EVENT)
+            || tel.is_raw_event_enabled(SESSION_FINISHED_EVENT)
+            || tel.is_raw_event_enabled(PRODUCT_PROJECTED_EVENT);
         if session.id.is_none() && emit_session_lifecycle {
             session.id = Some(allocate_session_id());
         }
@@ -2539,20 +2784,36 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         }
         Self {
             tel,
-            session,
+            session: Some(session),
             emit_causal_products: causal_product_events_enabled(tel),
             emit_session_lifecycle,
-            request_ids: ProductRequestIds::new(),
+            last_request: None,
             finished: Cell::new(false),
         }
     }
 
     pub fn session(&self) -> &PullSession {
-        &self.session
+        self.session.as_ref().expect("product driver session already retained")
     }
 
     pub fn session_mut(&mut self) -> &mut PullSession {
-        &mut self.session
+        self.session.as_mut().expect("product driver session already retained")
+    }
+
+    pub(crate) fn into_session(mut self) -> PullSession {
+        self.emit_finished_once();
+        self.session.take().expect("product driver session already retained")
+    }
+
+    pub(crate) fn root_projection(&self) -> Option<ProductProjection> {
+        Some(ProductProjection {
+            session: self.session().id()?,
+            request: self.last_request?,
+            generation: self
+                .session()
+                .memo
+                .generation(&ProductKey::RootBackendProduct(self.session().root()))?,
+        })
     }
 
     pub fn finish_session(&self) {
@@ -2560,40 +2821,43 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
     }
 
     pub(crate) fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
-        self.session.apply_fact_movements(movements);
+        self.session_mut().apply_fact_movements(movements);
     }
 
     pub fn pull(&mut self, producers: &mut impl ProductProducers, key: ProductKey) -> PullOutcome {
+        let tel = self.tel;
+        let emit_causal_products = self.emit_causal_products;
         assert!(
-            !self.session.memo.contains_in_progress(&key),
+            !self.session().memo.contains_in_progress(&key),
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
-        let request = self.request_ids.allocate();
+        let request = self.session_mut().request_ids.allocate();
+        self.last_request = Some(request);
         if self.emit_causal_products {
-            self.tel.raw_event2(PRODUCT_REQUESTED_EVENT, &key, &request);
+            tel.raw_event2(PRODUCT_REQUESTED_EVENT, &key, &request);
         }
-        self.session
-            .reconcile_fact_movements(self.tel, producers.product_types());
-        self.session
-            .note_product_request(self.tel, &key, producers.product_types());
-        if let Some(stale) = self.session.memo.stale_dependency(&key, producers.product_types()) {
-            self.session
+        self.session_mut()
+            .reconcile_fact_movements(tel, producers.product_types());
+        self.session_mut()
+            .note_product_request(tel, &key, producers.product_types());
+        if let Some(stale) = self.session().memo.stale_dependency(&key, producers.product_types()) {
+            self.session_mut()
                 .memo
-                .prepare_stale_for_reproduction(self.tel, &stale, producers.product_types());
+                .prepare_stale_for_reproduction(tel, &stale, producers.product_types());
             if stale != key {
                 return PullOutcome::wait_on_product(stale);
             }
         }
-        if let Some(value) = self.session.memo.get(&key) {
+        if let Some(value) = self.session().memo.get(&key) {
             self.emit("cache_hit", &key);
             return PullOutcome::Produced(value.clone());
         }
         assert!(
-            self.session.memo.begin(key.clone()),
+            self.session_mut().memo.begin(key.clone()),
             "safe product producers cannot recursively enter ProductDriver::pull"
         );
 
-        let mut context = ProductReadContext::new(&mut self.session);
+        let mut context = ProductReadContext::new(self.session_mut());
         let outcome = match &key {
             ProductKey::RootBackendProduct(root) => producers.produce_root_backend_product(&mut context, *root),
             ProductKey::BackendExecutable(executable) => producers.produce_backend_executable(&mut context, executable),
@@ -2619,15 +2883,15 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
         if let PullOutcome::Produced(ProductValue::MaterializedExecutable(materialized)) = &outcome
             && let ProductKey::MaterializedExecutable(executable) = &key
         {
-            self.session.reconcile_materialized_demand_epoch(
-                self.tel,
+            self.session_mut().reconcile_materialized_demand_epoch(
+                tel,
                 executable,
                 materialized,
                 producers.product_types(),
             );
         }
         if self.emit_causal_products {
-            self.tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
+            tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
         }
 
         match outcome {
@@ -2642,9 +2906,9 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     staged.push((key.clone(), value, dependencies));
                     ProductCompletion::Batch(staged)
                 };
-                let settled = self.session.memo.finish_completion(
-                    self.tel,
-                    self.emit_causal_products,
+                let settled = self.session_mut().memo.finish_completion(
+                    tel,
+                    emit_causal_products,
                     &key,
                     completion,
                     producers.product_types(),
@@ -2654,7 +2918,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     PullOutcome::Waiting(waits)
                 } else {
                     PullOutcome::Produced(
-                        self.session
+                        self.session()
                             .memo
                             .get(&key)
                             .expect("settled completion must install its requested product")
@@ -2663,7 +2927,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 }
             }
             PullOutcome::Waiting(waits) => {
-                self.session.memo.unblock(&key, dependencies);
+                self.session_mut().memo.unblock(&key, dependencies);
                 PullOutcome::Waiting(waits)
             }
         }
@@ -2675,7 +2939,7 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
 
     fn emit_finished_once(&self) {
         if self.emit_session_lifecycle && !self.finished.replace(true) {
-            self.session.emit_finished(self.tel);
+            self.session().emit_finished(self.tel);
         }
     }
 }
@@ -2764,6 +3028,119 @@ mod tests {
             ProductCompletion::RecursiveGroup(members),
             types,
         )
+    }
+
+    fn retained_test_session(root: RootId, fact: &FactKey, types: &super::super::types::Types) -> PullSession {
+        let tel = ConfiguredTelemetry::new();
+        let mut session = PullSession::new(root);
+        let key = ProductKey::RootBackendProduct(root);
+        assert!(finish_test_entry(
+            &mut session.memo,
+            &tel,
+            &key,
+            ProductValue::Unit,
+            ProductDependencies {
+                products: HashMap::new(),
+                facts: HashMap::from([(
+                    FactUse::settled(fact.clone()),
+                    FactState {
+                        revision: Some(1),
+                        settled: true,
+                    },
+                )]),
+            },
+            types,
+        ));
+        session
+    }
+
+    #[test]
+    fn retained_session_broker_fans_final_fact_state_to_dormant_and_nested_active_roots_once() {
+        let types = fake_types();
+        let fact = FactKey::BackendProgram(RootId::for_test(99));
+        let left = RootId::for_test(1);
+        let right = RootId::for_test(2);
+        let dormant = RootId::for_test(3);
+        let mut sessions = ProductSessions::default();
+        for session in [
+            retained_test_session(left, &fact, &types),
+            retained_test_session(right, &fact, &types),
+            retained_test_session(dormant, &fact, &types),
+        ] {
+            let root = session.root();
+            sessions.active_roots.insert(root, ActiveRootProduct::default());
+            sessions.restore(session);
+        }
+        assert_eq!(sessions.counts(), (3, 3));
+
+        let (mut active_left, _) = sessions.take(left, WorkStartTally::default());
+        let (mut active_right, _) = sessions.take(right, WorkStartTally::default());
+        sessions.publish(&[FactMovement {
+            key: fact.clone(),
+            state: FactState {
+                revision: Some(2),
+                settled: false,
+            },
+        }]);
+        sessions.publish(&[FactMovement {
+            key: fact.clone(),
+            state: FactState {
+                revision: Some(2),
+                settled: true,
+            },
+        }]);
+        sessions.drain_active_movements(left, &mut active_left);
+        sessions.drain_active_movements(right, &mut active_right);
+        let final_state = FactState {
+            revision: Some(2),
+            settled: true,
+        };
+        assert_eq!(
+            active_left.pending_fact_states,
+            HashMap::from([(fact.clone(), final_state)])
+        );
+        assert_eq!(
+            active_right.pending_fact_states,
+            HashMap::from([(fact.clone(), final_state)])
+        );
+        assert_eq!(
+            sessions.sessions[&dormant].pending_fact_states,
+            HashMap::from([(fact.clone(), final_state)])
+        );
+        sessions.finish_activation(right, &mut active_right, WorkStartTally::default());
+        sessions.restore(active_right);
+        sessions.finish_activation(left, &mut active_left, WorkStartTally::default());
+        sessions.restore(active_left);
+
+        assert!(sessions.retire(left));
+        assert_eq!(sessions.counts(), (2, 2));
+        assert_eq!(sessions.roots_by_fact[&fact], HashSet::from([right, dormant]));
+    }
+
+    #[test]
+    fn equal_fact_delivery_keeps_both_retained_root_products_settled() {
+        let types = fake_types();
+        let tel = ConfiguredTelemetry::new();
+        let fact = FactKey::BackendProgram(RootId::for_test(99));
+        let roots = [RootId::for_test(1), RootId::for_test(2)];
+        let mut sessions = ProductSessions::default();
+        for root in roots {
+            let session = retained_test_session(root, &fact, &types);
+            sessions.active_roots.insert(root, ActiveRootProduct::default());
+            sessions.restore(session);
+        }
+        sessions.publish(&[FactMovement {
+            key: fact,
+            state: FactState {
+                revision: Some(1),
+                settled: true,
+            },
+        }]);
+        for root in roots {
+            let session = sessions.sessions.get_mut(&root).expect("retained root");
+            session.reconcile_fact_movements(&tel, &types);
+            assert!(session.memo.get(&ProductKey::RootBackendProduct(root)).is_some());
+        }
     }
 
     /// Recursive search work is a property of the pending graph, not of the
@@ -3600,7 +3977,7 @@ mod tests {
             other => panic!("expected first runtime demand, got {other:?}"),
         }
         driver
-            .session
+            .session_mut()
             .memo
             .prepare_stale_for_reproduction(&tel, &key, &producers.types);
         producers.runtime_value = Some(ProductValue::RuntimeDemand(equal_but_distinct));
@@ -3612,7 +3989,7 @@ mod tests {
             ),
             other => panic!("expected reproduced runtime demand, got {other:?}"),
         }
-        match driver.session.memo.get(&key) {
+        match driver.session().memo.get(&key) {
             Some(ProductValue::RuntimeDemand(value)) => assert!(Rc::ptr_eq(value, &first)),
             other => panic!("expected canonical memoized runtime demand, got {other:?}"),
         }
@@ -4162,11 +4539,11 @@ mod tests {
         let mut driver = ProductDriver::new(&tel, root);
         let mut producers = FakeProducers::default();
 
-        assert!(driver.session.memo.begin(key.clone()));
+        assert!(driver.session_mut().memo.begin(key.clone()));
         assert!(catch_unwind(AssertUnwindSafe(|| driver.pull(&mut producers, key.clone()))).is_err());
         assert_eq!(requests.get(), 0);
-        assert_eq!(driver.request_ids.next, NonZeroU64::new(1));
-        assert!(driver.session.memo.contains_in_progress(&key));
+        assert_eq!(driver.session().request_ids.next, NonZeroU64::new(1));
+        assert!(driver.session().memo.contains_in_progress(&key));
         assert!(producers.calls.is_empty());
     }
 
@@ -4488,9 +4865,9 @@ mod tests {
         let mut world = World::new();
         let caller_key = ProductKey::OutgoingInputEdges(caller);
         driver.pull(&mut fake, caller_key.clone());
-        driver.session.memo.remove(&tel, &caller_key, &fake.types);
+        driver.session_mut().memo.remove(&tel, &caller_key, &fake.types);
         finish_test_entry(
-            &mut driver.session.memo,
+            &mut driver.session_mut().memo,
             &tel,
             &caller_key,
             ProductValue::OutgoingInputEdges(ordered_inputs(HashMap::from([(
@@ -4521,14 +4898,14 @@ mod tests {
                 PullOutcome::Produced(ProductValue::IncomingInputSlot(ordered_sources([source.clone()])))
             );
         }
-        let source_generation = driver.session.memo.generation(&incoming_key);
-        let relations_generation = driver.session.memo.generation(&relations_key);
+        let source_generation = driver.session().memo.generation(&incoming_key);
+        let relations_generation = driver.session().memo.generation(&relations_key);
 
         let unrelated_key = ProductKey::OutgoingInputEdges(unrelated);
         driver.pull(&mut fake, unrelated_key.clone());
-        driver.session.memo.remove(&tel, &unrelated_key, &fake.types);
+        driver.session_mut().memo.remove(&tel, &unrelated_key, &fake.types);
         finish_test_entry(
-            &mut driver.session.memo,
+            &mut driver.session_mut().memo,
             &tel,
             &unrelated_key,
             ProductValue::OutgoingInputEdges(ordered_inputs(HashMap::new())),
@@ -4548,12 +4925,12 @@ mod tests {
                 PullOutcome::Produced(ProductValue::IncomingInputSlot(ordered_sources([source])))
             );
         }
-        assert_eq!(driver.session.memo.generation(&incoming_key), source_generation);
-        assert_eq!(driver.session.memo.generation(&relations_key), relations_generation);
+        assert_eq!(driver.session().memo.generation(&incoming_key), source_generation);
+        assert_eq!(driver.session().memo.generation(&relations_key), relations_generation);
 
-        driver.session.memo.remove(&tel, &caller_key, &fake.types);
+        driver.session_mut().memo.remove(&tel, &caller_key, &fake.types);
         finish_test_entry(
-            &mut driver.session.memo,
+            &mut driver.session_mut().memo,
             &tel,
             &caller_key,
             ProductValue::OutgoingInputEdges(ordered_inputs(HashMap::new())),
@@ -5057,7 +5434,7 @@ mod tests {
         let root = RootId::for_test(9);
         let key = ProductKey::RuntimeDemand(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
-        driver.request_ids.next = NonZeroU64::new(u64::MAX);
+        driver.session_mut().request_ids.next = NonZeroU64::new(u64::MAX);
         let mut producers = FakeProducers::default();
 
         assert_eq!(
@@ -5085,7 +5462,10 @@ mod tests {
             [u64::MAX],
             "exhaustion must happen before a request event"
         );
-        assert!(driver.request_ids.next.is_none(), "exhaustion must be permanent");
+        assert!(
+            driver.session().request_ids.next.is_none(),
+            "exhaustion must be permanent"
+        );
     }
 
     #[test]
@@ -5266,6 +5646,7 @@ mod tests {
             original_entry_ids: Vec::new(),
             value_types: HashMap::new(),
             effects,
+            struct_modules: Box::default(),
             body: super::super::LoweredBody::Clauses {
                 clauses: vec![LoweredClause {
                     span: crate::source::Span::DUMMY,

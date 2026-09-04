@@ -5,7 +5,7 @@
 //! root-wide projection stack.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::diag::Diagnostic;
@@ -29,7 +29,7 @@ use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::FactKey;
 use super::super::executable_facts::ExecutableFacts;
 use super::super::facts::FactUse;
-use super::super::identity::{ExecutableKey, ExecutableNeed, RootId};
+use super::super::identity::{ExecutableKey, ExecutableNeed, ModuleId, RootId};
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, RecursiveProductRead, TransportCarrier,
     TransportLayout,
@@ -78,7 +78,7 @@ pub(crate) fn produce_materialized_executable_product(
     }
 
     let executable_facts = executable_facts.expect("executable-facts wait should have been satisfied");
-    let analysis = executable_facts.analysis().clone();
+    let mut analysis = executable_facts.analysis().clone();
     let return_ty = world
         .activation_return(&executable.activation)
         .unwrap_or_else(|| world.types_mut().none());
@@ -143,7 +143,17 @@ pub(crate) fn produce_materialized_executable_product(
     )
     .expect("product materialization should use settled semantic facts")
     .expect("product materialization should have complete call edges after waits");
+    let retained_values = super::body::retained_value_ids(&body);
+    analysis.value_types.retain(|value, _| retained_values.contains(value));
     let effects = local_effects(&body, &call_edges);
+    let struct_modules = reachable_struct_modules(
+        world.types(),
+        executable,
+        &body,
+        return_ty,
+        &analysis.value_types,
+        &call_edges,
+    );
     let materialized = Rc::new(MaterializedExecutable {
         entry_dispatch: executable_facts.entry_dispatch().cloned(),
         return_ty,
@@ -152,10 +162,62 @@ pub(crate) fn produce_materialized_executable_product(
         original_entry_ids: pruned.original_entry_ids,
         value_types: analysis.value_types,
         effects,
+        struct_modules,
         body,
         call_edges,
     });
     PullOutcome::Produced(ProductValue::MaterializedExecutable(materialized))
+}
+
+fn reachable_struct_modules(
+    types: &Types,
+    executable: &ExecutableKey,
+    body: &LoweredBody,
+    return_ty: Ty,
+    value_types: &HashMap<ValueId, Ty>,
+    call_edges: &HashMap<CallSiteId, MaterializedCallEdge>,
+) -> Box<[ModuleId]> {
+    let mut modules = BTreeSet::new();
+    if let LoweredBody::Clauses { clauses, entries, .. } = body {
+        for steps in clauses
+            .iter()
+            .map(|clause| clause.projections.as_slice())
+            .chain(entries.iter().map(|entry| entry.steps.as_slice()))
+        {
+            for step in steps {
+                match step {
+                    LoweredStep::Struct { module, .. } | LoweredStep::AssertStruct { module, .. } => {
+                        modules.insert(*module);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let mut type_roots = Vec::with_capacity(2 + value_types.len() + call_edges.len() * 2);
+    type_roots.extend([executable.activation.arrow, return_ty]);
+    type_roots.extend(value_types.values().copied());
+    for edge in call_edges.values() {
+        type_roots.push(edge.return_ty);
+        match &edge.target {
+            CallEdge::Direct(direct) => {
+                if let Some(callee) = direct.callee.local() {
+                    type_roots.push(callee.activation.arrow);
+                }
+            }
+            CallEdge::Dispatch(dispatch) => {
+                for arm in &dispatch.arms {
+                    if let Some(callee) = arm.callee.local() {
+                        type_roots.push(callee.activation.arrow);
+                    }
+                }
+            }
+            CallEdge::Indirect(_) => {}
+        }
+    }
+    modules.extend(types.struct_modules(type_roots));
+    modules.into_iter().collect()
 }
 
 pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>(

@@ -218,10 +218,13 @@
         a submitted root actually reaches.
       </p>
       <p class="rule">
-        There is one fact engine and one product driver. Joined activation inputs, return types,
+        There is one fact engine and one retained product session per requested root. Joined activation inputs, return types,
         direct-call summaries, and recursive keying facts settle as direct facts. Backend artifacts
-        are request-local products that wait on exact facts or products; they do not begin from a
-        root-wide collection pass.
+        are root-local products that wait on exact facts or products; they do not begin from a
+        root-wide collection pass. Interp, native, and macro consumers project the retained answer through one
+        boundary that keeps the World backend value and backend fact movement in lockstep. Struct
+        schemas follow the same rule: pruned executable products carry typed module identities, and
+        root assembly reads only those exact <code>StructDefined</code> facts.
       </p>
     </header>
 
@@ -667,9 +670,12 @@ MaterializedExecutable(E)
       <p>
         Product freshness is revisioned by exact product generations and exact fact uses. A producer
         records each dependency at the read site; a wait only names that already-recorded dependency.
-        The scheduler passes one final fact movement per moved key to the pull session by reference;
-        each movement carries the exact state from the scheduler's fact table after propagation, so
-        reconciliation neither relies on transition order nor rescans the world. Outgoing input publication is request-local and
+        The scheduler passes one final fact movement per moved key to a Compiler2-owned reverse
+        index. Only retained roots that read that fact receive its final state, including dormant
+        roots and roots suspended around a nested macro drive. The memo's reader index emits
+        subscription changes as its first or last reader appears, so delivery scans neither roots
+        nor dependencies. Reconciliation therefore relies on neither transition order nor a World
+        scan. Outgoing input publication is root-local and
         order-free: an immutable publisher frontier names requested executables, each publisher owns
         an immutable map from input slots to source sets, and
         <code>IncomingInputRelations(root)</code> derives the immutable request-relative relation
@@ -961,6 +967,9 @@ Executable(root, main/0, [], Value)</code></pre>
           The artifact path does not rely on self-scheduled follow-up work. When the interpreter
           asks for <code>RootBackendProduct(root)</code>, the product driver waits on the exact facts
           needed to key the entry executable and then pulls <code>BackendExecutable(main/0[])</code>.
+          Same-root artifact jobs already in the agenda remain owned there but are parked while this
+          retained request reconciles semantic work. The projection consumes the exact backend job,
+          then unparks native or macro consumers; scoped cleanup does the same on every failure.
         </p>
       </div>
 
@@ -1043,9 +1052,11 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
           semantic questions. <code>BackendExecutable(E)</code> lowers one symbolic body. Finally,
           <code>RootBackendProduct(root)</code> follows exact reachable backend product values, retains
           their positioned symbolic plan, and packages dense indices into <code>BackendProgram</code>.
-          Redefining uncalled <code>foo/0</code> later does
-          not change that root product. Redefining <code>main/0</code> can, because the settled local
-          callsite summaries it depends on may change.
+          The session and its dependency graph remain owned by <code>Compiler2</code> after the
+          request. Asking again without a movement cache-hits this exact root answer and evaluates
+          no producer. Redefining uncalled <code>foo/0</code> later does not change that root product.
+          Redefining <code>main/0</code> can, because the settled local callsite summaries it depends
+          on may change. Retiring the root releases the session and its movement subscriptions.
         </p>
       </div>
     </section>

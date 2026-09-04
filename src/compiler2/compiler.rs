@@ -9,7 +9,7 @@ use super::drive::ExecutionContext;
 use super::dump::DumpStage;
 use super::facts::FactUse;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, RootId};
-use super::pull::{ProductDriver, ProductKey, PullWait};
+use super::pull::{ProductKey, ProductSessions, PullWait};
 use super::scheduler::DriveOutcome;
 use super::world::World;
 use super::{ExecutableNeed, ModuleId, ModuleInterface};
@@ -36,6 +36,7 @@ pub struct Compiler2<T: Telemetry> {
     output: Box<dyn fz_runtime::output::OutputSink>,
     requested_output: Box<dyn super::dump::RequestedOutputSink>,
     drive_timeout: Option<Duration>,
+    product_sessions: ProductSessions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +61,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             output: Box::new(fz_runtime::output::StdoutOutput),
             requested_output: Box::new(super::dump::NullRequestedOutput),
             drive_timeout: None,
+            product_sessions: ProductSessions::default(),
         }
     }
 
@@ -130,43 +132,29 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     }
 
     pub fn drive(&mut self) -> DriveOutcome<Job, super::FactKey> {
-        super::drive::ExecutionContext::new(&mut self.world, &self.telemetry).drive_for(self.drive_timeout)
+        self.product_sessions
+            .begin_standalone_drive(self.world.work_start_tally());
+        let outcome = super::drive::ExecutionContext::with_product_sessions(
+            &mut self.world,
+            &self.telemetry,
+            &mut self.product_sessions,
+        )
+        .drive_for(self.drive_timeout);
+        self.product_sessions
+            .finish_standalone_drive(self.world.work_start_tally());
+        outcome
     }
 
     fn native_program_for_root(&mut self, root: RootId) -> Result<Rc<NativeProgram>, String> {
-        // Native/JIT/AOT reach the backend through the SAME product boundary as
-        // interp. `LowerNativeProgram` builds the `BackendProgram` via the
-        // product driver (`build_backend_product`), then consumes only that
-        // product fact plus compiler-owned stores.
-        self.abort_on_zero_drive_timeout(root)?;
-        let job = Job::LowerNativeProgram(root);
-        let mut context = super::drive::ExecutionContext::new(&mut self.world, &self.telemetry);
-        let effects = super::jobs::run(&mut context, &job).map_err(|_| {
-            format!(
-                "compiler2 root {} native lowering failed before backend execution",
-                root.as_u32()
-            )
-        })?;
-        super::drive::ExecutionContext::new(&mut self.world, &self.telemetry).complete_job(job, effects);
-        Ok(self.world.native_program(root))
-    }
-
-    /// Honors a zero-length drive budget before any product work runs, matching
-    /// the guarded interp/backend boundary. A configured `Duration::ZERO` aborts
-    /// the compile up front instead of building the backend product.
-    fn abort_on_zero_drive_timeout(&mut self, root: RootId) -> Result<(), String> {
-        if self.drive_timeout == Some(Duration::ZERO)
-            && let DriveOutcome::TimedOut { jobs_ran, pending_jobs } =
-                super::drive::ExecutionContext::new(&mut self.world, &self.telemetry).drive_for(self.drive_timeout)
-        {
-            return Err(format!(
-                "compiler2 root {} exceeded 0 ms drive limit after {} jobs with {} pending",
-                root.as_u32(),
-                jobs_ran,
-                pending_jobs,
-            ));
-        }
-        Ok(())
+        // Native/JIT/AOT reach the same retained backend request as interp,
+        // then lower its authoritative program handle before that request
+        // closes. Queued artifact consumers coalesce on the same projection.
+        let mut context = super::drive::ExecutionContext::with_product_sessions(
+            &mut self.world,
+            &self.telemetry,
+            &mut self.product_sessions,
+        );
+        super::jobs::lower_native_program_for_request(&mut context, root, self.drive_timeout)
     }
 
     fn compile_native_backend<B>(
@@ -250,29 +238,25 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     /// is the canonical source of the semantic executable/activation metrics the
     /// fixture contract harness asserts.
     pub(crate) fn product_executable_inventory(&mut self, root: RootId) -> Result<Vec<ExecutableKey>, String> {
-        let (_program, driver) = self.drive_root_backend_product(root)?;
-        let executables = driver
-            .session()
-            .memo()
-            .materialized_executables()
-            .map(|(executable, _)| executable.clone())
+        let program = self.drive_root_backend_product(root)?;
+        let executables = program
+            .executables
+            .iter()
+            .map(|executable| executable.key.clone())
             .collect::<Vec<_>>();
-        driver.finish_session();
         Ok(executables)
     }
 
-    /// Drives one root to its backend product and returns the finished
-    /// session's work-start attribution snapshot, read back through the
-    /// session's own accessor. The running pull-only guard
-    /// (`work_start_reason_test`) asserts on this: `unsanctioned_work_starts()`
-    /// and `root_scans` must be zero, and `ignition` must equal the true
-    /// external front-door count (one `submit_code` + one `submit_root`).
+    /// Drives one root to its backend product and returns the World's
+    /// cumulative work-start attribution. The running pull-only guard
+    /// (`work_start_reason_test`) asserts on this: `unsanctioned_work_starts()`,
+    /// `root_scans`, and `drain_discovery_sweeps` must be zero, and `ignition`
+    /// must equal the true external front-door count (one `submit_code` + one
+    /// `submit_root`).
     #[cfg(test)]
     pub(crate) fn drive_root_backend_work_starts(&mut self, root: RootId) -> Result<super::WorkStartTally, String> {
-        let (_program, driver) = self.drive_root_backend_product(root)?;
-        let tally = driver.session().work_starts();
-        driver.finish_session();
-        Ok(tally)
+        self.drive_root_backend_product(root)?;
+        Ok(self.world.work_start_tally())
     }
 
     /// Read-only access to the compiler's settled world, so tests can read the
@@ -301,10 +285,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
             self.telemetry
                 .raw_event3(STARTED, &self.world, &root, &BackendRequestEvent::Started);
         }
-        let result = self.drive_root_backend_product(root).map(|(program, driver)| {
-            driver.finish_session();
-            program
-        });
+        let result = self.drive_root_backend_product(root);
         if emit_lifecycle {
             let event = match &result {
                 Ok(program) => BackendRequestEvent::Succeeded {
@@ -318,16 +299,38 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         result
     }
 
-    /// Drives one root to its `BackendProgram` through the guarded product
-    /// boundary and returns the program together with the finished-but-not-yet
-    /// emitted driver, so callers can also read the demanded activation/executable
-    /// inventory the drive accumulated (the CLI dump path reads it).
-    fn drive_root_backend_product<'a>(
-        &'a mut self,
-        root: RootId,
-    ) -> Result<(Rc<BackendProgram>, ProductDriver<'a, T>), String> {
-        self.abort_on_zero_drive_timeout(root)?;
-        super::product_drive::drive_root_backend_product(&mut self.world, &self.telemetry, root)
+    /// Drives one root to its retained `BackendProgram` and publishes the
+    /// settled projection consumed by fact-driven front doors.
+    fn drive_root_backend_product(&mut self, root: RootId) -> Result<Rc<BackendProgram>, String> {
+        super::jobs::backend::complete_backend_product_for_request(
+            &mut ExecutionContext::with_product_sessions(&mut self.world, &self.telemetry, &mut self.product_sessions),
+            root,
+            self.drive_timeout,
+        )
+    }
+
+    /// Releases one root's retained product spreadsheet and every exact fact
+    /// subscription that routes movements to it. Requesting the known root
+    /// again begins a fresh product calculation over the same semantic World.
+    pub fn retire_root_products(&mut self, root: RootId) -> bool {
+        self.product_sessions.retire(root)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_product_counts(&self) -> (usize, usize) {
+        self.product_sessions.counts()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_backend_program(&self, root: RootId) -> Rc<BackendProgram> {
+        match self
+            .product_sessions
+            .get(root)
+            .and_then(|session| session.memo().get(&ProductKey::RootBackendProduct(root)))
+        {
+            Some(super::pull::ProductValue::RootBackendProduct(answer)) => Rc::clone(&answer.program),
+            _ => panic!("root product must be retained after a successful request"),
+        }
     }
 
     /// Drives one root to `NativeProgram` and JIT-compiles it through the

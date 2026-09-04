@@ -31,7 +31,7 @@ use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
     LoweredBitFieldSpec, LoweredBody, LoweredExtern, ReceiveAfter, ReceiveClause, ValueId,
 };
-use super::identity::{ExecutableKey, FunctionId, RootId};
+use super::identity::{ExecutableKey, FunctionId, ModuleId, RootId};
 use super::semantic::ExecutableRuntimeDemand;
 use super::transport::{
     BoundaryFacts, BoundaryId, CallableConstructionOwner, CallableFacts, CallableId, CodegenSeamFact, ExecutableSymbol,
@@ -179,6 +179,9 @@ pub struct MaterializedExecutable {
     pub original_entry_ids: Vec<ControlEntryId>,
     pub value_types: HashMap<ValueId, Ty>,
     pub effects: EffectSummary,
+    /// Struct schemas this pruned executable can construct, test, or name in
+    /// its type surface, kept as typed compiler identities until root packaging.
+    pub(crate) struct_modules: Box<[ModuleId]>,
     pub body: LoweredBody,
     pub call_edges: HashMap<CallSiteId, MaterializedCallEdge>,
 }
@@ -1450,6 +1453,12 @@ impl BackendProgramMap {
 
     pub fn get(&self, root: RootId) -> Option<&Rc<BackendProgram>> {
         self.inner.get(root)
+    }
+
+    pub fn retain_equal(&self, root: RootId, program: Rc<BackendProgram>) -> Rc<BackendProgram> {
+        self.get(root)
+            .filter(|existing| shared_eq(existing, &program))
+            .map_or(program, Rc::clone)
     }
 }
 

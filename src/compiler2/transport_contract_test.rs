@@ -4339,8 +4339,8 @@ fn product_memo_is_the_only_typed_artifact_inventory_and_shares_payloads_through
         other => panic!("expected second root backend answer, got {other:?}"),
     };
     assert!(
-        Rc::ptr_eq(&second_answer.program, &world_program,),
-        "a fresh product session must retain World's unchanged BackendProgram allocation"
+        Rc::ptr_eq(&second_answer.program, &world_program),
+        "a fresh product calculation must retain World's equal BackendProgram allocation"
     );
     second_driver.finish_session();
 }
@@ -5212,10 +5212,11 @@ fn pull_root_backend_driver_for_test<'a>(
     world: &mut World,
     root: super::RootId,
 ) -> ProductDriver<'a, ConfiguredTelemetry> {
-    let (_program, driver) =
+    let (program, driver) =
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(world, tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     driver.finish_session();
+    super::drive::ExecutionContext::new(world, tel).define_backend_program(root, program);
     driver
 }
 
@@ -5862,7 +5863,7 @@ fn assert_executable_fact_producer_pokes(world: &World, session: &PullSession) -
         expected,
         "a cold product drive should expand the sole direct ExecutableFacts producer once per demanded executable",
     );
-    let starts = session.work_starts();
+    let starts = world.work_start_tally();
     assert!(
         starts.blocked_waiter_expansion >= expected,
         "each executable-fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",

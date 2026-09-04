@@ -16,7 +16,7 @@ definition fact and never grows an activation.
 ## Fact and product families
 
 Fact families share one agenda; "stratum" is a write boundary, not a pass. The
-artifact path for interpreter execution is product-keyed and request-local:
+artifact path for interpreter execution is product-keyed and root-local:
 product producers return `ProductValue` or exact `PullWait`s, and the product
 driver is the only code that expands product waits.
 
@@ -60,9 +60,9 @@ product   RootBackendProduct(root)
           ExecutableEffects(E)
             local materialized effects joined with exact callee effect products
           CallableResolution(E, value, surface)
-            exact request-local first-class callable resolutions
+            exact root-local first-class callable resolutions
           RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
-            request-local representation demand and input-source accounting
+            root-local representation demand and input-source accounting
           TransportShape(position), CallableConstruction(position)
             position-owned transport layouts and callable construction facts
 ```
@@ -92,7 +92,12 @@ positioned callable owners embedded in each reached backend product, assigns
 dense executable indices, and publishes one `RootBackendProductAnswer`. That
 answer owns both the symbolic `MaterializedTransportPlan` and the closed runtime
 `BackendProgram`; runtime consumers project only the program. The product pull
-path is the only artifact path.
+path is the only artifact path. Each materialized executable first drops value
+types removed with pruned control, then carries the typed `ModuleId` set named
+by its surviving struct steps and runtime-facing `Ty` surfaces. Root assembly
+reads exactly those `StructDefined(module)` facts and registers schemas by full
+qualified module name; it never inventories World structs or decodes rendered
+types.
 
 A callable target keeps its exact private return layout. A first-class callable
 wrapper publishes one uniform contract: `Diverges`, `Absent`, or one `ValueRef`
@@ -111,7 +116,7 @@ durable source of truth for the pull artifact path as built.
   pulls `RootBackendProduct(root)`.
 - `RootKind::Macro` is a hidden compile-time entry request created only by
   `BuildMacroExecutable`. It uses the macro ABI input vector
-  `__CALLER__ + captures + quoted args`, uses the legacy backend program path,
+  `__CALLER__ + captures + quoted args`, uses the same retained backend product path,
   and publishes `MacroExecutable(function)` for the macro expander.
 
 ## A root's journey
@@ -132,6 +137,7 @@ submit_root(main/0)
         pulls EntryCapture, resume, input, return, and callable-boundary transport products
       lowers one symbolic backend executable
     follows exact reachable backend products and publishes RootBackendProductAnswer(root)
+  Compiler2 retains this session and exact dependency graph for the root's next request
 ```
 
 Each fact wait names the exact prerequisite: `LowerFunction` /
@@ -324,7 +330,7 @@ record dependencies at the read site; waits name those reads without restamping
 or rereading the world. Scheduler movements are reconciled to their final exact
 states before the next pull.
 
-Outgoing input publication is request-local and order-free.
+Outgoing input publication is root-local and order-free.
 `OutgoingEdgeFrontier(root)` is the immutable set of executables whose
 `OutgoingInputEdges(E)` product has actually been requested. Each outgoing
 product is an immutable `InputSlot -> Set<IncomingInputSource>` contribution.
@@ -403,7 +409,10 @@ indirect call.
 
 World movements arrive from the scheduler as borrowed `FactMovement` values,
 one exact final `FactState` per moved key. Product generations and reader edges
-invalidate only products that consumed a changed fact or product. Equal
+invalidate only products that consumed a changed fact or product. A
+Compiler2-owned reverse index routes each movement to exactly the retained
+roots whose memos read it, including dormant and nested-active roots; first/last
+reader transitions update that index without a dependency census. Equal
 reproduction preserves generations, and unrelated products remain valid.
 
 Runtime demand is what makes that line precise for *representation*. A semantic
@@ -605,12 +614,23 @@ same reason. These handles are deliberately `Rc`, not `Arc`: compiler2's World,
 product driver, interpreter handoff, and native lowering are single-thread
 owned, and the World already is not `Send`.
 
+An external backend/native request owns one retained root-session activation.
+While it reconciles queued edits, the agenda parks same-root backend, native,
+and already-mapped macro consumers without removing them from agenda ownership;
+duplicate demands still coalesce and runnable FIFO order is unchanged. The
+root product projection consumes a parked backend job exactly once, including
+an equal cache hit, then unparks the remaining consumers for the ordinary
+post-projection drive. Scoped cleanup unparks on every failure before the
+session is restored.
+
 `ProductMemo` is the only settled inventory for materialized, ABI, and symbolic
 backend executables. Typed iterators project those entries without collecting
 or cloning them; `PullSession` has no artifact mirrors or mirror invalidation.
 Final root packaging semantically orders the reached executable keys once, and
-the resulting `BackendProgram.executables` vector is the dense executable
-index. No request-local index projection is retained beside it.
+the resulting `BackendProgram.executables` vector is both the current reachable
+inventory and the dense executable index. Consumers do not scan a retained
+memo's historical products to rediscover the current root closure. No
+request-local index projection is retained beside it.
 
 `RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
 positioned owner whose exact product contains a first-class construction. It

@@ -51,7 +51,7 @@ use closure_surface_var::{closure_ret_var_id, closure_var_id};
 use conj::Conj;
 use descr::Descr;
 use dnf::{dnf_intersect_with, tuple_clause_subsumed};
-use sigs::{ArrowSig, ClosureLit, ListSig, MergeSig, PosMeet, ResourceSig, TupleSig};
+use sigs::{ArrowSig, ClosureLit, ListSig, MapTag, MergeSig, PosMeet, ResourceSig, StructTag, TupleSig};
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
 /// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
@@ -813,6 +813,16 @@ impl Types {
         self.intern(Descr::opaque_of(name))
     }
 
+    pub(crate) fn struct_map(&mut self, module: super::identity::ModuleId, name: &str, fields: &[(MapKey, Ty)]) -> Ty {
+        self.intern(Descr::struct_map(
+            StructTag {
+                module,
+                name: name.to_string(),
+            },
+            fields.iter().cloned(),
+        ))
+    }
+
     pub fn list_element_type(&mut self, a: &Ty) -> Ty {
         let d = {
             let cx = self.ctx();
@@ -913,13 +923,13 @@ impl Types {
             self.resource(payload)
         } else if descr.is_pure_callable() {
             self.intern(Descr::fun_top())
-        } else if let Some(map) = descr.pure_map() {
-            let fields = map
+        } else if let Some(record) = descr.pure_record() {
+            let fields = record
                 .fields
                 .iter()
                 .map(|(key, value)| (key.clone(), self.convergence_class(value)))
                 .collect::<Vec<_>>();
-            self.map(&fields)
+            self.intern(Descr::record(record.tag.clone(), fields))
         } else {
             *a
         }
@@ -986,8 +996,8 @@ impl Types {
             child.push(AddrStep::Payload);
             let payload = self.convergence_class_at(&payload, &child, keep_elements);
             self.resource(payload)
-        } else if let Some(map) = descr.pure_map() {
-            let fields = map
+        } else if let Some(record) = descr.pure_record() {
+            let fields = record
                 .fields
                 .iter()
                 .enumerate()
@@ -997,7 +1007,7 @@ impl Types {
                     (key.clone(), self.convergence_class_at(value, &child, keep_elements))
                 })
                 .collect::<Vec<_>>();
-            self.map(&fields)
+            self.intern(Descr::record(record.tag.clone(), fields))
         } else if keep_elements && self.has_vars(a) {
             // A kept leaf that still carries a free variable is replaced by the
             // canonical address var for its position, never kept verbatim: the
@@ -1508,6 +1518,74 @@ impl Types {
         obligations
     }
 
+    /// Struct schemas named by these retained type surfaces.
+    ///
+    /// Struct record tags use `ModuleId` as their sole semantic identity, so
+    /// this walk stays typed and local to the supplied types. It never renders
+    /// a `Ty`, consults source reference graphs, or inventories World modules.
+    pub(crate) fn struct_modules(&self, roots: impl IntoIterator<Item = Ty>) -> BTreeSet<super::identity::ModuleId> {
+        let mut modules = BTreeSet::new();
+        let mut seen = HashSet::new();
+        for root in roots {
+            self.collect_struct_modules(root, &mut seen, &mut modules);
+        }
+        modules
+    }
+
+    fn collect_struct_modules(
+        &self,
+        ty: Ty,
+        seen: &mut HashSet<Ty>,
+        modules: &mut BTreeSet<super::identity::ModuleId>,
+    ) {
+        if !seen.insert(ty) {
+            return;
+        }
+        let descr = self.descr(&ty);
+        for conj in &descr.tuples {
+            for sig in conj.pos.iter().chain(&conj.neg) {
+                for elem in &sig.elems {
+                    self.collect_struct_modules(*elem, seen, modules);
+                }
+            }
+        }
+        for conj in &descr.lists {
+            for sig in conj.pos.iter().chain(&conj.neg) {
+                if let Some(elem) = sig.elem {
+                    self.collect_struct_modules(elem, seen, modules);
+                }
+            }
+        }
+        for conj in &descr.resources {
+            for sig in conj.pos.iter().chain(&conj.neg) {
+                self.collect_struct_modules(sig.payload, seen, modules);
+            }
+        }
+        for conj in &descr.funcs {
+            for sig in conj.pos.iter().chain(&conj.neg) {
+                for arg in &sig.args {
+                    self.collect_struct_modules(*arg, seen, modules);
+                }
+                self.collect_struct_modules(sig.ret, seen, modules);
+                if let Some(lit) = &sig.lit {
+                    for capture in &lit.captures {
+                        self.collect_struct_modules(*capture, seen, modules);
+                    }
+                }
+            }
+        }
+        for conj in &descr.maps {
+            for sig in conj.pos.iter().chain(&conj.neg) {
+                if let MapTag::Struct(tag) = &sig.tag {
+                    modules.insert(tag.module);
+                }
+                for field in sig.fields.values() {
+                    self.collect_struct_modules(*field, seen, modules);
+                }
+            }
+        }
+    }
+
     fn collect_protocol_domain_obligations(
         &self,
         ty: Ty,
@@ -1590,10 +1668,9 @@ impl Types {
 
     pub(crate) fn runtime_type_predicate(&self, a: &Ty) -> RuntimeTypePredicate {
         let descr = self.descr(a);
-        if runtime_type_predicate_requires_any(descr) {
-            return RuntimeTypePredicate::any();
-        }
-        let named_structs = runtime_type_predicate_named_structs(descr);
+        let widen_non_structs = runtime_type_predicate_widens_non_structs(descr);
+        let (plain_maps, tagged_structs) = runtime_type_predicate_map_tags(descr);
+        let named_structs = runtime_type_predicate_named_structs(descr, tagged_structs);
         RuntimeTypePredicate {
             // Numbers are presence bits: the predicate is a kind check,
             // never a value-membership set, from this pipeline. `ints` and
@@ -1608,25 +1685,41 @@ impl Types {
             // codegen already implement the per-value membership check
             // and are reused live today for atom membership, so they need
             // no change to pick up real numeric value sets.
-            ints: if descr.basic.contains_all(BasicBits::INT) {
+            ints: if widen_non_structs || descr.basic.contains_all(BasicBits::INT) {
                 FiniteSet::any()
             } else {
                 FiniteSet::none()
             },
-            floats: if descr.basic.contains_all(BasicBits::FLOAT) {
+            floats: if widen_non_structs || descr.basic.contains_all(BasicBits::FLOAT) {
                 FiniteSet::any()
             } else {
                 FiniteSet::none()
             },
-            atoms: descr.atoms.clone(),
-            lists: self.runtime_type_predicate_lists(descr),
-            tuples: self.runtime_type_predicate_tuples(descr),
+            atoms: if widen_non_structs {
+                FiniteSet::any()
+            } else {
+                descr.atoms.clone()
+            },
+            lists: if widen_non_structs {
+                ListShapes::any()
+            } else {
+                self.runtime_type_predicate_lists(descr)
+            },
+            tuples: if widen_non_structs {
+                TupleShapes::any()
+            } else {
+                self.runtime_type_predicate_tuples(descr)
+            },
             named_structs: named_structs.clone(),
-            allow_other_structs: false,
-            maps: !descr.maps.is_empty() && named_structs.is_none(),
-            binaries: descr.basic.contains_all(BasicBits::BINARY),
-            callables: self.runtime_type_predicate_callables(descr),
-            resources: !descr.resources.is_empty(),
+            allow_other_structs: named_structs.cofinite,
+            maps: widen_non_structs || plain_maps,
+            binaries: widen_non_structs || descr.basic.contains_all(BasicBits::BINARY),
+            callables: if widen_non_structs {
+                CallableShapes::any()
+            } else {
+                self.runtime_type_predicate_callables(descr)
+            },
+            resources: widen_non_structs || !descr.resources.is_empty(),
         }
     }
 
@@ -1923,7 +2016,15 @@ impl Types {
         self.intern(descr)
     }
 
-    /// What a runtime test can see of `ty`.
+    /// The static surface from which a runtime test and its projections are
+    /// built.
+    ///
+    /// A plain map keeps recursively enveloped fields because pattern planning
+    /// projects and binds those fields statically, even though the emitted
+    /// `RuntimeTypePredicate::maps` question itself observes only map kind. A
+    /// named struct instead keeps its schema tag and clears positive fields:
+    /// its runtime question observes schema identity, while its field/storage
+    /// views come from the settled schema and lowered struct operation.
     ///
     /// On the callable axis that is the value's CONSTRUCTION: a closure
     /// value's heap word at `+8` names the construction it was minted from,
@@ -2715,12 +2816,45 @@ fn callable_clauses(cx: TyCtx<'_>, d: &Descr) -> Option<Vec<CallableClause<Ty>>>
     )
 }
 
-fn runtime_type_predicate_requires_any(descr: &Descr) -> bool {
+fn runtime_type_predicate_widens_non_structs(descr: &Descr) -> bool {
     const STRUCT_PREFIX: &str = "impl-target::";
     descr.opaques.cofinite
         || descr.opaques.values.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
+}
+
+fn runtime_type_predicate_map_tags(descr: &Descr) -> (bool, FiniteSet<String>) {
+    let mut plain = false;
+    let mut structs = FiniteSet::none();
+    for clause in &descr.maps {
+        let positive = clause.pos.first().map(|sig| &sig.tag);
+        if clause.pos.iter().skip(1).any(|sig| Some(&sig.tag) != positive) {
+            continue;
+        }
+        let (mut clause_plain, mut clause_structs) = match positive {
+            None => (true, FiniteSet::any()),
+            Some(MapTag::Plain) => (true, FiniteSet::none()),
+            Some(MapTag::Struct(tag)) => (false, FiniteSet::lit(tag.name.clone())),
+        };
+        for negative in &clause.neg {
+            // The runtime observes a record's family, not its fields. A shaped
+            // subtraction removes only part of that family, so rejecting the
+            // whole tag would under-admit. Runtime envelopes clear observable
+            // positive shapes first; their exact family negatives arrive here
+            // fieldless and can be subtracted.
+            if !negative.fields.is_empty() {
+                continue;
+            }
+            match &negative.tag {
+                MapTag::Plain => clause_plain = false,
+                MapTag::Struct(tag) => clause_structs = runtime_type_predicate_remove(&clause_structs, &tag.name),
+            }
+        }
+        plain |= clause_plain;
+        structs = structs.union(&clause_structs);
+    }
+    (plain, structs)
 }
 
 fn runtime_type_predicate_list_shapes(descr: &Descr) -> FiniteSet<ListShape> {
@@ -2818,15 +2952,20 @@ fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>>
     Some(targets)
 }
 
-fn runtime_type_predicate_named_structs(descr: &Descr) -> FiniteSet<String> {
+fn runtime_type_predicate_named_structs(descr: &Descr, structs: FiniteSet<String>) -> FiniteSet<String> {
     const STRUCT_PREFIX: &str = "impl-target::";
-    FiniteSet::finite(
-        descr
-            .opaques
-            .values
-            .iter()
-            .filter_map(|tag| tag.strip_prefix(STRUCT_PREFIX).map(str::to_string)),
-    )
+    let legacy = if descr.opaques.cofinite {
+        FiniteSet::none()
+    } else {
+        FiniteSet::finite(
+            descr
+                .opaques
+                .values
+                .iter()
+                .filter_map(|tag| tag.strip_prefix(STRUCT_PREFIX).map(str::to_string)),
+        )
+    };
+    legacy.union(&structs)
 }
 
 fn runtime_type_predicate_remove<T>(set: &FiniteSet<T>, value: &T) -> FiniteSet<T>
@@ -3189,12 +3328,32 @@ fn runtime_map_sig(
     polarity: RuntimeEnvelopePolarity,
     callables: CallableReading,
 ) -> Option<sigs::MapSig> {
-    let fields = sig
-        .fields
-        .into_iter()
-        .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, callables)))
-        .collect::<BTreeMap<_, _>>();
-    (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { fields })
+    match (&sig.tag, polarity) {
+        // A struct question observes the schema tag; its field layout is owned
+        // by the settled schema and lowered operation, not the question.
+        (MapTag::Struct(_), RuntimeEnvelopePolarity::Positive) => Some(sigs::MapSig {
+            tag: sig.tag,
+            fields: BTreeMap::new(),
+        }),
+        // A shaped struct negative cannot be tested exactly. Dropping it
+        // widens in the safe direction; a fieldless negative names the whole
+        // family.
+        (MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) if sig.fields.is_empty() => Some(sig),
+        (MapTag::Struct(_), RuntimeEnvelopePolarity::Negative) => None,
+        // Plain-map fields remain static projection evidence for map patterns,
+        // even though the runtime kind predicate itself is content-blind.
+        (MapTag::Plain, _) => {
+            let fields = sig
+                .fields
+                .into_iter()
+                .map(|(key, ty)| (key, runtime_envelope_ty(types, ty, polarity, callables)))
+                .collect::<BTreeMap<_, _>>();
+            (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig {
+                tag: MapTag::Plain,
+                fields,
+            })
+        }
+    }
 }
 
 fn arrow_join_return(cx: TyCtx<'_>, d: &Descr) -> Descr {
@@ -3351,7 +3510,9 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
             });
         }
     }
-    if let (Some(l), Some(r)) = (lhs.pure_map().cloned(), rhs.pure_map().cloned()) {
+    if let (Some(l), Some(r)) = (lhs.pure_record().cloned(), rhs.pure_record().cloned())
+        && l.tag == r.tag
+    {
         let mut fields = l.fields;
         for (key, rv) in &r.fields {
             if let Some(lv) = fields.get_mut(key) {
@@ -3360,7 +3521,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
                 fields.insert(key.clone(), *rv);
             }
         }
-        return t.intern(Descr::map_of(fields));
+        return t.intern(Descr::record(l.tag, fields));
     }
 
     t.union(a, b)
@@ -3462,7 +3623,9 @@ fn collect_subst_into(
         }
         collect_subst_into(t, ps.ret, ws.ret, side, target, sigma);
     }
-    if let (Some(ps), Some(ws)) = (pat.pure_map(), wit.pure_map()) {
+    if let (Some(ps), Some(ws)) = (pat.pure_record(), wit.pure_record())
+        && ps.tag == ws.tag
+    {
         for (key, p) in &ps.fields {
             if let Some(w) = ws.fields.get(key) {
                 collect_subst_into(t, *p, *w, side, target, sigma);
@@ -3511,7 +3674,7 @@ fn map_recursive_inputs_with(t: &mut Types, mut d: Descr, f: &mut impl FnMut(&mu
 fn mint_owned_resource_aliases_descr(cx: TyCtx<'_>, d: &Descr, candidates: &[(String, Descr)]) -> Descr {
     for (tag, inner) in candidates {
         if resource_payload_type(cx, d).is_some_and(|payload| payload.is_equiv(cx, inner)) {
-            return Descr::opaque_of(tag);
+            return Descr::opaque_of(tag.clone());
         }
     }
     d.clone()
