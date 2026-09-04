@@ -112,8 +112,12 @@ Built on `canon(Ty)`, by four rules:
   for `ExecutableKey`, `ExecutableSymbol`, and `TransportPosition`; it compares
   activation arrows structurally through `Types::cmp_activation_ty`, never by
   raw interner ids or rendered text. Packaging and wrapper enumeration consume
-  that same relation. Before typed publication order, a schedule flip could
-  swap two byte-identical construction wrappers on `enum_take_drop_split`.
+  that same relation. `Types::ComparisonCache` stores predicate and activation-
+  order verdicts in one operation-tagged key → typed-outcome map; immutable
+  interned `Ty` handles make each verdict reusable for the World lifetime, and
+  symmetric/reversed queries normalize onto one entry. Before typed publication
+  order, a schedule flip could swap two byte-identical construction wrappers on
+  `enum_take_drop_split`.
 - **body-local ids are re-densified**. `ValueId` and `CallSiteId` are sparse
   after pruning (entries are reindexed, values and callsites are not), so names
   are handed out at first appearance in the body walk: `v0`, `v1`, `cs0`. A

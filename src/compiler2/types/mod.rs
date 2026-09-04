@@ -119,9 +119,10 @@ struct TypeInterner {
 
 #[derive(Default)]
 struct ComparisonCache {
-    values: HashMap<ComparisonKey, bool>,
-    semantic_order: HashMap<SemanticOrderKey, std::cmp::Ordering>,
+    outcomes: HashMap<ComparisonKey, ComparisonOutcome>,
+    #[cfg(test)]
     hits: usize,
+    #[cfg(test)]
     misses: usize,
     #[cfg(test)]
     semantic_order_hits: usize,
@@ -138,18 +139,13 @@ enum ComparisonKey {
     /// `Types::row_column_dominates`. NOT symmetric: the two positions mean
     /// different things, so this key is never built through `symmetric_key`.
     RowColumnDominates(Ty, Ty),
+    ActivationArrowOrder(Ty, Ty),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum SemanticOrderOperation {
-    ActivationArrow,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct SemanticOrderKey {
-    operation: SemanticOrderOperation,
-    low: Ty,
-    high: Ty,
+enum ComparisonOutcome {
+    Predicate(bool),
+    Order(std::cmp::Ordering),
 }
 
 #[cfg(test)]
@@ -397,18 +393,14 @@ impl Types {
             return std::cmp::Ordering::Equal;
         }
         let (low, high, reversed) = if a < b { (a, b, false) } else { (b, a, true) };
-        let key = SemanticOrderKey {
-            operation: SemanticOrderOperation::ActivationArrow,
-            low,
-            high,
-        };
-        let normalized = if let Some(order) = self.comparisons.borrow_mut().semantic_order_hit(key) {
-            order
+        let key = ComparisonKey::ActivationArrowOrder(low, high);
+        let normalized = if let Some(outcome) = self.comparisons.borrow_mut().hit(key) {
+            outcome.order()
         } else {
             self.assert_activation_labels_registered(low);
             self.assert_activation_labels_registered(high);
             let order = self.activation_order().cmp_ty(low, high);
-            self.comparisons.borrow_mut().semantic_order_miss(key, order);
+            self.comparisons.borrow_mut().miss(key, ComparisonOutcome::Order(order));
             order
         };
         if reversed { normalized.reverse() } else { normalized }
@@ -530,11 +522,13 @@ impl Types {
     }
 
     fn cached_comparison(&self, key: ComparisonKey, compute: impl FnOnce(&Self) -> bool) -> bool {
-        if let Some(result) = self.comparisons.borrow_mut().hit(key) {
-            return result;
+        if let Some(outcome) = self.comparisons.borrow_mut().hit(key) {
+            return outcome.predicate();
         }
         let result = compute(self);
-        self.comparisons.borrow_mut().miss(key, result);
+        self.comparisons
+            .borrow_mut()
+            .miss(key, ComparisonOutcome::Predicate(result));
         result
     }
 
@@ -614,10 +608,14 @@ impl Types {
     pub(crate) fn comparison_cache_stats(&self) -> ComparisonCacheStats {
         let cache = self.comparisons.borrow();
         ComparisonCacheStats {
-            entries: cache.values.len(),
+            entries: cache.outcomes.len(),
             hits: cache.hits,
             misses: cache.misses,
-            semantic_order_entries: cache.semantic_order.len(),
+            semantic_order_entries: cache
+                .outcomes
+                .keys()
+                .filter(|key| matches!(key, ComparisonKey::ActivationArrowOrder(_, _)))
+                .count(),
             semantic_order_hits: cache.semantic_order_hits,
             semantic_order_misses: cache.semantic_order_misses,
         }
@@ -625,34 +623,45 @@ impl Types {
 }
 
 impl ComparisonCache {
-    fn hit(&mut self, key: ComparisonKey) -> Option<bool> {
-        let result = self.values.get(&key).copied();
-        if result.is_some() {
-            self.hits += 1;
-        }
-        result
-    }
-
-    fn miss(&mut self, key: ComparisonKey, result: bool) {
-        self.misses += 1;
-        self.values.insert(key, result);
-    }
-
-    fn semantic_order_hit(&mut self, key: SemanticOrderKey) -> Option<std::cmp::Ordering> {
-        let result = self.semantic_order.get(&key).copied();
+    fn hit(&mut self, key: ComparisonKey) -> Option<ComparisonOutcome> {
+        let result = self.outcomes.get(&key).copied();
         #[cfg(test)]
         if result.is_some() {
-            self.semantic_order_hits += 1;
+            if matches!(key, ComparisonKey::ActivationArrowOrder(_, _)) {
+                self.semantic_order_hits += 1;
+            } else {
+                self.hits += 1;
+            }
         }
         result
     }
 
-    fn semantic_order_miss(&mut self, key: SemanticOrderKey, result: std::cmp::Ordering) {
+    fn miss(&mut self, key: ComparisonKey, outcome: ComparisonOutcome) {
         #[cfg(test)]
         {
-            self.semantic_order_misses += 1;
+            if matches!(key, ComparisonKey::ActivationArrowOrder(_, _)) {
+                self.semantic_order_misses += 1;
+            } else {
+                self.misses += 1;
+            }
         }
-        self.semantic_order.insert(key, result);
+        assert!(self.outcomes.insert(key, outcome).is_none());
+    }
+}
+
+impl ComparisonOutcome {
+    fn predicate(self) -> bool {
+        match self {
+            Self::Predicate(result) => result,
+            Self::Order(_) => unreachable!("a comparison operation has one outcome type"),
+        }
+    }
+
+    fn order(self) -> std::cmp::Ordering {
+        match self {
+            Self::Order(result) => result,
+            Self::Predicate(_) => unreachable!("a comparison operation has one outcome type"),
+        }
     }
 }
 

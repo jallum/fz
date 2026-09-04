@@ -469,6 +469,32 @@ fn symmetric_comparisons_share_one_cache_entry() {
     assert_eq!(after_second.hits, after_first.hits + 1);
 }
 
+#[test]
+fn comparison_cache_keys_predicates_and_order_by_operation() {
+    let mut t = Types::new();
+    let int = t.int();
+    let atom = t.atom();
+
+    let before = t.comparison_cache_stats();
+    assert!(t.is_disjoint(&int, &atom));
+    let after_predicate = t.comparison_cache_stats();
+    assert_eq!(after_predicate.entries, before.entries + 1);
+
+    let first_order = t.cmp_activation_ty(int, atom);
+    let after_order = t.comparison_cache_stats();
+    assert_eq!(
+        after_order.entries,
+        after_predicate.entries + 1,
+        "the operation tag must give predicate and ordering results distinct slots in one cache",
+    );
+    assert_eq!(after_order.semantic_order_entries, before.semantic_order_entries + 1);
+
+    assert_eq!(t.cmp_activation_ty(atom, int), first_order.reverse());
+    let after_reverse = t.comparison_cache_stats();
+    assert_eq!(after_reverse.entries, after_order.entries);
+    assert_eq!(after_reverse.semantic_order_hits, after_order.semantic_order_hits + 1);
+}
+
 macro_rules! key_helper_conformance_tests {
     ($mod_name:ident, $ctor:expr) => {
         mod $mod_name {
