@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.183",
-    "fz-kdt.199"
+    "fz-kdt.199",
+    "fz-kdt.214"
   ],
   "blocks": [],
   "created": "2026-09-03T18:54:13Z",
@@ -20,5 +21,5 @@
   "status": "open",
   "title": "Replace InputDemand cone replay with one reactive per-function fact",
   "type": "task",
-  "updated_at": "2026-09-04T10:53:14Z"
+  "updated_at": "2026-09-04T10:53:19Z"
 }
