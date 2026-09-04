@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-kdt.213",
     "fz-tfn.30"
   ],
   "blocks": [
@@ -29,5 +30,5 @@
   "status": "open",
   "title": "Add callable-identity as the fourth InputDemand dimension",
   "type": "task",
-  "updated_at": "2026-09-04T10:53:14Z"
+  "updated_at": "2026-09-04T10:53:20Z"
 }

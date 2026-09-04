@@ -5,7 +5,9 @@
     "fz-kdt.199",
     "fz-kdt.214"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-kdt.165"
+  ],
   "created": "2026-09-03T18:54:13Z",
   "description": "## Goal\n\nMake `InputDemand(F)` one ordinary reactive per-function fact and delete its private whole-cone calculation. The atomic value continues to carry `local_dispatch`, `forwarded_dispatch`, and `returned`; `fz-kdt.165` later adds `callable_identity` as a fourth dimension of this same fact.\n\n## Current defect\n\n`derive_input_demand` collects a private forwarding cone and invokes `solve_forwarded_demand` twice over it, once for forwarded dispatch and once for returned positions. The returned solver also subtracts values supplied by recursion only within one function. A mutual component can therefore look unsupplied and mint unbought activation keys: the recorded corpus signal was 79 keys with no distinct return versus 36 that bought one, concentrated in the `List.reduce_*` mutual cycle.\n\nThis is separate from executable `RuntimeDemand`: `InputDemand` decides semantic activation-key precision per source function, while `RuntimeDemand(E)` decides materialization needs per executable. They share generic fact scheduling only; neither owns nor calls the other's cone, solver, contribution state, or compatibility bridge.\n\n## Correct model\n\n- One `FactKey::InputDemand(F)` and one World slot hold the complete atomic value.\n- One per-function formula reads the exact typed path-aware relation from `fz-kdt.214`, local body/dispatch facts, peer `InputDemand` values, and `CallGraphComponent` facts.\n- Source-owned contributions are replaceable, so edits retract only the old source edges.\n- Mutual recursion converges through ordinary fact movement. Supplied-position subtraction joins across the whole recursive component instead of running a self-only mini-fixpoint.\n- A publication commits every dimension together; readers can never observe a half-old, half-new keying decision.\n\n## TDD\n\n1. Acyclic forwarding evaluates only exact readers and publishes all three dimensions atomically.\n2. Self and mutual recursion converge independent of job order with no waits on cyclic peer values.\n3. The 79 recorded unbought returned-axis splits fall while the 36 bought distinctions and every activation-keying law remain.\n4. Direct, delivered, reconstructed, projected, and protocol flows from `fz-kdt.214` reach the same fact.\n5. Edge replacement retracts stale demand without resetting unaffected functions.\n6. Cross-process fact/work multisets, activation keys, artifacts, and all target outputs are exact.\n\n## Required deletion\n\n- `derive_input_demand`'s private cone collection and graph state;\n- both `solve_forwarded_demand` passes and their round/SCC bookkeeping;\n- self-only returned-supply fixpoint state;\n- dimension-specific forwarding scans, shadow facts, compatibility bridges, and migration telemetry.\n\n## Acceptance\n\nNo cone, root, function-inventory, or repeated full-graph scan remains. Every non-initial evaluation names exact changed content; equal conclusions do not revise the fact or wake readers. Full keying, recursion, library, serial fixture matrix, three-door behavior, causal determinism, formatting, check, strict clippy, and docs pass.",
   "id": "fz-kdt.213",
@@ -21,5 +23,5 @@
   "status": "open",
   "title": "Replace InputDemand cone replay with one reactive per-function fact",
   "type": "task",
-  "updated_at": "2026-09-04T10:53:19Z"
+  "updated_at": "2026-09-04T10:53:20Z"
 }
