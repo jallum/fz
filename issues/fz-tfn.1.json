@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-kdt.5",
-    "fz-tfn.10"
+    "fz-tfn.10",
+    "fz-tfn.30"
   ],
   "blocks": [
     "fz-kdt.4",
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "Persist one exact product calculation per root across compiler requests",
   "type": "bug",
-  "updated_at": "2026-09-03T08:06:51Z"
+  "updated_at": "2026-09-04T00:00:35Z"
 }

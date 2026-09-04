@@ -5,6 +5,7 @@
   ],
   "blocks": [
     "fz-kdt.4",
+    "fz-tfn.1",
     "fz-tfn.24"
   ],
   "created": "2026-09-04T00:00:17Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Stack recalculator work on semantic-correctness PR #110",
   "type": "task",
-  "updated_at": "2026-09-04T00:00:34Z"
+  "updated_at": "2026-09-04T00:00:35Z"
 }
