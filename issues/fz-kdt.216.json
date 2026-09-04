@@ -9,9 +9,15 @@
   "id": "fz-kdt.216",
   "labels": [],
   "parent": "fz-kdt",
+  "comments": [
+    {
+      "text": "fz-kdt.210 landed (5a1ba823b) and does NOT fix you, as its cold review confirmed independently: the parameter half reproduces identically at base and at 210. 210 is confined to the calculator (types/arrow_match.rs marks a partially joined variable so the RESULT answers Underconstrained) and deliberately leaves the parameter surface alone -- Underconstrained still publishes `params`. Your clamp lives at the other seam, contract.rs refine_contract_inputs consuming an instantiation as a refinement of the INPUT surface, so it needs its own rule. Reproducer unchanged: probe/seed.fz in the 210 artifacts, a fold whose accumulator seed is an atom; swapping the seed to [] makes it compile because the fz-f98.16 empty-list cleaner masks the list case, and fz-kdt.120 deletes that cleaner.",
+      "timestamp": "2026-09-04T00:02:26Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The PARAMETER half of a partial join is a false spec/violation: refine_contract_inputs clamps a reducer's arrow to the seed accumulator, so the ascent stops one rung short",
   "type": "task",
-  "updated_at": "2026-09-03T23:11:59Z"
+  "updated_at": "2026-09-04T00:02:26Z"
 }
