@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.68"
+    "fz-kdt.68",
+    "fz-tfn.30"
   ],
   "blocks": [],
   "created": "2026-09-03T08:04:44Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Delete dormant per-derivation scheduler machinery if the precision experiment is refuted",
   "type": "task",
-  "updated_at": "2026-09-03T08:04:49Z"
+  "updated_at": "2026-09-04T00:00:45Z"
 }
