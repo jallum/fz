@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.30"
+  ],
   "blocks": [
     "fz-kdt.48"
   ],
@@ -35,5 +37,5 @@
   "status": "open",
   "title": "Types::union(empty_list(), list(int)) interns as \"[] | [int]\": unions are not normalised by subsumption, so identity-distinct equal types mint duplicate executables",
   "type": "task",
-  "updated_at": "2026-09-03T21:20:07Z"
+  "updated_at": "2026-09-04T00:00:48Z"
 }
