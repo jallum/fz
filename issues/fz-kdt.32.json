@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.30"
+  ],
   "blocks": [
     "fz-tfn.20"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "[BUG] Retract requester-owned struct-field expectations when live redefinition drops the reference",
   "type": "bug",
-  "updated_at": "2026-09-03T08:02:49Z"
+  "updated_at": "2026-09-04T00:00:52Z"
 }
