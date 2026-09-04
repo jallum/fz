@@ -15,11 +15,15 @@
     {
       "text": "fz-kdt.210 (filed 2026-09-03) is a SECOND, distinct defect at your seam. You own refine_observed_return keeping the observed on an empty intersection and the row-order dependence of the key-wide join. fz-kdt.210 owns refine_call_return MEETING a contract return that was instantiated from a GROUND seed argument: reduce_cont keyed [list(int), empty_list(), a2] publishes {:done, []} because `b|c := []` binds from the seed and `[] \u003c: list(int)` makes the meet []. Same function, different failure. Linking so neither is fixed in a way that re-breaks the other.",
       "timestamp": "2026-09-03T18:17:44Z"
+    },
+    {
+      "text": "fz-kdt.210 landed (5a1ba823b): neither re-broken nor subsumed, measured. Your stated instance no longer reproduces at this head (fz-kdt.183 element keying) with or without 210 -- the swapped-order probe pair is identical on both binaries. Your half (a), row-order-dependent narrowing, gets strictly BETTER: the CARVE census (a constrained observed return narrowed to a strict subset) goes 8 -\u003e 0. Your half (b), an empty intersection kept silently, SURVIVES: CARVE_EMPTY_KEEP 13 -\u003e 9, the remainder all in 00144. So what is left of this ticket is half (b) plus a fresh reproducer, since the original one is gone.",
+      "timestamp": "2026-09-04T00:02:27Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A published return fact is source-order dependent: analyze_activation refines the key-wide join by each row @spec result in row order and refine_observed_return keeps the observed on an empty intersection, so the first row wins",
   "type": "task",
-  "updated_at": "2026-09-03T18:17:44Z"
+  "updated_at": "2026-09-04T00:02:27Z"
 }
