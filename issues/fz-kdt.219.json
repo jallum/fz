@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-f98.21"
+  ],
   "blocks": [],
   "created": "2026-09-04T01:24:06Z",
   "description": "Found by the fz-kdt.120 build (2026-09-03, c2c723c63), which had to rewrite a\nfixture header and then explain 36 canon diff lines that meant nothing.\n\nThe `--dump backend=` canonical form is this arc`s faithful comparand and the\none gates rely on. But it renders SPANS AS BYTE OFFSETS into the fixture\nsource, so editing a fixture`s COMMENT text -- without touching a single line\nof code, and without changing the line COUNT -- shifts every subsequent offset\nand the fixture reads as a canon mover. The artifact is identical.\n\nREPRODUCER: change one word inside the header comment of\n`fixtures2/behavior/spec_shared_var_self_composition.fz` without changing its\nline count, then `fz2 interp --dump backend=\u003cfile\u003e` before and after and diff:\n36 span lines move, artifact unchanged. (Flag order matters -- writing\n`--log-telemetry` after the subcommand truncates the fixture, fz-kdt.215.)\n\nWHY IT MATTERS: every ticket in this arc measured \"canon movers vs base\" to\ndecide whether a change was behaviour-neutral, and a ticket that also edits a\nfixture`s prose gets a false positive it must then explain away by hand. It\nalso means two trees whose fixtures differ only in comments cannot be compared\non canon at all.\n\nTHE FIX: render a span in a form that is stable under source edits that do not\nchange the code -- a (line, column) pair, or an offset relative to the\nenclosing item, or omit spans from the canonical form entirely if nothing\ndownstream reads them (canon is an EQUALITY comparand, not a diagnostic).\nWhichever is chosen, state in dispatch-matrix.md`s comparand section what the\ncanonical form is stable under.\n\nDISTINCT FROM fz-kdt.19, which is about the fixture matrix subtracting a\nfixture`s leading-comment LINE COUNT from a gutter rendered out of a\n`runtime:` source. This one is about byte offsets inside the canon dump and\nneeds no line-count change at all. Concordant: fz-f98.21 (the canonical form\nitself), fz-kdt.211 (the other false-mover source -- an AOT executable\nembedding the compiler`s build path).\n\nRED-FIRST: the reproducer above yields zero canon diff lines.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Canon spans are byte offsets, so rewriting a fixture COMMENT is a canon mover by construction and a false signal in any base-vs-head comparand",
   "type": "task",
-  "updated_at": "2026-09-04T01:24:06Z"
+  "updated_at": "2026-09-04T01:24:07Z"
 }
