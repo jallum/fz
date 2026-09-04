@@ -180,14 +180,24 @@ Reproduce the long-lived baselines with:
 
 ```
 cargo test --lib target_fixture_reports_exercise_all_five_request_scenarios -- --nocapture
-cargo test --test fz2_cli causal_work_multisets_agree_across_two_processes -- --nocapture
+cargo test --test fz2_cli target_fixture_public_causal_and_backend_observations_are_reproducible -- --nocapture
 ```
 
 The first command runs cold, unchanged, unreachable edit, reached-leaf edit,
 and callee replacement for each of the three exact target fixtures. It proves
 that all five request reports are separated and internally exact. The second
-compares every canonical work dimension from separate processes with zero
-exclusions. No command interprets elapsed time as correctness.
+produces one immutable observation bundle per fixture, each containing two
+separate-process public reports, runtime outputs, and canonical backend dumps.
+One immutable observation spec is the authority for the front door, public
+telemetry, backend dump, inherited environment, process invocation, and failure
+context. A controlled child proves inherited environments preserve ambient
+values while fixed environments clear them. Owned trace and dump paths remove
+partial files on an early return.
+Pure named ratchets fan over those same bundles to compare every canonical work
+dimension with zero exclusions and prove byte-identical backend output. This
+removes one duplicate three-fixture producer pass: three bundles and six
+subprocess compilations replace six bundles and twelve subprocess compilations.
+No command interprets elapsed time as correctness.
 
 The 2026-09-04 combined-stack baseline makes the retained-work problem
 explicit. Columns are producer evaluations / settlements / distinct demanded

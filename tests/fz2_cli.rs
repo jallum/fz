@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::temp_dir;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{metadata, read_to_string, remove_file, write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
@@ -11,6 +11,179 @@ use fz::causal::{CausalReport, FormulaWork, parse_public_trace};
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TargetFixture {
+    source: &'static str,
+    golden: &'static str,
+}
+
+const TARGET_FIXTURES: [TargetFixture; 3] = [
+    TargetFixture {
+        source: "fixtures2/00420_enum_take_drop_split.fz",
+        golden: "fixtures2/behavior/enum_take_drop_split.fz",
+    },
+    TargetFixture {
+        source: "fixtures2/behavior/enum_predicate_search.fz",
+        golden: "fixtures2/behavior/enum_predicate_search.fz",
+    },
+    TargetFixture {
+        source: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+        golden: "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    },
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationDoor {
+    Interp,
+    Run,
+}
+
+impl ObservationDoor {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Interp => "interp",
+            Self::Run => "run",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationTelemetry {
+    PublicJsonl,
+}
+
+impl ObservationTelemetry {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::PublicJsonl => "public-jsonl",
+        }
+    }
+
+    fn append_args(self, path: &Path, args: &mut Vec<OsString>) {
+        match self {
+            Self::PublicJsonl => {
+                args.push("--log-telemetry".into());
+                args.push(path.into());
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationDump {
+    Backend,
+    Native,
+}
+
+impl ObservationDump {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Backend => "backend",
+            Self::Native => "native",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservationEnvironment {
+    inherited: bool,
+    fixed_overrides: &'static [(&'static str, &'static str)],
+}
+
+impl std::fmt::Display for ObservationEnvironment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(if self.inherited { "inherited" } else { "fixed" })?;
+        for (name, value) in self.fixed_overrides {
+            write!(formatter, "+{name}={value}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservationSpec {
+    door: ObservationDoor,
+    telemetry: ObservationTelemetry,
+    dump: ObservationDump,
+    environment: ObservationEnvironment,
+}
+
+const TARGET_OBSERVATION_SPEC: ObservationSpec = ObservationSpec {
+    door: ObservationDoor::Interp,
+    telemetry: ObservationTelemetry::PublicJsonl,
+    dump: ObservationDump::Backend,
+    environment: ObservationEnvironment {
+        inherited: true,
+        fixed_overrides: &[],
+    },
+};
+
+impl ObservationSpec {
+    fn invocation(self, fixture: TargetFixture, trace: &Path, dump: &Path) -> ObservationInvocation {
+        let mut args = Vec::with_capacity(6);
+        self.telemetry.append_args(trace, &mut args);
+        args.push(self.door.name().into());
+        args.push("--dump".into());
+        args.push(format!("{}={}", self.dump.name(), dump.display()).into());
+        args.push(fixture.source.into());
+        ObservationInvocation {
+            args,
+            environment: self.environment,
+        }
+    }
+}
+
+impl std::fmt::Display for ObservationSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "door={} telemetry={} dump={} env={}",
+            self.door.name(),
+            self.telemetry.name(),
+            self.dump.name(),
+            self.environment,
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ObservationInvocation {
+    args: Vec<OsString>,
+    environment: ObservationEnvironment,
+}
+
+impl ObservationInvocation {
+    fn command(&self) -> Command {
+        self.configure(Command::new(FZ2_BIN))
+    }
+
+    fn configure(&self, mut command: Command) -> Command {
+        if !self.environment.inherited {
+            command.env_clear();
+        }
+        command.envs(self.environment.fixed_overrides.iter().copied());
+        command.args(&self.args);
+        command
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservationProcess {
+    First,
+    Second,
+}
+
+impl ObservationProcess {
+    const ALL: [Self; 2] = [Self::First, Self::Second];
+
+    const fn phase(self) -> &'static str {
+        match self {
+            Self::First => "first-process",
+            Self::Second => "second-process",
+        }
+    }
+}
+
 fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
     let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     temp_dir().join(format!("{}_{}_{}{}", prefix, id(), nonce, suffix))
@@ -18,6 +191,254 @@ fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
 
 fn run_fz2(args: &[&OsStr]) -> Output {
     Command::new(FZ2_BIN).args(args).output().expect("invoke fz2 binary")
+}
+
+#[derive(Debug)]
+struct ObservationFailure {
+    spec: ObservationSpec,
+    fixture: &'static str,
+    phase: &'static str,
+    ratchet: &'static str,
+    detail: String,
+}
+
+impl std::fmt::Display for ObservationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "fixture={} {} phase={} ratchet={}: {}",
+            self.fixture, self.spec, self.phase, self.ratchet, self.detail,
+        )
+    }
+}
+
+impl std::error::Error for ObservationFailure {}
+
+fn observation_failure(
+    spec: ObservationSpec,
+    fixture: TargetFixture,
+    phase: &'static str,
+    ratchet: &'static str,
+    detail: impl Into<String>,
+) -> ObservationFailure {
+    ObservationFailure {
+        spec,
+        fixture: fixture.source,
+        phase,
+        ratchet,
+        detail: detail.into(),
+    }
+}
+
+struct OwnedObservationFile {
+    path: Option<PathBuf>,
+}
+
+impl OwnedObservationFile {
+    fn new(prefix: &str, suffix: &str) -> Self {
+        Self {
+            path: Some(unique_temp_path(prefix, suffix)),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.path
+            .as_deref()
+            .expect("owned observation file was already consumed")
+    }
+
+    fn read_and_remove(mut self, request: ProcessRequest, artifact: &str) -> Result<Vec<u8>, ObservationFailure> {
+        let path = self.path();
+        let bytes = std::fs::read(path).map_err(|error| {
+            observation_failure(
+                request.spec,
+                request.fixture,
+                request.process.phase(),
+                "observation-production",
+                format!("read {artifact} {}: {error}", path.display()),
+            )
+        })?;
+        remove_file(path).map_err(|error| {
+            observation_failure(
+                request.spec,
+                request.fixture,
+                request.process.phase(),
+                "observation-production",
+                format!("remove {artifact} {}: {error}", path.display()),
+            )
+        })?;
+        self.path = None;
+        Ok(bytes)
+    }
+}
+
+impl Drop for OwnedObservationFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = remove_file(path);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProcessObservation {
+    stdout: String,
+    stderr: Vec<u8>,
+    report: CausalReport,
+    callable_resolutions: BTreeSet<String>,
+    backend: String,
+}
+
+struct TargetObservation<T = ProcessObservation> {
+    spec: ObservationSpec,
+    fixture: TargetFixture,
+    processes: [T; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProcessRequest {
+    spec: ObservationSpec,
+    fixture: TargetFixture,
+    process: ObservationProcess,
+}
+
+fn produce_target_observations<T, E>(
+    spec: ObservationSpec,
+    mut produce_process: impl FnMut(ProcessRequest) -> Result<T, E>,
+) -> Result<Vec<TargetObservation<T>>, E> {
+    TARGET_FIXTURES
+        .into_iter()
+        .map(|fixture| {
+            let request = |process| ProcessRequest { spec, fixture, process };
+            Ok(TargetObservation {
+                spec,
+                fixture,
+                processes: [
+                    produce_process(request(ObservationProcess::First))?,
+                    produce_process(request(ObservationProcess::Second))?,
+                ],
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn target_fixture_observations_call_the_process_producer_exactly_twice_per_fixture() {
+    #[derive(Debug, PartialEq, Eq)]
+    struct ProcessSentinel {
+        invocation: usize,
+        fixture: TargetFixture,
+        process: ObservationProcess,
+    }
+
+    let mut invocations = 0;
+    let observations = produce_target_observations(TARGET_OBSERVATION_SPEC, |request| {
+        invocations += 1;
+        Ok::<_, std::convert::Infallible>(ProcessSentinel {
+            invocation: invocations,
+            fixture: request.fixture,
+            process: request.process,
+        })
+    })
+    .expect("the sentinel producer is infallible");
+
+    assert_eq!(observations.len(), 3, "one bundle belongs to each fixture");
+    assert_eq!(invocations, 6, "each bundle needs two independent compiler processes");
+    for (fixture_index, observation) in observations.iter().enumerate() {
+        assert_eq!(observation.fixture, TARGET_FIXTURES[fixture_index]);
+        assert_eq!(observation.spec, TARGET_OBSERVATION_SPEC);
+        assert_eq!(observation.processes[0].fixture, observation.fixture);
+        assert_eq!(observation.processes[1].fixture, observation.fixture);
+        assert_eq!(observation.processes[0].process, ObservationProcess::First);
+        assert_eq!(observation.processes[1].process, ObservationProcess::Second);
+        assert_ne!(
+            observation.processes[0].invocation, observation.processes[1].invocation,
+            "a bundle must not clone one process result into both comparison slots"
+        );
+        assert_eq!(
+            [observation.processes[0].invocation, observation.processes[1].invocation],
+            [fixture_index * 2 + 1, fixture_index * 2 + 2],
+            "fixture and process production order must remain deterministic"
+        );
+    }
+}
+
+fn compile_process_observation(request: ProcessRequest) -> Result<ProcessObservation, ObservationFailure> {
+    let phase = request.process.phase();
+    let trace = OwnedObservationFile::new(&format!("fz2_target_{phase}"), ".jsonl");
+    let backend = OwnedObservationFile::new(&format!("fz2_target_{phase}"), ".backend");
+    let invocation = request.spec.invocation(request.fixture, trace.path(), backend.path());
+    let output = invocation.command().output().map_err(|error| {
+        observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!("spawn compiler process: {error}"),
+        )
+    })?;
+    if !output.status.success() {
+        return Err(observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!(
+                "compiler process exited {:?}; stdout={:?} stderr={:?}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            ),
+        ));
+    }
+
+    let trace = trace.read_and_remove(request, "public trace")?;
+    let backend = backend.read_and_remove(request, "backend dump")?;
+    let report = std::panic::catch_unwind(|| CausalReport::derive(&parse_public_trace(&trace))).map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string panic");
+        observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!("decode/replay public trace panicked: {detail}"),
+        )
+    })?;
+
+    let callable_resolutions = report
+        .products
+        .keys()
+        .filter(|identity| identity.kind() == Some("callable_resolution"))
+        .map(|identity| identity.canonical_identity(&report.canon))
+        .collect();
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        observation_failure(
+            request.spec,
+            request.fixture,
+            phase,
+            "observation-production",
+            format!("runtime stdout is not UTF-8: {error}"),
+        )
+    })?;
+    Ok(ProcessObservation {
+        stdout,
+        stderr: output.stderr,
+        report,
+        callable_resolutions,
+        backend: String::from_utf8(backend).map_err(|error| {
+            observation_failure(
+                request.spec,
+                request.fixture,
+                phase,
+                "observation-production",
+                format!("backend dump is not UTF-8: {error}"),
+            )
+        })?,
+    })
 }
 
 fn run_fz2_without_color(args: &[&OsStr]) -> Output {
@@ -229,6 +650,304 @@ fn assert_file_contains(path: &Path, needle: &str, context: &str) {
     );
 }
 
+fn public_trace_ratchet(observation: &TargetObservation) -> Result<usize, ObservationFailure> {
+    let expected = fixture_expected_stdout(observation.fixture.golden);
+    let mut callable_resolutions = 0;
+    for (process, process_observation) in ObservationProcess::ALL.into_iter().zip(&observation.processes) {
+        let phase = process.phase();
+        let fail =
+            |detail: String| observation_failure(observation.spec, observation.fixture, phase, "public-trace", detail);
+        if normalize_stdout(&process_observation.stdout) != normalize_stdout(&expected) {
+            return Err(fail(format!(
+                "runtime stdout differs from the fixture golden: {:?}",
+                process_observation.stdout
+            )));
+        }
+        if !process_observation.stderr.is_empty() {
+            return Err(fail(format!(
+                "compiler process wrote stderr: {}",
+                String::from_utf8_lossy(&process_observation.stderr)
+            )));
+        }
+        let report = &process_observation.report;
+        if report.recursive_search.searches == 0 {
+            return Err(fail("recursive-search population is empty".to_string()));
+        }
+        if let Some(gap) = report.undefined_first_uses.first() {
+            return Err(fail(format!("public trace used an undefined raw id first: {gap:?}")));
+        }
+        if report.canon.types() == 0 || report.canon.functions() == 0 {
+            return Err(fail("public trace canon dictionary is empty".to_string()));
+        }
+        if observation.fixture.source.ends_with("fz_f98_range_map_converges.fz")
+            && let Some(unattributed) = report.uncaused.first()
+        {
+            return Err(fail(format!("evaluation is unattributed: {unattributed:?}")));
+        }
+        if let Some(undefined) = process_observation
+            .callable_resolutions
+            .iter()
+            .find(|identity| identity.contains("?ty:"))
+        {
+            return Err(fail(format!(
+                "callable-resolution surface has an undefined canonical type: {undefined}"
+            )));
+        }
+        callable_resolutions += process_observation.callable_resolutions.len();
+    }
+    Ok(callable_resolutions)
+}
+
+fn causal_work_ratchet(observation: &TargetObservation) -> Result<(), ObservationFailure> {
+    let fail = |detail: String| {
+        observation_failure(
+            observation.spec,
+            observation.fixture,
+            "cross-process-comparison",
+            "causal-work",
+            detail,
+        )
+    };
+    let [first, second] = &observation.processes;
+    if first.stdout != second.stdout {
+        return Err(fail("runtime output moved across processes".to_string()));
+    }
+    let first = first.report.canonical_multiset();
+    let second = second.report.canonical_multiset();
+    if first.len() <= 1_000 {
+        return Err(fail(format!(
+            "canonical work comparand is vacuous: {} entries",
+            first.len()
+        )));
+    }
+    if first != second {
+        let divergence = first
+            .iter()
+            .find(|(key, count)| second.get(*key) != Some(count))
+            .or_else(|| second.iter().find(|(key, _)| !first.contains_key(*key)));
+        return Err(fail(format!(
+            "canonical work differs; first divergence: {divergence:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn backend_identity_ratchet(observation: &TargetObservation) -> Result<usize, ObservationFailure> {
+    let fail =
+        |phase, detail| observation_failure(observation.spec, observation.fixture, phase, "backend-identity", detail);
+    for (process, process_observation) in ObservationProcess::ALL.into_iter().zip(&observation.processes) {
+        let phase = process.phase();
+        if process_observation.backend.len() <= 1_000 {
+            return Err(fail(
+                phase,
+                format!("backend dump is vacuous: {} bytes", process_observation.backend.len()),
+            ));
+        }
+        if process_observation.backend.contains("Ty(") {
+            return Err(fail(phase, "backend dump carries a raw type interner id".to_string()));
+        }
+    }
+
+    let [first, second] = &observation.processes;
+    if first.callable_resolutions != second.callable_resolutions {
+        return Err(fail(
+            "cross-process-comparison",
+            "canonical callable-resolution identities differ".to_string(),
+        ));
+    }
+    if first.backend != second.backend {
+        let divergence = first
+            .backend
+            .lines()
+            .zip(second.backend.lines())
+            .position(|(left, right)| left != right);
+        return Err(fail(
+            "cross-process-comparison",
+            format!(
+                "canonical backend differs first at line {divergence:?}: first={:?} second={:?}",
+                divergence.and_then(|at| first.backend.lines().nth(at)),
+                divergence.and_then(|at| second.backend.lines().nth(at)),
+            ),
+        ));
+    }
+    Ok(first.callable_resolutions.len())
+}
+
+fn synthetic_process_observation(fixture: TargetFixture) -> ProcessObservation {
+    ProcessObservation {
+        stdout: fixture_expected_stdout(fixture.golden),
+        stderr: Vec::new(),
+        report: CausalReport::default(),
+        callable_resolutions: BTreeSet::new(),
+        backend: "x".repeat(1_001),
+    }
+}
+
+#[test]
+fn target_observation_consumer_failures_retain_exact_attribution() {
+    let fixture = TARGET_FIXTURES[0];
+    let base = synthetic_process_observation(fixture);
+
+    let public = public_trace_ratchet(&TargetObservation {
+        spec: TARGET_OBSERVATION_SPEC,
+        fixture,
+        processes: [base.clone(), base.clone()],
+    })
+    .expect_err("an empty public report must fail");
+    assert_eq!(public.phase, "first-process");
+    assert_eq!(public.ratchet, "public-trace");
+
+    let mut changed_output = base.clone();
+    changed_output.stdout.push('!');
+    let causal = causal_work_ratchet(&TargetObservation {
+        spec: TARGET_OBSERVATION_SPEC,
+        fixture,
+        processes: [base.clone(), changed_output],
+    })
+    .expect_err("different process output must fail");
+    assert_eq!(causal.phase, "cross-process-comparison");
+    assert_eq!(causal.ratchet, "causal-work");
+
+    let mut changed_backend = base.clone();
+    changed_backend.backend.push('!');
+    let backend = backend_identity_ratchet(&TargetObservation {
+        spec: TARGET_OBSERVATION_SPEC,
+        fixture,
+        processes: [base, changed_backend],
+    })
+    .expect_err("different backend artifacts must fail");
+    assert_eq!(backend.phase, "cross-process-comparison");
+    assert_eq!(backend.ratchet, "backend-identity");
+
+    for failure in [public, causal, backend] {
+        let context = failure.to_string();
+        assert!(context.contains(fixture.source));
+        assert!(context.contains("door=interp telemetry=public-jsonl dump=backend"));
+        assert!(context.contains("phase="));
+        assert!(context.contains("ratchet="));
+    }
+}
+
+#[test]
+fn observation_spec_moves_invocation_and_failure_context_together() {
+    let changed = ObservationSpec {
+        door: ObservationDoor::Run,
+        telemetry: ObservationTelemetry::PublicJsonl,
+        dump: ObservationDump::Native,
+        environment: ObservationEnvironment {
+            inherited: false,
+            fixed_overrides: &[("FZ_OBSERVATION_TEST", "isolated")],
+        },
+    };
+    let fixture = TARGET_FIXTURES[0];
+    let trace = Path::new("trace.jsonl");
+    let dump = Path::new("artifact.dump");
+    let normal = TARGET_OBSERVATION_SPEC.invocation(fixture, trace, dump);
+    let changed_invocation = changed.invocation(fixture, trace, dump);
+
+    assert_ne!(changed_invocation, normal);
+    let command = changed_invocation.command();
+    assert_eq!(
+        command.get_args().map(OsStr::to_owned).collect::<Vec<_>>(),
+        [
+            "--log-telemetry",
+            "trace.jsonl",
+            "run",
+            "--dump",
+            "native=artifact.dump",
+            fixture.source,
+        ]
+        .map(OsString::from)
+        .to_vec()
+    );
+
+    const AMBIENT_KEY: &str = "FZ_TFN31_AMBIENT_SENTINEL_7A16D2";
+    const AMBIENT_VALUE: &str = "visible-only-when-inherited";
+    let ambient_line = format!("{AMBIENT_KEY}={AMBIENT_VALUE}");
+    let environment = |invocation: &ObservationInvocation| {
+        let mut child = Command::new("/bin/sh");
+        child.args(["-c", "/usr/bin/env"]);
+        child.env(AMBIENT_KEY, AMBIENT_VALUE);
+        let output = invocation
+            .configure(child)
+            .output()
+            .expect("run controlled environment child");
+        assert!(output.status.success(), "controlled environment child must succeed");
+        String::from_utf8(output.stdout).expect("controlled environment is UTF-8")
+    };
+    let inherited_environment = environment(&normal);
+    let fixed_environment = environment(&changed_invocation);
+    assert!(
+        inherited_environment.lines().any(|line| line == ambient_line),
+        "an inherited observation environment must preserve the child's ambient sentinel"
+    );
+    assert!(
+        fixed_environment.lines().all(|line| line != ambient_line),
+        "a fixed observation environment must clear the child's ambient sentinel"
+    );
+    assert!(
+        fixed_environment
+            .lines()
+            .any(|line| line == "FZ_OBSERVATION_TEST=isolated"),
+        "a fixed observation environment must apply its declared overrides"
+    );
+
+    let failure = observation_failure(changed, fixture, "second-process", "probe", "deliberate failure");
+    let context = failure.to_string();
+    assert!(context.contains("door=run telemetry=public-jsonl dump=native"));
+    assert!(context.contains("env=fixed+FZ_OBSERVATION_TEST=isolated"));
+    assert!(context.contains("phase=second-process ratchet=probe"));
+}
+
+#[test]
+fn observation_outputs_are_removed_when_partial_production_returns_early() {
+    fn abandon_partial_outputs() -> Result<(), Vec<PathBuf>> {
+        let trace = OwnedObservationFile::new("fz2_target_early_error", ".jsonl");
+        let backend = OwnedObservationFile::new("fz2_target_early_error", ".backend");
+        let paths = vec![trace.path().to_path_buf(), backend.path().to_path_buf()];
+        write(trace.path(), b"partial trace").expect("write partial trace");
+        write(backend.path(), b"partial backend").expect("write partial backend");
+        Err(paths)
+    }
+
+    let paths = abandon_partial_outputs().expect_err("the partial producer deliberately returns early");
+
+    assert!(
+        paths.iter().all(|path| !path.exists()),
+        "Drop must remove every owned output when production exits before consumption: {paths:?}"
+    );
+}
+
+#[test]
+fn target_observation_temp_files_have_parallel_collision_free_ownership() {
+    let paths = std::thread::scope(|scope| {
+        (0..32)
+            .map(|_| {
+                scope.spawn(|| {
+                    let file = OwnedObservationFile::new("fz2_target_parallel", ".tmp");
+                    let path = file.path().to_path_buf();
+                    write(&path, path.as_os_str().as_encoded_bytes()).expect("write owned temp output");
+                    let bytes = file
+                        .read_and_remove(
+                            ProcessRequest {
+                                spec: TARGET_OBSERVATION_SPEC,
+                                fixture: TARGET_FIXTURES[0],
+                                process: ObservationProcess::First,
+                            },
+                            "parallel ownership probe",
+                        )
+                        .expect("read and remove owned temp output");
+                    assert_eq!(bytes, path.as_os_str().as_encoded_bytes());
+                    path
+                })
+            })
+            .map(|thread| thread.join().expect("parallel temp owner"))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(paths.iter().collect::<BTreeSet<_>>().len(), paths.len());
+    assert!(paths.iter().all(|path| !path.exists()));
+}
+
 #[test]
 fn help_lists_compiler2_commands_on_stdout() {
     for flag in ["help", "--help", "-h"] {
@@ -338,210 +1057,41 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     }
 }
 
-/// fz-kdt.34's cross-run acceptance: two SEPARATE PROCESSES compiling one input
-/// must have done the same WORK, measured from the public log alone.
-///
-/// Two processes is the point. `RandomState` reseeds per process, so raw arena
-/// ids genuinely drift between the two logs (fz-kdt.47 measured 16 differing
-/// slots over four runs) and no `World` survives to translate them. The logs
-/// translate themselves: each carries `fz.compiler2.canon.*` definition lines
-/// for every raw id it names, and the causal report joins through them. Raw ids
-/// may differ; canonical identity may not.
-///
-/// Recursive-search counts, typed completion publication, and cache behavior
-/// are all part of the comparand. There is no product-specific exclusion:
-/// owner-ordered completion waves make the whole canonical causal inventory
-/// reproducible.
+/// One immutable observation bundle now feeds the public-trace, causal-work,
+/// and canonical-backend ratchets. Each fixture is still compiled in two
+/// SEPARATE processes: `RandomState` must reseed across the comparison boundary,
+/// and the logs must translate their own raw arena ids. What disappeared is the
+/// second three-fixture producer loop that recompiled the same process/config/
+/// front-door observations solely so another pure assertion could read them.
 ///
 /// Work counts only — no wall-clock quantity appears in the comparand.
 #[test]
-fn causal_work_multisets_agree_across_two_processes() {
-    let mut observed_callable_resolutions = 0;
-    for (fixture, golden) in [
-        (
-            "fixtures2/00420_enum_take_drop_split.fz",
-            "fixtures2/behavior/enum_take_drop_split.fz",
-        ),
-        (
-            "fixtures2/behavior/enum_predicate_search.fz",
-            "fixtures2/behavior/enum_predicate_search.fz",
-        ),
-        (
-            "fixtures2/behavior/fz_f98_range_map_converges.fz",
-            "fixtures2/behavior/fz_f98_range_map_converges.fz",
-        ),
-    ] {
-        let mut multisets = Vec::new();
-        let mut outputs = Vec::new();
-        for tag in ["first", "second"] {
-            let telemetry_path = unique_temp_path(&format!("fz2_causal_{tag}"), ".jsonl");
-            let out = run_fz2(&[
-                OsStr::new("--log-telemetry"),
-                telemetry_path.as_os_str(),
-                OsStr::new("interp"),
-                OsStr::new(fixture),
-            ]);
-            assert_successful_stdout(&out, &fixture_expected_stdout(golden), fixture);
-            outputs.push(out.stdout);
-
-            let log = std::fs::read(&telemetry_path).expect("read public telemetry log");
-            let report = CausalReport::derive(&parse_public_trace(&log));
-            assert!(
-                report.recursive_search.searches > 0,
-                "{tag} {fixture}: no recursive search work"
-            );
-            assert!(
-                report.undefined_first_uses.is_empty(),
-                "the {tag} {fixture} log must define every raw id it names; first gap: {:?}",
-                report.undefined_first_uses.first()
-            );
-            assert!(
-                report.canon.types() > 0 && report.canon.functions() > 0,
-                "the {tag} {fixture} log must carry a populated canon dictionary"
-            );
-            if fixture.ends_with("fz_f98_range_map_converges.fz") {
-                assert!(
-                    report.uncaused.is_empty(),
-                    "the {tag} {fixture} log must attribute every evaluation; first unattributed: {:?}",
-                    report.uncaused.first()
-                );
-            }
-            let callable_resolutions = report
-                .products
-                .keys()
-                .filter(|identity| identity.kind() == Some("callable_resolution"))
-                .map(|identity| identity.canonical_identity(&report.canon))
-                .collect::<BTreeSet<_>>();
-            assert!(
-                callable_resolutions.iter().all(|identity| !identity.contains("?ty:")),
-                "the {tag} {fixture} trace must define every observed callable-resolution surface: \
-                 {callable_resolutions:?}"
-            );
-            observed_callable_resolutions += callable_resolutions.len();
-            let multiset = report.canonical_multiset();
-            multisets.push(multiset);
-            let _ = remove_file(&telemetry_path);
-        }
-
-        let (first, second) = (&multisets[0], &multisets[1]);
-        assert_eq!(
-            outputs[0], outputs[1],
-            "{fixture}: runtime output moved across processes"
-        );
-        assert!(
-            first.len() > 1_000,
-            "expected a substantial {fixture} comparand, got {} entries",
-            first.len()
-        );
-        let divergence = first
-            .iter()
-            .find(|(key, count)| second.get(*key) != Some(count))
-            .or_else(|| second.iter().find(|(key, _)| !first.contains_key(*key)));
-        assert!(
-            first == second,
-            "two processes compiling {fixture} must agree on every canonical work count; first divergence: {divergence:?}"
-        );
-    }
-    assert!(
-        observed_callable_resolutions > 0,
-        "the three demand fixtures must exercise a real callable-resolution product path"
+fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
+    let observations = produce_target_observations(TARGET_OBSERVATION_SPEC, compile_process_observation)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        observations.len(),
+        3,
+        "the three byte-identical fixture/config/front-door keys need three bundle productions"
     );
-}
+    assert_eq!(
+        observations
+            .iter()
+            .map(|observation| observation.processes.len())
+            .sum::<usize>(),
+        6,
+        "each bundle must retain two separate-process observations"
+    );
 
-/// `--dump backend` is the canonical external form, so two SEPARATE PROCESSES
-/// compiling one input must write byte-identical files.
-///
-/// Two processes is the point. Inside one process a `HashMap`'s iteration order
-/// is stable enough to hide the defect; across processes `RandomState` reseeds,
-/// so a rendering derived from `{:#?}` differs run to run even when the two
-/// programs are equal (fz-kdt.6). The sibling `--dump native` still renders
-/// with `{:#?}`, and on this very fixture two processes write files that differ
-/// at char 59,803 of 98,141 — which is what this test asserts can no longer
-/// happen to the backend dump. Nor is the arena a comparand: a `Ty` is a
-/// position in one `World`. The same two process logs prove that product
-/// identities carrying callable surfaces are canonical without requiring a
-/// second compilation just for that observation.
-#[test]
-fn backend_dump_is_byte_identical_across_two_processes() {
-    let mut observed_callable_resolutions = 0;
-    for fixture in [
-        "fixtures2/00420_enum_take_drop_split.fz",
-        "fixtures2/behavior/enum_predicate_search.fz",
-        "fixtures2/behavior/fz_f98_range_map_converges.fz",
-    ] {
-        let first_path = unique_temp_path("fz2_backend_canon_a", ".backend");
-        let second_path = unique_temp_path("fz2_backend_canon_b", ".backend");
-        let first_trace = unique_temp_path("fz2_backend_canon_a", ".jsonl");
-        let second_trace = unique_temp_path("fz2_backend_canon_b", ".jsonl");
-        let mut callable_resolutions = Vec::new();
-
-        for (path, trace) in [(&first_path, &first_trace), (&second_path, &second_trace)] {
-            let spec = format!("backend={}", path.display());
-            let out = run_fz2(&[
-                OsStr::new("--log-telemetry"),
-                trace.as_os_str(),
-                OsStr::new("interp"),
-                OsStr::new("--dump"),
-                OsStr::new(&spec),
-                OsStr::new(fixture),
-            ]);
-            assert!(
-                out.status.success() && out.stderr.is_empty(),
-                "{fixture}: backend-dump process failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let log = std::fs::read(trace).expect("read public telemetry log");
-            let report = CausalReport::derive(&parse_public_trace(&log));
-            let identities = report
-                .products
-                .keys()
-                .filter(|identity| identity.kind() == Some("callable_resolution"))
-                .map(|identity| identity.canonical_identity(&report.canon))
-                .collect::<BTreeSet<_>>();
-            assert!(
-                identities.iter().all(|identity| !identity.contains("?ty:")),
-                "{fixture}: the public trace must canonicalize every callable-resolution surface type: \
-                 {identities:?}"
-            );
-            callable_resolutions.push(identities);
-        }
-
-        assert_eq!(
-            callable_resolutions[0], callable_resolutions[1],
-            "{fixture}: two processes must publish the same canonical callable-resolution identities"
-        );
-        observed_callable_resolutions += callable_resolutions[0].len();
-
-        let first = read_to_string(&first_path).expect("read first backend dump");
-        let second = read_to_string(&second_path).expect("read second backend dump");
-        assert!(
-            first.len() > 1_000,
-            "{fixture}: the backend dump should describe a whole program, got {} bytes",
-            first.len()
-        );
-        assert!(
-            !first.contains("Ty("),
-            "{fixture}: the canonical backend dump must not carry raw interner ids"
-        );
-        let divergence = first
-            .lines()
-            .zip(second.lines())
-            .position(|(left, right)| left != right);
-        assert!(
-            first == second,
-            "{fixture}: two processes must write one canonical backend dump; they first differ at line \
-             {divergence:?}:\n  first:  {:?}\n  second: {:?}",
-            divergence.and_then(|at| first.lines().nth(at)),
-            divergence.and_then(|at| second.lines().nth(at)),
-        );
-
-        let _ = remove_file(&first_path);
-        let _ = remove_file(&second_path);
-        let _ = remove_file(&first_trace);
-        let _ = remove_file(&second_trace);
+    let mut public_callable_resolutions = 0;
+    let mut backend_callable_resolutions = 0;
+    for observation in &observations {
+        public_callable_resolutions += public_trace_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
+        causal_work_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
+        backend_callable_resolutions += backend_identity_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
     }
     assert!(
-        observed_callable_resolutions > 0,
+        public_callable_resolutions > 0 && backend_callable_resolutions > 0,
         "the three demand fixtures must exercise a real callable-resolution product path"
     );
 }
