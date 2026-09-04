@@ -6,6 +6,7 @@
     "fz-kdt.169",
     "fz-kdt.48",
     "fz-tfn.11",
+    "fz-tfn.12",
     "fz-tfn.30"
   ],
   "blocks": [],
@@ -18,5 +19,5 @@
   "status": "open",
   "title": "Reuse native code generation by changed function generation",
   "type": "feature",
-  "updated_at": "2026-09-04T10:53:17Z"
+  "updated_at": "2026-09-04T10:53:21Z"
 }
