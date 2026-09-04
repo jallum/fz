@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.182"
+    "fz-kdt.182",
+    "fz-tfn.30"
   ],
   "blocks": [
     "fz-tfn.13"
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "Make Ty identity denotational: mutually-subtype types intern to one ID",
   "type": "bug",
-  "updated_at": "2026-09-03T21:20:06Z"
+  "updated_at": "2026-09-04T00:00:38Z"
 }
