@@ -211,11 +211,6 @@ pub(crate) fn produce_root_backend_product(
     let (construction_wrappers, construction_identities) =
         package_backend_construction_wrappers(world, tel, root, &backends, &transport, &executable_index)
             .expect("root backend product should have complete construction wrapper inventory");
-    for (executable, index) in &executable_index {
-        context
-            .session_mut()
-            .assign_executable_index(executable.clone(), *index);
-    }
     let return_endpoints = executable_keys
         .iter()
         .flat_map(|key| {
@@ -336,9 +331,6 @@ pub(crate) fn produce_backend_executable_product(
         call_edges,
     };
     let backend = Rc::new(backend);
-    context
-        .session_mut()
-        .record_backend_executable(executable.clone(), Rc::clone(&backend));
     PullOutcome::Produced(ProductValue::BackendExecutable(backend))
 }
 

@@ -155,12 +155,6 @@ pub(crate) fn produce_materialized_executable_product(
         body,
         call_edges,
     });
-    context.session_mut().record_materialized_executable(
-        tel,
-        executable.clone(),
-        Rc::clone(&materialized),
-        world.types(),
-    );
     PullOutcome::Produced(ProductValue::MaterializedExecutable(materialized))
 }
 
@@ -325,9 +319,6 @@ pub(crate) fn produce_abi_executable_product(
         )
         .expect("per-executable ABI derivation should not require root fan-in"),
     );
-    context
-        .session_mut()
-        .record_abi_executable(executable.clone(), Rc::clone(&abi));
     PullOutcome::Produced(ProductValue::AbiExecutable(abi))
 }
 

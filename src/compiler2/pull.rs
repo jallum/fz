@@ -625,20 +625,65 @@ struct ProductDependencies {
 }
 
 impl ProductMemo {
-    fn retain_equal_value(&self, key: &ProductKey, candidate: ProductValue) -> ProductValue {
-        self.produced
-            .get(key)
-            .or_else(|| self.displaced.get(key))
-            .filter(|entry| same_product_value(&entry.value, &candidate))
-            .map_or(candidate, |entry| entry.value.clone())
-    }
-
     pub fn get(&self, key: &ProductKey) -> Option<&ProductValue> {
         self.produced.get(key).map(|entry| &entry.value)
     }
 
     pub fn generation(&self, key: &ProductKey) -> Option<u64> {
         self.produced.get(key).map(|entry| entry.generation)
+    }
+
+    pub fn materialized_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<MaterializedExecutable>)> {
+        self.produced
+            .iter()
+            .filter_map(|(key, entry)| match (key, &entry.value) {
+                (
+                    ProductKey::MaterializedExecutable(executable),
+                    ProductValue::MaterializedExecutable(materialized),
+                ) => Some((executable, materialized)),
+                _ => None,
+            })
+    }
+
+    pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&Rc<MaterializedExecutable>> {
+        match self.get(&ProductKey::MaterializedExecutable(executable.clone())) {
+            Some(ProductValue::MaterializedExecutable(materialized)) => Some(materialized),
+            _ => None,
+        }
+    }
+
+    pub fn abi_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<AbiReadyExecutable>)> {
+        self.produced
+            .iter()
+            .filter_map(|(key, entry)| match (key, &entry.value) {
+                (ProductKey::AbiExecutable(executable), ProductValue::AbiExecutable(abi)) => Some((executable, abi)),
+                _ => None,
+            })
+    }
+
+    pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&Rc<AbiReadyExecutable>> {
+        match self.get(&ProductKey::AbiExecutable(executable.clone())) {
+            Some(ProductValue::AbiExecutable(abi)) => Some(abi),
+            _ => None,
+        }
+    }
+
+    pub fn backend_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<SymbolicBackendExecutable>)> {
+        self.produced
+            .iter()
+            .filter_map(|(key, entry)| match (key, &entry.value) {
+                (ProductKey::BackendExecutable(executable), ProductValue::BackendExecutable(backend)) => {
+                    Some((executable, backend))
+                }
+                _ => None,
+            })
+    }
+
+    pub fn backend_executable(&self, executable: &ExecutableKey) -> Option<&Rc<SymbolicBackendExecutable>> {
+        match self.get(&ProductKey::BackendExecutable(executable.clone())) {
+            Some(ProductValue::BackendExecutable(backend)) => Some(backend),
+            _ => None,
+        }
     }
 
     #[cfg(test)]
@@ -721,10 +766,6 @@ impl ProductMemo {
     /// neither is current evidence that a formula is waiting on a cycle.
     fn pending_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
         self.pending_dependencies.get(key)
-    }
-
-    fn is_displaced(&self, key: &ProductKey) -> bool {
-        self.displaced.contains_key(key)
     }
 
     pub fn runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
@@ -1339,10 +1380,6 @@ pub struct PullSession {
     input_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>>,
     input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
-    materialized_executables: HashMap<ExecutableKey, Rc<MaterializedExecutable>>,
-    abi_executables: HashMap<ExecutableKey, Rc<AbiReadyExecutable>>,
-    backend_executables: HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
-    executable_index: HashMap<ExecutableKey, usize>,
     producer_pokes: u64,
     /// The world's cumulative work-start attribution snapshot, recorded by the
     /// caller that has `World` in scope at `finish_session` time (mirrors
@@ -1370,10 +1407,6 @@ impl PullSession {
             input_demand_contributions: HashMap::new(),
             input_demand_contributors: HashMap::new(),
             input_demands: HashMap::new(),
-            materialized_executables: HashMap::new(),
-            abi_executables: HashMap::new(),
-            backend_executables: HashMap::new(),
-            executable_index: HashMap::new(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
             pending_fact_states: HashMap::new(),
@@ -1463,7 +1496,7 @@ impl PullSession {
     }
 
     /// Record the demand-relevant callee set a settle derived for `executable`
-    /// -- the epoch baseline `record_materialized_executable` gates on.
+    /// -- the epoch baseline materialized completion gates on.
     pub fn record_settled_demand_callees(&mut self, executable: ExecutableKey, callees: HashSet<ExecutableKey>) {
         self.settled_demand_callees.insert(executable, callees);
     }
@@ -1551,10 +1584,6 @@ impl PullSession {
         joined
     }
 
-    pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&MaterializedExecutable> {
-        self.materialized_executables.get(executable).map(Rc::as_ref)
-    }
-
     pub fn invalidate_artifact_products_for(
         &mut self,
         tel: &impl Telemetry,
@@ -1562,30 +1591,6 @@ impl PullSession {
         types: &super::types::Types,
     ) {
         self.invalidate_artifact_products(tel, executable, types);
-    }
-
-    pub fn materialized_executables(&self) -> &HashMap<ExecutableKey, Rc<MaterializedExecutable>> {
-        &self.materialized_executables
-    }
-
-    pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&AbiReadyExecutable> {
-        self.abi_executables.get(executable).map(Rc::as_ref)
-    }
-
-    pub fn abi_executables(&self) -> &HashMap<ExecutableKey, Rc<AbiReadyExecutable>> {
-        &self.abi_executables
-    }
-
-    pub fn backend_executable(&self, executable: &ExecutableKey) -> Option<&SymbolicBackendExecutable> {
-        self.backend_executables.get(executable).map(Rc::as_ref)
-    }
-
-    pub fn backend_executables(&self) -> &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>> {
-        &self.backend_executables
-    }
-
-    pub fn executable_index(&self) -> &HashMap<ExecutableKey, usize> {
-        &self.executable_index
     }
 
     pub fn producer_pokes(&self) -> u64 {
@@ -1861,27 +1866,19 @@ impl PullSession {
         }
     }
 
-    pub fn record_materialized_executable(
+    fn reconcile_materialized_demand_epoch(
         &mut self,
         tel: &impl Telemetry,
-        executable: ExecutableKey,
-        materialized: Rc<MaterializedExecutable>,
+        executable: &ExecutableKey,
+        materialized: &MaterializedExecutable,
         types: &super::types::Types,
     ) {
-        let key = ProductKey::MaterializedExecutable(executable.clone());
-        let ProductValue::MaterializedExecutable(materialized) = self
-            .memo
-            .retain_equal_value(&key, ProductValue::MaterializedExecutable(materialized))
-        else {
-            unreachable!("materialized retention preserves the product variant")
-        };
-        self.demanded_executables.insert(executable.clone());
         // The demand epoch gate: materialization resolving a call edge the
         // demand settle never derived means the settled cone was keyed against
         // a smaller call graph -- re-key and re-settle it. Edges within the
         // settled callee set (the overwhelming case: the cone over-approximates
         // from settled facts) leave settled demand standing.
-        if let Some(settled_callees) = self.settled_demand_callees.get(&executable) {
+        if let Some(settled_callees) = self.settled_demand_callees.get(executable) {
             let materialized_callees: HashSet<ExecutableKey> = materialized
                 .call_edges
                 .values()
@@ -1893,32 +1890,9 @@ impl PullSession {
                     .entry(executable.clone())
                     .or_default()
                     .extend(materialized_callees);
-                self.invalidate_demand_derived_products(tel, &executable, types);
+                self.invalidate_demand_derived_products(tel, executable, types);
             }
         }
-        self.materialized_executables.insert(executable.clone(), materialized);
-    }
-
-    pub fn record_abi_executable(&mut self, executable: ExecutableKey, abi: Rc<AbiReadyExecutable>) {
-        let key = ProductKey::AbiExecutable(executable.clone());
-        let ProductValue::AbiExecutable(abi) = self.memo.retain_equal_value(&key, ProductValue::AbiExecutable(abi))
-        else {
-            unreachable!("ABI retention preserves the product variant")
-        };
-        self.demanded_executables.insert(executable.clone());
-        self.abi_executables.insert(executable, abi);
-    }
-
-    pub fn record_backend_executable(&mut self, executable: ExecutableKey, backend: Rc<SymbolicBackendExecutable>) {
-        let key = ProductKey::BackendExecutable(executable.clone());
-        let ProductValue::BackendExecutable(backend) = self
-            .memo
-            .retain_equal_value(&key, ProductValue::BackendExecutable(backend))
-        else {
-            unreachable!("backend retention preserves the product variant")
-        };
-        self.demanded_executables.insert(executable.clone());
-        self.backend_executables.insert(executable, backend);
     }
 
     fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
@@ -1930,11 +1904,6 @@ impl PullSession {
     fn reconcile_fact_movements(&mut self, tel: &impl Telemetry, types: &super::types::Types) {
         let pending = std::mem::take(&mut self.pending_fact_states);
         self.memo.reconcile_fact_movements(tel, &pending, types);
-    }
-
-    pub fn assign_executable_index(&mut self, executable: ExecutableKey, index: usize) {
-        self.demanded_executables.insert(executable.clone());
-        self.executable_index.insert(executable, index);
     }
 
     /// The demand EPOCH wipe: settled demand retracts only here. Walks the
@@ -1967,36 +1936,7 @@ impl PullSession {
             );
         }
         self.memo.invalidate_products(tel, products, types);
-        for current in &seen {
-            self.materialized_executables.remove(current);
-            self.abi_executables.remove(current);
-            self.backend_executables.remove(current);
-        }
         seen
-    }
-
-    fn discard_product_side_effects(&mut self, key: &ProductKey) {
-        match key {
-            ProductKey::MaterializedExecutable(executable) => {
-                self.materialized_executables.remove(executable);
-            }
-            ProductKey::ExecutableEffects(_) => {}
-            ProductKey::AbiExecutable(executable) => {
-                self.abi_executables.remove(executable);
-            }
-            ProductKey::BackendExecutable(executable) => {
-                self.backend_executables.remove(executable);
-            }
-            ProductKey::TransportShape(_) => {}
-            ProductKey::RootBackendProduct(_)
-            | ProductKey::RuntimeDemand(_)
-            | ProductKey::CallableResolution(_)
-            | ProductKey::OutgoingEdgeFrontier(_)
-            | ProductKey::OutgoingInputEdges(_)
-            | ProductKey::IncomingInputRelations(_)
-            | ProductKey::IncomingInputSlot(_)
-            | ProductKey::CallableConstruction(_) => {}
-        }
     }
 
     fn invalidate_artifact_products(
@@ -2007,9 +1947,6 @@ impl PullSession {
     ) {
         self.memo
             .invalidate_products(tel, artifact_product_keys(executable), types);
-        self.materialized_executables.remove(executable);
-        self.abi_executables.remove(executable);
-        self.backend_executables.remove(executable);
     }
 
     fn note_product_request(&mut self, tel: &impl Telemetry, key: &ProductKey, types: &super::types::Types) {
@@ -2651,9 +2588,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             self.emit("cache_hit", &key);
             return PullOutcome::Produced(value.clone());
         }
-        if self.session.memo.is_displaced(&key) {
-            self.session.discard_product_side_effects(&key);
-        }
         assert!(
             self.session.memo.begin(key.clone()),
             "safe product producers cannot recursively enter ProductDriver::pull"
@@ -2682,6 +2616,16 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             }
         };
         let (dependencies, mut staged, recursive_group) = context.into_completion();
+        if let PullOutcome::Produced(ProductValue::MaterializedExecutable(materialized)) = &outcome
+            && let ProductKey::MaterializedExecutable(executable) = &key
+        {
+            self.session.reconcile_materialized_demand_epoch(
+                self.tel,
+                executable,
+                materialized,
+                producers.product_types(),
+            );
+        }
         if self.emit_causal_products {
             self.tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
         }
@@ -2706,7 +2650,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                     producers.product_types(),
                 );
                 if !settled {
-                    self.session.discard_product_side_effects(&key);
                     let waits = vec![PullWait::Product(key.clone())];
                     PullOutcome::Waiting(waits)
                 } else {
@@ -3283,7 +3226,7 @@ mod tests {
     }
 
     #[test]
-    fn incoming_input_values_hide_frontier_slot_and_source_insertion_order() {
+    fn incoming_input_relations_and_slot_projection_share_one_ordered_source_allocation() {
         let root = RootId::for_test(90);
         let mut types = super::super::Types::new();
         let [producer_a, producer_b, callee_a, callee_b] =
@@ -3337,10 +3280,42 @@ mod tests {
             &types,
         );
         assert_eq!(forward, reverse);
-        assert_eq!(forward.get(&slot_a), reverse.get(&slot_a));
+        let relations = Rc::new(forward);
+        let slot_projection = relations.get(&slot_a).expect("independent slot projection a");
+        let mut memo = ProductMemo::default();
+        let tel = ConfiguredTelemetry::new();
+        finish_test_entry(
+            &mut memo,
+            &tel,
+            &ProductKey::IncomingInputRelations(root),
+            ProductValue::IncomingInputRelations(Rc::clone(&relations)),
+            ProductDependencies::default(),
+            &types,
+        );
+        finish_test_entry(
+            &mut memo,
+            &tel,
+            &ProductKey::IncomingInputSlot(slot_a.clone()),
+            ProductValue::IncomingInputSlot(Rc::clone(&slot_projection)),
+            ProductDependencies::default(),
+            &types,
+        );
+        let relation_sources = match memo.get(&ProductKey::IncomingInputRelations(root)) {
+            Some(ProductValue::IncomingInputRelations(relations)) => relations.get(&slot_a).expect("relation slot a"),
+            other => panic!("expected memoized input relations, got {other:?}"),
+        };
+        let slot_sources = match memo.get(&ProductKey::IncomingInputSlot(slot_a.clone())) {
+            Some(ProductValue::IncomingInputSlot(sources)) => sources,
+            other => panic!("expected memoized input slot, got {other:?}"),
+        };
+        assert!(
+            Rc::ptr_eq(&relation_sources, slot_sources),
+            "the aggregate relation and independently retained slot product must share one ordered source allocation"
+        );
+        assert_eq!(Some(&relation_sources), reverse.get(&slot_a).as_ref());
         let mut expected_sources = vec![source_a, source_b];
         expected_sources.sort_by(|left, right| compare_incoming_input_sources(left, right, &types));
-        assert_eq!(forward.get(&slot_a).expect("slot a").as_ref(), expected_sources);
+        assert_eq!(relation_sources.as_ref(), expected_sources);
     }
 
     #[derive(Default)]
@@ -3357,6 +3332,7 @@ mod tests {
         runtime_fact: Option<FactUse<FactKey>>,
         runtime_value: Option<ProductValue>,
         runtime_children: HashMap<ProductKey, ProductKey>,
+        materialized_value: Option<ProductValue>,
         backend_fact: Option<FactUse<FactKey>>,
         backend_value: Option<ProductValue>,
         fact_state_reads: usize,
@@ -3488,7 +3464,10 @@ mod tests {
             _context: &mut ProductReadContext<'_>,
             executable: &ExecutableKey,
         ) -> PullOutcome {
-            self.produce(ProductKey::MaterializedExecutable(executable.clone()))
+            let key = ProductKey::MaterializedExecutable(executable.clone());
+            self.calls.push(key.clone());
+            self.produced.insert(key);
+            PullOutcome::Produced(self.materialized_value.clone().unwrap_or(ProductValue::Unit))
         }
 
         fn produce_executable_effects(
@@ -3637,6 +3616,43 @@ mod tests {
             Some(ProductValue::RuntimeDemand(value)) => assert!(Rc::ptr_eq(value, &first)),
             other => panic!("expected canonical memoized runtime demand, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn newly_materialized_callee_rejects_the_smaller_demand_epoch_before_settlement() {
+        let tel = ConfiguredTelemetry::new();
+        let root = RootId::for_test(64);
+        let caller = fake_executable_with_function(root, 640);
+        let callee = fake_executable_with_function(root, 641);
+        let key = ProductKey::MaterializedExecutable(caller.clone());
+        let materialized = Rc::new(fake_effect_materialized(&caller, &[&callee], false));
+        let mut producers = FakeProducers {
+            materialized_value: Some(ProductValue::MaterializedExecutable(Rc::clone(&materialized))),
+            ..FakeProducers::default()
+        };
+        let mut driver = ProductDriver::new(&tel, root);
+        driver
+            .session_mut()
+            .record_settled_demand_callees(caller.clone(), HashSet::new());
+
+        assert_eq!(
+            driver.pull(&mut producers, key.clone()),
+            PullOutcome::wait_on_product(key.clone()),
+            "a materialized edge outside the settled demand epoch must reject the in-progress completion"
+        );
+        assert!(driver.session().memo().get(&key).is_none());
+        assert_eq!(
+            driver.session().settled_demand_callees(&caller),
+            Some(&HashSet::from([callee]))
+        );
+
+        match driver.pull(&mut producers, key.clone()) {
+            PullOutcome::Produced(ProductValue::MaterializedExecutable(value)) => {
+                assert!(Rc::ptr_eq(&value, &materialized));
+            }
+            other => panic!("the re-keyed demand epoch should accept the next materialized completion, got {other:?}"),
+        }
+        assert_eq!(driver.session().memo().generation(&key), Some(1));
     }
 
     #[test]
@@ -5137,12 +5153,6 @@ mod tests {
         materialized: MaterializedExecutable,
     ) {
         let tel = ConfiguredTelemetry::new();
-        session.record_materialized_executable(
-            &tel,
-            executable.clone(),
-            Rc::new(materialized.clone()),
-            &super::super::Types::new(),
-        );
         finish_test_entry(
             &mut session.memo,
             &tel,

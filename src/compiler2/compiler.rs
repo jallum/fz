@@ -253,9 +253,9 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         let (_program, driver) = self.drive_root_backend_product(root)?;
         let executables = driver
             .session()
+            .memo()
             .materialized_executables()
-            .keys()
-            .cloned()
+            .map(|(executable, _)| executable.clone())
             .collect::<Vec<_>>();
         driver.finish_session();
         Ok(executables)

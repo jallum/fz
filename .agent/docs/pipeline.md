@@ -605,6 +605,13 @@ same reason. These handles are deliberately `Rc`, not `Arc`: compiler2's World,
 product driver, interpreter handoff, and native lowering are single-thread
 owned, and the World already is not `Send`.
 
+`ProductMemo` is the only settled inventory for materialized, ABI, and symbolic
+backend executables. Typed iterators project those entries without collecting
+or cloning them; `PullSession` has no artifact mirrors or mirror invalidation.
+Final root packaging semantically orders the reached executable keys once, and
+the resulting `BackendProgram.executables` vector is the dense executable
+index. No request-local index projection is retained beside it.
+
 `RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
 positioned owner whose exact product contains a first-class construction. It
 does not reconstruct eligibility from the materialized publication-boundary

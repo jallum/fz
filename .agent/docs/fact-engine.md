@@ -615,9 +615,9 @@ fact-use states. `pull.recursive_group.searched` reports the traversal as query 
 Both group-search and demand-cone measurements name their exact anchor
 `ProductKey`; demand-cone `members`/`rounds`/`derivations` measure its private
 fixpoint ascent, not generic group discovery.
-Large product answers are single-threaded `Rc` values: the producer, typed
-session inventory, memo entry, downstream product, World projection, and cache
-hit retain one immutable allocation. `PullSession` and `World` already contain
+Large product answers are single-threaded `Rc` values: the producer, memo entry,
+downstream product, World projection, and cache hit retain one immutable
+allocation. `PullSession` and `World` already contain
 `Rc`-owned facts and never cross a `Send` boundary, so `Arc` would add atomic
 traffic without adding a valid ownership path. Recursive-group members also
 retain one `Rc<ProductDependencies>` because their validated external snapshot
@@ -626,8 +626,11 @@ equal answer preserves its product generation, while changed content advances
 it. Same-handle comparisons short-circuit on typed pointer identity before the
 structural fallback, so ordinary memo and World handoffs do not rescan payloads.
 When a producer reconstructs equal content, settlement retains the memo's
-existing allocation; the direct pull result and typed session inventories
-therefore cannot replace it with an equal-but-distinct handle.
+existing allocation, so the direct pull result cannot replace it with an
+equal-but-distinct handle. `ProductMemo` is also the typed settled inventory:
+its materialized, ABI, and symbolic-backend point queries and iterators project
+the stored key/value pairs directly. `PullSession` carries no parallel artifact
+maps.
 Every member of a settled group retains the union of the
 group's external product and fact dependencies when every duplicate dependency
 state agrees; a mixed-generation or mixed-fact-state snapshot publishes nothing

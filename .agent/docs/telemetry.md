@@ -469,8 +469,9 @@ jq -sr '
 The fixture call-edge oracle sources its activation set from
 `Compiler2::product_executable_inventory`
 (`compiler.rs`), which drives the root through the product backend path and
-collects `driver.session().materialized_executables()` — there is no separate
-frontier scan.
+collects the keys projected by
+`driver.session().memo().materialized_executables()` — there is no parallel
+session inventory or separate frontier scan.
 The root session carries the raw `PullSession`. An in-process
 handler derives scheduler counters, demanded-set cardinalities, and root
 identity during the callback instead of making the emit site traverse the

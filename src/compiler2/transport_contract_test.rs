@@ -10,7 +10,7 @@ use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendTail, TransportCarrier,
     TransportLayout, TransportShapeFact, WorldProductProducers,
 };
-use super::semantic::{CallableFlowFact, CallableSurface};
+use super::semantic::{CallableFlowFact, CallableSurface, SemanticOrd as _};
 use super::transport::{ActivationSymbol, ExecutableSymbol};
 use super::transport::{
     BoundaryDescr, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, LaneId, ShapeDescr, ShapeId, TransportPosition,
@@ -2158,7 +2158,12 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
     let root = submit_enum_reduce_operator_ref_root(&mut world, &tel, "pull_runtime_enum_reduce_operator_refs.fz");
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let executables = driver.session().materialized_executables().keys().collect::<Vec<_>>();
+    let executables = driver
+        .session()
+        .memo()
+        .materialized_executables()
+        .map(|(executable, _)| executable)
+        .collect::<Vec<_>>();
 
     let plus_flows = executables
         .iter()
@@ -2246,8 +2251,8 @@ fn main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
     let session = driver.session();
     let (executable, materialized) = session
+        .memo()
         .materialized_executables()
-        .iter()
         .find(|(executable, materialized)| {
             function_is(&world, executable.activation.function, "with_index", 2)
                 && materialized
@@ -2263,8 +2268,8 @@ fn main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
     assert_eq!(mapper_demand.callable.targets.len(), 1);
     assert!(!mapper_demand.callable.is_first_class());
     let abi = session
-        .abi_executables()
-        .get(executable)
+        .memo()
+        .abi_executable(executable)
         .expect("the mapper overload should publish an ABI executable");
     assert_eq!(
         abi.transport
@@ -3147,24 +3152,32 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
     let _ = &plan;
 
     assert!(
-        driver.session().materialized_executables().keys().any(|executable| {
-            let function = world.function_ref(executable.activation.function);
-            function.name == "main" && function.arity == 0
-        }),
+        driver
+            .session()
+            .memo()
+            .materialized_executables()
+            .any(|(executable, _)| {
+                let function = world.function_ref(executable.activation.function);
+                function.name == "main" && function.arity == 0
+            }),
         "product materialization should include main/0"
     );
     assert!(
-        driver.session().materialized_executables().keys().any(|executable| {
-            let function = world.function_ref(executable.activation.function);
-            function.name == "+" && function.arity == 2
-        }),
+        driver
+            .session()
+            .memo()
+            .materialized_executables()
+            .any(|(executable, _)| {
+                let function = world.function_ref(executable.activation.function);
+                function.name == "+" && function.arity == 2
+            }),
         "product materialization should include Kernel.+/2"
     );
-    for (caller, materialized) in driver.session().materialized_executables() {
+    for (caller, materialized) in driver.session().memo().materialized_executables() {
         for edge in materialized.call_edges.values() {
             for callee in materialized_call_edge_callees(edge) {
                 assert!(
-                    driver.session().materialized_executable(callee).is_some(),
+                    driver.session().memo().materialized_executable(callee).is_some(),
                     "symbolic materialized call edge from {caller:?} points to an undemanded callee {callee:?}"
                 );
             }
@@ -3182,22 +3195,22 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
     let executables = driver
         .session()
+        .memo()
         .backend_executables()
-        .keys()
-        .cloned()
+        .map(|(executable, _)| executable.clone())
         .collect::<HashSet<_>>();
 
     assert_eq!(
-        driver.session().abi_executables().len(),
+        driver.session().memo().abi_executables().count(),
         executables.len(),
         "ABI products should be per demanded executable"
     );
     assert_eq!(
-        driver.session().backend_executables().len(),
+        driver.session().memo().backend_executables().count(),
         executables.len(),
         "backend products should be per demanded executable"
     );
-    for (caller, abi) in driver.session().abi_executables() {
+    for (caller, abi) in driver.session().memo().abi_executables() {
         for edge in abi.call_edges.values() {
             for callee in abi_ready_call_edge_callees(edge) {
                 assert!(
@@ -3207,7 +3220,7 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
             }
         }
     }
-    for (caller, backend) in driver.session().backend_executables() {
+    for (caller, backend) in driver.session().memo().backend_executables() {
         assert_eq!(
             backend.call_edges,
             backend
@@ -3240,10 +3253,6 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let pull_events = PullTelemetryCapture::install(&tel);
     let product_jobs = JobTelemetry::new();
     product_jobs.install(&tel);
-    assert!(
-        ProductDriver::new(&tel, root).session().executable_index().is_empty(),
-        "dense executable indices should not exist before final backend packaging"
-    );
     let (program, driver) =
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
@@ -3254,18 +3263,24 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         .collect::<HashSet<_>>();
     let demanded = driver
         .session()
+        .memo()
         .backend_executables()
-        .keys()
-        .cloned()
+        .map(|(executable, _)| executable.clone())
         .collect::<HashSet<_>>();
     assert_eq!(
         packaged, demanded,
         "final backend packaging should preserve the demanded executable frontier"
     );
+    let mut ordered = demanded.into_iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.semantic_cmp(right, world.types()));
     assert_eq!(
-        driver.session().executable_index().len(),
-        packaged.len(),
-        "dense executable indices are assigned at final packaging only"
+        program
+            .executables
+            .iter()
+            .map(|executable| &executable.key)
+            .collect::<Vec<_>>(),
+        ordered.iter().collect::<Vec<_>>(),
+        "the backend program vector is the one typed, deterministic dense executable index"
     );
     assert!(
         program.construction_wrappers.is_empty(),
@@ -4132,7 +4147,7 @@ fn compiler2_callable_owners_publish_only_their_own_position() {
 /// surface must retain the producer's one allocation. Structural equality is
 /// still the movement rule; pointer identity is only the ownership proof.
 #[test]
-fn immutable_product_payloads_are_shared_from_producer_through_world_and_cache() {
+fn product_memo_is_the_only_typed_artifact_inventory_and_shares_payloads_through_world_and_cache() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -4153,12 +4168,9 @@ fn immutable_product_payloads_are_shared_from_producer_through_world_and_cache()
         "the root answer and World projection must retain the producer's BackendProgram allocation",
     );
 
-    for (executable, materialized) in driver.session().materialized_executables() {
-        let runtime_demand = match driver
-            .session()
-            .memo()
-            .get(&ProductKey::RuntimeDemand(executable.clone()))
-        {
+    let memo = driver.session().memo();
+    for (executable, materialized) in memo.materialized_executables() {
+        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.clone())) {
             Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
             other => panic!("expected memoized runtime demand, got {other:?}"),
         };
@@ -4166,96 +4178,45 @@ fn immutable_product_payloads_are_shared_from_producer_through_world_and_cache()
             Rc::ptr_eq(&materialized.runtime_demand, runtime_demand),
             "materialization must retain the producer's RuntimeDemand allocation",
         );
-        match driver
-            .session()
-            .memo()
-            .get(&ProductKey::MaterializedExecutable(executable.clone()))
-        {
-            Some(ProductValue::MaterializedExecutable(memoized)) => assert!(Rc::ptr_eq(materialized, memoized)),
-            other => panic!("expected memoized materialized executable, got {other:?}"),
-        }
     }
-    for (executable, abi) in driver.session().abi_executables() {
-        match driver
-            .session()
-            .memo()
-            .get(&ProductKey::AbiExecutable(executable.clone()))
-        {
-            Some(ProductValue::AbiExecutable(memoized)) => {
-                assert!(Rc::ptr_eq(abi, memoized));
-                let runtime_demand = match driver
-                    .session()
-                    .memo()
-                    .get(&ProductKey::RuntimeDemand(executable.clone()))
-                {
-                    Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
-                    other => panic!("expected memoized runtime demand, got {other:?}"),
-                };
-                assert!(Rc::ptr_eq(&abi.materialized.runtime_demand, runtime_demand));
-                assert!(Rc::ptr_eq(
-                    &abi.materialized,
-                    driver
-                        .session()
-                        .materialized_executables()
-                        .get(executable)
-                        .expect("ABI materialized input")
-                ));
-                for positioned in abi.callable_owners.iter() {
-                    match driver
-                        .session()
-                        .memo()
-                        .get(&ProductKey::CallableConstruction(positioned.position.clone()))
-                    {
-                        Some(ProductValue::CallableConstruction(owner)) => {
-                            assert!(
-                                Rc::ptr_eq(&positioned.owner, owner),
-                                "ABI owner at {:?} must retain its memo allocation (equal={})",
-                                positioned.position,
-                                positioned.owner == *owner,
-                            );
-                        }
-                        other => panic!("expected memoized callable owner, got {other:?}"),
-                    }
+    for (executable, abi) in memo.abi_executables() {
+        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.clone())) {
+            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
+            other => panic!("expected memoized runtime demand, got {other:?}"),
+        };
+        assert!(Rc::ptr_eq(&abi.materialized.runtime_demand, runtime_demand));
+        assert!(Rc::ptr_eq(
+            &abi.materialized,
+            memo.materialized_executable(executable)
+                .expect("memoized materialized input")
+        ));
+        for positioned in abi.callable_owners.iter() {
+            match memo.get(&ProductKey::CallableConstruction(positioned.position.clone())) {
+                Some(ProductValue::CallableConstruction(owner)) => {
+                    assert!(
+                        Rc::ptr_eq(&positioned.owner, owner),
+                        "ABI owner at {:?} must retain its memo allocation (equal={})",
+                        positioned.position,
+                        positioned.owner == *owner,
+                    );
                 }
+                other => panic!("expected memoized callable owner, got {other:?}"),
             }
-            other => panic!("expected memoized ABI executable, got {other:?}"),
         }
     }
-    for (executable, backend) in driver.session().backend_executables() {
-        match driver
-            .session()
-            .memo()
-            .get(&ProductKey::BackendExecutable(executable.clone()))
-        {
-            Some(ProductValue::BackendExecutable(memoized)) => {
-                assert!(Rc::ptr_eq(backend, memoized));
-                let runtime_demand = match driver
-                    .session()
-                    .memo()
-                    .get(&ProductKey::RuntimeDemand(executable.clone()))
-                {
-                    Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
-                    other => panic!("expected memoized runtime demand, got {other:?}"),
-                };
-                assert!(Rc::ptr_eq(&backend.abi.materialized.runtime_demand, runtime_demand));
-                assert!(Rc::ptr_eq(
-                    &backend.abi,
-                    driver
-                        .session()
-                        .abi_executables()
-                        .get(executable)
-                        .expect("backend ABI input")
-                ));
-            }
-            other => panic!("expected memoized backend executable, got {other:?}"),
-        }
+    for (executable, backend) in memo.backend_executables() {
+        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.clone())) {
+            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
+            other => panic!("expected memoized runtime demand, got {other:?}"),
+        };
+        assert!(Rc::ptr_eq(&backend.abi.materialized.runtime_demand, runtime_demand));
+        assert!(Rc::ptr_eq(
+            &backend.abi,
+            memo.abi_executable(executable).expect("memoized ABI input")
+        ));
     }
     for executable in &root_answer.program.executables {
-        let runtime_demand = match driver
-            .session()
-            .memo()
-            .get(&ProductKey::RuntimeDemand(executable.key.clone()))
-        {
+        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.key.clone())) {
             Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
             other => panic!("expected memoized runtime demand, got {other:?}"),
         };
@@ -4276,35 +4237,33 @@ fn immutable_product_payloads_are_shared_from_producer_through_world_and_cache()
 
     let executable = driver
         .session()
+        .memo()
         .backend_executables()
-        .keys()
+        .map(|(executable, _)| executable)
         .next()
         .cloned()
         .expect("the fixture must lower a backend executable");
     let materialized = Rc::clone(
         driver
             .session()
-            .materialized_executables()
-            .get(&executable)
+            .memo()
+            .materialized_executable(&executable)
             .expect("backend executable must have a materialized input"),
     );
     let abi = Rc::clone(
         driver
             .session()
-            .abi_executables()
-            .get(&executable)
+            .memo()
+            .abi_executable(&executable)
             .expect("backend executable must have an ABI input"),
     );
     let backend = Rc::clone(
         driver
             .session()
-            .backend_executables()
-            .get(&executable)
+            .memo()
+            .backend_executable(&executable)
             .expect("selected backend executable"),
     );
-    driver
-        .session_mut()
-        .invalidate_artifact_products_for(&tel, &executable, world.types());
     let reproduced = [
         (
             ProductKey::MaterializedExecutable(executable.clone()),
@@ -4318,30 +4277,58 @@ fn immutable_product_payloads_are_shared_from_producer_through_world_and_cache()
             ProductKey::BackendExecutable(executable.clone()),
             ProductValue::BackendExecutable(Rc::clone(&backend)),
         ),
-    ];
-    for (key, expected) in reproduced {
+    ]
+    .map(|(key, value)| {
+        let generation = driver
+            .session()
+            .memo()
+            .generation(&key)
+            .expect("settled artifact generation");
+        (key, value, generation)
+    });
+    driver
+        .session_mut()
+        .invalidate_artifact_products_for(&tel, &executable, world.types());
+    for (key, expected, generation) in reproduced {
         let actual = pull_product_until_produced_with_fact_waits(
             &mut driver,
             &mut world,
             root,
-            key,
+            key.clone(),
             "unchanged artifact reproduction must settle",
         );
         assert!(
             same_shared_product_handle(&actual, &expected),
             "unchanged artifact reproduction must return its prior canonical handle",
         );
+        assert_eq!(
+            driver.session().memo().generation(&key),
+            Some(generation),
+            "unchanged artifact reproduction must preserve its product generation",
+        );
     }
     assert!(Rc::ptr_eq(
-        driver.session().materialized_executables().get(&executable).unwrap(),
+        driver
+            .session()
+            .memo()
+            .materialized_executable(&executable)
+            .expect("reproduced materialized product"),
         &materialized,
     ));
     assert!(Rc::ptr_eq(
-        driver.session().abi_executables().get(&executable).unwrap(),
+        driver
+            .session()
+            .memo()
+            .abi_executable(&executable)
+            .expect("reproduced ABI product"),
         &abi,
     ));
     assert!(Rc::ptr_eq(
-        driver.session().backend_executables().get(&executable).unwrap(),
+        driver
+            .session()
+            .memo()
+            .backend_executable(&executable)
+            .expect("reproduced backend product"),
         &backend,
     ));
     driver.finish_session();
@@ -5120,8 +5107,8 @@ fn assert_entry_dispatch_control(
     let driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
     let (executable, materialized) = driver
         .session()
+        .memo()
         .materialized_executables()
-        .iter()
         .find(|(executable, _)| function_is(&world, executable.activation.function, function_name, 1))
         .unwrap_or_else(|| panic!("{function_name}/1 should materialize"));
     let reachability = &world
@@ -5869,7 +5856,7 @@ fn capture_finished_producer_pokes(tel: &ConfiguredTelemetry) -> Rc<RefCell<Opti
 }
 
 fn assert_executable_fact_producer_pokes(world: &World, session: &PullSession) -> u64 {
-    let expected = session.materialized_executables().len() as u64;
+    let expected = session.memo().materialized_executables().count() as u64;
     assert_eq!(
         session.producer_pokes(),
         expected,
@@ -5885,7 +5872,7 @@ fn assert_executable_fact_producer_pokes(world: &World, session: &PullSession) -
         "direct fact production must not start unsanctioned work"
     );
     assert_eq!(starts.root_scans, 0, "direct fact production must not scan roots");
-    for executable in session.materialized_executables().keys() {
+    for (executable, _) in session.memo().materialized_executables() {
         let fact = FactKey::ExecutableFacts(executable.clone());
         let job = Job::DeriveExecutableFacts(executable.clone());
         assert!(
