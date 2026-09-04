@@ -40,6 +40,16 @@ Compiler2 owns the active contract path:
   their result is the union of per-clause results on positionally narrowed
   arguments — `(int | float, int)` satisfies `+/2`'s `(int, int)` and
   `(float, int)` arrows jointly and yields `int | float`.
+- Coverage reads a VAR-CARRYING clause domain at `any`. A clause variable
+  still free after its bounds are closed accepts anything, so that is the
+  clause's domain: `pick({integer, a})` covers `{integer, any}`. Together with
+  `pick({binary, a})` it covers every member of `{binary, int} | {int, int}`,
+  which no single clause accepts — a witness is the argument, so neither clause
+  accepts a union spanning both. A polymorphic clause set that could rescue no
+  row at all would diagnose that legal program as a spec violation
+  (`fixtures2/behavior/spec_polymorphic_clause_set_coverage.fz`). Narrowing a
+  covered row into a clause domain leaves a var-carrying position untouched, so
+  such a call learns that it is legal and learns no input refinement from it.
 - Arrow matching (`Types::match_arrow`) handles union parameters structurally:
   a union of tuples with DIFFERENT arities matches a witness against the
   alternative of the witness's own width, and a kind collector (tuple, list,
@@ -47,6 +57,42 @@ Compiler2 owns the active contract path:
   pattern with that kind's component cleared (`witness_escapes_kind`) — a
   cross-kind union like `:first | {:acc, a}` accepts `:first` through its
   atom member but still rejects `:third`, which no member accepts.
+- Arrow matching is polarity-aware. A `@spec` variable collects LOWER bounds
+  from its covariant occurrences (list element, tuple field, map field, resource
+  payload, arrow result) and UPPER bounds from its contravariant ones (under an
+  arrow's parameters). The instantiation is the JOIN of the lowers and nothing
+  else — an upper bound never instantiates anything, so an `any`-typed predicate
+  parameter in `filter`/`reject` does not widen the element type, and a variable
+  in a contravariant result publishes its lower bound rather than an unsound
+  `any`. The MEET of the uppers is the solvability CHECK: `join(lowers) ⊆
+  meet(uppers)` is a necessary condition (over the variables both bounds reached,
+  over observed lowers, before bound closure) for a solution to exist. A variable
+  with only upper bounds stays free (`Underconstrained`).
+- A contract RESULT is a fact only when the joins behind its variables are
+  finished. A lower bound is the join of a variable's covariant occurrences;
+  where the walk reaches a NODE it cannot read — the witness carries variables,
+  or names no structure of the pattern's kind — every covariant variable beneath
+  it is owed a term it did not get, and what `Sigma` holds is a PARTIAL join.
+  (The unit is the node's merged outcome, not the individual occurrence; see
+  [`addressed-arrow`](addressed-arrow.md) for the two collectors that skip an
+  occurrence without marking it.) The parameter surface still refines from it
+  (it is a sound lower bound), but the verdict is `Underconstrained`, so
+  `FunctionContract::apply` publishes no result for that clause. `reduce_cont`'s
+  accumulator variable occurs at the SEED and inside the reducer arrow's RESULT;
+  `Enumerable` hands the reducer over as a bare address var, so a `[]`-seeded
+  fold over `[int]` reads the seed alone and `{:done, []}` would be a claim that
+  the fold returns what it started with. A variable the walk observed NOWHERE
+  keeps its fact: it never enters `Sigma` and `close_bounds` fills it from its
+  declared bound (`@spec f(integer) :: a when a: binary` is `Known binary`).
+- The empty list gets no rule of its own. Through a list pattern `[]` reads its
+  element as `none`, the bottom lower bound, which the join absorbs — so
+  `([a], [a])` at `([int], [])` is `[int]` — and at a bare variable it is the
+  whole argument, which is a fact: `@spec dbg(t) :: t when t: any` applied to
+  `[]` publishes `[]`, not the declared `any`. The fz-f98.16 cleaner that used
+  to drop `[]`-pinned bindings per position is gone (fz-kdt.120); it split those
+  two shapes apart and it masked the partial join above, since dropping a
+  `{:done, []}` rung's binding suppressed the claim without saying why it was
+  wrong.
 - Fatal `spec/violation` diagnostics fire only at USER callsites
   (`function_contract_is_enforced` in `compiler2/jobs/semantic.rs`). Library
   (bootstrap) callsites are validated for refinement but never diagnosed:
@@ -55,6 +101,17 @@ Compiler2 owns the active contract path:
   verdict there would be a false diagnostic with a span inside library source.
   The gate keys on the violation span's code and retires when activation
   evidence becomes correlation-sound.
+
+  Two users of one library reducer no longer share an activation over the
+  ELEMENT their lists carry: the element is part of the key wherever demand
+  reaches it (fz-kdt.183, see [`type-specialization`](type-specialization.md)),
+  so `Enum.reduce([1, 2], …)` and `Enum.reduce(["a", "b"], …)` in one program
+  key two activations and publish two returns. That closed the class of false
+  diagnostics where a USER callsite was diagnosed for a NEIGHBOUR's evidence —
+  `with_index_users_key_apart_by_element.fz` is the reproducer. The CALLABLE
+  slot is still blind and a returned tuple FIELD at a recursive key is still
+  freight, so joined evidence has not gone away; the
+  element axis of it has.
 - Kernel arithmetic (`+ - * / %`) is fully specced in
   `src/modules/runtime_library/kernel.fz`, so provably non-numeric operands at
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on

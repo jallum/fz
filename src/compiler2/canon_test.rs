@@ -401,17 +401,22 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             "fixtures2/behavior/fz_f98_range_map_converges.fz",
             include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-            59,
+            60,
         ),
         (
             "fixtures2/behavior/enum_predicate_search.fz",
             include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-            206,
+            166,
         ),
         (
             "fixtures2/behavior/enum_take_drop_split.fz",
             include_str!("../../fixtures2/behavior/enum_take_drop_split.fz"),
-            204,
+            // fz-kdt.199 re-measured 204 -> 237: the `returned` axis keys the
+            // accumulators of the reduce families this fixture drives
+            // (`List.reduce_cont/3` slot 1, `Range.reduce_cont/6` slot 4,
+            // `List.reduce_while_cont/3` slot 1), each one ascent rung apart,
+            // and the wrapper surfaces they ground stop sharing.
+            237,
         ),
     ] {
         let (mut compiler, root) = submit(name, text);

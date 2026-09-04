@@ -1,0 +1,32 @@
+#---
+# purpose: "a demanded list slot keeps its element at every depth, so a nested-list accumulator does not blend two users"
+#---
+#
+# The `ListShape` half of fz-kdt.183's element rule. `List.reduce_cont/3`
+# escaped the old collapse only because its mask is `ListShape(Ignore)` and the
+# descent reached the element; nest the element one list deeper and it
+# collapsed too, because `convergence_collapse_list_shape` handed an `Ignore`
+# element straight to the freight collapse.
+#
+# At HEAD that showed up not as a spec violation but as a materialization
+# abort: the settled closure return `{:cont, [[binary] | [int]]}` disagreed
+# with the semantic result `{:cont, [[binary]]} | {:cont, [[int]]}`, and the
+# artifact stage panicked rather than emit a program built on two answers.
+#
+# Demand reaching a list's SHAPE means the element is meaning at every depth --
+# nothing at the collapse can say how far down the chain that reads it looks --
+# so the element is kept and the two users key apart.
+#
+# The two `type/no-matching-clause` warnings in the golden are fz-kdt.185's,
+# as in `with_index_users_key_apart_by_element.fz`.
+defmodule M do
+  @spec strings([binary]) :: integer
+  fn strings(_xs), do: 1
+end
+
+fn main() do
+  a = Enum.with_index([[1], [2]], fn (x, _i) -> x end)
+  b = Enum.with_index([["s"], ["t"]], fn (x, _i) -> x end)
+  dbg(a)
+  dbg(b)
+end

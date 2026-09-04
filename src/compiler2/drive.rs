@@ -85,7 +85,7 @@ pub enum Job {
     BuildMacroExecutable(FunctionId),
     DeriveStaticCallees(FunctionId),
     DeriveCallGraphComponent(FunctionId),
-    DeriveDispatchMask(FunctionId),
+    DeriveInputDemand(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
@@ -132,7 +132,7 @@ pub enum FactKey {
     StaticCallees(FunctionId),
     CallGraphComponent(FunctionId),
     Recursive(FunctionId),
-    DispatchMask(FunctionId),
+    InputDemand(FunctionId),
     RootEntry(RootId),
     Activation(ActivationKey),
     ActivationInputs(ActivationKey),
@@ -264,7 +264,7 @@ impl World {
             FactKey::CallGraphComponent(function) | FactKey::Recursive(function) => {
                 Some(Job::DeriveCallGraphComponent(*function))
             }
-            FactKey::DispatchMask(function) => Some(Job::DeriveDispatchMask(*function)),
+            FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             FactKey::MacroExecutable(function) => Some(Job::BuildMacroExecutable(*function)),
             FactKey::FunctionSource(function) => Some(Job::PublishFunctionSource(*function)),
@@ -421,7 +421,7 @@ impl World {
         let mut demanded = 0_u64;
         for root_id in roots {
             let root = self.root_entry(root_id);
-            let gates = [FactKey::Recursive(root.function), FactKey::DispatchMask(root.function)];
+            let gates = [FactKey::Recursive(root.function), FactKey::InputDemand(root.function)];
             // A direct settled query is a settled question too: arbitrate it
             // before answering, or a quiesced cone would gate the root's own
             // entry analysis forever.

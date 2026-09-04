@@ -1,7 +1,5 @@
 use super::{AppliedStep, CodeSubmission, Compiler2, DriveOutcome, ExecutableNeed, Job, RootSubmission};
-use crate::compiler2::artifact::{
-    BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge, DispatchCallEdge,
-};
+use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::JobEffects;
 use crate::compiler2::{
@@ -8927,17 +8925,19 @@ end
 /// narrow one is dead; at LIFO the narrow arm comes first, swallows
 /// `{:halt, _}`, and `Enum.take(xs, 3)` returns the whole list.
 ///
-/// `call_destinations` therefore drops the narrower of two indistinguishable
-/// alternatives when the wider one is the SAME function on a domain that
-/// contains it, and this gate reads the landed artifact back to prove none
-/// survived. It is red at FIFO on today's tree -- no schedule knob needed.
+/// `call_destinations` therefore drops an arm whose stand-in the seat would
+/// never let it pass -- the SAME callee on a strictly wider observable domain
+/// asking a question that admits everything the arm's own admits -- and this
+/// gate reads the landed artifact back to prove no two arms asking one
+/// question survived. It is red at FIFO on today's tree -- no schedule knob
+/// needed.
 ///
 /// The LIFO half is verified by hand, per the fz-kdt.93 precedent: change
 /// `Agenda::pop` (src/compiler2/agenda.rs) to `self.queue.pop_back()` and run
 /// `fz2 run fixtures2/00183_enum_take_list_range.fz`; its first line must be
 /// `[1, 2, 3]`.
 ///
-/// Indistinguishable arms with no stand-in between them -- neither domain
+/// Arms asking one question with no stand-in between them -- neither domain
 /// contains the other, or they are different functions -- are a different,
 /// wider defect: no arm can supply the others' bodies, so the cure is a
 /// runtime predicate that can tell them apart, not a smaller plan
@@ -8958,11 +8958,22 @@ end
 /// five: `00231`, `00277`, `00281`, `opaque_fn_value_join` and
 /// `repr_seam_enum_count_after_reduce2` each had one or two groups that were
 /// one lambda over two capture types, which is one code pointer only while
-/// the axis stops at the function. The corpus census is now empty, and this
-/// list is the ratchet that keeps it so: a new entry is a new latent
-/// miscompile and wants a ticket, not a re-blessed constant.
+/// the axis stops at the function.
+///
+/// The CALL-EDGE census those three cures emptied is empty still, and every
+/// fixture each one cleared is listed below. What fz-kdt.178 added is the rest
+/// of the artifact -- an executable's clause dispatch and a construction
+/// wrapper's member selection are plans with arms exactly as a callsite is --
+/// and the wrapper selections are NOT empty:
+/// [`INDISTINGUISHABLE_ARM_POPULATION`] names each site and its group count.
+/// Member selection runs the drop now (fz-kdt.179), so any group whose members
+/// have a stand-in dissolves; what remains is fz-kdt.107's -- a group with no
+/// stand-in, whose members no runtime predicate tells apart -- and the constant
+/// is the ratchet fz-kdt.107 shrinks.
 #[test]
 fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
+    let mut measured: BTreeMap<(&str, String), usize> = BTreeMap::new();
+    let mut twins = Vec::new();
     for fixture in [
         "fixtures2/00183_enum_take_list_range.fz",
         "fixtures2/00420_enum_take_drop_split.fz",
@@ -8978,14 +8989,72 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
         "fixtures2/behavior/opaque_fn_value_join.fz",
         "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
     ] {
-        let twins = indistinguishable_dispatch_arms(fixture);
-        assert!(
-            twins.is_empty(),
-            "{fixture}: a dispatch must not offer two arms that ask one runtime question, \
-             or arm order decides the program's meaning: {twins:#?}",
-        );
+        for finding in indistinguishable_dispatch_arms(fixture) {
+            let (site, group) = finding
+                .split_once(" arm ")
+                .expect("a twin names its site then its arms");
+            *measured.entry((fixture, site.to_string())).or_default() += 1;
+            twins.push(format!("{fixture} {site}: arm {group}"));
+        }
     }
+    let known = INDISTINGUISHABLE_ARM_POPULATION
+        .iter()
+        .map(|(fixture, site, groups)| ((*fixture, (*site).to_string()), *groups))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        measured, known,
+        "a dispatch must not offer two arms that ask one runtime question, or arm order decides the \
+         program's meaning -- and the only groups that may are the ones fz-kdt.107 owns: members no \
+         runtime predicate tells apart, on a wrapper selection or a callsite alike: {twins:#?}",
+    );
 }
+
+/// The plans that still offer two arms one runtime question cannot separate,
+/// by site and by how many such groups the site carries.
+///
+/// Every row is a construction wrapper's member selection, and what remains is
+/// fz-kdt.107's alone. Member selection runs through `routable_alternatives`
+/// now (fz-kdt.179, `construction_member_selection`), so fz-kdt.118's drop --
+/// which dissolves a group whose members have a stand-in -- runs there exactly
+/// as it does on a callsite. What a drop cannot reach afterwards is fz-kdt.107's:
+/// members no runtime predicate tells apart at all, whose only cure is a sharper
+/// test, not a smaller plan.
+///
+/// A ratchet, per site, so fz-kdt.107 can retire a wrapper at a time. A new
+/// row, or a row on a call edge or an entry dispatch, is a new latent
+/// miscompile and wants a ticket rather than a re-blessed constant.
+///
+/// fz-kdt.183 shrank every moving site and retired none: `enum_map_family`
+/// 3 -> 1 at fifteen wrappers, `00277` 3 -> 1 at five and 4 -> 1 or 2 at
+/// seven. The sites are the same because the wrapper is the same; the GROUPS
+/// fall because the members whose arms asked one question were reducer
+/// specializations keyed on a blind list element. With the element in the key
+/// most of those members are one member, so there is nothing left to be
+/// indistinguishable from. fz-kdt.179 then dissolved the last groups a stand-in
+/// could reach (three of `00277`'s wrappers went 2 -> 1; they were `w15`, `w18`
+/// and `w19` in the PUBLISHED numbering of the tree that was measured in, and
+/// 00277 publishes five wrappers at head, so those names point at nothing now
+/// -- nor would they point at the same wrappers in a dump, which is
+/// fz-kdt.193's), and fz-kdt.199 drove the remainder to ZERO on every fixture
+/// the gate reads. The 44 groups this
+/// constant held -- 16 on `00277_enum_tier0_fixture`, 12 on
+/// `00420_enum_take_drop_split`, 16 on `enum_map_family`, each at group
+/// count 1 -- were construction-wrapper member selections whose members no
+/// runtime predicate told apart: two members carrying the same joined
+/// accumulator type. Keying a returned accumulator position gives each member
+/// its own type, so the selections discriminate and the groups dissolve.
+///
+/// The emptiness is a CURE and not vacuity, and the ratchet is its own proof:
+/// this constant is compared against what the walk FINDS, so the green tree at
+/// fz-kdt.199's base is the same walk over the same 13 fixtures reading
+/// exactly those 44 groups. The walk did not stop looking; the cause stopped
+/// existing.
+///
+/// But zero here is the strongest thing THIS gate can say, and it reads 13
+/// named fixtures -- it is not a proof that no such group exists anywhere.
+/// fz-kdt.107 is therefore UNMEASURABLE by this instrument rather than
+/// retired, and stays open.
+const INDISTINGUISHABLE_ARM_POPULATION: &[(&str, &str, usize)] = &[];
 
 /// The question that clears the last of them, in the program that names it.
 ///
@@ -9011,8 +9080,8 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut separated = Vec::new();
-    for (callsite, dispatch) in dispatch_call_edges(&program) {
-        let asked = dispatch
+    for entry in artifact_plans(compiler.world(), &program) {
+        let asked = entry
             .plan
             .matrix
             .arms
@@ -9037,11 +9106,12 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
                 }
                 assert!(
                     !left.overlaps(right),
-                    "{fixture} callsite {callsite}: two constructions of one lambda must put \
+                    "{fixture} {}: two constructions of one lambda must put \
                      disjoint questions, or a value reaches a body whose capture lane never \
                      named it -- {left} vs {right}",
+                    entry.site,
                 );
-                separated.push(format!("callsite {callsite}: {left} vs {right}"));
+                separated.push(format!("{}: {left} vs {right}", entry.site));
             }
         }
     }
@@ -9054,8 +9124,9 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 }
 
 /// The static twin asks NOTHING: the forwarder key carries the capture types,
-/// so each callsite has one callee and the program has no dispatch at all
-/// (fz-kdt.127 stage A).
+/// so each callsite has one callee and the program carries no dispatch plan of
+/// any kind -- no call edge, no clause dispatch, no wrapper member selection
+/// (fz-kdt.127 stage A, widened to the whole artifact by fz-kdt.178).
 ///
 /// `same_lambda_two_capture_types` forwards ONE lambda -- closed over an int at
 /// one callsite and over a float at another -- through `P.run/2`. Every call
@@ -9069,12 +9140,13 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_runtime_question() {
 fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     let fixture = "fixtures2/behavior/same_lambda_two_capture_types.fz";
     let (compiler, program) = driven_backend_program(fixture);
-    let dispatches = dispatch_call_edges(&program);
+    let plans = artifact_plans(compiler.world(), &program);
     assert!(
-        dispatches.is_empty(),
+        plans.is_empty(),
         "{fixture} passes a known closure at every call site, so nothing may be left for a \
-         runtime test; {} callsites still dispatch",
-        dispatches.len(),
+         runtime test; {} plan(s) still dispatch: {:?}",
+        plans.len(),
+        plans.iter().map(|plan| plan.site.to_string()).collect::<Vec<_>>(),
     );
 
     let types = compiler.world().types();
@@ -9106,15 +9178,16 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
     );
 }
 
-/// Drives one fixture to its backend product and names every dispatch call
-/// edge arm pair that asks one and the same runtime question.
+/// Drives one fixture to its backend product and names every arm pair, at
+/// every plan the artifact carries, that asks one and the same runtime
+/// question.
 fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
     let (compiler, program) = driven_backend_program(fixture);
     let types = compiler.world().types();
     let mut findings = Vec::new();
-    for (callsite, dispatch) in dispatch_call_edges(&program) {
-        for twin in indistinguishable_arms(&dispatch.plan, types) {
-            findings.push(format!("callsite {callsite} {twin}"));
+    for entry in artifact_plans(compiler.world(), &program) {
+        for twin in indistinguishable_arms(entry.plan, types) {
+            findings.push(format!("{} {twin}", entry.site));
         }
     }
     findings
@@ -9149,194 +9222,590 @@ fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Bac
     (compiler, program)
 }
 
-/// Every dispatching direct call a program's bodies tail into, named by its
-/// callsite.
-fn dispatch_call_edges(program: &BackendProgram) -> Vec<(u32, &DispatchCallEdge<usize, BackendReturnFlow>)> {
-    let mut edges = Vec::new();
-    for executable in &program.executables {
+/// Where in the artifact a [`PatternDispatchPlan`] sits.
+///
+/// The artifact carries FIVE, and every one of them decides which body a
+/// runtime value reaches, so every one of them is a seat the census owes an
+/// answer about. Three of the five have a `PatternDispatchPlan` field of their
+/// own -- `DispatchCallEdge`, `ExecutableDispatch`, `BackendConstructionWrapper`
+/// -- and two more ride a `BackendTail`: `BackendTail::Dispatch`'s
+/// `ControlDispatch` (a body's own `case`) and `BackendTail::Receive`'s
+/// `BackendReceive` (a `receive`'s clauses).
+///
+/// Two of the five seat their bodies in an order the COMPILER chose, and those
+/// are the ones a seat rule may move: a call edge's arms and a wrapper's
+/// members. The other three seat them in SOURCE order -- a function's clauses,
+/// a `case`'s clauses, a `receive`'s clauses -- and there the first matching
+/// clause is what the language means, so moving one would change the program.
+/// [`PlanSite::is_source_order`] is that split, and it is what the seat gate
+/// and the blind-escape census both read.
+enum PlanSite {
+    /// A dispatching direct call a body tails into, named by its callsite.
+    CallEdge { executable: usize, callsite: u32 },
+    /// An executable's own clause dispatch: the function's source clauses.
+    Entry { executable: usize },
+    /// A body's own `case`, named by the control entry that tails into it.
+    Case { executable: usize, entry: usize },
+    /// A `receive`'s clause dispatch, named by the control entry that tails
+    /// into it.
+    Receive { executable: usize, entry: usize },
+    /// A construction wrapper's member selection, carrying BOTH of the
+    /// wrapper's numbers: the `identity` the artifact publishes (which is its
+    /// position in `construction_wrappers`, and what the interpreter's own
+    /// errors print) and the `canonical` number
+    /// [`canon_backend_program`](crate::compiler2::canon::canon_backend_program)
+    /// heads its block with. They are different numbers and they agree only by
+    /// accident (fz-kdt.193).
+    Selection { wrapper: u32, canonical: usize },
+}
+
+impl PlanSite {
+    /// The class a census counts this plan under.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::CallEdge { .. } => "call-edge",
+            Self::Entry { .. } => "entry",
+            Self::Case { .. } => "case",
+            Self::Receive { .. } => "receive",
+            Self::Selection { .. } => "selection",
+        }
+    }
+
+    /// Whether the order this site lists its bodies in is the PROGRAMMER's.
+    ///
+    /// A function's clauses, a `case`'s clauses and a `receive`'s clauses are
+    /// all tried first-match in source order, which is what the language
+    /// means; a seat rule that reordered one would change the program. A call
+    /// edge's arms and a wrapper's members are the compiler's own order, and
+    /// those are the two the seat owns.
+    fn is_source_order(&self) -> bool {
+        matches!(self, Self::Entry { .. } | Self::Case { .. } | Self::Receive { .. })
+    }
+}
+
+impl std::fmt::Display for PlanSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CallEdge { executable, callsite } => write!(f, "callsite {callsite} (executable {executable})"),
+            Self::Entry { executable } => write!(f, "entry dispatch of executable {executable}"),
+            Self::Case { executable, entry } => write!(f, "case dispatch at entry e{entry} (executable {executable})"),
+            Self::Receive { executable, entry } => write!(f, "receive at entry e{entry} (executable {executable})"),
+            Self::Selection { wrapper, canonical } => {
+                write!(f, "wrapper w{canonical} (published w{wrapper}) selection")
+            }
+        }
+    }
+}
+
+/// One plan the artifact carries, with the bodies it can reach in the order
+/// the site itself lists them.
+struct ArtifactPlan<'a> {
+    site: PlanSite,
+    plan: &'a PatternDispatchPlan<Ty>,
+    /// The body ids this site offers, in the site's own list order: the call
+    /// arms for a call edge, the reachable clause ids for an entry, the member
+    /// index for a selection (welded to the plan's rows by fz-kdt.108).
+    ///
+    /// That list order is the order the runtime reaches them in.
+    /// `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
+    /// holds it to the decision graph, which is the only order execution has.
+    bodies: Vec<u32>,
+}
+
+/// Every [`PatternDispatchPlan`] a backend program carries, whatever kind of
+/// site it sits at.
+///
+/// A plan is a plan: the runtime walks the same decision graph and reaches a
+/// body by the same first-match rule whether the site is a callsite's arms, a
+/// function's own clauses, a body's `case`, a `receive`'s clauses or a
+/// construction wrapper's members. Walking only the call edges (fz-kdt.178)
+/// left the other kinds uncensused, and the dynamic tripwire was reading
+/// escapes in a wrapper's member selection that no static gate could see.
+///
+/// EXHAUSTIVE BY MEASUREMENT, not by hope: the five sites are every field of
+/// type `PatternDispatchPlan<Ty>` reachable from a `BackendProgram`, and the
+/// two that ride a `BackendTail` are matched here by naming every tail variant
+/// that carries one, so a sixth would have to be added to
+/// `BackendTail`/`BackendProgram` to escape this walk.
+fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgram) -> Vec<ArtifactPlan<'a>> {
+    // A selection site is labelled with the number the DUMP prints, so a reader
+    // following a failure message into `--dump backend=` lands on the wrapper
+    // the message meant (fz-kdt.193).
+    let canonical = crate::compiler2::canon::canonical_wrapper_numbers(world, program);
+    let mut plans = Vec::new();
+    for (index, executable) in program.executables.iter().enumerate() {
+        if let Some(entry) = &executable.entry_dispatch {
+            plans.push(ArtifactPlan {
+                site: PlanSite::Entry { executable: index },
+                plan: entry.plan(),
+                bodies: entry.clause_ids().to_vec(),
+            });
+        }
         let BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
-        for entry in entries {
-            let BackendTail::DirectCall {
-                callsite,
-                target: CallEdge::Dispatch(dispatch),
-                ..
-            } = &entry.tail
-            else {
-                continue;
-            };
-            edges.push((callsite.as_u32(), dispatch.as_ref()));
-        }
-    }
-    edges
-}
-
-/// fz-kdt.129 / fz-kdt.131: a seat must carry surface coverage.
-///
-/// An arm's `RuntimeTypePredicate` is COARSER than the surface its body was
-/// compiled for -- a list head says nothing about the tail, a tuple position
-/// erases whatever its own sub-test erases -- so a value can satisfy every
-/// question an arm asks and still lie outside the surface that arm's body was
-/// compiled for. Call that a BLIND ESCAPE: at some position the earlier and
-/// later arms put a question that cannot separate them, and the later arm's
-/// surface holds values the earlier arm's does not.
-///
-/// Two orderings were built on containment alone and BOTH miscompile, in
-/// opposite directions. Seating the narrower SURFACE first put
-/// `list(int) x {all?/1, all?/2, empty?}` ahead of `list(:ok) x {empty?}`
-/// (both measured when a list test still saw empty-or-cons and nothing else).
-/// Seating the narrower TEST first -- fz-kdt.129's first build, which this
-/// gate used to assert -- put `list(int) x {all?/1}` ahead of
-/// `list(:ok) x {all?/1, empty?}`, because a callable set of one is inside a
-/// set of two, and `Enum.all?([:ok, :ok])` then satisfied every question the
-/// int arm asks and aborted in `fz_list_head_int_ref` on `run` and `build`.
-///
-/// So this gate asserts the SOUND condition instead of either containment: an
-/// arm is seated ahead of a sibling only where the seat it took is the one no
-/// worse than its opposite. Formally, for every seated pair
-///
-/// ```text
-///     covers(early, late)  or  not covers(late, early)
-/// ```
-///
-/// -- either the earlier arm's surface already names everything the blind
-/// positions would hand it, or the reverse seat is no safer and the pair is
-/// the fz-kdt.107 inseparable class one rung wider, which fz-kdt.131 owns.
-/// What this forbids is the one seat that is strictly wrong: taking the
-/// escaping direction when the covering direction was available.
-///
-/// RED at 1dc98b087 on `enum_predicate_search` and
-/// `dispatch_seat_element_blind`, whose covering arms were both displaced by
-/// their strictly-smaller-test siblings.
-#[test]
-fn compiler2_dispatch_seats_the_covering_arm_where_one_covers() {
-    let mut proven = 0;
-    for fixture in ARM_ORDER_CENSUS {
-        let (compiler, program) = driven_backend_program(fixture);
-        let types = compiler.world().types();
-        let mut displaced = Vec::new();
-        for (callsite, dispatch) in dispatch_call_edges(&program) {
-            let seated = seated_arm_surfaces(dispatch);
-            for early in 0..seated.len() {
-                for late in early + 1..seated.len() {
-                    proven += 1;
-                    if !covers(types, &seated[early], &seated[late]) && covers(types, &seated[late], &seated[early]) {
-                        displaced.push(format!(
-                            "callsite {callsite}: arm {late} covers arm {early}'s surface where their tests are \
-                             blind, and arm {early} is seated first anyway",
-                        ));
-                    }
-                }
+        for (entry_index, entry) in entries.iter().enumerate() {
+            match &entry.tail {
+                BackendTail::DirectCall {
+                    callsite,
+                    target: CallEdge::Dispatch(dispatch),
+                    ..
+                } => plans.push(ArtifactPlan {
+                    site: PlanSite::CallEdge {
+                        executable: index,
+                        callsite: callsite.as_u32(),
+                    },
+                    plan: &dispatch.plan,
+                    bodies: dispatch.arms.iter().map(|arm| arm.body_id).collect(),
+                }),
+                // `native.rs` and `ir_interp/backend.rs` both reach the arm by
+                // `arm_entries[body_id]`, so the arm order IS the body order.
+                BackendTail::Dispatch { dispatch, .. } => plans.push(ArtifactPlan {
+                    site: PlanSite::Case {
+                        executable: index,
+                        entry: entry_index,
+                    },
+                    plan: &dispatch.plan,
+                    bodies: (0..dispatch.arm_entries.len() as u32).collect(),
+                }),
+                // Same weld on the receive side: the matched clause index is
+                // the plan's body id, and `clauses` is in source order.
+                BackendTail::Receive(receive) => plans.push(ArtifactPlan {
+                    site: PlanSite::Receive {
+                        executable: index,
+                        entry: entry_index,
+                    },
+                    plan: &receive.dispatch,
+                    bodies: (0..receive.clauses.len() as u32).collect(),
+                }),
+                _ => {}
             }
         }
-        assert!(
-            displaced.is_empty(),
-            "{fixture}: a dispatch seated the escaping arm first where the covering one was available, so a \
-             value every question admits runs a body its representation does not fit: {displaced:#?}",
-        );
     }
+    for wrapper in &program.construction_wrappers {
+        let Some(selection) = &wrapper.selection else {
+            continue;
+        };
+        plans.push(ArtifactPlan {
+            site: PlanSite::Selection {
+                wrapper: wrapper.identity,
+                canonical: canonical[wrapper.identity as usize],
+            },
+            plan: selection,
+            bodies: (0..wrapper.members.len() as u32).collect(),
+        });
+    }
+    plans
+}
+
+/// The order a plan's decision graph actually reaches its bodies in: a walk
+/// from the root taking the match edge before the miss edge, recording each
+/// outcome the first time it is reached.
+///
+/// This is the only order execution has -- the runtime executes `plan.graph`
+/// and never `plan.matrix.arms` -- so whether a site's own list agrees with it
+/// is a measurement, which
+/// `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
+/// takes.
+fn graph_first_match_bodies(plan: &PatternDispatchPlan<Ty>) -> Vec<u32> {
+    use crate::dispatch_matrix::DispatchNode;
+
+    let mut order = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![plan.graph.root];
+    while let Some(node) = stack.pop() {
+        match plan.graph.node(node) {
+            None | Some(DispatchNode::Fail) => {}
+            Some(DispatchNode::Outcome { outcome, .. }) => {
+                if let Some(entry) = plan.outcome(*outcome)
+                    && seen.insert(entry.body_id)
+                {
+                    order.push(entry.body_id);
+                }
+            }
+            Some(DispatchNode::Test { on_match, on_miss, .. }) => {
+                stack.push(on_miss.target);
+                stack.push(on_match.target);
+            }
+        }
+    }
+    order
+}
+
+/// fz-kdt.178: every census here reads a plan's bodies off the site's own
+/// list, and the runtime reaches them by walking the plan's decision graph.
+/// Those are two different orders unless they agree, and this is what says
+/// they do.
+///
+/// They agree BY CONSTRUCTION: `compile_dispatch_matrix` compiles the arms
+/// first-match in list order and emits one arm per row, so the graph's
+/// first-match walk is the list restricted to the bodies the site offers. An
+/// entry site offers only its reachable clause ids, which is a restriction of
+/// the same order, so the comparand is the graph order filtered to the bodies
+/// the site lists.
+///
+/// A fact by construction holds only while the construction does, which is why
+/// it is a gate: if a producer ever emits a graph that reaches its rows out of
+/// order, every seat this file reasons about is read off the wrong list, and
+/// nothing else here would say so.
+#[test]
+fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
+    let mut compared = 0;
+    let mut disagreements = Vec::new();
+    for fixture in ARM_ORDER_CENSUS {
+        let (compiler, program) = driven_backend_program(fixture);
+        for entry in artifact_plans(compiler.world(), &program) {
+            compared += 1;
+            let walked = graph_first_match_bodies(entry.plan)
+                .into_iter()
+                .filter(|body| entry.bodies.contains(body))
+                .collect::<Vec<_>>();
+            if walked != entry.bodies {
+                disagreements.push(format!(
+                    "{fixture} {}: the site lists {:?} and the graph reaches {walked:?}",
+                    entry.site, entry.bodies,
+                ));
+            }
+        }
+    }
+    println!("plans whose list order was held to the graph's first-match order: {compared}");
     assert!(
-        proven > 0,
-        "the census proved no seated pair at all, so it cannot have held anything"
+        disagreements.is_empty(),
+        "a plan's bodies must be reached in the order its site lists them, or the seat every census in this \
+         file reads is not the seat the runtime takes: {disagreements:#?}",
+    );
+    assert!(
+        compared > 0,
+        "the agreement gate compared no plan at all, so it cannot have held anything"
     );
 }
 
-/// fz-kdt.131: the seats where no order is escape-free, counted.
+/// fz-kdt.131: no seat over the corpus lets a value reach a body its surface
+/// never named -- at the settled arrival AND under every arm perturbation the
+/// stress can name.
 ///
-/// A blind escape this gate still finds is one BOTH seats carry -- the gate
-/// next door proves the covering seat was taken wherever one existed -- so
-/// what is left is the population fz-kdt.131 owns: pairs whose surfaces are
-/// incomparable at a position their tests cannot see. Arrival order carried
-/// them before any seating rule existed and carries them still; the seating
-/// rule declines to move such a pair, so it can only ever remove one of these,
-/// never add one.
+/// A blind escape is a seat where the arm tested first does not name what the
+/// arm tested second holds while some value satisfies both. Both a CALL EDGE
+/// and a construction wrapper's MEMBER SELECTION are seated by the same relation
+/// now (fz-kdt.179, `routable_alternatives`), so the seating law -- an arm is
+/// moved ahead of a sibling only under `Covering`, which admits no blind escape
+/// -- is the debug_assert in `specificity_order` that the fixture matrix drives
+/// on every debug compile. This gate reads the LANDED artifact back to the same
+/// law, and it reads zero: fz-kdt.119 and fz-kdt.107 gave the tuple and list
+/// axes the tests that separated the call-edge pairs, fz-kdt.183 keyed the
+/// reducer specializations on the element they carry, and fz-kdt.179 put member
+/// selection through the drop and the covering seat.
 ///
-/// These are latent MISCOMPILES, not untidiness. `enum_map_family`'s three
-/// entries are the ones that already abort natively under a reversed arm order
-/// (`compiler2_dispatch_answers_the_same_under_a_permuted_arm_order` names the
-/// reproduction), and `dispatch_seat_element_blind`'s is the one whose fixture
-/// only prints the right answers because arrival happens to seat the atom arm
-/// first. Nothing here is safe by proof; it is safe by arrival.
+/// THREE POPULATIONS, ONE WALK, because a reading only means something once it
+/// says which of them it belongs to: the REACHABLE escapes, which are latent
+/// miscompiles; the SOURCE-ORDER escapes -- a function's clauses, a `case`'s,
+/// a `receive`'s -- whose order is the programmer's; and the plans the walk
+/// could not read at all, counted so that class's zero is honest.
 ///
-/// The list is a RATCHET, not a target. It goes to zero when the runtime can
-/// see what the bodies rely on -- fz-kdt.119's per-position tuple tags and
-/// fz-kdt.107 step 3's list elements -- and not before. A new entry is a new
-/// latent miscompile and wants a ticket, not a re-blessed constant.
+/// A pair no value can reach is in none of them. [`seating`] answers
+/// `Separated` for it, in this reader and in production alike, and the walk
+/// never opens it (fz-kdt.186).
 ///
-/// SCOPE: measured at the SETTLED arrival only. An escape that only a legal
-/// permutation exposes does not move this constant -- the fz-kdt.107 step-3
-/// refutation measured 5 under `arms:3` where this pins 3, the two extras
-/// being un-dropped narrow arms a split question group re-arms (fz-kdt.143
-/// owns that cure; fz-kdt.141's stress is the instrument that sees them).
+/// WHY IT IS DRIVEN UNDER ONE SEED (fz-kdt.143, narrowed by fz-kdt.196). A
+/// census read at the settled arrival was once blind to a seat only a legal
+/// permutation produced, and until fz-kdt.143 the corpus had such seats: an arm
+/// the seat would never let past its stand-in was kept anyway, because
+/// fz-kdt.118's drop ran only inside one question group and every axis
+/// refinement since had split those groups. Under `arms:2` and `arms:3` this
+/// census once read 5 where the settled order pinned 3, the two extras being
+/// `dispatch_list_head_separates`'s `[int]` arm seated ahead of the arms that
+/// stand in for it. Those arms are dropped now.
+///
+/// SIX SEEDS WERE SIX READINGS OF ONE FACT, and that is a derivation rather
+/// than a hope: fz-kdt.194 gave every separated pair a canonical order and
+/// pinned the ARTIFACT's arrival-invariance in its own gate, so a census OF
+/// THAT ARTIFACT is arrival-invariant too. Measured by instrumenting this walk
+/// to count pairs and verdicts at each arrival: **87 pairs -- 36 `Separated`,
+/// 51 `Covering`, 0 `Escaping` -- at the settled arrival AND at every one of
+/// seeds 1-6, so all seven arrivals together walk exactly 609 = 87 x 7 pairs
+/// with the histogram scaling exactly 7x (252 / 357 / 0).** Not one seed read
+/// a pair, or a verdict, the settled arrival did not.
+///
+/// So ONE seed is kept, not none. The loop is still the permutation ratchet --
+/// a future arm axis that re-opens breaks the invariance fz-kdt.194 pins and
+/// this walk would then read a pair its gate does not -- and `arms:6` is the
+/// seed kept because it is the one that once aborted `enum_map_family` and
+/// `enum_predicate_search`. Dropping the other five costs no reading. Measured
+/// back to back in a debug build: run alone and serially this gate goes from
+/// **108.5 s to 34.1 s of CPU** (109.1 s -> 37.2 s wall), and the lib suite,
+/// whose critical path it is, from **705.8 s to 620.9 s of CPU** and
+/// 157.5 s -> 105.1 s of wall clock. CPU is the figure to compare: this is a
+/// shared machine and the suite's wall clock swings with what else is on it.
+///
+/// INJECTION RECIPE, so this zero is a cure and not a blind spot. In
+/// `callsite_dispatch::seats_before`, widen the `covering` closure to
+/// `Seating::Covering | Seating::Escaping` and delete `specificity_order`'s two
+/// `debug_assert`s (which otherwise catch the injection before an artifact
+/// lands). Production then seats blind arms ahead, and this gate FAILS on its
+/// `Reachable` assert reporting **25 escapes at the settled arrival** -- and
+/// the injected population is arrival-invariant too, reading the same 137 pairs
+/// / 36 `Separated` / 76 `Covering` / **25 `Escaping`** at settled and at each
+/// of seeds 1-6. The injection is caught by the settled reading alone, which is
+/// the same measurement that says the extra seeds bought nothing.
+///
+/// The census is a RATCHET, not a target: a new entry under ANY setting is a
+/// new latent miscompile and wants a ticket, not a re-blessed constant.
 #[test]
 fn compiler2_dispatch_blind_escape_census_is_the_known_population() {
-    let mut escapes = Vec::new();
+    let settled = blind_escape_census();
+    println!(
+        "plans walked: {:?}; plans the census cannot read: {:?}",
+        settled.plans, settled.unreadable,
+    );
+    assert_eq!(
+        settled.source_order_plans(),
+        SOURCE_ORDER_PLANS_ON_THE_CENSUS,
+        "a source-order class that reports no blind escape says nothing unless it also says how many of \
+         its plans it could read: {:?}",
+        settled.unreadable,
+    );
+    let reachable = seated_escapes(&settled, EscapeClass::Reachable);
+    assert!(
+        reachable.is_empty(),
+        "the corpus carries no reachable blind escape at the settled arrival: fz-kdt.119 and fz-kdt.107 \
+         gave the tuple and list axes the tests that separate the call-edge pairs, fz-kdt.183 keyed the \
+         reducer specializations on the list element they carry, and fz-kdt.179 made construction-wrapper \
+         member selection run the drop and the covering seat -- so a new entry here is a new latent \
+         miscompile and wants a ticket, not a re-blessed constant: {reachable:#?}",
+    );
+    assert_eq!(
+        seated_escapes(&settled, EscapeClass::SourceOrder),
+        SOURCE_ORDER_BLIND_ESCAPES,
+        "a clause order -- a function's, a `case`'s or a `receive`'s -- is the programmer's, so a blind \
+         escape there is a source-level fact with a repr-level cure, and it gets its own population rather \
+         than a seat finding",
+    );
+    // A permuted arrival is one the fixpoint could have delivered, so a blind
+    // pair any legal arm order reaches is a pair production could ship. None
+    // does: the reachable and source-order populations are empty at the seed as
+    // well as at the settled arrival (fz-kdt.143's red-first drive, kept as an
+    // emptiness ratchet now that the call-edge and selection populations it once
+    // tracked have both retired). ONE seed, not six: see the derivation above.
+    for setting in BLIND_ESCAPE_CENSUS_STRESSES {
+        let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+            crate::compiler2::callsite_dispatch::dispatch_stress::setting(setting),
+        );
+        let pairs = escaping_pairs(&blind_escape_census());
+        assert!(
+            pairs.is_empty(),
+            "FZ_STRESS_PERMUTE_DISPATCH={setting} reached a blind pair the settled arrival does not, which \
+             is an arrival production could deliver: {pairs:#?}",
+        );
+    }
+}
+
+/// The permuted arrivals the blind-escape census is read at, beside the settled
+/// one.
+///
+/// ONE seed, because the census is a reading of an ARTIFACT fz-kdt.194 pins as
+/// arrival-invariant, and the measurement in
+/// `compiler2_dispatch_blind_escape_census_is_the_known_population`'s doc says
+/// so outright: all seven arrivals walked the same 87 pairs with the same 36 /
+/// 51 / 0 histogram. `arms:6` is kept rather than none because a re-opened arm
+/// axis is exactly what this loop is the ratchet for, and it is that seed
+/// rather than another because it is the arrival that once aborted
+/// `enum_map_family` and `enum_predicate_search` (see [`ARM_ORDER_STRESSES`]).
+const BLIND_ESCAPE_CENSUS_STRESSES: [&str; 1] = ["arms:6"];
+
+/// Which population a blind pair belongs to.
+///
+/// One reading, two owners, because the cure differs: a seat can move the
+/// first, and only a repr or a sharper test can help the second. A pair no
+/// value can reach is in neither -- [`seating`] answers `Separated` for it and
+/// the walk never opens it (fz-kdt.186).
+#[derive(Clone, Copy, PartialEq)]
+enum EscapeClass {
+    /// A call-edge or wrapper-selection pair some value can satisfy both
+    /// halves of, so the seat between them decides which body it reaches.
+    Reachable,
+    /// A function's own clause dispatch, a body's `case`, or a `receive`:
+    /// sites where the order is the programmer's and the cure is never a seat.
+    SourceOrder,
+}
+
+/// One reading of the census: where it was found, and the two surfaces that
+/// meet blind there.
+struct BlindEscape {
+    class: EscapeClass,
+    site: String,
+    early: String,
+    late: String,
+}
+
+/// A census pass: every blind pair the walk found, and what it was able to
+/// look at while finding them.
+struct BlindEscapeCensus {
+    escapes: Vec<BlindEscape>,
+    /// How many plans of each site kind the walk saw.
+    plans: BTreeMap<&'static str, usize>,
+    /// The plans whose surfaces could not be read, by site kind and by the
+    /// question variant that stopped the read. fz-kdt.187 reads the readable
+    /// ones; a `Guard` genuinely cannot be read at all.
+    unreadable: BTreeMap<(&'static str, &'static str), usize>,
+}
+
+impl BlindEscapeCensus {
+    /// How many plans of one site kind the walk could not read.
+    fn unreadable_plans_of(&self, kind: &str) -> usize {
+        self.unreadable
+            .iter()
+            .filter(|((candidate, _), _)| *candidate == kind)
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    /// Every SOURCE-ORDER kind the walk saw, with how many plans it saw and
+    /// how many of those it could not read -- the comparand
+    /// [`SOURCE_ORDER_PLANS_ON_THE_CENSUS`] pins so the class's zero says how
+    /// much of itself it speaks for.
+    fn source_order_plans(&self) -> Vec<(&'static str, usize, usize)> {
+        let mut rows = self
+            .plans
+            .iter()
+            .filter(|(kind, _)| matches!(**kind, "entry" | "case" | "receive"))
+            .map(|(kind, plans)| (*kind, *plans, self.unreadable_plans_of(kind)))
+            .collect::<Vec<_>>();
+        rows.sort();
+        rows
+    }
+}
+
+/// Every seat in the census fixtures where the arm tested first does not name
+/// what the arm tested second holds, under whatever arrival this thread's
+/// stress setting asks for: where it happens, which population it belongs to,
+/// and the two surfaces that meet.
+///
+/// Every plan the artifact carries is walked -- call edge, entry dispatch and
+/// wrapper selection alike -- and the ones the reader cannot read are counted
+/// rather than passed over, so an empty class says how much of itself it
+/// speaks for.
+fn blind_escape_census() -> BlindEscapeCensus {
+    let mut census = BlindEscapeCensus {
+        escapes: Vec::new(),
+        plans: BTreeMap::new(),
+        unreadable: BTreeMap::new(),
+    };
     for fixture in ARM_ORDER_CENSUS {
         let (compiler, program) = driven_backend_program(fixture);
         let types = compiler.world().types();
-        for (_, dispatch) in dispatch_call_edges(&program) {
-            let seated = seated_arm_surfaces(dispatch);
+        for entry in artifact_plans(compiler.world(), &program) {
+            *census.plans.entry(entry.site.kind()).or_default() += 1;
+            if let Some(reason) = unreadable_reason(entry.plan, &entry.bodies) {
+                *census.unreadable.entry((entry.site.kind(), reason)).or_default() += 1;
+                continue;
+            }
+            let seated = seated_arm_surfaces(entry.plan, &entry.bodies);
             for early in 0..seated.len() {
                 for late in early + 1..seated.len() {
+                    if seating(types, &seated[early], &seated[late]) == Seating::Separated {
+                        continue;
+                    }
+                    let class = match entry.site.is_source_order() {
+                        true => EscapeClass::SourceOrder,
+                        false => EscapeClass::Reachable,
+                    };
                     for subject in blind_escapes(types, &seated[early], &seated[late]) {
-                        escapes.push(format!(
-                            "{fixture} subject {}: {} is seated before {}",
-                            subject.0,
-                            types.display(&seated[early][&subject]),
-                            types.display(&seated[late][&subject]),
-                        ));
+                        census.escapes.push(BlindEscape {
+                            class,
+                            site: format!("{fixture} {} subject {}", entry.site, subject.0),
+                            early: types.display(&seated[early][&subject]),
+                            late: types.display(&seated[late][&subject]),
+                        });
                     }
                 }
             }
         }
     }
-    escapes.sort();
-    assert_eq!(
-        escapes, BLIND_ESCAPE_POPULATION,
-        "the blind-escape population moved: every entry is a seat where a value the plan admits reaches a \
-         body its representation does not fit, and only fz-kdt.119 / fz-kdt.107 can retire one",
-    );
+    census
 }
 
-/// Every position in the census where the arm seated first does not name what
-/// the arm seated second holds -- TWO of them on the fixtures that carried the
-/// 19 over 12 arm pairs at fz-kdt.129's landing, plus one this ticket's own
-/// reproducer contributes by design.
+/// The census as SEATS, one class at a time: which surface the plan tests
+/// first.
+fn seated_escapes(census: &BlindEscapeCensus, class: EscapeClass) -> Vec<String> {
+    let mut seated = census
+        .escapes
+        .iter()
+        .filter(|escape| escape.class == class)
+        .map(|escape| format!("{}: {} is seated before {}", escape.site, escape.early, escape.late))
+        .collect::<Vec<_>>();
+    seated.sort();
+    seated
+}
+
+/// The census as PAIRS: which two surfaces meet blind, with the seat
+/// forgotten, so an arrival that flips an arrival-kept pair reads the same.
+/// Both classes are here, and the SITE says which: whether an order is the
+/// programmer's is a fact about the site, so no arrival can move a pair
+/// between them.
+fn escaping_pairs(census: &BlindEscapeCensus) -> Vec<String> {
+    let mut pairs = census
+        .escapes
+        .iter()
+        .map(|escape| {
+            let (first, second) = match escape.early <= escape.late {
+                true => (&escape.early, &escape.late),
+                false => (&escape.late, &escape.early),
+            };
+            format!("{}: {first} with {second}", escape.site)
+        })
+        .collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
+/// The blind escapes at the SOURCE-ORDER sites: a function's own clause
+/// dispatch, a body's `case`, a `receive`'s clauses.
 ///
-/// Each line reads: at this subject the two arms put ONE question to the
-/// runtime, and the arm seated second holds values the arm seated first does
-/// not name. Every subject here holds a LIST, and every one of the 19 was
-/// fz-kdt.107 step 3's, because a list-shape test could not see elements.
+/// Empty, and the emptiness is the finding: the seat gate excludes these three
+/// because their order is the programmer's, so this is the only place a blind
+/// clause pair would be counted, and there are none.
 ///
-/// The list axis can see them now, and the census reads it: seventeen entries
-/// leave outright (disjoint heads are a real separation, so those pairs never
-/// meet on an erasing axis at all), and the two that remain are the pairs
-/// whose heads OVERLAP without either surface containing the other --
-/// `[:false | :nil]` against `[int | :nil]` on `:nil`, and `[:false | :true]`
-/// against `[int | :ok | :true]` on `:true`. That is fz-kdt.131's facet 3
-/// exactly: overlap without containment, where no seat is escape-free and
-/// arrival stands. Neither is a head the axis failed to read; both are heads
-/// that genuinely meet, with a tail no test reads behind them.
+/// [`SOURCE_ORDER_PLANS_ON_THE_CENSUS`] says how much of the class that zero
+/// speaks for.
+const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
+
+/// How many plans of each source-order kind the census walks, and how many of
+/// them it cannot read: `(kind, plans, unreadable)`.
 ///
-/// They are ARRIVAL-KEPT AND PINNED, not fixed. Both are benign today only
-/// because the two arms are specializations of one source function with boxed
-/// element access -- argued, never proven -- and the cure is a repr-level or
-/// minting-level decision, not an ordering rule.
+/// A clause dispatch asks whatever the source patterns ask, and
+/// [`seated_arm_surfaces`] compares `Region::Type` questions only, so most
+/// entry plans and every `case` here are skipped. Pinning the numbers per kind
+/// is what stops [`SOURCE_ORDER_BLIND_ESCAPES`] from being an honest-looking
+/// zero over a class nobody looked at. The gate prints the variant breakdown
+/// beside them, and reading the readable variants is fz-kdt.187's.
 ///
-/// The third entry is `dispatch_list_head_separates`, the fixture fz-kdt.107
-/// step 3 added, and it is here ON PURPOSE: the same A/B pair, written down as
-/// source, so the population fz-kdt.131 owns has a reproducer of its own
-/// beside the pairs this ticket cured. It is not a regression and it is not a
-/// new class.
+/// A kind that reads zero plans is ABSENT here rather than zero, because the
+/// walk only reports the kinds it saw; a row appearing or leaving is the
+/// census fixtures changing shape, which wants looking at either way.
 ///
-/// The list is a RATCHET: any OTHER new entry is a new latent miscompile and
-/// wants a ticket, not a re-blessed constant.
-const BLIND_ESCAPE_POPULATION: &[&str] = &[
-    "fixtures2/behavior/dispatch_list_head_separates.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :nil] is seated before [int | :nil]",
-    "fixtures2/behavior/enum_predicate_search.fz subject 0: [:false | :true] is seated before [int | :ok | :true]",
-];
+/// fz-kdt.183: `entry` 144 -> 153 plans, 137 -> 146 unreadable. Nine more
+/// entry plans exist because a demanded list element keys nine more reducer
+/// specializations apart, and every one of them asks a `Region::List`
+/// question, which this walk does not read -- so the readable denominator is
+/// unchanged and the zero above still speaks for exactly what it did.
+/// fz-kdt.199: `entry` 153 -> 169 plans, 146 -> 162 unreadable. Sixteen more
+/// entry plans exist because a returned accumulator keys its seed apart from
+/// its ascent, and every one of them asks a `Region::List` or
+/// `Region::TupleArity` question, which this walk does not read -- so the
+/// READABLE denominator is 7 either way and the zero above still speaks for
+/// exactly what it did.
+/// fz-kdt.120: `entry` 169 -> 171 plans, 162 -> 164 unreadable, and both new
+/// plans are `Region::TupleArity` (25 -> 27; every other variant is flat). The
+/// two are one apiece on `00420_enum_take_drop_split` and
+/// `behavior/enum_take_drop_split`: with the fz-f98.16 empty-list veto gone,
+/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
+/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
+/// rung and left `{:cont, [int]}` alone -- so each fixture's artifact gains two
+/// dispatch plans and its `tuple_arity` questions go 21 -> 28. The READABLE
+/// denominator is 7 either way and the zero above still speaks for exactly what
+/// it did.
+const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
+    &[("case", 3, 3), ("entry", 171, 164), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -9368,19 +9837,88 @@ fn blind_escapes(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap
         .collect()
 }
 
-/// Whether seating `early` before `late` can route a value into a body that
-/// never named it: at every position, either their tests differ -- and the
-/// plan's own test keeps `late`'s values out -- or the test is blind there and
-/// `early`'s surface already contains `late`'s.
+/// What one seated pair asks of a seat, read back off the LANDED artifact.
 ///
-/// This mirrors `callsite_dispatch::covers`, read back off the LANDED
-/// artifact, which is the only place the whole materialization path can be
-/// held to it.
-fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> bool {
-    early.len() == late.len() && blind_escapes(types, early, late).is_empty()
+/// ONE RELATION, TWO READERS: this mirrors `callsite_dispatch::Seating`
+/// exactly, and this file is the only place the whole materialization path can
+/// be held to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seating {
+    /// The plan's own tests keep the two arms apart outright: at some subject
+    /// their predicates are DISJOINT, so no value satisfies both and no seat
+    /// between them routes anything. Not a blind escape, not a seat finding,
+    /// and not a population -- there is nothing there (fz-kdt.186).
+    Separated,
+    /// Some value reaches both, and wherever the tests cannot separate it
+    /// `early`'s surface already names everything `late` holds.
+    Covering,
+    /// Some value reaches both, and at some subject the test is blind while
+    /// `late` holds values `early` does not name.
+    Escaping,
 }
 
-/// A dispatch's arms in the order the plan seats them, each as the observable
+/// How the plan's own tests relate these two arms.
+///
+/// A row is a CONJUNCTION over its subjects, so the two arms admit a common
+/// call only where EVERY subject admits a common value; where one does not,
+/// the pair is separated and neither half of the coverage question applies.
+///
+/// A subject the two arms ask IDENTICALLY separates nothing -- it admits the
+/// same set to both, whatever that set is -- and saying so is what keeps an
+/// unrealizable projected test from deciding a reading, exactly as production's
+/// `callsite_dispatch::seating` does.
+fn seating(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<SubjectId, Ty>) -> Seating {
+    let reaches_both = early.len() == late.len()
+        && early.iter().all(|(subject, early)| {
+            late.get(subject).is_some_and(|late| {
+                let (early, late) = (types.runtime_type_predicate(early), types.runtime_type_predicate(late));
+                early == late || early.overlaps(&late)
+            })
+        });
+    if !reaches_both {
+        return Seating::Separated;
+    }
+    match blind_escapes(types, early, late).is_empty() {
+        true => Seating::Covering,
+        false => Seating::Escaping,
+    }
+}
+
+/// Why the census cannot read a plan's surfaces, if it cannot: the first
+/// question variant that is not a `Region::Type`, or the broken weld that
+/// leaves a listed body with no arm to read.
+///
+/// This is the same condition [`seated_arm_surfaces`] gives up on, named
+/// instead of silent, so a class whose census reads zero also says how much of
+/// itself it actually looked at. Reading the readable variants -- a
+/// `Region::List` is a shape test over the value exactly as a `Region::Type`
+/// is -- is fz-kdt.187's.
+fn unreadable_reason(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Option<&'static str> {
+    for body_id in bodies {
+        let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
+            return Some("a listed body has no outcome");
+        };
+        let Some(arm) = plan.matrix.arms.iter().find(|arm| arm.outcome == outcome.outcome) else {
+            return Some("an outcome has no arm");
+        };
+        for question in &arm.questions {
+            let variant = match &question.predicate.region {
+                Region::Type(_) => continue,
+                Region::Equal(_) => "Region::Equal",
+                Region::TupleArity(_) => "Region::TupleArity",
+                Region::List(_) => "Region::List",
+                Region::MapKind => "Region::MapKind",
+                Region::MapKeyPresent { .. } => "Region::MapKeyPresent",
+                Region::Bitstring(_) => "Region::Bitstring",
+                Region::Guard(_) => "Region::Guard",
+            };
+            return Some(variant);
+        }
+    }
+    None
+}
+
+/// A plan's bodies in the order its site seats them, each as the observable
 /// surface it puts to every subject it asks about.
 ///
 /// The surface, not only the predicate projected from it: the projection is
@@ -9388,26 +9926,17 @@ fn covers(types: &Types, early: &BTreeMap<SubjectId, Ty>, late: &BTreeMap<Subjec
 /// come off the artifact together.
 ///
 /// An arm asking a question the plan does not put through `Region::Type` is not
-/// a test this can compare, and the whole dispatch is skipped rather than
-/// guessed at.
-fn seated_arm_surfaces(dispatch: &DispatchCallEdge<usize, BackendReturnFlow>) -> Vec<BTreeMap<SubjectId, Ty>> {
+/// a test this can compare, and the whole plan is skipped rather than guessed
+/// at. That skip is silent no longer: [`unreadable_reason`] names it, the
+/// census counts it and [`SOURCE_ORDER_PLANS_ON_THE_CENSUS`] pins it, and
+/// reading the readable variants is fz-kdt.187's.
+fn seated_arm_surfaces(plan: &PatternDispatchPlan<Ty>, bodies: &[u32]) -> Vec<BTreeMap<SubjectId, Ty>> {
     let mut seated = Vec::new();
-    for call_arm in &dispatch.arms {
-        let Some(outcome) = dispatch
-            .plan
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.body_id == call_arm.body_id)
-        else {
+    for body_id in bodies {
+        let Some(outcome) = plan.outcomes.iter().find(|outcome| outcome.body_id == *body_id) else {
             return Vec::new();
         };
-        let Some(arm) = dispatch
-            .plan
-            .matrix
-            .arms
-            .iter()
-            .find(|arm| arm.outcome == outcome.outcome)
-        else {
+        let Some(arm) = plan.matrix.arms.iter().find(|arm| arm.outcome == outcome.outcome) else {
             return Vec::new();
         };
         let mut asked = BTreeMap::new();
@@ -9458,17 +9987,39 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// the callable-identity shape, and the one fz-kdt.129 added for the seat a
 /// blind list test would otherwise take.
 ///
-/// fz-kdt.107 step 3 adds `dispatch_list_head_separates`, whose three arms are
-/// the trio a head question separates.
+/// fz-kdt.107 step 3 adds `dispatch_list_head_separates`. Its
+/// `List.reduce_while_cont/3` callsite settles FOUR arms and seats TWO of
+/// them: the head question separates the `[:false | :true]` and
+/// `[int | :ok | :true]` arms from each other's values only where their heads
+/// are disjoint, and the other two, `[int]` and `[int | :ok]`, are dropped
+/// because `[int | :ok | :true]` stands in for each and no seat would put
+/// either first (fz-kdt.143). The pair that survives is the fz-kdt.131
+/// facet-3 reproducer this census is here to hold.
 ///
-/// DELIBERATE SUBSET (fz-kdt.141 refutation): the arm perturbation moves 27
-/// fixtures' artifacts; the 13 not listed here (protocol-dispatch, bsx guard,
-/// pipe and receive shapes) move plan content but carry no known
-/// indistinguishable groups -- their coverage is the doc'd sweep recipe with
-/// the canon comparand, not this in-process gate, which exists to hold the
-/// census population's SEATS specifically. Widen it if any of the 13 ever
-/// gains an indistinguishable group.
-const ARM_ORDER_CENSUS: [&str; 15] = [
+/// WHAT IS IN IT (fz-kdt.178): every fixture a corpus walk of all five plan
+/// kinds found carrying a blind pair or a pair one question cannot separate.
+/// The `case` and `receive` kinds put none of them anywhere: over the 469
+/// drivable fixtures the corpus carries 70 `case` plans and 86 `receive`
+/// plans, 156 of which read zero blind pairs, because a `case` or a `receive`
+/// asks `Region::Equal`, `TupleArity`, `List`, `MapKind`, `Bitstring` or a
+/// guard and almost never a bare `Region::Type` -- the same reason the entry
+/// class reads what it reads, and the same fz-kdt.187 that would widen it.
+/// The seven at the end were outside this census while the walk saw call edges
+/// alone -- `mailbox_closure_enum_hofs` was in no census at all, and the other
+/// six were in `WRAPPER_MEMBER_CENSUS` only, which measures whether an
+/// artifact MOVES under a permuted wrapper order and not what its plans then
+/// ask.
+///
+/// `00420_enum_take_drop_split` and `enum_take_drop_split` are the last two
+/// the corpus walk found: each carried four wrapper-selection seat findings on
+/// four adjacent wrappers that fz-kdt.179 has since cured -- `w21`-`w24` in the
+/// PUBLISHED numbering of the tree they were measured in, which is neither the
+/// numbering of this tree nor the one a dump prints (fz-kdt.193) -- and they
+/// stay in the census
+/// because their wrapper member selections still exercise the weld gate and the
+/// blind-escape walk under every seed -- the ratchet that would catch a
+/// regression of that cure.
+const ARM_ORDER_CENSUS: [&str; 22] = [
     "fixtures2/behavior/dispatch_seat_element_blind.fz",
     "fixtures2/behavior/dispatch_list_head_separates.fz",
     "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
@@ -9484,24 +10035,33 @@ const ARM_ORDER_CENSUS: [&str; 15] = [
     "fixtures2/behavior/repr_seam_enum_count_after_reduce2.fz",
     "fixtures2/behavior/closure_identity_tag_split.fz",
     "fixtures2/behavior/closure_identity_captures.fz",
+    "fixtures2/00276_enum_to_list_and_map.fz",
+    "fixtures2/behavior/enum_hof_three_distinct_closures.fz",
+    "fixtures2/behavior/list_literal_trailing_call.fz",
+    "fixtures2/behavior/mailbox_closure_enum_hofs.fz",
+    "fixtures2/behavior/map_enumerable.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
 ];
 
 /// The fixtures whose CONSTRUCTION-WRAPPER member order is free: compiling each
 /// under a permuted wrapper order moves its `BackendProgram` canon, and
 /// compiling it under the settled one does not.
 ///
-/// A callable value's construction wrapper carries one member per first-class
-/// surface it can be invoked at, and the selection plan that picks between them
-/// is built from the same list (`dispatch_from_callable_flow_edges` and the
-/// members beside it, `jobs/transport.rs`). That list is a `BTreeSet` walked in
+/// A callable value's construction wrapper carries one member per surviving
+/// first-class surface it can be invoked at, and both the member list and the
+/// selection plan are derived from one seated order (`construction_member_selection`
+/// returns the surviving member indices and transport walks exactly them,
+/// `jobs/transport.rs`). The surfaces arrive as a `BTreeSet` walked in
 /// interned-surface order -- the type interner's mint order, which is the
-/// agenda's -- so its order is the scheduler's, exactly like a callsite's
+/// agenda's -- so that order is the scheduler's, exactly like a callsite's
 /// arrival order, and exactly as free to move.
 ///
 /// This is the census the retired `FZ_STRESS_REVERSE_DISPATCH_ARMS` never
 /// touched at all (fz-kdt.136). Measured at this commit by sweeping the corpus
-/// under `wrappers:` seeds and diffing the backend dump; five of the nineteen
-/// are named by the arm census too.
+/// under `wrappers:` seeds and diffing the backend dump; eleven of the nineteen
+/// are named by [`ARM_ORDER_CENSUS`] too, which walks the same wrappers'
+/// selection PLANS rather than whether their artifact moves.
 const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
     "fixtures2/00183_enum_take_list_range.fz",
     "fixtures2/00197_poly_capture_ref.fz",
@@ -9528,11 +10088,16 @@ const WRAPPER_MEMBER_CENSUS: [&str; 19] = [
 ///
 /// `arms:reverse` is the retired knob's exact permutation, kept because the
 /// fixtures and the prose around it were measured under it. The seeds are why
-/// this gate has teeth the reversal did not: at this commit `arms:reverse`
-/// moves 8 fixtures' artifacts and a seed moves 27, and the two seeds here are
-/// the ones whose native movers differ (seed 1 aborts `00277` and
-/// `dispatch_seat_element_blind`; seed 6 aborts `enum_map_family` and
-/// `enum_predicate_search`).
+/// this gate has teeth the reversal did not: measured at fz-kdt.141's landing,
+/// `arms:reverse` moved 8 fixtures' artifacts and a seed moved 27 (both are 0
+/// at `ca23b676f` + fz-kdt.194, which is what
+/// `compiler2_a_permuted_arm_order_renders_the_same_artifact` ratchets; this
+/// gate holds the ANSWER, which was invariant throughout). The two
+/// seeds here are the ones that named the four native aborts fz-kdt.107 step 3
+/// then killed -- seed 1 aborted `00277` and `dispatch_seat_element_blind`,
+/// seed 6 aborted `enum_map_family` and `enum_predicate_search` -- and they
+/// are kept because those are the arrivals that reach the seats, not because
+/// anything still aborts under them.
 const ARM_ORDER_STRESSES: [&str; 3] = ["arms:reverse", "arms:1", "arms:6"];
 
 /// The construction-member settings the in-process gate drives. Two seeds,
@@ -9560,25 +10125,30 @@ const WRAPPER_MEMBER_STRESSES: [&str; 2] = ["wrappers:1", "wrappers:6"];
 /// permutation of exactly the pairs the plan cannot separate -- so as
 /// fz-kdt.119 taught the predicate to separate more of them the same knob got
 /// weaker, and on a callsite whose groups are all singletons it is the
-/// IDENTITY. Measured at this commit: reversal moves 8 fixtures' artifacts, a
-/// seeded permutation moves 27, and reversal moves ZERO construction wrappers
-/// where a seed moves 19. Of the four fixtures that abort natively under a
-/// legal arm order, the reversal reaches ONE.
+/// IDENTITY -- and at `ca23b676f` + fz-kdt.194 every group on the corpus IS a
+/// singleton, so it moves nothing at all. Measured at that head over the
+/// 604-fixture corpus: reversal moves 0 fixtures' artifacts and a seeded arm
+/// permutation moves 0 as well (22 without fz-kdt.194's canonical order over
+/// separated pairs), while a wrapper seed still moves 19. So the arm gates
+/// below assert an invariance the perturbation can no longer break by
+/// reordering separated arms; what they still reach is a permuted arrival
+/// running through the drop and the seat.
 ///
 /// RED AT 788c0c21f on `enum_reduce_halt_arm_order`, which returned
 /// `{:done, 3}` for `{:halted, 3}` when the narrow `{:cont, int}` arm was
 /// listed first (fz-kdt.118 fixed it).
 ///
 /// This gate drives the INTERPRETER, which is where every fixture's answer is
-/// defined and where a mis-seated value survives on its dynamic tag. Natively
-/// four fixtures abort under a legal order, all in one class -- three list arms
-/// whose bodies use incompatible element accessors, no one of which covers
-/// another, so `fz_list_head_int_ref` reads non-int elements as ints
-/// (atoms on two census fixtures, bitstrings and structs on the others)
-/// (fz-kdt.107 step 3). They are `enum_map_family` (`arms:reverse`, `6`),
-/// `00277_enum_tier0_fixture` (seeds 1-5), `dispatch_seat_element_blind`
-/// (every seed) and `enum_predicate_search` (`6`). Reproduce one outside the
-/// harness, where an abort cannot take the suite down with it:
+/// defined and where a mis-seated value survives on its dynamic tag. The
+/// native doors agree. Four fixtures USED to abort under a legal arm order --
+/// `enum_map_family`, `00277_enum_tier0_fixture`, `dispatch_seat_element_blind`
+/// and `enum_predicate_search` -- all in one class: three list arms whose
+/// bodies use incompatible element accessors, no one of which covers another,
+/// so `fz_list_head_int_ref` read non-int elements as ints. fz-kdt.107 step 3
+/// gave the list axis a head question and killed the class; measured on the
+/// JIT door at the fz-kdt.143 landing, all 28 combinations of those four
+/// fixtures with `arms:reverse` and seeds 1-6 exit 0. Reproduce outside the
+/// harness, where an abort could not take the suite down with it:
 ///
 ///     FZ_STRESS_PERMUTE_DISPATCH=arms:1 \
 ///       cargo run --bin fz2 -- run fixtures2/behavior/dispatch_seat_element_blind.fz
@@ -9595,13 +10165,16 @@ fn compiler2_dispatch_answers_the_same_under_a_permuted_arm_order() {
 /// were derived in, and nothing else.
 ///
 /// This half is what fz-kdt.136 found missing. It is green on stdout at this
-/// commit, on every door. It used to be green over a live hazard: the
-/// surface-membership tripwire reported 268 escapes at the settled order, 68
-/// under `wrappers:1` and 20 under `wrappers:6` -- values reaching a member
-/// whose surface never named them, with the order deciding which. fz-kdt.132
-/// removed the population rather than the ordering (the escapes were a fold
-/// accumulator rung that had no member at all), so the tripwire now reads 0
-/// under every setting and this gate holds the law on its own:
+/// commit, on every door. Until fz-kdt.179 it was green OVER a live hazard: the
+/// surface-membership tripwire read 12 escapes on `00277_enum_tier0_fixture` at
+/// the SETTLED wrapper order and 0 under `wrappers:1`/`wrappers:6`/
+/// `wrappers:reverse`, because the member the mint order put first took values
+/// its surface never named and only a permutation happened to put a covering
+/// member there instead. Member selection runs the drop and the covering seat
+/// now, so the settled order reads 0 as well -- but identical answers still are
+/// not the same claim as safe routing, and
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` holds
+/// the other half;
 /// `compiler2_a_permuted_wrapper_order_reseats_the_construction_members` is
 /// what proves the perturbation still lands.
 #[test]
@@ -9629,63 +10202,178 @@ fn assert_no_answer_moves(fixtures: &[&str], stresses: &[&str]) {
     }
 }
 
-/// fz-kdt.132: a value never reaches a body whose surface never named it.
+/// A value never reaches a body whose surface never named it, on any fixture
+/// [`SURFACE_MEMBERSHIP_CENSUS`] names, at any arrival it names.
 ///
 /// A dispatch test is a PROJECTION of the surface an arm was compiled for, so
 /// passing the test is not the same as belonging to the surface. Where the two
-/// part company, a body typed for one domain runs on a value from another --
-/// today by luck: BEFORE fz-kdt.138 the emitted tuple test was blind at a
-/// list position (the fz-kdt.119 Scope-A carve-out, since deleted) and handed
-/// every value to whichever member came first; making the test exact would
-/// have left that population nowhere to go (`backend callable construction N
-/// matched no member`) -- which is why fz-kdt.132 (the covering rung) had to
-/// land first, and did.
+/// part company, a body typed for one domain runs on a value from another. The
+/// `FZ_STRESS_ASSERT_SURFACE_MEMBERSHIP` tripwire measures that gap on the
+/// production interpreter path by re-asking each admitted value's own test
+/// under `PositionScope::Full`; this is the same census the shell recipe in
+/// `.agent/docs/dispatch-matrix.md` reads off stderr, driven in process so the
+/// population cannot grow unnoticed.
 ///
-/// The escapes were never a dispatch defect. They were a MISSING
-/// SPECIALIZATION: a fold's reducer is minted beside its initial accumulator
-/// and keeps that arrow, and `resolve_closure_call` used to intersect every
-/// later argument with it -- so each call was clamped back onto the initial
-/// specialization, the accumulator's ascent stopped one rung short, and the
-/// grown accumulator the fold actually produces got no specialization and no
-/// construction member at all. The values with nowhere to belong are exactly
-/// that rung.
+/// TWO ASSERTIONS, IN THIS ORDER, because a zero has two ways of being wrong
+/// (fz-kdt.187). First: the row OBSERVED something. A fixture whose wrappers
+/// have collapsed to single members runs no dispatch, so its escape count is 0
+/// no matter what the compiler does, and the row is watching an empty room --
+/// that is a stale row, not a green one, and it gets its own finding. Only then:
+/// the observations and the escapes are the two numbers
+/// [`SURFACE_MEMBERSHIP_CENSUS`] pins.
 ///
-/// This is the dynamic census the shell recipe in `.agent/docs/dispatch-matrix.md`
-/// reads off stderr, driven in process. The seven fixtures are the whole of the
-/// corpus that ever reported an escape; RED at 8002889ff with 268 of them
-/// (00183 16, 00230 16, 00418 4, 00419 16, 00420 106, enum_take_drop_split 106,
-/// unused_range_binding 4), and the corpus total is 0 either way outside this
-/// list.
+/// A RATCHET, not a blessing: see the table's own doc for what each row holds
+/// and what moving one means.
 #[test]
 fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
-    let mut escaping = Vec::new();
-    for fixture in SURFACE_MEMBERSHIP_CENSUS {
+    let mut blind = Vec::new();
+    let mut moved = Vec::new();
+    for (fixture, setting, observed, expected) in SURFACE_MEMBERSHIP_CENSUS {
+        let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+            crate::compiler2::callsite_dispatch::dispatch_stress::setting(setting),
+        );
         let census = crate::runtime_type_predicate::surface_membership::SurfaceMembershipCensus::install();
         interpreted_answer(fixture);
-        let escapes = census.escapes();
-        if escapes != 0 {
-            escaping.push(format!("{fixture}: {escapes}"));
+        let (observations, escapes) = (census.observations(), census.escapes());
+        let arrival = if setting.is_empty() {
+            "the settled arrival"
+        } else {
+            setting
+        };
+        if observations == 0 {
+            blind.push(format!("{fixture} under {arrival}"));
+        }
+        if (observations, escapes) != (observed, expected) {
+            moved.push(format!(
+                "{fixture} under {arrival}: {observations} observations / {escapes} escapes, census says \
+                 {observed} / {expected}"
+            ));
         }
     }
     assert!(
-        escaping.is_empty(),
+        blind.is_empty(),
+        "a row that observes nothing reports no escape for the same reason an empty room is quiet, so its \
+         zero says `nothing was looked at` rather than `nothing escaped` -- re-home it onto a fixture and \
+         arrival that still reach a dispatch, or delete it and say why: {}",
+        blind.join("; "),
+    );
+    assert!(
+        moved.is_empty(),
         "a value that passes an arm's test but lies outside the surface that arm was compiled for is \
-         running a body that never named it -- the arm is missing, not the test: {}",
-        escaping.join(", "),
+         running a body that never named it -- the arm is missing, not the test; and an observation count \
+         that moves is the row's denominator changing under it: {}",
+        moved.join("; "),
     );
 }
 
-/// Every fixture in the corpus that has ever reported a surface-membership
-/// escape. The whole corpus is the shell sweep in
-/// `.agent/docs/dispatch-matrix.md`; these seven are what it found.
-const SURFACE_MEMBERSHIP_CENSUS: [&str; 7] = [
-    "fixtures2/00183_enum_take_list_range.fz",
-    "fixtures2/00230_enum_take_chained.fz",
-    "fixtures2/00418_enum_count_range.fz",
-    "fixtures2/00419_enum_take_mixed.fz",
-    "fixtures2/00420_enum_take_drop_split.fz",
-    "fixtures2/behavior/enum_take_drop_split.fz",
-    "fixtures2/behavior/unused_range_binding.fz",
+/// The measured surface-membership population: fixture, arrival, observations,
+/// escapes. `""` is the settled arrival, and every other string is a
+/// `FZ_STRESS_PERMUTE_DISPATCH` setting the fixpoint could legally have
+/// delivered instead.
+///
+/// OBSERVATIONS ARE THE DENOMINATOR, and without them a row cannot be read
+/// (fz-kdt.187). `observe` fires once per `Region::Type` question a running
+/// dispatch plan MATCHES, so a fixture that runs no such question reports no
+/// escape for the same reason an empty room is quiet: its 0 says "nothing was
+/// looked at", not "nothing escaped". The gate asserts the count is positive
+/// before it reads the escapes, and pins it, so a row cannot go blind in
+/// silence.
+///
+/// The list-tail reading (fz-kdt.144) replaced the tuple-era population, which
+/// fz-kdt.132 emptied and fz-kdt.138 then made empty by construction. The first
+/// seven rows are that tuple-era population, kept at 0 because a table that
+/// only lists what escapes cannot say that anything stopped escaping.
+///
+/// **`00277_enum_tier0_fixture` and `enum_predicate_search` are GONE from this
+/// table, and the observation counter is what found them.** Both held
+/// fz-kdt.179's and fz-kdt.183's cures; both now observe ZERO at every arrival
+/// this table drove them at. Read off `interp --dump backend=`, the cause is
+/// the same for both and it is fz-kdt.199: `00277` publishes five construction
+/// wrappers and `enum_predicate_search` publishes 32, and EVERY one
+/// of them is single-member with no selection plan, so
+/// `select_construction_member` takes its `None if members.len() == 1` branch
+/// and no dispatch runs. The cures are real and their fixtures no longer build
+/// the shape that shows them.
+///
+/// WHERE THE SEVEN BLIND ROWS WENT. `00277`'s three wrapper orders and its
+/// `arms:6` moved to `behavior/enum_take_drop_split`, which still builds what
+/// they were written to watch: 23 of its 38 wrappers are multi-member WITH a
+/// selection plan, so a permuted wrapper or arm order really does reseat the
+/// members a value is routed among, and it observes 375 at each of those four
+/// arrivals. `enum_predicate_search`'s `arms:6` moved to `00419_enum_take_mixed`
+/// -- fz-kdt.183's cure was about two list arms whose ELEMENTS differ, and that
+/// is `enum_take_mixed`'s subject; all four of its wrappers are two-member with
+/// a selection plan, and it observes 36 under `arms:6`. The two SETTLED rows
+/// were DELETED rather than re-homed, because the settled arrival is already
+/// held by the six settled rows above them and a re-homing would have been a
+/// duplicate row, not a kept property.
+///
+/// WHAT THE OLD `00277` ROWS RECORDED, kept here because the table no longer
+/// can. Its construction wrapper's member-selection plan for
+/// `Enum.reverse(1..7//2, [:tail])`'s reducer used to seat `list(int)` ahead of
+/// `list(int | :tail)`, so the accumulator `[1, :tail]` and its growth passed
+/// `list(int)`'s head test and ran the body compiled for `[integer]` -- 12
+/// escapes at the settled arrival, 12 under `arms:6` and `arms:reverse`, 0
+/// under every wrapper order. stdout was right on every door because the
+/// accumulator lane is `ValueRef` in both bodies (boxed element access, the
+/// fz-kdt.131 correlation nobody proved), so the escape was latent. Member
+/// selection now runs through `routable_alternatives` (fz-kdt.179): the
+/// covering member stands in for `list(int)`, the drop takes it, and every
+/// arrival read 0 -- until fz-kdt.199 left the fixture with nothing to select
+/// among at all.
+///
+/// WHAT THE OLD `enum_predicate_search` ROWS RECORDED. The `arms:6` row was
+/// fz-kdt.131's facet-3 pair -- two list arms whose heads overlap and neither
+/// of whose surfaces contains the other -- measured on the production path for
+/// the first time, and fz-kdt.183 cured it 1 -> 0. The pair existed because one
+/// `List.reduce_while_step/3` key stood for two callers whose list elements
+/// differ; with the element in the key the two arms are two keys and neither is
+/// blind to the other's values. fz-kdt.131 has no reproducer in this tree and
+/// must decide one -- the facet-3 shape is still constructible, this fixture
+/// just no longer builds it.
+///
+/// A RATCHET, not a blessing. Every row reads 0 escapes now, each holding a
+/// fixture and arrival that once escaped or could regress; a count this table
+/// does not carry -- in either direction, and in either column -- is either a
+/// new latent miscompile, a cure, or a fixture that stopped exercising the
+/// property, and all three want the table edited deliberately rather than a
+/// number re-blessed.
+///
+/// fz-kdt.120: `enum_take_drop_split` reads 375 -> 373 OBSERVATIONS at all six
+/// of its arrivals, escapes flat at 0. The denominator moved because the plan
+/// shape did. With the fz-f98.16 empty-list veto gone,
+/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
+/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
+/// rung; the body's two rungs must then be told apart, so the artifact grows an
+/// entry clause dispatch asking `tuple_arity(2)` and `equal(:cont)`/
+/// `equal(:halt)`. Measured on the `--dump backend=` canon: +2 dispatch plans,
+/// `tuple_arity` questions 21 -> 28, `equal` +2, `Region::Type` questions FLAT
+/// at 62, executables flat at 237, and interp and run stdout byte-identical.
+/// Two evaluations that used to reach a matched `Region::Type` question are
+/// settled by that clause dispatch instead, which is the denominator changing
+/// under the row and not the escape count moving.
+const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
+    ("fixtures2/00183_enum_take_list_range.fz", "", 36, 0),
+    ("fixtures2/00230_enum_take_chained.fz", "", 36, 0),
+    ("fixtures2/00418_enum_count_range.fz", "", 6, 0),
+    ("fixtures2/00419_enum_take_mixed.fz", "", 36, 0),
+    ("fixtures2/00420_enum_take_drop_split.fz", "", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "", 373, 0),
+    ("fixtures2/behavior/unused_range_binding.fz", "", 6, 0),
+    // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
+    // hold, re-homed onto the fixture that still selects among members.
+    ("fixtures2/behavior/enum_take_drop_split.fz", "arms:6", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:1", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:6", 373, 0),
+    ("fixtures2/behavior/enum_take_drop_split.fz", "wrappers:reverse", 373, 0),
+    // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
+    // fixture whose list arms still differ at the element.
+    ("fixtures2/00419_enum_take_mixed.fz", "arms:6", 36, 0),
+    // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
+    // says why (the fold hands the TAIL to the recursive dispatch, so the
+    // mixed list never reaches the `[:false | :true]` arm), and this row is
+    // what holds that sentence to the tree.
+    ("fixtures2/behavior/dispatch_list_head_separates.fz", "", 4, 0),
 ];
 
 /// fz-kdt.141 / fz-kdt.136: the wrapper half of the stress has teeth.
@@ -9701,10 +10389,16 @@ const SURFACE_MEMBERSHIP_CENSUS: [&str; 7] = [
 /// keyed on accumulator tuples that differ only at a list position -- pairs
 /// the tuple test COULD not separate before fz-kdt.138 (whichever the mint
 /// order put first took every value) and now separates by shape and head.
-/// Which member the mint order lists first is what this perturbation moves. (fz-kdt.132 made every one of those members cover the values that
-/// reach it, so the choice is no longer a hazard -- but it is still a choice
-/// nothing but the interner makes, which is what this gate holds to one
-/// answer.)
+/// Which member the mint order lists first is what this perturbation moves.
+/// On this fixture that choice is no longer a hazard -- fz-kdt.132 minted the
+/// covering rung every one of its members needed, and the tripwire reads 0 here
+/// at every setting -- but it is still a choice nothing but the interner makes,
+/// which is what this gate holds to one answer. Where a wrapper's members are
+/// NOT all covering, the mint order used to decide a routing (00277 read 12
+/// surface-membership escapes at the settled order before fz-kdt.179); member
+/// selection runs the drop and the covering seat now, so that no longer depends
+/// on the interner, and `compiler2_no_value_reaches_a_construction_member_that_never_named_it`
+/// holds it at 0 under every setting.
 #[test]
 fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
     use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
@@ -9727,6 +10421,219 @@ fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
          a stress that cannot move them proves nothing about the order they arrived in",
     );
 }
+
+/// fz-kdt.193: the number a selection site's LABEL prints is the number the
+/// dump heads that wrapper's block with.
+///
+/// A wrapper has two numbers. Its `identity` is its position in
+/// `construction_wrappers`, and it is what the interpreter prints when a member
+/// selection goes wrong (`select_construction_member`'s three error messages).
+/// Its CANONICAL number is where `ProgramCanon::wrapper_order` sorts it, and it
+/// is what `--dump backend=` prints. They agree only by accident: on
+/// `00419_enum_take_mixed` the map is `0->2, 1->3, 2->0, 3->1` and no wrapper
+/// is a fixed point at all, so a label that printed the identity sent a reader
+/// following a failure message into the dump to the WRONG BLOCK, every time.
+///
+/// The cure is one authority, not a second opinion:
+/// [`PlanSite::Selection`] carries the number
+/// [`canonical_wrapper_numbers`](crate::compiler2::canon::canonical_wrapper_numbers)
+/// computes, which is `wrapper_order` read the other way round -- the same
+/// order the dump prints in. It prints BOTH numbers, because both have a
+/// reader: the canonical one leads to the dump, and the published one is what
+/// a runtime error and a debugger show.
+///
+/// AND THE PERTURBATION LANDS, which is what stops this being a tautology: the
+/// last assertion is that no selection site on this fixture has its two numbers
+/// agree, so the old label named the wrong block at every one of the four and
+/// this gate is exactly as red at base as the defect it holds.
+///
+/// `enum_map_family` was the ticket's subject and cannot be: fz-kdt.199 left
+/// all twelve of its wrappers single-member with no selection plan, so it
+/// carries no `PlanSite::Selection` at all now. `00419_enum_take_mixed` does --
+/// four wrappers, four two-member selections -- and its map has no fixed point
+/// either.
+#[test]
+fn compiler2_a_selection_sites_label_names_the_wrapper_the_dump_prints() {
+    let fixture = "fixtures2/00419_enum_take_mixed.fz";
+    let (compiler, program) = driven_backend_program(fixture);
+    let world = compiler.world();
+
+    // The reader's destination. Canon prints one block per wrapper, in
+    // canonical order, so the Nth block is headed `wrapper wN` -- and that is
+    // the only thing a number in a label can mean to whoever follows it here.
+    let dump = crate::compiler2::canon::canon_backend_program(world, &program);
+    let heads = dump
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("wrapper w"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        heads,
+        (0..program.construction_wrappers.len())
+            .map(|canonical| format!("wrapper w{canonical}"))
+            .collect::<Vec<_>>(),
+        "the dump heads one block per wrapper in canonical order; if it stopped doing that, a label \
+         could not name a block at all",
+    );
+
+    let canonical_of = crate::compiler2::canon::canonical_wrapper_numbers(world, &program);
+    let mut checked = 0;
+    let mut both_numbers_differ = 0;
+    for entry in artifact_plans(world, &program) {
+        let PlanSite::Selection { wrapper, .. } = entry.site else {
+            continue;
+        };
+        let label = entry.site.to_string();
+        let canonical = canonical_of[wrapper as usize];
+        assert!(
+            label.starts_with(&format!("wrapper w{canonical} ")),
+            "a selection site's label must LEAD with the number the dump prints, because that is the \
+             number a reader carries into `--dump backend=`: {label}",
+        );
+        assert_eq!(
+            heads[canonical],
+            format!("wrapper w{canonical}"),
+            "the block {label} sends a reader to must be the one the dump heads with that number",
+        );
+        assert!(
+            label.contains(&format!("(published w{wrapper})")),
+            "the published identity is what a runtime error and a debugger show, so the label keeps it \
+             too rather than trading one wrong number for another: {label}",
+        );
+        checked += 1;
+        both_numbers_differ += usize::from(canonical != wrapper as usize);
+    }
+    assert_eq!(
+        checked, 4,
+        "{fixture} is the subject because it still publishes four wrapper member selections; a fixture \
+         with none proves nothing here",
+    );
+    assert_eq!(
+        both_numbers_differ, checked,
+        "the two numberings must actually disagree on every site, or this gate would pass on a label \
+         that printed the published identity and would not be red at the defect it holds",
+    );
+}
+
+/// fz-kdt.194: on the fixtures below, the ARTIFACT -- and not only the answer
+/// -- is the same whichever order the fixpoint delivered a callsite's targets
+/// in.
+///
+/// `compiler2_dispatch_answers_the_same_under_a_permuted_arm_order` holds the
+/// BEHAVIOUR invariant, and it was green long before this: the residues arrival
+/// order decided were meaning-free or the corpus never reached them. What moved
+/// was the ARTIFACT -- arm order, and every plan node and body numbering
+/// downstream of it. Measured at fz-kdt.184's landing (`ca23b676f`), sweeping
+/// all 604 fixtures through `interp --dump backend=`: the settled canon differs
+/// from the `arms:N` canon on the 22 fixtures below, at every one of seeds 1-6
+/// and on the identical fixture set at each, and on none of the other 453 that
+/// render one.
+///
+/// Every one of those 22 moved on a SEPARATED pair -- two arms no value can
+/// reach both of, whose order therefore said nothing.
+/// `specificity_order`'s canonical repair settles them from any arrival, and
+/// the population reads 0 at every seed.
+///
+/// WHAT THIS DOES NOT CLAIM. The arm axis is not closed in general. The repair
+/// settles a run only where the run is pairwise separated end to end, and a
+/// `Covering` or `Escaping` pair anywhere in it stops there
+/// (`a_covering_pair_blocks_the_repair_and_leaves_the_arrival_showing` and
+/// `a_separated_run_a_meaning_bearing_pair_blocks_is_not_sorted_through` are
+/// the two shapes). What is measured is this corpus at this head: the
+/// population that moved is 0, and this gate is the ratchet on it.
+///
+/// A RATCHET ON THE WHOLE MEASURED POPULATION, not a sample: a fixture that
+/// starts moving again is an ordering axis that has re-opened, and it must be
+/// diagnosed rather than removed from this list.
+///
+/// WHAT IT COSTS, AND WHAT THAT BOUGHT. 22 fixtures x 3 compiles -- one
+/// settled and one per seed -- is the whole of the gate, and compiling
+/// fixtures is the most expensive thing this suite does. Measured back to back
+/// in a debug build on one machine: **36.9 s** at the two seeds it drives,
+/// against **61.6 s** at the four settings the prototype swept
+/// (`arms:reverse` plus seeds 1, 3 and 6). At four it joined
+/// `compiler2_dispatch_answers_the_same_under_a_permuted_arm_order`,
+/// `..._wrapper_order` and
+/// `compiler2_dispatch_blind_escape_census_is_the_known_population` above the
+/// harness's 60-second banner; at two it runs below them.
+///
+/// The 25 s came off readings measured to carry no signal, and measured BY
+/// INJECTION rather than argued: with the repair call deleted, this gate
+/// reports **66** findings under the prototype's four settings and every one
+/// of them is a seed -- `arms:reverse` contributes ZERO (a group mirror is the
+/// identity on singleton groups, and every group on this corpus is one), and
+/// seeds 1, 3 and 6 each name the SAME 22 fixtures. So the reversal bought 22
+/// compiles of nothing and the third seed bought a duplicate. Under the two
+/// seeds kept, the same injection reports **44**, so the gate is still exactly
+/// as red at base as the population it ratchets.
+///
+/// The SECOND seed is kept for the reason `WRAPPER_MEMBER_STRESSES` keeps its
+/// second: a seeded permutation of a two-element arrival is the identity for
+/// half the seeds, so one seed can be blind on a callsite this corpus does not
+/// have yet. `arms:reverse` is still exercised by `ARM_ORDER_STRESSES`, which
+/// drives the cheap in-process ANSWER gates, and
+/// `.agent/docs/dispatch-matrix.md` carries the recipe for the full six-seed
+/// corpus sweep, which is where a wider question gets asked.
+#[test]
+fn compiler2_a_permuted_arm_order_renders_the_same_artifact() {
+    let mut moved = Vec::new();
+    for fixture in ARM_ORDER_ARTIFACT_CENSUS {
+        let settled = backend_canon(fixture);
+        for stress in ARM_ORDER_ARTIFACT_STRESSES {
+            let permuted = {
+                let _stress = crate::compiler2::callsite_dispatch::dispatch_stress::DispatchStressed::install(
+                    crate::compiler2::callsite_dispatch::dispatch_stress::setting(stress),
+                );
+                backend_canon(fixture)
+            };
+            if permuted != settled {
+                moved.push(format!("{fixture} under {stress}"));
+            }
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "a permuted arrival is an order the fixpoint could legally have delivered, so an artifact \
+         that differs under one is an artifact the schedule wrote: {}",
+        moved.join("; "),
+    );
+}
+
+/// The fixtures whose backend canon moved under a seeded arm permutation at
+/// `ca23b676f`, measured over the whole corpus. Each one carried at least one
+/// separated pair the seat left in arrival order.
+const ARM_ORDER_ARTIFACT_CENSUS: [&str; 22] = [
+    "fixtures2/00231_joined_fn_refs_enum_reduce.fz",
+    "fixtures2/00274_closed_union_protocol.fz",
+    "fixtures2/00281_opaque_reducer_closure.fz",
+    "fixtures2/00384_closure_predicate_wrapper.fz",
+    "fixtures2/00420_enum_take_drop_split.fz",
+    "fixtures2/00426_closed_union_protocol_dispatch.fz",
+    "fixtures2/00428_open_union_protocol.fz",
+    "fixtures2/behavior/brand_refines_its_inner.fz",
+    "fixtures2/behavior/bsx_guard_eq.fz",
+    "fixtures2/behavior/bsx_nested_match.fz",
+    "fixtures2/behavior/closure_identity_captures.fz",
+    "fixtures2/behavior/closure_identity_tag_split.fz",
+    "fixtures2/behavior/enum_map_family.fz",
+    "fixtures2/behavior/enum_reduce_halt_arm_order.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/enumerable_protocol_dispatch.fz",
+    "fixtures2/behavior/opaque_fn_mixed_return.fz",
+    "fixtures2/behavior/opaque_fn_value_join.fz",
+    "fixtures2/behavior/pipe_headless_case.fz",
+    "fixtures2/behavior/range_enumerable.fz",
+    "fixtures2/behavior/repr_seam_closure_predicate.fz",
+    "fixtures2/behavior/same_lambda_two_capture_types_dynamic.fz",
+];
+
+/// The arrival settings the artifact ratchet drives: the two SEEDS
+/// [`ARM_ORDER_STRESSES`] names, and not its `arms:reverse`. All six seeds
+/// moved the identical 22 fixtures at base and the reversal moved none, so a
+/// third seed is a duplicate reading and the reversal is an empty one -- the
+/// gate's doc has the injection numbers that say so. The corpus recipe in
+/// `.agent/docs/dispatch-matrix.md` drives all six seeds and the reversal.
+const ARM_ORDER_ARTIFACT_STRESSES: [&str; 2] = ["arms:1", "arms:6"];
 
 /// One fixture's canonical `BackendProgram` -- the comparand the `--dump
 /// backend` path renders.
@@ -9757,18 +10664,19 @@ fn backend_canon(fixture: &str) -> String {
 /// is built (`callable_flow_resolution_edges_product`), before either derives;
 /// so a monotone member list is the whole construction authority being monotone.
 ///
-/// `enum_map_family` is the subject: its reducer flows to three element families
-/// (atoms, binaries, ints), each crossed with the empty and the grown
-/// accumulator, so its wrapper carries a genuinely multi-surface member list --
-/// the shape whose FIFO/LIFO backend-canon gap (1170 lines) this ticket closes.
-/// The order is non-strict: two members whose surfaces are `cmp_tys`-equal (the
-/// same element with the empty vs the grown accumulator can tie) are `Equal`,
-/// never `Greater`.
+/// `enum_take_drop_split` is the subject. `enum_map_family` was, and it stopped
+/// carrying a multi-surface member list at all under fz-kdt.199: its wrapper's
+/// members were one element family crossed with the empty and the grown
+/// accumulator, and keying the returned accumulator gives each cross its own
+/// activation, so every wrapper there is now single-member. The gate is aimed
+/// at a fixture that still exercises the order rather than re-blessed to
+/// nothing. The order is non-strict: two members whose surfaces are
+/// `cmp_tys`-equal are `Equal`, never `Greater`.
 #[test]
 fn compiler2_construction_members_carry_the_cmp_tys_canonical_order() {
     use std::cmp::Ordering;
 
-    let fixture = "fixtures2/behavior/enum_map_family.fz";
+    let fixture = "fixtures2/behavior/enum_take_drop_split.fz";
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.to_string()),
@@ -10923,10 +11831,23 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
         "deriving recursion should inspect the generated lambda body instead of peeking only at build/2",
     );
 
-    // Recursive non-dispatch inputs collapse to ONE build/2 activation key, and
-    // it still carries the recursive accumulator slot. Read off the settled
-    // per-activation `activation_analysis.defined` frontier, keeping only keys that
-    // earned a converged return (dropping mid-convergence intermediates).
+    // `build/2` RETURNS its accumulator (the `n == 0` branch is `acc`), and the
+    // recursion that rebuilds it runs inside a generated lambda rather than in
+    // `build/2`'s own entries -- which fz-kdt.199's self-call exclusion cannot
+    // see. So the accumulator is keyed and its seed `[]` stands apart from the
+    // ascended `list(int)`: TWO keys, one ascent rung, both bodies identical.
+    // That is a cost this ticket does not buy anything with (the seed
+    // activation is shared by every caller either way), and closing it needs
+    // the strong component rather than one body. It is the same class as the
+    // 91 corpus executables the returned axis adds that gain no distinct
+    // published return (against 36 that do), dominated by `List.reduce_*`
+    // minting fz-kdt.182 `empty_list()`/`list(tau)` rungs across the
+    // cont<->step cycle: fz-kdt.213 owns removing it, so the 2 below is a
+    // RECORD of a known-unbought split and not a law. What the test is FOR is
+    // unchanged: recursion is seen through the generated lambda at all. Read
+    // off the settled per-activation `activation_analysis.defined` frontier,
+    // keeping only keys that earned a converged return (dropping
+    // mid-convergence intermediates).
     let settled_returns = returns.settled_activations(root_id);
     let build_activations = analyzed
         .keys_for_root(root_id)
@@ -10935,8 +11856,9 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
         .collect::<HashSet<_>>();
     assert_eq!(
         build_activations.len(),
-        1,
-        "recursive non-dispatch inputs should collapse to one build/2 activation key",
+        2,
+        "a returned accumulator whose rebuild hides inside a generated lambda keys its seed apart \
+         from its ascent -- a known-unbought split fz-kdt.213 owns, pinned so it cannot grow",
     );
     assert!(
         build_activations
@@ -16354,6 +17276,15 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
     );
 }
 
+/// fz-kdt.183 re-aimed this gate from `enum_predicate_search` at
+/// `enum_take_drop_split`. The old subject stopped building multi-member
+/// callable constructions at all -- its wrappers each carried three reducer
+/// specializations keyed on a list element the key did not name, and with the
+/// element in the key each wrapper has ONE member -- so the gate's own
+/// coverage assertion (`saw_multi_member_construction`) went vacuous. The new
+/// subject still builds sixteen multi-member wrappers with physical captures,
+/// measured over the 469 backend dumps of the corpus, and it is the widest
+/// such fixture that is not one of the two slowest.
 #[test]
 fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     let tel = ConfiguredTelemetry::new();
@@ -16362,8 +17293,8 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/behavior/enum_predicate_search.fz".to_string()),
-        text: include_str!("../../fixtures2/behavior/enum_predicate_search.fz").to_string(),
+        name: Some("fixtures/behavior/enum_take_drop_split.fz".to_string()),
+        text: include_str!("../../fixtures2/behavior/enum_take_drop_split.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -16374,7 +17305,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     demand_backend_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
-        "enum_predicate_search should settle the backend product cleanly",
+        "enum_take_drop_split should settle the backend product cleanly",
     );
 
     let program = backend.last(root_id).program;
@@ -16421,11 +17352,11 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     }
     assert!(
         saw_multi_member_construction,
-        "enum_predicate_search should exercise multi-member callable constructions",
+        "enum_take_drop_split should exercise multi-member callable constructions",
     );
     assert!(
         saw_physical_capture,
-        "enum_predicate_search should exercise callable members with physical captures",
+        "enum_take_drop_split should exercise callable members with physical captures",
     );
 }
 
@@ -16597,4 +17528,399 @@ fn types_display_distinguishes_structurally_close_types() {
              stable sort key degenerates to a hash-order tie"
         );
     }
+}
+
+/// The fixtures whose backend products carry the `[] -> [τ]` ascent ladder,
+/// and how many rung/slot readings each one holds.
+///
+/// The corpus census (the recipe in `.agent/docs/type-specialization.md`, over
+/// `--dump backend=` on all 597 fixtures) reads 58 rungs over 16 fixtures at
+/// fz-kdt.183, up from 53 over 15. These five carry the two runtime modules the
+/// six NEW rungs live in plus the three heaviest ladder fixtures, so the gate
+/// below walks real ladders rather than asserting a vacuous zero.
+const ASCENT_RUNG_FIXTURES: &[&str] = &[
+    "fixtures2/behavior/map_enumerable.fz",
+    "fixtures2/behavior/range_enumerable.fz",
+    "fixtures2/behavior/enum_take_drop_split.fz",
+    "fixtures2/behavior/fz_f98_range_map_converges.fz",
+    "fixtures2/behavior/dead_closure_capture_empty_list.fz",
+];
+
+/// fz-kdt.183 / fz-kdt.124: an ascent rung never climbs a slot nothing demands.
+///
+/// A RUNG is two keys of one function where one is the other with a list
+/// position EMPTIED -- `empty_list()` where the sibling has a list family that
+/// contains it. It exists because `list_element_type([])` is `none`, so `[]`
+/// never converges with `list(τ)`, and a slot that keeps its element therefore
+/// keys the accumulator's first call apart from every later one. That is
+/// fz-kdt.124's ladder and fz-kdt.182 owns the duplicate executables it mints.
+///
+/// What THIS gate holds is the boundary fz-kdt.183 drew and fz-kdt.199 widened
+/// by one axis. A slot BOTH axes leave at `Ignore` is FREIGHT: the collapse
+/// maps every list family reaching it to one addressed class, so `[]` and
+/// `list(τ)` cannot key apart there, and a rung on such a slot would mean the
+/// collapse did not run. The measured count is 0 and it is 0 by construction,
+/// which is why the assertion is an emptiness and not a number.
+///
+/// The six rungs fz-kdt.183 ADDED are all on demanded slots and all honest:
+/// `Map.to_list/4` slot 3 and `Map.reverse/2` slot 0 (map.fz's `reverse(acc,
+/// [])` forwards the accumulator into `Map.reverse/2`'s dispatch slot),
+/// `Range.slice_from/5` slot 4 and `Range.reverse/2` slot 0 (range.fz the
+/// same), and `Kernel.dbg/1` / `Kernel.fz_dbg_value/1` on
+/// `00277_enum_tier0_fixture`, whose final mask is `[Ignore]` on a
+/// NON-recursive body -- the key is precise evidence there and no mask plays
+/// any part. `Range.reduce/5`'s rung retires in the same motion. One
+/// accumulator per function, not a product: bounded by the rule's own law.
+#[test]
+fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
+    let mut readings = 0_usize;
+    let mut on_freight = Vec::new();
+    for fixture in ASCENT_RUNG_FIXTURES {
+        let (compiler, program) = driven_backend_program(fixture);
+        let world = compiler.world();
+        let types = world.types();
+        // `Types::display` renders `list(int)` and `non_empty_list(int)` alike
+        // (`canon_test`'s display hole), and those two are DISJOINT rather than
+        // a ladder. `TyCanon` is the comparand the `--dump backend=` keys and
+        // the corpus census both read, so the gate reads what they read.
+        let labels = |fn_id| crate::compiler2::canon::function_label(world, FunctionId::from_fn_id(fn_id));
+        let mut canon = crate::compiler2::TyCanon::new(&labels);
+        let mut columns_by_function: HashMap<crate::compiler2::FunctionId, Vec<Vec<String>>> = HashMap::new();
+        for executable in &program.executables {
+            let activation = &executable.key.activation;
+            let columns = activation
+                .inputs(types)
+                .iter()
+                .map(|input| canonical_type_body(&canon.render(types, *input)))
+                .collect::<Vec<_>>();
+            let seen = columns_by_function.entry(activation.function).or_default();
+            if !seen.contains(&columns) {
+                seen.push(columns);
+            }
+        }
+        for (function, columns) in &columns_by_function {
+            if !world.body_keying(*function).is_some_and(|keying| keying.recursive) {
+                // A non-recursive key is precise evidence; no collapse runs and
+                // the demand plays no part in it.
+                continue;
+            }
+            let demand = world
+                .input_demand(*function)
+                .expect("a keyed activation should have published its input demand");
+            for low in columns {
+                for high in columns {
+                    for (slot, (low, high)) in low.iter().zip(high.iter()).enumerate() {
+                        if !is_ascent_rung(low, high) {
+                            continue;
+                        }
+                        readings += 1;
+                        let ignored = |axis: &Vec<crate::compiler2::keying::DispatchDemand>| {
+                            matches!(
+                                axis.get(slot),
+                                None | Some(crate::compiler2::keying::DispatchDemand::Ignore)
+                            )
+                        };
+                        // A rung may sit on a slot EITHER axis names: the
+                        // dispatch axis keeps a demanded list's element, and
+                        // the `returned` axis keeps a returned position's
+                        // ground class (fz-kdt.199). Freight is the slot
+                        // neither names.
+                        if ignored(&demand.forwarded_dispatch) && ignored(&demand.returned) {
+                            on_freight.push(format!(
+                                "{fixture} {} slot {slot}: `{low}` keys apart from `{high}` on a slot \
+                                 nothing demands",
+                                crate::compiler2::canon::function_label(world, *function),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "ascent rung readings over {} fixtures: {readings}",
+        ASCENT_RUNG_FIXTURES.len()
+    );
+    assert!(
+        on_freight.is_empty(),
+        "a freight slot collapses every list family to one addressed class, so a rung there means the \
+         collapse did not run: {on_freight:#?}",
+    );
+    assert!(
+        readings > 0,
+        "the gate proved no rung at all, so it cannot have held anything: re-aim \
+         `ASCENT_RUNG_FIXTURES` at fixtures that still carry the ladder",
+    );
+}
+
+/// Whether `low` is `high` with one or more list positions EMPTIED, at any
+/// structural depth.
+///
+/// The comparand is the one the corpus census recipe in
+/// `.agent/docs/type-specialization.md` reads off `--dump backend=` -- the
+/// canonical type body -- but the relation here is BROADER: this gate asks the
+/// question of each slot independently, where the census counts a sibling pair
+/// only when EVERY column stands in the relation. That is deliberate (a gate
+/// should over-read, not under-read) and it is why the two report different
+/// populations off the same dumps. `non_empty_list` is disjoint from
+/// `empty_list`, so an `empty_list()` beside a `non_empty_list(τ)` is two
+/// clause specializations, not a ladder rung.
+fn is_ascent_rung(low: &str, high: &str) -> bool {
+    fn absorbing_list_element(ty: &str) -> Option<&str> {
+        ty.strip_prefix("list(")?.strip_suffix(')')
+    }
+    fn same_kind_element<'a>(ty: &'a str, kind: &str) -> Option<&'a str> {
+        ty.strip_prefix(kind)?.strip_suffix(')')
+    }
+    fn list_kind(ty: &str) -> Option<&'static str> {
+        if ty.starts_with("list(") {
+            Some("list(")
+        } else if ty.starts_with("non_empty_list(") {
+            Some("non_empty_list(")
+        } else {
+            None
+        }
+    }
+    fn tuple_fields(ty: &str) -> Option<Vec<&str>> {
+        let inner = ty.strip_prefix('{')?.strip_suffix('}')?;
+        Some(split_top_level(inner))
+    }
+    fn walk(low: &str, high: &str) -> Option<usize> {
+        if low == high {
+            return Some(0);
+        }
+        if (low == "[]" || low == "empty_list()") && absorbing_list_element(high).is_some() {
+            return Some(1);
+        }
+        if let (Some(low_fields), Some(high_fields)) = (tuple_fields(low), tuple_fields(high))
+            && low_fields.len() == high_fields.len()
+        {
+            let mut total = 0;
+            for (low, high) in low_fields.iter().zip(high_fields.iter()) {
+                total += walk(low, high)?;
+            }
+            return Some(total);
+        }
+        let (low_kind, high_kind) = (list_kind(low)?, list_kind(high)?);
+        if low_kind != high_kind {
+            return None;
+        }
+        walk(same_kind_element(low, low_kind)?, same_kind_element(high, high_kind)?)
+    }
+    walk(low, high).is_some_and(|depth| depth > 0)
+}
+
+/// A canonical rendering is `<fingerprint> <body>`; the body is the structural
+/// text the ladder is a relation over.
+fn canonical_type_body(rendered: &str) -> String {
+    rendered
+        .split_once(' ')
+        .map(|(_fingerprint, body)| body)
+        .unwrap_or(rendered)
+        .to_string()
+}
+
+/// The comma-separated parts of `text` at bracket depth zero.
+fn split_top_level(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0_i32;
+    let mut start = 0_usize;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '[' | '{' | '(' => depth += 1,
+            ']' | '}' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(text[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts
+}
+
+/// The keying laws fz-kdt.183 and fz-kdt.199 must hold in BOTH directions,
+/// each as the smallest program that states one: source, the function the law
+/// is about, and how many activations of it the program may key.
+///
+/// The first four are the rules' LOWER bound -- a slot nothing demands and
+/// nothing returns is freight and must not split, which is what makes this a
+/// demand rule rather than "keep every element" (measured: keeping every list
+/// element splits `partition/4` 1 -> 4 and `split4/6` 1 -> 16, all bodies
+/// identical).
+///
+/// `tag/3`'s accumulator states fz-kdt.199's exclusion, and it is a COST law
+/// rather than a precision one. `tag/3` returns its accumulator, so the return
+/// does depend on a slot the key erases -- but the recursion SUPPLIES that
+/// slot, so the seed activation is the one every caller passes through and its
+/// `[]` is the same `[]` for all of them. Keying it mints one activation per
+/// ascent state (measured: three) and the seed still publishes the join, so the
+/// split is cost with nothing bought.
+///
+/// `fwd/2` is fz-6gb's law, and it is why `InputDemand`'s dispatch demand
+/// carries two halves. `fwd/2` only TRANSPORTS its callable: no clause of
+/// `fwd/2` tests it, so two same-shape lambdas must key one activation. But
+/// `apply2/2` -- which `fwd/2` forwards both slots to -- tests slot 0 against
+/// `:none`, so the FORWARDED demand on that slot is `Whole`. Erasing brands
+/// against the forwarded half would un-share `fwd/2` into one activation per
+/// lambda; erasing against the LOCAL half keeps fz-6gb's law intact while the
+/// key collapse still reads the forwarded demand.
+///
+/// The last three are the rules' UPPER bound: a position the activation
+/// RETURNS and the recursion does NOT supply must key its users apart, or one
+/// activation answers for both with the join of their returns (fz-kdt.199).
+/// `loop/2` states it at a whole slot and `walk/2` one tuple field down, where
+/// the key names the tag and the return IS the payload. `walk/2`'s four are two
+/// tags times two payload element types.
+///
+/// `loop/2` is a CORRECTION of a landed law. fz-kdt.183 blessed exactly this
+/// program at ONE activation as its freight law. Measured on the tree that law
+/// landed on: `loop(0, junk), do: junk` keys one activation publishing
+/// `non_empty_list(binary) | non_empty_list(int)`, and a `@spec` consumer
+/// asking `[binary]` for the first user rejects the program with
+/// `error[spec/violation] ([binary] | [int])`. So the blessed row was pinning a
+/// live wrong-typing as correct: it was a COST law, not a correctness one, and
+/// this axis is what makes freight collapse safe. `carry/2` -- the same shape
+/// that does NOT return the slot -- is the true freight statement and stays
+/// at 1.
+///
+/// `go/3` states the exclusion's boundary. It is a pure PERMUTATION: each
+/// self-call hands a slot the value the caller held at the OTHER slot, so the
+/// recursion supplies neither and both stay carried. That is why the exclusion
+/// is a LEAST FIXPOINT over "held nowhere, or held only at supplied positions"
+/// rather than the eager "not held at this same position" -- the eager test
+/// marks both slots supplied here and re-blends the two users into the base's
+/// wrong diagnostic.
+///
+/// What these rows prove, stated exactly: for every shape here the published
+/// return depends only on what the key names. They do NOT prove the invariant
+/// in general. The exclusion reads SELF calls only, so a position supplied
+/// across a mutual cycle or through a generated lambda is keyed anyway (cost,
+/// never unsoundness -- fz-kdt.213), and the axis rides fz-kdt.183's dispatch
+/// edge set, which does not see a reconstructed or projected forwarding
+/// argument (a missed cure -- fz-kdt.214).
+const ONE_ACTIVATION_KEYING_LAWS: &[(&str, &str, &str, usize)] = &[
+    (
+        "a slot no callee reads and the body does not return is freight",
+        "carry/2",
+        "fn carry(0, junk), do: 0\n\
+         fn carry(n, junk), do: carry(n - 1, junk)\n\
+         fn main() do\n  dbg(carry(3, [1, 2]))\n  dbg(carry(3, [\"a\", \"b\"]))\nend\n",
+        1,
+    ),
+    (
+        "an accumulator the recursion itself supplies stays collapsed",
+        "tag/3",
+        "fn tag(_f, [], acc), do: acc\n\
+         fn tag(f, [h | t], acc), do: tag(f, t, [f.(h) | acc])\n\
+         fn main() do\n  dbg(tag(fn (_x) -> \"n\" end, [1, 2], []))\n\
+         \x20 dbg(tag(fn (x) -> x + 1 end, [1, 2], []))\nend\n",
+        1,
+    ),
+    (
+        "three accumulators built by consing are opaque, not forwarded",
+        "split3/5",
+        "fn split3(_, [], a, b, c), do: {a, b, c}\n\
+         fn split3(p, [h | t], a, b, c) when h < p, do: split3(p, t, [h | a], b, c)\n\
+         fn split3(p, [h | t], a, b, c) when h == p, do: split3(p, t, a, [h | b], c)\n\
+         fn split3(p, [h | t], a, b, c), do: split3(p, t, a, b, [h | c])\n\
+         fn main() do\n  {a, b, c} = split3(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [])\n\
+         \x20 dbg(a)\n  dbg(b)\n  dbg(c)\nend\n",
+        1,
+    ),
+    (
+        "four accumulators do not become a product either",
+        "split4/6",
+        "fn split4(_, [], a, b, c, d), do: {a, b, c, d}\n\
+         fn split4(p, [h | t], a, b, c, d) when h < p, do: split4(p, t, [h | a], b, c, d)\n\
+         fn split4(p, [h | t], a, b, c, d) when h == p, do: split4(p, t, a, [h | b], c, d)\n\
+         fn split4(p, [h | t], a, b, c, d) when h > 6, do: split4(p, t, a, b, [h | c], d)\n\
+         fn split4(p, [h | t], a, b, c, d), do: split4(p, t, a, b, c, [h | d])\n\
+         fn main() do\n  {a, b, c, d} = split4(4, [3, 1, 4, 1, 5, 9, 2, 6], [], [], [], [])\n\
+         \x20 dbg(a)\n  dbg(b)\n  dbg(c)\n  dbg(d)\nend\n",
+        1,
+    ),
+    (
+        "a transported callable is freight to its forwarder even when a callee tests it",
+        "fwd/2",
+        "fn apply2(:none, x), do: x\n\
+         fn apply2(f, x), do: f.(x)\n\
+         fn fwd(f, x), do: apply2(f, x)\n\
+         fn main() do\n  dbg(fwd(fn (a) -> a + 1 end, 1))\n  dbg(fwd(fn (a) -> a + 2 end, 1))\nend\n",
+        1,
+    ),
+    (
+        "a slot the body RETURNS and the recursion carries keys its users apart",
+        "loop/2",
+        "fn loop(0, junk), do: junk\n\
+         fn loop(n, junk), do: loop(n - 1, junk)\n\
+         fn main() do\n  dbg(loop(3, [1, 2]))\n  dbg(loop(3, [\"a\", \"b\"]))\nend\n",
+        2,
+    ),
+    (
+        "a self-call that PERMUTES two carried slots supplies neither, so a returned one still keys",
+        "go/3",
+        "fn go(0, a, _b), do: a\n\
+         fn go(n, a, b), do: go(n - 1, b, a)\n\
+         fn main() do\n  dbg(go(2, [\"x\"], [\"y\"]))\n  dbg(go(2, [9], [8]))\nend\n",
+        2,
+    ),
+    (
+        "a returned tuple FIELD keys its users apart while the key names the tag",
+        "walk/2",
+        "fn walk({:stop, acc}, _n), do: acc\n\
+         fn walk({:go, acc}, 0), do: walk({:stop, acc}, 0)\n\
+         fn walk({:go, acc}, n), do: walk({:go, acc}, n - 1)\n\
+         fn main() do\n  dbg(walk({:go, [1, 2]}, 2))\n  dbg(walk({:go, [\"a\"]}, 2))\nend\n",
+        4,
+    ),
+];
+
+#[test]
+fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
+    let mut moved = Vec::new();
+    for (law, label, source, expected) in ONE_ACTIVATION_KEYING_LAWS {
+        let tel = ConfiguredTelemetry::new();
+        let backend = BackendProgramCapture::new();
+        backend.install(&tel);
+        let mut compiler = Compiler2::new(tel);
+        compiler.submit_code(CodeSubmission {
+            name: Some(format!("{label} keying law")),
+            text: (*source).to_string(),
+        });
+        let root_id = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".to_string(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        demand_backend_product(&mut compiler, root_id);
+        assert_resolved(
+            compiler.drive(),
+            &format!("{law}: the program must settle to a backend product"),
+        );
+
+        let program = backend.last(root_id).program;
+        let world = compiler.world();
+        let keyed = program
+            .executables
+            .iter()
+            .filter(|executable| {
+                crate::compiler2::canon::function_label(world, executable.key.activation.function) == *label
+            })
+            .count();
+        if keyed != *expected {
+            moved.push(format!(
+                "{law}: {label} keys {keyed} activations, the law says {expected}"
+            ));
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "a slot is keyed on DEMAND, not on structure, and demand has TWO axes: a dispatch question \
+         reaching it (fz-kdt.183) or the published return being built from it and the recursion not \
+         supplying it (fz-kdt.199). A slot NEITHER axis reaches stays collapsed, and brand erasure \
+         keeps asking the local question: {moved:#?}",
+    );
 }

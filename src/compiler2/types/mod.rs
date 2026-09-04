@@ -652,10 +652,6 @@ impl Types {
         self.intern(Descr::opaque_of(name))
     }
 
-    pub fn brand_of(&mut self, name: &str) -> Ty {
-        self.intern(Descr::brand_of(name))
-    }
-
     pub fn list_element_type(&mut self, a: &Ty) -> Ty {
         let d = {
             let cx = self.ctx();
@@ -774,10 +770,21 @@ impl Types {
     /// address (`P_e`, `P`) rather than the `any`/`fun_top` fallback
     /// (fz-f98.14.10.2). Breadth is still one address per position, so the
     /// interner folds same-shape arrows to one key exactly as `list(any)` did and
-    /// fz-y6w termination holds. Depth is capped: past `ADDRESS_COLLAPSE_DEPTH`
-    /// nested addressing steps the element tops out at `any` (the earned depth ⊤)
-    /// so a self-nesting list can never grow the address path without bound.
-    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep]) -> Ty {
+    /// fz-y6w termination holds. Depth is capped for LIST families: past
+    /// `ADDRESS_COLLAPSE_DEPTH` nested addressing steps the element tops out at
+    /// `any` (the earned depth ⊤) so a self-nesting list can never grow the
+    /// address path without bound. The cap is checked inside the
+    /// `is_pure_list_family` branch alone; the tuple, resource and map branches
+    /// recurse on the type that arrives, so their depth is bounded by that type
+    /// rather than by this function.
+    ///
+    /// `keep_elements` says DEMAND reached this position (fz-kdt.183): the value
+    /// here is one some body on the forwarding chain asks about, so its own
+    /// structure decides which callee activation -- and therefore which return
+    /// -- this key names, and a ground element is the key's meaning rather than
+    /// freight. It is set only under a demanded list's element; every other
+    /// caller passes `false` and gets the freight collapse unchanged.
+    fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], keep_elements: bool) -> Ty {
         const ADDRESS_COLLAPSE_DEPTH: usize = 8;
         let descr = self.descr(a).clone();
         if descr.is_pure_list_family() {
@@ -787,7 +794,13 @@ impl Types {
             }
             let mut child = path.to_vec();
             child.push(AddrStep::Elem);
-            let elem = self.address_var(&child);
+            let elem = if keep_elements {
+                let elem_descr = list_element_type(self.ctx(), &descr);
+                let elem = self.intern(elem_descr);
+                self.convergence_class_at(&elem, &child, true)
+            } else {
+                self.address_var(&child)
+            };
             self.list(elem)
         } else if descr.is_pure_callable() {
             // A clause-less `fun_top` is the unresolvable fallback; the address
@@ -802,7 +815,7 @@ impl Types {
                 .map(|(j, elem)| {
                     let mut child = path.to_vec();
                     child.push(AddrStep::Field(j as u16));
-                    self.convergence_class_at(elem, &child)
+                    self.convergence_class_at(elem, &child, keep_elements)
                 })
                 .collect::<Vec<_>>();
             self.tuple(&elems)
@@ -810,7 +823,7 @@ impl Types {
             let payload = resource.payload;
             let mut child = path.to_vec();
             child.push(AddrStep::Payload);
-            let payload = self.convergence_class_at(&payload, &child);
+            let payload = self.convergence_class_at(&payload, &child, keep_elements);
             self.resource(payload)
         } else if let Some(map) = descr.pure_map() {
             let fields = map
@@ -820,20 +833,38 @@ impl Types {
                 .map(|(j, (key, value))| {
                     let mut child = path.to_vec();
                     child.push(AddrStep::MapField(j as u16));
-                    (key.clone(), self.convergence_class_at(value, &child))
+                    (key.clone(), self.convergence_class_at(value, &child, keep_elements))
                 })
                 .collect::<Vec<_>>();
             self.map(&fields)
+        } else if keep_elements && self.has_vars(a) {
+            // A kept leaf that still carries a free variable is replaced by the
+            // canonical address var for its position, never kept verbatim: the
+            // collapsed arrow must be canonically ADDRESSED so re-addressing it
+            // through `address_inputs` is the identity (fz-hwn.27,
+            // fz-go4.18.3.2.1). Ground leaves are the key's meaning and survive.
+            self.address_var(path)
         } else {
             *a
         }
     }
 
-    /// Derive a recursive activation's dispatch KEY from its precise evidence
-    /// arrow by widening every non-dispatch subtree to its convergence class, so
-    /// the recursive ascent settles (fz-y6w bounded specialization:
-    /// `list(int)` and `list(any)` share one recursive key). Dispatch demand is
-    /// type-shaped: a tuple tag can remain precise while its payload collapses.
+    /// Derive a recursive activation's KEY from its precise evidence arrow by
+    /// widening every UNDEMANDED subtree to its convergence class, so the
+    /// recursive ascent settles (fz-y6w bounded specialization). The mask is
+    /// `InputDemand::forwarded_dispatch`: what this body asks about a slot,
+    /// joined with what every callee it forwards the slot to asks (fz-kdt.183).
+    /// Demand is type-shaped: a tuple tag can remain precise while its payload
+    /// collapses.
+    ///
+    /// `list(int)` and `list(any)` share one recursive key only where the list
+    /// is FREIGHT -- nothing on the forwarding chain reads it. A list some body
+    /// downstream splits into head and tail keeps its element, because the
+    /// element decides which callee activation is reached and therefore what
+    /// this activation publishes as its return. A `Whole` slot has no collapse
+    /// at all, and forwarding can hand a `Whole` up from a callee that tests a
+    /// literal; fz-y6w's termination argument does not cover a slot with no
+    /// collapse.
     ///
     /// This is ONE whole-arrow operation on the interned arrow (fz-hwn.27.7) — it
     /// replaces a per-input `convergence_class` pre-pass run before the inputs
@@ -842,7 +873,12 @@ impl Types {
     /// variable-addressing `from_inputs` applies. The arrow remains the PRECISE
     /// evidence surface (carried by `ActivationInputs`); the collapse is a derived
     /// dispatch key, and key != evidence is intentional.
-    pub(crate) fn convergence_collapse(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
+    pub(crate) fn convergence_collapse(
+        &mut self,
+        arrow: Ty,
+        mask: &[DispatchDemand],
+        returned: &[DispatchDemand],
+    ) -> Ty {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;
         };
@@ -853,8 +889,9 @@ impl Types {
             .enumerate()
             .map(|(slot, param)| {
                 let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
+                let result = returned.get(slot).unwrap_or(&DispatchDemand::Ignore);
                 let path = [AddrStep::Param(slot as u16)];
-                self.convergence_collapse_ty(*param, demand, &path, true)
+                self.convergence_collapse_ty(*param, demand, result, &path, true)
             })
             .collect::<Vec<_>>();
         self.arrow(&collapsed, ret)
@@ -871,6 +908,11 @@ impl Types {
     /// [`convergence_collapse`], no slot becomes an address var: this erasure
     /// is value-language throughout, so nothing key-shaped can leak into
     /// evidence.
+    ///
+    /// The mask is `InputDemand::local_dispatch`, never the forwarded half: the
+    /// question is "does a clause of THIS body test this slot", and a body that
+    /// merely hands a callable to a callee that tests it still cannot tell two
+    /// same-shape lambdas apart itself (fz-kdt.183).
     pub(crate) fn erase_transported_closure_identities(&mut self, arrow: Ty, mask: &[DispatchDemand]) -> Ty {
         let Some(sig) = self.descr(&arrow).pure_arrow() else {
             return arrow;
@@ -895,7 +937,12 @@ impl Types {
             .map(|(slot, input)| {
                 let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
                 let path = [AddrStep::Param(slot as u16)];
-                self.convergence_collapse_ty(*input, demand, &path, false)
+                // EVIDENCE reads the dispatch axis alone. The `returned` axis
+                // asks the key to KEEP a position, and evidence already keeps
+                // every ground position verbatim (the `Ignore` arm widens only
+                // what carries variables), so there is nothing for it to say
+                // here (fz-kdt.199).
+                self.convergence_collapse_ty(*input, demand, &DispatchDemand::Ignore, &path, false)
             })
             .collect()
     }
@@ -904,9 +951,19 @@ impl Types {
         &mut self,
         ty: Ty,
         demand: &DispatchDemand,
+        returned: &DispatchDemand,
         path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
+        // The two axes ask for two collapses and the DISPATCH axis wins where
+        // they meet: `Whole` there means a question reads the value itself, so
+        // the key keeps it verbatim, which is at least as precise as the class
+        // the `returned` axis would keep (fz-kdt.199).
+        if !matches!(demand, DispatchDemand::Whole)
+            && let Some(collapsed) = self.convergence_collapse_returned(ty, demand, returned, path)
+        {
+            return collapsed;
+        }
         match demand {
             DispatchDemand::Ignore => {
                 // KEY path (`collapse_concrete_ignored`) collapses an ignored slot
@@ -919,7 +976,7 @@ impl Types {
                 // The EVIDENCE path keeps a var-bearing pure callable verbatim and
                 // collapses every other var-bearing type to its (path-blind) class.
                 if collapse_concrete_ignored {
-                    self.convergence_class_at(&ty, path)
+                    self.convergence_class_at(&ty, path, false)
                 } else if self.has_vars(&ty) && !self.descr(&ty).is_pure_callable() {
                     self.convergence_class(&ty)
                 } else {
@@ -927,12 +984,63 @@ impl Types {
                 }
             }
             DispatchDemand::Whole => ty,
-            DispatchDemand::TupleFields(fields) => {
-                self.convergence_collapse_tuple_fields(ty, fields, path, collapse_concrete_ignored)
+            DispatchDemand::TupleFields(fields) => self.convergence_collapse_tuple_fields(
+                ty,
+                fields,
+                returned_fields(returned),
+                path,
+                collapse_concrete_ignored,
+            ),
+            DispatchDemand::ListShape(elem_demand) => self.convergence_collapse_list_shape(
+                ty,
+                elem_demand,
+                returned_element(returned),
+                path,
+                collapse_concrete_ignored,
+            ),
+        }
+    }
+
+    /// The `returned` axis's own answer at one position, or `None` when the
+    /// dispatch axis is the only one that has anything to say here.
+    ///
+    /// `Whole` on this axis means "the activation's published return IS this
+    /// value", and the key keeps its ADDRESSED CONVERGENCE CLASS: list families
+    /// normalise to `list(elem)` with the element kept at every depth and
+    /// capped at `ADDRESS_COLLAPSE_DEPTH`, and closure brands still erase to
+    /// their addressed surface -- the same bounded collapse fz-kdt.183 gives a
+    /// demanded list, one axis over. It is deliberately NOT `Whole`'s verbatim
+    /// keep, which has no collapse at all and no fz-y6w termination argument
+    /// (fz-kdt.200). The cap is a LIST-family cap:
+    /// [`Types::convergence_class_at`] checks it only in its
+    /// `is_pure_list_family` branch, so a tuple, map or resource nest at a
+    /// returned position recurses on the type that arrives with no depth bound
+    /// of its own.
+    ///
+    /// Where the two axes descend into DIFFERENT kinds at one position -- a
+    /// union of a tuple and a list, one axis reading each -- the class keeps
+    /// both, which is the same bounded answer and never the verbatim type.
+    fn convergence_collapse_returned(
+        &mut self,
+        ty: Ty,
+        demand: &DispatchDemand,
+        returned: &DispatchDemand,
+        path: &[AddrStep],
+    ) -> Option<Ty> {
+        match (demand, returned) {
+            (_, DispatchDemand::Ignore) => None,
+            (_, DispatchDemand::Whole)
+            | (DispatchDemand::TupleFields(_), DispatchDemand::ListShape(_))
+            | (DispatchDemand::ListShape(_), DispatchDemand::TupleFields(_)) => {
+                Some(self.convergence_class_at(&ty, path, true))
             }
-            DispatchDemand::ListShape(elem_demand) => {
-                self.convergence_collapse_list_shape(ty, elem_demand, path, collapse_concrete_ignored)
+            (DispatchDemand::Ignore, DispatchDemand::TupleFields(fields)) => {
+                Some(self.convergence_collapse_tuple_fields(ty, &BTreeMap::new(), Some(fields), path, true))
             }
+            (DispatchDemand::Ignore, DispatchDemand::ListShape(elem)) => {
+                Some(self.convergence_collapse_list_shape(ty, &DispatchDemand::Ignore, Some(elem), path, true))
+            }
+            (DispatchDemand::TupleFields(_) | DispatchDemand::ListShape(_) | DispatchDemand::Whole, _) => None,
         }
     }
 
@@ -940,6 +1048,7 @@ impl Types {
         &mut self,
         ty: Ty,
         fields: &BTreeMap<u32, DispatchDemand>,
+        returned_fields: Option<&BTreeMap<u32, DispatchDemand>>,
         path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
@@ -969,12 +1078,15 @@ impl Types {
                 tuple_alternative = tuple_alternative.saturating_add(1);
                 for (index, elem) in sig.elems.iter_mut().enumerate() {
                     let demand = fields.get(&(index as u32)).unwrap_or(&DispatchDemand::Ignore);
+                    let returned = returned_fields
+                        .and_then(|returned| returned.get(&(index as u32)))
+                        .unwrap_or(&DispatchDemand::Ignore);
                     let mut child = path.to_vec();
                     if discriminate_tuple_alternatives {
                         child.push(AddrStep::Variant(alternative));
                     }
                     child.push(AddrStep::Field(index as u16));
-                    *elem = self.convergence_collapse_ty(*elem, demand, &child, collapse_concrete_ignored);
+                    *elem = self.convergence_collapse_ty(*elem, demand, returned, &child, collapse_concrete_ignored);
                 }
             }
         }
@@ -985,6 +1097,7 @@ impl Types {
         &mut self,
         ty: Ty,
         elem_demand: &DispatchDemand,
+        returned_elem: Option<&DispatchDemand>,
         path: &[AddrStep],
         collapse_concrete_ignored: bool,
     ) -> Ty {
@@ -997,13 +1110,31 @@ impl Types {
         if collapse_concrete_ignored {
             let elem_descr = list_element_type(self.ctx(), &d);
             let elem = self.intern(elem_descr);
-            let elem = self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored);
+            // Demand reached this list's SHAPE, so the element is meaning, not
+            // freight -- at every depth, because nothing here can say how far
+            // down the forwarding chain that reads it looks (fz-kdt.183). An
+            // element the demand names further (`ListShape(Whole)`, a tuple
+            // field) is still collapsed by that demand; an element it stops at
+            // is KEPT.
+            let returned_elem = returned_elem.unwrap_or(&DispatchDemand::Ignore);
+            let elem =
+                if matches!(elem_demand, DispatchDemand::Ignore) && matches!(returned_elem, DispatchDemand::Ignore) {
+                    self.convergence_class_at(&elem, &child, true)
+                } else {
+                    self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse_concrete_ignored)
+                };
             return self.list(elem);
         }
         for conj in &mut d.lists {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
                 if let Some(elem) = sig.elem {
-                    sig.elem = Some(self.convergence_collapse_ty(elem, elem_demand, &child, collapse_concrete_ignored));
+                    sig.elem = Some(self.convergence_collapse_ty(
+                        elem,
+                        elem_demand,
+                        returned_elem.unwrap_or(&DispatchDemand::Ignore),
+                        &child,
+                        collapse_concrete_ignored,
+                    ));
                 }
             }
         }
@@ -1015,7 +1146,7 @@ impl Types {
     /// path-blind class (its earned ⊤).
     fn convergence_collapse_ignored_leaf(&mut self, ty: &Ty, path: &[AddrStep], collapse_concrete_ignored: bool) -> Ty {
         if collapse_concrete_ignored {
-            self.convergence_class_at(ty, path)
+            self.convergence_class_at(ty, path, false)
         } else {
             self.convergence_class(ty)
         }
@@ -1042,12 +1173,6 @@ impl Types {
         let left = self.descr(&a).clone();
         let right = self.descr(&b).clone();
         let d = intersect_descr(self, &left, &right);
-        self.intern(d)
-    }
-
-    #[cfg(test)]
-    pub fn complement(&mut self, a: Ty) -> Ty {
-        let d = self.descr(&a).neg();
         self.intern(d)
     }
 
@@ -1192,10 +1317,6 @@ impl Types {
         }
         let key = Self::symmetric_key(ComparisonKey::Equivalent, *a, *b);
         self.cached_comparison(key, |types| types.is_subtype(a, b) && types.is_subtype(b, a))
-    }
-
-    pub fn kinds_overlap(&self, a: &Ty, b: &Ty) -> bool {
-        self.descr(a).kinds_overlap(self.descr(b))
     }
 
     pub fn opaque_singleton(&self, a: &Ty) -> Option<String> {
@@ -1669,8 +1790,31 @@ impl Types {
         self.intern(d)
     }
 
+    /// UNIFY `pattern` against `witness`: the two describe the SAME thing, so
+    /// every aligned position binds and no polarity applies. This is template
+    /// instantiation (a callable clause specialized by a concrete surface), not
+    /// constraint solving -- see [`Types::collect_constraint_subst`] for that.
     pub fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
-        collect_subst_into(self, *pattern, *witness, sigma);
+        collect_subst_into(self, *pattern, *witness, BindingSide::Unify, BindingSide::Unify, sigma);
+    }
+
+    /// SOLVE the constraint `witness ⊆ σ(pattern)`, collecting the bindings on
+    /// ONE side of it. `side` is the direction of the constraint at the root
+    /// (`Lower` for a parameter matched against an argument); `target` selects
+    /// which positions record -- `Lower` for the join a variable must contain,
+    /// `Upper` for the meet it may not exceed. The direction reverses under an
+    /// arrow's PARAMETERS, so a variable reached through an odd number of
+    /// parameter descents is an upper bound and one reached through an even
+    /// number is a lower bound (fz-kdt.184).
+    pub(crate) fn collect_constraint_subst(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        target: BindingSide,
+        sigma: &mut Sigma<Ty>,
+    ) {
+        collect_subst_into(self, *pattern, *witness, side, target, sigma);
     }
 
     pub fn grounded_callable_args(&mut self, template_args: &[Ty], surface_inputs: &[Ty]) -> Vec<Ty> {
@@ -1727,7 +1871,7 @@ impl Types {
                     captures: Vec::new(),
                 }),
             })],
-            ..Descr::none()
+            ..Descr::unbranded()
         })
     }
 
@@ -1747,7 +1891,7 @@ impl Types {
                     captures,
                 }),
             })],
-            ..Descr::none()
+            ..Descr::unbranded()
         })
     }
 
@@ -1930,10 +2074,6 @@ impl SharedTypes for Types {
         Types::opaque_of(self, name)
     }
 
-    fn brand_of(&mut self, name: &str) -> Self::Ty {
-        Types::brand_of(self, name)
-    }
-
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty {
         Types::list_element_type(self, a)
     }
@@ -1999,11 +2139,6 @@ impl SharedTypes for Types {
         Types::intersect(self, a, b)
     }
 
-    #[cfg(test)]
-    fn complement(&mut self, a: Self::Ty) -> Self::Ty {
-        Types::complement(self, a)
-    }
-
     fn difference(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty {
         Types::difference(self, a, b)
     }
@@ -2035,10 +2170,6 @@ impl SharedTypes for Types {
 
     fn key_subsumes_with(&self, query: &Self::Ty, key: &Self::Ty, sigma: &mut Sigma<Self::Ty>) -> bool {
         Types::key_subsumes_with(self, query, key, sigma)
-    }
-
-    fn kinds_overlap(&self, a: &Self::Ty, b: &Self::Ty) -> bool {
-        Types::kinds_overlap(self, a, b)
     }
 
     fn opaque_singleton(&self, a: &Self::Ty) -> Option<String> {
@@ -2157,7 +2288,7 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
     let only_vars = d.basic.is_empty()
         && d.atoms.is_none()
         && d.opaques.is_none()
-        && d.brands.is_none()
+        && d.brands.is_any()
         && d.tuples.is_empty()
         && d.lists.is_empty()
         && d.resources.is_empty()
@@ -2214,6 +2345,24 @@ fn intersect_clauses<T: MergeSig>(types: &mut Types, a: &Conj<T>, b: &Conj<T>) -
         }
     }
     Some(Conj { pos, neg })
+}
+
+/// The `returned` axis's per-field demand where it descends into a tuple, and
+/// nothing where it does not (fz-kdt.199).
+fn returned_fields(returned: &DispatchDemand) -> Option<&BTreeMap<u32, DispatchDemand>> {
+    match returned {
+        DispatchDemand::TupleFields(fields) => Some(fields),
+        _ => None,
+    }
+}
+
+/// The `returned` axis's element demand where it descends into a list, and
+/// nothing where it does not (fz-kdt.199).
+fn returned_element(returned: &DispatchDemand) -> Option<&DispatchDemand> {
+    match returned {
+        DispatchDemand::ListShape(elem) => Some(elem),
+        _ => None,
+    }
 }
 
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Descr {
@@ -2399,7 +2548,6 @@ fn runtime_type_predicate_requires_any(descr: &Descr) -> bool {
     const STRUCT_PREFIX: &str = "impl-target::";
     descr.opaques.cofinite
         || descr.opaques.values.iter().any(|tag| !tag.starts_with(STRUCT_PREFIX))
-        || descr.brands.cofinite
         || descr.vars.cofinite
         || !descr.vars.values.is_empty()
 }
@@ -3024,7 +3172,7 @@ fn refine_widen(t: &mut Types, a: Ty, b: Ty) -> Ty {
             let ret = refine_widen(t, l.ret, r.ret);
             return t.intern(Descr {
                 funcs: vec![Conj::pos_of(ArrowSig { args, ret, lit })],
-                ..Descr::none()
+                ..Descr::unbranded()
             });
         }
     }
@@ -3071,12 +3219,48 @@ fn instantiate(t: &mut Types, a: Ty, sigma: &Sigma<Ty>) -> Descr {
     walked.union(t.ctx(), &substituted)
 }
 
-fn collect_subst_into(t: &mut Types, pattern: Ty, witness: Ty, sigma: &mut Sigma<Ty>) {
+/// Which side of a subtyping constraint the position being walked binds for.
+///
+/// Passing argument `W` where parameter pattern `P` is declared asserts
+/// `W ⊆ σ(P)`. Every covariant slot preserves that direction; an arrow's
+/// PARAMETERS reverse it, because `(w) -> r ⊆ (σp) -> σr` needs `σp ⊆ w`. So a
+/// variable under an arrow parameter is bounded from ABOVE, and an upper bound
+/// is not evidence about any value -- it never instantiates anything. `Unify`
+/// is the third case: the two sides describe the same thing rather than
+/// standing in a constraint, so every position binds and no flip applies
+/// (fz-kdt.184).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum BindingSide {
+    Unify,
+    Lower,
+    Upper,
+}
+
+impl BindingSide {
+    pub(crate) fn flipped(self) -> Self {
+        match self {
+            Self::Unify => Self::Unify,
+            Self::Lower => Self::Upper,
+            Self::Upper => Self::Lower,
+        }
+    }
+}
+
+fn collect_subst_into(
+    t: &mut Types,
+    pattern: Ty,
+    witness: Ty,
+    side: BindingSide,
+    target: BindingSide,
+    sigma: &mut Sigma<Ty>,
+) {
     let pat = t.descr(&pattern).clone();
     let wit = t.descr(&witness).clone();
     if let Some(ids) = pure_var_ids(&pat) {
-        for id in ids {
-            sigma.entry(id).or_insert(witness);
+        if side == target {
+            for id in ids {
+                sigma.entry(id).or_insert(witness);
+            }
         }
         return;
     }
@@ -3084,29 +3268,29 @@ fn collect_subst_into(t: &mut Types, pattern: Ty, witness: Ty, sigma: &mut Sigma
         && ps.elems.len() == ws.elems.len()
     {
         for (p, w) in ps.elems.iter().zip(ws.elems.iter()) {
-            collect_subst_into(t, *p, *w, sigma);
+            collect_subst_into(t, *p, *w, side, target, sigma);
         }
     }
     if let (Some(ps), Some(ws)) = (pat.as_pure_list(t.ctx()), wit.as_pure_list(t.ctx()))
         && let (Some(p), Some(w)) = (ps.elem, ws.elem)
     {
-        collect_subst_into(t, p, w, sigma);
+        collect_subst_into(t, p, w, side, target, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_resource(), wit.pure_resource()) {
-        collect_subst_into(t, ps.payload, ws.payload, sigma);
+        collect_subst_into(t, ps.payload, ws.payload, side, target, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_arrow(), wit.pure_arrow())
         && ps.args.len() == ws.args.len()
     {
         for (p, w) in ps.args.iter().zip(ws.args.iter()) {
-            collect_subst_into(t, *p, *w, sigma);
+            collect_subst_into(t, *p, *w, side.flipped(), target, sigma);
         }
-        collect_subst_into(t, ps.ret, ws.ret, sigma);
+        collect_subst_into(t, ps.ret, ws.ret, side, target, sigma);
     }
     if let (Some(ps), Some(ws)) = (pat.pure_map(), wit.pure_map()) {
         for (key, p) in &ps.fields {
             if let Some(w) = ws.fields.get(key) {
-                collect_subst_into(t, *p, *w, sigma);
+                collect_subst_into(t, *p, *w, side, target, sigma);
             }
         }
     }

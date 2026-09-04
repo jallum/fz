@@ -75,6 +75,31 @@ pub(crate) fn canon_backend_program(world: &World, program: &BackendProgram) -> 
     ProgramCanon::new(world, TyCanon::new(&labels)).render(program)
 }
 
+/// The canonical wrapper number [`canon_backend_program`] heads each wrapper
+/// block with, indexed by the wrapper IDENTITY the artifact publishes.
+///
+/// ONE AUTHORITY FOR ONE NUMBER (fz-kdt.193). A wrapper has two numbers -- the
+/// published `identity`, which is its position in
+/// `program.construction_wrappers` and what the interpreter's own errors print,
+/// and the canonical number, which is where [`ProgramCanon::wrapper_order`]
+/// sorts it and what the dump prints. They agree only by accident: measured on
+/// `00277_enum_tier0_fixture` the map is `0->3, 1->4, 2->1, 3->2, 4->0` and on
+/// `00419_enum_take_mixed` it is `0->2, 1->3, 2->0, 3->1` -- neither has a
+/// fixed point at all. Anything that LABELS a wrapper for a human to look up in
+/// a dump must therefore get the canonical number from here rather than mint a
+/// second opinion.
+///
+/// Nothing in a production build labels a wrapper for a dump reader -- the
+/// interpreter prints the identity it holds, and the dump prints the canonical
+/// number it computes -- so this bridge between them exists only where a gate
+/// needs to follow one to the other.
+#[cfg(test)]
+pub(crate) fn canonical_wrapper_numbers(world: &World, program: &BackendProgram) -> Vec<usize> {
+    let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
+    let mut canon = ProgramCanon::new(world, TyCanon::new(&labels));
+    inverse(&canon.wrapper_order(program))
+}
+
 /// A function's stable label: `Module.name/arity`.
 ///
 /// Generated lambdas are minted with a name that embeds their OWNER's raw

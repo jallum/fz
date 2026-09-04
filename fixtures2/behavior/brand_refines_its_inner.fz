@@ -1,0 +1,33 @@
+#---
+# purpose: "fz-kdt.198 — a branded value satisfies a spec position declared as its inner, and the runtime stays brand-blind"
+# oracle: oracle.exs
+#---
+#
+# # brand_refines_its_inner
+#
+# `@type utf8 :: refines binary` makes `utf8` a NOMINAL REFINEMENT of `binary`:
+# every utf8 IS one of the binaries, so a `utf8` argument is accepted wherever
+# a `binary` is declared. `M.echo/1` declares the inner and is handed the
+# brand; `Utf8.to_bytes/1` declares the brand and is handed the same value.
+#
+# The runtime has no brand to see (fz-bsx): the value is the bytes, so `==`
+# against a plain binary literal is true and the literal pattern matches. The
+# Elixir oracle owns the values precisely because the brand is invisible to it.
+import Utf8
+
+defmodule M do
+  @spec echo(binary) :: binary
+  fn echo(b), do: b
+end
+
+fn main() do
+  s = Utf8.from_bytes!(<<104, 105>>)
+  dbg(M.echo(s))
+  dbg(Utf8.to_bytes(s))
+  dbg(s == "hi")
+  result = case s do
+    "hi" -> :matched
+    _ -> :no_match
+  end
+  dbg(result)
+end

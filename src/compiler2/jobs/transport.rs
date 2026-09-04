@@ -1274,6 +1274,15 @@ fn produce_local_callable_construction(
         None
     } else {
         let construction_edges = callable_direct_edges(world, &flow.first_class_edges, &mut builder);
+        // ONE ROUTING RULE, MEMBER SELECTION INCLUDED (fz-kdt.179). The
+        // selection names which edges are destinations at all and the order
+        // the wrapper tests them in; the member list below is built by walking
+        // exactly that, which is how the fz-kdt.108 weld -- selection row `i`
+        // is member `i` -- is re-derived from the seated order instead of
+        // inherited from the edge list's `cmp_tys` content order.
+        let selection =
+            super::super::callsite_dispatch::construction_member_selection(world.types_mut(), &flow.first_class_edges)
+                .expect("settled callable flow edges should produce a dispatch plan");
         Some(CallableConstructionFact {
             callable,
             producer: producer_position,
@@ -1290,26 +1299,25 @@ fn produce_local_callable_construction(
                     layout,
                 })
                 .collect(),
-            members: flow
-                .first_class_edges
+            members: selection
+                .members
                 .iter()
-                .zip(construction_edges.iter())
-                .map(|(source, edge)| CallableConstructionMember {
-                    boundary: *boundaries_by_surface
-                        .get(&source.surface)
-                        .expect("every construction edge surface should have a published boundary"),
-                    surface_inputs: edge.surface_inputs.clone(),
-                    surface_arg_shapes: edge.surface_arg_shapes.clone(),
-                    resolution: edge.resolution.clone(),
-                    capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
-                    surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
+                .map(|member| {
+                    let source = &flow.first_class_edges[*member];
+                    let edge = &construction_edges[*member];
+                    CallableConstructionMember {
+                        boundary: *boundaries_by_surface
+                            .get(&source.surface)
+                            .expect("every construction edge surface should have a published boundary"),
+                        surface_inputs: edge.surface_inputs.clone(),
+                        surface_arg_shapes: edge.surface_arg_shapes.clone(),
+                        resolution: edge.resolution.clone(),
+                        capture_semantic_inputs: edge.capture_semantic_inputs.clone(),
+                        surface_semantic_inputs: edge.surface_semantic_inputs.clone(),
+                    }
                 })
                 .collect(),
-            selection: super::super::callsite_dispatch::dispatch_from_callable_flow_edges(
-                world.types_mut(),
-                &flow.first_class_edges,
-            )
-            .expect("settled callable flow edges should produce a dispatch plan"),
+            selection: selection.plan,
         })
     };
     let (callable_facts, boundary_facts) = builder.finish(world.types());

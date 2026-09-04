@@ -1,0 +1,38 @@
+#---
+# purpose: "two users of one recursive walker read their own return, not the join, when the return is a tuple field the key used to erase"
+#---
+#
+# fz-kdt.199's live reproducer. `G.walk/2` dispatches on its state TAG and on
+# its counter; nothing anywhere asks about the payload beside the tag, so
+# fz-kdt.183's forwarding rule leaves it FREIGHT and the collapse replaces it
+# with an addressed variable: one key, `{:go, list(a0_1_e)}`, for both users.
+#
+# The payload is also what `walk/2` RETURNS. One activation publishes one
+# return, so the one key answered for both users with the join
+# `[binary] | [int]`, and `M.strings/1` -- which asks for `[binary]` -- was
+# handed that. Deleting the second `dbg` line made the first compile: the whole
+# defect in one sentence.
+#
+# The two clauses that recurse hand the payload on UNCHANGED inside a rebuilt
+# tuple, so the position is constant along the ascent and two keys there are
+# two users rather than one user's own accumulator ladder.
+#
+# The `type/no-matching-clause` warning in the golden is this program's own: a
+# two-tag state is not exhaustive over every input. Its gutter number is this
+# file's, so re-bless (`BLESS=1 cargo test --test fixture_matrix`) after editing
+# the prose above.
+defmodule M do
+  @spec strings([binary]) :: integer
+  fn strings(_xs), do: 1
+end
+
+defmodule G do
+  fnp walk({:stop, acc}, _n), do: acc
+  fnp walk({:go, acc}, 0), do: walk({:stop, acc}, 0)
+  fnp walk({:go, acc}, n), do: walk({:go, acc}, n - 1)
+end
+
+fn main() do
+  dbg(M.strings(G.walk({:go, ["x"]}, 2)))
+  dbg(G.walk({:go, [9]}, 2))
+end

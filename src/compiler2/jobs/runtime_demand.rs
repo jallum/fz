@@ -1178,10 +1178,14 @@ fn derive_callable_flow_facts_for_executable_product(
             &ground_source,
         );
         // The one ordering authority for this callable's construction wrapper:
-        // members, selection rows, boundary resolutions and the resolution list
-        // below all derive from these edges, and fz-kdt.108 welded a selection
-        // row's `body_id` to its member's index. Perturbing here keeps the weld
-        // (fz-kdt.141).
+        // the boundary resolutions and the resolution list below derive from
+        // these edges directly, while the member list and the selection plan
+        // derive from the SEATED order `construction_member_selection` computes
+        // from them (fz-kdt.179), which drops the members no seat would route to
+        // and seats the rest. fz-kdt.108's weld -- selection row `body_id` ==
+        // member index -- is re-derived from that seated order, so perturbing
+        // here still lands (fz-kdt.141): a permuted edge order feeds the same
+        // seat and comes out reseated.
         let first_class_edges =
             dispatch_stress::perturbed_construction_members(callable_flow_resolution_edges_product(
                 world,
@@ -3188,13 +3192,19 @@ fn callable_flow_resolution_edges_product(
         return Vec::new();
     };
     let root = executable.activation.root;
+    // EVERY EDGE OF ONE WRAPPER IS ONE CALLEE AT ONE CAPTURE LAYOUT: each is
+    // minted from this producer's `function` and this one `capture_tys`, varying
+    // only the call `surface`. That is the fact fz-kdt.179 rests the member-
+    // selection drop on -- two members are two specializations of one body, so
+    // the stand-in test's same-callee conjunct holds outright.
+    //
     // The one ordering authority for this callable's construction wrapper.
     // `surfaces` is a `BTreeSet<CallableSurface>` ordered by interned-`Ty` id,
     // which is the type interner's mint order and therefore the agenda's: walk
     // it as-is and the schedule leaks into everything that derives from these
-    // edges -- the parallel members list, the selection plan whose `body_id` is
-    // welded to a member index, the boundary resolutions and the flow's
-    // resolution list -- and into the `activation_key` `Ty`s minted below.
+    // edges -- the boundary resolutions, the flow's resolution list, and (via
+    // the seated order `construction_member_selection` computes) the member list
+    // and selection plan -- and into the `activation_key` `Ty`s minted below.
     // Ordering by what each surface SAYS (`cmp_tys`, the kdt.101/129 key)
     // BEFORE the mint makes one canonical order flow to all of them and to the
     // mint, removing that degree of freedom (fz-kdt.108). The single residual
@@ -3237,13 +3247,13 @@ fn require_activation_key_facts_product(
         waits.insert(PullWait::Fact(FactUse::current(recursive)));
     }
 
-    let dispatch_mask = FactKey::DispatchMask(function);
-    let dispatch_mask_ready = context.read_fact(world, FactUse::current(dispatch_mask.clone()));
-    if !dispatch_mask_ready {
-        waits.insert(PullWait::Fact(FactUse::current(dispatch_mask)));
+    let input_demand = FactKey::InputDemand(function);
+    let input_demand_ready = context.read_fact(world, FactUse::current(input_demand.clone()));
+    if !input_demand_ready {
+        waits.insert(PullWait::Fact(FactUse::current(input_demand)));
     }
 
-    recursive_ready && dispatch_mask_ready
+    recursive_ready && input_demand_ready
 }
 
 fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {

@@ -1,0 +1,29 @@
+#---
+# purpose: "two Enum.reduce/3 users over different element types publish their own returns, not one joined return"
+# oracle: oracle.exs
+#---
+#
+# fz-kdt.122's oracle, and fz-kdt.183's keystone gate.
+#
+# `List.reduce_step/3` dispatches only on its accumulator tag, so its own entry
+# mask leaves the list slot `Ignore` and the recursive collapse used to erase
+# the element: one activation stood for BOTH `Enum.reduce/3` users here, and
+# the one return it published was the join of an `[int]` and a `[binary]`. The
+# int user then saw a `binary` in its accumulator and `+/2` failed its @spec.
+#
+# `reduce_step/3` FORWARDS its list to `List.reduce_cont/3`, whose key IS
+# ground in the element, so the element decides which callee activation the
+# forward reaches and therefore what comes back. fz-kdt.183 joins that demand
+# into the key: `[list(int), {:cont, list(a1_1_e)}, a2]` beside
+# `[list(binary), {:cont, list(a1_1_e)}, a2]`, two activations, two returns.
+# The accumulator payload and the reducer stay free -- only the demanded
+# element is kept.
+#
+# The flipped twin `reduce_users_key_apart_by_element_flipped.fz` is the same
+# program with the two statements swapped: at HEAD the published return
+# depended on which user was analysed first, so the pair is what says the
+# answer is the program's and not the schedule's.
+fn main() do
+  dbg(Enum.reduce([1, 2], [], fn (x, acc) -> [x + 200 | acc] end))
+  dbg(Enum.reduce(["a", "b"], [], fn (x, acc) -> [x <> "!" | acc] end))
+end

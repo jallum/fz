@@ -85,7 +85,7 @@ pub use identity::{
     RootMap, TypeName,
 };
 pub(crate) use jobs::runtime_demand::DemandConeSettlement;
-pub(crate) use keying::DispatchDemand;
+pub(crate) use keying::InputDemand;
 pub use module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable,
     ReadyOrPending,
