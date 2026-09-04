@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-0za",
-    "fz-kdt.72"
+    "fz-kdt.72",
+    "fz-tfn.30"
   ],
   "blocks": [
     "fz-tfn.19"
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Specialize ActivationInputMap and delete the orphaned contribution abstraction",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:43Z"
+  "updated_at": "2026-09-04T00:00:43Z"
 }
