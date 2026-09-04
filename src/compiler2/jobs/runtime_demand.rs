@@ -68,7 +68,8 @@ pub(crate) struct DemandFormulaEvaluation {
 }
 
 /// The exact fields this formula reads from its own demand cell.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeDemandOwnInput {
     pub(crate) return_demand: RuntimeDemand,
     pub(crate) input_demands: Vec<RuntimeDemand>,
@@ -81,7 +82,8 @@ pub(crate) struct RuntimeDemandCallableInput {
 }
 
 /// Role-specific peer reads; unrelated demand fields are not representable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeDemandFormulaSnapshot {
     pub(crate) own: RuntimeDemandOwnInput,
     pub(crate) target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
@@ -534,8 +536,7 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
         }
         let demand = settled
             .demands
-            .get(executable)
-            .cloned()
+            .remove(executable)
             .expect("requested executable should belong to its demand cone");
         for member in settlement_members {
             if member == *executable {
@@ -547,10 +548,10 @@ pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
                 .expect("every published member has settled demand evidence");
             context.publish_product(
                 ProductKey::RuntimeDemand(member.clone()),
-                ProductValue::RuntimeDemand(Box::new(member_demand)),
+                ProductValue::RuntimeDemand(member_demand),
             );
         }
-        return PullOutcome::Produced(ProductValue::RuntimeDemand(Box::new(demand)));
+        return PullOutcome::Produced(ProductValue::RuntimeDemand(demand));
     }
 }
 
@@ -564,12 +565,12 @@ enum DemandConeRetryGuard {
 struct DemandGraph {
     facts: HashMap<ExecutableKey, Rc<ExecutableFacts>>,
     edges: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    external: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    external: HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
 }
 
 struct SettledDemandCone {
     members: Vec<ExecutableKey>,
-    demands: HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    demands: HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
     contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>>,
 }
 
@@ -717,18 +718,19 @@ fn settle_demand_cone<T: Telemetry>(
                 .push(member);
         }
     }
-    // `reads` is the Jacobi input view: the externals' settled demands plus
-    // every member's previous-round iterate, its `return_demand` overwritten
-    // with the round's joined value. It is maintained incrementally — the
-    // externals are cloned in once, and only members whose iterate moved are
-    // rewritten between rounds.
-    let mut reads: HashMap<ExecutableKey, ExecutableRuntimeDemand> = graph.external.clone();
-    let mut iterates: HashMap<ExecutableKey, ExecutableRuntimeDemand> = HashMap::new();
+    // `reads` is the frozen Jacobi input view: shared settled externals plus
+    // each member's previous-round result. The current round's joined return
+    // and input demands live separately in `own_inputs`, so formula evaluation
+    // can read the exact overlay without mutating or copying a shared result.
+    // Only results that move replace their member handle after the whole round.
+    let external_members = graph.external.len();
+    let mut reads = graph.external.clone();
     for member in &members {
         let facts = graph.facts.get(member).expect("every cone member has facts");
-        let bottom = empty_runtime_demand(member, facts, world.types());
-        reads.insert(member.clone(), bottom.clone());
-        iterates.insert(member.clone(), bottom);
+        reads.insert(
+            member.clone(),
+            Rc::new(empty_runtime_demand(member, facts, world.types())),
+        );
     }
     let mut contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>> = HashMap::new();
     let mut bootstrapped: HashSet<ExecutableKey> = HashSet::new();
@@ -762,6 +764,7 @@ fn settle_demand_cone<T: Telemetry>(
                 }
             }
         }
+        let mut own_inputs = Vec::with_capacity(members.len());
         for member in &members {
             let mut joined = external_return_demands
                 .get(member)
@@ -773,27 +776,22 @@ fn settle_demand_cone<T: Telemetry>(
             if bootstrapped.contains(member) {
                 joined.join_assign(&runtime_demand_for_executable_need(member.need));
             }
-            let cell = reads.get_mut(member).expect("every cone member has a read cell");
-            let mut moved_cell = false;
-            if cell.return_demand != joined {
-                cell.return_demand = joined;
-                moved_cell = true;
-            }
+            let current = reads.get(member).expect("every cone member has a read cell");
+            let mut input_demands = current.input_demands.clone();
             let local_positions = joined_input_contributions.get(member).into_iter().flatten();
             let external_positions = external_input_demands.get(member).into_iter().flatten();
             for (&index, demand) in local_positions.chain(external_positions) {
-                if let Some(slot) = cell.input_demands.get_mut(index) {
-                    let mut merged = slot.clone();
-                    merged.join_assign(demand);
-                    if merged != *slot {
-                        *slot = merged;
-                        moved_cell = true;
-                    }
+                if let Some(slot) = input_demands.get_mut(index) {
+                    slot.join_assign(demand);
                 }
             }
-            if moved_cell {
+            if current.return_demand != joined || current.input_demands != input_demands {
                 dirty.insert(member);
             }
+            own_inputs.push(RuntimeDemandOwnInput {
+                return_demand: joined,
+                input_demands,
+            });
         }
         // Re-derive the dirty members against the previous round's view; a
         // member none of whose reads moved derives the identical value and is
@@ -802,20 +800,20 @@ fn settle_demand_cone<T: Telemetry>(
         let mut waits = HashSet::new();
         let mut moved: Vec<&ExecutableKey> = Vec::new();
         let mut demand_moved: Vec<&ExecutableKey> = Vec::new();
-        let mut read_updates: Vec<(&ExecutableKey, ExecutableRuntimeDemand)> = Vec::new();
-        for member in &members {
+        let mut read_updates: Vec<(&ExecutableKey, Rc<ExecutableRuntimeDemand>)> = Vec::new();
+        for (member, own) in members.iter().zip(own_inputs) {
             if !dirty.contains(member) {
                 continue;
             }
             let facts = graph.facts.get(member).expect("every cone member has facts");
             derivations += 1;
             let (demand, member_contributions) =
-                derive_member_demand(world.types(), tel, context, member, facts, &reads, &mut waits);
-            let demand_changed = iterates.get(member) != Some(&demand);
+                derive_member_demand(world.types(), tel, context, member, facts, own, &reads, &mut waits);
+            let demand_changed = reads.get(member).is_none_or(|previous| previous.as_ref() != &demand);
             if demand_changed {
                 demand_moved.push(member);
-                read_updates.push((member, demand.clone()));
-                iterates.insert(member.clone(), demand);
+                let demand = Rc::new(demand);
+                read_updates.push((member, Rc::clone(&demand)));
             }
             if demand_changed || contributions.get(member) != Some(&member_contributions) {
                 contributions.insert(member.clone(), member_contributions);
@@ -879,15 +877,16 @@ fn settle_demand_cone<T: Telemetry>(
                         &ProductKey::RuntimeDemand(anchor.clone()),
                         &DemandConeSettlement {
                             members: members.len() as u64,
-                            external_members: graph.external.len() as u64,
+                            external_members: external_members as u64,
                             rounds: u64::from(rounds),
                             derivations,
                         },
                     );
                 }
+                reads.retain(|executable, _| member_set.contains(executable));
                 return Ok(SettledDemandCone {
                     members,
-                    demands: iterates,
+                    demands: reads,
                     contributions,
                 });
             }
@@ -922,7 +921,8 @@ fn derive_member_demand<T: Telemetry>(
     context: &mut ProductReadContext<'_>,
     member: &ExecutableKey,
     facts: &Rc<ExecutableFacts>,
-    reads: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+    own: RuntimeDemandOwnInput,
+    reads: &HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
     waits: &mut HashSet<PullWait>,
 ) -> (
     ExecutableRuntimeDemand,
@@ -932,7 +932,7 @@ fn derive_member_demand<T: Telemetry>(
     let identity_inventory = types.identity_inventory();
     #[cfg(test)]
     let read_checkpoint = context.product_read_checkpoint();
-    let mut input = RuntimeDemandFormulaInput::new(member, facts, reads);
+    let mut input = RuntimeDemandFormulaInput::new(member, facts, own, reads);
     let mut derived = derive_executable_runtime_demand(types, &input);
     let return_demand_contributions = call_return_demand_contributions(&input.facts, derived.call_return_demands);
     let flow_plans = plan_callable_flows(types, &input, &derived.callable_flows, &derived.demand);
@@ -996,10 +996,11 @@ impl<'a> RuntimeDemandFormulaInput<'a> {
     fn new(
         member: &'a ExecutableKey,
         facts: &'a ExecutableFacts,
-        reads: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+        own: RuntimeDemandOwnInput,
+        reads: &HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
     ) -> Self {
         Self {
-            current: RuntimeDemandFormulaSnapshot::new(member, facts, reads),
+            current: RuntimeDemandFormulaSnapshot::new(member, facts, own, reads),
             member,
             facts: facts.runtime_demand_facts(),
             product_answers: Vec::new(),
@@ -1011,9 +1012,9 @@ impl RuntimeDemandFormulaSnapshot {
     fn new(
         member: &ExecutableKey,
         facts: &ExecutableFacts,
-        reads: &HashMap<ExecutableKey, ExecutableRuntimeDemand>,
+        own: RuntimeDemandOwnInput,
+        reads: &HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
     ) -> Self {
-        let own = reads.get(member).expect("formula member must have a current demand");
         let target_inputs = direct_local_targets(facts)
             .into_iter()
             .filter_map(|key| reads.get(&key).map(|demand| (key, demand.input_demands.clone())))
@@ -1033,10 +1034,7 @@ impl RuntimeDemandFormulaSnapshot {
             }
         }
         Self {
-            own: RuntimeDemandOwnInput {
-                return_demand: own.return_demand.clone(),
-                input_demands: own.input_demands.clone(),
-            },
+            own,
             target_inputs,
             callable_inputs,
         }
@@ -1459,7 +1457,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
     // body walk below fully rebuilds `input_demands` from scratch, so the
     // carried positions are joined back in at every return point instead of
     // seeded up front.
-    let previous_input_demands = Some(demands.own.input_demands.clone());
+    let previous_input_demands = demands.own.input_demands.as_slice();
     let mut out = ExecutableRuntimeDemand {
         callable_activation_inputs: facts.callable_activation_inputs.to_vec(),
         return_demand: demands.own.return_demand.clone(),
@@ -1485,7 +1483,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
                 .collect(),
             LoweredBody::Clauses { .. } => unreachable!(),
         };
-        join_previous_input_demands(&mut out.input_demands, previous_input_demands.as_deref());
+        join_previous_input_demands(&mut out.input_demands, Some(previous_input_demands));
         return DerivedExecutableDemand {
             demand: out,
             call_return_demands,
@@ -1543,7 +1541,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
         out.input_demands[semantic_index].join_assign(&demand);
     }
 
-    join_previous_input_demands(&mut out.input_demands, previous_input_demands.as_deref());
+    join_previous_input_demands(&mut out.input_demands, Some(previous_input_demands));
     widen_boxed_closure_call_results(facts, &mut out, &mut call_return_demands);
 
     DerivedExecutableDemand {

@@ -781,7 +781,7 @@ impl World {
         self.executable_facts.get(key)
     }
 
-    pub(crate) fn backend_program(&self, root: RootId) -> BackendProgram {
+    pub(crate) fn backend_program(&self, root: RootId) -> std::rc::Rc<BackendProgram> {
         #[cfg(test)]
         self.telemetry_query_count.set(self.telemetry_query_count.get() + 1);
         self.backend
@@ -811,7 +811,7 @@ impl World {
         self.macro_executables.get(function)
     }
 
-    pub(crate) fn native_program(&self, root: RootId) -> NativeProgram {
+    pub(crate) fn native_program(&self, root: RootId) -> std::rc::Rc<NativeProgram> {
         self.native
             .get(root)
             .cloned()
@@ -2656,7 +2656,7 @@ impl World {
         true
     }
 
-    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
+    pub(crate) fn define_backend_program(&mut self, root: RootId, program: std::rc::Rc<BackendProgram>) -> bool {
         self.backend.define(root, program)
     }
 
@@ -2665,7 +2665,7 @@ impl World {
         function: FunctionId,
         root: RootId,
         backend_revision: u64,
-        program: BackendProgram,
+        program: std::rc::Rc<BackendProgram>,
     ) -> bool {
         self.macro_executables.define(
             function,
@@ -2677,7 +2677,7 @@ impl World {
         )
     }
 
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: std::rc::Rc<NativeProgram>) -> bool {
         self.native.define(root, program)
     }
 
@@ -3111,7 +3111,7 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub(crate) fn define_backend_program(&mut self, root: RootId, program: BackendProgram) -> bool {
+    pub(crate) fn define_backend_program(&mut self, root: RootId, program: std::rc::Rc<BackendProgram>) -> bool {
         let changed = self.world.define_backend_program(root, program);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "backend_program", "defined"], &root);
@@ -3124,7 +3124,7 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         function: FunctionId,
         root: RootId,
         backend_revision: u64,
-        program: BackendProgram,
+        program: std::rc::Rc<BackendProgram>,
     ) -> bool {
         let changed = self
             .world
@@ -3161,7 +3161,7 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         )
     }
 
-    pub(crate) fn define_native_program(&mut self, root: RootId, program: NativeProgram) -> bool {
+    pub(crate) fn define_native_program(&mut self, root: RootId, program: std::rc::Rc<NativeProgram>) -> bool {
         let changed = self.world.define_native_program(root, program);
         if changed {
             self.emit_world_key(&["fz", "compiler2", "native_program", "defined"], &root);

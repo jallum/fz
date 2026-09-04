@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use super::super::body::{
     CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId, callsite_call_args,
@@ -222,7 +223,7 @@ pub(crate) fn produce_callable_construction_product(
         flow,
         demand,
     ) {
-        Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(answer))),
+        Ok(answer) => PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(answer))),
         Err(waits) => PullOutcome::Waiting(waits),
     }
 }
@@ -243,14 +244,12 @@ fn produce_generic_callable_owner(
         None => return PullOutcome::wait_on_product(shape_key),
     };
     if matches!(world.shape(layout.structural), ShapeDescr::Nothing) {
-        return PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(
-            CallableConstructionOwner {
-                layout,
-                construction: None,
-                callable_facts: HashMap::new(),
-                boundary_facts: HashMap::new(),
-            },
-        )));
+        return PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
+            layout,
+            construction: None,
+            callable_facts: HashMap::new(),
+            boundary_facts: HashMap::new(),
+        })));
     }
     if let Some(fact) = generic_owner_ty_fact(executable, position) {
         let fact = FactUse::settled(fact);
@@ -408,7 +407,7 @@ fn produce_generic_callable_owner(
         let value = context.stage_callable_construction_group(&current, &members, values);
         return PullOutcome::Produced(value);
     }
-    PullOutcome::Produced(ProductValue::CallableConstruction(Box::new(project_owner_answer(
+    PullOutcome::Produced(ProductValue::CallableConstruction(Rc::new(project_owner_answer(
         world, &builder, layout, ty, &demand, position,
     ))))
 }
@@ -439,7 +438,7 @@ fn project_group_member_owner(
         .settled_runtime_demand(&executable)
         .expect("callable owner group member must have a settled runtime demand");
     let (ty, demand) = generic_owner_ty_and_demand(world, &executable, &facts, runtime, position);
-    ProductValue::CallableConstruction(Box::new(project_owner_answer(
+    ProductValue::CallableConstruction(Rc::new(project_owner_answer(
         world, evidence, layout, ty, &demand, position,
     )))
 }
@@ -1484,7 +1483,7 @@ fn produce_named_transport_position(
                     .map(|origin| origin_transport_recipe(world, &symbol, &facts, origin))
                     .collect(),
             );
-            (ty, runtime.return_demand)
+            (ty, runtime.return_demand.clone())
         }
         TransportPosition::Value { value, .. } => {
             let ty = facts
@@ -1497,8 +1496,7 @@ fn produce_named_transport_position(
             match facts.value_origin(*value) {
                 Some(TransportSource::CallableValue(_)) if runtime.callable_flows.contains_key(value) => {
                     let key = ProductKey::CallableConstruction(position.clone());
-                    let construction = context.read_product(tel, key.clone(), world.types()).cloned();
-                    return Some(match construction {
+                    return Some(match context.read_product(tel, key.clone(), world.types()) {
                         Some(ProductValue::CallableConstruction(construction)) => PullOutcome::Produced(
                             ProductValue::TransportShape(TransportShapeFact::Layout(construction.layout)),
                         ),
@@ -1619,7 +1617,7 @@ fn produce_named_transport_position(
                         .unwrap_or_else(|| world.types_mut().any()),
                     runtime.value_demands.get(&value).cloned().unwrap_or_default(),
                 ),
-                _ => (caller_return_ty, runtime.return_demand),
+                _ => (caller_return_ty, runtime.return_demand.clone()),
             }
         }
         TransportPosition::EntryCapture {

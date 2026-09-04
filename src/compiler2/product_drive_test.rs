@@ -158,7 +158,7 @@ fn compiling_the_same_root_twice_through_the_jit_reaches_the_same_outcome() {
 /// contract: the ordered sequence of jobs the drive actually ran (observed
 /// through the production `fz.compiler2.job` span, not a test-only hook) and
 /// the `BackendProgram` it published.
-fn compile_enum_predicate_search() -> (Vec<Job>, super::BackendProgram) {
+fn compile_enum_predicate_search() -> (Vec<Job>, std::rc::Rc<super::BackendProgram>) {
     let tel = ConfiguredTelemetry::new();
     let jobs: std::rc::Rc<std::cell::RefCell<Vec<Job>>> = Default::default();
     let recorded = std::rc::Rc::clone(&jobs);

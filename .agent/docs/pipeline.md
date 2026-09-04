@@ -580,7 +580,10 @@ The next products narrow the contract:
 - `AbiExecutable(E)` reads `MaterializedExecutable(E)`,
   `ExecutableEffects(E)`, and the exact transport products for executable
   inputs, returns, entry captures, resumes, local backend values, and callable
-  boundaries. It does not derive movement from root-wide demand state.
+  boundaries. It retains the materialized product explicitly: local effects
+  and the pre-ABI transport view remain on that materialized input, while the
+  ABI product owns settled/transitive effects, completed ABI transport,
+  layouts, and edges. It does not derive movement from root-wide demand state.
 - `BackendExecutable(E)` reads `AbiExecutable(E)` and lowers one symbolic
   backend executable. Direct calls remain symbolic executable keys until final
   packaging.
@@ -593,6 +596,13 @@ The next products narrow the contract:
   continuations, construction wrappers, native body return contracts, and
   extern-marshal facts instead of rebuilt `ModulePlan`, `PlannedProgram`, or
   `AbiFacts`.
+
+The root answer and World retain the same immutable `Rc<BackendProgram>`; macro
+packaging and interpreter reads clone that handle rather than the program tree.
+The native projection is stored and returned as `Rc<NativeProgram>` for the
+same reason. These handles are deliberately `Rc`, not `Arc`: compiler2's World,
+product driver, interpreter handoff, and native lowering are single-thread
+owned, and the World already is not `Send`.
 
 `RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
 positioned owner whose exact product contains a first-class construction. It

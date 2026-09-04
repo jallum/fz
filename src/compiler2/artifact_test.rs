@@ -1,11 +1,13 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, Types};
 use crate::compiler2::artifact::{
-    BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
-    BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
-    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram, NativeProgramMap,
+    BackendCallableReturn, BackendExecutable, BackendProgram, BackendProgramMap, BackendReturnLayout,
+    BackendSemanticInputLayout, BackendValueLayout, EffectSummary, MacroExecutable, MacroExecutableMap, NativeBody,
+    NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi,
+    NativeExecutableEntry, NativeProgram, NativeProgramMap,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
@@ -68,26 +70,75 @@ fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
 #[test]
 fn compiler2_native_program_map_observes_schema_only_recompute() {
     let root = RootId::for_test(0);
-    let initial = NativeProgram {
+    let initial = Rc::new(NativeProgram {
         entry: FnId(0),
         module: Module::default(),
         executable_entries: Vec::new(),
         bodies: Vec::new(),
         callable_boundaries: Vec::new(),
-    };
-    let mut changed = initial.clone();
+    });
+    let mut changed = initial.as_ref().clone();
     changed
         .module
         .struct_schemas
         .insert("Point".to_string(), vec!["x".to_string(), "y".to_string()]);
     let mut programs = NativeProgramMap::new();
 
-    assert!(programs.define(root, initial.clone()));
-    assert!(!programs.define(root, initial));
+    assert!(programs.define(root, Rc::clone(&initial)));
+    assert!(!programs.define(root, Rc::clone(&initial)));
+    let equal_but_distinct = Rc::new(initial.as_ref().clone());
+    assert!(!programs.define(root, equal_but_distinct));
+    assert!(Rc::ptr_eq(programs.get(root).unwrap(), &initial));
     assert!(
-        programs.define(root, changed),
+        programs.define(root, Rc::new(changed)),
         "a schema-only recompute changes codegen-visible native content and must emit a definition",
     );
+}
+
+#[test]
+fn backend_program_map_retains_canonical_handle_without_moving_equal_state() {
+    let root = RootId::for_test(0);
+    let program = || BackendProgram {
+        entry: 0,
+        atom_names: Vec::new(),
+        struct_schemas: Default::default(),
+        executables: Vec::new(),
+        construction_wrappers: Vec::new(),
+    };
+    let shared = Rc::new(program());
+    let equal_but_distinct = Rc::new(program());
+    let mut programs = BackendProgramMap::new();
+
+    assert!(programs.define(root, Rc::clone(&shared)));
+    assert!(!programs.define(root, Rc::clone(&shared)));
+    assert!(!programs.define(root, Rc::clone(&equal_but_distinct)));
+    assert!(Rc::ptr_eq(programs.get(root).unwrap(), &shared));
+}
+
+#[test]
+fn macro_executable_map_retains_canonical_handle_without_moving_equal_state() {
+    let root = RootId::for_test(0);
+    let function = FunctionId::for_test(0);
+    let program = || BackendProgram {
+        entry: 0,
+        atom_names: Vec::new(),
+        struct_schemas: Default::default(),
+        executables: Vec::new(),
+        construction_wrappers: Vec::new(),
+    };
+    let shared = Rc::new(program());
+    let mut executables = MacroExecutableMap::new();
+    let macro_executable = |program| MacroExecutable {
+        root,
+        backend_revision: 1,
+        program,
+    };
+
+    assert!(executables.define(function, macro_executable(Rc::clone(&shared))));
+    assert!(!executables.define(function, macro_executable(Rc::clone(&shared))));
+    let equal_but_distinct = Rc::new(program());
+    assert!(!executables.define(function, macro_executable(Rc::clone(&equal_but_distinct))));
+    assert!(Rc::ptr_eq(&executables.get(function).unwrap().program, &shared));
 }
 
 impl TestTransportShapes {
@@ -260,17 +311,22 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     );
 
     let mut programs = NativeProgramMap::new();
-    assert!(programs.define(root, program.clone()));
+    let shared = std::rc::Rc::new(program.clone());
+    assert!(programs.define(root, std::rc::Rc::clone(&shared)));
+    assert!(std::rc::Rc::ptr_eq(programs.get(root).unwrap(), &shared));
     assert!(
-        !programs.define(root, program.clone()),
+        !programs.define(root, std::rc::Rc::clone(&shared)),
         "an identical recomputation should remain quiet",
     );
+    let equal_but_distinct = std::rc::Rc::new(program.clone());
+    assert!(!programs.define(root, std::rc::Rc::clone(&equal_but_distinct)));
+    assert!(std::rc::Rc::ptr_eq(programs.get(root).unwrap(), &shared));
     let mut logically_changed = program;
     logically_changed.executable_entries[0].key.need = ExecutableNeed::TupleFields(1);
     // `lower_native_program` feeds this exact `define` result into
     // `JobEffects.changed`, which is the scheduler's dependent-wake signal.
     assert!(
-        programs.define(root, logically_changed.clone()),
+        programs.define(root, std::rc::Rc::new(logically_changed.clone())),
         "a changed semantic-to-physical entry must report movement even when all physical native code is identical",
     );
     assert_eq!(

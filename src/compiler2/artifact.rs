@@ -9,6 +9,7 @@
 //! rebuilds `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 use crate::ast::{BinOp, UnOp};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
@@ -168,11 +169,12 @@ impl MaterializedExecutableTransport {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct MaterializedExecutable {
     pub entry_dispatch: Option<ExecutableDispatch>,
     pub return_ty: Ty,
-    pub runtime_demand: ExecutableRuntimeDemand,
+    pub runtime_demand: Rc<ExecutableRuntimeDemand>,
     pub transport: MaterializedExecutableTransport,
     pub original_entry_ids: Vec<ControlEntryId>,
     pub value_types: HashMap<ValueId, Ty>,
@@ -276,7 +278,8 @@ pub enum BackendReturnFlow {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct BackendProgram {
     pub entry: usize,
     pub atom_names: Vec<String>,
@@ -285,9 +288,10 @@ pub struct BackendProgram {
     pub construction_wrappers: Vec<BackendConstructionWrapper>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct RootBackendProductAnswer {
-    pub program: BackendProgram,
+    pub program: Rc<BackendProgram>,
     pub transport: MaterializedTransportPlan,
 }
 
@@ -295,10 +299,11 @@ pub struct RootBackendProductAnswer {
 pub(crate) struct MacroExecutable {
     pub root: RootId,
     pub backend_revision: u64,
-    pub program: BackendProgram,
+    pub program: Rc<BackendProgram>,
 }
 
-#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug)]
 pub(crate) struct NativeProgram {
     /// The CPS/native entry body the shared JIT/AOT pipeline should start at.
     pub entry: FnId,
@@ -963,21 +968,17 @@ impl NativeCallableBoundary {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct AbiReadyExecutable {
-    pub entry_dispatch: Option<ExecutableDispatch>,
-    pub return_ty: Ty,
+    pub materialized: Rc<MaterializedExecutable>,
     pub param_reprs: Vec<AbiValueRepr>,
     pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
     pub return_layout: BackendReturnLayout,
     pub return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
-    pub runtime_demand: ExecutableRuntimeDemand,
     pub transport: MaterializedExecutableTransport,
-    pub original_entry_ids: Vec<ControlEntryId>,
-    pub value_types: HashMap<ValueId, Ty>,
     pub value_layouts: HashMap<ValueId, BackendValueLayout>,
     pub effects: EffectSummary,
-    pub body: LoweredBody,
     pub call_edges: HashMap<CallSiteId, AbiReadyCallEdge>,
     pub callable_owners: Box<[PositionedCallableConstructionOwner]>,
 }
@@ -985,37 +986,13 @@ pub struct AbiReadyExecutable {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PositionedCallableConstructionOwner {
     pub position: TransportPosition,
-    pub owner: CallableConstructionOwner,
+    pub owner: Rc<CallableConstructionOwner>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbiReadyCallEdge {
     pub target: CallEdge<ExecutableKey>,
     pub return_ty: Ty,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmissionReadyExecutable {
-    pub key: ExecutableKey,
-    pub entry_dispatch: Option<ExecutableDispatch>,
-    pub return_ty: Ty,
-    pub param_reprs: Vec<AbiValueRepr>,
-    pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
-    pub return_layout: BackendReturnLayout,
-    pub runtime_demand: ExecutableRuntimeDemand,
-    pub transport: MaterializedExecutableTransport,
-    pub original_entry_ids: Vec<ControlEntryId>,
-    pub value_types: HashMap<ValueId, Ty>,
-    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
-    pub effects: EffectSummary,
-    pub body: LoweredBody,
-    pub call_edges: Vec<EmissionReadyCallEdge>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmissionReadyCallEdge {
-    pub callsite: CallSiteId,
-    pub target: CallEdge<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1026,7 +1003,7 @@ pub struct BackendExecutable {
     pub param_reprs: Vec<AbiValueRepr>,
     pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
     pub return_layout: BackendReturnLayout,
-    pub runtime_demand: ExecutableRuntimeDemand,
+    pub runtime_demand: Rc<ExecutableRuntimeDemand>,
     pub value_types: HashMap<ValueId, Ty>,
     pub value_layouts: HashMap<ValueId, BackendValueLayout>,
     pub effects: EffectSummary,
@@ -1450,7 +1427,7 @@ struct RootProjectionMap<T> {
 
 #[derive(Debug, Default)]
 pub struct BackendProgramMap {
-    inner: RootProjectionMap<BackendProgram>,
+    inner: RootProjectionMap<Rc<BackendProgram>>,
 }
 
 #[derive(Debug, Default)]
@@ -1460,7 +1437,7 @@ pub(crate) struct MacroExecutableMap {
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeProgramMap {
-    slots: Vec<ProjectionState<NativeProgram>>,
+    inner: RootProjectionMap<Rc<NativeProgram>>,
 }
 
 impl BackendProgramMap {
@@ -1468,11 +1445,11 @@ impl BackendProgramMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, program: BackendProgram) -> bool {
-        self.inner.define(root, program)
+    pub fn define(&mut self, root: RootId, program: Rc<BackendProgram>) -> bool {
+        self.inner.define_by(root, program, shared_eq)
     }
 
-    pub fn get(&self, root: RootId) -> Option<&BackendProgram> {
+    pub fn get(&self, root: RootId) -> Option<&Rc<BackendProgram>> {
         self.inner.get(root)
     }
 }
@@ -1486,8 +1463,8 @@ impl MacroExecutableMap {
         self.ensure(function);
         let slot = &mut self.slots[function.as_u32() as usize];
         let next = ProjectionState::Defined(executable);
-        let changed = !slot.state.same_state(&next);
-        if !slot.state.same_state(&next) {
+        let changed = !macro_executable_same_state(&slot.state, &next);
+        if changed {
             slot.state = next;
             slot.revision += 1;
         }
@@ -1517,41 +1494,28 @@ impl NativeProgramMap {
         Self::default()
     }
 
-    pub fn define(&mut self, root: RootId, program: NativeProgram) -> bool {
-        self.ensure(root);
-        let slot = &mut self.slots[root.as_u32() as usize];
-        let next = ProjectionState::Defined(program);
-        let changed = !native_program_same_state(slot, &next);
-        *slot = next;
-        changed
+    pub fn define(&mut self, root: RootId, program: Rc<NativeProgram>) -> bool {
+        self.inner.define_by(root, program, |left, right| {
+            Rc::ptr_eq(left, right) || native_programs_equal(left, right)
+        })
     }
 
-    pub fn get(&self, root: RootId) -> Option<&NativeProgram> {
-        match self.slots.get(root.as_u32() as usize)? {
-            ProjectionState::Placeholder => None,
-            ProjectionState::Defined(value) => Some(value),
-        }
-    }
-
-    fn ensure(&mut self, root: RootId) {
-        let needed = root.as_u32() as usize + 1;
-        if self.slots.len() < needed {
-            self.slots.resize_with(needed, || ProjectionState::Placeholder);
-        }
+    pub fn get(&self, root: RootId) -> Option<&Rc<NativeProgram>> {
+        self.inner.get(root)
     }
 }
 
-impl<T> RootProjectionMap<T>
-where
-    T: PartialEq,
-{
-    fn define(&mut self, root: RootId, value: T) -> bool {
+impl<T> RootProjectionMap<T> {
+    fn define_by(&mut self, root: RootId, value: T, same: impl FnOnce(&T, &T) -> bool) -> bool {
         self.ensure(root);
         let slot = &mut self.slots[root.as_u32() as usize];
-        let next = ProjectionState::Defined(value);
-        let changed = !slot.same_state(&next);
-        *slot = next;
-        changed
+        if let ProjectionState::Defined(previous) = slot
+            && same(previous, &value)
+        {
+            return false;
+        }
+        *slot = ProjectionState::Defined(value);
+        true
     }
 
     fn get(&self, root: RootId) -> Option<&T> {
@@ -1575,25 +1539,23 @@ impl<T> Default for RootProjectionMap<T> {
     }
 }
 
-impl<T> ProjectionState<T>
-where
-    T: PartialEq,
-{
-    fn same_state(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ProjectionState::Placeholder, ProjectionState::Placeholder) => true,
-            (ProjectionState::Defined(left), ProjectionState::Defined(right)) => left == right,
-            _ => false,
+fn macro_executable_same_state(
+    left: &ProjectionState<MacroExecutable>,
+    right: &ProjectionState<MacroExecutable>,
+) -> bool {
+    match (left, right) {
+        (ProjectionState::Placeholder, ProjectionState::Placeholder) => true,
+        (ProjectionState::Defined(left), ProjectionState::Defined(right)) => {
+            left.root == right.root
+                && left.backend_revision == right.backend_revision
+                && shared_eq(&left.program, &right.program)
         }
+        _ => false,
     }
 }
 
-fn native_program_same_state(left: &ProjectionState<NativeProgram>, right: &ProjectionState<NativeProgram>) -> bool {
-    match (left, right) {
-        (ProjectionState::Placeholder, ProjectionState::Placeholder) => true,
-        (ProjectionState::Defined(left), ProjectionState::Defined(right)) => native_programs_equal(left, right),
-        _ => false,
-    }
+fn shared_eq<T: PartialEq>(left: &Rc<T>, right: &Rc<T>) -> bool {
+    Rc::ptr_eq(left, right) || left == right
 }
 
 fn native_programs_equal(left: &NativeProgram, right: &NativeProgram) -> bool {

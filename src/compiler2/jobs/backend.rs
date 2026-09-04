@@ -4,6 +4,7 @@
 //! backend-owned program consumed by the interpreter and native lowering.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -18,7 +19,7 @@ use super::super::artifact::{
     BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
     BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
     BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
-    EmissionReadyExecutable, MaterializedTransportPlan, RootBackendProductAnswer,
+    MaterializedTransportPlan, RootBackendProductAnswer,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -173,7 +174,7 @@ pub(crate) fn produce_root_backend_product(
         let ProductValue::BackendExecutable(backend) = value else {
             panic!("backend executable product produced unexpected value {value:?}");
         };
-        let backend = backend.as_ref().clone();
+        let backend = Rc::clone(backend);
         for target in backend.call_edges.values() {
             for callee in symbolic_call_edge_callees(target) {
                 stack.push(callee.clone());
@@ -189,17 +190,14 @@ pub(crate) fn produce_root_backend_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let owners = backends
-        .values()
-        .flat_map(|backend| {
-            backend
-                .abi
-                .callable_owners
-                .iter()
-                .map(|positioned| positioned.owner.clone())
-        })
-        .collect::<Vec<_>>();
-    let (produced_callables, produced_boundaries) = aggregate_callable_owners(&owners);
+    let owners = backends.values().flat_map(|backend| {
+        backend
+            .abi
+            .callable_owners
+            .iter()
+            .map(|positioned| positioned.owner.as_ref())
+    });
+    let (produced_callables, produced_boundaries) = aggregate_callable_owners(owners);
     let transport =
         symbolic_materialized_transport_plan(&backends, &entry, world, &produced_callables, &produced_boundaries);
 
@@ -252,24 +250,25 @@ pub(crate) fn produce_root_backend_product(
         .get(&entry)
         .copied()
         .expect("root entry should be in packaged executable inventory");
-    let program = BackendProgram {
+    let program = Rc::new(BackendProgram {
         entry: entry_index,
         atom_names: collect_backend_atom_names(world, &executables),
         struct_schemas: world.struct_def_schemas(),
         executables,
         construction_wrappers,
-    };
+    });
     verify_boxed_apply_seam_return_convention(tel, root, &program)
         .expect("root backend product should compile one return convention across the boxed apply seam");
-    super::super::drive::ExecutionContext::new(world, tel).define_backend_program(root, program.clone());
-    PullOutcome::Produced(ProductValue::RootBackendProduct(Box::new(RootBackendProductAnswer {
+    super::super::drive::ExecutionContext::new(world, tel).define_backend_program(root, Rc::clone(&program));
+    let program = world.backend_program(root);
+    PullOutcome::Produced(ProductValue::RootBackendProduct(Rc::new(RootBackendProductAnswer {
         program,
         transport,
     })))
 }
 
-pub(crate) fn aggregate_callable_owners(
-    owners: &[super::super::transport::CallableConstructionOwner],
+pub(crate) fn aggregate_callable_owners<'a>(
+    owners: impl IntoIterator<Item = &'a super::super::transport::CallableConstructionOwner>,
 ) -> (HashMap<CallableId, CallableFacts>, HashMap<BoundaryId, BoundaryFacts>) {
     let mut callables = HashMap::<CallableId, CallableFacts>::new();
     let mut boundaries = HashMap::<BoundaryId, BoundaryFacts>::new();
@@ -320,11 +319,10 @@ pub(crate) fn produce_backend_executable_product(
     let ProductValue::AbiExecutable(abi) = value else {
         panic!("ABI executable product produced unexpected value {value:?}");
     };
-    let abi = abi.as_ref().clone();
+    let abi = Rc::clone(abi);
     let value_shapes = executable_value_shapes(&abi);
     let mut lowerer = BackendLowerer::new(world, tel, context.session().root(), value_shapes);
-    let emission = symbolic_emission_ready_executable(executable.clone(), &abi);
-    let lowered = lower_symbolic_body(&mut lowerer, &emission, &abi)
+    let lowered = lower_symbolic_body(&mut lowerer, &abi)
         .expect("symbolic backend lowering should be complete after ABI product exists");
     let call_edges = abi
         .call_edges
@@ -333,14 +331,15 @@ pub(crate) fn produce_backend_executable_product(
         .collect::<std::collections::HashMap<_, _>>();
     let backend = SymbolicBackendExecutable {
         key: executable.clone(),
-        abi: Box::new(abi),
+        abi,
         body: lowered,
         call_edges,
     };
+    let backend = Rc::new(backend);
     context
         .session_mut()
-        .record_backend_executable(executable.clone(), backend.clone());
-    PullOutcome::Produced(ProductValue::BackendExecutable(Box::new(backend)))
+        .record_backend_executable(executable.clone(), Rc::clone(&backend));
+    PullOutcome::Produced(ProductValue::BackendExecutable(backend))
 }
 
 fn executable_value_shapes(abi: &AbiReadyExecutable) -> HashMap<ValueId, ShapeId> {
@@ -418,13 +417,13 @@ fn package_symbolic_backend_executable(
         resolved_constructions_for_values(&backend.abi.transport.value_positions, construction_identities);
     Ok(BackendExecutable {
         key: backend.key.clone(),
-        entry_dispatch: backend.abi.entry_dispatch.clone(),
-        return_ty: backend.abi.return_ty,
+        entry_dispatch: backend.abi.materialized.entry_dispatch.clone(),
+        return_ty: backend.abi.materialized.return_ty,
         param_reprs: backend.abi.param_reprs.clone(),
         semantic_inputs: backend.abi.semantic_inputs.clone(),
         return_layout: backend.abi.return_layout.clone(),
-        runtime_demand: backend.abi.runtime_demand.clone(),
-        value_types: backend.abi.value_types.clone(),
+        runtime_demand: Rc::clone(&backend.abi.materialized.runtime_demand),
+        value_types: backend.abi.materialized.value_types.clone(),
         value_layouts: backend.abi.value_layouts.clone(),
         effects: backend.abi.effects,
         body: package_symbolic_backend_body(
@@ -870,7 +869,7 @@ fn package_backend_construction_wrappers(
     world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root: RootId,
-    backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     transport: &MaterializedTransportPlan,
     executable_index: &std::collections::HashMap<ExecutableKey, usize>,
 ) -> Result<(Vec<BackendConstructionWrapper>, HashMap<TransportPosition, u32>), FatalError> {
@@ -1035,10 +1034,9 @@ fn executable_key_for_symbol_in_index(
 /// `Types`, never through raw interner ids or rendering.
 fn lower_symbolic_body(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
-    emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
 ) -> Result<SymbolicBackendBody, FatalError> {
-    match &abi.body {
+    match &abi.materialized.body {
         LoweredBody::Extern { signature } => Ok(SymbolicBackendBody::Extern {
             signature: signature.clone(),
         }),
@@ -1065,7 +1063,7 @@ fn lower_symbolic_body(
             entries: entries
                 .iter()
                 .enumerate()
-                .map(|(index, entry)| lower_symbolic_entry(lowerer, emission, abi, index, entry))
+                .map(|(index, entry)| lower_symbolic_entry(lowerer, abi, index, entry))
                 .collect::<Result<Vec<_>, _>>()?,
             generated: generated.clone(),
         }),
@@ -1074,25 +1072,24 @@ fn lower_symbolic_body(
 
 fn lower_symbolic_entry(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
-    emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     entry_index: usize,
     entry: &LoweredEntry,
 ) -> Result<SymbolicBackendEntry, FatalError> {
-    let entry_id = original_entry_id(emission, entry_index);
+    let entry_id = original_entry_id(abi, entry_index);
     Ok(SymbolicBackendEntry {
         span: entry.span,
-        origin: lower_entry_origin(emission, entry_index, entry),
+        origin: lower_entry_origin(abi, entry_index, entry),
         params: entry.params.clone(),
         captures: entry.captures.clone(),
-        capture_positions: lowerer.capture_positions_for_entry(emission, entry_id, entry)?,
+        capture_positions: lowerer.capture_positions_for_entry(abi, entry_id, entry)?,
         reusable_cons_captures: entry.reusable_cons_captures.clone(),
         steps: entry
             .steps
             .iter()
             .map(|step| lowerer.lower_step(step))
             .collect::<Result<Vec<_>, _>>()?,
-        tail: lower_symbolic_tail(lowerer, emission, abi, &entry.tail).unwrap_or_else(|_| {
+        tail: lower_symbolic_tail(lowerer, abi, &entry.tail).unwrap_or_else(|_| {
             panic!(
                 "symbolic backend entry {entry_index} tail is incomplete: {:?}",
                 entry.tail
@@ -1103,7 +1100,6 @@ fn lower_symbolic_entry(
 
 fn lower_symbolic_tail(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
-    emission: &EmissionReadyExecutable,
     abi: &AbiReadyExecutable,
     tail: &LoweredTail,
 ) -> Result<SymbolicBackendTail, FatalError> {
@@ -1130,7 +1126,7 @@ fn lower_symbolic_tail(
                 value: *value,
                 callsite: *callsite,
                 target: edge.target.clone(),
-                args: lowerer.lower_call_args(emission, *callsite, None, args)?,
+                args: lowerer.lower_call_args(abi, *callsite, None, args)?,
                 dest: dest.clone(),
             }
         }
@@ -1149,7 +1145,7 @@ fn lower_symbolic_tail(
                 target: edge
                     .and_then(|edge| symbolic_direct_call_edge(&edge.target))
                     .and_then(|edge| edge.callee.local().cloned()),
-                args: lowerer.lower_call_args(emission, *callsite, Some(*callee), args)?,
+                args: lowerer.lower_call_args(abi, *callsite, Some(*callee), args)?,
                 dest: dest.clone(),
                 return_flow: edge
                     .and_then(|edge| symbolic_call_edge_return_flow(&edge.target))
@@ -1202,27 +1198,8 @@ fn symbolic_call_edge_return_flow(target: &CallEdge<ExecutableKey>) -> Option<&C
     }
 }
 
-fn symbolic_emission_ready_executable(key: ExecutableKey, abi: &AbiReadyExecutable) -> EmissionReadyExecutable {
-    EmissionReadyExecutable {
-        key,
-        entry_dispatch: abi.entry_dispatch.clone(),
-        return_ty: abi.return_ty,
-        param_reprs: abi.param_reprs.clone(),
-        semantic_inputs: abi.semantic_inputs.clone(),
-        return_layout: abi.return_layout.clone(),
-        runtime_demand: abi.runtime_demand.clone(),
-        transport: abi.transport.clone(),
-        original_entry_ids: abi.original_entry_ids.clone(),
-        value_types: abi.value_types.clone(),
-        value_layouts: abi.value_layouts.clone(),
-        effects: abi.effects,
-        body: abi.body.clone(),
-        call_edges: Vec::new(),
-    }
-}
-
 pub(crate) fn symbolic_materialized_transport_plan(
-    backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     executable: &ExecutableKey,
     world: &World,
     callables: &HashMap<CallableId, CallableFacts>,
@@ -1301,7 +1278,7 @@ pub(crate) fn symbolic_materialized_transport_plan(
 }
 
 fn symbolic_codegen_seam_facts(
-    backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     position_layouts: &[(TransportPosition, TransportLayout)],
     world: &World,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
@@ -1466,7 +1443,7 @@ fn symbolic_codegen_seam_facts(
 }
 
 fn symbolic_position_structural_lanes_are_ignored(
-    backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     position: &TransportPosition,
     world: &World,
 ) -> bool {
@@ -1475,14 +1452,21 @@ fn symbolic_position_structural_lanes_are_ignored(
             executable,
             semantic_index,
         } => symbolic_backend_for_executable(backends, executable, world)
-            .and_then(|backend| backend.abi.runtime_demand.input_demands.get(*semantic_index))
+            .and_then(|backend| {
+                backend
+                    .abi
+                    .materialized
+                    .runtime_demand
+                    .input_demands
+                    .get(*semantic_index)
+            })
             .is_some_and(|demand| demand.is_ignore()),
         TransportPosition::EntryCapture {
             executable,
             entry,
             capture_index,
         } => symbolic_backend_for_executable(backends, executable, world)
-            .and_then(|backend| backend.abi.runtime_demand.entry_capture_demands.get(entry))
+            .and_then(|backend| backend.abi.materialized.runtime_demand.entry_capture_demands.get(entry))
             .and_then(|demands| demands.get(*capture_index))
             .is_some_and(|demand| demand.is_ignore()),
         TransportPosition::ExecutableReturn { .. }
@@ -1494,7 +1478,7 @@ fn symbolic_position_structural_lanes_are_ignored(
 }
 
 fn push_symbolic_boundary_codegen_seams(
-    backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     world: &World,
     boundary: BoundaryId,
     facts: &BoundaryFacts,
@@ -1529,7 +1513,7 @@ fn push_symbolic_boundary_codegen_seams(
 }
 
 fn push_symbolic_publication_codegen_seam(
-    backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     world: &World,
     boundary: BoundaryId,
     publication: &TransportPosition,
@@ -1629,13 +1613,14 @@ fn push_symbolic_publication_codegen_seam(
 }
 
 fn symbolic_backend_for_executable<'a>(
-    backends: &'a HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &'a HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     executable: &ExecutableSymbol,
     world: &World,
 ) -> Option<&'a SymbolicBackendExecutable> {
     backends
         .values()
         .find(|backend| executable_symbol(&backend.key, world) == *executable)
+        .map(Rc::as_ref)
 }
 
 fn executable_symbol(executable: &ExecutableKey, world: &World) -> ExecutableSymbol {
@@ -1650,7 +1635,7 @@ fn executable_symbol(executable: &ExecutableKey, world: &World) -> ExecutableSym
 }
 
 fn symbolic_entry_capture_owner_callsite(
-    backends: &HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     executable: &ExecutableSymbol,
     position: &TransportPosition,
     world: &World,
@@ -1756,7 +1741,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
 
     fn capture_positions_for_entry(
         &mut self,
-        executable: &super::super::artifact::EmissionReadyExecutable,
+        executable: &AbiReadyExecutable,
         entry_id: ControlEntryId,
         entry: &LoweredEntry,
     ) -> Result<Vec<super::super::transport::TransportPosition>, FatalError> {
@@ -1970,7 +1955,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
 
     fn lower_call_args(
         &mut self,
-        _executable: &super::super::artifact::EmissionReadyExecutable,
+        _executable: &AbiReadyExecutable,
         _callsite: CallSiteId,
         _closure_callee: Option<super::super::body::ValueId>,
         args: &[CallArg],
@@ -1980,7 +1965,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
 }
 
 fn lower_entry_origin(
-    executable: &super::super::artifact::EmissionReadyExecutable,
+    executable: &AbiReadyExecutable,
     entry_index: usize,
     entry: &LoweredEntry,
 ) -> SymbolicBackendEntryOrigin {
@@ -2019,11 +2004,9 @@ fn lower_entry_origin(
     }
 }
 
-fn original_entry_id(
-    executable: &super::super::artifact::EmissionReadyExecutable,
-    entry_index: usize,
-) -> ControlEntryId {
+fn original_entry_id(executable: &AbiReadyExecutable, entry_index: usize) -> ControlEntryId {
     executable
+        .materialized
         .original_entry_ids
         .get(entry_index)
         .copied()
@@ -2472,7 +2455,7 @@ mod tests {
                     layout: value_layout(TransportCarrier::Absent, Vec::new()),
                     diverges: false,
                 },
-                runtime_demand: ExecutableRuntimeDemand::default(),
+                runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
                 value_types: HashMap::new(),
                 value_layouts: HashMap::from([(
                     callee,
