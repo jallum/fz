@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-04T15:37:04Z",
+  "description": "# Goal\n\nMake every repeated evaluation of a product blocked on another product follow an exact recorded trigger, or prove and encode the distinct request cause that legitimately requires the retry.\n\n## Observed defect\n\nAfter fz-tfn.8 exposes ExecutableEffects recursion as ordinary ProductMemo dependency edges, the three long-lived target fixtures report 3 / 5 / 13 additional unexplained producer evaluations in every request scenario. Each new record is a recursive ExecutableEffects member with a prior ExecutableEffects(callee) wait and no ProductSettlement, ProductCacheHit, or displacement movement between the prior and repeated evaluation. This evidence identifies a generic product-wait retry symptom; it does not yet establish which driver, request, or arbitration edge is missing.\n\n## Model and scope\n\nInvestigate the generic ProductDriver/ProductMemo wait protocol. A blocked product formula must not be retried merely because unrelated work or a drain occurred. Any required retry must be named by exact structured product identity and causal movement. Do not add an ExecutableEffects-specific gate, retry path, reverse graph, or causality exception.\n\n## TDD and acceptance\n\n- Reproduce the retry with the smallest generic pending-product graph, including self and mutual recursion.\n- Prove whether the repeated evaluation is necessary; remove it if not, or publish the exact missing trigger if it is.\n- Exact blocked dependency replacement, recursive-group publication, displacement, and cache-hit behavior remain correct.\n- The 3 / 5 / 13 target-fixture unexplained deltas disappear or become exactly attributed without exclusions.\n- Product values, generations, canonical cross-process traces, backend artifacts, and runtime output remain deterministic.\n- Update causal baselines and performance documentation from measured evidence.\n- Run focused ProductMemo/ProductDriver tests, full library, target causal/equivalence tests, fixture matrix, formatting, and clippy with warnings denied.",
+  "id": "fz-tfn.32",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 4,
+  "status": "open",
+  "title": "Attribute and eliminate untriggered recursive-product retries",
+  "type": "bug",
+  "updated_at": "2026-09-04T15:37:04Z"
+}
