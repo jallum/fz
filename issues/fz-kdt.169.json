@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-kdt.127.2"
+    "fz-kdt.127.2",
+    "fz-tfn.30"
   ],
   "blocks": [
     "fz-tfn.13"
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "Brand-erased forwarder keys duplicate activations across seven programs when capture tuples differ; determine the minimal sound capture-sensitive key",
   "type": "task",
-  "updated_at": "2026-09-03T08:02:41Z"
+  "updated_at": "2026-09-04T00:00:47Z"
 }
