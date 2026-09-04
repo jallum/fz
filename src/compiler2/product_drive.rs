@@ -12,6 +12,8 @@
 //! inventory); the backend job publishes the `BackendProgram` fact behind a
 //! `FatalError` and finishes the session itself. `ProductDriveError`
 //! parameterizes exactly that seam so the loop body lives once.
+use std::rc::Rc;
+
 use super::drive::{ExecutionContext, FactKey};
 use super::facts::{FactReadiness, FactUse};
 use super::identity::RootId;
@@ -78,7 +80,7 @@ pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::RawSpanTelemet
     world: &mut World,
     tel: &'a T,
     root: RootId,
-) -> Result<(BackendProgram, ProductDriver<'a, T>), E> {
+) -> Result<(Rc<BackendProgram>, ProductDriver<'a, T>), E> {
     drive_root_backend_product_with_budgets(world, tel, root, PRODUCT_DRIVE_BUDGET, PRODUCT_DRIVE_BUDGET)
 }
 
@@ -99,7 +101,7 @@ pub(super) fn drive_root_backend_product_with_budgets<
     root: RootId,
     product_stack_budget: u64,
     fact_wait_budget: u64,
-) -> Result<(BackendProgram, ProductDriver<'a, T>), E> {
+) -> Result<(Rc<BackendProgram>, ProductDriver<'a, T>), E> {
     let root_key = ProductKey::RootBackendProduct(root);
     let mut driver = ProductDriver::new(tel, root);
     let mut stack = vec![root_key.clone()];
@@ -117,7 +119,7 @@ pub(super) fn drive_root_backend_product_with_budgets<
             PullOutcome::Produced(ProductValue::RootBackendProduct(answer)) if current == root_key => {
                 driver.session_mut().record_work_starts(world.work_start_tally());
                 ExecutionContext::new(world, tel).flush_reported_warnings();
-                return Ok((answer.program, driver));
+                return Ok((Rc::clone(&answer.program), driver));
             }
             PullOutcome::Produced(_) => {}
             PullOutcome::Waiting(mut waits) => {

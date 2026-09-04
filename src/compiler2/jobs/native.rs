@@ -66,7 +66,7 @@ pub(super) fn lower_native_program(
     }
 
     let backend = world.backend_program(root_id);
-    let program = NativeLowerer::new(world, tel, root_id, &backend)?.lower()?;
+    let program = std::rc::Rc::new(NativeLowerer::new(world, tel, root_id, &backend)?.lower()?);
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_native_program(root_id, program);
     emit_reusable_cons(tel, &root_id, &backend);
     Ok(JobEffects {

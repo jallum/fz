@@ -9833,7 +9833,7 @@ fn indistinguishable_dispatch_arms(fixture: &str) -> Vec<String> {
 
 /// Drives one fixture to its backend product, and hands back the program with
 /// the compiler whose world types it.
-fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, BackendProgram) {
+fn driven_backend_program(fixture: &str) -> (Compiler2<ConfiguredTelemetry>, Rc<BackendProgram>) {
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -14747,14 +14747,14 @@ pub(crate) struct CallsiteDefinedRecord {
 struct BackendProgramRecord {
     root_id: crate::compiler2::RootId,
     changed: bool,
-    program: BackendProgram,
+    program: Rc<BackendProgram>,
 }
 
 #[derive(Debug, Clone)]
 struct NativeProgramRecord {
     root_id: crate::compiler2::RootId,
     changed: bool,
-    program: NativeProgram,
+    program: Rc<NativeProgram>,
 }
 
 #[derive(Debug, Clone)]

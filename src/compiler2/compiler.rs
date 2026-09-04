@@ -1,4 +1,5 @@
 use crate::telemetry::{RawSpanTelemetry, Telemetry, TelemetryExt as _};
+use std::rc::Rc;
 use std::time::Duration;
 
 use super::NativeProgram;
@@ -122,7 +123,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         super::drive::ExecutionContext::new(&mut self.world, &self.telemetry).drive_for(self.drive_timeout)
     }
 
-    fn native_program_for_root(&mut self, root: RootId) -> Result<NativeProgram, String> {
+    fn native_program_for_root(&mut self, root: RootId) -> Result<Rc<NativeProgram>, String> {
         // Native/JIT/AOT reach the backend through the SAME product boundary as
         // interp. `LowerNativeProgram` builds the `BackendProgram` via the
         // product driver (`build_backend_product`), then consumes only that
@@ -281,7 +282,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         crate::ir_interp::run_backend_main(types, transport, tel, self.output.as_ref(), &program)
     }
 
-    fn product_backend_program_for_root(&mut self, root: RootId) -> Result<BackendProgram, String> {
+    fn product_backend_program_for_root(&mut self, root: RootId) -> Result<Rc<BackendProgram>, String> {
         const STARTED: &[&str] = &["fz", "compiler2", "backend_request", "started"];
         const FINISHED: &[&str] = &["fz", "compiler2", "backend_request", "finished"];
         if self.telemetry.is_raw_event_enabled(STARTED) {
@@ -293,7 +294,8 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         });
         if self.telemetry.is_raw_event_enabled(FINISHED) {
             if let Ok(program) = &result {
-                self.telemetry.raw_event3(FINISHED, &self.world, &root, program);
+                self.telemetry
+                    .raw_event3(FINISHED, &self.world, &root, program.as_ref());
             } else {
                 self.telemetry.raw_event2(FINISHED, &self.world, &root);
             }
@@ -308,7 +310,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     fn drive_root_backend_product<'a>(
         &'a mut self,
         root: RootId,
-    ) -> Result<(BackendProgram, ProductDriver<'a, T>), String> {
+    ) -> Result<(Rc<BackendProgram>, ProductDriver<'a, T>), String> {
         self.abort_on_zero_drive_timeout(root)?;
         super::product_drive::drive_root_backend_product(&mut self.world, &self.telemetry, root)
     }

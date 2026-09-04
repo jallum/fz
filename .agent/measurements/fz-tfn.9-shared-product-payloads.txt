@@ -1,0 +1,76 @@
+fz-tfn.9 immutable product-payload sharing
+===========================================
+
+Probe
+-----
+
+A temporary test-only counter wrapped `ProductValue::clone` and counted a deep
+clone whenever the value held a root answer, symbolic backend, ABI,
+materialized executable, runtime demand, or callable-construction owner. A
+second probe counted the whole-demand clones at the typed
+`read_runtime_demand` boundary that the first counter missed. Backend packaging
+also cloned that demand once per packaged executable; its exact executable
+inventory supplies that count. Each fixture was driven alone with
+`--test-threads=1`.
+
+                                              first probe   missed reads   packaging   Jacobi COW   overlay recopies   observed eliminated lower bound   after
+00420_enum_take_drop_split                           9,605         10,562         204        7,912             22,618                            50,901       0
+fn main(), do: 1 + 2                                    106             97           3  not measured       not measured                               206       0
+
+The corrected before column is deliberately a lower bound, not a claimed
+global total. Review found a further uninstrumented deep clone when the old
+demand cone split a settled answer between its read view and publication. That
+site was removed by retaining `Rc` in the settled cone. The after column is
+exact for the instrumented wrapper, typed-read, packaging, and 00420 Jacobi
+sites; the permanent pointer-identity test covers the now-shared retained path.
+
+The follow-up `Rc::make_mut` detector measured the table's 7,912 guaranteed
+copy-on-write clones while settling 00420: each derived answer was stored in
+both the read view and the final iterate before the next round tried to mutate
+the read view. Keeping one frozen Jacobi view and supplying the formula's
+own-demand overlay separately reduced that exact site to 0. The detector and
+its test were removed after the green measurement. The column was not measured
+on the small fixture, and the counters were introduced at different review
+points, so the sum remains an observed lower bound rather than a simultaneous
+global clone census.
+
+A final overlay probe measured 22,618 redundant whole-vector copies on 00420:
+one copy moving the already-owned `RuntimeDemandOwnInput` into the formula
+snapshot, then another copy retaining its input-demand vector for the final
+join. The formula now consumes the overlay into a production-non-`Clone`
+snapshot and borrows that vector through the join, reducing both sites to 0.
+Like the Jacobi measurement, this was measured after the preceding redesign;
+the 50,901 figure is the sum of directly observed eliminated operations across
+the review snapshots, not a claim that one baseline run performed every
+operation simultaneously.
+
+Both counters and their probe tests were deleted after recording the result.
+Permanent tests use `Rc::ptr_eq` from the memo through materialization, ABI,
+symbolic backend, and packaged backend output instead of retaining measurement
+scaffolding.
+
+Resulting ownership
+-------------------
+
+- A producer allocates each large product payload once. ProductValue, the
+  typed PullSession inventory, ProductMemo, downstream typed products, and
+  cache hits retain the same `Rc`.
+- ABI products retain their materialized input and callable-construction
+  owners. Symbolic backend products retain their ABI input. Materialized, ABI,
+  symbolic backend, and packaged backend products all retain the memoized
+  runtime-demand allocation.
+- Root answers and World retain one `Rc<BackendProgram>`; macro consumers keep
+  that handle. World stores and returns `Rc<NativeProgram>`.
+- All members of a recursive completion retain one validated
+  `Rc<ProductDependencies>` snapshot.
+
+`Rc` is sufficient: PullSession and World are single-thread owned, already use
+`Rc` for facts and ordered product values, and do not satisfy a `Send`/`Sync`
+handoff. `Arc` would add atomic reference-count traffic without making a real
+ownership path valid.
+
+Structural equality remains the movement rule. Separately allocated equal
+payloads preserve the existing generation; changed payload content advances
+it. Same-handle equality short-circuits on `Rc::ptr_eq` before structural
+fallback. Product keys, dependency contents, and group validation are
+unchanged.

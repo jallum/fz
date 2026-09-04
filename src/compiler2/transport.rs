@@ -301,7 +301,8 @@ pub struct CallableConstructionFact {
     pub(crate) selection: Option<PatternDispatchPlan<Ty>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct CallableConstructionOwner {
     pub layout: TransportLayout,
     pub construction: Option<CallableConstructionFact>,

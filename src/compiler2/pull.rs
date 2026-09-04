@@ -192,19 +192,53 @@ impl TransportShapeFact {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProductValue {
     Unit,
-    RootBackendProduct(Box<RootBackendProductAnswer>),
-    BackendExecutable(Box<SymbolicBackendExecutable>),
-    AbiExecutable(Box<AbiReadyExecutable>),
-    MaterializedExecutable(Box<MaterializedExecutable>),
+    RootBackendProduct(Rc<RootBackendProductAnswer>),
+    BackendExecutable(Rc<SymbolicBackendExecutable>),
+    AbiExecutable(Rc<AbiReadyExecutable>),
+    MaterializedExecutable(Rc<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
-    RuntimeDemand(Box<ExecutableRuntimeDemand>),
+    RuntimeDemand(Rc<ExecutableRuntimeDemand>),
     CallableResolution(CallableFlowEdge),
     OutgoingEdgeFrontier(Rc<[ExecutableKey]>),
     OutgoingInputEdges(Rc<OrderedIncomingInputs>),
     IncomingInputRelations(Rc<OrderedIncomingInputs>),
     IncomingInputSlot(Rc<[IncomingInputSource]>),
     TransportShape(TransportShapeFact),
-    CallableConstruction(Box<CallableConstructionOwner>),
+    CallableConstruction(Rc<CallableConstructionOwner>),
+}
+
+fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
+    match (left, right) {
+        (ProductValue::RootBackendProduct(left), ProductValue::RootBackendProduct(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::BackendExecutable(left), ProductValue::BackendExecutable(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::AbiExecutable(left), ProductValue::AbiExecutable(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::MaterializedExecutable(left), ProductValue::MaterializedExecutable(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::RuntimeDemand(left), ProductValue::RuntimeDemand(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::CallableConstruction(left), ProductValue::CallableConstruction(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::OutgoingEdgeFrontier(left), ProductValue::OutgoingEdgeFrontier(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::OutgoingInputEdges(left), ProductValue::OutgoingInputEdges(right))
+        | (ProductValue::IncomingInputRelations(left), ProductValue::IncomingInputRelations(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        (ProductValue::IncomingInputSlot(left), ProductValue::IncomingInputSlot(right)) => {
+            Rc::ptr_eq(left, right) || left == right
+        }
+        _ => left == right,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,10 +284,11 @@ pub enum PullOutcome {
     Waiting(Vec<PullWait>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq)]
 pub struct SymbolicBackendExecutable {
     pub key: ExecutableKey,
-    pub abi: Box<AbiReadyExecutable>,
+    pub abi: Rc<AbiReadyExecutable>,
     pub body: SymbolicBackendBody,
     pub call_edges: HashMap<CallSiteId, CallEdge<ExecutableKey>>,
 }
@@ -536,7 +571,7 @@ pub struct RecursiveGroupSearch {
 struct ProductEntry {
     value: ProductValue,
     generation: u64,
-    dependencies: ProductDependencies,
+    dependencies: Rc<ProductDependencies>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -586,7 +621,7 @@ impl ProductMemo {
                 self.produced
                     .iter()
                     .chain(self.displaced.iter())
-                    .map(|(key, entry)| (key, &entry.dependencies)),
+                    .map(|(key, entry)| (key, entry.dependencies.as_ref())),
             )
             .flat_map(|(key, dependencies)| dependencies.products.keys().map(move |dependency| (key, dependency)))
     }
@@ -632,8 +667,8 @@ impl ProductMemo {
     fn product_dependencies_for_group(&self, key: &ProductKey) -> Option<&ProductDependencies> {
         self.pending_dependencies
             .get(key)
-            .or_else(|| self.produced.get(key).map(|entry| &entry.dependencies))
-            .or_else(|| self.displaced.get(key).map(|entry| &entry.dependencies))
+            .or_else(|| self.produced.get(key).map(|entry| entry.dependencies.as_ref()))
+            .or_else(|| self.displaced.get(key).map(|entry| entry.dependencies.as_ref()))
     }
 
     /// The dependencies of `key` if `key` has not settled: either it is in
@@ -643,7 +678,7 @@ impl ProductMemo {
     fn unsettled_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
         self.pending_dependencies
             .get(key)
-            .or_else(|| self.displaced.get(key).map(|entry| &entry.dependencies))
+            .or_else(|| self.displaced.get(key).map(|entry| entry.dependencies.as_ref()))
     }
 
     fn is_displaced(&self, key: &ProductKey) -> bool {
@@ -715,7 +750,7 @@ impl ProductMemo {
                     self.produced.remove(requested);
                     return false;
                 }
-                self.commit_members(tel, emit_causal, requested, members, None, types);
+                self.commit_members(tel, emit_causal, requested, members, None, None, types);
             }
             ProductCompletion::RecursiveGroup(members) => {
                 let member_keys = members.iter().map(|(key, _, _)| key.clone()).collect::<HashSet<_>>();
@@ -753,11 +788,15 @@ impl ProductMemo {
                 }
                 self.next_group_id += 1;
                 let group_id = self.next_group_id;
-                let members = members
-                    .into_iter()
-                    .map(|(key, value, _)| (key, value, group_dependencies.clone()))
-                    .collect();
-                self.commit_members(tel, emit_causal, requested, members, Some(group_id), types);
+                self.commit_members(
+                    tel,
+                    emit_causal,
+                    requested,
+                    members,
+                    Some(Rc::new(group_dependencies)),
+                    Some(group_id),
+                    types,
+                );
             }
         }
         true
@@ -769,6 +808,7 @@ impl ProductMemo {
         emit_causal: bool,
         requested: &ProductKey,
         members: Vec<(ProductKey, ProductValue, ProductDependencies)>,
+        shared_dependencies: Option<Rc<ProductDependencies>>,
         group: Option<u64>,
         types: &super::types::Types,
     ) {
@@ -776,9 +816,11 @@ impl ProductMemo {
         for (key, value, dependencies) in members {
             self.in_progress.remove(&key);
             let previous = self.produced.remove(&key).or_else(|| self.displaced.remove(&key));
-            self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| &entry.dependencies));
+            self.remove_reader_dependencies(&key, previous.as_ref().map(|entry| entry.dependencies.as_ref()));
             self.take_pending_dependencies(&key);
-            let changed = previous.as_ref().is_none_or(|entry| entry.value != value);
+            let changed = previous
+                .as_ref()
+                .is_none_or(|entry| !same_product_value(&entry.value, &value));
             let generation = previous.as_ref().map_or(1, |entry| {
                 if changed {
                     entry.generation + 1
@@ -786,6 +828,9 @@ impl ProductMemo {
                     entry.generation
                 }
             });
+            let dependencies = shared_dependencies
+                .as_ref()
+                .map_or_else(|| Rc::new(dependencies), Rc::clone);
             prepared.push((key, value, dependencies, generation, changed));
         }
 
@@ -845,7 +890,7 @@ impl ProductMemo {
                 tel.raw_event1(&["fz", "compiler2", "pull", "product", "displaced"], key);
             }
             if let Some(entry) = self.displaced.get_mut(key) {
-                entry.dependencies = ProductDependencies::default();
+                entry.dependencies = Rc::new(ProductDependencies::default());
             }
         }
         self.mutate_product_wave(tel, mutations, types);
@@ -1257,10 +1302,10 @@ pub struct PullSession {
     input_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>>,
     input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
     input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
-    materialized_executables: HashMap<ExecutableKey, MaterializedExecutable>,
+    materialized_executables: HashMap<ExecutableKey, Rc<MaterializedExecutable>>,
     executable_effects: HashMap<ExecutableKey, EffectSummary>,
-    abi_executables: HashMap<ExecutableKey, AbiReadyExecutable>,
-    backend_executables: HashMap<ExecutableKey, SymbolicBackendExecutable>,
+    abi_executables: HashMap<ExecutableKey, Rc<AbiReadyExecutable>>,
+    backend_executables: HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
     executable_index: HashMap<ExecutableKey, usize>,
     producer_pokes: u64,
     /// The world's cumulative work-start attribution snapshot, recorded by the
@@ -1378,7 +1423,7 @@ impl PullSession {
             &key,
             ProductCompletion::Batch(vec![(
                 key.clone(),
-                ProductValue::RuntimeDemand(Box::new(demand)),
+                ProductValue::RuntimeDemand(Rc::new(demand)),
                 ProductDependencies::default(),
             )]),
             types,
@@ -1478,7 +1523,7 @@ impl PullSession {
     }
 
     pub fn materialized_executable(&self, executable: &ExecutableKey) -> Option<&MaterializedExecutable> {
-        self.materialized_executables.get(executable)
+        self.materialized_executables.get(executable).map(Rc::as_ref)
     }
 
     pub fn invalidate_artifact_products_for(
@@ -1490,7 +1535,7 @@ impl PullSession {
         self.invalidate_artifact_products(tel, executable, types);
     }
 
-    pub fn materialized_executables(&self) -> &HashMap<ExecutableKey, MaterializedExecutable> {
+    pub fn materialized_executables(&self) -> &HashMap<ExecutableKey, Rc<MaterializedExecutable>> {
         &self.materialized_executables
     }
 
@@ -1503,18 +1548,18 @@ impl PullSession {
     }
 
     pub fn abi_executable(&self, executable: &ExecutableKey) -> Option<&AbiReadyExecutable> {
-        self.abi_executables.get(executable)
+        self.abi_executables.get(executable).map(Rc::as_ref)
     }
 
-    pub fn abi_executables(&self) -> &HashMap<ExecutableKey, AbiReadyExecutable> {
+    pub fn abi_executables(&self) -> &HashMap<ExecutableKey, Rc<AbiReadyExecutable>> {
         &self.abi_executables
     }
 
     pub fn backend_executable(&self, executable: &ExecutableKey) -> Option<&SymbolicBackendExecutable> {
-        self.backend_executables.get(executable)
+        self.backend_executables.get(executable).map(Rc::as_ref)
     }
 
-    pub fn backend_executables(&self) -> &HashMap<ExecutableKey, SymbolicBackendExecutable> {
+    pub fn backend_executables(&self) -> &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>> {
         &self.backend_executables
     }
 
@@ -1799,7 +1844,7 @@ impl PullSession {
         &mut self,
         tel: &impl Telemetry,
         executable: ExecutableKey,
-        materialized: MaterializedExecutable,
+        materialized: Rc<MaterializedExecutable>,
         types: &super::types::Types,
     ) {
         self.demanded_executables.insert(executable.clone());
@@ -1869,12 +1914,12 @@ impl PullSession {
         self.executable_effects.insert(executable, effects);
     }
 
-    pub fn record_abi_executable(&mut self, executable: ExecutableKey, abi: AbiReadyExecutable) {
+    pub fn record_abi_executable(&mut self, executable: ExecutableKey, abi: Rc<AbiReadyExecutable>) {
         self.demanded_executables.insert(executable.clone());
         self.abi_executables.insert(executable, abi);
     }
 
-    pub fn record_backend_executable(&mut self, executable: ExecutableKey, backend: SymbolicBackendExecutable) {
+    pub fn record_backend_executable(&mut self, executable: ExecutableKey, backend: Rc<SymbolicBackendExecutable>) {
         self.demanded_executables.insert(executable.clone());
         self.backend_executables.insert(executable, backend);
     }
@@ -2164,7 +2209,7 @@ impl<'s> ProductReadContext<'s> {
         &self,
         members: &[ProductKey],
         types: &super::types::Types,
-    ) -> Vec<CallableConstructionOwner> {
+    ) -> Vec<Rc<CallableConstructionOwner>> {
         let member_set = members.iter().collect::<HashSet<_>>();
         let mut dependencies = members
             .iter()
@@ -2183,7 +2228,7 @@ impl<'s> ProductReadContext<'s> {
         dependencies
             .iter()
             .filter_map(|dependency| match self.session.memo.get(dependency) {
-                Some(ProductValue::CallableConstruction(owner)) => Some(owner.as_ref().clone()),
+                Some(ProductValue::CallableConstruction(owner)) => Some(Rc::clone(owner)),
                 _ => None,
             })
             .collect()
@@ -2277,9 +2322,9 @@ impl<'s> ProductReadContext<'s> {
         tel: &impl Telemetry,
         executable: &ExecutableKey,
         types: &super::types::Types,
-    ) -> Option<ExecutableRuntimeDemand> {
+    ) -> Option<Rc<ExecutableRuntimeDemand>> {
         match self.read_product(tel, ProductKey::RuntimeDemand(executable.clone()), types) {
-            Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref().clone()),
+            Some(ProductValue::RuntimeDemand(demand)) => Some(Rc::clone(demand)),
             Some(other) => panic!("runtime demand product produced unexpected value {other:?}"),
             None => None,
         }
@@ -3854,7 +3899,7 @@ mod tests {
             &mut session.memo,
             &tel,
             &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
+            ProductValue::RuntimeDemand(Rc::default()),
             ProductDependencies::default(),
             &types,
         );
@@ -3908,7 +3953,7 @@ mod tests {
             &mut session.memo,
             &tel,
             &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
+            ProductValue::RuntimeDemand(Rc::default()),
             ProductDependencies::default(),
             &types,
         );
@@ -3949,7 +3994,7 @@ mod tests {
             &mut session.memo,
             &tel,
             &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
+            ProductValue::RuntimeDemand(Rc::default()),
             ProductDependencies::default(),
             &types,
         );
@@ -4001,7 +4046,7 @@ mod tests {
             &mut session.memo,
             &tel,
             &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Box::default()),
+            ProductValue::RuntimeDemand(Rc::default()),
             ProductDependencies::default(),
             &types,
         );
@@ -4282,7 +4327,7 @@ mod tests {
             MaterializedExecutable {
                 entry_dispatch: None,
                 return_ty: test_ty(),
-                runtime_demand: ExecutableRuntimeDemand::default(),
+                runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
                 transport: MaterializedExecutableTransport {
                     executable,
                     position_layouts: Vec::new(),
@@ -4473,7 +4518,7 @@ mod tests {
             MaterializedExecutable {
                 entry_dispatch: None,
                 return_ty: fake_ty(),
-                runtime_demand: ExecutableRuntimeDemand::default(),
+                runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
                 transport: MaterializedExecutableTransport {
                     executable,
                     position_layouts: Vec::new(),
@@ -4667,7 +4712,7 @@ mod tests {
             MaterializedExecutable {
                 entry_dispatch: None,
                 return_ty: fake_ty(),
-                runtime_demand: ExecutableRuntimeDemand::default(),
+                runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
                 transport: MaterializedExecutableTransport {
                     executable,
                     position_layouts: Vec::new(),
@@ -4846,14 +4891,14 @@ mod tests {
         session.record_materialized_executable(
             &tel,
             executable.clone(),
-            materialized.clone(),
+            Rc::new(materialized.clone()),
             &super::super::Types::new(),
         );
         finish_test_entry(
             &mut session.memo,
             &tel,
             &ProductKey::MaterializedExecutable(executable),
-            ProductValue::MaterializedExecutable(Box::new(materialized)),
+            ProductValue::MaterializedExecutable(Rc::new(materialized)),
             ProductDependencies::default(),
             &fake_types(),
         );
@@ -4919,7 +4964,7 @@ mod tests {
         boundary: BoundaryId,
         resolution: ExecutableSymbol,
     ) -> ProductValue {
-        ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+        ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
             layout,
             construction: None,
             callable_facts: HashMap::from([(
@@ -4942,7 +4987,7 @@ mod tests {
     }
 
     fn withdrawn_callable_owner_answer(layout: TransportLayout) -> ProductValue {
-        ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+        ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
             layout,
             construction: None,
             callable_facts: HashMap::new(),
@@ -5032,14 +5077,14 @@ mod tests {
         finish_test_product(
             &mut memo,
             &root_key,
-            ProductValue::RootBackendProduct(Box::new(RootBackendProductAnswer {
-                program: super::super::artifact::BackendProgram {
+            ProductValue::RootBackendProduct(Rc::new(RootBackendProductAnswer {
+                program: Rc::new(super::super::artifact::BackendProgram {
                     entry: 0,
                     atom_names: Vec::new(),
                     struct_schemas: Default::default(),
                     executables: Vec::new(),
                     construction_wrappers: Vec::new(),
-                },
+                }),
                 transport: super::super::artifact::MaterializedTransportPlan {
                     entry: left_resolution.clone(),
                     executable_membership: Box::default(),
@@ -5208,7 +5253,7 @@ mod tests {
                 .collect();
             let mut publications = self.publications.iter().cloned().collect::<Vec<_>>();
             publications.sort_by_key(owner_position_key);
-            ProductValue::CallableConstruction(Box::new(CallableConstructionOwner {
+            ProductValue::CallableConstruction(Rc::new(CallableConstructionOwner {
                 layout: self.layout,
                 construction: None,
                 callable_facts: (!resolutions.is_empty())
@@ -5555,6 +5600,92 @@ mod tests {
     }
 
     #[test]
+    fn recursive_group_members_share_one_dependency_snapshot() {
+        let tel = ConfiguredTelemetry::new();
+        let types = fake_types();
+        let root = RootId::for_test(61);
+        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 610));
+        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 611));
+        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 612));
+        let dependencies = ProductDependencies {
+            products: HashMap::from([(external, Some(7))]),
+            facts: HashMap::new(),
+        };
+        let mut memo = ProductMemo::default();
+        assert!(memo.begin(left.clone()));
+        assert!(memo.begin(right.clone()));
+        assert!(finish_test_group(
+            &mut memo,
+            &tel,
+            &left,
+            vec![
+                (left.clone(), ProductValue::Unit, dependencies.clone()),
+                (right.clone(), ProductValue::Unit, dependencies),
+            ],
+            &types,
+        ));
+        let left_dependencies = &memo.produced[&left].dependencies;
+        let right_dependencies = &memo.produced[&right].dependencies;
+        assert!(
+            Rc::ptr_eq(left_dependencies, right_dependencies),
+            "one recursive publication must retain one shared dependency snapshot",
+        );
+    }
+
+    #[test]
+    fn shared_payloads_keep_structural_generation_semantics() {
+        let tel = ConfiguredTelemetry::new();
+        let types = fake_types();
+        let key = ProductKey::RuntimeDemand(fake_executable_with_function(RootId::for_test(62), 620));
+        let first = Rc::new(ExecutableRuntimeDemand::default());
+        let same = Rc::clone(&first);
+        let equal_but_distinct = Rc::new(ExecutableRuntimeDemand::default());
+        assert!(!Rc::ptr_eq(&first, &equal_but_distinct));
+
+        let mut memo = ProductMemo::default();
+        assert!(finish_test_entry(
+            &mut memo,
+            &tel,
+            &key,
+            ProductValue::RuntimeDemand(first),
+            ProductDependencies::default(),
+            &types,
+        ));
+        assert!(finish_test_entry(
+            &mut memo,
+            &tel,
+            &key,
+            ProductValue::RuntimeDemand(same),
+            ProductDependencies::default(),
+            &types,
+        ));
+        assert_eq!(memo.generation(&key), Some(1));
+        assert!(finish_test_entry(
+            &mut memo,
+            &tel,
+            &key,
+            ProductValue::RuntimeDemand(equal_but_distinct),
+            ProductDependencies::default(),
+            &types,
+        ));
+        assert_eq!(memo.generation(&key), Some(1));
+
+        let changed = ExecutableRuntimeDemand {
+            return_demand: RuntimeDemand::whole(),
+            ..ExecutableRuntimeDemand::default()
+        };
+        assert!(finish_test_entry(
+            &mut memo,
+            &tel,
+            &key,
+            ProductValue::RuntimeDemand(Rc::new(changed)),
+            ProductDependencies::default(),
+            &types,
+        ));
+        assert_eq!(memo.generation(&key), Some(2));
+    }
+
+    #[test]
     fn changed_product_authority_discards_pending_reader_snapshots_before_group_settlement() {
         let types = fake_types();
         let root = RootId::for_test(39);
@@ -5820,7 +5951,7 @@ mod tests {
                 .dependencies
                 .clone();
             let mut entries = vec![
-                (left.clone(), ProductValue::Unit, stale),
+                (left.clone(), ProductValue::Unit, stale.as_ref().clone()),
                 (right.clone(), ProductValue::Unit, current.clone()),
             ];
             if reverse {
@@ -5834,7 +5965,7 @@ mod tests {
                     .get(key)
                     .expect("rejected member should retain its prior value and generation");
                 assert_eq!(displaced.generation, 1);
-                assert_eq!(displaced.dependencies, ProductDependencies::default());
+                assert_eq!(displaced.dependencies.as_ref(), &ProductDependencies::default());
                 assert!(memo.begin(key.clone()));
             }
             assert!(finish_test_group(

@@ -2958,9 +2958,10 @@ fn compiler2_uncalled_named_function_value_is_callable_in_interp_and_jit() {
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, _) = pull_transport_plan_for_test(&tel, &mut world, root);
-    let constructions = callable_owners_for_test(driver.session())
-        .into_iter()
-        .filter_map(|owner| owner.construction)
+    let owners = callable_owners_for_test(driver.session());
+    let constructions = owners
+        .iter()
+        .filter_map(|owner| owner.construction.as_ref())
         .filter(|construction| {
             world
                 .callable(construction.callable)
@@ -4127,6 +4128,149 @@ fn compiler2_callable_owners_publish_only_their_own_position() {
     );
 }
 
+/// Large immutable products cross several ownership surfaces, but each
+/// surface must retain the producer's one allocation. Structural equality is
+/// still the movement rule; pointer identity is only the ownership proof.
+#[test]
+fn immutable_product_payloads_are_shared_from_producer_through_world_and_cache() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("shared_product_payloads.fz".to_string()),
+        "fn add1(x), do: x + 1\nfn main(), do: add1(41)".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let mut driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
+
+    let root_key = ProductKey::RootBackendProduct(root);
+    let root_answer = match driver.session().memo().get(&root_key) {
+        Some(ProductValue::RootBackendProduct(answer)) => Rc::clone(answer),
+        other => panic!("expected shared root backend answer, got {other:?}"),
+    };
+    let world_program = world.backend_program(root);
+    assert!(
+        Rc::ptr_eq(&root_answer.program, &world_program),
+        "the root answer and World projection must retain the producer's BackendProgram allocation",
+    );
+
+    for (executable, materialized) in driver.session().materialized_executables() {
+        let runtime_demand = match driver
+            .session()
+            .memo()
+            .get(&ProductKey::RuntimeDemand(executable.clone()))
+        {
+            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
+            other => panic!("expected memoized runtime demand, got {other:?}"),
+        };
+        assert!(
+            Rc::ptr_eq(&materialized.runtime_demand, runtime_demand),
+            "materialization must retain the producer's RuntimeDemand allocation",
+        );
+        match driver
+            .session()
+            .memo()
+            .get(&ProductKey::MaterializedExecutable(executable.clone()))
+        {
+            Some(ProductValue::MaterializedExecutable(memoized)) => assert!(Rc::ptr_eq(materialized, memoized)),
+            other => panic!("expected memoized materialized executable, got {other:?}"),
+        }
+    }
+    for (executable, abi) in driver.session().abi_executables() {
+        match driver
+            .session()
+            .memo()
+            .get(&ProductKey::AbiExecutable(executable.clone()))
+        {
+            Some(ProductValue::AbiExecutable(memoized)) => {
+                assert!(Rc::ptr_eq(abi, memoized));
+                let runtime_demand = match driver
+                    .session()
+                    .memo()
+                    .get(&ProductKey::RuntimeDemand(executable.clone()))
+                {
+                    Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
+                    other => panic!("expected memoized runtime demand, got {other:?}"),
+                };
+                assert!(Rc::ptr_eq(&abi.materialized.runtime_demand, runtime_demand));
+                assert!(Rc::ptr_eq(
+                    &abi.materialized,
+                    driver
+                        .session()
+                        .materialized_executables()
+                        .get(executable)
+                        .expect("ABI materialized input")
+                ));
+                for positioned in abi.callable_owners.iter() {
+                    match driver
+                        .session()
+                        .memo()
+                        .get(&ProductKey::CallableConstruction(positioned.position.clone()))
+                    {
+                        Some(ProductValue::CallableConstruction(owner)) => {
+                            assert!(Rc::ptr_eq(&positioned.owner, owner));
+                        }
+                        other => panic!("expected memoized callable owner, got {other:?}"),
+                    }
+                }
+            }
+            other => panic!("expected memoized ABI executable, got {other:?}"),
+        }
+    }
+    for (executable, backend) in driver.session().backend_executables() {
+        match driver
+            .session()
+            .memo()
+            .get(&ProductKey::BackendExecutable(executable.clone()))
+        {
+            Some(ProductValue::BackendExecutable(memoized)) => {
+                assert!(Rc::ptr_eq(backend, memoized));
+                let runtime_demand = match driver
+                    .session()
+                    .memo()
+                    .get(&ProductKey::RuntimeDemand(executable.clone()))
+                {
+                    Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
+                    other => panic!("expected memoized runtime demand, got {other:?}"),
+                };
+                assert!(Rc::ptr_eq(&backend.abi.materialized.runtime_demand, runtime_demand));
+                assert!(Rc::ptr_eq(
+                    &backend.abi,
+                    driver
+                        .session()
+                        .abi_executables()
+                        .get(executable)
+                        .expect("backend ABI input")
+                ));
+            }
+            other => panic!("expected memoized backend executable, got {other:?}"),
+        }
+    }
+    for executable in &root_answer.program.executables {
+        let runtime_demand = match driver
+            .session()
+            .memo()
+            .get(&ProductKey::RuntimeDemand(executable.key.clone()))
+        {
+            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
+            other => panic!("expected memoized runtime demand, got {other:?}"),
+        };
+        assert!(
+            Rc::ptr_eq(&executable.runtime_demand, runtime_demand),
+            "backend packaging must retain the producer's RuntimeDemand allocation",
+        );
+    }
+
+    let cached = driver.pull(&mut WorldProductProducers::new(&mut world, &tel), root_key);
+    match cached {
+        PullOutcome::Produced(ProductValue::RootBackendProduct(answer)) => {
+            assert!(Rc::ptr_eq(&answer, &root_answer));
+            assert!(Rc::ptr_eq(&answer.program, &world_program));
+        }
+        other => panic!("settled root product should be a cache hit, got {other:?}"),
+    }
+    driver.finish_session();
+}
+
 /// One recursion component publishes ONE return contract.
 ///
 /// Two functions that call each other in return position are two views of one
@@ -4968,7 +5112,9 @@ fn root_backend_answer_for_test(session: &super::pull::PullSession) -> &super::a
     }
 }
 
-fn callable_owners_for_test(session: &super::pull::PullSession) -> Vec<super::transport::CallableConstructionOwner> {
+fn callable_owners_for_test(
+    session: &super::pull::PullSession,
+) -> Vec<std::rc::Rc<super::transport::CallableConstructionOwner>> {
     root_backend_answer_for_test(session)
         .transport
         .callable_owners

@@ -647,7 +647,8 @@ pub(crate) fn ground_dispatch_surfaces(
 }
 
 /// The full runtime-demand projection for one analyzed executable.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(Clone))]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct ExecutableRuntimeDemand {
     pub callable_activation_inputs: Vec<CallableActivationInput>,
     pub return_demand: RuntimeDemand,

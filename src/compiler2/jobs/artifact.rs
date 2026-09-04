@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -142,7 +143,7 @@ pub(crate) fn produce_materialized_executable_product(
     .expect("product materialization should use settled semantic facts")
     .expect("product materialization should have complete call edges after waits");
     let effects = local_effects(&body, &call_edges);
-    let materialized = MaterializedExecutable {
+    let materialized = Rc::new(MaterializedExecutable {
         entry_dispatch: executable_facts.entry_dispatch().cloned(),
         return_ty,
         runtime_demand: runtime_demand.expect("runtime-demand product wait should have been satisfied"),
@@ -152,11 +153,14 @@ pub(crate) fn produce_materialized_executable_product(
         effects,
         body,
         call_edges,
-    };
-    context
-        .session_mut()
-        .record_materialized_executable(tel, executable.clone(), materialized.clone(), world.types());
-    PullOutcome::Produced(ProductValue::MaterializedExecutable(Box::new(materialized)))
+    });
+    context.session_mut().record_materialized_executable(
+        tel,
+        executable.clone(),
+        Rc::clone(&materialized),
+        world.types(),
+    );
+    PullOutcome::Produced(ProductValue::MaterializedExecutable(materialized))
 }
 
 pub(crate) fn produce_executable_effects_product<T: crate::telemetry::Telemetry>(
@@ -288,11 +292,15 @@ fn effect_scc_external_waits(
                 continue;
             }
             let key = ProductKey::ExecutableEffects(callee.clone());
-            match context.read_product(tel, key.clone(), types).cloned() {
-                Some(ProductValue::ExecutableEffects(value)) => {
+            let effect = match context.read_product(tel, key.clone(), types) {
+                Some(ProductValue::ExecutableEffects(value)) => Some(*value),
+                Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
+                None => None,
+            };
+            match effect {
+                Some(value) => {
                     effects.insert(callee.clone(), value);
                 }
-                Some(other) => panic!("executable effects product produced unexpected value {other:?}"),
                 None if !context.session().product_is_in_progress(&key) => waits.push(PullWait::Product(key)),
                 None => {}
             }
@@ -349,7 +357,7 @@ pub(crate) fn produce_abi_executable_product(
     let mut waits = Vec::new();
     let materialized_key = ProductKey::MaterializedExecutable(executable.clone());
     let materialized = match context.read_product(tel, materialized_key.clone(), world.types()) {
-        Some(ProductValue::MaterializedExecutable(materialized)) => Some(materialized.as_ref().clone()),
+        Some(ProductValue::MaterializedExecutable(materialized)) => Some(Rc::clone(materialized)),
         Some(other) => panic!("materialized executable product produced unexpected value {other:?}"),
         None => {
             waits.push(PullWait::Product(materialized_key));
@@ -369,8 +377,8 @@ pub(crate) fn produce_abi_executable_product(
         return PullOutcome::Waiting(waits);
     }
 
-    let mut materialized = materialized.expect("materialized executable product wait should have been satisfied");
-    materialized.effects = effects.expect("executable effects product wait should have been satisfied");
+    let materialized = materialized.expect("materialized executable product wait should have been satisfied");
+    let effects = effects.expect("executable effects product wait should have been satisfied");
     let mut transport_positions = materialized
         .transport
         .position_layouts
@@ -389,17 +397,18 @@ pub(crate) fn produce_abi_executable_product(
             Vec::new()
         }
     };
-    if waits.is_empty() {
-        materialized.transport = materialized_executable_transport(position_layouts, executable, world.types());
-    }
+    let transport = waits
+        .is_empty()
+        .then(|| materialized_executable_transport(position_layouts, executable, world.types()));
     let mut callable_owners = Vec::new();
-    for position in executable_transport_positions(&materialized.transport) {
+    let owner_transport = transport.as_ref().unwrap_or(&materialized.transport);
+    for position in executable_transport_positions(owner_transport) {
         let key = ProductKey::CallableConstruction(position.clone());
         match context.read_product(tel, key.clone(), world.types()) {
             Some(ProductValue::CallableConstruction(owner)) => {
                 callable_owners.push(PositionedCallableConstructionOwner {
                     position: position.clone(),
-                    owner: owner.as_ref().clone(),
+                    owner: Rc::clone(owner),
                 })
             }
             Some(other) => panic!("callable construction product produced unexpected value {other:?}"),
@@ -409,15 +418,24 @@ pub(crate) fn produce_abi_executable_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
+    let transport = transport.expect("complete transport reads must construct the ABI transport");
     let codegen_seam_facts = Box::default();
-    let transport_plan = transport_lookup(&materialized.transport.position_layouts, &codegen_seam_facts);
-    let plan = build_executable_abi_plan(world, executable, &materialized, &transport_plan);
-    let abi = build_abi_executable(&materialized, &plan, callable_owners.into_boxed_slice())
-        .expect("per-executable ABI derivation should not require root fan-in");
+    let transport_plan = transport_lookup(&transport.position_layouts, &codegen_seam_facts);
+    let plan = build_executable_abi_plan(world, executable, &materialized, &transport, &transport_plan);
+    let abi = Rc::new(
+        build_abi_executable(
+            materialized,
+            effects,
+            transport,
+            plan,
+            callable_owners.into_boxed_slice(),
+        )
+        .expect("per-executable ABI derivation should not require root fan-in"),
+    );
     context
         .session_mut()
-        .record_abi_executable(executable.clone(), abi.clone());
-    PullOutcome::Produced(ProductValue::AbiExecutable(Box::new(abi)))
+        .record_abi_executable(executable.clone(), Rc::clone(&abi));
+    PullOutcome::Produced(ProductValue::AbiExecutable(abi))
 }
 
 pub(crate) fn executable_transport_positions(
@@ -1900,10 +1918,10 @@ fn build_executable_abi_plan(
     world: &mut World,
     _key: &ExecutableKey,
     executable: &MaterializedExecutable,
+    transport: &MaterializedExecutableTransport,
     transport_plan: &ArtifactTransportLookup<'_>,
 ) -> ExecutableAbiPlan {
-    let semantic_inputs = executable
-        .transport
+    let semantic_inputs = transport
         .input_positions
         .iter()
         .filter_map(|position| {
@@ -1973,7 +1991,7 @@ fn build_executable_abi_plan(
         .iter()
         .flat_map(|input| input.layout.reprs.iter().copied())
         .collect::<Vec<_>>();
-    let return_position = &executable.transport.return_position;
+    let return_position = &transport.return_position;
     let return_layout = transport_plan
         .layout_at(return_position)
         .unwrap_or_else(|| panic!("transport plan should publish materialized return position {return_position:?}"));
@@ -1992,7 +2010,7 @@ fn build_executable_abi_plan(
                             matches!(
                                 seam,
                                 CodegenSeam::ReturnDelivery { executable: symbol }
-                                    if symbol == &executable.transport.executable
+                                    if symbol == &transport.executable
                             )
                         },
                         Some(leaf_shape),
@@ -2002,8 +2020,7 @@ fn build_executable_abi_plan(
             })
             .collect::<Vec<_>>()
     };
-    let mut value_layouts: HashMap<ValueId, BackendValueLayout> = executable
-        .transport
+    let mut value_layouts: HashMap<ValueId, BackendValueLayout> = transport
         .value_positions
         .iter()
         .filter_map(|position| {
@@ -2048,11 +2065,10 @@ fn build_executable_abi_plan(
         }
     }
 
-    let return_endpoints = executable
-        .transport
+    let return_endpoints = transport
         .return_payload_positions
         .iter()
-        .chain(executable.transport.resume_positions.iter())
+        .chain(transport.resume_positions.iter())
         .chain(std::iter::once(return_position))
         .map(|position| {
             let layout = transport_plan
@@ -2103,11 +2119,13 @@ fn build_executable_abi_plan(
 }
 
 fn build_abi_executable(
-    executable: &MaterializedExecutable,
-    plan: &ExecutableAbiPlan,
+    materialized: Rc<MaterializedExecutable>,
+    effects: EffectSummary,
+    transport: MaterializedExecutableTransport,
+    plan: ExecutableAbiPlan,
     callable_owners: Box<[PositionedCallableConstructionOwner]>,
 ) -> Result<AbiReadyExecutable, FatalError> {
-    let call_edges = executable
+    let call_edges = materialized
         .call_edges
         .iter()
         .map(|(callsite, edge)| {
@@ -2121,19 +2139,14 @@ fn build_abi_executable(
         })
         .collect::<HashMap<_, _>>();
     Ok(AbiReadyExecutable {
-        entry_dispatch: executable.entry_dispatch.clone(),
-        return_ty: executable.return_ty,
-        param_reprs: plan.param_reprs.clone(),
-        semantic_inputs: plan.semantic_inputs.clone(),
-        return_layout: plan.return_layout.clone(),
-        return_endpoints: plan.return_endpoints.clone(),
-        runtime_demand: executable.runtime_demand.clone(),
-        transport: executable.transport.clone(),
-        original_entry_ids: executable.original_entry_ids.clone(),
-        value_types: executable.value_types.clone(),
-        value_layouts: plan.value_layouts.clone(),
-        effects: executable.effects,
-        body: executable.body.clone(),
+        materialized,
+        param_reprs: plan.param_reprs,
+        semantic_inputs: plan.semantic_inputs,
+        return_layout: plan.return_layout,
+        return_endpoints: plan.return_endpoints,
+        transport,
+        value_layouts: plan.value_layouts,
+        effects,
         call_edges,
         callable_owners,
     })

@@ -1,11 +1,13 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::identity::{FunctionMap, ModuleId, RootEntry, RootKind, RootMap};
 use super::{AbiValueRepr, ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId, Types};
 use crate::compiler2::artifact::{
-    BackendCallableReturn, BackendExecutable, BackendProgram, BackendReturnLayout, BackendSemanticInputLayout,
-    BackendValueLayout, EffectSummary, NativeBody, NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId,
-    NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram, NativeProgramMap,
+    BackendCallableReturn, BackendExecutable, BackendProgram, BackendProgramMap, BackendReturnLayout,
+    BackendSemanticInputLayout, BackendValueLayout, EffectSummary, MacroExecutable, MacroExecutableMap, NativeBody,
+    NativeBodyOrigin, NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi,
+    NativeExecutableEntry, NativeProgram, NativeProgramMap,
 };
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{
@@ -63,6 +65,55 @@ fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
     }
 
     let _ = assert_closed as fn(BackendProgram);
+}
+
+#[test]
+fn backend_program_map_shares_latest_handle_without_moving_equal_state() {
+    let root = RootId::for_test(0);
+    let program = || BackendProgram {
+        entry: 0,
+        atom_names: Vec::new(),
+        struct_schemas: Default::default(),
+        executables: Vec::new(),
+        construction_wrappers: Vec::new(),
+    };
+    let shared = Rc::new(program());
+    let equal_but_distinct = Rc::new(program());
+    let mut programs = BackendProgramMap::new();
+
+    assert!(programs.define(root, Rc::clone(&shared)));
+    assert!(!programs.define(root, Rc::clone(&shared)));
+    assert!(!programs.define(root, Rc::clone(&equal_but_distinct)));
+    assert!(Rc::ptr_eq(programs.get(root).unwrap(), &equal_but_distinct));
+}
+
+#[test]
+fn macro_executable_map_shares_latest_handle_without_moving_equal_state() {
+    let root = RootId::for_test(0);
+    let function = FunctionId::for_test(0);
+    let program = || BackendProgram {
+        entry: 0,
+        atom_names: Vec::new(),
+        struct_schemas: Default::default(),
+        executables: Vec::new(),
+        construction_wrappers: Vec::new(),
+    };
+    let shared = Rc::new(program());
+    let mut executables = MacroExecutableMap::new();
+    let macro_executable = |program| MacroExecutable {
+        root,
+        backend_revision: 1,
+        program,
+    };
+
+    assert!(executables.define(function, macro_executable(Rc::clone(&shared))));
+    assert!(!executables.define(function, macro_executable(Rc::clone(&shared))));
+    let equal_but_distinct = Rc::new(program());
+    assert!(!executables.define(function, macro_executable(Rc::clone(&equal_but_distinct))));
+    assert!(Rc::ptr_eq(
+        &executables.get(function).unwrap().program,
+        &equal_but_distinct
+    ));
 }
 
 impl TestTransportShapes {
@@ -228,17 +279,22 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
     );
 
     let mut programs = NativeProgramMap::new();
-    assert!(programs.define(root, program.clone()));
+    let shared = std::rc::Rc::new(program.clone());
+    assert!(programs.define(root, std::rc::Rc::clone(&shared)));
+    assert!(std::rc::Rc::ptr_eq(programs.get(root).unwrap(), &shared));
     assert!(
-        !programs.define(root, program.clone()),
+        !programs.define(root, std::rc::Rc::clone(&shared)),
         "an identical recomputation should remain quiet",
     );
+    let equal_but_distinct = std::rc::Rc::new(program.clone());
+    assert!(!programs.define(root, std::rc::Rc::clone(&equal_but_distinct)));
+    assert!(std::rc::Rc::ptr_eq(programs.get(root).unwrap(), &equal_but_distinct));
     let mut logically_changed = program;
     logically_changed.executable_entries[0].key.need = ExecutableNeed::TupleFields(1);
     // `lower_native_program` feeds this exact `define` result into
     // `JobEffects.changed`, which is the scheduler's dependent-wake signal.
     assert!(
-        programs.define(root, logically_changed.clone()),
+        programs.define(root, std::rc::Rc::new(logically_changed.clone())),
         "a changed semantic-to-physical entry must report movement even when all physical native code is identical",
     );
     assert_eq!(
