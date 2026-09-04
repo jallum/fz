@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.10"
+  ],
   "created": "2026-09-04T16:47:08Z",
   "description": "# Goal\n\nMake the 00181 product cache-hit count and trace deterministic across local, coverage, and CI execution without weakening the causal contract or adding retries. Restore a green push boundary before publishing fz-tfn.10.\n\n# Proven failure\n\nCI run 33895141634 on fz-tfn.8 passed all 1,786 library tests, the 525-test serial fixture matrix, 28 other fz2_cli tests, and lint, then failed `the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`. The exact product tuple was `(408, 408, 408, 0, 19, 0)` versus the established `(408, 408, 408, 0, 18, 0)`: only cache hits increased by one. The preceding cross-process target causal/backend reproducibility test passed. This is not the readiness-EOF race in fz-tfn.28 and is not yet proven to be the untriggered producer retry defect in fz-tfn.32.\n\n# Strategy and TDD\n\n1. Reproduce with the smallest exact command and under the coverage/serial ordering used by CI; inspect the one extra ProductCacheHit identity and its preceding request cause.\n2. Compare repeated fresh-process traces and the fz-tfn.7 parent to determine whether fz-tfn.8 introduced semantic nondeterminism or the baseline is accidentally order/environment dependent.\n3. Fix the structured scheduling/product dependency cause, not the expected count. Do not accept multiple baselines, loosen assertions, add retries/sleeps, or special-case ExecutableEffects.\n4. Prove exact product values, generations, settlements, cache-hit identities, causal attribution, backend artifact, and runtime output across repeated processes and coverage.\n5. Run focused causal tests, full library, serial fixture matrix, fz2_cli, formatting, strict clippy, and CI.\n\n# Acceptance\n\nRun 33895141634’s failure is reproducible and explained by exact structured product identity. Repeated local and CI coverage executions publish one canonical cache-hit trace/count. All gates are green, and fz-tfn.10 remains unpushed until this ticket is closed and its CI succeeds.",
   "id": "fz-tfn.33",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Make product cache-hit causality deterministic under coverage",
   "type": "bug",
-  "updated_at": "2026-09-04T16:47:08Z"
+  "updated_at": "2026-09-04T16:47:13Z"
 }
