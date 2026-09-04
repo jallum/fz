@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.30"
+  ],
   "blocks": [
     "fz-tfn.13"
   ],
@@ -27,5 +29,5 @@
   "status": "open",
   "title": "Derive callable-identity key demand per input and reachable entry",
   "type": "task",
-  "updated_at": "2026-09-03T12:16:39Z"
+  "updated_at": "2026-09-04T00:00:47Z"
 }
