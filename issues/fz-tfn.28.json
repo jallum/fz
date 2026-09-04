@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.30"
+  ],
   "blocks": [
     "fz-tfn.24"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Make readiness EOF failure classification deterministic under parallel fixture load",
   "type": "bug",
-  "updated_at": "2026-09-03T20:19:27Z"
+  "updated_at": "2026-09-04T00:00:53Z"
 }
