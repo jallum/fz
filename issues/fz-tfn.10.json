@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-tfn.30",
     "fz-tfn.8",
@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete PullSession's parallel artifact side maps",
   "type": "task",
-  "updated_at": "2026-09-04T10:53:16Z"
+  "updated_at": "2026-09-04T16:27:04Z"
 }
