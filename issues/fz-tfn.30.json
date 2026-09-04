@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-tfn.9"
   ],
@@ -46,8 +46,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 0,
-  "status": "open",
+  "status": "in_progress",
   "title": "Stack recalculator work on semantic-correctness PR #110",
   "type": "task",
-  "updated_at": "2026-09-04T00:15:05Z"
+  "updated_at": "2026-09-04T01:39:27Z"
 }
