@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-tfn.30",
     "fz-tfn.8",
     "fz-tfn.9"
   ],
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Delete PullSession's parallel artifact side maps",
   "type": "task",
-  "updated_at": "2026-09-03T08:06:18Z"
+  "updated_at": "2026-09-04T00:00:42Z"
 }
