@@ -16,10 +16,284 @@ struct ContractCase<'a> {
 }
 
 #[test]
+fn backend_member_survives_reachable_sibling_insertion_and_withdrawal() {
+    use super::artifact::{BackendBody, BackendExecutable, BackendTail, CallEdge};
+    use super::pull::ProductKey;
+
+    fn target(executable: &BackendExecutable) -> super::ExecutableKey {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            panic!("right has a function body");
+        };
+        entries
+            .iter()
+            .find_map(|entry| match &entry.tail {
+                BackendTail::DirectCall {
+                    target: CallEdge::Direct(edge),
+                    ..
+                } => edge.callee.local().cloned(),
+                _ => None,
+            })
+            .expect("right directly calls zleaf")
+    }
+
+    let telemetry = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&telemetry, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(telemetry);
+    let aleaf = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "aleaf", 0);
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_member_identity.fz".into()),
+        text: "fn aleaf(), do: 1\nfn left(), do: 1\nfn right(), do: zleaf()\nfn zleaf(), do: 41\nfn main(), do: left() + right()\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let right = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "right", 0);
+    let left = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "left", 0);
+    let zleaf = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "zleaf", 0);
+    let original = compiler.retained_backend_program(root);
+    assert!(
+        !original
+            .executables()
+            .iter()
+            .any(|member| member.key.activation.function == aleaf)
+    );
+    let member = original
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    let key = ProductKey::BackendExecutable(member.key.clone());
+    let generation = compiler.retained_product_generation(root, &key);
+    let original_target = target(member);
+
+    let mut previous_left = Rc::clone(
+        original
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == left)
+            .unwrap(),
+    );
+    for (text, leaf_present) in [
+        ("fn aleaf(), do: 1\nfn left(), do: aleaf()\n", true),
+        ("fn left(), do: 1\n", false),
+    ] {
+        compiler.submit_code(CodeSubmission {
+            name: Some("backend_member_sibling_edit.fz".into()),
+            text: text.into(),
+        });
+        assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+        let changed = compiler.retained_backend_program(root);
+        assert_eq!(
+            changed
+                .executables()
+                .iter()
+                .any(|member| member.key.activation.function == aleaf),
+            leaf_present,
+            "the edit must actually insert or withdraw its new reachable member"
+        );
+        let changed_left = changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == left)
+            .unwrap();
+        assert!(
+            !Rc::ptr_eq(&previous_left, changed_left),
+            "the edited body must move while right remains shared"
+        );
+        previous_left = Rc::clone(changed_left);
+        let retained = changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == right)
+            .unwrap();
+        assert_eq!(
+            compiler.retained_product_generation(root, &key),
+            generation,
+            "the sibling edit moves no local backend dependency"
+        );
+        assert_eq!(
+            target(retained),
+            original_target,
+            "adding or withdrawing an earlier member cannot rename right's zleaf target"
+        );
+        assert!(
+            Rc::ptr_eq(member, retained),
+            "root membership changes must share the unchanged complete backend allocation"
+        );
+    }
+    let original_leaf = original
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == zleaf)
+        .unwrap();
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_leaf_edit.fz".into()),
+        text: "fn zleaf(), do: 42\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(43));
+    let leaf_changed = compiler.retained_backend_program(root);
+    let changed_leaf = leaf_changed
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == zleaf)
+        .unwrap();
+    assert!(
+        !Rc::ptr_eq(original_leaf, changed_leaf),
+        "a changed leaf body cannot reuse stale instructions"
+    );
+    let retained_right = leaf_changed
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    assert_eq!(target(retained_right), original_target);
+    assert!(
+        Rc::ptr_eq(member, retained_right),
+        "a changed target body with equal ABI needs no caller rewrite"
+    );
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_right_edit.fz".into()),
+        text: "fn right(), do: 43\n".into(),
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(44));
+    let right_changed = compiler.retained_backend_program(root);
+    let changed_right = right_changed
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    assert!(
+        !Rc::ptr_eq(member, changed_right),
+        "a relevant right edit must publish its new complete body"
+    );
+    assert!(
+        !right_changed
+            .executables()
+            .iter()
+            .any(|member| member.key.activation.function == zleaf),
+        "removing right's edge withdraws its unneeded former target"
+    );
+    assert!(Rc::ptr_eq(
+        &previous_left,
+        right_changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == left)
+            .unwrap()
+    ));
+}
+
+#[test]
 fn compiler2_can_own_configured_telemetry() {
     fn requires_owned_configured_telemetry(_: Compiler2<ConfiguredTelemetry>) {}
 
     requires_owned_configured_telemetry(Compiler2::new(ConfiguredTelemetry::new()));
+}
+
+#[test]
+fn backend_construction_identity_survives_sibling_wrapper_insertion_and_withdrawal() {
+    let telemetry = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&telemetry, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(telemetry);
+    let output = DbgCapture::new();
+    compiler.set_output(output.sink());
+    let aleaf = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "aleaf", 0);
+    compiler.submit_code(CodeSubmission {
+        name: Some("backend_construction_identity.fz".into()),
+        text: "fn left(), do: 1\nfn right(), do: fn x -> x + 41 end\nfn main() do\n f = right()\n dbg(f)\n left() + f.(0)\nend\n".into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+    let right = compiler
+        .world_mut()
+        .reference_function(super::ModuleId::GLOBAL, "right", 0);
+    let original = compiler.retained_backend_program(root);
+    let member = original
+        .executables()
+        .iter()
+        .find(|member| member.key.activation.function == right)
+        .unwrap();
+    let wrapper = member
+        .construction_wrappers
+        .first()
+        .expect("printing the callable requires a first-class construction");
+    let identity = wrapper.identity.clone();
+    let generation =
+        compiler.retained_product_generation(root, &super::pull::ProductKey::BackendExecutable(member.key.clone()));
+    let original_count = original.construction_wrappers().len();
+    let old_ordinal = original.construction_index(&identity).unwrap();
+    for (text, added) in [
+        (
+            "fn aleaf(), do: fn x -> x + 1 end\nfn left() do\n f = aleaf()\n dbg(f)\n f.(0)\nend\n",
+            true,
+        ),
+        ("fn left(), do: 1\n", false),
+    ] {
+        compiler.submit_code(CodeSubmission {
+            name: Some("backend_construction_sibling_edit.fz".into()),
+            text: text.into(),
+        });
+        assert_eq!(compiler.run_root_interp(root), Ok(42), "{:?}", diagnostics.events());
+        let changed = compiler.retained_backend_program(root);
+        assert_eq!(
+            changed
+                .executables()
+                .iter()
+                .any(|member| member.key.activation.function == aleaf),
+            added
+        );
+        assert_eq!(
+            changed.construction_wrappers().len(),
+            original_count + usize::from(added),
+            "the edit must actually add or remove one independent construction"
+        );
+        let ordinal = changed
+            .construction_index(&identity)
+            .expect("right still owns its exact construction");
+        assert_eq!(
+            ordinal,
+            old_ordinal + usize::from(added),
+            "only the consumer-local runtime projection renumbers"
+        );
+        assert!(
+            Rc::ptr_eq(wrapper, &changed.construction_wrappers()[ordinal]),
+            "the exact wrapper payload is shared across sibling membership edits"
+        );
+        let retained = changed
+            .executables()
+            .iter()
+            .find(|member| member.key.activation.function == right)
+            .unwrap();
+        assert!(
+            Rc::ptr_eq(member, retained),
+            "constructor instructions retain their stable typed wrapper reference"
+        );
+        assert_eq!(
+            compiler.retained_product_generation(root, &super::pull::ProductKey::BackendExecutable(member.key.clone())),
+            generation
+        );
+    }
 }
 
 #[test]
@@ -830,7 +1104,7 @@ fn drive_and_count_function_source_production(name: &str, source: &str) -> (usiz
         .drive_root_backend_work_starts(root)
         .unwrap_or_else(|error| panic!("{name} should drive to its backend product: {error}"));
     assert!(
-        !compiler.retained_backend_program(root).executables.is_empty(),
+        !compiler.retained_backend_program(root).executables().is_empty(),
         "{name} should settle a backend product with executable functions",
     );
 

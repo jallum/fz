@@ -34,6 +34,7 @@
 //! per-instance `RandomState` order, so a form derived from it would differ run
 //! to run even between equal structs.
 
+use super::transport::TransportPosition;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -95,25 +96,10 @@ pub(crate) fn canon_executable_key(world: &World, executable: &ExecutableKey) ->
     let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
     ProgramCanon::new(world, TyCanon::new(&labels)).executable_key(executable)
 }
-
-/// The canonical wrapper number [`canon_backend_program`] heads each wrapper
-/// block with, indexed by the wrapper IDENTITY the artifact publishes.
-///
-/// ONE AUTHORITY FOR ONE NUMBER (fz-kdt.193). A wrapper has two numbers -- the
-/// published `identity`, which is its position in
-/// `program.construction_wrappers` and what the interpreter's own errors print,
-/// and the canonical number, which is where [`ProgramCanon::wrapper_order`]
-/// sorts it and what the dump prints. They agree only by accident: measured on
-/// `00277_enum_tier0_fixture` the map is `0->3, 1->4, 2->1, 3->2, 4->0` and on
-/// `00419_enum_take_mixed` it is `0->2, 1->3, 2->0, 3->1` -- neither has a
-/// fixed point at all. Anything that LABELS a wrapper for a human to look up in
-/// a dump must therefore get the canonical number from here rather than mint a
-/// second opinion.
-///
-/// Nothing in a production build labels a wrapper for a dump reader -- the
-/// interpreter prints the identity it holds, and the dump prints the canonical
-/// number it computes -- so this bridge between them exists only where a gate
-/// needs to follow one to the other.
+/// Canonical display numbers indexed by consumer-local wrapper ordinal.
+/// Both projections name the same immutable wrappers; neither is their typed
+/// construction identity. Tests use this to match interpreter runtime labels
+/// against canonical dump labels.
 #[cfg(test)]
 pub(crate) fn canonical_wrapper_numbers(world: &World, program: &BackendProgram) -> Vec<usize> {
     let labels = |fn_id| function_label(world, FunctionId::from_fn_id(fn_id));
@@ -239,10 +225,8 @@ impl Names {
 struct ProgramCanon<'a> {
     world: &'a World,
     tyc: TyCanon<'a>,
-    /// Old vector position to canonical position, for the two program-wide
-    /// vectors every index in the artifact points into.
-    executables: Vec<usize>,
-    wrappers: Vec<usize>,
+    executables: HashMap<ExecutableKey, usize>,
+    wrappers: HashMap<TransportPosition, usize>,
     names: Names,
     shapes: HashMap<ShapeId, Arc<str>>,
     callables: HashMap<CallableId, Arc<str>>,
@@ -256,8 +240,8 @@ impl<'a> ProgramCanon<'a> {
         Self {
             world,
             tyc,
-            executables: Vec::new(),
-            wrappers: Vec::new(),
+            executables: HashMap::new(),
+            wrappers: HashMap::new(),
             names: Names::default(),
             shapes: HashMap::new(),
             callables: HashMap::new(),
@@ -289,12 +273,20 @@ impl<'a> ProgramCanon<'a> {
     fn render(&mut self, program: &BackendProgram) -> String {
         let executable_order = self.executable_order(program);
         let wrapper_order = self.wrapper_order(program);
-        self.executables = inverse(&executable_order);
-        self.wrappers = inverse(&wrapper_order);
+        self.executables = executable_order
+            .iter()
+            .enumerate()
+            .map(|(canonical, old)| (program.executables()[*old].key.clone(), canonical))
+            .collect();
+        self.wrappers = wrapper_order
+            .iter()
+            .enumerate()
+            .map(|(canonical, old)| (program.construction_wrappers()[*old].identity.clone(), canonical))
+            .collect();
 
         let mut out = Out::default();
         out.enter("backend_program");
-        out.put(&format!("entry {}", self.executable_ref(program.entry)));
+        out.put(&format!("entry {}", self.executable_ref(program.entry())));
         // The atom table's ORDER is an allocation artifact: nothing in the
         // artifact names an atom by its index (steps carry `GroundValue::Atom`
         // with the name), so only the set is meaningful.
@@ -309,10 +301,10 @@ impl<'a> ProgramCanon<'a> {
             out.exit();
         }
         for (canonical, old) in executable_order.iter().enumerate() {
-            self.executable(&mut out, canonical, &program.executables[*old]);
+            self.executable(&mut out, canonical, &program.executables()[*old]);
         }
         for (canonical, old) in wrapper_order.iter().enumerate() {
-            self.wrapper(&mut out, canonical, &program.construction_wrappers[*old]);
+            self.wrapper(&mut out, canonical, &program.construction_wrappers()[*old]);
         }
         out.exit();
         out.buf
@@ -333,16 +325,16 @@ impl<'a> ProgramCanon<'a> {
     /// raw interner ids.
     fn executable_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
-            .executables
+            .executables()
             .iter()
             .enumerate()
             .map(|(index, executable)| {
                 let key = format!(
                     "{}|{}|{:?}|{}",
                     self.executable_key(&executable.key),
-                    self.ty(executable.return_ty),
-                    executable.param_reprs,
-                    effects_text(executable.effects)
+                    self.ty(executable.abi.materialized.return_ty),
+                    executable.abi.param_reprs,
+                    effects_text(executable.abi.effects)
                 );
                 (key, index)
             })
@@ -360,7 +352,7 @@ impl<'a> ProgramCanon<'a> {
     /// `TransportPosition`, shared by publication and packaging.
     fn wrapper_order(&mut self, program: &BackendProgram) -> Vec<usize> {
         let mut keys: Vec<(String, usize)> = program
-            .construction_wrappers
+            .construction_wrappers()
             .iter()
             .enumerate()
             .map(|(index, wrapper)| {
@@ -383,18 +375,15 @@ impl<'a> ProgramCanon<'a> {
         keys.into_iter().map(|(_, index)| index).collect()
     }
 
-    fn executable_ref(&self, old: usize) -> String {
+    fn executable_ref(&self, old: &ExecutableKey) -> String {
         match self.executables.get(old) {
             Some(canonical) => format!("x{canonical}"),
             None => "x?".to_string(),
         }
     }
 
-    fn wrapper_ref(&self, identity: u32) -> String {
-        // A wrapper's `identity` IS its position in the published vector
-        // (`package_backend_construction_wrappers` enumerates them), so the
-        // same remap serves both.
-        match self.wrappers.get(identity as usize) {
+    fn wrapper_ref(&self, identity: &TransportPosition) -> String {
+        match self.wrappers.get(identity) {
             Some(canonical) => format!("w{canonical}"),
             None => "w?".to_string(),
         }
@@ -409,21 +398,24 @@ impl<'a> ProgramCanon<'a> {
         // The body is rendered FIRST so value and callsite names are handed out
         // in body-walk order; the sections that only reference them follow.
         let body = self.body(&executable.body);
-        let demand = self.runtime_demand(&executable.runtime_demand);
+        let demand = self.runtime_demand(&executable.abi.materialized.runtime_demand);
         let values = self.value_table(executable);
         let dispatch = executable
+            .abi
+            .materialized
             .entry_dispatch
             .as_ref()
             .map(|dispatch| self.entry_dispatch(dispatch));
 
         out.enter(&format!("executable x{index}"));
         out.put(&format!("key {}", self.executable_key(&executable.key)));
-        out.put(&format!("return {}", self.ty(executable.return_ty)));
-        out.put(&format!("param_reprs [{}]", reprs_text(&executable.param_reprs)));
-        out.put(&format!("effects {}", effects_text(executable.effects)));
+        out.put(&format!("return {}", self.ty(executable.abi.materialized.return_ty)));
+        out.put(&format!("param_reprs [{}]", reprs_text(&executable.abi.param_reprs)));
+        out.put(&format!("effects {}", effects_text(executable.abi.effects)));
         out.section(
             "semantic_inputs",
             executable
+                .abi
                 .semantic_inputs
                 .iter()
                 .map(|input| self.semantic_input(input))
@@ -431,7 +423,7 @@ impl<'a> ProgramCanon<'a> {
         );
         out.put(&format!(
             "return_layout {}",
-            self.return_layout(&executable.return_layout)
+            self.return_layout(&executable.abi.return_layout)
         ));
         if let Some(dispatch) = dispatch {
             out.section("entry_dispatch", dispatch);
@@ -461,20 +453,25 @@ impl<'a> ProgramCanon<'a> {
 
     fn value_table(&mut self, executable: &BackendExecutable) -> Vec<String> {
         let mut keys: Vec<&ValueId> = executable
+            .abi
+            .materialized
             .value_types
             .keys()
-            .chain(executable.value_layouts.keys())
+            .chain(executable.abi.value_layouts.keys())
             .collect();
         keys.sort();
         keys.dedup();
         let mut rows: Vec<(Option<usize>, String)> = Vec::with_capacity(keys.len());
         for value in keys {
             let ty = executable
+                .abi
+                .materialized
                 .value_types
                 .get(value)
                 .map(|ty| self.ty(*ty))
                 .unwrap_or_else(|| "-".to_string());
             let layout = executable
+                .abi
                 .value_layouts
                 .get(value)
                 .map(|layout| self.layout(layout))
@@ -1050,7 +1047,7 @@ impl ProgramCanon<'_> {
                 format!(
                     "{name} = function_ref {} {}",
                     function_label(self.world, *function),
-                    self.construction(*construction)
+                    self.construction(construction.as_ref())
                 )
             }
             BackendStep::Lambda {
@@ -1064,7 +1061,7 @@ impl ProgramCanon<'_> {
                 format!(
                     "{name} = lambda {label} captures=[{}] {}",
                     self.value_list(captures),
-                    self.construction(*construction)
+                    self.construction(construction.as_ref())
                 )
             }
             BackendStep::BinaryOp { value, op, left, right } => {
@@ -1167,7 +1164,7 @@ impl ProgramCanon<'_> {
         format!("%{{{}}}", pairs.join(", "))
     }
 
-    fn construction(&mut self, construction: Option<u32>) -> String {
+    fn construction(&mut self, construction: Option<&TransportPosition>) -> String {
         match construction {
             None => "construction=-".to_string(),
             Some(identity) => format!("construction={}", self.wrapper_ref(identity)),
@@ -1234,6 +1231,7 @@ impl ProgramCanon<'_> {
                 let callee = self.names.value(*callee);
                 let args = self.call_args(args);
                 let target = target
+                    .as_ref()
                     .map(|target| self.executable_ref(target))
                     .unwrap_or_else(|| "-".to_string());
                 out.enter(&format!(
@@ -1339,7 +1337,7 @@ impl ProgramCanon<'_> {
         format!("{} timeout={timeout} e{}", self.span(after.span), after.entry.as_u32())
     }
 
-    fn call_edge(&mut self, out: &mut Out, edge: &CallEdge<usize, BackendReturnFlow>) {
+    fn call_edge(&mut self, out: &mut Out, edge: &CallEdge<ExecutableKey, BackendReturnFlow>) {
         match edge {
             CallEdge::Direct(direct) => {
                 let callee = self.call_target(&direct.callee);
@@ -1370,9 +1368,9 @@ impl ProgramCanon<'_> {
         }
     }
 
-    fn call_target(&mut self, target: &CallTarget<usize>) -> String {
+    fn call_target(&mut self, target: &CallTarget<ExecutableKey>) -> String {
         match target {
-            CallTarget::Local(index) => self.executable_ref(*index),
+            CallTarget::Local(index) => self.executable_ref(index),
             CallTarget::ProviderBoundary(function) => {
                 format!("provider:{}", function_label(self.world, *function))
             }
@@ -1450,7 +1448,7 @@ impl ProgramCanon<'_> {
         format!(
             "{} target={} inputs=[{}] shapes=[{}] captures={:?} surface={:?} target_inputs=[{}] return={}",
             self.boundary(member.boundary),
-            self.executable_ref(member.target),
+            self.executable_ref(&member.target),
             inputs.join(", "),
             shapes.join(", "),
             member.capture_semantic_inputs,
@@ -1826,6 +1824,7 @@ fn ordered(mut rows: Vec<(Option<usize>, String)>) -> Vec<String> {
     rows.into_iter().map(|(_, line)| line).collect()
 }
 
+#[cfg(test)]
 fn inverse(order: &[usize]) -> Vec<usize> {
     let mut inverse = vec![0; order.len()];
     for (canonical, old) in order.iter().enumerate() {

@@ -653,7 +653,7 @@ structural fallback, so ordinary memo handoffs do not rescan payloads.
 When a producer reconstructs equal content, settlement retains the memo's
 existing allocation, so the direct pull result cannot replace it with an
 equal-but-distinct handle. `ProductMemo` is also the typed settled inventory:
-its materialized, ABI, and symbolic-backend point queries and iterators project
+its materialized, ABI, and backend point queries and iterators project
 the stored key/value pairs directly. `PullSession` carries no parallel artifact
 maps.
 Every member of a settled group retains the union of the
@@ -675,16 +675,17 @@ positioned layout answers it consumed. A closure callee's carrier selects its
 physical invocation: `ValueRef` uses the public wrapper, while `Absent` permits
 one exact semantic target to refine directly. `AbiReadyExecutable` refines that
 set and embeds each callable-construction answer with its position; and
-`SymbolicBackendExecutable` carries both values unchanged. The root backend
-packages a wrapper only from a positioned owner whose `construction` is
-present. Direct-only owners retain their layout and direct callable facts with
-no construction, so final packaging does not rejoin boundary publications to
-recover first-class eligibility.
+`BackendExecutable` retains that ABI handle. Its producer reads the exact ABI
+prerequisites named by return endpoints and construction members/captures, then
+lowers one complete body and creates wrappers only for positioned owners whose
+`construction` is present. Direct-only owners retain their layout and direct
+callable facts with no construction, so lowering does not rejoin boundary
+publications to recover first-class eligibility.
 
 A value whose positioned layout settled to `Nothing` carries no runtime lanes.
 Its lexical capture metadata can still be consumed by a callable wrapper.
 Backend lowering applies the lane-absence proof once, in the
-shared symbolic lowering: every fresh construction step
+shared backend lowering: every fresh construction step
 (`Tuple`/`List`/`Map`/`MapUpdate`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 goes through `construction_step_or_omitted` and becomes `BackendStep::Omitted`
 when its own value is proven absent — a closure the plan proves is never invoked
@@ -700,10 +701,14 @@ encode, so a value tail returning through it reads no value at all
 `ir_interp/backend.rs`).
 
 The root backend producer traverses its exact reachable backend-product
-values, then densifies
-their embedded layouts and callable owners into one root product answer. The
-answer retains that `MaterializedTransportPlan` beside the closed
-`BackendProgram`; runtime consumers project only the program.
+values and aggregates their embedded layouts and callable owners into one root
+product answer. The answer retains that `MaterializedTransportPlan` beside a
+`BackendProgram` of shared executable and wrapper allocations. Each body keeps
+`ExecutableKey` call targets and `TransportPosition` construction references;
+membership changes do not rewrite them. The program's private immutable
+inventories supply derived key-to-ordinal lookups for runtime consumers.
+Root assembly also collects atoms and reachable schemas. Runtime consumers
+project only the program.
 There is no parallel session map of transport positions, shapes, layouts,
 callable boundaries, or transport-shape groups, and final packaging does not scan the
 fact table or memo to rediscover them.

@@ -51,9 +51,9 @@ semantic  SeedRoot, SeedActivation, AnalyzeActivation
             contributions; peer propagation reads only exact target
             RuntimeDemandInputs sub-facts
 product   RootBackendProduct(root)
-            final dense interpreter package for a root
+            closed shared backend inventory for a root
           BackendExecutable(E)
-            one symbolic backend executable
+            one immutable interpreter-ready backend executable
           AbiExecutable(E)
             ABI lanes, return delivery, entry captures, resumes, and callable entries
             for one executable
@@ -102,10 +102,10 @@ World fact values are not copied into `ProductMemo` and therefore have no
 product settlement, displacement, cache-hit, or re-entry lifecycle.
 
 `RootBackendProduct(root)` is the final assembly boundary. It keys the root
-entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
-positioned callable owners embedded in each reached backend product, assigns
-dense executable indices, and publishes one `RootBackendProductAnswer`. That
-answer owns both the symbolic `MaterializedTransportPlan` and the closed runtime
+entry, pulls `BackendExecutable(entry)`, follows typed backend call edges and
+positioned callable owners embedded in each reached backend product, and gathers
+their shared allocations into one `RootBackendProductAnswer`. That
+answer owns both the `MaterializedTransportPlan` and the closed runtime
 `BackendProgram`; runtime consumers project only the program. The product pull
 path is the only artifact path. Each materialized executable first drops value
 types removed with pruned control, then carries the typed `ModuleId` set named
@@ -150,7 +150,8 @@ submit_root(main/0)
           waits on settled RuntimeDemand(E), then pulls local TransportShape products
         pulls ExecutableEffects(E)
         pulls EntryCapture, resume, input, return, and callable-boundary transport products
-      lowers one symbolic backend executable
+      reads exact ABI prerequisites for return endpoints and construction members/captures
+      lowers one interpreter-ready backend executable
     follows exact reachable backend products and publishes RootBackendProductAnswer(root)
   Compiler2 retains this session and exact dependency graph for the root's next request
 ```
@@ -655,13 +656,15 @@ The next products narrow the contract:
   and the pre-ABI transport view remain on that materialized input, while the
   ABI product owns settled/transitive effects, completed ABI transport,
   layouts, and edges. It does not derive movement from root-wide demand state.
-- `BackendExecutable(E)` reads `AbiExecutable(E)` and lowers one symbolic
-  backend executable. Direct calls remain symbolic executable keys until final
-  packaging.
+- `BackendExecutable(E)` reads `AbiExecutable(E)` and the exact ABI products
+  named by its return endpoints and construction members/captures. It lowers one
+  interpreter-ready body with `ExecutableKey` call targets and
+  `TransportPosition` construction references. Its ABI handle retains the
+  materialized input; metadata is read from those owners rather than copied.
 - `RootBackendProduct(root)` traverses exact reachable `BackendExecutable`
-  product values and packages them into dense `BackendProgram` indices and
-  closed `BackendValueLayout` contracts. Its answer retains the symbolic plan;
-  the program is the interpreter-ready projection.
+  product values and gathers their shared executable and wrapper allocations
+  into `BackendProgram`. It aggregates transport, atom, and reachable-schema
+  inventories; it does not rewrite or clone backend bodies.
 - `RootBackendContent(root)` is the native dependency's exact, pointer-only
   view of the immutable `BackendProgram` inside `RootBackendProduct(root)`.
   Equality is one `Rc::ptr_eq`, so this boundary never walks the program.
@@ -687,14 +690,15 @@ including hidden macro roots. Active sessions remain addressable through short
 checked borrows that end before scheduler jobs run. Every failure restores the
 same session, and failed native lowering installs no cached native answer.
 
-`ProductMemo` is the only settled inventory for materialized, ABI, and symbolic
+`ProductMemo` is the only settled inventory for materialized, ABI, and
 backend executables. Typed iterators project those entries without collecting
 or cloning them; `PullSession` has no artifact mirrors or mirror invalidation.
-Final root packaging semantically orders the reached executable keys once, and
-the resulting `BackendProgram.executables` vector is both the current reachable
-inventory and the dense executable index. Consumers do not scan a retained
-memo's historical products to rediscover the current root closure. No
-request-local index projection is retained beside it.
+Final root packaging semantically orders reached executable and construction
+keys. `BackendProgram` owns a private immutable entry key and inventories of shared members and
+derives key-to-ordinal lookups from them at construction. Body references remain
+typed keys even when membership order changes. Ordinals serve interpreter
+execution and native linking, not semantic identity. Consumers do not scan a
+retained memo's historical products to rediscover the current root closure.
 
 `RootBackendProduct(root)` preserves one `BackendConstructionWrapper` per
 positioned owner whose exact product contains a first-class construction. It
@@ -706,11 +710,8 @@ layouts, member selection, and one public return form: `Diverges`, `Absent`, or
 `ValueRef`. Every nonempty returning member adapts to that one public word;
 mixed empty and nonempty returning members are invalid. The public form is not
 copied from one private member or reconstructed from a semantic return type.
-Because the construction owner contributes every member's exact return
-contract, a wrapper over returning members publishes `ValueRef` — at HEAD
-every corpus wrapper does (354/354; the two spawned zero-arity `server/0`
-bodies that used to sit at `Absent` now publish their `:nil` in one raw atom
-lane, at zero measured allocation cost). The packaging tripwire refuses any
+The construction owner contributes every member's exact return contract.
+The packaging tripwire refuses any
 program where a boxed callsite could reach a wrapper that publishes no return
 lane.
 The lane count a wrapper publishes and the lane count every boxed closure
@@ -780,11 +781,13 @@ requested product.
 - `AbiExecutable(E)` may consume only `MaterializedExecutable(E)`,
   `ExecutableEffects(E)`, exact transport products, and the world-owned type
   store.
-- `BackendExecutable(E)` may consume only `AbiExecutable(E)` and its embedded
-  positioned transport answers.
+- `BackendExecutable(E)` consumes its own `AbiExecutable(E)`, its embedded
+  positioned transport answers, and exact ABI prerequisites for return
+  endpoints and construction members/captures.
 - `RootBackendProduct(root)` may consume only `RootEntry(root)`/entry key facts
-  and exact `BackendExecutable(E)` products reached through their symbolic call
-  edges and positioned callable owners.
+  and exact `BackendExecutable(E)` products reached through their typed call
+  edges and positioned callable owners, plus the `StructDefined` facts named
+  by their reachable schema obligations.
 
 If backend code needs to ask semantic, reachability, callee-selection, or
 type-inference questions after that line, the product contract is incomplete or

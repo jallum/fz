@@ -77,7 +77,7 @@ pub struct MaterializedTransportPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendConstructionWrapper {
-    pub identity: u32,
+    pub identity: TransportPosition,
     pub callable: CallableId,
     pub captures: Box<[BackendConstructionCapture]>,
     pub call_arity: usize,
@@ -98,7 +98,7 @@ pub struct BackendConstructionMemberAdapter {
     pub boundary: BoundaryId,
     pub surface_inputs: Box<[Ty]>,
     pub surface_arg_shapes: Box<[ShapeId]>,
-    pub target: usize,
+    pub target: ExecutableKey,
     pub capture_semantic_inputs: Box<[usize]>,
     pub surface_semantic_inputs: Box<[usize]>,
     pub target_inputs: Box<[BackendSemanticInputLayout]>,
@@ -136,6 +136,7 @@ impl MaterializedTransportPlan {
         self.layout_at(position).map(|layout| layout.structural)
     }
 
+    #[cfg(test)]
     pub fn layout_at(&self, position: &TransportPosition) -> Option<TransportLayout> {
         self.position_layouts
             .iter()
@@ -278,11 +279,94 @@ pub enum BackendReturnFlow {
 #[cfg_attr(test, derive(Clone))]
 #[derive(Debug, PartialEq)]
 pub struct BackendProgram {
-    pub entry: usize,
+    entry: ExecutableKey,
     pub atom_names: Vec<String>,
     pub struct_schemas: BTreeMap<String, Vec<String>>,
-    pub executables: Vec<BackendExecutable>,
-    pub construction_wrappers: Vec<BackendConstructionWrapper>,
+    executables: Vec<Rc<BackendExecutable>>,
+    construction_wrappers: Vec<Rc<BackendConstructionWrapper>>,
+    executable_indices: HashMap<ExecutableKey, usize>,
+    construction_indices: HashMap<TransportPosition, usize>,
+}
+
+impl BackendProgram {
+    pub fn entry(&self) -> &ExecutableKey {
+        &self.entry
+    }
+    pub fn executables(&self) -> &[Rc<BackendExecutable>] {
+        &self.executables
+    }
+
+    pub fn construction_wrappers(&self) -> &[Rc<BackendConstructionWrapper>] {
+        &self.construction_wrappers
+    }
+
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        let mut world = super::World::new();
+        let function = world.reference_function(ModuleId::GLOBAL, "test_entry", 0);
+        let entry = ExecutableKey {
+            activation: super::identity::ActivationKey::from_inputs(
+                super::RootId::for_test(0),
+                function,
+                &[],
+                world.types_mut(),
+            ),
+            need: super::ExecutableNeed::Value,
+        };
+        Self {
+            entry,
+            atom_names: Vec::new(),
+            struct_schemas: BTreeMap::new(),
+            executables: Vec::new(),
+            construction_wrappers: Vec::new(),
+            executable_indices: HashMap::new(),
+            construction_indices: HashMap::new(),
+        }
+    }
+
+    pub fn new(
+        entry: ExecutableKey,
+        atom_names: Vec<String>,
+        struct_schemas: BTreeMap<String, Vec<String>>,
+        executables: Vec<Rc<BackendExecutable>>,
+        construction_wrappers: Vec<Rc<BackendConstructionWrapper>>,
+    ) -> Self {
+        let mut executable_indices = HashMap::with_capacity(executables.len());
+        for (index, executable) in executables.iter().enumerate() {
+            assert!(
+                executable_indices.insert(executable.key.clone(), index).is_none(),
+                "duplicate backend executable identity"
+            );
+        }
+        assert!(
+            executable_indices.contains_key(&entry),
+            "backend entry must belong to its program"
+        );
+        let mut construction_indices = HashMap::with_capacity(construction_wrappers.len());
+        for (index, wrapper) in construction_wrappers.iter().enumerate() {
+            assert!(
+                construction_indices.insert(wrapper.identity.clone(), index).is_none(),
+                "duplicate backend construction identity"
+            );
+        }
+        Self {
+            entry,
+            atom_names,
+            struct_schemas,
+            executables,
+            construction_wrappers,
+            executable_indices,
+            construction_indices,
+        }
+    }
+
+    pub fn executable_index(&self, key: &ExecutableKey) -> Option<usize> {
+        self.executable_indices.get(key).copied()
+    }
+
+    pub fn construction_index(&self, key: &TransportPosition) -> Option<usize> {
+        self.construction_indices.get(key).copied()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -993,16 +1077,80 @@ pub struct AbiReadyCallEdge {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendExecutable {
     pub key: ExecutableKey,
-    pub entry_dispatch: Option<ExecutableDispatch>,
-    pub return_ty: Ty,
-    pub param_reprs: Vec<AbiValueRepr>,
-    pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
-    pub return_layout: BackendReturnLayout,
-    pub runtime_demand: Rc<ExecutableRuntimeDemand>,
-    pub value_types: HashMap<ValueId, Ty>,
-    pub value_layouts: HashMap<ValueId, BackendValueLayout>,
-    pub effects: EffectSummary,
+    pub abi: Rc<AbiReadyExecutable>,
     pub body: BackendBody,
+    pub construction_wrappers: Box<[Rc<BackendConstructionWrapper>]>,
+}
+
+#[cfg(test)]
+impl BackendExecutable {
+    pub(crate) fn for_test(key: ExecutableKey, return_ty: Ty, nothing: ShapeId) -> Self {
+        let symbol = ExecutableSymbol {
+            activation: super::transport::ActivationSymbol {
+                function: key.activation.function,
+                arrow: key.activation.arrow,
+                input: Box::default(),
+            },
+            need: key.need,
+        };
+        let transport = MaterializedExecutableTransport {
+            executable: symbol.clone(),
+            position_layouts: Vec::new(),
+            input_positions: Vec::new(),
+            return_position: TransportPosition::ExecutableReturn { executable: symbol },
+            resume_positions: Vec::new(),
+            return_payload_positions: Vec::new(),
+            entry_capture_positions: Vec::new(),
+            call_arg_positions: Vec::new(),
+            value_positions: Vec::new(),
+        };
+        let materialized = Rc::new(MaterializedExecutable {
+            entry_dispatch: None,
+            return_ty,
+            runtime_demand: Rc::default(),
+            transport: transport.clone(),
+            original_entry_ids: Vec::new(),
+            value_types: HashMap::new(),
+            effects: EffectSummary::default(),
+            struct_modules: Box::default(),
+            body: LoweredBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+            call_edges: HashMap::new(),
+        });
+        let abi = Rc::new(AbiReadyExecutable {
+            materialized,
+            param_reprs: Vec::new(),
+            semantic_inputs: Box::default(),
+            return_layout: BackendReturnLayout {
+                layout: BackendValueLayout {
+                    structural: nothing,
+                    carrier: TransportCarrier::Absent,
+                    tys: Box::default(),
+                    reprs: Box::default(),
+                },
+                diverges: false,
+            },
+            return_endpoints: Box::default(),
+            transport,
+            value_layouts: HashMap::new(),
+            effects: EffectSummary::default(),
+            call_edges: HashMap::new(),
+            callable_owners: Box::default(),
+        });
+        Self {
+            key,
+            abi,
+            body: BackendBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+            construction_wrappers: Box::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1224,7 +1372,7 @@ pub enum BackendTail {
     DirectCall {
         value: ValueId,
         callsite: CallSiteId,
-        target: CallEdge<usize, BackendReturnFlow>,
+        target: CallEdge<ExecutableKey, BackendReturnFlow>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
     },
@@ -1232,7 +1380,7 @@ pub enum BackendTail {
         value: ValueId,
         callsite: CallSiteId,
         callee: ValueId,
-        target: Option<usize>,
+        target: Option<ExecutableKey>,
         args: Vec<BackendCallArg>,
         dest: ControlDestination,
         return_flow: Option<BackendReturnFlow>,
@@ -1292,13 +1440,13 @@ pub enum BackendStep {
     FunctionRef {
         value: ValueId,
         function: FunctionId,
-        construction: Option<u32>,
+        construction: Option<TransportPosition>,
     },
     Lambda {
         value: ValueId,
         function: FunctionId,
         captures: Vec<ValueId>,
-        construction: Option<u32>,
+        construction: Option<TransportPosition>,
     },
     BinaryOp {
         value: ValueId,

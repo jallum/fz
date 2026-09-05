@@ -102,10 +102,12 @@ Built on `canon(Ty)`, by four rules:
   a `Span`'s code id becomes the submission's name.
 - **program-wide positions are re-sorted** on an id-free key: an executable's
   function, input types and need; a wrapper's callable, arity, return form and
-  member boundaries. Every index into either vector — the program entry, direct
-  and closure call targets, wrapper identities, the `construction` field on a
-  step — is remapped through that order. The remap lives in the RENDERING;
-  nothing renumbers the real structures.
+  member boundaries. The renderer assigns ordinals to `ExecutableKey` and
+  `TransportPosition` identities in that order, then uses them for the program
+  entry, call targets, wrappers, and construction references. These references
+  remain typed keys in the retained bodies. Rendering neither renumbers nor
+  rewrites the real structures; runtime ordinal lookups are a separate consumer
+  projection of the immutable program inventory.
 
   Two entries that render the same tie fall back to published order, so that
   order must also be semantic. `SemanticOrd<Types>` is the single typed owner

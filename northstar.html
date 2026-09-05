@@ -325,7 +325,7 @@
         <code>CallableConstruction(position)</code> pulled only when a demanded executable names
         them. The final
         <code>RootBackendProduct(root)</code> follows exact reachable backend product values and
-        owns their symbolic plan beside one shared dense <code>BackendProgram</code>.
+        owns their transport plan beside one shared <code>BackendProgram</code> inventory.
         <code>Compiler2</code> retains user and macro root sessions in
         <code>ProductSessions</code>; each session's <code>ProductMemo</code> owns these
         artifact answers. <code>RootBackendContent(root)</code> exposes the backend
@@ -477,7 +477,7 @@ enum FactValue {
           <tr>
             <td>Product root</td>
             <td><code>RootBackendProduct(root)</code></td>
-            <td>The demanded root answer. It keys the entry executable, follows exact backend products through symbolic edges and positioned callable owners, and retains their symbolic plan beside the dense runtime program.</td>
+            <td>The demanded root answer. It keys the entry executable, follows exact backend products through typed edges and positioned callable owners, and retains their transport plan beside shared runtime-ready members.</td>
           </tr>
           <tr>
             <td>Executable products</td>
@@ -674,8 +674,10 @@ MaterializedExecutable(E)
         semantically cold local-control entries into explicit halt stubs, and freezes each live
         callsite to selected symbolic callee executable keys. The root product traverses exact
         reachable <code>BackendExecutable</code> product values through their symbolic call edges
-        and positioned callable owners. Its answer retains the symbolic transport plan beside the
-        dense runtime program and does not scan session state or semantic facts to rediscover membership.
+        and positioned callable owners. Its answer retains the transport plan beside shared
+        executable and wrapper allocations, without rewriting their bodies. Root assembly still
+        aggregates transport, atoms, and reachable schemas; it does not scan session state or
+        semantic facts to rediscover membership.
       </p>
       <p>
         Product freshness is revisioned by exact product generations and exact fact uses. A producer
@@ -810,17 +812,20 @@ MaterializedExecutable(E)
         <div class="card">
           <h3><code>BackendExecutable</code></h3>
           <p>
-            The symbolic interpreter handoff for one executable. It keeps direct calls as
-            executable keys until root packaging assigns dense indices, so per-executable products
-            stay independent of root inventory order.
+            The immutable interpreter-ready body for one executable. Calls name
+            <code>ExecutableKey</code>s and constructions name <code>TransportPosition</code>s,
+            independent of root inventory order. Its shared ABI handle retains layouts and the
+            materialized input rather than copying their metadata into another body representation.
           </p>
         </div>
         <div class="card">
           <h3><code>RootBackendProduct</code></h3>
           <p>
             The final product answer. It traverses exact reachable backend product values, retains
-            their positioned layouts and callable owners in a symbolic plan, and assigns dense
-            executable indices in the interpreter-ready <code>BackendProgram</code> projection.
+            their positioned layouts and callable owners in a transport plan, and gathers shared
+            executable and wrapper members into <code>BackendProgram</code>. Private immutable
+            inventories provide derived ordinal lookups for interpreter execution and native
+            linking; those ordinals do not replace typed body references.
           </p>
         </div>
         <div class="card">
@@ -1109,9 +1114,10 @@ join =&gt; Inputs([list(int)]) after refine_widen + alpha normalization</code></
           semantically cold local-control entries into explicit halt stubs, and records symbolic call
           edges. <code>AbiExecutable(E)</code> then makes return delivery, ABI lanes,
           <code>EntryCapture</code> positions, resumes, and callable entries explicit without asking new
-          semantic questions. <code>BackendExecutable(E)</code> lowers one symbolic body. Finally,
+          semantic questions. <code>BackendExecutable(E)</code> reads the exact ABI prerequisites
+          named by return endpoints and construction members/captures, then lowers one retained body. Finally,
           <code>RootBackendProduct(root)</code> follows exact reachable backend product values, retains
-          their positioned symbolic plan, and packages dense indices into <code>BackendProgram</code>.
+          their positioned transport plan, and shares their allocations in <code>BackendProgram</code>.
           The session and its dependency graph remain owned by <code>Compiler2</code> after the
           request. Asking again without a movement cache-hits this exact root answer and evaluates
           no producer. Redefining uncalled <code>foo/0</code> later does not change that root product.
@@ -1243,7 +1249,7 @@ ReturnType(root, lambda#reduce_sum/2, [int, int]) = int</code></pre>
         <li><strong>No separate type loop:</strong> activation-input joins are ordinary fact replacement.</li>
         <li><strong>Lazy runtime bootstrap:</strong> <code>runtime.fz</code> and runtime modules warm only when demanded.</li>
         <li><strong>Product-keyed artifacts:</strong> artifact producers return exact fact/product waits; they do not self-schedule follow-up work.</li>
-        <li><strong>Artifact isolation:</strong> materialization consumes settled local facts and named products, then final root packaging follows and densifies only exact reachable backend product values.</li>
+        <li><strong>Artifact isolation:</strong> materialization consumes settled local facts and named products, then final root packaging follows and shares only exact reachable backend product values.</li>
         <li><strong>Blast radius by revision:</strong> redefinition propagates only as far as fact revisions actually change.</li>
       </ul>
     </section>

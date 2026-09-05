@@ -18,8 +18,8 @@ use super::super::artifact::{
     AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendCallableReturn, BackendClause,
     BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
     BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
-    BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
-    MaterializedTransportPlan, RootBackendProductAnswer,
+    BackendStep, BackendTail, CallEdge, CallReturnFlow, DirectCallEdge, DispatchCallArm, MaterializedTransportPlan,
+    RootBackendProductAnswer,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry,
@@ -30,9 +30,7 @@ use super::super::facts::FactUse;
 use super::super::identity::RootId;
 use super::super::identity::{ActivationKey, ExecutableKey};
 use super::super::pull::{
-    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, SymbolicBackendBody, SymbolicBackendClause,
-    SymbolicBackendEntry, SymbolicBackendEntryOrigin, SymbolicBackendExecutable, SymbolicBackendTail, TransportCarrier,
-    TransportLayout,
+    ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
 };
 use super::super::scheduler::FatalError;
 use super::super::semantic::SemanticOrd;
@@ -182,8 +180,8 @@ pub(crate) fn produce_root_backend_product(
             panic!("backend executable product produced unexpected value {value:?}");
         };
         let backend = Rc::clone(backend);
-        for target in backend.call_edges.values() {
-            for callee in symbolic_call_edge_callees(target) {
+        for edge in backend.abi.call_edges.values() {
+            for callee in symbolic_call_edge_callees(&edge.target) {
                 stack.push(callee.clone());
             }
         }
@@ -234,55 +232,29 @@ pub(crate) fn produce_root_backend_product(
 
     let mut executable_keys = reachable.into_iter().collect::<Vec<_>>();
     executable_keys.sort_by(|left, right| left.semantic_cmp(right, world.types()));
-    let executable_index = executable_keys
-        .iter()
-        .enumerate()
-        .map(|(index, executable)| (executable.clone(), index))
-        .collect::<std::collections::HashMap<_, _>>();
-    let (construction_wrappers, construction_identities) =
-        package_backend_construction_wrappers(world, tel, root, &backends, &transport, &executable_index)
-            .expect("root backend product should have complete construction wrapper inventory");
-    let return_endpoints = executable_keys
-        .iter()
-        .flat_map(|key| {
-            backends
-                .get(key)
-                .into_iter()
-                .flat_map(|backend| backend.abi.return_endpoints.iter().cloned())
-        })
-        .collect::<HashMap<_, _>>();
     let executables = executable_keys
         .iter()
-        .map(|executable| {
-            let backend = backends
-                .get(executable)
-                .expect("reachable backend executable should have been checked before packaging");
-            package_symbolic_backend_executable(
-                world,
-                tel,
-                root,
-                backend,
-                &executable_index,
-                &transport,
-                &construction_identities,
-                &return_endpoints,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_else(|error| {
-            panic!("root backend product should have complete symbolic executable inventory: {error:?}")
-        });
-    let entry_index = executable_index
-        .get(&entry)
-        .copied()
-        .expect("root entry should be in packaged executable inventory");
-    let program = Rc::new(BackendProgram {
-        entry: entry_index,
-        atom_names: collect_backend_atom_names(world, &executables),
+        .map(|key| Rc::clone(&backends[key]))
+        .collect::<Vec<_>>();
+    let mut construction_wrappers = executables
+        .iter()
+        .flat_map(|backend| backend.construction_wrappers.iter().cloned())
+        .collect::<Vec<_>>();
+    construction_wrappers.sort_by(|left, right| left.identity.semantic_cmp(&right.identity, world.types()));
+    construction_wrappers.dedup_by(|left, right| {
+        if left.identity != right.identity {
+            return false;
+        }
+        assert_eq!(left, right, "one construction position has one complete wrapper");
+        true
+    });
+    let program = Rc::new(BackendProgram::new(
+        entry,
+        collect_backend_atom_names(world, &executables),
         struct_schemas,
         executables,
         construction_wrappers,
-    });
+    ));
     verify_boxed_apply_seam_return_convention(tel, root, &program)
         .expect("root backend product should compile one return convention across the boxed apply seam");
     PullOutcome::Produced(ProductValue::RootBackendProduct(RootBackendProductAnswer {
@@ -360,20 +332,86 @@ pub(crate) fn produce_backend_executable_product(
         panic!("ABI executable product produced unexpected value {value:?}");
     };
     let abi = Rc::clone(abi);
-    let value_shapes = executable_value_shapes(&abi);
-    let mut lowerer = BackendLowerer::new(world, tel, context.session().root(), value_shapes);
-    let lowered = lower_symbolic_body(&mut lowerer, &abi)
-        .expect("symbolic backend lowering should be complete after ABI product exists");
-    let call_edges = abi
-        .call_edges
+    let root = context.session().root();
+    let mut dependencies = HashSet::new();
+    for edge in abi.call_edges.values() {
+        let flows = match &edge.target {
+            CallEdge::Direct(edge) => vec![&edge.return_flow],
+            CallEdge::Dispatch(dispatch) => dispatch.arms.iter().map(|arm| &arm.return_flow).collect(),
+            CallEdge::Indirect(flow) => vec![flow],
+        };
+        for flow in flows {
+            let source = match flow {
+                CallReturnFlow::NoReturn { local_source } => local_source.as_ref(),
+                CallReturnFlow::Tail { source, .. }
+                | CallReturnFlow::Continue { source, .. }
+                | CallReturnFlow::Deliver { source, .. } => Some(source),
+            };
+            if let Some(source) = source {
+                dependencies.insert(executable_key_for_symbol(root, source.executable()));
+            }
+        }
+    }
+    for construction in abi
+        .callable_owners
         .iter()
-        .map(|(callsite, edge)| (*callsite, edge.target.clone()))
-        .collect::<std::collections::HashMap<_, _>>();
-    let backend = SymbolicBackendExecutable {
+        .filter_map(|owner| owner.owner.construction.as_ref())
+    {
+        dependencies.extend(
+            construction
+                .members
+                .iter()
+                .map(|member| executable_key_for_symbol(root, &member.resolution)),
+        );
+        dependencies.extend(
+            construction
+                .captures
+                .iter()
+                .map(|capture| executable_key_for_symbol(root, capture.source.executable())),
+        );
+    }
+    dependencies.remove(executable);
+    let mut dependencies = dependencies.into_iter().collect::<Vec<_>>();
+    dependencies.sort_by(|left, right| left.semantic_cmp(right, world.types()));
+    let mut abis = HashMap::from([(executable.clone(), Rc::clone(&abi))]);
+    let mut waits = Vec::new();
+    for dependency in dependencies {
+        let key = ProductKey::AbiExecutable(dependency.clone());
+        match context.read_product(tel, key.clone(), world.types()) {
+            Some(ProductValue::AbiExecutable(answer)) => {
+                abis.insert(dependency, Rc::clone(answer));
+            }
+            Some(answer) => panic!("ABI prerequisite produced unexpected value {answer:?}"),
+            None => waits.push(PullWait::Product(key)),
+        }
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    let return_endpoints = abis
+        .values()
+        .flat_map(|abi| abi.return_endpoints.iter().cloned())
+        .collect();
+    let construction_wrappers = package_backend_construction_wrappers(world, tel, root, &abis, &abi)
+        .expect("local construction prerequisites must provide complete wrappers");
+    let constructions = construction_wrappers
+        .iter()
+        .filter_map(|wrapper| {
+            let TransportPosition::Value { value, .. } = &wrapper.identity else {
+                return None;
+            };
+            Some((*value, wrapper.identity.clone()))
+        })
+        .collect();
+    let value_shapes = executable_value_shapes(&abi);
+    let mut lowerer = BackendLowerer::new(world, tel, root, value_shapes, return_endpoints, constructions);
+    let lowered = lower_backend_body(&mut lowerer, &abi)
+        .expect("symbolic backend lowering should be complete after ABI product exists");
+    let backend = BackendExecutable {
         key: executable.clone(),
         abi,
         body: lowered,
-        call_edges,
+        construction_wrappers,
     };
     let backend = Rc::new(backend);
     PullOutcome::Produced(ProductValue::BackendExecutable(backend))
@@ -440,363 +478,14 @@ pub(crate) fn executable_key_for_symbol(root: RootId, symbol: &ExecutableSymbol)
     }
 }
 
-fn package_symbolic_backend_executable(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    backend: &SymbolicBackendExecutable,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    transport: &MaterializedTransportPlan,
-    construction_identities: &HashMap<TransportPosition, u32>,
-    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
-) -> Result<BackendExecutable, FatalError> {
-    let resolved_entries =
-        resolved_constructions_for_values(&backend.abi.transport.value_positions, construction_identities);
-    Ok(BackendExecutable {
-        key: backend.key.clone(),
-        entry_dispatch: backend.abi.materialized.entry_dispatch.clone(),
-        return_ty: backend.abi.materialized.return_ty,
-        param_reprs: backend.abi.param_reprs.clone(),
-        semantic_inputs: backend.abi.semantic_inputs.clone(),
-        return_layout: backend.abi.return_layout.clone(),
-        runtime_demand: Rc::clone(&backend.abi.materialized.runtime_demand),
-        value_types: backend.abi.materialized.value_types.clone(),
-        value_layouts: backend.abi.value_layouts.clone(),
-        effects: backend.abi.effects,
-        body: package_symbolic_backend_body(
-            world,
-            tel,
-            root,
-            &backend.key,
-            &backend.body,
-            executable_index,
-            &resolved_entries,
-            transport,
-            return_endpoints,
-        )?,
-    })
-}
-
-fn package_symbolic_backend_body(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    caller: &ExecutableKey,
-    body: &SymbolicBackendBody,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    resolved_entries: &HashMap<ValueId, u32>,
-    transport: &MaterializedTransportPlan,
-    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
-) -> Result<BackendBody, FatalError> {
-    Ok(match body {
-        SymbolicBackendBody::Extern { signature } => BackendBody::Extern {
-            signature: signature.clone(),
-        },
-        SymbolicBackendBody::Clauses {
-            clauses,
-            entries,
-            generated,
-        } => BackendBody::Clauses {
-            clauses: clauses
-                .iter()
-                .map(|clause| BackendClause {
-                    span: clause.span,
-                    params: clause.params.clone(),
-                    projections: package_backend_steps(&clause.projections, resolved_entries),
-                    entry: clause.entry,
-                })
-                .collect(),
-            entries: entries
-                .iter()
-                .map(|entry| {
-                    package_symbolic_backend_entry(
-                        world,
-                        tel,
-                        root,
-                        caller,
-                        entry,
-                        executable_index,
-                        resolved_entries,
-                        transport,
-                        return_endpoints,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            generated: generated.clone(),
-        },
-    })
-}
-
-fn package_symbolic_backend_entry(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    caller: &ExecutableKey,
-    entry: &SymbolicBackendEntry,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    resolved_entries: &HashMap<ValueId, u32>,
-    transport: &MaterializedTransportPlan,
-    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
-) -> Result<BackendEntry, FatalError> {
-    Ok(BackendEntry {
-        span: entry.span,
-        origin: package_backend_entry_origin(&entry.origin, return_endpoints)?,
-        params: entry.params.clone(),
-        captures: package_backend_entry_captures(world, transport, entry)?,
-        reusable_cons_captures: entry.reusable_cons_captures.clone(),
-        steps: package_backend_steps(&entry.steps, resolved_entries),
-        tail: package_symbolic_backend_tail(
-            world,
-            tel,
-            root,
-            caller,
-            &entry.tail,
-            executable_index,
-            resolved_entries,
-            return_endpoints,
-        )?,
-    })
-}
-
-fn package_backend_entry_origin(
-    origin: &SymbolicBackendEntryOrigin,
-    endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
-) -> Result<BackendEntryOrigin, FatalError> {
-    Ok(match origin {
-        SymbolicBackendEntryOrigin::Clause => BackendEntryOrigin::Clause,
-        SymbolicBackendEntryOrigin::Branch => BackendEntryOrigin::Branch,
-        SymbolicBackendEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
-        SymbolicBackendEntryOrigin::DeliveredResume { value, position } => BackendEntryOrigin::DeliveredResume {
-            value: *value,
-            layout: endpoints.get(position).cloned().ok_or(FatalError)?,
-        },
-    })
-}
-
-fn package_backend_entry_captures(
-    world: &mut World,
-    transport: &MaterializedTransportPlan,
-    entry: &SymbolicBackendEntry,
-) -> Result<Vec<BackendEntryCapture>, FatalError> {
-    if entry.captures.len() != entry.capture_positions.len() {
-        return Err(FatalError);
-    }
-    entry
-        .captures
-        .iter()
-        .copied()
-        .zip(entry.capture_positions.iter().cloned())
-        .map(|(value, position)| {
-            let layout = transport.layout_at(&position).ok_or(FatalError)?;
-            let contract = backend_entry_capture_contract(world, transport, &position, layout);
-            Ok(BackendEntryCapture {
-                value,
-                layout: super::super::artifact::BackendValueLayout {
-                    structural: layout.structural,
-                    carrier: layout.carrier,
-                    tys: contract.iter().map(|(ty, _)| *ty).collect(),
-                    reprs: contract.iter().map(|(_, repr)| *repr).collect(),
-                },
-            })
-        })
-        .collect()
-}
-
-fn backend_entry_capture_contract(
-    world: &mut World,
-    transport: &MaterializedTransportPlan,
-    position: &TransportPosition,
-    layout: TransportLayout,
-) -> Vec<(Ty, AbiValueRepr)> {
-    world
-        .layout_physical_lanes(layout)
-        .into_iter()
-        .filter_map(|physical| {
-            let leaf_shape = physical.structural;
-            let lane = physical.lane;
-            match physical.source {
-                PhysicalLaneSource::Carrier => Some((world.lane(lane).ty, AbiValueRepr::ValueRef)),
-                PhysicalLaneSource::Structural => transport
-                    .codegen_seam_facts
-                    .iter()
-                    .find(|fact| {
-                        fact.shape == Some(leaf_shape)
-                            && fact.lane == lane
-                            && backend_entry_capture_seam_matches(position, &fact.seam)
-                    })
-                    .map(|fact| {
-                        let repr = match fact.repr {
-                            CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
-                            CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
-                            CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
-                            CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
-                        };
-                        (world.lane(lane).ty, repr)
-                    }),
-            }
-        })
-        .collect()
-}
-
-fn backend_entry_capture_seam_matches(position: &TransportPosition, seam: &CodegenSeam) -> bool {
-    let TransportPosition::EntryCapture {
-        executable,
-        entry,
-        capture_index,
-    } = position
-    else {
-        return false;
-    };
-    matches!(
-        seam,
-        CodegenSeam::EntryCapture {
-            executable: seam_executable,
-            entry: seam_entry,
-            capture_index: seam_capture_index,
-        } if seam_executable == executable && seam_entry == entry && seam_capture_index == capture_index
-    )
-}
-
-fn resolved_constructions_for_values(
-    positions: &[TransportPosition],
-    identities: &HashMap<TransportPosition, u32>,
-) -> HashMap<ValueId, u32> {
-    let mut resolved = HashMap::new();
-    for position in positions {
-        let TransportPosition::Value { value, .. } = position else {
-            continue;
-        };
-        if let Some(identity) = identities.get(position) {
-            resolved.insert(*value, *identity);
-        }
-    }
-    resolved
-}
-
-fn package_backend_steps(steps: &[BackendStep], resolved_entries: &HashMap<ValueId, u32>) -> Vec<BackendStep> {
-    let resolved_entry_for = |value: &ValueId| resolved_entries.get(value).copied();
-    steps
-        .iter()
-        .map(|step| match step {
-            BackendStep::FunctionRef { value, function, .. } => BackendStep::FunctionRef {
-                value: *value,
-                function: *function,
-                construction: resolved_entry_for(value),
-            },
-            BackendStep::Lambda {
-                value,
-                function,
-                captures,
-                ..
-            } => BackendStep::Lambda {
-                value: *value,
-                function: *function,
-                captures: captures.clone(),
-                construction: resolved_entry_for(value),
-            },
-            _ => step.clone(),
-        })
-        .collect()
-}
-
-fn package_symbolic_backend_tail(
-    world: &World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    caller: &ExecutableKey,
-    tail: &SymbolicBackendTail,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    _resolved_entries: &HashMap<ValueId, u32>,
-    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
-) -> Result<BackendTail, FatalError> {
-    Ok(match tail {
-        SymbolicBackendTail::Value { value, dest } => BackendTail::Value {
-            value: *value,
-            dest: dest.clone(),
-        },
-        SymbolicBackendTail::DirectCall {
-            value,
-            callsite,
-            target,
-            args,
-            dest,
-        } => BackendTail::DirectCall {
-            value: *value,
-            callsite: *callsite,
-            target: package_call_edge(world, tel, root, caller, target, executable_index, return_endpoints)?,
-            args: args.clone(),
-            dest: dest.clone(),
-        },
-        SymbolicBackendTail::ClosureCall {
-            value,
-            callsite,
-            callee,
-            target,
-            args,
-            dest,
-            return_flow,
-        } => BackendTail::ClosureCall {
-            value: *value,
-            callsite: *callsite,
-            callee: *callee,
-            target: target
-                .as_ref()
-                .map(|target| {
-                    executable_index.get(target).copied().ok_or_else(|| {
-                        incomplete_backend_program(
-                            tel,
-                            root,
-                            format!(
-                                "symbolic closure target {:?} -> {:?} is missing from final inventory",
-                                caller, target
-                            ),
-                        )
-                    })
-                })
-                .transpose()?,
-            args: args.clone(),
-            dest: dest.clone(),
-            return_flow: return_flow
-                .as_ref()
-                .map(|flow| resolve_return_flow(flow, return_endpoints))
-                .transpose()?,
-        },
-        SymbolicBackendTail::If {
-            cond,
-            then_entry,
-            else_entry,
-        } => BackendTail::If {
-            cond: *cond,
-            then_entry: *then_entry,
-            else_entry: *else_entry,
-        },
-        SymbolicBackendTail::Dispatch {
-            inputs,
-            bindings,
-            dispatch,
-        } => BackendTail::Dispatch {
-            inputs: inputs.clone(),
-            bindings: bindings.clone(),
-            dispatch: dispatch.clone(),
-        },
-        SymbolicBackendTail::Receive(receive) => BackendTail::Receive(receive.clone()),
-        SymbolicBackendTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
-    })
-}
-
-fn package_call_edge(
-    world: &World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    caller: &ExecutableKey,
+fn backend_call_edge(
     target: &CallEdge<ExecutableKey>,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-    return_endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
-) -> Result<CallEdge<usize, BackendReturnFlow>, FatalError> {
+    endpoints: &HashMap<TransportPosition, BackendReturnLayout>,
+) -> Result<CallEdge<ExecutableKey, BackendReturnFlow>, FatalError> {
     Ok(match target {
         CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
-            callee: package_call_target(world, tel, root, caller, &direct.callee, executable_index)?,
-            return_flow: resolve_return_flow(&direct.return_flow, return_endpoints)?,
+            callee: direct.callee.clone(),
+            return_flow: resolve_return_flow(&direct.return_flow, endpoints)?,
             extern_marshals: direct.extern_marshals.clone(),
         }),
         CallEdge::Dispatch(dispatch) => CallEdge::Dispatch(Box::new(super::super::artifact::DispatchCallEdge {
@@ -807,39 +496,70 @@ fn package_call_edge(
                 .map(|arm| {
                     Ok(DispatchCallArm {
                         body_id: arm.body_id,
-                        callee: package_call_target(world, tel, root, caller, &arm.callee, executable_index)?,
-                        return_flow: resolve_return_flow(&arm.return_flow, return_endpoints)?,
+                        callee: arm.callee.clone(),
+                        return_flow: resolve_return_flow(&arm.return_flow, endpoints)?,
                         extern_marshals: arm.extern_marshals.clone(),
                     })
                 })
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, FatalError>>()?,
             miss: dispatch.miss,
         })),
-        CallEdge::Indirect(return_flow) => CallEdge::Indirect(resolve_return_flow(return_flow, return_endpoints)?),
+        CallEdge::Indirect(flow) => CallEdge::Indirect(resolve_return_flow(flow, endpoints)?),
     })
 }
 
-fn package_call_target(
-    _world: &World,
-    tel: &impl crate::telemetry::Telemetry,
-    root: RootId,
-    caller: &ExecutableKey,
-    target: &CallTarget<ExecutableKey>,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-) -> Result<CallTarget<usize>, FatalError> {
-    Ok(match target {
-        CallTarget::Local(callee) => CallTarget::Local(executable_index.get(callee).copied().ok_or_else(|| {
-            incomplete_backend_program(
-                tel,
-                root,
-                format!(
-                    "symbolic backend call edge {:?} -> {:?} points outside final executable inventory",
-                    caller, callee
-                ),
-            )
-        })?),
-        CallTarget::ProviderBoundary(function) => CallTarget::ProviderBoundary(*function),
-    })
+fn backend_entry_captures(
+    world: &World,
+    abi: &AbiReadyExecutable,
+    values: &[ValueId],
+    positions: &[TransportPosition],
+) -> Result<Vec<BackendEntryCapture>, FatalError> {
+    if values.len() != positions.len() {
+        return Err(FatalError);
+    }
+    values
+        .iter()
+        .zip(positions)
+        .map(|(value, position)| {
+            let layout = abi.transport.layout_at(position).ok_or(FatalError)?;
+            let TransportPosition::EntryCapture {
+                entry, capture_index, ..
+            } = position
+            else {
+                return Err(FatalError);
+            };
+            let ignored = abi
+                .materialized
+                .runtime_demand
+                .entry_capture_demands
+                .get(entry)
+                .and_then(|demands| demands.get(*capture_index))
+                .is_some_and(|demand| demand.is_ignore());
+            let contract = world
+                .layout_physical_lanes(layout)
+                .into_iter()
+                .filter(|physical| !ignored || physical.source == PhysicalLaneSource::Carrier)
+                .map(|physical| {
+                    let repr = match block_param_codegen_repr_for_physical_lane(world, physical) {
+                        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
+                        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
+                        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
+                        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
+                    };
+                    (world.lane(physical.lane).ty, repr)
+                })
+                .collect::<Vec<_>>();
+            Ok(BackendEntryCapture {
+                value: *value,
+                layout: super::super::artifact::BackendValueLayout {
+                    structural: layout.structural,
+                    carrier: layout.carrier,
+                    tys: contract.iter().map(|(ty, _)| *ty).collect(),
+                    reprs: contract.iter().map(|(_, repr)| *repr).collect(),
+                },
+            })
+        })
+        .collect()
 }
 
 fn resolve_return_flow(
@@ -889,11 +609,10 @@ fn package_backend_construction_wrappers(
     world: &World,
     tel: &impl crate::telemetry::Telemetry,
     root: RootId,
-    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
-    transport: &MaterializedTransportPlan,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-) -> Result<(Vec<BackendConstructionWrapper>, HashMap<TransportPosition, u32>), FatalError> {
-    let mut constructions = transport
+    abis: &HashMap<ExecutableKey, Rc<AbiReadyExecutable>>,
+    abi: &AbiReadyExecutable,
+) -> Result<Box<[Rc<BackendConstructionWrapper>]>, FatalError> {
+    let mut constructions = abi
         .callable_owners
         .iter()
         .filter_map(|positioned| {
@@ -905,15 +624,9 @@ fn package_backend_construction_wrappers(
         })
         .collect::<Vec<_>>();
     constructions.sort_by(|(left, _), (right, _)| left.position.semantic_cmp(&right.position, world.types()));
-    let identities = constructions
-        .iter()
-        .enumerate()
-        .map(|(identity, (positioned, _))| (positioned.position.clone(), identity as u32))
-        .collect();
-    let wrappers = constructions
+    constructions
         .into_iter()
-        .enumerate()
-        .map(|(identity, (_, construction))| {
+        .map(|(positioned, construction)| {
             let call_arity = construction
                 .members
                 .first()
@@ -942,27 +655,8 @@ fn package_backend_construction_wrappers(
                 .members
                 .iter()
                 .map(|member| {
-                    let target_key = executable_key_for_symbol_in_index(&member.resolution, executable_index);
-                    let target = target_key
-                        .as_ref()
-                        .and_then(|key| executable_index.get(key).copied())
-                        .ok_or_else(|| {
-                            incomplete_backend_program(
-                                tel,
-                                root,
-                                format!(
-                                    "callable construction {:?} member {:?} is missing from final executable inventory",
-                                    construction.producer, member.resolution
-                                ),
-                            )
-                        })?;
-                    let target_backend = backends
-                        .get(
-                            target_key
-                                .as_ref()
-                                .expect("resolved construction member should name an executable"),
-                        )
-                        .expect("resolved construction member should have backend ABI");
+                    let target = executable_key_for_symbol(root, &member.resolution);
+                    let target_abi = abis.get(&target).ok_or(FatalError)?;
                     Ok(BackendConstructionMemberAdapter {
                         boundary: member.boundary,
                         surface_inputs: member.surface_inputs.clone(),
@@ -970,8 +664,8 @@ fn package_backend_construction_wrappers(
                         target,
                         capture_semantic_inputs: member.capture_semantic_inputs.clone(),
                         surface_semantic_inputs: member.surface_semantic_inputs.clone(),
-                        target_inputs: target_backend.abi.semantic_inputs.clone(),
-                        target_return: target_backend.abi.return_layout.clone(),
+                        target_inputs: target_abi.semantic_inputs.clone(),
+                        target_return: target_abi.return_layout.clone(),
                     })
                 })
                 .collect::<Result<Vec<_>, FatalError>>()?;
@@ -1008,8 +702,9 @@ fn package_backend_construction_wrappers(
                     let TransportPosition::Value { executable, value } = &capture.source else {
                         return Err(FatalError);
                     };
-                    let layout = symbolic_backend_for_executable(backends, executable, world)
-                        .and_then(|backend| backend.abi.value_layouts.get(value))
+                    let layout = abis
+                        .get(&executable_key_for_symbol(root, executable))
+                        .and_then(|abi| abi.value_layouts.get(value))
                         .cloned()
                         .ok_or(FatalError)?;
                     if layout.structural != capture.layout.structural || layout.carrier != capture.layout.carrier {
@@ -1018,57 +713,36 @@ fn package_backend_construction_wrappers(
                     Ok(BackendConstructionCapture { layout })
                 })
                 .collect::<Result<Box<_>, FatalError>>()?;
-            Ok(BackendConstructionWrapper {
-                identity: identity as u32,
+            Ok(Rc::new(BackendConstructionWrapper {
+                identity: positioned.position.clone(),
                 callable: construction.callable,
                 captures,
                 call_arity,
                 return_form,
                 members: members.into_boxed_slice(),
                 selection: construction.selection.clone(),
-            })
+            }))
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((wrappers, identities))
+        .collect()
 }
 
-fn executable_key_for_symbol_in_index(
-    symbol: &ExecutableSymbol,
-    executable_index: &std::collections::HashMap<ExecutableKey, usize>,
-) -> Option<ExecutableKey> {
-    executable_index
-        .keys()
-        .find(|key| {
-            key.need == symbol.need
-                && key.activation.function == symbol.activation.function
-                && key.activation.arrow == symbol.activation.arrow
-        })
-        .cloned()
-}
-
-/// The order the executable inventory is packaged in, and so the order its
-/// `x<N>` indices are handed out in.
-///
-/// The inventory is already published in the central typed semantic order for
-/// `ExecutableKey`; activation arrows compare structurally through their owning
-/// `Types`, never through raw interner ids or rendering.
-fn lower_symbolic_body(
+fn lower_backend_body(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     abi: &AbiReadyExecutable,
-) -> Result<SymbolicBackendBody, FatalError> {
+) -> Result<BackendBody, FatalError> {
     match &abi.materialized.body {
-        LoweredBody::Extern { signature } => Ok(SymbolicBackendBody::Extern {
+        LoweredBody::Extern { signature } => Ok(BackendBody::Extern {
             signature: signature.clone(),
         }),
         LoweredBody::Clauses {
             clauses,
             entries,
             generated,
-        } => Ok(SymbolicBackendBody::Clauses {
+        } => Ok(BackendBody::Clauses {
             clauses: clauses
                 .iter()
                 .map(|clause| {
-                    Ok(SymbolicBackendClause {
+                    Ok(BackendClause {
                         span: clause.span,
                         params: clause.params.clone(),
                         projections: clause
@@ -1083,33 +757,33 @@ fn lower_symbolic_body(
             entries: entries
                 .iter()
                 .enumerate()
-                .map(|(index, entry)| lower_symbolic_entry(lowerer, abi, index, entry))
+                .map(|(index, entry)| lower_backend_entry(lowerer, abi, index, entry))
                 .collect::<Result<Vec<_>, _>>()?,
             generated: generated.clone(),
         }),
     }
 }
 
-fn lower_symbolic_entry(
+fn lower_backend_entry(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     abi: &AbiReadyExecutable,
     entry_index: usize,
     entry: &LoweredEntry,
-) -> Result<SymbolicBackendEntry, FatalError> {
+) -> Result<BackendEntry, FatalError> {
     let entry_id = original_entry_id(abi, entry_index);
-    Ok(SymbolicBackendEntry {
+    let capture_positions = lowerer.capture_positions_for_entry(abi, entry_id, entry)?;
+    Ok(BackendEntry {
         span: entry.span,
         origin: lower_entry_origin(abi, entry_index, entry),
         params: entry.params.clone(),
-        captures: entry.captures.clone(),
-        capture_positions: lowerer.capture_positions_for_entry(abi, entry_id, entry)?,
+        captures: backend_entry_captures(lowerer.world, abi, &entry.captures, &capture_positions)?,
         reusable_cons_captures: entry.reusable_cons_captures.clone(),
         steps: entry
             .steps
             .iter()
             .map(|step| lowerer.lower_step(step))
             .collect::<Result<Vec<_>, _>>()?,
-        tail: lower_symbolic_tail(lowerer, abi, &entry.tail).unwrap_or_else(|_| {
+        tail: lower_backend_tail(lowerer, abi, &entry.tail).unwrap_or_else(|_| {
             panic!(
                 "symbolic backend entry {entry_index} tail is incomplete: {:?}",
                 entry.tail
@@ -1118,13 +792,13 @@ fn lower_symbolic_entry(
     })
 }
 
-fn lower_symbolic_tail(
+fn lower_backend_tail(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     abi: &AbiReadyExecutable,
     tail: &LoweredTail,
-) -> Result<SymbolicBackendTail, FatalError> {
+) -> Result<BackendTail, FatalError> {
     Ok(match tail {
-        LoweredTail::Value { value, dest } => SymbolicBackendTail::Value {
+        LoweredTail::Value { value, dest } => BackendTail::Value {
             value: *value,
             dest: dest.clone(),
         },
@@ -1142,10 +816,10 @@ fn lower_symbolic_tail(
                     format!("missing symbolic direct-call edge for callsite {}", callsite.as_u32()),
                 )
             })?;
-            SymbolicBackendTail::DirectCall {
+            BackendTail::DirectCall {
                 value: *value,
                 callsite: *callsite,
-                target: edge.target.clone(),
+                target: backend_call_edge(&edge.target, &lowerer.return_endpoints)?,
                 args: lowerer.lower_call_args(abi, *callsite, None, args)?,
                 dest: dest.clone(),
             }
@@ -1158,7 +832,7 @@ fn lower_symbolic_tail(
             dest,
         } => {
             let edge = abi.call_edges.get(callsite);
-            SymbolicBackendTail::ClosureCall {
+            BackendTail::ClosureCall {
                 value: *value,
                 callsite: *callsite,
                 callee: *callee,
@@ -1169,14 +843,15 @@ fn lower_symbolic_tail(
                 dest: dest.clone(),
                 return_flow: edge
                     .and_then(|edge| symbolic_call_edge_return_flow(&edge.target))
-                    .cloned(),
+                    .map(|flow| resolve_return_flow(flow, &lowerer.return_endpoints))
+                    .transpose()?,
             }
         }
         LoweredTail::If {
             cond,
             then_entry,
             else_entry,
-        } => SymbolicBackendTail::If {
+        } => BackendTail::If {
             cond: *cond,
             then_entry: *then_entry,
             else_entry: *else_entry,
@@ -1185,21 +860,19 @@ fn lower_symbolic_tail(
             inputs,
             bindings,
             dispatch,
-        } => SymbolicBackendTail::Dispatch {
+        } => BackendTail::Dispatch {
             inputs: inputs.clone(),
             bindings: bindings.clone(),
             dispatch: dispatch.clone(),
         },
-        LoweredTail::Receive(receive) => {
-            SymbolicBackendTail::Receive(Box::new(super::super::artifact::BackendReceive {
-                bindings: receive.bindings.clone(),
-                dispatch: receive.dispatch.clone(),
-                clauses: receive.clauses.clone(),
-                after: receive.after.clone(),
-                dest: receive.dest.clone(),
-            }))
-        }
-        LoweredTail::Halt { atom } => SymbolicBackendTail::Halt { atom: atom.clone() },
+        LoweredTail::Receive(receive) => BackendTail::Receive(Box::new(super::super::artifact::BackendReceive {
+            bindings: receive.bindings.clone(),
+            dispatch: receive.dispatch.clone(),
+            clauses: receive.clauses.clone(),
+            after: receive.after.clone(),
+            dest: receive.dest.clone(),
+        })),
+        LoweredTail::Halt { atom } => BackendTail::Halt { atom: atom.clone() },
     })
 }
 
@@ -1219,7 +892,7 @@ fn symbolic_call_edge_return_flow(target: &CallEdge<ExecutableKey>) -> Option<&C
 }
 
 pub(crate) fn symbolic_materialized_transport_plan(
-    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
+    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
     executable: &ExecutableKey,
     world: &World,
     callables: &HashMap<CallableId, CallableFacts>,
@@ -1298,7 +971,7 @@ pub(crate) fn symbolic_materialized_transport_plan(
 }
 
 fn symbolic_codegen_seam_facts(
-    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
+    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
     position_layouts: &[(TransportPosition, TransportLayout)],
     world: &World,
     boundaries: &HashMap<BoundaryId, BoundaryFacts>,
@@ -1328,7 +1001,7 @@ fn symbolic_codegen_seam_facts(
                         repr,
                     });
                     if symbolic_backend_for_executable(backends, executable, world)
-                        .is_some_and(|backend| matches!(backend.body, SymbolicBackendBody::Extern { .. }))
+                        .is_some_and(|backend| matches!(backend.body, BackendBody::Extern { .. }))
                     {
                         out.push(CodegenSeamFact {
                             seam: CodegenSeam::ExternBoundary {
@@ -1351,7 +1024,7 @@ fn symbolic_codegen_seam_facts(
                         repr,
                     });
                     if symbolic_backend_for_executable(backends, executable, world)
-                        .is_some_and(|backend| matches!(backend.body, SymbolicBackendBody::Extern { .. }))
+                        .is_some_and(|backend| matches!(backend.body, BackendBody::Extern { .. }))
                     {
                         out.push(CodegenSeamFact {
                             seam: CodegenSeam::ExternBoundary {
@@ -1465,7 +1138,7 @@ fn symbolic_codegen_seam_facts(
 }
 
 fn symbolic_position_structural_lanes_are_ignored(
-    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
+    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
     position: &TransportPosition,
     world: &World,
 ) -> bool {
@@ -1500,7 +1173,7 @@ fn symbolic_position_structural_lanes_are_ignored(
 }
 
 fn push_symbolic_boundary_codegen_seams(
-    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
+    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
     world: &World,
     boundary: BoundaryId,
     facts: &BoundaryFacts,
@@ -1537,7 +1210,7 @@ fn push_symbolic_boundary_codegen_seams(
 }
 
 fn push_symbolic_publication_codegen_seam(
-    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
+    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
     world: &World,
     boundary: BoundaryId,
     publication: &TransportPosition,
@@ -1637,10 +1310,10 @@ fn push_symbolic_publication_codegen_seam(
 }
 
 fn symbolic_backend_for_executable<'a>(
-    backends: &'a HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
+    backends: &'a HashMap<ExecutableKey, Rc<BackendExecutable>>,
     executable: &ExecutableSymbol,
     world: &World,
-) -> Option<&'a SymbolicBackendExecutable> {
+) -> Option<&'a BackendExecutable> {
     backends
         .values()
         .find(|backend| executable_symbol(&backend.key, world) == *executable)
@@ -1659,42 +1332,41 @@ fn executable_symbol(executable: &ExecutableKey, world: &World) -> ExecutableSym
 }
 
 fn symbolic_entry_capture_owner_callsite(
-    backends: &HashMap<ExecutableKey, Rc<SymbolicBackendExecutable>>,
+    backends: &HashMap<ExecutableKey, Rc<BackendExecutable>>,
     executable: &ExecutableSymbol,
     position: &TransportPosition,
     world: &World,
 ) -> Option<CallSiteId> {
     let backend = symbolic_backend_for_executable(backends, executable, world)?;
-    let SymbolicBackendBody::Clauses { entries, .. } = &backend.body else {
+    let TransportPosition::EntryCapture { entry, .. } = position else {
         return None;
     };
-    entries
+    backend
+        .abi
+        .transport
+        .resume_positions
         .iter()
-        .filter(|entry| entry.capture_positions.iter().any(|candidate| candidate == position))
-        .find_map(|entry| match &entry.origin {
-            SymbolicBackendEntryOrigin::DeliveredResume {
-                position:
-                    TransportPosition::ResumePayload {
-                        callsite: Some(callsite),
-                        ..
-                    },
+        .find_map(|position| match position {
+            TransportPosition::ResumePayload {
+                entry: resumed,
+                callsite,
                 ..
-            } => Some(*callsite),
+            } if resumed == entry => *callsite,
             _ => None,
         })
 }
 
-fn symbolic_callsite_dest(backend: &SymbolicBackendExecutable, callsite: CallSiteId) -> Option<&ControlDestination> {
-    let SymbolicBackendBody::Clauses { entries, .. } = &backend.body else {
+fn symbolic_callsite_dest(backend: &BackendExecutable, callsite: CallSiteId) -> Option<&ControlDestination> {
+    let BackendBody::Clauses { entries, .. } = &backend.body else {
         return None;
     };
     entries.iter().find_map(|entry| match &entry.tail {
-        SymbolicBackendTail::DirectCall {
+        BackendTail::DirectCall {
             callsite: candidate,
             dest,
             ..
         }
-        | SymbolicBackendTail::ClosureCall {
+        | BackendTail::ClosureCall {
             callsite: candidate,
             dest,
             ..
@@ -1746,15 +1418,26 @@ struct BackendLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     telemetry: &'tel T,
     root_id: RootId,
     value_shapes: HashMap<ValueId, ShapeId>,
+    return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
+    constructions: HashMap<ValueId, TransportPosition>,
 }
 
 impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
-    fn new(world: &'a mut World, telemetry: &'tel T, root_id: RootId, value_shapes: HashMap<ValueId, ShapeId>) -> Self {
+    fn new(
+        world: &'a mut World,
+        telemetry: &'tel T,
+        root_id: RootId,
+        value_shapes: HashMap<ValueId, ShapeId>,
+        return_endpoints: HashMap<TransportPosition, BackendReturnLayout>,
+        constructions: HashMap<ValueId, TransportPosition>,
+    ) -> Self {
         Self {
             world,
             telemetry,
             root_id,
             value_shapes,
+            return_endpoints,
+            constructions,
         }
     }
 
@@ -1854,7 +1537,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 BackendStep::FunctionRef {
                     value: *value,
                     function: *function,
-                    construction: None,
+                    construction: self.constructions.get(value).cloned(),
                 },
             ),
             LoweredStep::Lambda {
@@ -1867,7 +1550,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                     value: *value,
                     function: *function,
                     captures: captures.clone(),
-                    construction: None,
+                    construction: self.constructions.get(value).cloned(),
                 },
             ),
             LoweredStep::BinaryOp { value, op, left, right } => BackendStep::BinaryOp {
@@ -1983,11 +1666,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     }
 }
 
-fn lower_entry_origin(
-    executable: &AbiReadyExecutable,
-    entry_index: usize,
-    entry: &LoweredEntry,
-) -> SymbolicBackendEntryOrigin {
+fn lower_entry_origin(executable: &AbiReadyExecutable, entry_index: usize, entry: &LoweredEntry) -> BackendEntryOrigin {
     let entry_id = original_entry_id(executable, entry_index);
     if let ControlEntryOrigin::DeliveredResume { value } = entry.origin {
         if let Some(position) = executable
@@ -2005,20 +1684,25 @@ fn lower_entry_origin(
             })
             .cloned()
         {
-            return SymbolicBackendEntryOrigin::DeliveredResume { value, position };
+            let layout = executable
+                .return_endpoints
+                .iter()
+                .find_map(|(candidate, layout)| (candidate == &position).then(|| layout.clone()))
+                .expect("resume ABI owns its return endpoint");
+            return BackendEntryOrigin::DeliveredResume { value, layout };
         }
         if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
-            return SymbolicBackendEntryOrigin::Branch;
+            return BackendEntryOrigin::Branch;
         }
         panic!("resume entry {entry_index} should have a settled transport position: {entry:?}");
     }
     if matches!(&entry.tail, LoweredTail::Halt { atom } if atom == UNREACHABLE_CONTROL_ATOM) {
-        return SymbolicBackendEntryOrigin::Branch;
+        return BackendEntryOrigin::Branch;
     }
     match entry.origin {
-        ControlEntryOrigin::Clause => SymbolicBackendEntryOrigin::Clause,
-        ControlEntryOrigin::Branch => SymbolicBackendEntryOrigin::Branch,
-        ControlEntryOrigin::ReceiveOutcome => SymbolicBackendEntryOrigin::ReceiveOutcome,
+        ControlEntryOrigin::Clause => BackendEntryOrigin::Clause,
+        ControlEntryOrigin::Branch => BackendEntryOrigin::Branch,
+        ControlEntryOrigin::ReceiveOutcome => BackendEntryOrigin::ReceiveOutcome,
         ControlEntryOrigin::DeliveredResume { .. } => unreachable!("delivered resumes return before branch fallback"),
     }
 }
@@ -2032,7 +1716,7 @@ fn original_entry_id(executable: &AbiReadyExecutable, entry_index: usize) -> Con
         .unwrap_or_else(|| ControlEntryId::from_u32(entry_index as u32))
 }
 
-fn collect_backend_atom_names(world: &mut World, executables: &[BackendExecutable]) -> Vec<String> {
+fn collect_backend_atom_names(world: &mut World, executables: &[Rc<BackendExecutable>]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut atoms = Vec::new();
     for name in ["nil", "true", "false"] {
@@ -2053,7 +1737,7 @@ fn collect_executable_atoms(
     match &executable.body {
         BackendBody::Extern { .. } => {}
         BackendBody::Clauses { clauses, entries, .. } => {
-            if let Some(dispatch) = &executable.entry_dispatch {
+            if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
                 collect_dispatch_atoms(world, dispatch.plan(), seen, atoms);
             }
             for clause in clauses {
@@ -2288,13 +1972,13 @@ fn verify_boxed_apply_seam_return_convention(
     program: &BackendProgram,
 ) -> Result<(), FatalError> {
     let mut published: HashMap<usize, Vec<&BackendConstructionWrapper>> = HashMap::new();
-    for wrapper in &program.construction_wrappers {
+    for wrapper in program.construction_wrappers() {
         if matches!(wrapper.return_form, BackendCallableReturn::Diverges) {
             continue;
         }
         published.entry(wrapper.call_arity).or_default().push(wrapper);
     }
-    for executable in &program.executables {
+    for executable in program.executables() {
         let BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -2309,6 +1993,7 @@ fn verify_boxed_apply_seam_return_convention(
                 continue;
             };
             if !executable
+                .abi
                 .value_layouts
                 .get(callee)
                 .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef(_)))
@@ -2329,7 +2014,7 @@ fn verify_boxed_apply_seam_return_convention(
                         root_id,
                         format!(
                             "boxed closure call in {:?} expects {delivered} delivered lane(s) but construction \
-                             wrapper {} it can reach publishes {published_lanes} ({:?}): the two halves of one \
+                             wrapper {:?} it can reach publishes {published_lanes} ({:?}): the two halves of one \
                              calling convention were compiled against different contracts",
                             executable.key.activation.function, wrapper.identity, wrapper.return_form,
                         ),
@@ -2556,7 +2241,6 @@ mod tests {
             BackendEntryOrigin, BackendProgram, BackendReturnFlow, BackendTail,
         };
         use crate::compiler2::body::ControlDestination;
-        use crate::compiler2::semantic::ExecutableRuntimeDemand;
         use crate::compiler2::transport::CallableId;
         use crate::compiler2::{CallSiteId, ControlEntryId, ValueId};
         use crate::telemetry::ConfiguredTelemetry;
@@ -2572,79 +2256,76 @@ mod tests {
             reprs: reprs.into_boxed_slice(),
         };
         let callee = ValueId::from_u32(1);
-        let program = |return_form| BackendProgram {
-            entry: 0,
-            atom_names: Vec::new(),
-            struct_schemas: std::collections::BTreeMap::new(),
-            construction_wrappers: vec![BackendConstructionWrapper {
-                identity: 0,
+        let program = |return_form| {
+            let key = ExecutableKey {
+                activation: ActivationKey {
+                    root: RootId::for_test(0),
+                    function: FunctionId::for_test(0),
+                    arrow: int,
+                },
+                need: ExecutableNeed::Value,
+            };
+            let mut executable = BackendExecutable::for_test(key.clone(), int, shape);
+            Rc::make_mut(&mut executable.abi).value_layouts.insert(
+                callee,
+                value_layout(
+                    TransportCarrier::ValueRef(LaneId::for_test(0)),
+                    vec![AbiValueRepr::ValueRef],
+                ),
+            );
+            executable.body = BackendBody::Clauses {
+                clauses: Vec::new(),
+                generated: Vec::new(),
+                entries: vec![BackendEntry {
+                    span: Span::DUMMY,
+                    origin: BackendEntryOrigin::Clause,
+                    params: Vec::new(),
+                    captures: Vec::new(),
+                    reusable_cons_captures: Vec::new(),
+                    steps: Vec::new(),
+                    tail: BackendTail::ClosureCall {
+                        value: ValueId::from_u32(2),
+                        callsite: CallSiteId::from_u32(0),
+                        callee,
+                        target: None,
+                        args: vec![BackendCallArg {
+                            value: ValueId::from_u32(3),
+                        }],
+                        dest: ControlDestination::Return,
+                        return_flow: Some(BackendReturnFlow::Deliver {
+                            source: Box::new(BackendReturnLayout {
+                                layout: value_layout(
+                                    TransportCarrier::ValueRef(LaneId::for_test(0)),
+                                    vec![AbiValueRepr::ValueRef],
+                                ),
+                                diverges: false,
+                            }),
+                            entry: ControlEntryId::from_u32(0),
+                        }),
+                    },
+                }],
+            };
+            let identity = TransportPosition::Value {
+                executable: executable.abi.transport.executable.clone(),
+                value: callee,
+            };
+            let wrapper = Rc::new(BackendConstructionWrapper {
+                identity,
                 callable: CallableId::for_test(0),
                 captures: Box::default(),
                 call_arity: 1,
                 return_form,
                 members: Box::default(),
                 selection: None,
-            }],
-            executables: vec![BackendExecutable {
-                key: ExecutableKey {
-                    activation: ActivationKey {
-                        root: RootId::for_test(0),
-                        function: FunctionId::for_test(0),
-                        arrow: int,
-                    },
-                    need: ExecutableNeed::Value,
-                },
-                entry_dispatch: None,
-                return_ty: int,
-                param_reprs: Vec::new(),
-                semantic_inputs: Box::default(),
-                return_layout: BackendReturnLayout {
-                    layout: value_layout(TransportCarrier::Absent, Vec::new()),
-                    diverges: false,
-                },
-                runtime_demand: Rc::new(ExecutableRuntimeDemand::default()),
-                value_types: HashMap::new(),
-                value_layouts: HashMap::from([(
-                    callee,
-                    value_layout(
-                        TransportCarrier::ValueRef(LaneId::for_test(0)),
-                        vec![AbiValueRepr::ValueRef],
-                    ),
-                )]),
-                effects: crate::compiler2::artifact::EffectSummary::default(),
-                body: BackendBody::Clauses {
-                    clauses: Vec::new(),
-                    generated: Vec::new(),
-                    entries: vec![BackendEntry {
-                        span: Span::DUMMY,
-                        origin: BackendEntryOrigin::Clause,
-                        params: Vec::new(),
-                        captures: Vec::new(),
-                        reusable_cons_captures: Vec::new(),
-                        steps: Vec::new(),
-                        tail: BackendTail::ClosureCall {
-                            value: ValueId::from_u32(2),
-                            callsite: CallSiteId::from_u32(0),
-                            callee,
-                            target: None,
-                            args: vec![BackendCallArg {
-                                value: ValueId::from_u32(3),
-                            }],
-                            dest: ControlDestination::Return,
-                            return_flow: Some(BackendReturnFlow::Deliver {
-                                source: Box::new(BackendReturnLayout {
-                                    layout: value_layout(
-                                        TransportCarrier::ValueRef(LaneId::for_test(0)),
-                                        vec![AbiValueRepr::ValueRef],
-                                    ),
-                                    diverges: false,
-                                }),
-                                entry: ControlEntryId::from_u32(0),
-                            }),
-                        },
-                    }],
-                },
-            }],
+            });
+            executable.construction_wrappers = vec![Rc::clone(&wrapper)].into_boxed_slice();
+            BackendProgram::new(
+                key,
+                Vec::new(),
+                BTreeMap::new(),
+                vec![Rc::new(executable)],
+                vec![wrapper],
+            )
         };
 
         assert!(

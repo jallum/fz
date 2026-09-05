@@ -428,7 +428,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             .drive_root_to_dump_stage(root, DumpStage::Backend)
             .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
         assert_eq!(
-            compiler.retained_backend_program(root).executables.len(),
+            compiler.retained_backend_program(root).executables().len(),
             executables,
             "{name}: the emitted executable inventory moved off its fz-kdt.63 pin; \
              re-measure, name the cause, and re-pin"
@@ -462,10 +462,10 @@ fn artifact_clause_ids_follow_source_order_on_the_target_fixtures() {
         let world = compiler.world();
         let program = compiler.retained_backend_program(root);
         let unordered = program
-            .executables
+            .executables()
             .iter()
             .filter_map(|executable| {
-                let clause_ids = executable.entry_dispatch.as_ref()?.clause_ids();
+                let clause_ids = executable.abi.materialized.entry_dispatch.as_ref()?.clause_ids();
                 let ascends = clause_ids.windows(2).all(|pair| pair[0] < pair[1]);
                 (!ascends).then(|| {
                     format!(
@@ -520,7 +520,7 @@ fn sibling_specializations_are_ordered_by_canonical_inputs_not_interning_order()
         let types = world.types();
         let program = compiler.retained_backend_program(root);
         let descents = program
-            .executables
+            .executables()
             .windows(2)
             .enumerate()
             .filter(|(_, pair)| pair[0].key.activation.function == pair[1].key.activation.function)

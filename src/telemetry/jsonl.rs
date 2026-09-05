@@ -1611,11 +1611,11 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(',');
         write_str_lit(out, "executables");
         out.push(':');
-        push_u64(out, program.executables.len() as u64);
+        push_u64(out, program.executables().len() as u64);
         out.push(',');
         write_str_lit(out, "construction_wrappers");
         out.push(':');
-        push_u64(out, program.construction_wrappers.len() as u64);
+        push_u64(out, program.construction_wrappers().len() as u64);
         out.push(',');
         write_str_lit(out, "birth_count");
         out.push(':');
@@ -1769,11 +1769,11 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         out.push(',');
         write_str_lit(out, "executables");
         out.push(':');
-        push_u64(out, answer.program.executables.len() as u64);
+        push_u64(out, answer.program.executables().len() as u64);
         out.push(',');
         write_str_lit(out, "construction_wrappers");
         out.push(':');
-        push_u64(out, answer.program.construction_wrappers.len() as u64);
+        push_u64(out, answer.program.construction_wrappers().len() as u64);
     } else if let Some(outcome) = opaque.downcast_ref::<crate::compiler2::pull::PullOutcome>() {
         out.push(',');
         write_str_lit(out, "status");
@@ -1936,7 +1936,7 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
 fn reusable_cons_counts(program: &crate::compiler2::BackendProgram) -> (u64, u64) {
     let mut birth_count = 0;
     let mut transport_count = 0;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
             continue;
         };

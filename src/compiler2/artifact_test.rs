@@ -34,35 +34,70 @@ fn stub_activation_key(_types: &mut Types, input: Vec<super::types::Ty>) -> (Roo
 struct TestTransportShapes {
     transport: TransportStore,
 }
+#[test]
+#[should_panic(expected = "duplicate backend executable identity")]
+fn backend_program_rejects_duplicate_member_identities() {
+    let mut world = super::World::new();
+    let int = world.types_mut().int();
+    let shape = world.intern_shape(ShapeDescr::Nothing);
+    let (_, _, activation) = stub_activation_key(world.types_mut(), Vec::new());
+    let key = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
+    BackendProgram::new(
+        key,
+        Vec::new(),
+        Default::default(),
+        vec![member.clone(), member],
+        Vec::new(),
+    );
+}
 
 #[test]
-fn compiler2_backend_package_types_contain_no_symbolic_transport_fields() {
-    fn assert_closed(program: BackendProgram) {
-        let BackendProgram {
-            entry: _,
-            atom_names: _,
-            struct_schemas: _,
-            executables,
-            construction_wrappers: _,
-        } = program;
-        for executable in executables {
-            let BackendExecutable {
-                key: _,
-                entry_dispatch: _,
-                return_ty: _,
-                param_reprs: _,
-                semantic_inputs: _,
-                return_layout: _,
-                runtime_demand: _,
-                value_types: _,
-                value_layouts: _,
-                effects: _,
-                body: _,
-            } = executable;
-        }
-    }
+#[should_panic(expected = "backend entry must belong to its program")]
+fn backend_program_rejects_an_entry_outside_its_inventory() {
+    let mut types = Types::new();
+    let (_, _, activation) = stub_activation_key(&mut types, Vec::new());
+    let key = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    BackendProgram::new(key, Vec::new(), Default::default(), Vec::new(), Vec::new());
+}
 
-    let _ = assert_closed as fn(BackendProgram);
+#[test]
+#[should_panic(expected = "duplicate backend construction identity")]
+fn backend_program_rejects_duplicate_construction_owners() {
+    let mut world = super::World::new();
+    let int = world.types_mut().int();
+    let shape = world.intern_shape(ShapeDescr::Nothing);
+    let (_, _, activation) = stub_activation_key(world.types_mut(), Vec::new());
+    let key = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+    let member = std::rc::Rc::new(BackendExecutable::for_test(key.clone(), int, shape));
+    let wrapper = std::rc::Rc::new(super::artifact::BackendConstructionWrapper {
+        identity: super::transport::TransportPosition::Value {
+            executable: member.abi.transport.executable.clone(),
+            value: super::ValueId::from_u32(0),
+        },
+        callable: CallableId::for_test(0),
+        captures: Box::default(),
+        call_arity: 0,
+        return_form: BackendCallableReturn::Absent,
+        members: Box::default(),
+        selection: None,
+    });
+    BackendProgram::new(
+        key,
+        Vec::new(),
+        Default::default(),
+        vec![member],
+        vec![wrapper.clone(), wrapper],
+    );
 }
 
 impl TestTransportShapes {

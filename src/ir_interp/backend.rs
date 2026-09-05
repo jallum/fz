@@ -10,14 +10,14 @@ use super::value::{
     interp_struct_field_from_tagged_bits, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
-use crate::compiler2::FunctionId;
 use crate::compiler2::pull::TransportCarrier;
-use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, TransportStore};
+use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, TransportPosition, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendExecutable,
     BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ControlDestination,
     ExecutableDispatch, ValueId, required_dispatch_input_ordinals,
 };
+use crate::compiler2::{ExecutableKey, FunctionId};
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
 use crate::runtime_type_predicate::{
     CallableShape, RuntimeValueReader, matches_runtime_type_predicate, surface_membership,
@@ -81,7 +81,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
         struct_schemas: program.struct_schemas.clone(),
         ..Module::default()
     };
-    runtime.enqueue_backend_entry(1, program.entry, Vec::new())?;
+    runtime.enqueue_backend_entry(1, backend_executable_index(program, program.entry())?, Vec::new())?;
     let completions = drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, None)?;
     let halt_val = completions
         .iter()
@@ -119,7 +119,7 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
         ..Module::default()
     };
     let result = (|| {
-        runtime.enqueue_backend_entry(1, program.entry, args)?;
+        runtime.enqueue_backend_entry(1, backend_executable_index(program, program.entry())?, args)?;
         let completions =
             drive_backend_until_idle(&mut runtime, types, transport, tel, output, program, &module, Some(1))?;
         completions
@@ -234,7 +234,7 @@ impl IrInterpRuntime {
                 &park.env,
             )? {
                 let executable = program
-                    .executables
+                    .executables()
                     .get(park.executable)
                     .ok_or_else(|| format!("backend parked executable {} is out of bounds", park.executable))?;
                 let BackendBody::Clauses { entries, .. } = &executable.body else {
@@ -396,7 +396,7 @@ fn run_backend_resume<T: Telemetry + ?Sized>(
                 continuations,
             } => {
                 let executable_ref = program
-                    .executables
+                    .executables()
                     .get(executable)
                     .ok_or_else(|| format!("backend executable {} is out of bounds", executable))?;
                 let BackendBody::Clauses { entries, .. } = &executable_ref.body else {
@@ -441,7 +441,7 @@ fn continue_backend_value(
         )?));
     };
     let executable = program
-        .executables
+        .executables()
         .get(frame.executable)
         .ok_or_else(|| format!("backend continuation executable {} is out of bounds", frame.executable))?;
     let BackendBody::Clauses { entries, .. } = &executable.body else {
@@ -486,7 +486,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let executable = program
-        .executables
+        .executables()
         .get(executable_index)
         .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
     match &executable.body {
@@ -502,7 +502,7 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
         }
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs = bind_executable_inputs(transport, types, runtime, executable, &args)?;
-            let clause_index = match &executable.entry_dispatch {
+            let clause_index = match &executable.abi.materialized.entry_dispatch {
                 None => 0,
                 Some(dispatch) => {
                     let dispatch_inputs = semantic_inputs
@@ -793,7 +793,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             // contract publishes no lanes either, so there is nothing to encode
             // and nothing to read. Any other env miss is still a real fault.
             let returns_no_lanes =
-                matches!(dest, ControlDestination::Return) && executable.return_layout.layout.reprs.is_empty();
+                matches!(dest, ControlDestination::Return) && executable.abi.return_layout.layout.reprs.is_empty();
             let result = if returns_no_lanes && !env.contains_key(value) {
                 BackendBoundValue::Absent
             } else {
@@ -926,10 +926,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                             callee.as_u32()
                         ));
                     };
-                    let callee_executable = program
-                        .executables
-                        .get(*target)
-                        .ok_or_else(|| format!("backend executable {} is out of bounds", target))?;
+                    let callee_executable = &program.executables()[backend_executable_index(program, target)?];
                     (
                         FnId(callee_executable.key.activation.function.as_u32()),
                         None,
@@ -943,9 +940,9 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     .iter()
                     .map(|arg| env_get(transport, runtime.cur_proc(), &env, arg.value))
                     .collect::<Result<Vec<_>, _>>()?;
-                select_construction_member(runtime, types, transport, program, module, wrapper, &args)?.target
+                &select_construction_member(runtime, types, transport, program, module, wrapper, &args)?.target
             } else if let Some(target) = target {
-                *target
+                target
             } else {
                 return Err(format!(
                     "backend closure call executable={} function={} callsite={} has no construction wrapper or direct target",
@@ -954,8 +951,9 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     callsite.as_u32()
                 ));
             };
+            let executable_target = backend_executable_index(program, executable_target)?;
             let callee_executable = program
-                .executables
+                .executables()
                 .get(executable_target)
                 .ok_or_else(|| format!("backend executable {} is out of bounds", executable_target))?;
             let capture_inputs_end = callee_executable
@@ -971,6 +969,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 })?;
             if missing_direct_callee
                 && callee_executable
+                    .abi
                     .semantic_inputs
                     .iter()
                     .any(|input| input.semantic_index < capture_inputs_end && !input.layout.reprs.is_empty())
@@ -1346,8 +1345,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 construction,
             } => {
                 let bound = if let Some(construction) = construction {
-                    construction_callable_value(runtime.cur_proc(), program, *construction, &[])?
+                    construction_callable_value(runtime.cur_proc(), program, construction, &[])?
                 } else if executable
+                    .abi
+                    .materialized
                     .runtime_demand
                     .callable_flows
                     .get(value)
@@ -1370,12 +1371,12 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 construction,
             } => {
                 let bound = if let Some(construction) = construction {
-                    let wrapper = construction_wrapper_for_identity(program, *construction).ok_or_else(|| {
-                        format!("backend callable construction {construction} is missing its wrapper")
+                    let wrapper = construction_wrapper_for_identity(program, construction).ok_or_else(|| {
+                        format!("backend callable construction {construction:?} is missing its wrapper")
                     })?;
                     if captures.len() != wrapper.captures.len() {
                         return Err(format!(
-                            "backend callable construction {construction} expected {} logical capture(s), got {}",
+                            "backend callable construction {construction:?} expected {} logical capture(s), got {}",
                             wrapper.captures.len(),
                             captures.len()
                         ));
@@ -1387,8 +1388,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                         .filter(|(_, capture)| !capture.layout.reprs.is_empty())
                         .map(|(capture, _)| env_get(transport, runtime.cur_proc(), env, capture))
                         .collect::<Result<Vec<_>, _>>()?;
-                    construction_callable_value(runtime.cur_proc(), program, *construction, &physical_captures)?
+                    construction_callable_value(runtime.cur_proc(), program, construction, &physical_captures)?
                 } else if executable
+                    .abi
+                    .materialized
                     .runtime_demand
                     .callable_flows
                     .get(value)
@@ -1694,7 +1697,7 @@ fn eval_backend_direct_call_edge<T: Telemetry + ?Sized>(
     tel: &T,
     program: &BackendProgram,
     module: &Module,
-    callee: &CallTarget<usize>,
+    callee: &CallTarget<ExecutableKey>,
     args: &[crate::compiler2::BackendCallArg],
     extern_marshals: Option<&[crate::fz_ir::ExternTy]>,
     env: HashMap<ValueId, BackendBoundValue>,
@@ -1710,7 +1713,7 @@ fn eval_backend_direct_call_edge<T: Telemetry + ?Sized>(
             tel,
             program,
             module,
-            *callee,
+            backend_executable_index(program, callee)?,
             args,
             extern_marshals,
             env,
@@ -1741,7 +1744,7 @@ fn eval_direct_call<T: Telemetry + ?Sized>(
     continuations: Vec<BackendContinuation>,
 ) -> Result<BackendEvalTransition, String> {
     let executable = program
-        .executables
+        .executables()
         .get(callee)
         .ok_or_else(|| format!("backend direct callee {} is out of bounds", callee))?;
     let call_args = encode_call_args(transport, program, types, runtime, executable, &env, args, 0)?;
@@ -1843,7 +1846,7 @@ fn publish_backend_capture(proc: *mut Process, value: &BackendBoundValue) -> Res
 
 fn entries_for_executable(program: &BackendProgram, executable_index: usize) -> Result<&[BackendEntry], String> {
     let executable = program
-        .executables
+        .executables()
         .get(executable_index)
         .ok_or_else(|| format!("backend executable {} is out of bounds", executable_index))?;
     let BackendBody::Clauses { entries, .. } = &executable.body else {
@@ -1915,7 +1918,7 @@ fn bind_executable_inputs(
     let semantic_arity = executable.key.activation.input_len(types);
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
-    for input in &executable.semantic_inputs {
+    for input in &executable.abi.semantic_inputs {
         let value = if input.layout.reprs.is_empty() {
             None
         } else {
@@ -1957,12 +1960,9 @@ pub(crate) fn encode_macro_entry_inputs(
     transport: &TransportStore,
     semantic_values: &[AnyValue],
 ) -> Result<Vec<AnyValue>, String> {
-    let executable = program
-        .executables
-        .get(program.entry)
-        .ok_or_else(|| format!("macro entry executable {} is out of bounds", program.entry))?;
+    let executable = &program.executables()[backend_executable_index(program, program.entry())?];
     let mut lanes = Vec::new();
-    for input in &executable.semantic_inputs {
+    for input in &executable.abi.semantic_inputs {
         let semantic_index = input.semantic_index;
         let shape = input.layout.structural;
         if matches!(transport.interners().shape(shape), ShapeDescr::Nothing) {
@@ -1981,6 +1981,7 @@ pub(crate) fn encode_macro_entry_inputs(
 
 fn value_shape(executable: &BackendExecutable, value: ValueId) -> Result<ShapeId, String> {
     executable
+        .abi
         .value_layouts
         .get(&value)
         .map(|layout| layout.structural)
@@ -2044,8 +2045,18 @@ fn direct_callable_value(
 
 const CONSTRUCTION_WRAPPER_IDENTITY_BASE: u32 = 0x8000_0000;
 
-fn construction_wrapper_identity_fn(identity: u32) -> FnId {
-    FnId(CONSTRUCTION_WRAPPER_IDENTITY_BASE | identity)
+fn backend_executable_index(program: &BackendProgram, key: &ExecutableKey) -> Result<usize, String> {
+    program
+        .executable_index(key)
+        .ok_or_else(|| format!("backend executable {key:?} is missing from its program"))
+}
+
+fn construction_wrapper_identity_fn(index: usize) -> Result<FnId, String> {
+    let index = u32::try_from(index)
+        .ok()
+        .filter(|index| index & CONSTRUCTION_WRAPPER_IDENTITY_BASE == 0)
+        .ok_or_else(|| "backend callable construction inventory exceeds runtime identity space".to_string())?;
+    Ok(FnId(CONSTRUCTION_WRAPPER_IDENTITY_BASE | index))
 }
 
 /// The user-visible parameter count of the callable value `function` produces:
@@ -2060,34 +2071,39 @@ fn construction_wrapper_identity_fn(identity: u32) -> FnId {
 /// arity of its own. The program always does.
 fn callable_value_arity(program: &BackendProgram, function: FunctionId, capture_count: usize) -> u16 {
     program
-        .executables
+        .executables()
         .iter()
         .find(|executable| executable.key.activation.function == function)
-        .map(|executable| executable.semantic_inputs.len().saturating_sub(capture_count) as u16)
+        .map(|executable| executable.abi.semantic_inputs.len().saturating_sub(capture_count) as u16)
         .unwrap_or(0)
 }
 
 fn construction_wrapper_for_fn(program: &BackendProgram, fn_id: FnId) -> Option<&BackendConstructionWrapper> {
     (fn_id.0 & CONSTRUCTION_WRAPPER_IDENTITY_BASE != 0)
         .then_some(fn_id.0 & !CONSTRUCTION_WRAPPER_IDENTITY_BASE)
-        .and_then(|identity| construction_wrapper_for_identity(program, identity))
+        .and_then(|index| program.construction_wrappers().get(index as usize))
+        .map(Rc::as_ref)
 }
 
-fn construction_wrapper_for_identity(program: &BackendProgram, identity: u32) -> Option<&BackendConstructionWrapper> {
+fn construction_wrapper_for_identity<'a>(
+    program: &'a BackendProgram,
+    identity: &TransportPosition,
+) -> Option<&'a BackendConstructionWrapper> {
     program
-        .construction_wrappers
-        .iter()
-        .find(|wrapper| wrapper.identity == identity)
+        .construction_index(identity)
+        .map(|index| program.construction_wrappers()[index].as_ref())
 }
 
 fn construction_callable_value(
     proc: *mut Process,
     program: &BackendProgram,
-    identity: u32,
+    identity: &TransportPosition,
     captures: &[AnyValue],
 ) -> Result<BackendBoundValue, String> {
-    let wrapper = construction_wrapper_for_identity(program, identity)
-        .ok_or_else(|| format!("backend callable construction {identity} is missing its wrapper"))?;
+    let index = program
+        .construction_index(identity)
+        .ok_or_else(|| format!("backend callable construction {identity:?} is missing its wrapper"))?;
+    let wrapper = &program.construction_wrappers()[index];
     let capture_count = wrapper
         .captures
         .iter()
@@ -2095,12 +2111,12 @@ fn construction_callable_value(
         .count();
     if captures.len() != capture_count {
         return Err(format!(
-            "backend callable construction {identity} expected {} capture value(s), got {}",
+            "backend callable construction {identity:?} expected {} capture value(s), got {}",
             capture_count,
             captures.len()
         ));
     }
-    let fn_id = construction_wrapper_identity_fn(identity);
+    let fn_id = construction_wrapper_identity_fn(index)?;
     let arity = wrapper.call_arity as u16;
     let value = if captures.is_empty() {
         AnyValue::FnRef(fn_id, arity)
@@ -2121,7 +2137,7 @@ fn select_construction_member<'a>(
 ) -> Result<&'a BackendConstructionMemberAdapter, String> {
     if args.len() != wrapper.call_arity {
         return Err(format!(
-            "backend callable construction {} expected {} call arg(s), got {}",
+            "backend callable construction {:?} expected {} call arg(s), got {}",
             wrapper.identity,
             wrapper.call_arity,
             args.len()
@@ -2138,12 +2154,12 @@ fn select_construction_member<'a>(
             args,
             &HashMap::new(),
         )?
-        .ok_or_else(|| format!("backend callable construction {} matched no member", wrapper.identity))?
+        .ok_or_else(|| format!("backend callable construction {:?} matched no member", wrapper.identity))?
             as usize,
         None if wrapper.members.len() == 1 => 0,
         None => {
             return Err(format!(
-                "backend callable construction {} has {} members without a selection plan",
+                "backend callable construction {:?} has {} members without a selection plan",
                 wrapper.identity,
                 wrapper.members.len()
             ));
@@ -2151,7 +2167,7 @@ fn select_construction_member<'a>(
     };
     wrapper.members.get(member).ok_or_else(|| {
         format!(
-            "backend callable construction {} selected member {} outside {} members",
+            "backend callable construction {:?} selected member {} outside {} members",
             wrapper.identity,
             member,
             wrapper.members.len()
@@ -2172,10 +2188,10 @@ pub(super) fn construction_wrapper_invocation(
     let wrapper = construction_wrapper_for_fn(program, fn_id)
         .ok_or_else(|| format!("backend callable {} has no construction wrapper", fn_id.0))?;
     let member = select_construction_member(runtime, types, transport, program, module, wrapper, args)?;
-    let target = member.target;
-    let executable = program.executables.get(target).ok_or_else(|| {
+    let target = backend_executable_index(program, &member.target)?;
+    let executable = program.executables().get(target).ok_or_else(|| {
         format!(
-            "backend callable construction {} target {} is out of bounds",
+            "backend callable construction {:?} target {} is out of bounds",
             wrapper.identity, target
         )
     })?;
@@ -2224,7 +2240,7 @@ impl ConstructionInputEncoder<'_> {
             .find(|input| input.semantic_index >= semantic_arity)
         {
             return Err(format!(
-                "backend callable construction {} member target {} publishes semantic input {} for arity {}",
+                "backend callable construction {:?} member target {} publishes semantic input {} for arity {}",
                 self.wrapper.identity, self.target_index, input.semantic_index, semantic_arity
             ));
         }
@@ -2240,7 +2256,7 @@ impl ConstructionInputEncoder<'_> {
             || args.len() != self.wrapper.call_arity
         {
             return Err(format!(
-                "backend callable construction {} member target {} does not match its published semantic layout",
+                "backend callable construction {:?} member target {} does not match its published semantic layout",
                 self.wrapper.identity, self.target_index
             ));
         }
@@ -2254,7 +2270,7 @@ impl ConstructionInputEncoder<'_> {
         {
             let slot = semantic_values.get_mut(semantic_index).ok_or_else(|| {
                 format!(
-                    "backend callable construction {} maps capture outside target {}",
+                    "backend callable construction {:?} maps capture outside target {}",
                     self.wrapper.identity, self.target_index
                 )
             })?;
@@ -2262,21 +2278,21 @@ impl ConstructionInputEncoder<'_> {
                 && slot
                     .replace(physical_captures.next().ok_or_else(|| {
                         format!(
-                            "backend callable construction {} is missing a physical capture",
+                            "backend callable construction {:?} is missing a physical capture",
                             self.wrapper.identity
                         )
                     })?)
                     .is_some()
             {
                 return Err(format!(
-                    "backend callable construction {} maps more than one capture to one target input",
+                    "backend callable construction {:?} maps more than one capture to one target input",
                     self.wrapper.identity
                 ));
             }
         }
         if physical_captures.next().is_some() {
             return Err(format!(
-                "backend callable construction {} has excess physical captures",
+                "backend callable construction {:?} has excess physical captures",
                 self.wrapper.identity
             ));
         }
@@ -2284,19 +2300,19 @@ impl ConstructionInputEncoder<'_> {
         for (arg_index, semantic_index) in self.member.surface_semantic_inputs.iter().copied().enumerate() {
             let slot = explicit_values.get_mut(semantic_index).ok_or_else(|| {
                 format!(
-                    "backend callable construction {} maps an argument outside target {}",
+                    "backend callable construction {:?} maps an argument outside target {}",
                     self.wrapper.identity, self.target_index
                 )
             })?;
             if semantic_values[semantic_index].is_some() || slot.replace(arg_index).is_some() {
                 return Err(format!(
-                    "backend callable construction {} maps more than one value to target input {}",
+                    "backend callable construction {:?} maps more than one value to target input {}",
                     self.wrapper.identity, semantic_index
                 ));
             }
         }
         let mut lanes = Vec::new();
-        for binding in &self.target.semantic_inputs {
+        for binding in &self.target.abi.semantic_inputs {
             let input = self
                 .member
                 .target_inputs
@@ -2304,7 +2320,7 @@ impl ConstructionInputEncoder<'_> {
                 .find(|input| input.semantic_index == binding.semantic_index)
                 .ok_or_else(|| {
                     format!(
-                        "backend callable construction {} target {} omits semantic input {}",
+                        "backend callable construction {:?} target {} omits semantic input {}",
                         self.wrapper.identity, self.target_index, binding.semantic_index
                     )
                 })?;
@@ -2316,7 +2332,7 @@ impl ConstructionInputEncoder<'_> {
                 None => {
                     let arg_index = explicit_values[binding.semantic_index].ok_or_else(|| {
                         format!(
-                            "backend callable construction {} cannot populate target {} semantic input {}",
+                            "backend callable construction {:?} cannot populate target {} semantic input {}",
                             self.wrapper.identity, self.target_index, binding.semantic_index
                         )
                     })?;
@@ -2420,7 +2436,7 @@ fn encode_call_args(
         ));
     }
     let mut lanes = Vec::new();
-    let bindings = &executable.semantic_inputs;
+    let bindings = &executable.abi.semantic_inputs;
     for binding in bindings
         .iter()
         .filter(|binding| binding.semantic_index >= semantic_start)
@@ -2883,7 +2899,7 @@ fn tuple_step_value(
     value: ValueId,
     items: &[ValueId],
 ) -> Result<BackendBoundValue, String> {
-    if let Some(layout) = executable.value_layouts.get(&value)
+    if let Some(layout) = executable.abi.value_layouts.get(&value)
         && !matches!(layout.carrier, TransportCarrier::ValueRef(_))
         && let ShapeDescr::Tuple(fields) = transport.interners().shape(layout.structural)
     {
@@ -3166,13 +3182,7 @@ mod tests {
     use super::*;
 
     fn empty_backend_program() -> BackendProgram {
-        BackendProgram {
-            entry: 0,
-            atom_names: Vec::new(),
-            struct_schemas: Default::default(),
-            executables: Vec::new(),
-            construction_wrappers: Vec::new(),
-        }
+        BackendProgram::empty_for_test()
     }
 
     fn encode_for_layout(

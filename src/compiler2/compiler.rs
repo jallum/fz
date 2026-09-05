@@ -257,7 +257,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     pub(crate) fn product_executable_inventory(&mut self, root: RootId) -> Result<Vec<ExecutableKey>, String> {
         let program = self.drive_root_backend_product(root)?;
         let executables = program
-            .executables
+            .executables()
             .iter()
             .map(|executable| executable.key.clone())
             .collect::<Vec<_>>();
@@ -311,8 +311,8 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         if emit_lifecycle {
             let event = match &result {
                 Ok(program) => BackendRequestEvent::Succeeded {
-                    executables: program.executables.len(),
-                    construction_wrappers: program.construction_wrappers.len(),
+                    executables: program.executables().len(),
+                    construction_wrappers: program.construction_wrappers().len(),
                 },
                 Err(_) => BackendRequestEvent::Failed,
             };

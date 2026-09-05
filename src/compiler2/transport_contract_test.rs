@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-use super::artifact::{AbiValueRepr, MaterializedTransportPlan};
+use super::artifact::{AbiValueRepr, BackendTail, MaterializedTransportPlan};
 use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::facts::FactUse;
 use super::pull::{
-    ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, SymbolicBackendTail, TransportCarrier,
-    TransportLayout, TransportShapeFact, WorldProductProducers,
+    ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
+    TransportShapeFact, WorldProductProducers,
 };
 use super::semantic::{CallableFlowFact, CallableSurface, SemanticOrd as _};
 use super::transport::{ActivationSymbol, ExecutableSymbol};
@@ -3307,17 +3307,18 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
         }
     }
     for (caller, backend) in driver.session().memo().backend_executables() {
-        assert_eq!(
-            backend.call_edges,
-            backend
-                .abi
-                .call_edges
-                .iter()
-                .map(|(callsite, edge)| (*callsite, edge.target.clone()))
-                .collect::<HashMap<_, _>>(),
-            "symbolic backend product should preserve ABI ExecutableKey call edges"
+        assert!(
+            Rc::ptr_eq(
+                &backend.abi,
+                driver
+                    .session()
+                    .memo()
+                    .abi_executable(caller)
+                    .expect("backend ABI prerequisite")
+            ),
+            "backend metadata must retain the exact ABI allocation"
         );
-        assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
+        assert_backend_body_has_typed_targets(&backend.body, caller);
     }
     assert_materialized_executable_fact_authority(&world, &driver.session());
 }
@@ -3343,7 +3344,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         super::product_drive::drive_root_backend_product::<_, PanicProductDriveError>(&mut world, &tel, root)
             .expect("panic-based ProductDriveError never returns Err");
     let packaged = program
-        .executables
+        .executables()
         .iter()
         .map(|executable| executable.key.clone())
         .collect::<HashSet<_>>();
@@ -3361,15 +3362,15 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     ordered.sort_by(|left, right| left.semantic_cmp(right, world.types()));
     assert_eq!(
         program
-            .executables
+            .executables()
             .iter()
             .map(|executable| &executable.key)
             .collect::<Vec<_>>(),
         ordered.iter().collect::<Vec<_>>(),
-        "the backend program vector is the one typed, deterministic dense executable index"
+        "the backend program inventory preserves deterministic semantic order"
     );
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "direct operator refs should not fabricate first-class construction wrappers",
     );
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
@@ -3393,7 +3394,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
 
 fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World, program: &super::artifact::BackendProgram) {
     let mut checked = 0;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let super::artifact::BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
             continue;
         };
@@ -3414,19 +3415,23 @@ fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World, program: &s
             let super::artifact::CallEdge::Direct(edge) = target else {
                 continue;
             };
-            let Some(callee_index) = edge.callee.copied_local() else {
+            let Some(callee_key) = edge.callee.local() else {
                 continue;
             };
             let callee = program
-                .executables
-                .get(callee_index)
+                .executables()
+                .get(
+                    program
+                        .executable_index(callee_key)
+                        .expect("direct target belongs to program"),
+                )
                 .expect("packaged direct-call callee index should be in bounds");
             if executable_input_shape_is_nothing(world, callee, 0) {
                 continue;
             }
             checked += 1;
             assert!(
-                executable.value_layouts.contains_key(&first_arg.value),
+                executable.abi.value_layouts.contains_key(&first_arg.value),
                 "direct call in {:?} forwards clause param {:?} into non-empty callee input 0, so ABI must bind it",
                 executable.key,
                 first_arg.value
@@ -3445,6 +3450,7 @@ fn executable_input_shape_is_nothing(
     semantic_index: usize,
 ) -> bool {
     let shape = executable
+        .abi
         .semantic_inputs
         .iter()
         .find(|input| input.semantic_index == semantic_index)
@@ -3967,7 +3973,7 @@ fn main(), do: make(41).(1)
         );
         assert_eq!(capture.layout.carrier, TransportCarrier::Absent);
         let wrapper = program
-            .construction_wrappers
+            .construction_wrappers()
             .iter()
             .find(|wrapper| wrapper.callable == construction.callable)
             .unwrap_or_else(|| panic!("public construction should retain its backend wrapper: {construction:?}"));
@@ -4019,7 +4025,7 @@ fn compiler2_callable_capture_carriers_reach_backend_wrappers() {
     let session = &*driver.session();
     let owners = callable_owners_for_test(session);
     let mut checked = 0;
-    for wrapper in &program.construction_wrappers {
+    for wrapper in program.construction_wrappers() {
         let construction = owners
             .iter()
             .filter_map(|owner| owner.construction.as_ref())
@@ -4092,7 +4098,7 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
 
     let mut whole_value_lanes = 0;
     let mut sunk = Vec::new();
-    for executable in &program.executables {
+    for executable in program.executables() {
         let name = &world.function_ref(executable.key.activation.function).name;
         let mut check = |what: String, layout: &super::artifact::BackendValueLayout, ty: Ty, world: &World| {
             let ShapeDescr::Lane(_) = shape_descr(world, layout.structural) else {
@@ -4112,12 +4118,12 @@ fn compiler2_whole_value_lanes_stay_above_their_analyzed_ty() {
         };
         whole_value_lanes += check(
             format!("{name}/{} return", executable.key.activation.function.as_u32()),
-            &executable.return_layout.layout,
-            executable.return_ty,
+            &executable.abi.return_layout.layout,
+            executable.abi.materialized.return_ty,
             &world,
         );
-        for (value, layout) in &executable.value_layouts {
-            let Some(value_ty) = executable.value_types.get(value).copied() else {
+        for (value, layout) in &executable.abi.value_layouts {
+            let Some(value_ty) = executable.abi.materialized.value_types.get(value).copied() else {
                 continue;
             };
             whole_value_lanes += check(
@@ -4308,12 +4314,12 @@ fn world_facts_and_product_memo_share_their_immutable_payloads() {
             memo.abi_executable(executable).expect("memoized ABI input")
         ));
     }
-    for executable in &root_answer.program.executables {
+    for executable in root_answer.program.executables() {
         let runtime_demand = world
             .runtime_demand(&executable.key)
             .expect("packaged executable must read a RuntimeDemand fact");
         assert!(
-            Rc::ptr_eq(&executable.runtime_demand, runtime_demand),
+            Rc::ptr_eq(&executable.abi.materialized.runtime_demand, runtime_demand),
             "backend packaging must retain the producer's RuntimeDemand allocation",
         );
     }
@@ -4372,7 +4378,7 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
     let reaches = direct_call_reachability(&program);
     let mut checked = 0;
     let mut demoted = Vec::new();
-    for (caller, executable) in program.executables.iter().enumerate() {
+    for (caller, executable) in program.executables().iter().enumerate() {
         let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -4386,11 +4392,14 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
             let super::body::ControlDestination::Return = dest else {
                 continue;
             };
-            for (callee, return_flow) in return_flow_arms(target) {
+            for (callee_key, return_flow) in return_flow_arms(target) {
+                let callee = program
+                    .executable_index(callee_key)
+                    .expect("call target belongs to program");
                 if !reaches[callee].contains(&caller) {
                     continue;
                 }
-                if program.executables[callee].return_ty != executable.return_ty {
+                if program.executables()[callee].abi.materialized.return_ty != executable.abi.materialized.return_ty {
                     continue;
                 }
                 checked += 1;
@@ -4403,7 +4412,7 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
                     caller,
                     callsite,
                     world
-                        .function_ref(program.executables[callee].key.activation.function)
+                        .function_ref(program.executables()[callee].key.activation.function)
                         .name,
                     callee,
                 ));
@@ -4427,8 +4436,8 @@ fn compiler2_one_recursion_component_publishes_one_return_contract() {
 /// Which executables each executable can reach through packaged call edges --
 /// the artifact's own call graph, read back off the program it published.
 fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BTreeSet<usize>> {
-    let mut edges = vec![BTreeSet::new(); program.executables.len()];
-    for (caller, executable) in program.executables.iter().enumerate() {
+    let mut edges = vec![BTreeSet::new(); program.executables().len()];
+    for (caller, executable) in program.executables().iter().enumerate() {
         let super::artifact::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -4437,7 +4446,12 @@ fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BT
                 super::artifact::BackendTail::DirectCall { target, .. } => target,
                 _ => continue,
             };
-            edges[caller].extend(target.local_callees().into_iter().copied());
+            edges[caller].extend(
+                target
+                    .local_callees()
+                    .into_iter()
+                    .map(|key| program.executable_index(key).expect("call target belongs to program")),
+            );
         }
     }
     let mut reaches = edges.clone();
@@ -4459,19 +4473,19 @@ fn direct_call_reachability(program: &super::artifact::BackendProgram) -> Vec<BT
 
 /// The callee and return flow of every arm one packaged call edge can take.
 fn return_flow_arms(
-    target: &super::artifact::CallEdge<usize, super::artifact::BackendReturnFlow>,
-) -> Vec<(usize, &super::artifact::BackendReturnFlow)> {
+    target: &super::artifact::CallEdge<ExecutableKey, super::artifact::BackendReturnFlow>,
+) -> Vec<(&ExecutableKey, &super::artifact::BackendReturnFlow)> {
     match target {
         super::artifact::CallEdge::Direct(direct) => direct
             .callee
-            .copied_local()
+            .local()
             .map(|callee| (callee, &direct.return_flow))
             .into_iter()
             .collect(),
         super::artifact::CallEdge::Dispatch(dispatch) => dispatch
             .arms
             .iter()
-            .filter_map(|arm| Some((arm.callee.copied_local()?, &arm.return_flow)))
+            .filter_map(|arm| Some((arm.callee.local()?, &arm.return_flow)))
             .collect(),
         super::artifact::CallEdge::Indirect(_) => Vec::new(),
     }
@@ -4684,7 +4698,7 @@ fn main(), do: make(41).(1)
         }
     }
     let wrapper = program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
         .find(|wrapper| wrapper.callable == construction.callable)
         .expect("ignored-input lambda should retain its backend wrapper");
@@ -5479,36 +5493,36 @@ fn abi_ready_call_edge_callees(edge: &super::artifact::AbiReadyCallEdge) -> Vec<
     }
 }
 
-fn assert_symbolic_backend_body_has_no_dense_targets(body: &super::pull::SymbolicBackendBody, caller: &ExecutableKey) {
-    let super::pull::SymbolicBackendBody::Clauses { entries, .. } = body else {
+fn assert_backend_body_has_typed_targets(body: &super::artifact::BackendBody, caller: &ExecutableKey) {
+    let super::artifact::BackendBody::Clauses { entries, .. } = body else {
         return;
     };
     for entry in entries {
         match &entry.tail {
-            SymbolicBackendTail::DirectCall { target, .. } => {
+            BackendTail::DirectCall { target, .. } => {
                 assert!(
                     !abi_call_edge_callees_from_target(target).is_empty(),
-                    "symbolic backend direct call in {caller:?} should keep ExecutableKey targets"
+                    "backend direct call in {caller:?} should keep ExecutableKey targets"
                 );
             }
-            SymbolicBackendTail::ClosureCall { target, .. } => {
+            BackendTail::ClosureCall { target, .. } => {
                 if let Some(target) = target {
                     assert!(
                         target.activation.root == caller.activation.root,
-                        "symbolic backend closure target should be an ExecutableKey, got {target:?}"
+                        "backend closure target should be an ExecutableKey, got {target:?}"
                     );
                 }
             }
-            SymbolicBackendTail::Value { .. }
-            | SymbolicBackendTail::If { .. }
-            | SymbolicBackendTail::Dispatch { .. }
-            | SymbolicBackendTail::Receive(_)
-            | SymbolicBackendTail::Halt { .. } => {}
+            BackendTail::Value { .. }
+            | BackendTail::If { .. }
+            | BackendTail::Dispatch { .. }
+            | BackendTail::Receive(_)
+            | BackendTail::Halt { .. } => {}
         }
     }
 }
 
-fn abi_call_edge_callees_from_target(target: &super::artifact::CallEdge<ExecutableKey>) -> Vec<&ExecutableKey> {
+fn abi_call_edge_callees_from_target<R>(target: &super::artifact::CallEdge<ExecutableKey, R>) -> Vec<&ExecutableKey> {
     match target {
         super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
         super::artifact::CallEdge::Dispatch(dispatch) => {

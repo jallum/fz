@@ -5,6 +5,8 @@
 //! explicit waits. It does not enqueue jobs, schedule follow-up work, or scan a
 //! root frontier.
 
+#[cfg(test)]
+use super::body::{CallSiteId, ValueId};
 use super::world::World;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
@@ -15,11 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::artifact::{
-    AbiReadyExecutable, BackendCallArg, BackendProgram, BackendReceive, BackendStep, CallEdge, CallReturnFlow,
-    EffectSummary, MaterializedExecutable, NativeProgram, ReusableConsCapture, RootBackendProductAnswer,
-};
-use super::body::{
-    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredExtern, ValueId,
+    AbiReadyExecutable, BackendExecutable, BackendProgram, EffectSummary, MaterializedExecutable, NativeProgram,
+    RootBackendProductAnswer,
 };
 use super::drive::{DependencyKey, FactKey, ProductAddress};
 use super::executable_facts::ExecutableFacts;
@@ -188,7 +187,7 @@ pub enum ProductValue {
     RootBackendProduct(RootBackendProductAnswer),
     RootBackendContent(Rc<BackendProgram>),
     NativeProgram(Rc<NativeProgram>),
-    BackendExecutable(Rc<SymbolicBackendExecutable>),
+    BackendExecutable(Rc<BackendExecutable>),
     AbiExecutable(Rc<AbiReadyExecutable>),
     MaterializedExecutable(Rc<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
@@ -238,96 +237,6 @@ pub enum PullOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProductFailure {
     NativeLowering,
-}
-
-#[cfg_attr(test, derive(Clone))]
-#[derive(Debug, PartialEq)]
-pub struct SymbolicBackendExecutable {
-    pub key: ExecutableKey,
-    pub abi: Rc<AbiReadyExecutable>,
-    pub body: SymbolicBackendBody,
-    pub call_edges: HashMap<CallSiteId, CallEdge<ExecutableKey>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SymbolicBackendBody {
-    Extern {
-        signature: LoweredExtern,
-    },
-    Clauses {
-        clauses: Vec<SymbolicBackendClause>,
-        entries: Vec<SymbolicBackendEntry>,
-        generated: Vec<super::FunctionId>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SymbolicBackendClause {
-    pub span: crate::source::Span,
-    pub params: Vec<ValueId>,
-    pub projections: Vec<BackendStep>,
-    pub entry: ControlEntryId,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SymbolicBackendEntry {
-    pub span: crate::source::Span,
-    pub origin: SymbolicBackendEntryOrigin,
-    pub params: Vec<ValueId>,
-    pub captures: Vec<ValueId>,
-    pub capture_positions: Vec<TransportPosition>,
-    pub reusable_cons_captures: Vec<ReusableConsCapture>,
-    pub steps: Vec<BackendStep>,
-    pub tail: SymbolicBackendTail,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolicBackendEntryOrigin {
-    Clause,
-    Branch,
-    ReceiveOutcome,
-    DeliveredResume {
-        value: ValueId,
-        position: TransportPosition,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SymbolicBackendTail {
-    Value {
-        value: ValueId,
-        dest: ControlDestination,
-    },
-    DirectCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        target: CallEdge<ExecutableKey>,
-        args: Vec<BackendCallArg>,
-        dest: ControlDestination,
-    },
-    ClosureCall {
-        value: ValueId,
-        callsite: CallSiteId,
-        callee: ValueId,
-        target: Option<ExecutableKey>,
-        args: Vec<BackendCallArg>,
-        dest: ControlDestination,
-        return_flow: Option<CallReturnFlow>,
-    },
-    If {
-        cond: ValueId,
-        then_entry: ControlEntryId,
-        else_entry: ControlEntryId,
-    },
-    Dispatch {
-        inputs: Vec<ValueId>,
-        bindings: DispatchBindings,
-        dispatch: Box<ControlDispatch>,
-    },
-    Receive(Box<BackendReceive>),
-    Halt {
-        atom: String,
-    },
 }
 
 impl PullOutcome {
@@ -615,7 +524,7 @@ impl ProductMemo {
     }
 
     #[cfg(test)]
-    pub fn backend_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<SymbolicBackendExecutable>)> {
+    pub fn backend_executables(&self) -> impl Iterator<Item = (&ExecutableKey, &Rc<BackendExecutable>)> {
         self.produced
             .iter()
             .filter_map(|(key, entry)| match (key, &entry.value) {
@@ -3210,13 +3119,7 @@ mod tests {
         let root_key = ProductKey::RootBackendProduct(root);
         let content_key = ProductKey::RootBackendContent(root);
         let native_key = ProductKey::NativeProgram(root);
-        let backend = Rc::new(super::super::artifact::BackendProgram {
-            entry: 0,
-            atom_names: Vec::new(),
-            struct_schemas: Default::default(),
-            executables: Vec::new(),
-            construction_wrappers: Vec::new(),
-        });
+        let backend = Rc::new(super::super::artifact::BackendProgram::empty_for_test());
         let answer = |entry, program| {
             ProductValue::RootBackendProduct(RootBackendProductAnswer {
                 program,
@@ -4773,13 +4676,7 @@ mod tests {
             &mut memo,
             &root_key,
             ProductValue::RootBackendProduct(RootBackendProductAnswer {
-                program: Rc::new(super::super::artifact::BackendProgram {
-                    entry: 0,
-                    atom_names: Vec::new(),
-                    struct_schemas: Default::default(),
-                    executables: Vec::new(),
-                    construction_wrappers: Vec::new(),
-                }),
+                program: Rc::new(super::super::artifact::BackendProgram::empty_for_test()),
                 transport: Rc::new(super::super::artifact::MaterializedTransportPlan {
                     entry: left_resolution.clone(),
                     executable_membership: Box::default(),

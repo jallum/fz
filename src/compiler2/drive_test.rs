@@ -4115,13 +4115,14 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
     let foo_id = function_id(&functions, "foo", 0);
 
     let executable_ids = program
-        .executables
+        .executables()
         .iter()
         .map(|executable| executable.key.activation.function)
         .collect::<HashSet<_>>();
     assert_eq!(
-        program.executables[program.entry].key.activation.function, main_id,
-        "the backend-program entry should still point at the main/0 executable inventory slot",
+        program.entry().activation.function,
+        main_id,
+        "the backend-program entry should still name the main/0 executable",
     );
     assert!(
         executable_ids.contains(&main_id)
@@ -4135,7 +4136,7 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
         "backend lowering should keep cold foo/0 out of the backend handoff",
     );
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "quicksort should not manufacture callable constructions in the backend handoff",
     );
 
@@ -4147,12 +4148,9 @@ fn compiler2_backend_program_keeps_only_the_closed_quicksort_inventory() {
                 panic!("expected backend direct edge for main/0 -> qsort/1");
             };
             assert_eq!(
-                program.executables[*local_call_target(&direct.callee)]
-                    .key
-                    .activation
-                    .function,
+                local_call_target(&direct.callee).activation.function,
                 qsort_id,
-                "backend direct-call steps should point at settled executable inventory indices",
+                "backend direct-call steps should name settled executable identities",
             );
             assert_eq!(
                 args.len(),
@@ -4322,7 +4320,7 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
 
     let program = backend.last(root_id).program;
     let mut saw_return_payload_flow = false;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -4332,14 +4330,14 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
                     target: CallEdge::Direct(target),
                     ..
                 } => {
-                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.return_layout) {
+                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.abi.return_layout) {
                         saw_return_payload_flow = true;
                     }
                 }
                 BackendTail::ClosureCall {
                     return_flow: Some(return_flow),
                     ..
-                } if return_flow_is_distinct_return_payload(return_flow, &executable.return_layout) => {
+                } if return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout) => {
                     saw_return_payload_flow = true;
                 }
                 _ => {}
@@ -4396,11 +4394,11 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
 
     let program = backend.last(root_id).program;
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "backend construction-wrapper inventory should stay empty for direct-only reducer transport",
     );
     let executable_functions = program
-        .executables
+        .executables()
         .iter()
         .map(|executable| executable.key.activation.function)
         .collect::<HashSet<_>>();
@@ -4543,12 +4541,9 @@ fn compiler2_backend_program_preserves_variadic_extern_wire_classes() {
                 panic!("expected backend direct edge for libc::open");
             };
             assert_eq!(
-                program.executables[*local_call_target(&direct.callee)]
-                    .key
-                    .activation
-                    .function,
+                local_call_target(&direct.callee).activation.function,
                 open_id,
-                "backend extern calls should still target the settled extern executable inventory slot",
+                "backend extern calls should still target the settled extern executable identity",
             );
             assert_eq!(
                 direct.extern_marshals.as_deref(),
@@ -7199,12 +7194,13 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let (_, main_exec) = backend_executable(&program, main_id);
     let (_, dbg_exec) = backend_executable(&program, dbg_id);
     assert_eq!(
-        dbg_exec.param_reprs,
+        dbg_exec.abi.param_reprs,
         vec![AbiValueRepr::ValueRef],
         "Kernel.dbg/1 should still require its input as one runtime lane even when callers ignore the returned value",
     );
     assert!(
         dbg_exec
+            .abi
             .semantic_inputs
             .iter()
             .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
@@ -7244,6 +7240,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
             let _shape = layout.layout.structural;
             assert!(
                 main_exec
+                    .abi
+                    .materialized
                     .runtime_demand
                     .value_demands
                     .get(value)
@@ -7308,12 +7306,13 @@ fn compiler2_interp_runs_quicksort_from_backend_artifacts() {
         "quicksort entry/0 should halt with its explicit scalar result"
     );
     assert_eq!(
-        qsort_exec.param_reprs,
+        qsort_exec.abi.param_reprs,
         vec![AbiValueRepr::ValueRef],
         "entry matching and recursive descent should keep qsort/1's list input as a runtime lane",
     );
     assert!(
         qsort_exec
+            .abi
             .semantic_inputs
             .iter()
             .any(|input| input.semantic_index == 0 && !input.layout.reprs.is_empty()),
@@ -8626,11 +8625,11 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
     let exact_result = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
     let backend_program = compiler.retained_backend_program(root_id);
     let count_result = backend_program
-        .executables
+        .executables()
         .iter()
         .find(|executable| {
             compiler.world().function_ref(executable.key.activation.function).name == "count_result"
-                && executable.runtime_demand.input_demands.first() == Some(&exact_result)
+                && executable.abi.materialized.runtime_demand.input_demands.first() == Some(&exact_result)
         })
         .expect("the selected count-result clause should need only the integer payload");
     assert!(
@@ -8644,11 +8643,13 @@ fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lane
     );
 
     let count_resume = backend_program
-        .executables
+        .executables()
         .iter()
         .filter(|executable| {
             compiler.world().function_ref(executable.key.activation.function).name == "count"
                 && executable
+                    .abi
+                    .materialized
                     .runtime_demand
                     .call_arg_demands
                     .values()
@@ -9598,12 +9599,11 @@ end
         .arms
         .iter()
         .map(|arm| {
-            let index = arm
+            let target = arm
                 .callee
                 .local()
-                .copied()
                 .unwrap_or_else(|| panic!("protocol dispatch arms should target local executables"));
-            program.executables[index].key.activation.function
+            target.activation.function
         })
         .collect::<HashSet<_>>();
     assert_eq!(
@@ -9849,7 +9849,7 @@ fn compiler2_a_forwarded_lambdas_capture_layout_is_the_static_key() {
 
     let types = compiler.world().types();
     let mut keys_by_function: BTreeMap<FunctionId, BTreeSet<String>> = BTreeMap::new();
-    for executable in &program.executables {
+    for executable in program.executables() {
         let activation = &executable.key.activation;
         let Some(first) = activation.inputs(types).first().copied() else {
             continue;
@@ -10028,8 +10028,8 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
     // the message meant (fz-kdt.193).
     let canonical = crate::compiler2::canon::canonical_wrapper_numbers(world, program);
     let mut plans = Vec::new();
-    for (index, executable) in program.executables.iter().enumerate() {
-        if let Some(entry) = &executable.entry_dispatch {
+    for (index, executable) in program.executables().iter().enumerate() {
+        if let Some(entry) = &executable.abi.materialized.entry_dispatch {
             plans.push(ArtifactPlan {
                 site: PlanSite::Entry { executable: index },
                 plan: entry.plan(),
@@ -10077,14 +10077,14 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
             }
         }
     }
-    for wrapper in &program.construction_wrappers {
+    for (index, wrapper) in program.construction_wrappers().iter().enumerate() {
         let Some(selection) = &wrapper.selection else {
             continue;
         };
         plans.push(ArtifactPlan {
             site: PlanSite::Selection {
-                wrapper: wrapper.identity,
-                canonical: canonical[wrapper.identity as usize],
+                wrapper: index as u32,
+                canonical: canonical[index],
             },
             plan: selection,
             bodies: (0..wrapper.members.len() as u32).collect(),
@@ -11167,7 +11167,7 @@ fn compiler2_a_selection_sites_label_names_the_wrapper_the_dump_prints() {
         .collect::<Vec<_>>();
     assert_eq!(
         heads,
-        (0..program.construction_wrappers.len())
+        (0..program.construction_wrappers().len())
             .map(|canonical| format!("wrapper w{canonical}"))
             .collect::<Vec<_>>(),
         "the dump heads one block per wrapper in canonical order; if it stopped doing that, a label \
@@ -11554,7 +11554,7 @@ fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
 
     let main = compiler
         .retained_backend_program(root)
-        .executables
+        .executables()
         .iter()
         .find(|executable| compiler.world().function_ref(executable.key.activation.function).name == "main")
         .expect("the main executable should reach the backend")
@@ -11720,23 +11720,23 @@ end
     let mut joined = partial;
     joined.join_assign(&retained);
     let target_index = program
-        .executables
+        .executables()
         .iter()
         .position(|executable| &executable.key == target)
         .expect("the shared target should reach the backend program");
     let wrapper = program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
-        .find(|wrapper| wrapper.members.iter().any(|member| member.target == target_index))
+        .find(|wrapper| wrapper.members.iter().any(|member| &member.target == target))
         .expect("the shared target should remain behind its construction wrapper");
     let member = wrapper
         .members
         .iter()
-        .find(|member| member.target == target_index)
+        .find(|member| &member.target == target)
         .expect("the selected wrapper should contain the shared target");
-    let executable = &program.executables[target_index];
-    assert_eq!(executable.runtime_demand.return_demand, joined);
-    assert_eq!(member.target_return, executable.return_layout);
+    let executable = &program.executables()[target_index];
+    assert_eq!(executable.abi.materialized.runtime_demand.return_demand, joined);
+    assert_eq!(member.target_return, executable.abi.return_layout);
     assert_eq!(
         wrapper.return_form,
         BackendCallableReturn::ValueRef,
@@ -11875,7 +11875,7 @@ fn compiler2_construction_target_precedes_seated_wrapper_selection() {
     let program = compiler.retained_backend_program(root);
 
     let multi_member_wrappers = program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
         .filter(|wrapper| wrapper.members.len() > 1)
         .count();
@@ -12059,7 +12059,7 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
     let program = backend.last(root_id).program;
     let summaries = callsites.all();
     let mut found = false;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
@@ -13925,7 +13925,7 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
         let program = backend.last(root).program;
 
         let mut checked = 0;
-        for executable in &program.executables {
+        for executable in program.executables() {
             let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
                 continue;
             };
@@ -13941,7 +13941,7 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
                 };
                 // A grounded callee is lowered as a direct edge and aliases its
                 // target's own return fact; only a boxed one reaches a wrapper.
-                if !executable.value_layouts.get(callee).is_some_and(|layout| {
+                if !executable.abi.value_layouts.get(callee).is_some_and(|layout| {
                     matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef(_))
                 }) {
                     continue;
@@ -13951,7 +13951,7 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
                 };
                 let delivered = source.layout.reprs.len();
                 for wrapper in program
-                    .construction_wrappers
+                    .construction_wrappers()
                     .iter()
                     .filter(|wrapper| wrapper.call_arity == args.len())
                     .filter(|wrapper| {
@@ -13970,7 +13970,7 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
                         published,
                         delivered,
                         "{name}: a boxed closure call taking {} argument(s) delivers {delivered} lane(s) while \
-                         wrapper {} it can reach publishes {published} ({:?})",
+                         wrapper {:?} it can reach publishes {published} ({:?})",
                         args.len(),
                         wrapper.identity,
                         wrapper.return_form,
@@ -14026,13 +14026,13 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
     let program = backend.last(root).program;
 
     assert!(
-        program.construction_wrappers.is_empty(),
+        program.construction_wrappers().is_empty(),
         "a lambda named where it is used never crosses the boxed seam, so the program builds no \
          construction wrapper at all: {:?}",
         program
-            .construction_wrappers
+            .construction_wrappers()
             .iter()
-            .map(|wrapper| (wrapper.identity, wrapper.return_form))
+            .map(|wrapper| (&wrapper.identity, wrapper.return_form))
             .collect::<Vec<_>>(),
     );
 
@@ -14040,7 +14040,7 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
     // result away; the reducer calls around it legitimately use theirs.
     let each_step_id = function_id(&functions, "each_step", 3);
     let mut checked = 0;
-    for executable in &program.executables {
+    for executable in program.executables() {
         if executable.key.activation.function != each_step_id {
             continue;
         }
@@ -14126,7 +14126,7 @@ fn compiler2_same_shape_lambda_literals_share_the_library_chain() {
                 .run_root_interp(root)
                 .expect("compiler2 backend interpreter should run same-shape lambda literals");
         }
-        (dbg.lines(), backend.last(root).program.executables.len())
+        (dbg.lines(), backend.last(root).program.executables().len())
     };
 
     let (one_site_out, one_site_executables) = run_lane(1, true);
@@ -16459,7 +16459,7 @@ struct SourceNoteCapture {
 fn reusable_cons_counts(program: &BackendProgram) -> (u64, u64) {
     let mut birth_count = 0_u64;
     let mut transport_count = 0_u64;
-    for executable in &program.executables {
+    for executable in program.executables() {
         let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
             continue;
         };
@@ -16590,10 +16590,11 @@ fn local_call_target<T>(target: &CallTarget<T>) -> &T {
 
 fn backend_executable(program: &BackendProgram, function: FunctionId) -> (usize, &crate::compiler2::BackendExecutable) {
     program
-        .executables
+        .executables()
         .iter()
         .enumerate()
         .find(|(_, executable)| executable.key.activation.function == function)
+        .map(|(index, executable)| (index, executable.as_ref()))
         .unwrap_or_else(|| panic!("backend executable for {function:?}"))
 }
 
@@ -16626,10 +16627,12 @@ fn backend_direct_call_in_entry<'a>(
         BackendTail::DirectCall {
             target: CallEdge::Direct(target),
             ..
-        } if program.executables[*local_call_target(&target.callee)]
-            .key
-            .activation
-            .function
+        } if program.executables()[program
+            .executable_index(local_call_target(&target.callee))
+            .expect("a backend direct target belongs to its program")]
+        .key
+        .activation
+        .function
             == callee =>
         {
             Some(&entry.tail)
@@ -18510,9 +18513,9 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     );
 
     let program = backend.last(root_id).program;
-    let mut by_target: HashMap<usize, Vec<Vec<AbiValueRepr>>> = HashMap::new();
+    let mut by_target: HashMap<&ExecutableKey, Vec<Vec<AbiValueRepr>>> = HashMap::new();
     for member in program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
         .flat_map(|wrapper| wrapper.members.iter())
     {
@@ -18528,11 +18531,11 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
                     .flat_map(|input| input.layout.reprs.iter().copied())
             })
             .collect::<Vec<_>>();
-        by_target.entry(member.target).or_default().push(capture_reprs);
+        by_target.entry(&member.target).or_default().push(capture_reprs);
     }
 
     let saw_multi_member_construction = program
-        .construction_wrappers
+        .construction_wrappers()
         .iter()
         .any(|wrapper| wrapper.members.len() > 1);
     let mut saw_physical_capture = false;
@@ -18547,7 +18550,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
         for capture_surface in &capture_surfaces[1..] {
             assert_eq!(
                 capture_surface, first,
-                "construction members naming target {target} should use its one settled capture surface",
+                "construction members naming target {target:?} should use its one settled capture surface",
             );
         }
     }
@@ -18844,7 +18847,7 @@ fn compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key() {
         let labels = |fn_id| crate::compiler2::canon::function_label(world, FunctionId::from_fn_id(fn_id));
         let mut canon = crate::compiler2::TyCanon::new(&labels);
         let mut columns_by_function: HashMap<crate::compiler2::FunctionId, Vec<Vec<String>>> = HashMap::new();
-        for executable in &program.executables {
+        for executable in program.executables() {
             let activation = &executable.key.activation;
             let columns = activation
                 .inputs(types)
@@ -19162,7 +19165,7 @@ fn compiler2_input_demand_keys_one_activation_where_nothing_demands_the_slot() {
         let program = backend.last(root_id).program;
         let world = compiler.world();
         let keyed = program
-            .executables
+            .executables()
             .iter()
             .filter(|executable| {
                 crate::compiler2::canon::function_label(world, executable.key.activation.function) == *label

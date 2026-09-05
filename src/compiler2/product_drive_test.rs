@@ -179,13 +179,7 @@ fn failed_native_request_retains_backend_and_reuses_the_same_session_for_retry()
     );
     let mut world = World::new();
     let mut sessions = super::pull::ProductSessions::default();
-    let backend = std::rc::Rc::new(super::BackendProgram {
-        entry: 0,
-        atom_names: Vec::new(),
-        struct_schemas: std::collections::BTreeMap::new(),
-        executables: Vec::new(),
-        construction_wrappers: Vec::new(),
-    });
+    let backend = std::rc::Rc::new(super::BackendProgram::empty_for_test());
     let mut types = super::Types::new();
     let any = types.any();
     let entry = super::transport::ExecutableSymbol {
@@ -623,7 +617,7 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         .flat_map(|root| {
             compiler
                 .retained_backend_program(root)
-                .executables
+                .executables()
                 .iter()
                 .filter(|executable| compiler.world().function_ref(executable.key.activation.function).name == "leaf")
                 .map(|executable| executable.key.clone())
@@ -639,13 +633,13 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
             .find_map(|root| {
                 compiler
                     .retained_backend_program(root)
-                    .executables
+                    .executables()
                     .iter()
                     .find(|executable| &executable.key == leaf)
                     .cloned()
             })
             .expect("cold leaf backend executable");
-        assert!(executable.param_reprs.is_empty());
+        assert!(executable.abi.param_reprs.is_empty());
     }
     runtime_demand_runs.borrow_mut().clear();
     runtime_demand_wakes.borrow_mut().clear();
@@ -752,9 +746,9 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         assert_eq!(demand.input_demands[0].shape, super::ShapeDemand::Whole);
         let executable = [&moved_main, &moved_other]
             .into_iter()
-            .find_map(|program| program.executables.iter().find(|executable| &executable.key == leaf))
+            .find_map(|program| program.executables().iter().find(|executable| &executable.key == leaf))
             .expect("moved leaf backend executable");
-        assert_eq!(executable.param_reprs, vec![super::AbiValueRepr::RawInt]);
+        assert_eq!(executable.abi.param_reprs, vec![super::AbiValueRepr::RawInt]);
         for expected in [
             ProductKey::MaterializedExecutable(leaf.clone()),
             ProductKey::AbiExecutable(leaf.clone()),
