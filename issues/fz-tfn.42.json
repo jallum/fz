@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-kdt.58"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.39"
+  ],
   "created": "2026-09-05T19:14:24Z",
   "description": "## Goal\n\nOne return-payload position has one analyzed type and runtime demand: the delivered call result when it has a distinct value, or the enclosing return for a tail result.\n\n## Evidence\n\nAt committed164eb3940, src/compiler2/jobs/transport.rs generic_owner_ty_and_demand groups ReturnPayload with ExecutableReturn and returns the enclosing activation return type and runtime.return_demand. generic_owner_ty_fact likewise subscribes to enclosing ReturnType. The TransportShape ReturnPayload branch already distinguishes delivered call results via callsite_result and uses that value's analyzed type/demand (the fz-f98.14.11 convention correction). These are two inconsistent authorities for the same positioned answer.\n\nFound during fz-kdt.58. This is a proven source-level contract divergence, not yet a demonstrated end-to-end wrong artifact. Generic Lane/Nothing pruning can use the exact settled shape and existing generic-producer no-output branches without consulting this mismatched helper, so this finding does not currently block .58.\n\n## Strategy and TDD\n\nCreate a minimal independent RED with a non-tail delivered result whose type/callable demand differs from the caller's own return. Pin the exact positioned type/demand and emitted callable/boundary evidence using typed identities; determine whether the divergence currently loses, invents or only redundantly examines evidence. Preserve a tail-call control and discarded-result control. Then collapse positioned type/demand interpretation so shape and generic owner cannot disagree, removing duplicated branches and unnecessary prerequisite reads only where justified. Do not hide the issue by result equality, display strings or a fallback lookup.\n\n## Acceptance\n\n- Delivered return-payload shape and callable-owner projection use the same exact call-result type/demand.\n- Tail payloads retain the enclosing-return contract; discarded results remain physically absent without erasing unrelated metadata obligations.\n- Local callable producer versus generic projected metadata ownership remains distinct and exact.\n- No new scanner, bridge, store or private computation authority.\n- Every corrected dependency/read is precisely attributed; equal answers retain generations and allocations.\n- Focused RED/GREEN, neighboring transport/closure/return tests, semantic and artifact parity, full regression gates and strict lint checks pass.\n- Update relevant agent guidance from final code, cold ticket-scoped adversarial review, one commit and close.\n\nRun after fz-kdt.58 unless independent RED proves its pruning actually depends on this correction; update description/dependencies if that evidence changes.",
   "id": "fz-tfn.42",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Unify delivered return-payload type and demand authority",
   "type": "bug",
-  "updated_at": "2026-09-05T19:15:48Z"
+  "updated_at": "2026-09-05T19:15:49Z"
 }
