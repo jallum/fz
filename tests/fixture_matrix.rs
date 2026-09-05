@@ -69,7 +69,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio, id};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
@@ -164,6 +164,18 @@ fn main() {
 /// and the trial list survives refactors.
 fn static_tests() -> Vec<(&'static str, fn())> {
     vec![
+        (
+            "fixture_telemetry_reserves_its_path",
+            fixture_telemetry_reserves_its_path,
+        ),
+        (
+            "fixture_telemetry_cleans_failed_invocations",
+            fixture_telemetry_cleans_failed_invocations,
+        ),
+        (
+            "fixture_telemetry_concurrent_spec_violations",
+            fixture_telemetry_concurrent_spec_violations,
+        ),
         ("fixtures2_single_file_matrix_smoke", fixtures2_single_file_matrix_smoke),
         (
             "behavior_fixtures_route_via_filename_not_paths_frontmatter",
@@ -710,21 +722,42 @@ impl CommandCapture {
     }
 }
 
-struct CreatedCapture {
+struct FixtureTempFile {
     path: Option<PathBuf>,
     file: Option<File>,
 }
 
-impl CreatedCapture {
+impl FixtureTempFile {
+    fn new(label: &str) -> Result<Self, String> {
+        loop {
+            let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = temp_dir().join(format!("fz_fixture_{}_{}_{}", id(), nonce, label));
+            match File::options().read(true).write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path: Some(path),
+                        file: Some(file),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("create fixture {label}: {error}")),
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.path.as_deref().expect("named temporary file has a path")
+    }
+
     fn unlink(mut self) -> Result<File, String> {
-        let path = self.path.as_ref().expect("created capture has a path");
+        let path = self.path();
         remove_file(path).map_err(|error| format!("unlink {}: {error}", path.display()))?;
         self.path = None;
         Ok(self.file.take().expect("created capture has a file"))
     }
 }
 
-impl Drop for CreatedCapture {
+impl Drop for FixtureTempFile {
     fn drop(&mut self) {
         if let Some(path) = &self.path {
             let _ = remove_file(path);
@@ -733,21 +766,7 @@ impl Drop for CreatedCapture {
 }
 
 fn anonymous_capture(stream: &str) -> Result<File, String> {
-    loop {
-        let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = temp_dir().join(format!("fz_fixture_capture_{}_{}_{}", id(), nonce, stream));
-        match File::options().read(true).write(true).create_new(true).open(&path) {
-            Ok(file) => {
-                return CreatedCapture {
-                    path: Some(path),
-                    file: Some(file),
-                }
-                .unlink();
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("create fixture {stream} capture: {error}")),
-        }
-    }
+    FixtureTempFile::new(stream)?.unlink()
 }
 
 fn execution_start(boundary: TimeoutStart, now: Instant) -> Option<Instant> {
@@ -1703,14 +1722,10 @@ fn check_diagnostic_telemetry(
     path: FixtureMatrixPath,
     expected_code: &str,
 ) -> CheckOutcome {
-    let telemetry_path = temp_telemetry_path(fixture, "diagnostic");
-    let out = match run_path_logged(fixture, header, path, &telemetry_path) {
+    let (out, log) = match run_path_logged(fixture, header, path) {
         Ok(out) => out,
         Err(e) => return CheckOutcome::Fail(e),
     };
-    let log =
-        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
-    let _ = fs::remove_file(&telemetry_path);
     let code_needle = format!("\"code\":\"{}\"", expected_code);
     let found = log
         .lines()
@@ -1733,6 +1748,23 @@ fn check_diagnostic_telemetry(
 }
 
 fn run_path_logged(
+    fixture: &FixtureCase,
+    header: &Header,
+    path: FixtureMatrixPath,
+) -> Result<(Output, String), String> {
+    with_fixture_telemetry(|telemetry_path| run_path_logged_to(fixture, header, path, telemetry_path))
+}
+
+fn with_fixture_telemetry(run: impl FnOnce(&Path) -> Result<Output, String>) -> Result<(Output, String), String> {
+    let telemetry = FixtureTempFile::new("telemetry.jsonl")?;
+    let output = run(telemetry.path())?;
+    let log = fs::read_to_string(telemetry.path())
+        .map_err(|error| format!("read {}: {error}", telemetry.path().display()))?;
+    telemetry.unlink()?;
+    Ok((output, log))
+}
+
+fn run_path_logged_to(
     fixture: &FixtureCase,
     header: &Header,
     path: FixtureMatrixPath,
@@ -1880,13 +1912,111 @@ fn oracle_goldens_match_elixir() {
 // per-pair compare all live in the helpers above; the trial wiring
 // is at the top of this file.
 
-fn temp_telemetry_path(fixture: &FixtureCase, emit: &str) -> PathBuf {
-    let name = fixture.name();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before unix epoch")
-        .as_nanos();
-    temp_dir().join(format!("fz_telemetry_{}_{}_{}_{}.jsonl", name, emit, id(), nanos))
+fn fixture_telemetry_reserves_its_path() {
+    let telemetry = FixtureTempFile::new("telemetry.jsonl").expect("reserve telemetry");
+    let path = telemetry.path().to_path_buf();
+    assert!(
+        path.is_file(),
+        "telemetry invocation must reserve its path before spawning a writer"
+    );
+    assert_eq!(
+        File::create_new(&path).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    drop(telemetry);
+    assert!(!path.exists(), "only dropping the owner removes its reservation");
+}
+
+fn fixture_telemetry_cleans_failed_invocations() {
+    let mut reserved = PathBuf::new();
+    let result = with_fixture_telemetry(|path| {
+        reserved = path.to_path_buf();
+        fs::write(path, "unfinished telemetry").expect("write partial log");
+        Err("child failed before completion".into())
+    });
+    assert_eq!(result.unwrap_err(), "child failed before completion");
+    assert!(!reserved.exists(), "failed commands must release their telemetry");
+
+    let result = with_fixture_telemetry(|path| {
+        reserved = path.to_path_buf();
+        fs::remove_file(path).expect("inject premature removal");
+        Ok(Output {
+            status: ExitStatus::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+    });
+    assert!(
+        result
+            .unwrap_err()
+            .starts_with(&format!("read {}:", reserved.display())),
+        "a missing log after completion must remain a hard read error"
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_fixture_telemetry(|path| {
+            reserved = path.to_path_buf();
+            panic!("injected invocation panic");
+        })
+    }));
+    assert!(result.is_err());
+    assert!(!reserved.exists(), "unwinding must release the reservation");
+}
+
+fn fixture_telemetry_concurrent_spec_violations() {
+    const INVOCATIONS: usize = 24;
+    let barrier = std::sync::Barrier::new(INVOCATIONS);
+    let paths = std::thread::scope(|scope| {
+        let handles = (0..INVOCATIONS)
+            .map(|index| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let fixture = behavior_fixture_case("spec_violation");
+                    let header = parse_header(&fixture).expect("parse spec violation");
+                    let leg = [
+                        FixtureMatrixPath::Run,
+                        FixtureMatrixPath::Interp,
+                        FixtureMatrixPath::Build,
+                    ][index % 3];
+                    let mut reserved = PathBuf::new();
+                    let (output, log) = with_fixture_telemetry(|path| {
+                        reserved = path.to_path_buf();
+                        assert!(path.is_file());
+                        barrier.wait();
+                        run_path_logged_to(&fixture, &header, leg, path)
+                    })
+                    .expect("complete telemetry invocation");
+                    assert!(!output.status.success(), "spec violation must reject compilation");
+                    assert!(log.ends_with('\n'), "completed JSONL must end on a whole record");
+                    let events = log
+                        .lines()
+                        .map(|line| {
+                            serde_json::from_str::<serde_json::Value>(line)
+                                .expect("every completed telemetry record must parse")
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(
+                        events
+                            .iter()
+                            .any(|event| event["name"] == serde_json::json!(["fz", "diag", "error"])
+                                && event["metadata"]["diagnostic"]["code"] == "spec/violation"),
+                        "each invocation must retain its diagnostic"
+                    );
+                    assert!(!reserved.exists(), "successful reads must release their reservation");
+                    reserved
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("telemetry worker"))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        paths.iter().collect::<std::collections::HashSet<_>>().len(),
+        INVOCATIONS,
+        "simultaneous paths, including repeated fixture legs, must never alias"
+    );
 }
 
 fn parse_json_u64_field(line: &str, key: &str) -> Option<usize> {
@@ -1918,9 +2048,8 @@ impl ReusableConsTelemetryStats {
 }
 
 fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableConsTelemetryStats {
-    let telemetry_path = temp_telemetry_path(fixture, "reusable_cons");
     let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
-    let out = run_path_logged(fixture, &header, FixtureMatrixPath::Run, &telemetry_path)
+    let (out, log) = run_path_logged(fixture, &header, FixtureMatrixPath::Run)
         .unwrap_or_else(|e| panic!("run fz2 run --log-telemetry: {}", e));
     assert!(
         out.status.success(),
@@ -1929,9 +2058,6 @@ fn reusable_cons_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ReusableC
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    let log =
-        fs::read_to_string(&telemetry_path).unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
-    let _ = fs::remove_file(&telemetry_path);
     let mut stats = ReusableConsTelemetryStats::default();
     let mut saw_native_event = false;
     for line in log.lines() {

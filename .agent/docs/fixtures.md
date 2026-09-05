@@ -170,6 +170,15 @@ needed, and does not return until the child is reaped. That teardown contract
 owns delegated roots that remain in the command's group; detached daemons are
 outside fixture-runner ownership.
 
+`FixtureTempFile` reserves each telemetry path with exclusive file creation
+before spawning its writer. It shares that ownership mechanism with anonymous
+stdout/stderr captures; timestamps do not establish uniqueness. The logged
+invocation keeps the reservation through child completion and the final read,
+then unlinks it. Errors and unwinding release the reservation too. The CLI owns
+its telemetry bus inside dispatch, so diagnostic returns drop and flush the
+JSONL writer before process exit. A missing or unreadable completed log is a
+hard failure, not an empty observation.
+
 ### BLESS
 
 `BLESS=1 cargo test fixture_matrix` rewrites `expected.txt` /
