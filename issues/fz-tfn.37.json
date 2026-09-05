@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-kdt.4"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 0,
-  "status": "open",
+  "status": "in_progress",
   "title": "Keep direct partial tuple returns unboxed",
   "type": "bug",
-  "updated_at": "2026-09-05T07:38:20Z"
+  "updated_at": "2026-09-05T07:38:21Z"
 }
