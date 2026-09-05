@@ -153,6 +153,8 @@ mod identity_test;
 #[cfg(test)]
 mod namespace_test;
 #[cfg(test)]
+mod native_inventory_test;
+#[cfg(test)]
 mod port_codegen_test;
 #[cfg(test)]
 mod port_frontend_test;

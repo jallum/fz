@@ -308,8 +308,13 @@ entry resume_k:
 ```
 
 The backend products and native lowering preserve this shape mechanically.
-They derive ABI
-for resume entries, clause-entry helpers, and continuations from the same entry
+Native entry helpers are allocated only when a lowered control edge references
+them. A typed entry-to-function map queues each first reference; draining that
+queue discovers further helpers without rebuilding unused backend entries.
+Repeated and recursive references reuse the same function. Thus a no-return
+call's unused delivery destination and a dispatch graph's unselected arms
+produce no native helper, body facts, or codegen work.
+The ABI for resume entries, clause-entry helpers, and continuations comes from the same entry
 graph instead of rebuilding hidden CPS structure from "tail position" guesses.
 The backend interpreter preserves the same distinction: tail calls can park on
 `receive`, and blocked tasks keep an explicit backend continuation stack so a
@@ -845,9 +850,9 @@ their canonical ownership roles (executable root, clause index, and
 completed-IR continuation path). The path is derived from deterministic IR
 control-edge order, so helper allocation and inventory order never become
 semantic identity. A graph containing an owned continuation that is not
-reachable through those edges is ineligible for sharing. Such helpers are
-genuinely dead emission in the current corpus and are removed at their emitter
-by fz-tfn.27; the sharing pass neither guesses a role nor hides them. This makes
+reachable through those edges is ineligible for sharing. This is a structural
+integrity check: the sharing pass neither guesses a role nor hides detached
+owned bodies. Native helper emission itself is reference-driven. This makes
 comparison order and work deterministic without repeatedly scanning every body
 for each candidate pair.
 It alpha-renames only graph-owned function IDs, diagnostic names, and

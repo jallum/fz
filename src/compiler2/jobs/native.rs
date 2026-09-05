@@ -9,7 +9,7 @@
 use super::super::identity::ExecutableKey;
 use super::super::transport::TransportPosition;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -260,9 +260,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 match &executable.body {
                     BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
                     BackendBody::Clauses { clauses, entries, .. } => {
-                        let entry_fns = entry_fn_ids(&mut self.module, entries);
+                        let mut entry_fns = EntryFns::default();
                         if executable.abi.materialized.entry_dispatch.is_some() {
-                            self.lower_clause_dispatch_executable(index, executable, clauses, entries, &entry_fns)?;
+                            self.lower_clause_dispatch_executable(index, executable, clauses, entries, &mut entry_fns)?;
                         } else {
                             let [clause] = clauses.as_slice() else {
                                 return Err(incomplete_native_program(
@@ -286,11 +286,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                                 FnCategory::User,
                                 NativeBodyOrigin::Executable(executable.key.clone()),
                                 entries,
-                                &entry_fns,
+                                &mut entry_fns,
                                 clause,
                             )?;
                         }
-                        self.lower_entry_helpers(index, executable, entries, &entry_fns)?;
+                        while let Some((entry, fn_id)) = entry_fns.pending.pop_front() {
+                            self.lower_entry_fn(index, executable, entries, &mut entry_fns, entry, fn_id)?;
+                        }
                         Ok(())
                     }
                 }
@@ -825,7 +827,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         executable: &BackendExecutable,
         clauses: &[BackendClause],
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
     ) -> Result<(), FatalError> {
         let helper_ids = clauses.iter().map(|_| self.module.fresh_fn_id()).collect::<Vec<_>>();
         let fn_id = self.executable_fns[index];
@@ -913,7 +915,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         category: FnCategory,
         origin: NativeBodyOrigin,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         clause: &BackendClause,
     ) -> Result<(), FatalError> {
         let (return_reprs, return_tuple_arity) = native_return_contract(self.world, &executable.abi.return_layout);
@@ -954,40 +956,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         self.native_bodies.push(body);
     }
 
-    fn lower_entry_helpers(
-        &mut self,
-        executable_index: usize,
-        executable: &BackendExecutable,
-        entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
-    ) -> Result<(), FatalError> {
-        for (entry_index, entry) in entries.iter().enumerate() {
-            if matches!(entry.origin, BackendEntryOrigin::Clause) {
-                continue;
-            }
-            self.lower_entry_fn(
-                executable_index,
-                executable,
-                entries,
-                entry_fns,
-                ControlEntryId::from_u32(entry_index as u32),
-            )?;
-        }
-        Ok(())
-    }
-
     fn lower_entry_fn(
         &mut self,
         executable_index: usize,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
+        fn_id: FnId,
     ) -> Result<(), FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
-        let fn_id = *entry_fns
-            .get(&entry_id)
-            .expect("non-clause entry should have a predeclared helper fn");
         let base_name = format!(
             "{}__e{}",
             self.world.function_ref(executable.key.activation.function).name,
@@ -1041,7 +1019,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
         mut env: ValueEnv,
     ) -> Result<(), FatalError> {
@@ -1420,7 +1398,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         env: &ValueEnv,
         tail: &BackendTail,
     ) -> Result<(), FatalError> {
@@ -1649,9 +1627,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let then_args = self.entry_capture_args(ctx, executable, entries, *then_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(
-                        *entry_fns.get(then_entry).expect("branch entry should have a helper fn"),
-                    ),
+                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *then_entry)),
                     args: then_args,
                     is_back_edge: false,
                 });
@@ -1659,9 +1635,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let else_args = self.entry_capture_args(ctx, executable, entries, *else_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(
-                        *entry_fns.get(else_entry).expect("branch entry should have a helper fn"),
-                    ),
+                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *else_entry)),
                     args: else_args,
                     is_back_edge: false,
                 });
@@ -1703,9 +1677,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             ident: CallsiteIdent::from_source(clause.span),
                             bound_names: clause.bound_names.clone(),
                             guard: None,
-                            body: *entry_fns
-                                .get(&clause.entry)
-                                .expect("receive clause entry should have a helper fn"),
+                            body: entry_fns.reference(&mut self.module, clause.entry),
                             span: clause.span,
                         })
                     })
@@ -1715,9 +1687,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         Ok(ReceiveAfter {
                             ident: CallsiteIdent::from_source(after.span),
                             timeout: self.env_runtime_var(ctx, executable, env, after.timeout),
-                            body: *entry_fns
-                                .get(&after.entry)
-                                .expect("receive after entry should have a helper fn"),
+                            body: entry_fns.reference(&mut self.module, after.entry),
                             span: after.span,
                         })
                     })
@@ -1750,7 +1720,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         env: &ValueEnv,
         callee: &CallTarget<ExecutableKey>,
         args: &[super::super::artifact::BackendCallArg],
@@ -1777,7 +1747,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         env: &ValueEnv,
         dispatch: &DispatchCallEdge<ExecutableKey, BackendReturnFlow>,
         args: &[super::super::artifact::BackendCallArg],
@@ -1817,7 +1787,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         env: &ValueEnv,
         dispatch: &DispatchCallEdge<ExecutableKey, BackendReturnFlow>,
         args: &[super::super::artifact::BackendCallArg],
@@ -1988,7 +1958,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         env: &ValueEnv,
         callee: DirectCallTarget,
         call_args: Vec<Var>,
@@ -2062,7 +2032,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         env: &ValueEnv,
         value_id: ValueId,
         dest: &ControlDestination,
@@ -2077,9 +2047,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let args = self.entry_call_args_from_value(ctx, executable, entries, *entry_id, env, value_id)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(
-                        *entry_fns.get(entry_id).expect("resume entry should have a helper fn"),
-                    ),
+                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *entry_id)),
                     args,
                     is_back_edge: false,
                 });
@@ -2349,7 +2317,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
         env: &ValueEnv,
         return_flow: Option<&BackendReturnFlow>,
@@ -2376,7 +2344,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
         env: &ValueEnv,
     ) -> Result<Cont, FatalError> {
@@ -2395,7 +2363,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ));
         }
         Ok(Cont {
-            fn_id: *entry_fns.get(&entry_id).expect("resume entry should have a helper fn"),
+            fn_id: entry_fns.reference(&mut self.module, entry_id),
             captured: self.entry_capture_args(ctx, executable, entries, entry_id, env)?,
         })
     }
@@ -2476,7 +2444,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
         env: &ValueEnv,
         source: &super::super::artifact::BackendReturnLayout,
@@ -2594,7 +2562,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         cont_ctx.set_term(Term::TailCall {
             ident: CallsiteIdent::from_source(Span::DUMMY),
-            callee: DirectCallTarget::Local(*entry_fns.get(&entry_id).expect("resume entry should have a helper fn")),
+            callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, entry_id)),
             args,
             is_back_edge: false,
         });
@@ -2893,7 +2861,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
-        entry_fns: &HashMap<ControlEntryId, FnId>,
+        entry_fns: &mut EntryFns,
         env: &ValueEnv,
         plan: &PatternDispatchPlan<Ty>,
         arm_entries: &[ControlEntryId],
@@ -2913,11 +2881,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(
-                        *entry_fns
-                            .get(&miss_entry)
-                            .expect("local dispatch miss entry should have a helper fn"),
-                    ),
+                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, miss_entry)),
                     args,
                     is_back_edge: false,
                 });
@@ -2928,11 +2892,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let args = self.entry_capture_args(ctx, executable, entries, miss_entry, env)?;
                     ctx.set_term(Term::TailCall {
                         ident: CallsiteIdent::from_source(Span::DUMMY),
-                        callee: DirectCallTarget::Local(
-                            *entry_fns
-                                .get(&miss_entry)
-                                .expect("local dispatch miss entry should have a helper fn"),
-                        ),
+                        callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, miss_entry)),
                         args,
                         is_back_edge: false,
                     });
@@ -2948,11 +2908,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let args = self.control_dispatch_entry_args(ctx, executable, entries, arm_entry, env, state)?;
                 ctx.set_term(Term::TailCall {
                     ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(
-                        *entry_fns
-                            .get(&arm_entry)
-                            .expect("local dispatch arm entry should have a helper fn"),
-                    ),
+                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, arm_entry)),
                     args,
                     is_back_edge: false,
                 });
@@ -3979,15 +3935,20 @@ fn same_entry_capture_contract(left: &BackendEntryCapture, right: &BackendEntryC
     left.value == right.value && left.layout == right.layout
 }
 
-fn entry_fn_ids(module: &mut ModuleBuilder, entries: &[BackendEntry]) -> HashMap<ControlEntryId, FnId> {
-    let mut out = HashMap::new();
-    for (index, entry) in entries.iter().enumerate() {
-        if matches!(entry.origin, BackendEntryOrigin::Clause) {
-            continue;
-        }
-        out.insert(ControlEntryId::from_u32(index as u32), module.fresh_fn_id());
+#[derive(Default)]
+struct EntryFns {
+    ids: HashMap<ControlEntryId, FnId>,
+    pending: VecDeque<(ControlEntryId, FnId)>,
+}
+
+impl EntryFns {
+    fn reference(&mut self, module: &mut ModuleBuilder, entry: ControlEntryId) -> FnId {
+        *self.ids.entry(entry).or_insert_with(|| {
+            let fn_id = module.fresh_fn_id();
+            self.pending.push_back((entry, fn_id));
+            fn_id
+        })
     }
-    out
 }
 
 fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
@@ -4858,6 +4819,27 @@ mod tests {
     use crate::compiler2::pull::TransportCarrier;
     use crate::compiler2::transport::{LaneDescr, TransportClass};
     use crate::telemetry::sink::NullTelemetry;
+
+    #[test]
+    fn entry_function_references_schedule_each_recursive_helper_once() {
+        let mut module = ModuleBuilder::new();
+        let mut entries = EntryFns::default();
+        let first = ControlEntryId::from_u32(7);
+        let second = ControlEntryId::from_u32(2);
+        assert!(entries.pending.is_empty());
+        let first_fn = entries.reference(&mut module, first);
+        assert_eq!(entries.pending.pop_front(), Some((first, first_fn)));
+        let second_fn = entries.reference(&mut module, second);
+        assert_eq!(entries.reference(&mut module, first), first_fn);
+        assert_eq!(entries.pending.pop_front(), Some((second, second_fn)));
+        assert_eq!(entries.reference(&mut module, second), second_fn);
+        assert_eq!(entries.reference(&mut module, first), first_fn);
+        assert!(
+            entries.pending.is_empty(),
+            "self and mutual references reuse emitted helpers"
+        );
+        assert_ne!(first_fn, second_fn);
+    }
 
     fn empty_backend_program() -> BackendProgram {
         BackendProgram::empty_for_test()

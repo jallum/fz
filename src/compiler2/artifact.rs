@@ -609,7 +609,7 @@ impl NativeOwnedGraph {
     }
 }
 
-fn ir_control_fn_ids(function: &IrFn) -> Vec<FnId> {
+pub(super) fn ir_control_fn_ids(function: &IrFn) -> Vec<FnId> {
     let mut fn_ids = Vec::new();
     for block in &function.blocks {
         match &block.terminator {

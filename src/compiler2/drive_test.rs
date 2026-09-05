@@ -5406,6 +5406,44 @@ fn main(), do: mk(double).(4) + mk(triple).(4)
     );
 }
 
+fn assert_native_helpers_are_referenced(source: &str) {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_helper_references.fz".into()),
+        text: source.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    let program = native.last(root).program;
+    let unreachable = super::native_inventory_test::unreachable_native_functions(&program);
+    assert!(
+        unreachable.is_empty(),
+        "native helpers must only be emitted for real references: {:?}",
+        unreachable
+            .iter()
+            .map(|id| &program.module.fn_by_id(*id).name)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn native_dispatch_does_not_emit_unselected_branch_helpers() {
+    assert_native_helpers_are_referenced(include_str!("../../fixtures2/00152_case_wildcard_unreachable.fz"));
+}
+
+#[test]
+fn native_no_return_call_does_not_emit_delivery_resume() {
+    assert_native_helpers_are_referenced("fn main() do\n  panic(:done)\n  42\nend\n");
+}
+
 /// Regenerate `.agent/measurements/fz-kdt.163-native-cps-sharing.txt` with:
 ///
 /// `cargo test --lib compiler2::drive_test::measure_native_cps_sharing_corpus -- --ignored --exact --nocapture`
@@ -5439,6 +5477,8 @@ fn measure_native_cps_sharing_corpus() {
         graph_comparisons: usize,
         body_comparisons: usize,
         sharing_micros: u128,
+        unreachable_functions: usize,
+        before_sharing_unreachable_functions: usize,
     }
     #[derive(Debug)]
     struct Mover {
@@ -5515,13 +5555,14 @@ fn measure_native_cps_sharing_corpus() {
             arity: 0,
             need: ExecutableNeed::Value,
         });
-        settle_native_product(&mut compiler, root);
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compiler.drive()));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compiler.drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Native)
+        }));
         let Ok(outcome) = outcome else {
             drive_panics.push(path.display().to_string());
             continue;
         };
-        if !matches!(outcome, DriveOutcome::Resolved) {
+        if outcome.is_err() {
             unresolved.push((path.display().to_string(), format!("{outcome:?}")));
             continue;
         }
@@ -5532,6 +5573,28 @@ fn measure_native_cps_sharing_corpus() {
             .cloned()
             .expect("pre-sharing native program");
         let after = after_sharing.last(root).program;
+        totals.before_sharing_unreachable_functions +=
+            super::native_inventory_test::unreachable_native_functions(&before).len();
+        let unreachable = super::native_inventory_test::unreachable_native_functions(&after);
+        totals.unreachable_functions += unreachable.len();
+        if !unreachable.is_empty() {
+            eprintln!(
+                "native unreachable {}: {:?}",
+                path.display(),
+                unreachable
+                    .iter()
+                    .map(|id| &after.module.fn_by_id(*id).name)
+                    .collect::<Vec<_>>()
+            );
+        }
+        eprintln!(
+            "native inventory {}: before_bodies={} after_bodies={} before_functions={} after_functions={}",
+            path.display(),
+            before.bodies.len(),
+            after.bodies.len(),
+            before.module.fns.len(),
+            after.module.fns.len()
+        );
         let mut reproduced = before.clone();
         let sharing_started = std::time::Instant::now();
         let sharing_work = reproduced.deduplicate_equivalent_sibling_graphs();
@@ -5640,6 +5703,13 @@ fn measure_native_cps_sharing_corpus() {
         };
         let (before_ok, before_bytes, before_millis) = compile("before", &before);
         let (after_ok, after_bytes, after_millis) = compile("after", &after);
+        eprintln!(
+            "native bytes {}: before={} after={} paired={}",
+            path.display(),
+            before_bytes,
+            after_bytes,
+            before_ok && after_ok
+        );
         if before_ok && after_ok {
             totals.codegen_pairs += 1;
             totals.before_native_bytes += before_bytes;
@@ -5676,6 +5746,14 @@ fn measure_native_cps_sharing_corpus() {
         .join("\n");
     eprintln!(
         "fz-kdt.163 census: {totals:#?}\ndrive_panics={drive_panics:#?}\nunresolved={unresolved:#?}\ncodegen_failures={codegen_failures:#?}\nmovers:\n{mover_lines}"
+    );
+    assert_eq!(
+        totals.before_sharing_unreachable_functions, 0,
+        "native lowering must emit only referenced functions"
+    );
+    assert_eq!(
+        totals.unreachable_functions, 0,
+        "physical sharing must retain reference closure"
     );
 }
 
