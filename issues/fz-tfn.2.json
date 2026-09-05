@@ -5,7 +5,9 @@
     "fz-kdt.47",
     "fz-tfn.30"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.39"
+  ],
   "created": "2026-09-03T01:53:56Z",
   "description": "## Goal\n\nAfter fz-kdt.4 deletes eager RuntimeDemand cone replay, make exact recursive-group publication membership reproducible across process hash seeds without changing semantic pull behavior.\n\n## Construction order\n\nfz-tfn.25 owns the work that is valid on the current graph: deterministic searches, candidate scans, reached candidates, dependency visits, and their causal telemetry. fz-kdt.5 then installs the cold/incremental product-work signal, fz-tfn.1 retains product state, and fz-kdt.4 removes the schedule-dependent eager cone interaction.\n\nThis ticket owns only the remaining exact member-identity requirement against that final reactive graph. It must not restore or preserve the old cone merely to stabilize its traversal order.\n\n## Current evidence\n\nPost-fz-kdt.47 runs have equal RuntimeDemand formula values, requested products, settled product sets, search-shape totals, and backend artifacts, but the eager cone/product interaction closes different exact pending SCC member sets involving union-typed versus narrower CallableConstruction activations. This is not a Ty alias defect and cannot be repaired by choosing a canonical resolver or sorting current pending members.\n\n## TDD and acceptance\n\n- Preserve the raw subprocess oracle that compares exact canonical recursive publication members.\n- First prove it fails before the fz-kdt.4 cutover and becomes meaningful on the reactive per-executable graph.\n- Exact successful recursive publication membership and canonical per-product group identity are reproducible across process hash seeds.\n- Search counts and traversal work remain those established by fz-tfn.25; do not duplicate its traversal implementation or telemetry.\n- Product values, settlements, backend programs, artifacts, and runtime output remain identical.\n- Remove exclusions for recursive-member identity from the fz-kdt.5 causal report.\n- Delete transition-only oracle data, switches, and compatibility paths before review.\n- Update performance/fact-engine documentation and run targeted recursive-product, causal cross-process, target fixture, full library, matrix, formatting, and warning-free checks.\n\n## Non-goals\n\nDo not reintroduce cone collection, snapshot replay, private fixpoint passes, or ordering based on raw intern/hash identity.",
   "id": "fz-tfn.2",
@@ -29,5 +31,5 @@
   "status": "open",
   "title": "Make recursive-group publication membership reproducible after RuntimeDemand cutover",
   "type": "bug",
-  "updated_at": "2026-09-04T00:00:41Z"
+  "updated_at": "2026-09-05T14:15:52Z"
 }
