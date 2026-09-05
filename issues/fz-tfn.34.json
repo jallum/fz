@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-09-05T00:17:53Z",
+  "description": "## Goal\n\nMake interpreter tuple construction obey the settled transport shape: a tuple field with zero physical width is not read from the semantic environment. Match native lowering so exact RuntimeDemand retraction can remove unused values without making the debug interpreter fail.\n\n## Recorded signal\n\nDuring fz-kdt.4, reactive owner replacement correctly narrowed f175 in fz_f98_range_map_converges from TupleFields[Whole, Whole] to TupleFields[Ignore, Whole]. Transport therefore assigned the first tuple field ShapeDescr::Nothing and omitted its delivered-entry capture. Native lowering already returns before looking up a zero-width value. The interpreter tuple_step_value looked up the semantic operand first and failed with backend value 3 is unbound, even though encode_runtime_value would emit no lanes for ShapeDescr::Nothing. The old RuntimeDemand cone masked this parity bug by retaining sticky Whole demand.\n\n## Correct model\n\nPhysical shape is the authority for runtime reads. Zero-width fields contribute no lanes and require no environment binding. Interpreter and native tuple encoding follow the same lookup boundary. Do not widen RuntimeDemand, retain sticky cone evidence, synthesize an absent value, or special-case the f98 fixture. Prefer one crisp helper or control flow that makes lookup impossible for zero-width shapes.\n\n## Acceptance\n\n- Add a focused RED test proving tuple construction succeeds when a zero-width field has no environment binding.\n- Make the interpreter skip lookup exactly when the field shape has zero width; preserve errors for missing values with nonzero width.\n- Prove native/interpreter parity at this boundary and run the focused compiler/interpreter tests.\n- With the fz-kdt.4 reactive tree applied, fz_f98_range_map_converges advances without the unbound-value failure and without demand widening.\n- No debug scaffolding, fixture-specific branches, warnings, or contradictory comments remain.\n- Update relevant agent/user documentation if this changes a documented runtime contract.",
+  "id": "fz-tfn.34",
+  "labels": [],
+  "parent": "fz-tfn",
+  "priority": 1,
+  "status": "open",
+  "title": "Make interpreter tuple construction honor zero-width fields",
+  "type": "bug",
+  "updated_at": "2026-09-05T00:17:53Z"
+}
