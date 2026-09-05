@@ -4,7 +4,9 @@
     "fz-tfn.14",
     "fz-tfn.30"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.39"
+  ],
   "created": "2026-09-03T08:01:25Z",
   "description": "## Goal\n\nMake ActivationInputMap updates proportional to actual publisher movement after the store has one explicit semantic model.\n\n## Current defect\n\nEvery upsert removes the slot, clones the previous aggregate, renders and sorts every publisher, rejoins every contribution, rebuilds the activation-input antichain, and reinserts the slot. Equal publisher reproduction pays the full cost. Monotone ascents also rebuild from bottom even though only one contribution moved upward.\n\n## Strategy and proof\n\n1. Classify updates as introduction, equal reproduction, monotone ascent, rebase, or withdrawal.\n2. Equal reproduction performs zero aggregate work.\n3. Incrementally fold introductions and proven monotone ascents.\n4. Retain the simple full-rebuild oracle only for withdrawal/rebase where subtraction is required.\n5. Preserve deterministic evidence order without using rendered display text as semantic execution order.\n6. Add randomized differential tests comparing every optimized history with the rebuild oracle.\n7. Measure contributor visits, render allocations, antichain rebuilds, collapse events, semantic answers, and artifacts; remove temporary counters.\n8. Run full tests, fixture matrix, cross-process determinism, formatting, and strict clippy.\n\nDelete obsolete rebuild paths and tests that only exercise them once the optimized classifications are total.",
   "id": "fz-tfn.19",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Make activation-input publisher reconciliation change-aware",
   "type": "task",
-  "updated_at": "2026-09-04T00:00:45Z"
+  "updated_at": "2026-09-05T14:15:51Z"
 }
