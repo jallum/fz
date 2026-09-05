@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.4",
-    "fz-tfn.30"
+    "fz-tfn.30",
+    "fz-tfn.41"
   ],
   "blocks": [
     "fz-kdt.58",
@@ -17,5 +18,5 @@
   "status": "in_progress",
   "title": "Make root-scoped transport relations react to edge changes, not settlement waves",
   "type": "task",
-  "updated_at": "2026-09-05T18:04:40Z"
+  "updated_at": "2026-09-05T18:08:27Z"
 }
