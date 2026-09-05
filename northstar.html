@@ -683,6 +683,17 @@ MaterializedExecutable(E)
         Equal reproduction preserves generations.
       </p>
       <p>
+        Position-owned tuple layouts may retain different fields of the same
+        value for different consumers. At the runtime and native encoding seam,
+        same-arity tuple layouts are reprojected positionally: source field spans
+        supply the lanes, destination <code>Nothing</code> fields discard theirs,
+        and every required field is encoded recursively. This leaves both
+        layouts unchanged and never reads an erased sibling merely to rebuild
+        the outer tuple. A required absent field remains an error, while an
+        explicit outer <code>ValueRef</code> carrier still requires a whole
+        materializable tuple.
+      </p>
+      <p>
         Backend-required transport positions wait for produced
         <code>TransportShape(position)</code> values, not just demanded position membership.
         Each position owns one layout answer derived from settled <code>RuntimeDemand(E)</code>,

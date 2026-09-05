@@ -490,6 +490,16 @@ args after the callee capture prefix. Product runtime-demand pulls record the
 same dependency edge (`callee RuntimeDemand -> caller RuntimeDemand`) so a
 changed callee demand invalidates only the products that read it.
 
+A tuple value can cross several positions whose exact layouts retain different
+fields. The producer layout remains the authority for the lanes already in
+hand; the consumer layout says which positions it needs. When both layouts are
+tuples of the same arity, backend and native encoding split the value with the
+producer's field spans, discard destination `Nothing` fields, and recursively
+encode each remaining positional pair. They do not materialize the outer tuple
+or unify the layouts. A required destination field still fails if its source
+field is absent. An explicit outer `ValueRef` carrier is different: it requires
+a genuinely whole materializable tuple and produces one value lane.
+
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
 never reach a boundary. A first-class callable that escapes through a generic

@@ -2562,7 +2562,7 @@ fn encode_runtime_value(
             Ok(())
         }
         ShapeDescr::Tuple(fields) => {
-            let tuple_fields = tuple_field_values_for_shape(transport, proc, value, shape, fields)?;
+            let tuple_fields = tuple_field_values_for_encoding(transport, proc, value, fields)?;
             for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
                 encode_runtime_value(transport, program, proc, field_value, field_shape, lanes)?;
             }
@@ -2615,20 +2615,18 @@ fn encode_runtime_value_with_carrier(
     proc: *mut Process,
     value: &BackendBoundValue,
     shape: ShapeId,
-    carrier: crate::compiler2::pull::TransportCarrier,
+    carrier: TransportCarrier,
     lanes: &mut Vec<AnyValue>,
 ) -> Result<(), String> {
     match transport.interners().shape(shape) {
-        ShapeDescr::Nothing if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
-            lanes.push(materialize_backend_value(transport, proc, value)?);
-            Ok(())
-        }
-        ShapeDescr::Callable(_) if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
+        ShapeDescr::Nothing | ShapeDescr::Callable(_) | ShapeDescr::Tuple(_)
+            if matches!(carrier, TransportCarrier::ValueRef) =>
+        {
             lanes.push(materialize_backend_value(transport, proc, value)?);
             Ok(())
         }
         ShapeDescr::Tuple(fields) => {
-            let tuple_fields = tuple_field_values_for_shape(transport, proc, value, shape, fields)?;
+            let tuple_fields = tuple_field_values_for_encoding(transport, proc, value, fields)?;
             for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
                 encode_runtime_value_with_carrier(transport, program, proc, field_value, field_shape, carrier, lanes)?;
             }
@@ -2831,20 +2829,19 @@ fn transport_field_views(
         .collect()
 }
 
-fn tuple_field_values_for_shape(
+fn tuple_field_values_for_encoding(
     transport: &TransportStore,
     proc: *mut Process,
     value: &BackendBoundValue,
-    shape: ShapeId,
     fields: &[ShapeId],
 ) -> Result<Vec<BackendBoundValue>, String> {
     if let BackendBoundValue::Transport {
         shape: value_shape,
         lanes,
     } = value
-        && *value_shape == shape
+        && matches!(transport.interners().shape(*value_shape), ShapeDescr::Tuple(source) if source.len() == fields.len())
     {
-        return transport_field_views(transport, shape, lanes);
+        return transport_field_views(transport, *value_shape, lanes);
     }
     let tuple = materialize_backend_value(transport, proc, value)?;
     fields
@@ -3249,6 +3246,188 @@ fn backend_unop(op: crate::ast::UnOp) -> Result<IrUnOp, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_backend_program() -> BackendProgram {
+        BackendProgram {
+            entry: 0,
+            atom_names: Vec::new(),
+            struct_schemas: Default::default(),
+            executables: Vec::new(),
+            construction_wrappers: Vec::new(),
+        }
+    }
+
+    fn encode_for_layout(
+        transport: &TransportStore,
+        process: *mut Process,
+        value: &BackendBoundValue,
+        shape: ShapeId,
+    ) -> Result<Vec<AnyValue>, String> {
+        encode_with_carrier(transport, process, value, shape, TransportCarrier::Absent)
+    }
+
+    fn encode_with_carrier(
+        transport: &TransportStore,
+        process: *mut Process,
+        value: &BackendBoundValue,
+        shape: ShapeId,
+        carrier: TransportCarrier,
+    ) -> Result<Vec<AnyValue>, String> {
+        let mut encoded = Vec::new();
+        encode_runtime_value_with_carrier(
+            transport,
+            &empty_backend_program(),
+            process,
+            value,
+            shape,
+            carrier,
+            &mut encoded,
+        )?;
+        Ok(encoded)
+    }
+
+    #[test]
+    fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
+        let mut transport = TransportStore::new();
+        let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+        let mut types = crate::compiler2::Types::new();
+        let int = types.int();
+        let inner_tuple_ty = types.tuple(&[int, int, int]);
+        let lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: int,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let scalar = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        let inner_tuple_lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: inner_tuple_ty,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let inner_tuple_value = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Lane(inner_tuple_lane));
+        let source_inner = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![scalar, scalar, scalar].into_boxed_slice()));
+        let source = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![nothing, source_inner].into_boxed_slice()));
+        let destination = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![nothing, inner_tuple_value].into_boxed_slice()));
+        let selective_inner = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![nothing, scalar, nothing].into_boxed_slice()));
+        let selective_destination = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![nothing, selective_inner].into_boxed_slice()));
+        let required_absent_destination = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![scalar, nothing].into_boxed_slice()));
+        let arity_mismatch_destination = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![scalar].into_boxed_slice()));
+        let value = BackendBoundValue::Transport {
+            shape: source,
+            lanes: vec![AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
+        };
+        let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
+        let mut process = runtime.take_process(1).expect("test process");
+        let process = &mut process as *mut Process;
+        let encoded = encode_for_layout(&transport, process, &value, destination)
+            .expect("the destination erases the absent field before encoding the required inner tuple");
+
+        assert_eq!(encoded.len(), 1);
+        assert!(
+            matches!(encoded[0], AnyValue::Ref(_)),
+            "the inner tuple crosses as one value ref"
+        );
+        assert_eq!(transport.interners().lane(inner_tuple_lane).ty, inner_tuple_ty);
+        let inner_fields = (0..3)
+            .map(|index| {
+                with_value_ref(process, encoded[0], "reprojected inner tuple", |tuple| {
+                    fz_struct_get_field_ref(process, tuple, index * 8)
+                })
+                .and_then(|word| interp_value_from_ref_word(word, "reprojected inner tuple field"))
+                .and_then(|value| {
+                    value
+                        .as_i64()
+                        .ok_or_else(|| "inner tuple field was not an int".to_string())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the destination lane should hold the materialized inner tuple");
+        assert_eq!(inner_fields, [1, 2, 3]);
+
+        let selectively_encoded = encode_for_layout(&transport, process, &value, selective_destination)
+            .expect("a second consumer should independently select one nested source field");
+        assert_eq!(selectively_encoded.len(), 1);
+        assert_eq!(selectively_encoded[0].as_i64(), Some(2));
+
+        let source_with_present_discard = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(vec![scalar, source_inner].into_boxed_slice()));
+        let value_with_present_discard = BackendBoundValue::Transport {
+            shape: source_with_present_discard,
+            lanes: vec![AnyValue::Int(99), AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
+        };
+        let present_discarded = encode_for_layout(&transport, process, &value_with_present_discard, destination)
+            .expect("destination Nothing should discard a present source field");
+        assert_eq!(present_discarded.len(), 1);
+        assert!(matches!(present_discarded[0], AnyValue::Ref(_)));
+
+        let whole_carrier = encode_with_carrier(
+            &transport,
+            process,
+            &value_with_present_discard,
+            source_with_present_discard,
+            TransportCarrier::ValueRef,
+        )
+        .expect("a whole tuple should satisfy an outer ValueRef carrier");
+        assert_eq!(whole_carrier.len(), 1);
+        assert!(matches!(whole_carrier[0], AnyValue::Ref(_)));
+        assert!(
+            encode_with_carrier(&transport, process, &value, destination, TransportCarrier::ValueRef,).is_err(),
+            "same-arity reprojection must not bypass an outer ValueRef obligation",
+        );
+
+        let required_absent = encode_for_layout(&transport, process, &value, required_absent_destination)
+            .expect_err("a required destination field cannot be invented from an absent source field");
+        assert_eq!(required_absent, "backend value was absent and cannot be materialized");
+
+        let arity_mismatch = encode_for_layout(&transport, process, &value, arity_mismatch_destination)
+            .expect_err("arity-mismatched tuples retain outer materialization behavior");
+        assert_eq!(arity_mismatch, "backend value was absent and cannot be materialized");
+
+        let non_tuple = encode_runtime_value(
+            &transport,
+            &empty_backend_program(),
+            process,
+            &value,
+            scalar,
+            &mut Vec::new(),
+        )
+        .expect_err("non-tuple destinations retain outer materialization behavior");
+        assert_eq!(non_tuple, "backend value was absent and cannot be materialized");
+
+        let mut identical = Vec::new();
+        encode_runtime_value(
+            &transport,
+            &empty_backend_program(),
+            process,
+            &value,
+            source,
+            &mut identical,
+        )
+        .expect("an identical layout keeps the direct lane-copy path");
+        assert_eq!(
+            identical.iter().map(|value| value.as_i64()).collect::<Vec<_>>(),
+            [Some(1), Some(2), Some(3)]
+        );
+    }
 
     #[test]
     fn tuple_field_encoding_checks_width_before_environment_binding() {

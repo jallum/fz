@@ -3782,11 +3782,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         )
     }
 
-    fn tuple_field_values_for_shape(
+    fn tuple_field_values_for_encoding(
         &mut self,
         ctx: &mut NativeFnCtx,
         value: &NativeBoundValue,
-        shape: ShapeId,
         fields: &[ShapeId],
     ) -> Result<Vec<NativeBoundValue>, FatalError> {
         if let NativeBoundValue::Transport {
@@ -3794,9 +3793,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             lanes,
             ..
         } = value
-            && *value_shape == shape
+            && let ShapeDescr::Tuple(source_fields) = self.world.shape(*value_shape)
+            && source_fields.len() == fields.len()
         {
-            return self.transport_field_views(shape, lanes, fields);
+            return self.transport_field_views(*value_shape, lanes, source_fields);
         }
         let tuple = self.materialize_native_value(ctx, None, value)?;
         Ok(fields
@@ -3875,7 +3875,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             ShapeDescr::Tuple(fields) => {
-                let tuple_fields = self.tuple_field_values_for_shape(ctx, value, shape, &fields)?;
+                let tuple_fields = self.tuple_field_values_for_encoding(ctx, value, &fields)?;
                 for (field, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
                     self.encode_runtime_value(ctx, executable, None, field, field_shape, lanes)?;
                 }
@@ -4000,7 +4000,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(())
             }
             ShapeDescr::Tuple(fields) => {
-                let tuple_fields = self.tuple_field_values_for_shape(ctx, value, shape, &fields)?;
+                let tuple_fields = self.tuple_field_values_for_encoding(ctx, value, &fields)?;
                 for (field, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
                     self.encode_runtime_value_with_carrier(
                         ctx,
@@ -4927,4 +4927,234 @@ fn incomplete_native_program(
     );
     emit_through(tel, std::slice::from_ref(&diagnostic));
     FatalError
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler2::artifact::{BackendReturnLayout, BackendValueLayout, EffectSummary};
+    use crate::compiler2::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
+    use crate::compiler2::pull::TransportCarrier;
+    use crate::compiler2::transport::{LaneDescr, TransportClass};
+    use crate::telemetry::sink::NullTelemetry;
+
+    fn empty_backend_program() -> BackendProgram {
+        BackendProgram {
+            entry: 0,
+            atom_names: Vec::new(),
+            struct_schemas: Default::default(),
+            executables: Vec::new(),
+            construction_wrappers: Vec::new(),
+        }
+    }
+
+    fn test_executable(key: ExecutableKey, return_ty: Ty, nothing: ShapeId) -> BackendExecutable {
+        BackendExecutable {
+            key,
+            entry_dispatch: None,
+            return_ty,
+            param_reprs: Vec::new(),
+            semantic_inputs: Box::new([]),
+            return_layout: BackendReturnLayout {
+                layout: BackendValueLayout {
+                    structural: nothing,
+                    carrier: TransportCarrier::Absent,
+                    tys: Box::new([]),
+                    reprs: Box::new([]),
+                },
+                diverges: false,
+            },
+            runtime_demand: Rc::new(super::super::super::semantic::ExecutableRuntimeDemand::default()),
+            value_types: HashMap::new(),
+            value_layouts: HashMap::new(),
+            effects: EffectSummary::default(),
+            body: BackendBody::Clauses {
+                clauses: Vec::new(),
+                entries: Vec::new(),
+                generated: Vec::new(),
+            },
+        }
+    }
+
+    fn encode_for_layout<T: crate::telemetry::Telemetry>(
+        lowerer: &mut NativeLowerer<'_, '_, T>,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        value: &NativeBoundValue,
+        shape: ShapeId,
+    ) -> Result<Vec<Var>, FatalError> {
+        encode_with_carrier(lowerer, ctx, executable, value, shape, false)
+    }
+
+    fn encode_with_carrier<T: crate::telemetry::Telemetry>(
+        lowerer: &mut NativeLowerer<'_, '_, T>,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        value: &NativeBoundValue,
+        shape: ShapeId,
+        carries_runtime_value: bool,
+    ) -> Result<Vec<Var>, FatalError> {
+        let mut encoded = Vec::new();
+        lowerer.encode_runtime_value_with_carrier(
+            ctx,
+            executable,
+            None,
+            value,
+            shape,
+            carries_runtime_value,
+            &mut encoded,
+        )?;
+        Ok(encoded)
+    }
+
+    fn defining_prim(function: &crate::fz_ir::FnIr, value: Var) -> Option<&Prim> {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .find_map(|statement| {
+                let crate::fz_ir::Stmt::Let(defined, prim) = statement;
+                (*defined == value).then_some(prim)
+            })
+    }
+
+    #[test]
+    fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let inner_tuple_ty = world.types_mut().tuple(&[int, int, int]);
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let lane = world.intern_lane(LaneDescr {
+            ty: int,
+            class: TransportClass::Value,
+        });
+        let scalar = world.intern_shape(ShapeDescr::Lane(lane));
+        let inner_tuple_lane = world.intern_lane(LaneDescr {
+            ty: inner_tuple_ty,
+            class: TransportClass::Value,
+        });
+        let inner_tuple_value = world.intern_shape(ShapeDescr::Lane(inner_tuple_lane));
+        let source_inner = world.intern_shape(ShapeDescr::Tuple(vec![scalar, scalar, scalar].into_boxed_slice()));
+        let source = world.intern_shape(ShapeDescr::Tuple(vec![nothing, source_inner].into_boxed_slice()));
+        let destination = world.intern_shape(ShapeDescr::Tuple(vec![nothing, inner_tuple_value].into_boxed_slice()));
+        let selective_inner = world.intern_shape(ShapeDescr::Tuple(vec![nothing, scalar, nothing].into_boxed_slice()));
+        let selective_destination =
+            world.intern_shape(ShapeDescr::Tuple(vec![nothing, selective_inner].into_boxed_slice()));
+        let source_with_present_discard =
+            world.intern_shape(ShapeDescr::Tuple(vec![scalar, source_inner].into_boxed_slice()));
+        let required_absent_destination =
+            world.intern_shape(ShapeDescr::Tuple(vec![scalar, nothing].into_boxed_slice()));
+        let arity_mismatch_destination = world.intern_shape(ShapeDescr::Tuple(vec![scalar].into_boxed_slice()));
+        let root = RootId::for_test(0);
+        let function = FunctionId::for_test(0);
+        let activation = ActivationKey::from_inputs(root, function, &[], world.types_mut());
+        let key = ExecutableKey {
+            activation,
+            need: ExecutableNeed::Value,
+        };
+        let executable = test_executable(key.clone(), int, nothing);
+        let program = empty_backend_program();
+        let telemetry = NullTelemetry;
+        let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");
+        let mut ctx = NativeFnCtx::new(
+            FnId(0),
+            "tuple_reprojection",
+            FnCategory::User,
+            NativeBodyOrigin::Executable(key),
+            NativeEntryAbi::Direct,
+            Vec::new(),
+            int,
+            vec![AbiValueRepr::ValueRef],
+            None,
+            EffectSummary::default(),
+        );
+        let params = ctx.entry_params(&[int, int, int]);
+        let value = NativeBoundValue::Transport {
+            shape: source,
+            lanes: params.clone(),
+        };
+        let encoded = encode_for_layout(&mut lowerer, &mut ctx, &executable, &value, destination)
+            .expect("the destination erases the absent field before encoding the required inner tuple");
+
+        assert_eq!(encoded.len(), 1);
+
+        let selectively_encoded = encode_for_layout(&mut lowerer, &mut ctx, &executable, &value, selective_destination)
+            .expect("a second consumer should independently select one nested source field");
+        assert_eq!(selectively_encoded, vec![params[1]]);
+
+        let (present_tag, _) = ctx.emit_let(Prim::Const(Const::Int(99)));
+        let value_with_present_discard = NativeBoundValue::Transport {
+            shape: source_with_present_discard,
+            lanes: std::iter::once(present_tag).chain(params.iter().copied()).collect(),
+        };
+        let present_discarded = encode_for_layout(
+            &mut lowerer,
+            &mut ctx,
+            &executable,
+            &value_with_present_discard,
+            destination,
+        )
+        .expect("destination Nothing should discard a present source field");
+        assert_eq!(present_discarded.len(), 1);
+
+        let whole_carrier = encode_with_carrier(
+            &mut lowerer,
+            &mut ctx,
+            &executable,
+            &value_with_present_discard,
+            source_with_present_discard,
+            true,
+        )
+        .expect("a whole tuple should satisfy an outer ValueRef carrier");
+        assert_eq!(whole_carrier.len(), 1);
+        assert!(
+            encode_with_carrier(&mut lowerer, &mut ctx, &executable, &value, destination, true,).is_err(),
+            "same-arity reprojection must not bypass an outer ValueRef obligation",
+        );
+
+        assert!(
+            encode_for_layout(&mut lowerer, &mut ctx, &executable, &value, required_absent_destination,).is_err(),
+            "a required destination field cannot be invented from an absent source field",
+        );
+        assert!(
+            encode_for_layout(&mut lowerer, &mut ctx, &executable, &value, arity_mismatch_destination,).is_err(),
+            "arity-mismatched tuples retain outer materialization behavior",
+        );
+        assert!(
+            lowerer
+                .encode_runtime_value(&mut ctx, &executable, None, &value, scalar, &mut Vec::new())
+                .is_err(),
+            "non-tuple destinations retain outer materialization behavior",
+        );
+
+        let mut identical = Vec::new();
+        lowerer
+            .encode_runtime_value(&mut ctx, &executable, None, &value, source, &mut identical)
+            .expect("an identical layout keeps the direct lane-copy path");
+        assert_eq!(identical, params);
+
+        ctx.set_term(Term::Halt(encoded[0]));
+        let (function, body) = ctx.finish();
+        assert_eq!(body.value_types.get(&encoded[0]), Some(&inner_tuple_ty));
+        assert_eq!(body.value_types.get(&present_discarded[0]), Some(&inner_tuple_ty));
+        assert!(
+            matches!(defining_prim(&function, encoded[0]), Some(Prim::MakeTuple(items)) if items == &params),
+            "the absent-tag consumer should build only the required inner tuple",
+        );
+        assert!(
+            matches!(defining_prim(&function, present_discarded[0]), Some(Prim::MakeTuple(items)) if items == &params),
+            "the present-tag consumer should discard the tag before building the inner tuple",
+        );
+        assert!(
+            matches!(defining_prim(&function, whole_carrier[0]), Some(Prim::MakeTuple(items)) if items.len() == 2 && items[0] == present_tag),
+            "the explicit whole carrier should build one outer tuple value",
+        );
+        assert!(
+            function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.stmts)
+                .all(|statement| { !matches!(statement, crate::fz_ir::Stmt::Let(_, Prim::TupleField(_, _))) })
+        );
+    }
 }
