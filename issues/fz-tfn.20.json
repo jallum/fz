@@ -6,7 +6,9 @@
     "fz-kdt.32",
     "fz-tfn.30"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.39"
+  ],
   "created": "2026-09-03T08:01:25Z",
   "description": "## Goal\n\nGive the long-lived compiler a bounded source lifecycle: withdraw and reclaim superseded code snapshots, source text, definitions, expectations, and scheduler subscriptions once no current owner refers to them.\n\n## Current boundary\n\nCodeMap::define always appends a new CodeId, source-map entry, text Arc, and CodeState. Same-World redefinition therefore accumulates historical source state. Exact reclamation is currently unsafe because function/module/struct expectation ownership is not yet total: late duplicate functions, named-module replacement, and stale requester expectations each have open correctness tickets.\n\n## Strategy and proof\n\n1. First establish durable source/definition ownership and replaceable requester contributions.\n2. Define current, superseded-but-diagnostically-retained, and reclaimable states explicitly.\n3. Withdraw scheduler claims, waits, product readers, span/source mappings, and semantic contributions from a superseded CodeId through normal ownership rules.\n4. Reclaim only after no current diagnostic or artifact can name the snapshot.\n5. Delete whole-code rediscovery scans and append-only compatibility retention made unnecessary by exact ownership.\n6. Test repeated redefinition, late duplicates, macro-produced definitions, retained diagnostics, reachable/unreachable roots, and bounded inventory over many replacements.\n7. Prove identical current semantics/artifacts and exact invalidation; use inventory counts rather than time thresholds.\n8. Update source/module lifecycle docs and remove temporary retention probes.\n\nDo not implement Ty or source garbage collection by age or generation heuristics.",
   "id": "fz-tfn.20",
@@ -16,5 +18,5 @@
   "status": "open",
   "title": "Retire superseded source snapshots after exact ownership lands",
   "type": "task",
-  "updated_at": "2026-09-04T00:00:50Z"
+  "updated_at": "2026-09-05T14:15:53Z"
 }
