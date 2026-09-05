@@ -15,8 +15,8 @@
   "labels": [],
   "parent": "fz-tfn",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Make root backend packaging react to exact keyed contributions",
   "type": "task",
-  "updated_at": "2026-09-05T21:06:50Z"
+  "updated_at": "2026-09-05T21:43:39Z"
 }
