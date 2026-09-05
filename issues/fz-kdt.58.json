@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-kdt.57",
     "fz-tfn.30"
@@ -20,8 +20,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Prove and prune unnecessary transport-shape and callable-construction products",
   "type": "task",
-  "updated_at": "2026-09-05T18:55:59Z"
+  "updated_at": "2026-09-05T19:05:56Z"
 }
