@@ -7,9 +7,9 @@
   "id": "fz-tfn.42",
   "labels": [],
   "parent": "fz-tfn",
-  "priority": 2,
+  "priority": 4,
   "status": "open",
   "title": "Unify delivered return-payload type and demand authority",
   "type": "bug",
-  "updated_at": "2026-09-05T19:14:24Z"
+  "updated_at": "2026-09-05T19:15:47Z"
 }
