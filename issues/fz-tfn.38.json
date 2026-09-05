@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-tfn.11"
+  ],
   "created": "2026-09-05T12:49:43Z",
   "description": "## Goal\n\nRestore the exact 00181 public-trace and drain-arbiter work budgets after the reactive RuntimeDemand cutover. Do not raise either budget. Attribute and eliminate the redundant work or telemetry so the simplification arc becomes observably smaller and faster under the actual CI coverage configuration.\n\n## Proven regression\n\nDraft PR #118 commit fe73709d44474affa138ec31da058c7c22dcfb24 passed local serial library and fixture gates but CI run 33966002646 failed after 22 minutes in the llvm-cov workspace test step:\n\n- tests/fz2_cli.rs::compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals: fixtures2/00181_enum_reduce_operator_ref.fz exceeded the 1,600 KiB byte budget.\n- tests/fz2_cli.rs::the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation: 41 quiescence events versus the pinned 34.\n\nThe same CI run passed 1,832 library tests and all 531 fixture paths before the two integration failures. Lint and doc tests were green. The regression is therefore a causal-work/public-trace failure, not semantic fixture behavior.\n\n## Strategy and acceptance\n\n1. Reproduce from exact commit fe73709d4 in an isolated worktree using the fz2_cli targets under the same coverage cfg when needed. Record exact event and byte counts.\n2. Compare typed quiescence steps and event families against green parent 7f2bcc2de. Name the exact new jobs/facts/products causing the seven extra readiness-only quiescence steps and the byte growth.\n3. Fix the earliest ownership/scheduling/telemetry cause. Do not increase the 34-event or 1,600-KiB limits, suppress required public causal signals, restore cone-era RuntimeDemand machinery, or special-case the fixture.\n4. Preserve fz-kdt.4 invariants: 1,278 RuntimeDemand evaluations, 1,039 changed-revision demand wakes, 311 demand/construction keys, 1,730 non-demand changed-revision starts, 1,140 non-demand blocked expansions, tree 3 allocations/144 bytes, and all semantic artifacts/output.\n5. Add focused TDD proof for the eliminated redundant transition or duplicate rendering. Update ticket description before any model correction and update agent/user documentation if ownership or telemetry semantics change.\n6. Pass both failing fz2_cli tests in the actual llvm-cov configuration, the complete fz2_cli integration target, focused RuntimeDemand/scheduler tests, serial library, serial 531-case fixture matrix, cross-process determinism, all-target check, strict clippy, fmt, and diff check.\n7. Record before/after event and byte counts and delete all diagnostic instrumentation or temporary fixtures before commit.\n\nThis ticket blocks the next epic commit and push because CI must be green at every ticket boundary.",
   "id": "fz-tfn.38",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Eliminate post-RuntimeDemand 00181 telemetry and quiescence budget regression",
   "type": "bug",
-  "updated_at": "2026-09-05T12:49:43Z"
+  "updated_at": "2026-09-05T12:49:52Z"
 }
