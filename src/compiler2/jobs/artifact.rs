@@ -67,9 +67,11 @@ pub(crate) fn produce_materialized_executable_product(
     if !context.read_fact(world, FactUse::settled(return_fact.clone())) {
         waits.push(PullWait::Fact(FactUse::settled(return_fact)));
     }
-    let runtime_demand = context.read_runtime_demand(tel, executable, world.types());
+    let runtime_demand = context.read_runtime_demand_fact(world, executable);
     if runtime_demand.is_none() {
-        waits.push(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+            executable.clone(),
+        ))));
     }
     let outgoing_key = ProductKey::OutgoingInputEdges(executable.clone());
     if context.read_product(tel, outgoing_key.clone(), world.types()).is_none() {
@@ -159,7 +161,7 @@ pub(crate) fn produce_materialized_executable_product(
     let materialized = Rc::new(MaterializedExecutable {
         entry_dispatch: executable_facts.entry_dispatch().cloned(),
         return_ty,
-        runtime_demand: runtime_demand.expect("runtime-demand product wait should have been satisfied"),
+        runtime_demand: runtime_demand.expect("runtime-demand fact wait should have been satisfied"),
         transport,
         original_entry_ids: pruned.original_entry_ids,
         value_types: analysis.value_types,

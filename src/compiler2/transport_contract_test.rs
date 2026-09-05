@@ -17,8 +17,8 @@ use super::transport::{
 };
 use super::types::Ty;
 use super::{
-    CodeSubmission, Compiler2, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand, FactKey, Job, RootSubmission,
-    RuntimeDemand, ShapeDemand, World,
+    CallableConstructionTargetKey, CodeSubmission, Compiler2, ExecutableKey, ExecutableNeed, ExecutableRuntimeDemand,
+    FactKey, Job, RootSubmission, RuntimeDemand, ShapeDemand, World,
 };
 use crate::exec::runtime::DbgCapture;
 use crate::telemetry::ConfiguredTelemetry;
@@ -1012,7 +1012,7 @@ end
         .callable(callable)
         .function
         .unwrap_or_else(|| panic!("returned direct callable should name its local producer"));
-    let flow = upstream_callable_flow_for_producer(session, producer_function);
+    let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, callable, &flow);
     let ShapeDescr::Callable(applied_callable) = shape_descr(&world, applied) else {
         panic!("apply1/2's input ABI should remain callable-shaped")
@@ -1389,21 +1389,8 @@ end
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
     let session = driver.session();
-    let mut demand_closure = session.demanded_executables().clone();
-    loop {
-        let previous_len = demand_closure.len();
-        demand_closure.extend(demand_closure.clone().into_iter().flat_map(|executable| {
-            session
-                .settled_demand_callees(&executable)
-                .into_iter()
-                .flatten()
-                .cloned()
-        }));
-        if demand_closure.len() == previous_len {
-            break;
-        }
-    }
-    let demanded_lambda_inputs = demand_closure
+    let demanded_lambda_inputs = session
+        .demanded_executables()
         .iter()
         .filter(|executable| {
             world
@@ -1912,7 +1899,7 @@ end
         .callable(callable)
         .function
         .unwrap_or_else(|| panic!("returned direct-and-escaped callable should name its local producer"));
-    let flow = upstream_callable_flow_for_producer(session, producer_function);
+    let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, callable, &flow);
     let (callables, boundaries) = callable_owner_facts_for_test(session);
     let facts = callables
@@ -1926,7 +1913,7 @@ end
         !facts.boundary_ids.is_empty(),
         "the escaped callable should still publish a first-class boundary"
     );
-    let runtime_demands = runtime_demands_for_frontier(session);
+    let runtime_demands = runtime_demands_for_frontier(&world, session);
     for boundary in facts.boundary_ids.iter() {
         let boundary_facts = boundaries
             .get(boundary)
@@ -2008,7 +1995,7 @@ end
         .callable(captured_callable)
         .function
         .unwrap_or_else(|| panic!("captured callable should name its local producer"));
-    let flow = upstream_callable_flow_for_producer(session, producer_function);
+    let flow = upstream_callable_flow_for_producer(&world, session, producer_function);
     assert_callable_facts_match_upstream_flow(&mut world, session, captured_callable, &flow);
     assert!(
         !captured_facts.direct_surfaces.is_empty(),
@@ -2272,7 +2259,7 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
 
     let plus_flows = executables
         .iter()
-        .filter_map(|executable| driver.session().memo().runtime_demand(executable))
+        .filter_map(|executable| world.runtime_demand(executable))
         .flat_map(|demand| demand.callable_flows.values())
         .filter(|flow| function_is(&world, flow.function, "+", 2))
         .collect::<Vec<_>>();
@@ -2284,15 +2271,15 @@ fn compiler2_pull_runtime_demand_keeps_enum_reduce_operator_refs_direct_callable
                     .iter()
                     .any(|resolution| function_is(&world, resolution.activation.function, "+", 2))
         }),
-        "product runtime demand should keep operator refs as direct Kernel.+/2 callable flows: {plus_flows:?}"
+        "the RuntimeDemand fact should keep operator refs as direct Kernel.+/2 callable flows: {plus_flows:?}"
     );
     assert!(
         plus_flows
             .iter()
             .all(|flow| flow.first_class_surfaces.is_empty() && !flow.opaque && !flow.escape),
-        "operator refs used only as Enum.reduce reducers should not become first-class product demand: {plus_flows:?}"
+        "operator refs used only as Enum.reduce reducers should not become first-class demand: {plus_flows:?}"
     );
-    let executable_fact_pokes = assert_executable_fact_producer_pokes(&world, driver.session());
+    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product path should emit finished produced outcomes"
@@ -2323,13 +2310,13 @@ end
     let _ = &plan;
     let session = driver.session();
 
-    let demand = product_runtime_demand_for_function(&world, session, "ignore", 1);
+    let demand = runtime_demand_fact_for_function(&world, session, "ignore", 1);
     assert_eq!(
         demand.input_demands,
         vec![RuntimeDemand::ignore()],
         "semantic inputs stay present, but an unused callable input should not claim runtime demand",
     );
-    let omitted_inputs = runtime_demands_for_frontier(session)
+    let omitted_inputs = runtime_demands_for_frontier(&world, session)
         .values()
         .flat_map(|demand| demand.input_demands.iter())
         .filter(|input| input.is_ignore())
@@ -2455,7 +2442,7 @@ end
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
-    let demands = runtime_demands_for_frontier(driver.session());
+    let demands = runtime_demands_for_frontier(&world, driver.session());
 
     let direct_callable_flows = demands
         .values()
@@ -2500,7 +2487,7 @@ fn compiler2_a_discarded_closure_call_narrows_its_callee_only_when_no_seam_boxes
         let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
         let _ = &plan;
         let session = driver.session();
-        let demands = runtime_demands_for_frontier(session);
+        let demands = runtime_demands_for_frontier(&world, session);
         // The callable-flow fact names the function it constructs; that is the
         // lambda whose own return the discarded call may or may not reach.
         let lambda_function = demands
@@ -2571,7 +2558,7 @@ fn main(), do: make()
     let _ = &plan;
     let session = driver.session();
 
-    let demand = product_runtime_demand_for_function(&world, session, "make", 0);
+    let demand = runtime_demand_fact_for_function(&world, session, "make", 0);
     assert!(
         has_callable_flow(&demand, |flow| flow.escape && !flow.opaque),
         "a callable that escapes should be first-class at runtime: {demand:?}",
@@ -2586,7 +2573,7 @@ fn main(), do: make()
         }),
         "an escaped callable with no known call surface should publish a first-class surface and canonical resolution upstream: {demand:?}",
     );
-    let first_class_callable_flows = runtime_demands_for_frontier(session)
+    let first_class_callable_flows = runtime_demands_for_frontier(&world, session)
         .values()
         .flat_map(|demand| demand.callable_flows.values())
         .filter(|flow| !flow.first_class_surfaces.is_empty())
@@ -2619,7 +2606,7 @@ fn main(), do: apply(make_adder(1))
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demand = product_runtime_demand_for_function(&world, driver.session(), "make_adder", 1);
+    let demand = runtime_demand_fact_for_function(&world, driver.session(), "make_adder", 1);
     assert!(
         has_callable_flow(&demand, |flow| {
             !flow.escape && !flow.opaque && !flow.direct_surfaces.is_empty()
@@ -2648,7 +2635,7 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
     let _ = &plan;
     let session = driver.session();
 
-    let demand = product_runtime_demand_for_function(&world, session, "main", 1);
+    let demand = runtime_demand_fact_for_function(&world, session, "main", 1);
     assert!(
         matches!(
             demand.input_demands.as_slice(),
@@ -2659,7 +2646,7 @@ fn compiler2_runtime_demand_makes_opaque_callable_use_explicit() {
         ),
         "an unresolved closure call should keep opaque callable demand and its observed surface explicit: {demand:?}",
     );
-    let opaque_callable_demands = runtime_demands_for_frontier(session)
+    let opaque_callable_demands = runtime_demands_for_frontier(&world, session)
         .values()
         .flat_map(|demand| demand.input_demands.iter())
         .filter(|input| input.callable.opaque)
@@ -2691,7 +2678,7 @@ end
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demand = product_runtime_demand_for_function(&world, driver.session(), "main", 1);
+    let demand = runtime_demand_fact_for_function(&world, driver.session(), "main", 1);
     assert!(
         demand.call_arg_demands.values().any(|demands| {
             matches!(
@@ -2746,7 +2733,7 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
     let _ = &plan;
     let session = driver.session();
 
-    let demands = runtime_demands_for_frontier(session);
+    let demands = runtime_demands_for_frontier(&world, session);
     let (main_executable, demand) = demands
         .iter()
         .find(|(executable, _)| function_is(&world, executable.activation.function, "main", 0))
@@ -2823,7 +2810,7 @@ fn compiler2_runtime_demand_resolves_enum_take_first_class_reducer_surfaces_befo
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let demands = runtime_demands_for_frontier(driver.session());
+    let demands = runtime_demands_for_frontier(&world, driver.session());
     let first_class_flows = demands
         .values()
         .flat_map(|demand| demand.callable_flows.values())
@@ -2856,7 +2843,7 @@ fn main(), do: make_pairer()
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let runtime_demands = runtime_demands_for_frontier(driver.session());
+    let runtime_demands = runtime_demands_for_frontier(&world, driver.session());
     let tuple_return_demands = runtime_demands
         .iter()
         .filter_map(|(executable, demand)| {
@@ -2916,7 +2903,7 @@ end
     let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
     let _ = &plan;
 
-    let resume_demands = runtime_demands_for_frontier(driver.session())
+    let resume_demands = runtime_demands_for_frontier(&world, driver.session())
         .iter()
         .filter_map(|(executable, demand)| {
             function_is(&world, executable.activation.function, "pair_down", 1).then_some(demand.value_demands.clone())
@@ -2980,7 +2967,7 @@ fn main(), do: make()
         "the settled demand closure should hold canonical reducer activations, not type-template inputs: {reducer_executables:?}"
     );
 
-    let demands = runtime_demands_for_frontier(session);
+    let demands = runtime_demands_for_frontier(&world, session);
     assert!(
         demands.values().any(|demand| {
             has_callable_flow(demand, |flow| {
@@ -3030,7 +3017,7 @@ end
     // The per-executable product makes every dbg/1 activation individually
     // observable; the store-era test asserted one map entry — every activation
     // must satisfy the same contract.
-    let dbg_input_demands = runtime_demands_for_frontier(session)
+    let dbg_input_demands = runtime_demands_for_frontier(&world, session)
         .iter()
         .filter(|(executable, _)| function_is(&world, executable.activation.function, "dbg", 1))
         .map(|(_, demand)| demand.input_demands.clone())
@@ -3047,7 +3034,7 @@ end
         );
     }
 
-    let main_demand = product_runtime_demand_for_function(&world, session, "main", 0);
+    let main_demand = runtime_demand_fact_for_function(&world, session, "main", 0);
     assert!(
         main_demand
             .entry_capture_demands
@@ -3170,7 +3157,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
         .demanded_executables()
         .iter()
         .find_map(|executable| {
-            let runtime = driver.session().memo().runtime_demand(executable)?;
+            let runtime = world.runtime_demand(executable)?;
             runtime
                 .input_demands
                 .iter()
@@ -3200,7 +3187,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     assert_eq!(plus_descr.function, Some(zero_capture_plus_input.2.activation.function));
     assert!(callable_capture_lanes(&world, *plus_callable).is_empty());
     assert_eq!(plus_layout.carrier, TransportCarrier::Absent);
-    assert_executable_fact_producer_pokes(&world, driver.session());
+    assert_materialized_executable_fact_authority(&world, driver.session());
     assert!(
         pull_events.produced_count() > 0,
         "product transport path should emit finished produced outcomes"
@@ -3288,7 +3275,7 @@ fn compiler2_pull_materialized_products_keep_enum_reduce_operator_refs_symbolic(
             }
         }
     }
-    assert_executable_fact_producer_pokes(&world, driver.session());
+    assert_materialized_executable_fact_authority(&world, driver.session());
 }
 
 #[test]
@@ -3338,7 +3325,7 @@ fn compiler2_pull_abi_and_backend_products_keep_call_edges_symbolic() {
         );
         assert_symbolic_backend_body_has_no_dense_targets(&backend.body, caller);
     }
-    assert_executable_fact_producer_pokes(&world, driver.session());
+    assert_materialized_executable_fact_authority(&world, driver.session());
 }
 
 #[test]
@@ -3392,7 +3379,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
         "direct operator refs should not fabricate first-class construction wrappers",
     );
     assert_direct_clause_param_forwards_have_abi_reprs(&world, &program);
-    let executable_fact_pokes = assert_executable_fact_producer_pokes(&world, driver.session());
+    let executable_fact_pokes = assert_materialized_executable_fact_authority(&world, driver.session());
     driver.finish_session();
     assert!(
         product_jobs.total_stops() > 0,
@@ -3660,7 +3647,7 @@ fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix
         .demanded_executables()
         .iter()
         .find_map(|executable| {
-            let demand = session.memo().runtime_demand(executable)?;
+            let demand = world.runtime_demand(executable)?;
             demand
                 .input_demands
                 .iter()
@@ -4263,11 +4250,11 @@ fn compiler2_callable_owners_publish_only_their_own_position() {
     );
 }
 
-/// Large immutable products cross several ownership surfaces, but each
-/// surface must retain the producer's one allocation. Structural equality is
-/// still the movement rule; pointer identity is only the ownership proof.
+/// Large immutable facts and products cross several ownership surfaces, but
+/// each surface must retain the producer's one allocation. Structural equality
+/// remains the movement rule; pointer identity is only the ownership proof.
 #[test]
-fn product_memo_is_the_only_typed_artifact_inventory_and_shares_payloads_through_world_and_cache() {
+fn world_facts_and_product_memo_share_their_immutable_payloads() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -4290,20 +4277,18 @@ fn product_memo_is_the_only_typed_artifact_inventory_and_shares_payloads_through
 
     let memo = driver.session().memo();
     for (executable, materialized) in memo.materialized_executables() {
-        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.clone())) {
-            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
-            other => panic!("expected memoized runtime demand, got {other:?}"),
-        };
+        let runtime_demand = world
+            .runtime_demand(executable)
+            .expect("materialized executable must read a RuntimeDemand fact");
         assert!(
             Rc::ptr_eq(&materialized.runtime_demand, runtime_demand),
             "materialization must retain the producer's RuntimeDemand allocation",
         );
     }
     for (executable, abi) in memo.abi_executables() {
-        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.clone())) {
-            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
-            other => panic!("expected memoized runtime demand, got {other:?}"),
-        };
+        let runtime_demand = world
+            .runtime_demand(executable)
+            .expect("ABI executable must read a RuntimeDemand fact");
         assert!(Rc::ptr_eq(&abi.materialized.runtime_demand, runtime_demand));
         assert!(Rc::ptr_eq(
             &abi.materialized,
@@ -4325,10 +4310,9 @@ fn product_memo_is_the_only_typed_artifact_inventory_and_shares_payloads_through
         }
     }
     for (executable, backend) in memo.backend_executables() {
-        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.clone())) {
-            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
-            other => panic!("expected memoized runtime demand, got {other:?}"),
-        };
+        let runtime_demand = world
+            .runtime_demand(executable)
+            .expect("backend executable must read a RuntimeDemand fact");
         assert!(Rc::ptr_eq(&backend.abi.materialized.runtime_demand, runtime_demand));
         assert!(Rc::ptr_eq(
             &backend.abi,
@@ -4336,10 +4320,9 @@ fn product_memo_is_the_only_typed_artifact_inventory_and_shares_payloads_through
         ));
     }
     for executable in &root_answer.program.executables {
-        let runtime_demand = match memo.get(&ProductKey::RuntimeDemand(executable.key.clone())) {
-            Some(ProductValue::RuntimeDemand(runtime_demand)) => runtime_demand,
-            other => panic!("expected memoized runtime demand, got {other:?}"),
-        };
+        let runtime_demand = world
+            .runtime_demand(&executable.key)
+            .expect("packaged executable must read a RuntimeDemand fact");
         assert!(
             Rc::ptr_eq(&executable.runtime_demand, runtime_demand),
             "backend packaging must retain the producer's RuntimeDemand allocation",
@@ -4355,102 +4338,6 @@ fn product_memo_is_the_only_typed_artifact_inventory_and_shares_payloads_through
         other => panic!("settled root product should be a cache hit, got {other:?}"),
     }
 
-    let executable = driver
-        .session()
-        .memo()
-        .backend_executables()
-        .map(|(executable, _)| executable)
-        .next()
-        .cloned()
-        .expect("the fixture must lower a backend executable");
-    let materialized = Rc::clone(
-        driver
-            .session()
-            .memo()
-            .materialized_executable(&executable)
-            .expect("backend executable must have a materialized input"),
-    );
-    let abi = Rc::clone(
-        driver
-            .session()
-            .memo()
-            .abi_executable(&executable)
-            .expect("backend executable must have an ABI input"),
-    );
-    let backend = Rc::clone(
-        driver
-            .session()
-            .memo()
-            .backend_executable(&executable)
-            .expect("selected backend executable"),
-    );
-    let reproduced = [
-        (
-            ProductKey::MaterializedExecutable(executable.clone()),
-            ProductValue::MaterializedExecutable(Rc::clone(&materialized)),
-        ),
-        (
-            ProductKey::AbiExecutable(executable.clone()),
-            ProductValue::AbiExecutable(Rc::clone(&abi)),
-        ),
-        (
-            ProductKey::BackendExecutable(executable.clone()),
-            ProductValue::BackendExecutable(Rc::clone(&backend)),
-        ),
-    ]
-    .map(|(key, value)| {
-        let generation = driver
-            .session()
-            .memo()
-            .generation(&key)
-            .expect("settled artifact generation");
-        (key, value, generation)
-    });
-    driver
-        .session_mut()
-        .invalidate_artifact_products_for(&tel, &executable, world.types());
-    for (key, expected, generation) in reproduced {
-        let actual = pull_product_until_produced_with_fact_waits(
-            &mut driver,
-            &mut world,
-            root,
-            key.clone(),
-            "unchanged artifact reproduction must settle",
-        );
-        assert!(
-            same_shared_product_handle(&actual, &expected),
-            "unchanged artifact reproduction must return its prior canonical handle",
-        );
-        assert_eq!(
-            driver.session().memo().generation(&key),
-            Some(generation),
-            "unchanged artifact reproduction must preserve its product generation",
-        );
-    }
-    assert!(Rc::ptr_eq(
-        driver
-            .session()
-            .memo()
-            .materialized_executable(&executable)
-            .expect("reproduced materialized product"),
-        &materialized,
-    ));
-    assert!(Rc::ptr_eq(
-        driver
-            .session()
-            .memo()
-            .abi_executable(&executable)
-            .expect("reproduced ABI product"),
-        &abi,
-    ));
-    assert!(Rc::ptr_eq(
-        driver
-            .session()
-            .memo()
-            .backend_executable(&executable)
-            .expect("reproduced backend product"),
-        &backend,
-    ));
     driver.finish_session();
 
     let second_driver = pull_root_backend_driver_for_test(&tel, &mut world, root);
@@ -4977,6 +4864,72 @@ end
 }
 
 #[test]
+fn compiler2_escaped_callable_uses_its_exact_target_to_project_branded_capture_demand() {
+    let source = r#"
+fn main() do
+  predicate = fn x -> x > 2 end
+  fn (entry, acc) ->
+    if predicate.(entry), do: acc + 1, else: acc
+  end
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("escaped_branded_capture.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let owner = super::jobs::backend::executable_key_for_symbol(root, &plan.entry);
+    let owner_demand = world.runtime_demand(&owner).expect("main demand");
+    let (value, flow) = owner_demand
+        .callable_flows
+        .iter()
+        .find(|(_, flow)| flow.captures.len() == 1 && !flow.first_class_edges.is_empty())
+        .expect("the escaped outer closure should have one exact construction target");
+    assert!(flow.direct_edges.is_empty());
+    assert!(
+        owner_demand
+            .value_demands
+            .get(value)
+            .expect("escaped outer demand")
+            .callable
+            .targets
+            .is_empty(),
+        "the escaped-only path must prove construction-fact correlation rather than the direct-target path",
+    );
+    let target_key = CallableConstructionTargetKey {
+        owner: owner.clone(),
+        value: *value,
+        surface: flow.first_class_edges[0].surface.clone(),
+    };
+    assert!(
+        world
+            .job_reads(&Job::DeriveRuntimeDemand(owner))
+            .contains(&FactUse::current(FactKey::CallableConstructionTarget(target_key))),
+        "the owner formula must retain the exact construction-target dependency used to select the row",
+    );
+    let (callables, _) = callable_owner_facts_for_test(session);
+    let captured_shapes = callables
+        .keys()
+        .filter_map(|callable| {
+            let descr = world.callable(*callable);
+            let [capture] = descr.capture_layouts.as_ref() else {
+                return None;
+            };
+            Some(capture.structural)
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        captured_shapes
+            .iter()
+            .any(|shape| matches!(shape_descr(&world, *shape), ShapeDescr::Callable(_))),
+        "the escaped outer callable must carry its invoked predicate capture as a callable: {captured_shapes:?}",
+    );
+}
+
+#[test]
 fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_producer_identity_over_range() {
     let source = include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz");
 
@@ -4991,7 +4944,7 @@ fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_produce
     let _ = &plan;
     let session = driver.session();
     let (callables, _) = callable_owner_facts_for_test(session);
-    let runtime_demands = runtime_demands_for_frontier(session);
+    let runtime_demands = runtime_demands_for_frontier(&world, session);
     let direct_flows = runtime_demands
         .values()
         .flat_map(|demand| demand.callable_flows.values())
@@ -5109,110 +5062,6 @@ fn executable_for(world: &World, session: &PullSession, name: &str, arity: usize
         .unwrap_or_else(|| panic!("transport plan executable {name}/{arity}"))
 }
 
-#[test]
-fn compiler2_runtime_demand_resettles_a_member_whose_contribution_grows_an_external_callee() {
-    // INTENT (fz-go4.18.22 rework, F1 — the stale-caller window): a NON-anchor
-    // cone member whose settled contribution GROWS the joined return demand of
-    // a callee settled EARLIER (outside the cone) must not memoize a demand
-    // derived against that callee's pre-growth input demands.
-    //
-    // The anchor alone is already covered: the invalidation walk from the
-    // moved callee climbs the dependency chain back to the in-progress anchor,
-    // whose production the memo discards (`invalidated_in_progress`) and the
-    // driver re-pulls. The window is the MEMBER: its stale memo is recorded
-    // after the walk and stands — and the anchor's re-pull then reads it as a
-    // settled EXTERNAL, laundering the pre-growth demand into the anchor while
-    // the displaced callee re-settles larger with nothing re-deriving its
-    // caller. The fix refuses to memoize a cone whose publication displaced
-    // one of its own external inputs: it re-collects (the displaced callee is
-    // memo-less and joins as a member) and settles the grown cone together.
-    let tel = ConfiguredTelemetry::new();
-    let mut world = World::new();
-    world.submit_code(
-        Some("runtime_demand_stale_caller_window.fz".to_string()),
-        r#"
-fn id(x), do: x
-fn mid(q), do: id(q)
-fn caller(p), do: mid(p)
-fn main(), do: caller(1)
-"#
-        .to_string(),
-    );
-    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    // Settle every World fact once; the window itself is re-constructed in a
-    // FRESH session below, where the pull order is controlled explicitly.
-    let warm = pull_root_backend_driver_for_test(&tel, &mut world, root);
-    let id_exec = demanded_executable_for_function(&world, warm.session(), "id", 1);
-    let mid_exec = demanded_executable_for_function(&world, warm.session(), "mid", 1);
-    let caller_exec = demanded_executable_for_function(&world, warm.session(), "caller", 1);
-    let phantom_caller = world.root_entry_executable(root);
-
-    let mut driver = ProductDriver::new(&tel, root);
-    // An earlier settle observed `id` only as a discarded call: its joined
-    // return demand is the bottom `ignore` (an observed discard, not absence),
-    // so `id` settles with its input undemanded.
-    driver.session_mut().replace_settled_return_demand_contributions(
-        &tel,
-        phantom_caller,
-        HashMap::from([(id_exec.clone(), RuntimeDemand::ignore())]),
-        &HashSet::new(),
-        world.types(),
-    );
-    pull_product_until_produced_with_fact_waits(
-        &mut driver,
-        &mut world,
-        root,
-        ProductKey::RuntimeDemand(id_exec.clone()),
-        "id demand should settle from the discard evidence",
-    );
-    assert_eq!(
-        driver
-            .session()
-            .memo()
-            .runtime_demand(&id_exec)
-            .map(|demand| demand.input_demands.clone()),
-        Some(vec![RuntimeDemand::ignore()]),
-        "premise: id settles EARLIER with its input undemanded",
-    );
-
-    // `caller` anchors a {caller, mid} cone that reads `id` as an external
-    // input; the anchor's explicit executable-need return contract flows down
-    // the chain, so `mid`'s contribution grows `id`'s join past the earlier
-    // settle.
-    pull_product_until_produced_with_fact_waits(
-        &mut driver,
-        &mut world,
-        root,
-        ProductKey::RuntimeDemand(caller_exec.clone()),
-        "caller demand should settle",
-    );
-
-    for (name, executable) in [("caller", &caller_exec), ("mid", &mid_exec), ("id", &id_exec)] {
-        let demand = driver
-            .session()
-            .memo()
-            .runtime_demand(executable)
-            .unwrap_or_else(|| panic!("{name} demand should be memoized by the re-settled cone"))
-            .clone();
-        assert_eq!(
-            demand.input_demands,
-            vec![RuntimeDemand::whole()],
-            "{name}'s settled input demand must reflect id's POST-growth input demand \
-             (whole flows caller -> mid -> id and back up the argument chain), \
-             not the displaced pre-growth ignore",
-        );
-    }
-}
-
-fn demanded_executable_for_function(world: &World, session: &PullSession, name: &str, arity: usize) -> ExecutableKey {
-    session
-        .demanded_executables()
-        .iter()
-        .find(|executable| function_is(world, executable.activation.function, name, arity))
-        .cloned()
-        .unwrap_or_else(|| panic!("demanded executable for {name}/{arity}"))
-}
-
 fn assert_entry_dispatch_control(
     source_name: &str,
     source: &str,
@@ -5245,20 +5094,22 @@ fn assert_entry_dispatch_control(
     );
 }
 
-fn runtime_demands_for_frontier(session: &PullSession) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
+fn runtime_demands_for_frontier(
+    world: &World,
+    session: &PullSession,
+) -> HashMap<ExecutableKey, ExecutableRuntimeDemand> {
     session
         .demanded_executables()
         .iter()
         .filter_map(|executable| {
-            session
-                .memo()
+            world
                 .runtime_demand(executable)
-                .map(|demand| (executable.clone(), demand.clone()))
+                .map(|demand| (executable.clone(), demand.as_ref().clone()))
         })
         .collect()
 }
 
-fn product_runtime_demand_for_function(
+fn runtime_demand_fact_for_function(
     world: &World,
     session: &PullSession,
     name: &str,
@@ -5268,8 +5119,9 @@ fn product_runtime_demand_for_function(
         .demanded_executables()
         .iter()
         .find(|executable| function_is(world, executable.activation.function, name, arity))
-        .and_then(|executable| session.memo().runtime_demand(executable).cloned())
-        .unwrap_or_else(|| panic!("product runtime demand for {name}/{arity}"))
+        .and_then(|executable| world.runtime_demand(executable))
+        .map(|demand| demand.as_ref().clone())
+        .unwrap_or_else(|| panic!("RuntimeDemand fact for {name}/{arity}"))
 }
 
 fn has_callable_flow(demand: &ExecutableRuntimeDemand, predicate: impl Fn(&CallableFlowFact) -> bool) -> bool {
@@ -5446,17 +5298,6 @@ fn pull_product_until_produced_with_fact_waits(
     panic!("{message}: product {key:?} did not settle; last wait: {last_wait:?}");
 }
 
-fn same_shared_product_handle(left: &ProductValue, right: &ProductValue) -> bool {
-    match (left, right) {
-        (ProductValue::MaterializedExecutable(left), ProductValue::MaterializedExecutable(right)) => {
-            Rc::ptr_eq(left, right)
-        }
-        (ProductValue::AbiExecutable(left), ProductValue::AbiExecutable(right)) => Rc::ptr_eq(left, right),
-        (ProductValue::BackendExecutable(left), ProductValue::BackendExecutable(right)) => Rc::ptr_eq(left, right),
-        _ => false,
-    }
-}
-
 fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {
     match &edge.target {
         super::artifact::CallEdge::Direct(direct) => direct.callee.local().into_iter().collect(),
@@ -5516,8 +5357,12 @@ fn abi_call_edge_callees_from_target(target: &super::artifact::CallEdge<Executab
     }
 }
 
-fn upstream_callable_flow_for_producer(session: &PullSession, function: super::FunctionId) -> CallableFlowFact {
-    runtime_demands_for_frontier(session)
+fn upstream_callable_flow_for_producer(
+    world: &World,
+    session: &PullSession,
+    function: super::FunctionId,
+) -> CallableFlowFact {
+    runtime_demands_for_frontier(world, session)
         .values()
         .flat_map(|demand| demand.callable_flows.values())
         .find(|flow| flow.function == function)
@@ -5532,7 +5377,7 @@ fn upstream_input_demand_for_function(
     arity: usize,
     semantic_index: usize,
 ) -> RuntimeDemand {
-    runtime_demands_for_frontier(session)
+    runtime_demands_for_frontier(world, session)
         .iter()
         .find_map(|(executable, demand)| {
             let function_ref = world.function_ref(executable.activation.function);
@@ -5988,17 +5833,12 @@ fn capture_finished_producer_pokes(tel: &ConfiguredTelemetry) -> Rc<RefCell<Opti
     observed
 }
 
-fn assert_executable_fact_producer_pokes(world: &World, session: &PullSession) -> u64 {
-    let expected = session.memo().materialized_executables().count() as u64;
-    assert_eq!(
-        session.producer_pokes(),
-        expected,
-        "a cold product drive should expand the sole direct ExecutableFacts producer once per demanded executable",
-    );
+fn assert_materialized_executable_fact_authority(world: &World, session: &PullSession) -> u64 {
+    let producer_pokes = session.producer_pokes();
     let starts = world.work_start_tally();
     assert!(
-        starts.blocked_waiter_expansion >= expected,
-        "each executable-fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
+        starts.blocked_waiter_expansion >= producer_pokes,
+        "each product-triggered fact producer poke must be attributed to BlockedWaiterExpansion: {starts:?}",
     );
     assert_eq!(
         starts.unclassified, 0,
@@ -6017,8 +5857,19 @@ fn assert_executable_fact_producer_pokes(world: &World, session: &PullSession) -
             vec![fact],
             "each demanded executable key must have exactly its one direct producer",
         );
+        let runtime_fact = FactKey::RuntimeDemand(executable.clone());
+        assert!(
+            world.fact_is_settled(&runtime_fact),
+            "each materialized executable must consume one settled RuntimeDemand fact",
+        );
+        assert!(
+            world
+                .job_outputs(&Job::DeriveRuntimeDemand(executable.clone()))
+                .contains(&runtime_fact),
+            "each runtime-demand value must come from its exact formula",
+        );
     }
-    expected
+    producer_pokes
 }
 
 fn product_no_dump_interp_job_telemetry(source: &str) -> (super::RootId, JobTelemetry) {

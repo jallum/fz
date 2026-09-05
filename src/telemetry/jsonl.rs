@@ -398,21 +398,6 @@ impl JsonlBackend {
                 );
             },
         );
-        let demand_cone_backend = Rc::clone(&backend);
-        telemetry.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::DemandConeSettlement, _>(
-            &["fz", "compiler2", "demand", "cone", "settled"],
-            move |name, span_id, parent_span_id, product, cone| {
-                demand_cone_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    crate::metadata! {
-                        product: crate::telemetry::opaque(product),
-                        cone: crate::telemetry::opaque(cone),
-                    },
-                );
-            },
-        );
         for name in [
             &["fz", "compiler2", "pull", "recursive_group", "published"][..],
             &["fz", "compiler2", "pull", "product", "copublished"][..],
@@ -1235,7 +1220,6 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "backend_request", ..]
             | ["fz", "compiler2", "pull", "recursive_group", "searched"]
             | ["fz", "compiler2", "work", "started"]
-            | ["fz", "compiler2", "demand", "cone", "settled"]
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
             | ["fz", "compiler2", "drive", "demand_on_stall"]
@@ -1662,18 +1646,6 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         write_str_lit(out, "transport_count");
         out.push(':');
         push_u64(out, transport_count);
-    } else if let Some(cone) = opaque.downcast_ref::<crate::compiler2::DemandConeSettlement>() {
-        for (name, value) in [
-            ("members", cone.members),
-            ("external_members", cone.external_members),
-            ("rounds", cone.rounds),
-            ("derivations", cone.derivations),
-        ] {
-            out.push(',');
-            write_str_lit(out, name);
-            out.push(':');
-            push_u64(out, value);
-        }
     } else if let Some(session) = opaque.downcast_ref::<crate::compiler2::PullSession>() {
         let work_starts = session.work_starts();
         for (name, value) in [
@@ -2069,6 +2041,20 @@ fn write_executable_key(out: &mut String, key: &crate::compiler2::ExecutableKey)
     write_executable_need(out, key.need);
 }
 
+fn write_callable_construction_target_key(out: &mut String, key: &crate::compiler2::CallableConstructionTargetKey) {
+    write_executable_key(out, &key.owner);
+    write_id_field(out, "value", key.value.as_u32());
+    out.push_str(",\"surface\":[");
+    for (index, ty) in key.surface.inputs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        note_named_type(*ty);
+        push_u64(out, ty.as_u32() as u64);
+    }
+    out.push(']');
+}
+
 fn write_callsite_id(out: &mut String, callsite: crate::compiler2::CallSiteId) {
     write_id_field(out, "callsite", callsite.as_u32());
 }
@@ -2210,7 +2196,8 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
             write_root_id(out, *root)
         }
         Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
-        Job::DeriveExecutableFacts(key) => write_executable_key(out, key),
+        Job::DeriveExecutableFacts(key) | Job::DeriveRuntimeDemand(key) => write_executable_key(out, key),
+        Job::DeriveCallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
     }
 }
 
@@ -2249,7 +2236,12 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::ActivationAnalyzed(key)
         | FactKey::ReturnType(key) => write_activation_key(out, key),
         FactKey::CallSiteTargets(key) | FactKey::CallSiteSummary(key) => write_callsite_key_identity(out, key),
-        FactKey::Executable(key) | FactKey::ExecutableFacts(key) => write_executable_key(out, key),
+        FactKey::CallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
+        FactKey::Executable(key)
+        | FactKey::ExecutableFacts(key)
+        | FactKey::RuntimeDemandInput(key)
+        | FactKey::RuntimeDemand(key)
+        | FactKey::RuntimeDemandInputs(key) => write_executable_key(out, key),
     }
 }
 
@@ -2398,21 +2390,7 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
         | ProductKey::AbiExecutable(executable)
         | ProductKey::MaterializedExecutable(executable)
         | ProductKey::ExecutableEffects(executable)
-        | ProductKey::RuntimeDemand(executable)
         | ProductKey::OutgoingInputEdges(executable) => write_executable_key(out, executable),
-        ProductKey::CallableResolution(key) => {
-            write_executable_key(out, &key.executable);
-            write_id_field(out, "value_id", key.value.as_u32());
-            out.push_str(",\"surface_tys\":[");
-            for (index, ty) in key.surface.inputs.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                note_named_type(*ty);
-                push_u64(out, u64::from(ty.as_u32()));
-            }
-            out.push(']');
-        }
         ProductKey::IncomingInputSlot(slot) => {
             write_executable_key(out, &slot.executable);
             write_semantic_index(out, slot.semantic_index);
@@ -2458,6 +2436,10 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::CallSiteSummary(_) => "CallSiteSummary",
         FactKey::Executable(_) => "Executable",
         FactKey::ExecutableFacts(_) => "ExecutableFacts",
+        FactKey::CallableConstructionTarget(_) => "CallableConstructionTarget",
+        FactKey::RuntimeDemandInput(_) => "RuntimeDemandInput",
+        FactKey::RuntimeDemand(_) => "RuntimeDemand",
+        FactKey::RuntimeDemandInputs(_) => "RuntimeDemandInputs",
         FactKey::BackendProgram(_) => "BackendProgram",
         FactKey::NativeProgram(_) => "NativeProgram",
     }
@@ -2487,6 +2469,8 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::SeedActivation(_) => "SeedActivation",
         Job::AnalyzeActivation(_) => "AnalyzeActivation",
         Job::DeriveExecutableFacts(_) => "DeriveExecutableFacts",
+        Job::DeriveCallableConstructionTarget(_) => "DeriveCallableConstructionTarget",
+        Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
         Job::BuildBackendProduct(_) => "BuildBackendProduct",
         Job::LowerNativeProgram(_) => "LowerNativeProgram",
     }

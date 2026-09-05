@@ -344,8 +344,8 @@ fn specificity_order(types: &Types, questions: &[Vec<RuntimeTypePredicate>], obs
 /// TWO KEYS, AND THEY ARE DIFFERENT QUANTITIES. This repair orders semantic
 /// destinations by the typed activation relation over the OBSERVABLE ENVELOPE
 /// ([`observable_inputs`], which is what the plan's rows are built from).
-/// `plan_callable_flows` orders independent `CallableResolutionKey` product
-/// reads by the full surface inputs. That earlier order schedules resolution;
+/// `plan_callable_flows` orders independent callable surfaces by their full
+/// inputs before resolving their edges. That earlier order schedules resolution;
 /// it does not order wrapper destinations. This function alone drops and seats
 /// the finished edges, so no concordance between the two quantities is assumed.
 ///
@@ -863,9 +863,9 @@ pub(crate) struct ConstructionSelection {
 ///
 /// EVERY MEMBER OF ONE WRAPPER IS ONE CALLEE, which is why the stand-in test's
 /// same-callee conjunct is satisfied outright here. A construction wrapper is
-/// one function at one capture layout: each `CallableResolution` product derives
-/// its edge from the same local producer and capture types, varying only the
-/// planned call surface. Two members are therefore two specializations of one
+/// one function at one capture layout: each edge is derived from the same local
+/// producer and capture types, varying only the planned call surface. Two
+/// members are therefore two specializations of one
 /// body, never two bodies. That also settles the drop's one open residue in this
 /// caller's favour: fz-kdt.143's group-dissolution reroute is meaning-bearing
 /// only between DIFFERENT callees, and there are none to be had.

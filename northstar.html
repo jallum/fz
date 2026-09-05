@@ -313,9 +313,9 @@
         </div>
       </div>
       <p>
-        The artifact boundary is product-keyed:
+        Runtime demand is an ordinary reactive fact. The artifact boundary is product-keyed:
         <code>MaterializedExecutable(E)</code> then <code>AbiExecutable(E)</code> then
-        <code>BackendExecutable(E)</code>, with <code>RuntimeDemand(E)</code>,
+        <code>BackendExecutable(E)</code>, with settled <code>RuntimeDemand(E)</code> facts and
         <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, and
         <code>CallableConstruction(position)</code> pulled only when a demanded executable names
         them. The final
@@ -462,8 +462,8 @@ enum FactValue {
           </tr>
           <tr>
             <td>Semantic</td>
-            <td><code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>CallSiteSummary</code></td>
-            <td>Type and plan facts are one family. A callsite summary carries selected callee, joined input types, executable need, and return type together.</td>
+            <td><code>ActivationAnalyzed</code>, <code>ReturnType</code>, <code>CallSiteSummary</code>, <code>RuntimeDemand(E)</code></td>
+            <td>Type and plan facts are one family. Runtime demand is one replacing World fact per executable, derived from exact caller, direct-callee, and locally produced function cells.</td>
           </tr>
           <tr>
             <td>Product root</td>
@@ -477,8 +477,8 @@ enum FactValue {
           </tr>
           <tr>
             <td>Representation products</td>
-            <td><code>RuntimeDemand(E)</code>, <code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, <code>CallableConstruction(position)</code></td>
-            <td>Request-local representation answers pulled only for positions named by demanded executables. Executable demand/effects and recursive position products publish cyclic groups atomically, so no mid-ascent value is observable.</td>
+            <td><code>ExecutableEffects(E)</code>, <code>TransportShape(position)</code>, <code>CallableConstruction(position)</code></td>
+            <td>Request-local representation answers pulled only for positions named by demanded executables. Recursive position products publish cyclic groups atomically, so no mid-ascent layout is observable.</td>
           </tr>
         </tbody>
       </table>
@@ -657,7 +657,8 @@ AbiExecutable(E)
 
 MaterializedExecutable(E)
   waits on ActivationAnalyzed(E.activation), ReturnType(E.activation), CallSiteSummary(...)
-  pulls RuntimeDemand(E), OutgoingInputEdges(E), TransportShape(ExecutableReturn(E))</code></pre>
+  waits on settled RuntimeDemand(E)
+  pulls OutgoingInputEdges(E), TransportShape(ExecutableReturn(E))</code></pre>
       <p>
         Product materialization clones one executable body, enters a sole reachable clause directly
         only when failure is unreachable, prunes unreachable clauses, rewrites
@@ -722,11 +723,20 @@ MaterializedExecutable(E)
         Each position owns one layout answer derived from settled <code>RuntimeDemand(E)</code>,
         the World-owned <code>ExecutableFacts(E)</code> fact, and exact upstream position products. One
         <code>DeriveExecutableFacts(E)</code> scheduler job reads the exact settled activation analysis,
-        lowered body, entry dispatch, and analyzed callsite summaries. <code>RuntimeDemand</code>,
-        <code>OutgoingInputEdges</code>, <code>CallableResolution</code>, <code>TransportShape</code>,
+        lowered body, entry dispatch, and analyzed callsite summaries. The
+        <code>DeriveRuntimeDemand(E)</code> job waits for that fact once, then reads its Current content,
+        the Current exact caller contribution, and exact <code>RuntimeDemandInputs(target)</code>
+        sub-facts. Direct edges name their target; first-class surfaces use exact
+        <code>CallableConstructionTarget(owner, value, surface)</code> facts. The formula follows only
+        newly named targets until its local read set stops growing. Absence is bottom: an owned formula
+        publishes provisional demand and caller-local return contributions while peer-dependent
+        capture/input contributions wait only for absent non-self targets. The input sub-fact owns a
+        revision, not another value: it addresses the input vector of the one stored runtime demand.
+        <code>RuntimeDemand</code>, <code>OutgoingInputEdges</code>, <code>TransportShape</code>,
         <code>CallableConstruction</code>, and <code>MaterializedExecutable</code> record that fact as an
         ordinary dependency; materialization additionally waits on its activation's <code>ReturnType</code>.
-        There is no product, producer bridge, reader, driver branch, or memo identity for executable facts. Direct-call
+        There is no product, producer bridge, reader, driver branch, or memo identity for executable facts
+        or runtime demand. Direct-call
         and public-callable return origins are distinguished before transport. Recursive position
         dependencies settle as one atomic product group from their external anchors; there is no
         root transport solve, component inventory, or absence-provenance side channel. Exact fact

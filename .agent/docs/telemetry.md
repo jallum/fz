@@ -482,8 +482,8 @@ from the product-path activation inventory.
 Transport product construction emits `[fz, compiler2, pull, product, *]` for
 per-position product demand. There is no root-wide `transport_flow` signal: the
 legacy `DeriveTransportPlan` job that emitted it — and its `TransportPlan(root)`
-fact — do not exist. The product path treats the
-`RuntimeDemand(E)` product as pre-transport evidence; `TransportPosition ->
+fact — do not exist. The product path treats the settled
+`RuntimeDemand(E)` World fact as pre-transport evidence; `TransportPosition ->
 ShapeId`, `CallableId` facts, `BoundaryId` contracts, and `CodegenSeamFact` rows
 are produced for the positions and boundaries named by demanded executable
 products. Tests assert ShapeId relationships from the demanded

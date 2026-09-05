@@ -34,7 +34,7 @@
 use std::collections::HashSet;
 
 use super::drive::Job;
-use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission, WorkStartTally};
+use super::{CodeSubmission, Compiler2, ExecutableNeed, FactKey, FactUse, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// One `submit_code` (its `IndexCode`) plus one `submit_root` (its `SeedRoot`)
@@ -137,6 +137,31 @@ fn pull_only_guard_holds_for_protocol_impl_dispatch() {
 #[test]
 fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let telemetry = ConfiguredTelemetry::new();
+    let demand_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, HashSet::<Job>::new())));
+    let observed_demand_work = std::rc::Rc::clone(&demand_work);
+    telemetry.attach_raw_event2::<super::World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            let mut demand_work = observed_demand_work.borrow_mut();
+            match &completion.job {
+                Job::DeriveRuntimeDemand(_) => {
+                    demand_work.0 += 1;
+                    demand_work.2.insert(completion.job.clone());
+                }
+                Job::DeriveCallableConstructionTarget(_) => {
+                    demand_work.2.insert(completion.job.clone());
+                }
+                _ => {}
+            }
+            for wake in &completion.wakes {
+                if wake.disposition == super::WakeDisposition::Enqueued
+                    && matches!(wake.job, Job::DeriveRuntimeDemand(_))
+                {
+                    demand_work.1 += 1;
+                }
+            }
+        },
+    );
     let mut compiler = Compiler2::new(telemetry);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures2/00420_enum_take_drop_split.fz".to_string()),
@@ -152,20 +177,44 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let starts = compiler
         .drive_root_backend_work_starts(root)
         .expect("the activation-edge fixture should settle its backend product");
+    let (demand_evaluations, demand_wake_starts, demanded_formula_keys) = &*demand_work.borrow();
     assert_eq!(
-        starts,
-        WorkStartTally {
-            ignition: 2,
-            // fz-tfn.26's typed completion order coalesces six revision wakes
-            // before their readers run; the activation frontier is unchanged.
-            changed_revision_wake: 1730,
-            activation_frontier: 268,
-            blocked_waiter_expansion: 1140,
-            unclassified: 0,
-            root_scans: 0,
-            drain_discovery_sweeps: 0,
-        },
-        "the parent's 3 root and 265 callee starts must become 268 shared-frontier starts; typed ordering may only remove causally redundant wakes",
+        starts.changed_revision_wake - demand_wake_starts,
+        1730,
+        "making RuntimeDemand work explicit must not add a wake to any pre-existing job family",
+    );
+    assert_eq!(
+        starts.blocked_waiter_expansion - demanded_formula_keys.len() as u64,
+        1140,
+        "each newly explicit formula may be pulled once; every pre-existing producer expansion stays flat",
+    );
+    assert_eq!(
+        *demand_evaluations, 1278,
+        "the exact RuntimeDemand evaluation multiset must remain deterministic",
+    );
+    assert_eq!(
+        *demand_wake_starts, 1039,
+        "the exact RuntimeDemand changed-revision wake multiset must remain deterministic",
+    );
+    assert_eq!(
+        demanded_formula_keys.len(),
+        311,
+        "the exact RuntimeDemand and construction-target key frontier must remain deterministic",
+    );
+    assert!(
+        *demand_evaluations < 6_250,
+        "ordinary per-executable demand formulas must beat the 6,250 hidden member derivations measured in the removed cone",
+    );
+    assert_eq!(
+        (
+            starts.ignition,
+            starts.activation_frontier,
+            starts.unclassified,
+            starts.root_scans,
+            starts.drain_discovery_sweeps
+        ),
+        (2, 268, 0, 0, 0),
+        "the root and 265 callee analyses must keep one shared frontier with no unsanctioned or scanning path",
     );
 
     let world = compiler.world();

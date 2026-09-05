@@ -337,58 +337,52 @@ symbolic call edges and callable entries recorded by already demanded products.
 Those exact dependencies grow artifact membership; no root-wide scan decides
 it.
 
-`RuntimeDemand(E)` is a product that settles its whole demand SCC inside one
-producer. Demand dependencies run
-both ways along every call edge (callers read callee input demands; callee
-return demands join caller contributions), so the demand SCC containing `E` is
-`E`'s call cone, discovered from settled facts only: `CallSiteSummary` direct
-targets, type-derived callable-flow resolutions, and any callee set a previous
-epoch recorded. The producer runs a bottom-start monotone Kleene ascent over
-the whole cone (return demands join up edges, input demands flow down edges,
-`ShapeDemand::join` per round) until nothing changes, then memoizes the settled
-fixpoint for every member at once. The requested anchor contributes its exact
-`ExecutableNeed` contract when no settled caller contribution exists, and a
-first-class construction contributes that same exact contract to every boxed
-member through the ordinary return-demand map. Observed partial return demand
-joins with that contract instead of replacing it.
-No mid-ascent value is ever observable outside the producer: there is no
-active-SCC seed, no consumed-return contribution floor, and no in-flight
-retraction. Settled demand retracts when materialization resolves a call edge
-outside the settled callee inventory, which re-keys and
-re-settles the affected cone.
+`DeriveRuntimeDemand(E)` owns the ordinary `RuntimeDemand(E)` World
+fact. It waits for `ExecutableFacts(E)` to appear settled and thereafter reads
+its Current content, the Current exact `RuntimeDemandInput(E)`, and Current
+`RuntimeDemandInputs(target)` sub-facts for direct and first-class callable
+targets. First-class surfaces name exact
+`CallableConstructionTarget(owner, value, surface)` facts. A loaded target
+input vector can expose another captured local callable, so the formula follows
+only those newly named target keys to a finite local closure; it does not
+inventory functions or executables. A self sub-fact is read only when an exact
+self edge names it. Absence is bottom. An owned job publishes its provisional
+demand and caller-local/direct or construction-owner return contributions. An
+absent non-self target adds a presence wait; only peer-dependent capture/input
+contributions wait for it. It never waits for a cyclic peer to settle.
 
-Exact dependencies keep retries proportional to movement without changing the
-iterates. `DeriveExecutableFacts(E)` owns a direct World fact containing the
-activation analysis, lowered body, entry dispatch, callsite summaries, origins,
-and canonical type projections. Movement of one recorded semantic input reruns
-that exact producer; content movement then displaces only its product readers.
-Equal reproduction retains the content revision even though a settled-readiness
-edge may wake settled readers while the producer goes dirty and quiet again.
-`RuntimeDemand(E)` cannot
-intern types or mint identities: local first-class calls instead read exact
-`CallableResolution(E, value, surface)` products. A miss waits and reruns; a
-success consumes the resolved edge. Formula order is only schedule, while
-callable-wrapper surface order remains semantic.
+Each formula conclusion owns a complete forward contribution set. A wait-free
+conclusion atomically replaces that publisher's exact target contributions, so
+omission retracts only that publisher. A blocked run extends without recanting
+prior evidence. Exact target activation keys retain capture/surface correlation;
+there is no callable-row aggregate or contribution store. Ordinary fact
+movement wakes the exact registered readers, including self and mutual cycles,
+until the scheduler reaches finality; an equal answer moves no content and
+wakes no current reader.
 
-Inside the ascent, a
-round re-derives only the members whose reads moved: a member reads its own joined
-return demand, its cone-edge targets' demands, and (for a lambda producer)
-every executable of the produced function — the two reverse indexes over
-exactly those reads mark the dirty set when a member's iterate moves, and
-every skipped member would have derived an identical value. A new world-fact
-read must enter the producing product's dependencies, and a new mutable-round
-read must extend the reverse indexes.
+A first-class callable edge contributes the target's exact `ExecutableNeed`
+return contract through that same ordinary map. Observed return demand remains
+an independent publisher and joins with the construction owner's contract;
+neither publication widens or replaces the other, and either retracts with its
+owner.
 
-Publication closes the stale-caller window: when a settling cone's
-contributions grow the joined return demand of an executable settled earlier
-OUTSIDE the cone, that external's memo is displaced while the cone's members
-were derived against its pre-growth input demands. The producer refuses to
-memoize such a cone; it re-collects (the displaced external is memo-less and
-joins as a member through the edge that carried the contribution) and settles
-the grown group together. Each re-cycle strictly grows the member set —
-enforced as a hard assertion — so the loop terminates within the finite
-demanded universe. The per-cone ascent round budget is likewise a hard failure
-in every build (a non-monotone regression fails loudly instead of hanging).
+`RuntimeDemand(E)` is the single stored semantic demand value.
+`RuntimeDemandInputs(E)` addresses its input vector with an independent
+revision, but stores no clone and has the same producer: return/value-only
+movement wakes full-value consumers, while input movement wakes both keys.
+Artifact producers
+read it only when settled and retain that allocation in materialized, ABI, and
+backend products. There is no runtime-demand product, private cone ascent,
+dirty-member index, epoch replay, or PullSession demand side map. This makes the
+same World fact authority observable to dormant retained sessions through the
+normal fact-movement subscription path. The production arrival-order gate
+registers independent, self-recursive, and mutually recursive roots in several
+orders and compares the canonical backend, interpreter output, causal
+`DeriveRuntimeDemand` work multiset, and settled state of every observed demand
+fact. The target
+fixture gates separately pin cross-door output. A second formula-only canon
+would duplicate the production artifact proof while bypassing the reactive
+scheduler that this boundary is meant to test.
 
 ## Current vs settled is the key boundary
 

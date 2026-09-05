@@ -18,6 +18,7 @@ pub(crate) fn lower_native_program_for_request<T: crate::telemetry::RawSpanTelem
 pub(crate) mod artifact;
 pub(crate) mod backend;
 mod body;
+mod callable_target;
 mod contract;
 mod dispatch;
 mod executable_facts;
@@ -68,5 +69,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
         Job::AnalyzeActivation(activation) => semantic::analyze_activation(world, tel, activation),
         Job::DeriveExecutableFacts(executable) => executable_facts::derive_executable_facts(world, executable),
+        Job::DeriveCallableConstructionTarget(key) => callable_target::derive(world, key),
+        Job::DeriveRuntimeDemand(executable) => runtime_demand::derive_runtime_demand_fact(world, tel, executable),
     }
 }

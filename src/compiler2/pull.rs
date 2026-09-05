@@ -25,7 +25,7 @@ use super::executable_facts::ExecutableFacts;
 use super::facts::{FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, RootId};
 use super::scheduler::WorkStartTally;
-use super::semantic::{CallableFlowEdge, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, SemanticOrd};
+use super::semantic::{ExecutableRuntimeDemand, SemanticOrd};
 #[cfg(test)]
 use super::transport::LaneId;
 use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
@@ -125,14 +125,6 @@ pub struct InputSlot {
     pub semantic_index: usize,
 }
 
-/// Exact resolved edge for a local callable producer and canonical surface.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CallableResolutionKey {
-    pub executable: ExecutableKey,
-    pub value: ValueId,
-    pub surface: CallableSurface,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ProductKey {
     RootBackendProduct(RootId),
@@ -140,8 +132,6 @@ pub enum ProductKey {
     AbiExecutable(ExecutableKey),
     MaterializedExecutable(ExecutableKey),
     ExecutableEffects(ExecutableKey),
-    RuntimeDemand(ExecutableKey),
-    CallableResolution(CallableResolutionKey),
     OutgoingEdgeFrontier(RootId),
     OutgoingInputEdges(ExecutableKey),
     IncomingInputRelations(RootId),
@@ -159,16 +149,10 @@ impl SemanticOrd<super::types::Types> for ProductKey {
                 | (Self::BackendExecutable(left), Self::BackendExecutable(right))
                 | (Self::MaterializedExecutable(left), Self::MaterializedExecutable(right))
                 | (Self::ExecutableEffects(left), Self::ExecutableEffects(right))
-                | (Self::RuntimeDemand(left), Self::RuntimeDemand(right))
                 | (Self::OutgoingInputEdges(left), Self::OutgoingInputEdges(right)) => left.semantic_cmp(right, types),
                 (Self::RootBackendProduct(left), Self::RootBackendProduct(right))
                 | (Self::OutgoingEdgeFrontier(left), Self::OutgoingEdgeFrontier(right))
                 | (Self::IncomingInputRelations(left), Self::IncomingInputRelations(right)) => left.cmp(right),
-                (Self::CallableResolution(left), Self::CallableResolution(right)) => left
-                    .executable
-                    .semantic_cmp(&right.executable, types)
-                    .then_with(|| left.value.cmp(&right.value))
-                    .then_with(|| types.cmp_activation_tys(&left.surface.inputs, &right.surface.inputs)),
                 (Self::IncomingInputSlot(left), Self::IncomingInputSlot(right)) => left
                     .executable
                     .semantic_cmp(&right.executable, types)
@@ -187,16 +171,14 @@ fn product_rank(product: &ProductKey) -> u8 {
         ProductKey::AbiExecutable(_) => 0,
         ProductKey::BackendExecutable(_) => 1,
         ProductKey::CallableConstruction(_) => 2,
-        ProductKey::CallableResolution(_) => 3,
-        ProductKey::ExecutableEffects(_) => 4,
-        ProductKey::IncomingInputRelations(_) => 5,
-        ProductKey::IncomingInputSlot(_) => 6,
-        ProductKey::MaterializedExecutable(_) => 7,
-        ProductKey::OutgoingEdgeFrontier(_) => 8,
-        ProductKey::OutgoingInputEdges(_) => 9,
-        ProductKey::RootBackendProduct(_) => 10,
-        ProductKey::RuntimeDemand(_) => 11,
-        ProductKey::TransportShape(_) => 12,
+        ProductKey::ExecutableEffects(_) => 3,
+        ProductKey::IncomingInputRelations(_) => 4,
+        ProductKey::IncomingInputSlot(_) => 5,
+        ProductKey::MaterializedExecutable(_) => 6,
+        ProductKey::OutgoingEdgeFrontier(_) => 7,
+        ProductKey::OutgoingInputEdges(_) => 8,
+        ProductKey::RootBackendProduct(_) => 9,
+        ProductKey::TransportShape(_) => 10,
     }
 }
 
@@ -208,8 +190,6 @@ impl ProductKey {
             Self::AbiExecutable(_) => "abi_executable",
             Self::MaterializedExecutable(_) => "materialized_executable",
             Self::ExecutableEffects(_) => "executable_effects",
-            Self::RuntimeDemand(_) => "runtime_demand",
-            Self::CallableResolution(_) => "callable_resolution",
             Self::OutgoingEdgeFrontier(_) => "outgoing_edge_frontier",
             Self::OutgoingInputEdges(_) => "outgoing_input_edges",
             Self::IncomingInputRelations(_) => "incoming_input_relations",
@@ -225,9 +205,7 @@ impl ProductKey {
             | Self::AbiExecutable(executable)
             | Self::MaterializedExecutable(executable)
             | Self::ExecutableEffects(executable)
-            | Self::RuntimeDemand(executable)
             | Self::OutgoingInputEdges(executable) => Some(executable),
-            Self::CallableResolution(key) => Some(&key.executable),
             Self::IncomingInputSlot(slot) => Some(&slot.executable),
             Self::RootBackendProduct(_)
             | Self::OutgoingEdgeFrontier(_)
@@ -265,8 +243,6 @@ pub enum ProductValue {
     AbiExecutable(Rc<AbiReadyExecutable>),
     MaterializedExecutable(Rc<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
-    RuntimeDemand(Rc<ExecutableRuntimeDemand>),
-    CallableResolution(CallableFlowEdge),
     OutgoingEdgeFrontier(Rc<[ExecutableKey]>),
     OutgoingInputEdges(Rc<OrderedIncomingInputs>),
     IncomingInputRelations(Rc<OrderedIncomingInputs>),
@@ -287,9 +263,6 @@ fn same_product_value(left: &ProductValue, right: &ProductValue) -> bool {
             Rc::ptr_eq(left, right) || left == right
         }
         (ProductValue::MaterializedExecutable(left), ProductValue::MaterializedExecutable(right)) => {
-            Rc::ptr_eq(left, right) || left == right
-        }
-        (ProductValue::RuntimeDemand(left), ProductValue::RuntimeDemand(right)) => {
             Rc::ptr_eq(left, right) || left == right
         }
         (ProductValue::CallableConstruction(left), ProductValue::CallableConstruction(right)) => {
@@ -791,28 +764,6 @@ impl ProductMemo {
     /// neither is current evidence that a formula is waiting on a cycle.
     fn pending_product_dependencies(&self, key: &ProductKey) -> Option<&ProductDependencies> {
         self.pending_dependencies.get(key)
-    }
-
-    pub fn runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
-        match self.get(&ProductKey::RuntimeDemand(executable.clone())) {
-            Some(ProductValue::RuntimeDemand(demand)) => Some(demand.as_ref()),
-            Some(
-                ProductValue::Unit
-                | ProductValue::RootBackendProduct(_)
-                | ProductValue::BackendExecutable(_)
-                | ProductValue::AbiExecutable(_)
-                | ProductValue::MaterializedExecutable(_)
-                | ProductValue::ExecutableEffects(_)
-                | ProductValue::CallableResolution(_)
-                | ProductValue::OutgoingEdgeFrontier(_)
-                | ProductValue::OutgoingInputEdges(_)
-                | ProductValue::IncomingInputRelations(_)
-                | ProductValue::IncomingInputSlot(_)
-                | ProductValue::TransportShape(_)
-                | ProductValue::CallableConstruction(_),
-            )
-            | None => None,
-        }
     }
 
     fn begin(&mut self, key: ProductKey) -> bool {
@@ -1369,12 +1320,6 @@ fn incoming_input_role_key(role: IncomingInputRole) -> (u8, u32, usize) {
     }
 }
 
-type DemandContributionTransaction = (
-    ExecutableKey,
-    HashMap<ExecutableKey, RuntimeDemand>,
-    HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
-);
-
 #[derive(Debug)]
 pub struct PullSession {
     id: Option<PullSessionId>,
@@ -1383,38 +1328,6 @@ pub struct PullSession {
     memo: ProductMemo,
     outgoing_edge_request_set: HashSet<ExecutableKey>,
     demanded_executables: HashSet<ExecutableKey>,
-    runtime_demand_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // Reverse callable-flow demand edges `resolution -> producers`, kept apart
-    // from `runtime_demand_dependents` (direct callsite reads) so the
-    // edge-derived transport invalidation walks only the direct graph while
-    // the demand EPOCH wipe reaches flow-coupled members too.
-    demand_flow_dependents: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // The demand-relevant callee set each executable's demand settle used (its
-    // cone edges). Re-materialization is the demand epoch gate: a materialized
-    // call-edge set that escapes this settled set re-keys the call graph, so
-    // the executable's demand cone is invalidated and re-settled -- the only
-    // path that retracts settled demand.
-    settled_demand_callees: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    // Per-caller SETTLED return-demand evidence, keyed `caller -> (callee ->
-    // demand)` -- the cross-settle channel a demand cone reads as external
-    // caller input (`external_return_demand`). A callee present here is
-    // OBSERVED (even when its demand is the bottom `ignore` discard marker); a
-    // callee absent is not-yet-observed. Every entry is a settled fixpoint
-    // value: producers replace their contributions only at settle time, and a
-    // re-settled caller whose contribution DROPS (an epoch event) retracts
-    // cleanly because the `return_demands` join is rebuilt from current
-    // contributions -- the join is not a monotone accumulator.
-    return_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, RuntimeDemand>>,
-    return_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    return_demands: HashMap<ExecutableKey, RuntimeDemand>,
-    // The INPUT-side sibling of the three fields above: a boundary-published
-    // callable's contract can pin specific argument POSITIONS on a resolved
-    // target even when the target's own body elides them (a destructor that
-    // ignores its payload). Keyed the same way, with an extra position level
-    // (`usize` = semantic input index) nested under the target.
-    input_demand_contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>>,
-    input_demand_contributors: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
     // Request-local counters reset whenever this retained session is
     // reactivated. The memo and dependency indexes above remain durable.
     producer_pokes: u64,
@@ -1431,15 +1344,6 @@ impl PullSession {
             memo: ProductMemo::default(),
             outgoing_edge_request_set: HashSet::new(),
             demanded_executables: HashSet::new(),
-            runtime_demand_dependents: HashMap::new(),
-            demand_flow_dependents: HashMap::new(),
-            settled_demand_callees: HashMap::new(),
-            return_demand_contributions: HashMap::new(),
-            return_demand_contributors: HashMap::new(),
-            return_demands: HashMap::new(),
-            input_demand_contributions: HashMap::new(),
-            input_demand_contributors: HashMap::new(),
-            input_demands: HashMap::new(),
             producer_pokes: 0,
             work_starts: WorkStartTally::default(),
             pending_fact_states: HashMap::new(),
@@ -1466,166 +1370,6 @@ impl PullSession {
         &self.demanded_executables
     }
 
-    pub fn record_runtime_demand_dependency(&mut self, dependency: ExecutableKey, dependent: ExecutableKey) {
-        if dependency == dependent {
-            return;
-        }
-        self.runtime_demand_dependents
-            .entry(dependency)
-            .or_default()
-            .insert(dependent);
-    }
-
-    /// Record a callable-flow demand dependency `resolution <- producer`. These
-    /// edges join the demand EPOCH wipe's walk only; they never widen the
-    /// edge-derived transport invalidation.
-    pub fn record_demand_flow_dependency(&mut self, dependency: ExecutableKey, dependent: ExecutableKey) {
-        if dependency == dependent {
-            return;
-        }
-        self.demand_flow_dependents
-            .entry(dependency)
-            .or_default()
-            .insert(dependent);
-    }
-
-    /// Memoize one cone member's settled runtime demand. The demand SCC settles
-    /// inside its producer, so every member is published here at once -- only
-    /// the settled fixpoint is ever observable. A re-settle that changes a
-    /// member's value invalidates the member's transport and artifact products
-    /// (they consumed the displaced demand); an unchanged re-settle leaves them
-    /// standing.
-    #[cfg(test)]
-    pub fn record_settled_runtime_demand(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: ExecutableKey,
-        demand: ExecutableRuntimeDemand,
-        types: &super::types::Types,
-    ) {
-        let key = ProductKey::RuntimeDemand(executable.clone());
-        let previous = match self.memo.produced.get(&key).or_else(|| self.memo.displaced.get(&key)) {
-            Some(ProductEntry {
-                value: ProductValue::RuntimeDemand(previous),
-                ..
-            }) => Some(previous.as_ref().clone()),
-            _ => None,
-        };
-        let changed = previous.is_some_and(|previous| previous != demand);
-        self.memo.finish_completion(
-            tel,
-            causal_product_events_enabled(tel),
-            &key,
-            ProductCompletion::Batch(vec![(
-                key.clone(),
-                ProductValue::RuntimeDemand(Rc::new(demand)),
-                ProductDependencies::default(),
-            )]),
-            types,
-        );
-        if changed {
-            self.invalidate_artifact_products(tel, &executable, types);
-        }
-    }
-
-    /// Record the demand-relevant callee set a settle derived for `executable`
-    /// -- the epoch baseline materialized completion gates on.
-    pub fn record_settled_demand_callees(&mut self, executable: ExecutableKey, callees: HashSet<ExecutableKey>) {
-        self.settled_demand_callees.insert(executable, callees);
-    }
-
-    /// The demand-relevant callee set recorded for `executable`, including any
-    /// materialized call edges an epoch gate folded in -- a settled call-edge
-    /// fact source for demand-cone discovery.
-    pub fn settled_demand_callees(&self, executable: &ExecutableKey) -> Option<&HashSet<ExecutableKey>> {
-        self.settled_demand_callees.get(executable)
-    }
-
-    /// The joined return demand contributed to `target` by settled contributors
-    /// OUTSIDE `members` -- the cross-settle evidence a cone consumes as an
-    /// external input. Contributions from `members` are excluded: they are
-    /// re-derived inside the ascent, and a member's stored entry may belong to
-    /// a displaced epoch.
-    pub fn external_return_demand(
-        &self,
-        target: &ExecutableKey,
-        members: &HashSet<ExecutableKey>,
-        types: &super::types::Types,
-    ) -> Option<RuntimeDemand> {
-        let mut contributors = self
-            .return_demand_contributors
-            .get(target)
-            .into_iter()
-            .flatten()
-            .filter(|contributor| !members.contains(*contributor))
-            .cloned()
-            .collect::<Vec<_>>();
-        contributors.sort_by(|left, right| left.semantic_cmp(right, types));
-        contributors
-            .iter()
-            .filter_map(|contributor| {
-                self.return_demand_contributions
-                    .get(contributor)
-                    .and_then(|contributions| contributions.get(target))
-            })
-            .fold(None::<RuntimeDemand>, |acc, demand| match acc {
-                Some(mut acc) => {
-                    acc.join_assign(demand);
-                    Some(acc)
-                }
-                None => Some(demand.clone()),
-            })
-    }
-
-    /// The INPUT-side sibling of [`Self::external_return_demand`]: the joined
-    /// per-position demand contributed to `target` by settled contributors
-    /// OUTSIDE `members` (a boundary contract pinning an argument position on
-    /// a resolution this cone treats as an already-settled external).
-    pub fn external_input_demand(
-        &self,
-        target: &ExecutableKey,
-        members: &HashSet<ExecutableKey>,
-        types: &super::types::Types,
-    ) -> HashMap<usize, RuntimeDemand> {
-        let mut joined: HashMap<usize, RuntimeDemand> = HashMap::new();
-        let mut contributors = self
-            .input_demand_contributors
-            .get(target)
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect::<Vec<_>>();
-        contributors.sort_by(|left, right| left.semantic_cmp(right, types));
-        for contributor in &contributors {
-            if members.contains(contributor) {
-                continue;
-            }
-            let Some(positions) = self
-                .input_demand_contributions
-                .get(contributor)
-                .and_then(|c| c.get(target))
-            else {
-                continue;
-            };
-            for (index, demand) in positions {
-                joined
-                    .entry(*index)
-                    .and_modify(|current| current.join_assign(demand))
-                    .or_insert_with(|| demand.clone());
-            }
-        }
-        joined
-    }
-
-    pub fn invalidate_artifact_products_for(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: &ExecutableKey,
-        types: &super::types::Types,
-    ) {
-        self.invalidate_artifact_products(tel, executable, types);
-    }
-
     pub fn producer_pokes(&self) -> u64 {
         self.producer_pokes
     }
@@ -1649,284 +1393,6 @@ impl PullSession {
         self.producer_pokes += count;
     }
 
-    /// Replace `caller`'s full set of SETTLED return-demand contributions.
-    /// Every callee the caller names becomes (or stays) OBSERVED; any callee the
-    /// caller named on a previous settle but not this one has its contribution
-    /// withdrawn. Each affected callee's joined return demand is rebuilt from
-    /// all current contributors.
-    ///
-    /// Retraction is epoch-scoped by construction: within one settlement the
-    /// joins are quiescent (`settled_members` carries the cone that was just
-    /// solved together, and its members' joins equal the fixpoint the settle
-    /// computed), so only a NON-member target whose join moves -- a settled
-    /// executable outside the re-settled cone consuming displaced evidence --
-    /// has its demand-derived products invalidated and re-settled.
-    ///
-    /// Returns every executable whose demand-derived products the moved joins
-    /// displaced (the moved targets plus their transitive demand readers). The
-    /// publishing producer inspects this set: a displaced executable it
-    /// consumed as an EXTERNAL input means its just-settled members were
-    /// derived against pre-growth demands, and the cone must re-settle with
-    /// the displaced executable absorbed (the stale-caller window).
-    #[cfg(test)]
-    pub fn replace_settled_return_demand_contributions(
-        &mut self,
-        tel: &impl Telemetry,
-        caller: ExecutableKey,
-        contributions: HashMap<ExecutableKey, RuntimeDemand>,
-        settled_members: &HashSet<ExecutableKey>,
-        types: &super::types::Types,
-    ) -> HashSet<ExecutableKey> {
-        self.replace_settled_demand_contributions(
-            tel,
-            vec![(caller, contributions, HashMap::new())],
-            settled_members,
-            types,
-        )
-    }
-
-    pub fn replace_settled_demand_contributions(
-        &mut self,
-        tel: &impl Telemetry,
-        mut transactions: Vec<DemandContributionTransaction>,
-        settled_members: &HashSet<ExecutableKey>,
-        types: &super::types::Types,
-    ) -> HashSet<ExecutableKey> {
-        transactions.sort_by(|(left, _, _), (right, _, _)| left.semantic_cmp(right, types));
-        let mut affected_returns = HashSet::new();
-        let mut affected_inputs = HashSet::new();
-        for (caller, returns, inputs) in transactions {
-            self.replace_return_demand_contributions(caller.clone(), returns, &mut affected_returns);
-            self.replace_input_demand_contributions(caller, inputs, &mut affected_inputs);
-        }
-        let mut affected = affected_returns.union(&affected_inputs).cloned().collect::<Vec<_>>();
-        affected.sort_by(|left, right| left.semantic_cmp(right, types));
-        let mut displaced = HashSet::new();
-        for target in affected {
-            if affected_returns.contains(&target) {
-                displaced.extend(self.recompute_return_demand(tel, &target, settled_members, types));
-            }
-            if affected_inputs.contains(&target) {
-                displaced.extend(self.recompute_input_demand(tel, &target, settled_members, types));
-            }
-        }
-        displaced
-    }
-
-    fn replace_return_demand_contributions(
-        &mut self,
-        caller: ExecutableKey,
-        contributions: HashMap<ExecutableKey, RuntimeDemand>,
-        affected: &mut HashSet<ExecutableKey>,
-    ) {
-        let previous = self.return_demand_contributions.remove(&caller).unwrap_or_default();
-        for target in previous.keys() {
-            affected.insert(target.clone());
-            if let Some(contributors) = self.return_demand_contributors.get_mut(target) {
-                contributors.remove(&caller);
-            }
-        }
-        for target in contributions.keys() {
-            affected.insert(target.clone());
-            self.return_demand_contributors
-                .entry(target.clone())
-                .or_default()
-                .insert(caller.clone());
-        }
-        if !contributions.is_empty() {
-            self.return_demand_contributions.insert(caller, contributions);
-        }
-    }
-
-    fn recompute_return_demand(
-        &mut self,
-        tel: &impl Telemetry,
-        target: &ExecutableKey,
-        settled_members: &HashSet<ExecutableKey>,
-        types: &super::types::Types,
-    ) -> HashSet<ExecutableKey> {
-        let mut contributors = self
-            .return_demand_contributors
-            .get(target)
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect::<Vec<_>>();
-        contributors.sort_by(|left, right| left.semantic_cmp(right, types));
-        let joined = contributors
-            .iter()
-            .filter_map(|caller| {
-                self.return_demand_contributions
-                    .get(caller)
-                    .and_then(|contributions| contributions.get(target))
-            })
-            .fold(None::<RuntimeDemand>, |acc, demand| match acc {
-                Some(mut acc) => {
-                    acc.join_assign(demand);
-                    Some(acc)
-                }
-                None => Some(demand.clone()),
-            });
-        let changed = self.return_demands.get(target) != joined.as_ref();
-        match joined {
-            Some(demand) => {
-                self.demanded_executables.insert(target.clone());
-                self.return_demands.insert(target.clone(), demand);
-            }
-            None => {
-                self.return_demand_contributors.remove(target);
-                self.return_demands.remove(target);
-            }
-        }
-        debug_assert_eq!(
-            self.return_demand_contributors
-                .get(target)
-                .is_some_and(|c| !c.is_empty()),
-            self.return_demands.contains_key(target),
-            "return_demand_contributors[target] and return_demands must stay in lockstep: a \
-             target is present in one iff present in the other (absent from both = \
-             not-yet-observed; present in both = observed, possibly joined to an `ignore` \
-             marker). A target present in only one map means the two fell out of sync."
-        );
-        if changed && !settled_members.contains(target) {
-            self.invalidate_demand_derived_products(tel, target, types)
-        } else {
-            HashSet::new()
-        }
-    }
-
-    /// The INPUT-side sibling of [`Self::replace_settled_return_demand_contributions`]:
-    /// replace `caller`'s full set of SETTLED boundary input-demand pins
-    /// (target -> position -> demand). Same OBSERVED/retraction semantics —
-    /// a re-settled caller whose pin drops retracts cleanly because each
-    /// target's joined positions are rebuilt from current contributors.
-    #[cfg(test)]
-    pub fn replace_settled_input_demand_contributions(
-        &mut self,
-        tel: &impl Telemetry,
-        caller: ExecutableKey,
-        contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
-        settled_members: &HashSet<ExecutableKey>,
-        types: &super::types::Types,
-    ) -> HashSet<ExecutableKey> {
-        self.replace_settled_demand_contributions(
-            tel,
-            vec![(caller, HashMap::new(), contributions)],
-            settled_members,
-            types,
-        )
-    }
-
-    fn replace_input_demand_contributions(
-        &mut self,
-        caller: ExecutableKey,
-        contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>>,
-        affected: &mut HashSet<ExecutableKey>,
-    ) {
-        let previous = self.input_demand_contributions.remove(&caller).unwrap_or_default();
-        for target in previous.keys() {
-            affected.insert(target.clone());
-            if let Some(contributors) = self.input_demand_contributors.get_mut(target) {
-                contributors.remove(&caller);
-            }
-        }
-        for target in contributions.keys() {
-            affected.insert(target.clone());
-            self.input_demand_contributors
-                .entry(target.clone())
-                .or_default()
-                .insert(caller.clone());
-        }
-        if !contributions.is_empty() {
-            self.input_demand_contributions.insert(caller, contributions);
-        }
-    }
-
-    fn recompute_input_demand(
-        &mut self,
-        tel: &impl Telemetry,
-        target: &ExecutableKey,
-        settled_members: &HashSet<ExecutableKey>,
-        types: &super::types::Types,
-    ) -> HashSet<ExecutableKey> {
-        let mut joined: HashMap<usize, RuntimeDemand> = HashMap::new();
-        let mut contributors = self
-            .input_demand_contributors
-            .get(target)
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect::<Vec<_>>();
-        contributors.sort_by(|left, right| left.semantic_cmp(right, types));
-        for contributor in &contributors {
-            let Some(positions) = self
-                .input_demand_contributions
-                .get(contributor)
-                .and_then(|c| c.get(target))
-            else {
-                continue;
-            };
-            for (index, demand) in positions {
-                joined
-                    .entry(*index)
-                    .and_modify(|current| current.join_assign(demand))
-                    .or_insert_with(|| demand.clone());
-            }
-        }
-        let changed = self.input_demands.get(target).cloned().unwrap_or_default() != joined;
-        if joined.is_empty() {
-            self.input_demand_contributors.remove(target);
-            self.input_demands.remove(target);
-        } else {
-            self.demanded_executables.insert(target.clone());
-            self.input_demands.insert(target.clone(), joined);
-        }
-        debug_assert_eq!(
-            self.input_demand_contributors
-                .get(target)
-                .is_some_and(|c| !c.is_empty()),
-            self.input_demands.contains_key(target),
-            "input_demand_contributors[target] and input_demands must stay in lockstep: a \
-             target is present in one iff present in the other (absent from both = \
-             not-yet-observed; present in both = observed, possibly joined to per-position \
-             demand). A target present in only one map means the two fell out of sync."
-        );
-        if changed && !settled_members.contains(target) {
-            self.invalidate_demand_derived_products(tel, target, types)
-        } else {
-            HashSet::new()
-        }
-    }
-
-    fn reconcile_materialized_demand_epoch(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: &ExecutableKey,
-        materialized: &MaterializedExecutable,
-        types: &super::types::Types,
-    ) {
-        // The demand epoch gate: materialization resolving a call edge the
-        // demand settle never derived means the settled cone was keyed against
-        // a smaller call graph -- re-key and re-settle it. Edges within the
-        // settled callee set (the overwhelming case: the cone over-approximates
-        // from settled facts) leave settled demand standing.
-        if let Some(settled_callees) = self.settled_demand_callees.get(executable) {
-            let materialized_callees: HashSet<ExecutableKey> = materialized
-                .call_edges
-                .values()
-                .flat_map(|edge| edge.target.local_callees())
-                .cloned()
-                .collect();
-            if !materialized_callees.is_subset(settled_callees) {
-                self.settled_demand_callees
-                    .entry(executable.clone())
-                    .or_default()
-                    .extend(materialized_callees);
-                self.invalidate_demand_derived_products(tel, executable, types);
-            }
-        }
-    }
-
     fn apply_fact_movements(&mut self, movements: &[FactMovement<FactKey>]) {
         for movement in movements {
             self.pending_fact_states.insert(movement.key.clone(), movement.state);
@@ -1936,49 +1402,6 @@ impl PullSession {
     fn reconcile_fact_movements(&mut self, tel: &impl Telemetry, types: &super::types::Types) {
         let pending = std::mem::take(&mut self.pending_fact_states);
         self.memo.reconcile_fact_movements(tel, &pending, types);
-    }
-
-    /// The demand EPOCH wipe: settled demand retracts only here. Walks the
-    /// demand-read dependents (callers) transitively, displacing each member's
-    /// RuntimeDemand memo plus the transport/artifact products derived from it,
-    /// so the next demand pull re-settles the affected cone against the new
-    /// call graph. Returns the displaced executables.
-    fn invalidate_demand_derived_products(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: &ExecutableKey,
-        types: &super::types::Types,
-    ) -> HashSet<ExecutableKey> {
-        let mut stack = vec![executable.clone()];
-        let mut seen = HashSet::new();
-        let mut products = Vec::new();
-        while let Some(current) = stack.pop() {
-            if !seen.insert(current.clone()) {
-                continue;
-            }
-            products.push(ProductKey::RuntimeDemand(current.clone()));
-            products.extend(artifact_product_keys(&current));
-            stack.extend(
-                self.runtime_demand_dependents
-                    .get(&current)
-                    .into_iter()
-                    .flatten()
-                    .chain(self.demand_flow_dependents.get(&current).into_iter().flatten())
-                    .cloned(),
-            );
-        }
-        self.memo.invalidate_products(tel, products, types);
-        seen
-    }
-
-    fn invalidate_artifact_products(
-        &mut self,
-        tel: &impl Telemetry,
-        executable: &ExecutableKey,
-        types: &super::types::Types,
-    ) {
-        self.memo
-            .invalidate_products(tel, artifact_product_keys(executable), types);
     }
 
     fn note_product_request(&mut self, tel: &impl Telemetry, key: &ProductKey, types: &super::types::Types) {
@@ -2211,28 +1634,11 @@ impl ProductSessions {
     }
 }
 
-fn artifact_product_keys(executable: &ExecutableKey) -> [ProductKey; 3] {
-    [
-        ProductKey::MaterializedExecutable(executable.clone()),
-        ProductKey::AbiExecutable(executable.clone()),
-        ProductKey::BackendExecutable(executable.clone()),
-    ]
-}
-
 pub struct ProductReadContext<'s> {
     session: &'s mut PullSession,
     dependencies: ProductDependencies,
     staged: Vec<ProductCommitMember>,
     recursive_group: Option<Vec<ProductCommitMember>>,
-    #[cfg(test)]
-    product_reads: Vec<ProductReadObservation>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProductReadObservation {
-    pub(crate) key: ProductKey,
-    pub(crate) hit: bool,
 }
 
 pub(crate) enum RecursiveProductRead<'a> {
@@ -2248,19 +1654,7 @@ impl<'s> ProductReadContext<'s> {
             dependencies: ProductDependencies::default(),
             staged: Vec::new(),
             recursive_group: None,
-            #[cfg(test)]
-            product_reads: Vec::new(),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn product_read_checkpoint(&self) -> usize {
-        self.product_reads.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn product_reads_since(&self, checkpoint: usize) -> Vec<ProductReadObservation> {
-        self.product_reads[checkpoint..].to_vec()
     }
 
     pub fn read_product(
@@ -2340,12 +1734,6 @@ impl<'s> ProductReadContext<'s> {
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
             _ => None,
         }
-    }
-
-    /// A group member's settled runtime demand, read without adding a second
-    /// dependency after each member already recorded its own ordinary read.
-    pub(crate) fn settled_runtime_demand(&self, executable: &ExecutableKey) -> Option<&ExecutableRuntimeDemand> {
-        self.session.memo.runtime_demand(executable)
     }
 
     pub(crate) fn recorded_recursive_group_inputs(
@@ -2441,34 +1829,26 @@ impl<'s> ProductReadContext<'s> {
             self.session.memo.prepare_stale_for_reproduction(tel, &stale, types);
             let generation = self.session.memo.generation(&key);
             self.dependencies.products.insert(key.clone(), generation);
-            #[cfg(test)]
-            self.product_reads.push(ProductReadObservation {
-                key: key.clone(),
-                hit: false,
-            });
             return None;
         }
         let generation = self.session.memo.generation(&key);
         self.dependencies.products.insert(key.clone(), generation);
-        #[cfg(test)]
-        self.product_reads.push(ProductReadObservation {
-            key: key.clone(),
-            hit: self.session.memo.get(&key).is_some(),
-        });
         self.session.memo.get(&key)
     }
 
-    pub fn read_runtime_demand(
+    pub(crate) fn read_runtime_demand_fact(
         &mut self,
-        tel: &impl Telemetry,
+        world: &World,
         executable: &ExecutableKey,
-        types: &super::types::Types,
     ) -> Option<Rc<ExecutableRuntimeDemand>> {
-        match self.read_product(tel, ProductKey::RuntimeDemand(executable.clone()), types) {
-            Some(ProductValue::RuntimeDemand(demand)) => Some(Rc::clone(demand)),
-            Some(other) => panic!("runtime demand product produced unexpected value {other:?}"),
-            None => None,
-        }
+        let fact = FactUse::settled(FactKey::RuntimeDemand(executable.clone()));
+        self.read_fact(world, fact).then(|| {
+            Rc::clone(
+                world
+                    .runtime_demand(executable)
+                    .expect("settled runtime demand should have a value"),
+            )
+        })
     }
 
     pub(crate) fn read_executable_facts(
@@ -2503,16 +1883,6 @@ impl<'s> ProductReadContext<'s> {
     #[cfg(test)]
     fn record_fact_state(&mut self, fact: FactUse<FactKey>, state: FactState) {
         self.dependencies.facts.insert(fact, state);
-    }
-
-    pub(crate) fn publish_product(&mut self, key: ProductKey, value: ProductValue) {
-        self.staged.push((key, value, self.dependencies.clone()));
-    }
-
-    pub(crate) fn remove_product_dependencies(&mut self, dependencies: impl IntoIterator<Item = ProductKey>) {
-        for dependency in dependencies {
-            self.dependencies.products.remove(&dependency);
-        }
     }
 
     pub fn session(&self) -> &PullSession {
@@ -2558,18 +1928,6 @@ pub trait ProductProducers {
         context: &mut ProductReadContext<'_>,
         executable: &ExecutableKey,
     ) -> PullOutcome;
-    fn produce_runtime_demand(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome;
-    fn produce_callable_resolution(
-        &mut self,
-        _context: &mut ProductReadContext<'_>,
-        _key: &CallableResolutionKey,
-    ) -> PullOutcome {
-        panic!("callable resolution producer is not installed")
-    }
     fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, root: RootId) -> PullOutcome;
     fn produce_outgoing_input_edges(
         &mut self,
@@ -2647,22 +2005,6 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
             executable,
             self.world.types(),
         )
-    }
-
-    fn produce_runtime_demand(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        executable: &ExecutableKey,
-    ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_runtime_demand_product(self.world, self.telemetry, context, executable)
-    }
-
-    fn produce_callable_resolution(
-        &mut self,
-        context: &mut ProductReadContext<'_>,
-        key: &CallableResolutionKey,
-    ) -> PullOutcome {
-        super::jobs::runtime_demand::produce_callable_resolution_product(self.world, self.telemetry, context, key)
     }
 
     fn produce_outgoing_edge_frontier(&mut self, context: &mut ProductReadContext<'_>, _root: RootId) -> PullOutcome {
@@ -2868,8 +2210,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
                 producers.produce_materialized_executable(&mut context, executable)
             }
             ProductKey::ExecutableEffects(executable) => producers.produce_executable_effects(&mut context, executable),
-            ProductKey::RuntimeDemand(executable) => producers.produce_runtime_demand(&mut context, executable),
-            ProductKey::CallableResolution(key) => producers.produce_callable_resolution(&mut context, key),
             ProductKey::OutgoingEdgeFrontier(root) => producers.produce_outgoing_edge_frontier(&mut context, *root),
             ProductKey::OutgoingInputEdges(executable) => {
                 producers.produce_outgoing_input_edges(&mut context, executable)
@@ -2882,16 +2222,6 @@ impl<'a, T: Telemetry> ProductDriver<'a, T> {
             }
         };
         let (dependencies, mut staged, recursive_group) = context.into_completion();
-        if let PullOutcome::Produced(ProductValue::MaterializedExecutable(materialized)) = &outcome
-            && let ProductKey::MaterializedExecutable(executable) = &key
-        {
-            self.session_mut().reconcile_materialized_demand_epoch(
-                tel,
-                executable,
-                materialized,
-                producers.product_types(),
-            );
-        }
         if self.emit_causal_products {
             tel.raw_event3(PRODUCT_EVALUATED_EVENT, &key, &request, &outcome);
         }
@@ -3057,9 +2387,9 @@ mod tests {
     }
 
     #[test]
-    fn retained_session_broker_fans_final_fact_state_to_dormant_and_nested_active_roots_once() {
+    fn retained_session_broker_fans_runtime_demand_movement_to_dormant_and_nested_active_roots_once() {
         let types = fake_types();
-        let fact = FactKey::BackendProgram(RootId::for_test(99));
+        let fact = FactKey::RuntimeDemand(fake_executable_with_function(RootId::for_test(99), 99));
         let left = RootId::for_test(1);
         let right = RootId::for_test(2);
         let dormant = RootId::for_test(3);
@@ -3217,9 +2547,9 @@ mod tests {
     fn recursive_group_search_matches_pending_graph_boundaries() {
         let types = fake_types();
         let root = RootId::for_test(84);
-        let current = ProductKey::RuntimeDemand(fake_executable_with_function(root, 840));
-        let dependency = ProductKey::RuntimeDemand(fake_executable_with_function(root, 841));
-        let peer = ProductKey::RuntimeDemand(fake_executable_with_function(root, 842));
+        let current = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 840));
+        let dependency = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 841));
+        let peer = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 842));
         let bridge = ProductKey::RootBackendProduct(root);
         let missing = ProductMemo::default();
         assert_eq!(
@@ -3337,10 +2667,10 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();
         let root = RootId::for_test(85);
-        let current = ProductKey::RuntimeDemand(fake_executable_with_function(root, 850));
-        let missing = ProductKey::RuntimeDemand(fake_executable_with_function(root, 851));
-        let ready = ProductKey::RuntimeDemand(fake_executable_with_function(root, 852));
-        let cyclic = ProductKey::RuntimeDemand(fake_executable_with_function(root, 853));
+        let current = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 850));
+        let missing = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 851));
+        let ready = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 852));
+        let cyclic = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 853));
         let mut session = PullSession::new(root);
 
         {
@@ -3433,8 +2763,8 @@ mod tests {
     fn completion_batch_commits_one_semantic_sequence_for_every_requested_anchor() {
         let root = RootId::for_test(86);
         let mut types = super::super::Types::new();
-        let keys =
-            [860, 861, 862].map(|function| ProductKey::RuntimeDemand(fake_executable_in(&mut types, root, function)));
+        let keys = [860, 861, 862]
+            .map(|function| ProductKey::OutgoingInputEdges(fake_executable_in(&mut types, root, function)));
         let mut expected = keys.to_vec();
         sort_product_keys(&mut expected, &types);
 
@@ -3468,8 +2798,8 @@ mod tests {
     fn recursive_group_commits_one_semantic_sequence_for_every_requested_anchor() {
         let root = RootId::for_test(88);
         let mut types = super::super::Types::new();
-        let keys =
-            [880, 881, 882].map(|function| ProductKey::RuntimeDemand(fake_executable_in(&mut types, root, function)));
+        let keys = [880, 881, 882]
+            .map(|function| ProductKey::OutgoingInputEdges(fake_executable_in(&mut types, root, function)));
         let mut expected = keys.to_vec();
         sort_product_keys(&mut expected, &types);
 
@@ -3512,7 +2842,7 @@ mod tests {
         let root = RootId::for_test(87);
         let mut types = super::super::Types::new();
         let keys = [870, 871, 872, 873, 874, 875, 876]
-            .map(|function| ProductKey::RuntimeDemand(fake_executable_in(&mut types, root, function)));
+            .map(|function| ProductKey::OutgoingInputEdges(fake_executable_in(&mut types, root, function)));
         let [left, right, left_reader, right_reader, join, pending, pending_child] = &keys;
         let mut expected_displaced = vec![left_reader.clone(), right_reader.clone()];
         sort_product_keys(&mut expected_displaced, &types);
@@ -3580,10 +2910,10 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();
         let root = RootId::for_test(99);
-        let source = ProductKey::RuntimeDemand(fake_executable_with_function(root, 990));
-        let intermediate = ProductKey::RuntimeDemand(fake_executable_with_function(root, 991));
-        let pending = ProductKey::RuntimeDemand(fake_executable_with_function(root, 992));
-        let settled = ProductKey::RuntimeDemand(fake_executable_with_function(root, 993));
+        let source = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 990));
+        let intermediate = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 991));
+        let pending = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 992));
+        let settled = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 993));
         let mut memo = ProductMemo::default();
         finish_test_product(&mut memo, &source, ProductValue::Unit, []);
         finish_test_product(&mut memo, &intermediate, ProductValue::Unit, [source.clone()]);
@@ -3734,7 +3064,7 @@ mod tests {
             match key {
                 ProductKey::RootBackendProduct(root) => {
                     let prerequisite =
-                        ProductKey::RuntimeDemand(self.root_entry.clone().expect("fake root entry should be set"));
+                        ProductKey::OutgoingInputEdges(self.root_entry.clone().expect("fake root entry should be set"));
                     if self.produced.contains(&prerequisite) {
                         self.produced.insert(ProductKey::RootBackendProduct(root));
                         PullOutcome::Produced(ProductValue::Unit)
@@ -3742,7 +3072,7 @@ mod tests {
                         PullOutcome::wait_on_product(prerequisite)
                     }
                 }
-                ProductKey::RuntimeDemand(_) => {
+                ProductKey::OutgoingInputEdges(_) => {
                     self.produced.insert(key);
                     PullOutcome::Produced(ProductValue::Unit)
                 }
@@ -3796,7 +3126,7 @@ mod tests {
                 return PullOutcome::Waiting(waits);
             }
             let prerequisite =
-                ProductKey::RuntimeDemand(self.root_entry.clone().expect("fake root entry should be set"));
+                ProductKey::OutgoingInputEdges(self.root_entry.clone().expect("fake root entry should be set"));
             if context
                 .read_product_entry(&tel, prerequisite.clone(), &self.types)
                 .is_some()
@@ -3857,12 +3187,12 @@ mod tests {
             self.produce(ProductKey::ExecutableEffects(executable.clone()))
         }
 
-        fn produce_runtime_demand(
+        fn produce_outgoing_input_edges(
             &mut self,
             context: &mut ProductReadContext<'_>,
             executable: &ExecutableKey,
         ) -> PullOutcome {
-            let key = ProductKey::RuntimeDemand(executable.clone());
+            let key = ProductKey::OutgoingInputEdges(executable.clone());
             self.calls.push(key.clone());
             if let Some(fact) = self.runtime_fact.clone() {
                 let state = self.fact_state(&fact);
@@ -3892,14 +3222,6 @@ mod tests {
             root: RootId,
         ) -> PullOutcome {
             self.produce(ProductKey::OutgoingEdgeFrontier(root))
-        }
-
-        fn produce_outgoing_input_edges(
-            &mut self,
-            _context: &mut ProductReadContext<'_>,
-            executable: &ExecutableKey,
-        ) -> PullOutcome {
-            self.produce(ProductKey::OutgoingInputEdges(executable.clone()))
         }
 
         fn produce_incoming_input_relations(
@@ -3934,7 +3256,7 @@ mod tests {
         let root = RootId::for_test(0);
         let executable = fake_executable(root);
         let root_key = ProductKey::RootBackendProduct(root);
-        let prerequisite = ProductKey::RuntimeDemand(executable.clone());
+        let prerequisite = ProductKey::OutgoingInputEdges(executable.clone());
         let mut producers = FakeProducers {
             root_entry: Some(executable),
             ..FakeProducers::default()
@@ -3962,91 +3284,18 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_reproduction_returns_the_canonical_memo_handle() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(63);
-        let key = ProductKey::RuntimeDemand(fake_executable_with_function(root, 630));
-        let first = Rc::new(ExecutableRuntimeDemand::default());
-        let equal_but_distinct = Rc::new(ExecutableRuntimeDemand::default());
-        let mut producers = FakeProducers {
-            runtime_value: Some(ProductValue::RuntimeDemand(Rc::clone(&first))),
-            ..FakeProducers::default()
-        };
-        let mut driver = ProductDriver::new(&tel, root);
-
-        match driver.pull(&mut producers, key.clone()) {
-            PullOutcome::Produced(ProductValue::RuntimeDemand(value)) => assert!(Rc::ptr_eq(&value, &first)),
-            other => panic!("expected first runtime demand, got {other:?}"),
-        }
-        driver
-            .session_mut()
-            .memo
-            .prepare_stale_for_reproduction(&tel, &key, &producers.types);
-        producers.runtime_value = Some(ProductValue::RuntimeDemand(equal_but_distinct));
-
-        match driver.pull(&mut producers, key.clone()) {
-            PullOutcome::Produced(ProductValue::RuntimeDemand(value)) => assert!(
-                Rc::ptr_eq(&value, &first),
-                "an unchanged producer run must return the memo's retained allocation",
-            ),
-            other => panic!("expected reproduced runtime demand, got {other:?}"),
-        }
-        match driver.session().memo.get(&key) {
-            Some(ProductValue::RuntimeDemand(value)) => assert!(Rc::ptr_eq(value, &first)),
-            other => panic!("expected canonical memoized runtime demand, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn newly_materialized_callee_rejects_the_smaller_demand_epoch_before_settlement() {
-        let tel = ConfiguredTelemetry::new();
-        let root = RootId::for_test(64);
-        let caller = fake_executable_with_function(root, 640);
-        let callee = fake_executable_with_function(root, 641);
-        let key = ProductKey::MaterializedExecutable(caller.clone());
-        let materialized = Rc::new(fake_effect_materialized(&caller, &[&callee], false));
-        let mut producers = FakeProducers {
-            materialized_value: Some(ProductValue::MaterializedExecutable(Rc::clone(&materialized))),
-            ..FakeProducers::default()
-        };
-        let mut driver = ProductDriver::new(&tel, root);
-        driver
-            .session_mut()
-            .record_settled_demand_callees(caller.clone(), HashSet::new());
-
-        assert_eq!(
-            driver.pull(&mut producers, key.clone()),
-            PullOutcome::wait_on_product(key.clone()),
-            "a materialized edge outside the settled demand epoch must reject the in-progress completion"
-        );
-        assert!(driver.session().memo().get(&key).is_none());
-        assert_eq!(
-            driver.session().settled_demand_callees(&caller),
-            Some(&HashSet::from([callee]))
-        );
-
-        match driver.pull(&mut producers, key.clone()) {
-            PullOutcome::Produced(ProductValue::MaterializedExecutable(value)) => {
-                assert!(Rc::ptr_eq(&value, &materialized));
-            }
-            other => panic!("the re-keyed demand epoch should accept the next materialized completion, got {other:?}"),
-        }
-        assert_eq!(driver.session().memo().generation(&key), Some(1));
-    }
-
-    #[test]
     fn product_driver_correlates_waiting_producer_runs_and_cache_hits() {
         let tel = Rc::new(ConfiguredTelemetry::new());
         let (buf, writer) = crate::telemetry::capture::vec_writer();
         JsonlBackend::new_writer(writer).install(tel.as_ref());
         let root = RootId::for_test(90);
         let root_key = ProductKey::RootBackendProduct(root);
-        let dependency = ProductKey::RuntimeDemand(fake_executable_with_function(root, 901));
-        let dependency_child = ProductKey::RuntimeDemand(fake_executable_with_function(root, 902));
-        let moved = ProductKey::RuntimeDemand(fake_executable_with_function(root, 903));
+        let dependency = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 901));
+        let dependency_child = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 902));
+        let moved = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 903));
         let mut producers = FakeProducers {
             root_entry: match &dependency {
-                ProductKey::RuntimeDemand(executable) => Some(executable.clone()),
+                ProductKey::OutgoingInputEdges(executable) => Some(executable.clone()),
                 _ => unreachable!(),
             },
             root_prerequisites: vec![moved.clone()],
@@ -4203,7 +3452,7 @@ mod tests {
         let root = RootId::for_test(7);
         let executable = fake_executable(root);
         let parent = ProductKey::RootBackendProduct(root);
-        let child = ProductKey::RuntimeDemand(executable.clone());
+        let child = ProductKey::OutgoingInputEdges(executable.clone());
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let mut producers = FakeProducers {
             root_entry: Some(executable),
@@ -4297,7 +3546,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(70);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
             &mut driver.session_mut().memo,
@@ -4342,7 +3591,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(71);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
             &mut driver.session_mut().memo,
@@ -4382,7 +3631,7 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let root = RootId::for_test(72);
         let fact = FactKey::CodeIndexed(super::super::CodeId::ZERO);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         finish_test_entry(
             &mut driver.session_mut().memo,
@@ -4417,12 +3666,12 @@ mod tests {
         let root = RootId::for_test(17);
         let executable = fake_executable(root);
         let grandparent = ProductKey::RootBackendProduct(root);
-        let parent = ProductKey::RuntimeDemand(executable.clone());
+        let parent = ProductKey::OutgoingInputEdges(executable.clone());
         let child = ProductKey::BackendExecutable(executable);
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let mut producers = FakeProducers {
             root_entry: match &parent {
-                ProductKey::RuntimeDemand(executable) => Some(executable.clone()),
+                ProductKey::OutgoingInputEdges(executable) => Some(executable.clone()),
                 _ => unreachable!(),
             },
             runtime_children: HashMap::from([(parent.clone(), child.clone())]),
@@ -4575,10 +3824,9 @@ mod tests {
         driver.pull(&mut fake, ProductKey::BackendExecutable(first.clone()));
         assert_eq!(driver.session().memo().generation(&frontier), first_generation);
 
-        fake.self_wait = Some(ProductKey::OutgoingInputEdges(second.clone()));
         assert_eq!(
             driver.pull(&mut fake, ProductKey::OutgoingInputEdges(second.clone())),
-            PullOutcome::wait_on_product(ProductKey::OutgoingInputEdges(second.clone()))
+            PullOutcome::Produced(ProductValue::Unit)
         );
         let expanded = {
             let mut producers = WorldProductProducers::new(&mut world, &tel);
@@ -4589,321 +3837,6 @@ mod tests {
             PullOutcome::Produced(ProductValue::OutgoingEdgeFrontier(ordered_frontier([first, second])))
         );
         assert_ne!(driver.session().memo().generation(&frontier), first_generation);
-    }
-
-    #[test]
-    fn pull_session_invalidates_runtime_demand_when_return_demand_grows() {
-        let tel = ConfiguredTelemetry::new();
-        let types = fake_types();
-        let caller = fake_executable(RootId::for_test(5));
-        let callee = fake_executable(RootId::for_test(5));
-        let mut session = PullSession::new(RootId::for_test(5));
-        finish_test_entry(
-            &mut session.memo,
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Rc::default()),
-            ProductDependencies::default(),
-            &types,
-        );
-
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            caller,
-            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
-            &HashSet::new(),
-            &types,
-        );
-
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new(), &types),
-            Some(RuntimeDemand::whole()),
-            "the joined return demand should be retained for the next pull"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
-            "an epoch contribution that grows a non-member target's return demand re-settles it"
-        );
-    }
-
-    #[test]
-    fn pull_session_retracts_return_demand_when_a_caller_collapses_to_a_discard() {
-        // The "unknown is not none" guard at the session layer, epoch-scoped: a
-        // caller re-settled across an epoch whose contribution collapses to an
-        // observed discard must DROP its callee's joined demand, not bake the
-        // stale `whole`. An observed discard is the bottom `ignore` cell --
-        // still present (observed), distinct from a callee no caller has named
-        // (absent -> None).
-        let tel = ConfiguredTelemetry::new();
-        let types = fake_types();
-        let caller = fake_executable(RootId::for_test(7));
-        let callee = fake_executable(RootId::for_test(7));
-        let mut session = PullSession::new(RootId::for_test(7));
-
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
-            &HashSet::new(),
-            &types,
-        );
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new(), &types),
-            Some(RuntimeDemand::whole())
-        );
-
-        finish_test_entry(
-            &mut session.memo,
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Rc::default()),
-            ProductDependencies::default(),
-            &types,
-        );
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), RuntimeDemand::ignore())]),
-            &HashSet::new(),
-            &types,
-        );
-
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new(), &types),
-            Some(RuntimeDemand::ignore()),
-            "a collapsed caller retracts its callee's whole demand down to the observed discard"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_none(),
-            "retracting a non-member callee's return demand re-settles its runtime demand"
-        );
-
-        session.replace_settled_return_demand_contributions(&tel, caller, HashMap::new(), &HashSet::new(), &types);
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new(), &types),
-            None,
-            "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
-        );
-    }
-
-    #[test]
-    fn equal_return_contribution_is_stable_and_owner_retraction_preserves_other_evidence() {
-        let tel = ConfiguredTelemetry::new();
-        let types = fake_types();
-        let root = RootId::for_test(8);
-        let owner = fake_executable_with_function(root, 80);
-        let observer = fake_executable_with_function(root, 81);
-        let callee = fake_executable_with_function(root, 82);
-        let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
-        let mut session = PullSession::new(root);
-
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            owner.clone(),
-            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
-            &HashSet::new(),
-            &types,
-        );
-        session.replace_settled_return_demand_contributions(
-            &tel,
-            observer,
-            HashMap::from([(callee.clone(), partial.clone())]),
-            &HashSet::new(),
-            &types,
-        );
-        finish_test_entry(
-            &mut session.memo,
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Rc::default()),
-            ProductDependencies::default(),
-            &types,
-        );
-
-        let reproduced = session.replace_settled_return_demand_contributions(
-            &tel,
-            owner.clone(),
-            HashMap::from([(callee.clone(), RuntimeDemand::whole())]),
-            &HashSet::new(),
-            &types,
-        );
-        assert!(
-            reproduced.is_empty(),
-            "reproducing the same owner contribution must not move the target"
-        );
-        assert!(session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_some());
-
-        let retracted =
-            session.replace_settled_return_demand_contributions(&tel, owner, HashMap::new(), &HashSet::new(), &types);
-        assert!(
-            retracted.contains(&callee),
-            "retracting the owner's obligation must move its target"
-        );
-        assert_eq!(
-            session.external_return_demand(&callee, &HashSet::new(), &types),
-            Some(partial),
-            "retracting one owner must preserve another caller's exact partial evidence",
-        );
-    }
-
-    #[test]
-    fn pull_session_invalidates_runtime_demand_when_input_demand_grows() {
-        let tel = ConfiguredTelemetry::new();
-        let types = fake_types();
-        let caller = fake_executable(RootId::for_test(9));
-        let callee = fake_executable(RootId::for_test(9));
-        let mut session = PullSession::new(RootId::for_test(9));
-        finish_test_entry(
-            &mut session.memo,
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Rc::default()),
-            ProductDependencies::default(),
-            &types,
-        );
-
-        session.replace_settled_input_demand_contributions(
-            &tel,
-            caller,
-            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::whole())]))]),
-            &HashSet::new(),
-            &types,
-        );
-
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new(), &types),
-            HashMap::from([(0, RuntimeDemand::whole())]),
-            "the joined input demand should be retained for the next pull"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee)).is_none(),
-            "an epoch contribution that grows a non-member target's input demand re-settles it"
-        );
-    }
-
-    #[test]
-    fn pull_session_retracts_input_demand_when_a_caller_collapses_to_a_discard() {
-        // The input-side sibling of the return-demand retraction test above:
-        // a caller re-settled across an epoch whose contribution collapses to
-        // an observed discard must DROP its callee's joined position demand,
-        // not bake the stale `whole`.
-        let tel = ConfiguredTelemetry::new();
-        let types = fake_types();
-        let caller = fake_executable(RootId::for_test(11));
-        let callee = fake_executable(RootId::for_test(11));
-        let mut session = PullSession::new(RootId::for_test(11));
-
-        session.replace_settled_input_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::whole())]))]),
-            &HashSet::new(),
-            &types,
-        );
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new(), &types),
-            HashMap::from([(0, RuntimeDemand::whole())])
-        );
-
-        finish_test_entry(
-            &mut session.memo,
-            &tel,
-            &ProductKey::RuntimeDemand(callee.clone()),
-            ProductValue::RuntimeDemand(Rc::default()),
-            ProductDependencies::default(),
-            &types,
-        );
-        session.replace_settled_input_demand_contributions(
-            &tel,
-            caller.clone(),
-            HashMap::from([(callee.clone(), HashMap::from([(0, RuntimeDemand::ignore())]))]),
-            &HashSet::new(),
-            &types,
-        );
-
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new(), &types),
-            HashMap::from([(0, RuntimeDemand::ignore())]),
-            "a collapsed caller retracts its callee's whole position demand down to the observed discard"
-        );
-        assert!(
-            session.memo().get(&ProductKey::RuntimeDemand(callee.clone())).is_none(),
-            "retracting a non-member callee's input demand re-settles its runtime demand"
-        );
-
-        session.replace_settled_input_demand_contributions(&tel, caller, HashMap::new(), &HashSet::new(), &types);
-        assert_eq!(
-            session.external_input_demand(&callee, &HashSet::new(), &types),
-            HashMap::new(),
-            "withdrawing the last contributor leaves the callee not-yet-observed (distinct from an observed discard)"
-        );
-        assert!(
-            !session.input_demand_contributors.contains_key(&callee),
-            "withdrawing the last contributor must remove the stale empty contributor entry, \
-             not leave it behind as an empty HashSet"
-        );
-    }
-
-    #[test]
-    fn contribution_transaction_is_canonical_across_callers_targets_and_contributors() {
-        let root = RootId::for_test(89);
-        let mut types = super::super::Types::new();
-        let [caller_a, caller_b, target_a, target_b] =
-            [890, 891, 892, 893].map(|function| fake_executable_in(&mut types, root, function));
-        let mut expected_displaced = vec![
-            ProductKey::RuntimeDemand(target_a.clone()),
-            ProductKey::RuntimeDemand(target_b.clone()),
-        ];
-        sort_product_keys(&mut expected_displaced, &types);
-
-        for reverse in [false, true] {
-            let tel = ConfiguredTelemetry::new();
-            let mut session = PullSession::new(root);
-            for key in &expected_displaced {
-                finish_test_product(&mut session.memo, key, ProductValue::Unit, []);
-            }
-            let displaced = Rc::new(RefCell::new(Vec::new()));
-            let sink = Rc::clone(&displaced);
-            tel.attach_raw_event1::<ProductKey, _>(
-                &["fz", "compiler2", "pull", "product", "displaced"],
-                move |_, _, _, key| sink.borrow_mut().push(key.clone()),
-            );
-            let mut transactions = vec![
-                (
-                    caller_a.clone(),
-                    HashMap::from([(target_b.clone(), RuntimeDemand::whole())]),
-                    HashMap::from([(target_a.clone(), HashMap::from([(0, RuntimeDemand::whole())]))]),
-                ),
-                (
-                    caller_b.clone(),
-                    HashMap::from([(target_a.clone(), RuntimeDemand::ignore())]),
-                    HashMap::from([(target_b.clone(), HashMap::from([(1, RuntimeDemand::whole())]))]),
-                ),
-            ];
-            if reverse {
-                transactions.reverse();
-            }
-            let changed = session.replace_settled_demand_contributions(&tel, transactions, &HashSet::new(), &types);
-
-            assert_eq!(*displaced.borrow(), expected_displaced);
-            assert_eq!(changed, HashSet::from([target_a.clone(), target_b.clone()]));
-            assert_eq!(
-                session.external_return_demand(&target_a, &HashSet::new(), &types),
-                Some(RuntimeDemand::ignore())
-            );
-            assert_eq!(
-                session.external_return_demand(&target_b, &HashSet::new(), &types),
-                Some(RuntimeDemand::whole())
-            );
-            assert_eq!(
-                session.external_input_demand(&target_a, &HashSet::new(), &types),
-                HashMap::from([(0, RuntimeDemand::whole())])
-            );
-            assert_eq!(
-                session.external_input_demand(&target_b, &HashSet::new(), &types),
-                HashMap::from([(1, RuntimeDemand::whole())])
-            );
-        }
     }
 
     #[test]
@@ -5446,7 +4379,7 @@ mod tests {
         let mut producers = FakeProducers::default();
 
         assert_eq!(
-            driver.pull(&mut producers, ProductKey::RuntimeDemand(executable)),
+            driver.pull(&mut producers, ProductKey::OutgoingInputEdges(executable)),
             PullOutcome::Produced(ProductValue::Unit)
         );
         driver.session_mut().record_producer_pokes(2);
@@ -5494,7 +4427,7 @@ mod tests {
             move |_, _, _, _, request| observed.borrow_mut().push(*request),
         );
         let root = RootId::for_test(9);
-        let key = ProductKey::RuntimeDemand(fake_executable(root));
+        let key = ProductKey::OutgoingInputEdges(fake_executable(root));
         let mut driver = ProductDriver::new(&tel, root);
         driver.session_mut().request_ids.next = NonZeroU64::new(u64::MAX);
         let mut producers = FakeProducers::default();
@@ -6379,8 +5312,8 @@ mod tests {
         );
 
         let root = RootId::for_test(60);
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 600));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 601));
+        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 600));
+        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 601));
         let mut memo = ProductMemo::default();
 
         let first_value = ProductValue::ExecutableEffects(EffectSummary::default());
@@ -6476,9 +5409,9 @@ mod tests {
         let tel = ConfiguredTelemetry::new();
         let types = fake_types();
         let root = RootId::for_test(61);
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 610));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 611));
-        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 612));
+        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 610));
+        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 611));
+        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 612));
         let dependencies = ProductDependencies {
             products: HashMap::from([(external, Some(7))]),
             facts: HashMap::new(),
@@ -6505,74 +5438,13 @@ mod tests {
     }
 
     #[test]
-    fn shared_payloads_keep_structural_generation_semantics() {
-        let tel = ConfiguredTelemetry::new();
-        let types = fake_types();
-        let key = ProductKey::RuntimeDemand(fake_executable_with_function(RootId::for_test(62), 620));
-        let first = Rc::new(ExecutableRuntimeDemand::default());
-        let retained = Rc::clone(&first);
-        let same = Rc::clone(&first);
-        let equal_but_distinct = Rc::new(ExecutableRuntimeDemand::default());
-        assert!(!Rc::ptr_eq(&first, &equal_but_distinct));
-
-        let mut memo = ProductMemo::default();
-        assert!(finish_test_entry(
-            &mut memo,
-            &tel,
-            &key,
-            ProductValue::RuntimeDemand(first),
-            ProductDependencies::default(),
-            &types,
-        ));
-        assert!(finish_test_entry(
-            &mut memo,
-            &tel,
-            &key,
-            ProductValue::RuntimeDemand(same),
-            ProductDependencies::default(),
-            &types,
-        ));
-        assert_eq!(memo.generation(&key), Some(1));
-        assert!(finish_test_entry(
-            &mut memo,
-            &tel,
-            &key,
-            ProductValue::RuntimeDemand(equal_but_distinct),
-            ProductDependencies::default(),
-            &types,
-        ));
-        assert_eq!(memo.generation(&key), Some(1));
-        match memo.get(&key) {
-            Some(ProductValue::RuntimeDemand(current)) => assert!(
-                Rc::ptr_eq(current, &retained),
-                "an equal settlement must retain the already-memoized allocation",
-            ),
-            other => panic!("expected memoized runtime demand, got {other:?}"),
-        }
-
-        let changed = ExecutableRuntimeDemand {
-            return_demand: RuntimeDemand::whole(),
-            ..ExecutableRuntimeDemand::default()
-        };
-        assert!(finish_test_entry(
-            &mut memo,
-            &tel,
-            &key,
-            ProductValue::RuntimeDemand(Rc::new(changed)),
-            ProductDependencies::default(),
-            &types,
-        ));
-        assert_eq!(memo.generation(&key), Some(2));
-    }
-
-    #[test]
     fn changed_product_authority_discards_pending_reader_snapshots_before_group_settlement() {
         let types = fake_types();
         let root = RootId::for_test(39);
-        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 390));
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 391));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 392));
-        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 393));
+        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 390));
+        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 391));
+        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 392));
+        let unrelated = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 393));
         let first = ProductValue::ExecutableEffects(EffectSummary::default());
         let second = ProductValue::ExecutableEffects(EffectSummary {
             allocates: true,
@@ -6650,8 +5522,8 @@ mod tests {
     fn changed_fact_authority_discards_only_pending_readers_of_that_fact() {
         let types = fake_types();
         let root = RootId::for_test(40);
-        let reader = ProductKey::RuntimeDemand(fake_executable_with_function(root, 400));
-        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 401));
+        let reader = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 400));
+        let unrelated = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 401));
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let other_fact = FactUse::settled(FactKey::RootEntry(root));
         let first = FactState {
@@ -6707,10 +5579,10 @@ mod tests {
     #[test]
     fn group_settlement_rejects_discordant_dependency_snapshots_before_publication() {
         let root = RootId::for_test(41);
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 410));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 411));
-        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 412));
-        let unrelated = ProductKey::RuntimeDemand(fake_executable_with_function(root, 413));
+        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 410));
+        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 411));
+        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 412));
+        let unrelated = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 413));
         let fact = FactUse::current(FactKey::CodeIndexed(super::super::CodeId::ZERO));
         let fact_one = FactState {
             revision: Some(1),
@@ -6789,9 +5661,9 @@ mod tests {
     fn rejected_group_retries_without_displaced_dependency_snapshots() {
         let types = fake_types();
         let root = RootId::for_test(42);
-        let left = ProductKey::RuntimeDemand(fake_executable_with_function(root, 420));
-        let right = ProductKey::RuntimeDemand(fake_executable_with_function(root, 421));
-        let external = ProductKey::RuntimeDemand(fake_executable_with_function(root, 422));
+        let left = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 420));
+        let right = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 421));
+        let external = ProductKey::OutgoingInputEdges(fake_executable_with_function(root, 422));
 
         for reverse in [false, true] {
             let mut memo = ProductMemo::default();

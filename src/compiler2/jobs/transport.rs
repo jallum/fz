@@ -198,9 +198,9 @@ pub(crate) fn produce_callable_construction_product(
         Some(facts) => facts,
         None => return PullOutcome::wait_on_fact(FactUse::settled(FactKey::ExecutableFacts(executable))),
     };
-    let runtime = match context.read_runtime_demand(tel, &executable, world.types()) {
+    let runtime = match context.read_runtime_demand_fact(world, &executable) {
         Some(runtime) => runtime,
-        None => return PullOutcome::wait_on_product(ProductKey::RuntimeDemand(executable)),
+        None => return PullOutcome::wait_on_fact(FactUse::settled(FactKey::RuntimeDemand(executable))),
     };
     let TransportPosition::Value { value, .. } = position else {
         return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
@@ -434,10 +434,11 @@ fn project_group_member_owner(
         .executable_facts(&executable)
         .cloned()
         .expect("callable owner group member must have settled executable facts");
-    let runtime = context
-        .settled_runtime_demand(&executable)
+    let runtime = world
+        .runtime_demand(&executable)
+        .cloned()
         .expect("callable owner group member must have a settled runtime demand");
-    let (ty, demand) = generic_owner_ty_and_demand(world, &executable, &facts, runtime, position);
+    let (ty, demand) = generic_owner_ty_and_demand(world, &executable, &facts, &runtime, position);
     ProductValue::CallableConstruction(Rc::new(project_owner_answer(
         world, evidence, layout, ty, &demand, position,
     )))
@@ -1010,8 +1011,8 @@ fn direct_callable_descr(
     })
 }
 
-/// The one callable row a closure callsite could ground its return against:
-/// a settled summary naming exactly one compiler-owned target. Whether the
+/// The one compiler-owned target a closure callsite could ground its return
+/// against. Whether the
 /// grounding APPLIES is decided at recipe evaluation from the callee value's
 /// own transport carrier — the same fact `materialize_closure_call_edge` uses
 /// to choose a direct edge — so claim and call share one authority.
@@ -1082,7 +1083,7 @@ fn origin_transport_recipe(
             )
         }
         TransportSource::ClosureCallReturn { callsite, callee } => {
-            // A closure-call result refines the authoritative callable row
+            // A closure-call result refines the settled singleton target
             // forward (fz-9i4.4.5): when the callee VALUE travels in its exact
             // (non-ValueRef) carrier, `materialize_closure_call_edge` lowers
             // the call as a direct edge to the settled singleton target, so
@@ -1177,13 +1178,11 @@ fn produce_local_callable_construction(
     let mut capture_demands = vec![RuntimeDemand::ignore(); capture_tys.len()];
     let mut waits = Vec::new();
     for resolution in &flow.resolutions {
-        let key = ProductKey::RuntimeDemand(resolution.clone());
-        let Some(value) = context.read_product(tel, key.clone(), world.types()) else {
-            waits.push(PullWait::Product(key));
+        let Some(resolution_demand) = context.read_runtime_demand_fact(world, resolution) else {
+            waits.push(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+                resolution.clone(),
+            ))));
             continue;
-        };
-        let ProductValue::RuntimeDemand(resolution_demand) = value else {
-            panic!("runtime demand produced unexpected value {value:?}");
         };
         assert!(resolution_demand.input_demands.len() >= capture_tys.len());
         for (capture, input) in capture_demands
@@ -1427,12 +1426,12 @@ fn produce_named_transport_position(
             ))));
         }
     };
-    let runtime = match context.read_runtime_demand(tel, executable, world.types()) {
+    let runtime = match context.read_runtime_demand_fact(world, executable) {
         Some(runtime) => runtime,
         None => {
-            return Some(PullOutcome::wait_on_product(ProductKey::RuntimeDemand(
+            return Some(PullOutcome::wait_on_fact(FactUse::settled(FactKey::RuntimeDemand(
                 executable.clone(),
-            )));
+            ))));
         }
     };
     let symbol = position.executable().clone();
@@ -2114,11 +2113,7 @@ fn joined_tuple_structural(
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
-    let field_demands = match &demand.shape {
-        ShapeDemand::TupleFields(fields) if fields.len() == arity => fields.clone(),
-        ShapeDemand::Whole => vec![RuntimeDemand::whole(); arity],
-        ShapeDemand::Ignore | ShapeDemand::TupleFields(_) => return None,
-    };
+    let field_demands = tuple_field_demands(&demand.shape, arity)?;
     let fields = field_tys
         .into_iter()
         .zip(field_demands)
@@ -2299,18 +2294,31 @@ fn generic_layout_from_demand(
                 .collect::<Vec<_>>();
             TransportLayout::structural(world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice())))
         }
-        ShapeDemand::TupleFields(fields) => {
-            if !has_exact_tuple_arity(world, ty, fields.len()) {
+        ShapeDemand::TupleFields(_) => {
+            let Some(field_tys) = exact_tuple_field_tys(world, ty) else {
                 return TransportLayout::structural(value_lane_shape(world, ty));
-            }
-            let items = tuple_field_tys(world, ty, fields.len())
+            };
+            let Some(field_demands) = tuple_field_demands(&demand.shape, field_tys.len()) else {
+                return TransportLayout::structural(value_lane_shape(world, ty));
+            };
+            let items = field_tys
                 .into_iter()
-                .zip(fields.iter())
+                .zip(field_demands.iter())
                 .map(|(field_ty, field_demand)| generic_layout_from_demand(world, field_ty, field_demand, facts, None))
                 .collect::<Vec<_>>();
             TransportLayout::structural(world.intern_shape(ShapeDescr::Tuple(items.into_boxed_slice())))
         }
     }
+}
+
+fn tuple_field_demands(shape: &ShapeDemand, arity: usize) -> Option<Vec<RuntimeDemand>> {
+    let mut fields = match shape {
+        ShapeDemand::TupleFields(fields) if fields.len() <= arity => fields.clone(),
+        ShapeDemand::Whole => vec![RuntimeDemand::whole(); arity],
+        ShapeDemand::Ignore | ShapeDemand::TupleFields(_) => return None,
+    };
+    fields.resize_with(arity, RuntimeDemand::ignore);
+    Some(fields)
 }
 
 fn has_exact_tuple_arity(world: &World, ty: Ty, arity: usize) -> bool {
@@ -2618,6 +2626,39 @@ mod tests {
             fields
                 .iter()
                 .all(|field| matches!(world.shape(field.structural), ShapeDescr::Lane(_)))
+        );
+    }
+
+    #[test]
+    fn generic_partial_exact_tuple_fills_omitted_trailing_fields_with_nothing() {
+        let mut world = World::new();
+        let atom = world.types_mut().atom();
+        let int = world.types_mut().int();
+        let tuple_ty = world.types_mut().tuple(&[atom, atom, int, atom]);
+        let demand = RuntimeDemand::tuple_fields(vec![
+            RuntimeDemand::ignore(),
+            RuntimeDemand::ignore(),
+            RuntimeDemand::whole(),
+        ]);
+        let mut facts = TransportFactsBuilder::default();
+
+        let layout = generic_layout_from_demand(&mut world, tuple_ty, &demand, &mut facts, None);
+
+        assert_eq!(layout.carrier, TransportCarrier::Absent);
+        let ShapeDescr::Tuple(fields) = world.shape(layout.structural) else {
+            panic!("a tuple demand prefix must retain the exact tuple's positions")
+        };
+        assert_eq!(fields.len(), 4);
+        assert!(matches!(world.shape(fields[0].structural), ShapeDescr::Nothing));
+        assert!(matches!(world.shape(fields[1].structural), ShapeDescr::Nothing));
+        assert!(matches!(world.shape(fields[2].structural), ShapeDescr::Lane(_)));
+        assert!(matches!(world.shape(fields[3].structural), ShapeDescr::Nothing));
+
+        let overlong = RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); 5]);
+        let layout = generic_layout_from_demand(&mut world, tuple_ty, &overlong, &mut facts, None);
+        assert!(
+            matches!(world.shape(layout.structural), ShapeDescr::Lane(_)),
+            "a demanded index beyond the exact tuple arity must use the safe boxed contract"
         );
     }
 

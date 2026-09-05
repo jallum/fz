@@ -186,7 +186,6 @@ const BACKEND_REQUEST_STARTED: &[&str] = &["fz", "compiler2", "backend_request",
 const BACKEND_REQUEST_FINISHED: &[&str] = &["fz", "compiler2", "backend_request", "finished"];
 const RECURSIVE_GROUP_SEARCHED: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "searched"];
 const RECURSIVE_GROUP_PUBLISHED: &[&str] = &["fz", "compiler2", "pull", "recursive_group", "published"];
-const DEMAND_CONE_SETTLED: &[&str] = &["fz", "compiler2", "demand", "cone", "settled"];
 
 /// Fields that describe a fact's STATE rather than its identity. Stripping
 /// them is what lets a `reads` entry, a `blocked` wait, a `changed` record and
@@ -270,11 +269,6 @@ pub struct ProductWork {
     pub copublications: u64,
     pub unexplained_evaluations: u64,
     pub recursive_members: u64,
-    pub demand_cone_settlements: u64,
-    pub demand_members: u64,
-    pub demand_external_members: u64,
-    pub demand_rounds: u64,
-    pub demand_derivations: u64,
 }
 
 /// One exact product identity as it appeared on the public stream. The raw
@@ -592,11 +586,6 @@ impl CausalReport {
             put("copublications", work.copublications);
             put("unexplained_evaluations", work.unexplained_evaluations);
             put("recursive_members", work.recursive_members);
-            put("demand_cone_settlements", work.demand_cone_settlements);
-            put("demand_members", work.demand_members);
-            put("demand_external_members", work.demand_external_members);
-            put("demand_rounds", work.demand_rounds);
-            put("demand_derivations", work.demand_derivations);
         }
         for evaluation in &self.product_evaluations {
             let mut prior_waits = evaluation
@@ -742,11 +731,6 @@ impl CausalReport {
             totals.copublications += work.copublications;
             totals.unexplained_evaluations += work.unexplained_evaluations;
             totals.recursive_members += work.recursive_members;
-            totals.demand_cone_settlements += work.demand_cone_settlements;
-            totals.demand_members += work.demand_members;
-            totals.demand_external_members += work.demand_external_members;
-            totals.demand_rounds += work.demand_rounds;
-            totals.demand_derivations += work.demand_derivations;
         }
         totals
     }
@@ -1051,8 +1035,6 @@ impl Replay {
             self.record_publication(position, event, ProductPublicationKind::RecursiveGroup);
         } else if event.named(RECURSIVE_GROUP_SEARCHED) {
             self.record_recursive_group(position, event);
-        } else if event.named(DEMAND_CONE_SETTLED) {
-            self.record_demand_cone(event);
         } else if event.named(SESSION_FINISHED) {
             self.finish_session(event);
             let session = event.metadata["session_id"].as_u64().expect("session finish identity");
@@ -1502,19 +1484,6 @@ impl Replay {
         });
     }
 
-    fn record_demand_cone(&mut self, event: &PublicEvent) {
-        let Some(cone) = event.metadata.get("cone") else {
-            return;
-        };
-        let count = |key: &str| cone.get(key).and_then(Json::as_u64).unwrap_or(0);
-        let work = self.product(event);
-        work.demand_cone_settlements += 1;
-        work.demand_members += count("members");
-        work.demand_external_members += count("external_members");
-        work.demand_rounds += count("rounds");
-        work.demand_derivations += count("derivations");
-    }
-
     fn record_product_movement(&mut self, position: usize, event: &PublicEvent, kind: ProductEvaluationTriggerKind) {
         let Some(product) = event.metadata.get("product") else {
             return;
@@ -1674,7 +1643,7 @@ impl References {
                     match (key.as_str(), field) {
                         ("arrow", Json::Number(id)) => self.types.extend(id.as_u64()),
                         ("function_id", Json::Number(id)) => self.functions.extend(id.as_u64()),
-                        ("input" | "surface_tys", Json::Array(tys)) => {
+                        ("input" | "surface" | "surface_tys", Json::Array(tys)) => {
                             self.types.extend(tys.iter().filter_map(Json::as_u64));
                         }
                         _ => self.walk(field),
@@ -1724,7 +1693,7 @@ fn canonical_product_value(value: &Json, canon: &CanonTables) -> Json {
                         ("function_id", Json::Number(id)) => {
                             Json::String(canon.function(id.as_u64().unwrap_or_default()))
                         }
-                        ("input" | "surface_tys", Json::Array(tys)) => Json::Array(
+                        ("input" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
                             tys.iter()
                                 .map(|ty| {
                                     ty.as_u64().map_or_else(
@@ -1765,7 +1734,7 @@ fn identity_field(key: &str, field: &Json, canon: Option<&CanonTables>) -> Json 
     match (canon, key, field) {
         (Some(canon), "arrow", Json::Number(id)) => Json::String(canon.ty(id.as_u64().unwrap_or_default())),
         (Some(canon), "function_id", Json::Number(id)) => Json::String(canon.function(id.as_u64().unwrap_or_default())),
-        (Some(canon), "input" | "surface_tys", Json::Array(tys)) => Json::Array(
+        (Some(canon), "input" | "surface" | "surface_tys", Json::Array(tys)) => Json::Array(
             tys.iter()
                 .map(|ty| Json::String(canon.ty(ty.as_u64().unwrap_or_default())))
                 .collect(),
@@ -1782,6 +1751,29 @@ fn render_identity(identity: &Json) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn construction_target_surfaces_use_the_trace_type_dictionary() {
+        let canon = CanonTables {
+            types: HashMap::from([(7, "int".to_string()), (8, "atom".to_string())]),
+            functions: HashMap::new(),
+        };
+        let raw = serde_json::json!({
+            "kind": "DeriveCallableConstructionTarget",
+            "surface": [7, 8],
+        });
+
+        assert_eq!(
+            serde_json::from_str::<Json>(&RawIdentity::new(&raw).canonical(&canon)).unwrap(),
+            serde_json::json!({
+                "kind": "DeriveCallableConstructionTarget",
+                "surface": ["int", "atom"],
+            })
+        );
+        let mut references = References::default();
+        references.walk(&raw);
+        assert_eq!(references.types, vec![7, 8]);
+    }
 
     #[test]
     fn raw_product_identity_removes_only_its_renderer_annotation() {

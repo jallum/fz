@@ -4,11 +4,13 @@ use crate::compiler2::artifact::{
     NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeGraphSharingWork, NativeProgram,
 };
 use crate::compiler2::drive::JobEffects;
+use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::{
     AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, ControlEntryOrigin, ExecutableKey, FactKey, FactUse,
     FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, ModuleState, Namespace, QuotedSourceHeap,
-    QuotedSourceMetadata, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World, parse_quoted_program,
+    QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World,
+    parse_quoted_program,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
@@ -41,6 +43,47 @@ type ReturnTypeDefs = Rc<RefCell<Vec<ReturnTypeRecord>>>;
 type ActivationInputDefs = Rc<RefCell<Vec<ActivationInputRecord>>>;
 type PublishedStructFields = Rc<RefCell<Vec<(u32, Vec<String>)>>>;
 type ReusableConsCounts = Rc<RefCell<Vec<(crate::compiler2::RootId, u64, u64)>>>;
+
+#[test]
+fn executable_construction_and_runtime_demand_share_one_world_type_projection() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("shared_runtime_demand_projection.fz".to_string()),
+        text: "fn add_one(x), do: x + 1\nfn twice(x), do: add_one(add_one(x))\nfn main(), do: twice(40)\n".to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let executables = compiler
+        .product_executable_inventory(root)
+        .expect("the shared-projection fixture should compile");
+    let world = compiler.world();
+
+    let mut uses = Vec::new();
+    for executable in executables {
+        let facts = world
+            .executable_facts(&executable)
+            .expect("each materialized executable should retain its settled facts");
+        let demand_facts = facts.runtime_demand_facts(world.runtime_demand_type_projections());
+        for &ty in facts.analysis().value_types.values() {
+            if world.types().is_integer(&ty) {
+                uses.push(demand_facts.projection_identity(ty));
+            }
+        }
+    }
+    assert!(
+        uses.len() >= 2,
+        "the fixture should exercise the same integer projection in multiple executable constructions",
+    );
+    assert!(
+        uses.iter().all(|projection| *projection == uses[0]),
+        "construction and formula views must borrow one World-owned projection for an interned type",
+    );
+}
 
 #[test]
 fn executable_facts_are_one_world_owned_scheduler_fact_with_exact_semantic_reads() {
@@ -6283,31 +6326,13 @@ fn compiler2_interp_runs_range_and_map_to_list_from_backend_artifacts() {
 #[test]
 fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
     let tel = ConfiguredTelemetry::new();
-    let demand_productions = Rc::new(Cell::new(0_u64));
-    let demand_sink = Rc::clone(&demand_productions);
-    // fz-kdt.34.4: `pull.product.settled` now fires once per settled
-    // PRODUCT (memo-authoritative), not once per `ProductDriver::pull` call
-    // -- so this total is no longer a proxy for "how many cone pulls the
-    // driver ran" (that count WAS a floor: on this same fixture it read 3
-    // before fz-kdt.34.4, undercounting the true settle count by ~20x). The
-    // "without cycling" guarantee this test is named for is now checked
-    // directly: `demand_keys` is the set of DISTINCT settled RuntimeDemand
-    // product keys, so `total == distinct.len()` below is the literal
-    // absence of a re-settle -- a cycling regression would inflate the
-    // total past the distinct count instead.
-    let demand_keys: Rc<RefCell<HashSet<crate::compiler2::ProductKey>>> = Rc::new(RefCell::new(HashSet::new()));
-    let demand_keys_sink = Rc::clone(&demand_keys);
-    tel.attach_raw_event3::<
-        crate::compiler2::ProductKey,
-        crate::compiler2::pull::ProductValue,
-        crate::compiler2::pull::ProductSettlement,
-        _,
-    >(
-        &["fz", "compiler2", "pull", "product", "settled"],
-        move |_, _, _, product, _, _| {
-            if product.kind() == "runtime_demand" {
-                demand_sink.set(demand_sink.get() + 1);
-                demand_keys_sink.borrow_mut().insert(product.clone());
+    let derivations = Rc::new(RefCell::new(Vec::<ExecutableKey>::new()));
+    let derivation_sink = Rc::clone(&derivations);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if let Job::DeriveRuntimeDemand(executable) = &completion.job {
+                derivation_sink.borrow_mut().push(executable.clone());
             }
         },
     );
@@ -6330,23 +6355,21 @@ fn compiler2_runtime_demand_settles_the_f98_orbit_fixture_without_cycling() {
         .expect("the orbit fixture should settle and run");
     assert_eq!(dbg.lines().as_slice(), ["[1, 3, 5, 7]", "[{1, :a}]"]);
 
+    let derivations = derivations.borrow();
+    let distinct_executables = derivations.iter().collect::<HashSet<_>>();
     assert!(
-        demand_productions.get() > 0,
-        "the run should settle at least one demand cone"
+        distinct_executables.len() >= 8,
+        "the fixture should exercise a nontrivial RuntimeDemand fact graph, got {} executables",
+        distinct_executables.len(),
     );
-    let demand_production_count = demand_productions.get();
-    let distinct_demand_products = demand_keys.borrow().len() as u64;
-    assert!(
-        distinct_demand_products >= 8,
-        "RuntimeDemand settles whole cones at once: expected more than a handful of distinct \
-         settled products on this fixture, got {distinct_demand_products}"
-    );
-    assert_eq!(
-        demand_production_count, distinct_demand_products,
-        "without cycling: every settled RuntimeDemand product key should settle exactly once \
-         (total settled events {demand_production_count} vs {distinct_demand_products} distinct \
-         product keys -- a gap would mean some product re-settled, i.e. cycling)"
-    );
+    for executable in distinct_executables {
+        let fact = FactKey::RuntimeDemand(executable.clone());
+        assert!(compiler.world().fact_is_settled(&fact), "{fact:?} must settle");
+        assert!(
+            compiler.world().runtime_demand(executable).is_some(),
+            "{fact:?} must have a value"
+        );
+    }
 }
 
 #[test]
@@ -8671,7 +8694,7 @@ end
 }
 
 #[test]
-fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
+fn compiler2_native_program_adapts_delivered_calls_from_exact_callee_return_lanes() {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     native.install(&tel);
@@ -8694,17 +8717,68 @@ fn compiler2_native_program_adapts_delivered_calls_from_callee_return_lanes() {
         "Enum.take should settle before inspecting delivered-call native adapters",
     );
 
+    let exact_result = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
+    let backend_program = compiler.world().backend_program(root_id);
+    let count_result = backend_program
+        .executables
+        .iter()
+        .find(|executable| {
+            compiler.world().function_ref(executable.key.activation.function).name == "count_result"
+                && executable.runtime_demand.input_demands.first() == Some(&exact_result)
+        })
+        .expect("the selected count-result clause should need only the integer payload");
+    assert!(
+        compiler
+            .world()
+            .executable_facts(&count_result.key)
+            .expect("count-result executable facts should be settled")
+            .entry_dispatch_inputs
+            .is_empty(),
+        "the directly selected ok clause must not consume the omitted variant tag",
+    );
+
+    let count_resume = backend_program
+        .executables
+        .iter()
+        .filter(|executable| {
+            compiler.world().function_ref(executable.key.activation.function).name == "count"
+                && executable
+                    .runtime_demand
+                    .call_arg_demands
+                    .values()
+                    .flatten()
+                    .any(|demand| demand == &exact_result)
+        })
+        .flat_map(|executable| match &executable.body {
+            BackendBody::Clauses { entries, .. } => entries.iter().collect::<Vec<_>>(),
+            BackendBody::Extern { .. } => Vec::new(),
+        })
+        .find_map(|entry| match &entry.origin {
+            BackendEntryOrigin::DeliveredResume { layout, .. }
+                if layout.layout.reprs.as_ref() == [AbiValueRepr::RawInt] =>
+            {
+                Some(layout)
+            }
+            _ => None,
+        })
+        .expect("the exact count-result demand should project one delivered integer lane");
+    assert_eq!(count_resume.layout.carrier, TransportCarrier::Absent);
+
     let program = native.last(root_id).program;
     let adapter = program
         .bodies
         .iter()
         .find(|body| {
             let function = program.module.fn_by_id(body.fn_id);
+            let NativeBodyOrigin::Continuation { owner } = body.origin else {
+                return false;
+            };
             function.name.starts_with("deliver_lanes__")
-                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 2 })
-                && body.param_reprs == [AbiValueRepr::RawAtom, AbiValueRepr::RawInt]
+                && program.module.fn_by_id(owner).name.starts_with("count__")
+                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
+                && body.param_reprs == [AbiValueRepr::RawInt]
         })
-        .expect("delivered call adapter should expose the callee's full split return lanes");
+        .expect("the native adapter should expose the same exact delivered integer lane");
 
     assert!(
         program
@@ -11386,352 +11460,240 @@ fn backend_canon(fixture: &str) -> String {
     crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root))
 }
 
-/// fz-kdt.47: a RuntimeDemand formula reads one frozen demand snapshot and
-/// immutable authoritative inputs. Independent members and recursive members
-/// may therefore be evaluated in any schedule order without moving the
-/// canonical demand/flow answer, requested executable identities, or backend.
 #[test]
-fn runtime_demand_formulas_are_order_independent_for_independent_self_and_mutual_cycles() {
-    use crate::compiler2::jobs::runtime_demand::{DemandFormulaCapture, DemandFormulaOrder, DemandFormulaOrdered};
-
-    const SYNTHETIC_CASES: &str = r#"
-fn left(x), do: fn(y) -> x + y end
-fn right(x), do: fn(y) -> x * y end
-fn count(0), do: fn(x) -> x end
-fn count(n), do: count(n - 1)
-fn even(0), do: fn(x) -> x end
-fn even(n), do: odd(n - 1)
-fn odd(0), do: fn(x) -> x + 1 end
-fn odd(n), do: even(n - 1)
-fn main() do
-  l = left(1)
-  r = right(2)
-  c = count(3)
-  e = even(4)
-  {l.(3), r.(4), c.(1), e.(1)}
-end
-"#;
-
-    fn snapshot(
-        source: &str,
-        formula_order: DemandFormulaOrder,
-        capture: DemandFormulaCapture,
-    ) -> (String, Vec<crate::compiler2::canon::DemandFormulaCanon>) {
-        let order = match capture {
-            DemandFormulaCapture::All => DemandFormulaOrdered::install(formula_order),
-            DemandFormulaCapture::Latest => DemandFormulaOrdered::latest(formula_order),
-            DemandFormulaCapture::None => DemandFormulaOrdered::shuffle(formula_order),
-        };
+fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders() {
+    const FUNCTIONS: [(&str, &str); 5] = [
+        ("left.fz", "fn left(x), do: fn(y) -> x + y end\n"),
+        ("right.fz", "fn right(x), do: fn(y) -> x * y end\n"),
+        (
+            "count.fz",
+            "fn count(0), do: fn(x) -> x end\nfn count(n), do: count(n - 1)\n",
+        ),
+        (
+            "even.fz",
+            "fn even(0), do: fn(x) -> x end\nfn even(n), do: odd(n - 1)\n",
+        ),
+        (
+            "odd.fz",
+            "fn odd(0), do: fn(x) -> x + 1 end\nfn odd(n), do: even(n - 1)\n",
+        ),
+    ];
+    fn settle(order: usize) -> (String, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
         let tel = ConfiguredTelemetry::new();
-        let mut compiler = Compiler2::new(tel);
-        compiler.submit_code(CodeSubmission {
-            name: Some("demand_formula_order.fz".to_string()),
-            text: source.to_string(),
-        });
-        let root = compiler.submit_root(RootSubmission {
-            module_name: None,
-            name: "main".to_string(),
-            arity: 0,
-            need: ExecutableNeed::Value,
-        });
-        compiler
-            .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Backend)
-            .expect("order harness should reach a backend program");
-        let world = compiler.world();
-        let backend = crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root));
-        let evaluations = match capture {
-            DemandFormulaCapture::All | DemandFormulaCapture::Latest => order.evaluations(),
-            DemandFormulaCapture::None => Vec::new(),
-        };
-        if source == SYNTHETIC_CASES {
-            assert_canonical_distinctions(world, &evaluations);
-        }
-        let mut facts_canons = std::collections::HashMap::new();
-        for evaluation in &evaluations {
-            facts_canons
-                .entry(evaluation.member.clone())
-                .or_insert_with(|| crate::compiler2::canon::canon_runtime_demand_facts(world, &evaluation.facts));
-        }
-        let formulas = evaluations
-            .iter()
-            .map(|evaluation| {
-                crate::compiler2::canon::canon_demand_formula(
-                    world,
-                    &evaluation.member,
-                    &evaluation.facts,
-                    &facts_canons[&evaluation.member],
-                    &evaluation.current,
-                    &evaluation.product_answers,
-                    &evaluation.demand,
-                    &evaluation.contributions,
-                    &evaluation.product_reads,
-                )
-            })
-            .collect::<Vec<_>>();
-        for (evaluation, formula) in evaluations.iter().zip(&formulas) {
-            assert_eq!(evaluation.product_reads.len(), evaluation.product_answers.len());
-            for (read, answer) in evaluation.product_reads.iter().zip(&evaluation.product_answers) {
-                assert_eq!(
-                    read.key,
-                    crate::compiler2::pull::ProductKey::CallableResolution(answer.key.clone())
-                );
-                assert_eq!(read.hit, answer.answer.is_some());
-            }
-            let current_cells = 1 + evaluation.current.target_inputs.len() + evaluation.current.callable_inputs.len();
-            assert!(
-                current_cells <= 64
-                    && evaluation.product_answers.len() <= 32
-                    && formula.input.len() + formula.output.len() <= 128 * 1024,
-                "one formula input exceeded the compact-boundary ratchet: current={} products={} bytes={}",
-                current_cells,
-                evaluation.product_answers.len(),
-                formula.input.len() + formula.output.len()
-            );
-        }
-        (backend, formulas)
-    }
-
-    type FinalAnswers = Vec<(String, String, String, Vec<(String, bool)>)>;
-
-    fn final_answers(canons: &[crate::compiler2::canon::DemandFormulaCanon]) -> FinalAnswers {
-        let mut final_by_member = std::collections::HashMap::new();
-        for canon in canons {
-            final_by_member.insert(
-                canon.input.lines().next().unwrap(),
-                (
-                    canon.input.lines().next().unwrap().to_string(),
-                    canon.input.clone(),
-                    canon.output.clone(),
-                    canon.requests.clone(),
-                ),
-            );
-        }
-        let mut final_answers = final_by_member.into_values().collect::<Vec<_>>();
-        final_answers.sort();
-        final_answers
-    }
-
-    fn record_formula_function(
-        observed: &mut FormulaAnswers,
-        canons: &[crate::compiler2::canon::DemandFormulaCanon],
-        context: &str,
-    ) {
-        for canon in canons {
-            let key = (canon.input.clone(), canon.requests.clone());
-            if let Some(previous) = observed.insert(key, canon.output.clone()) {
-                assert_eq!(
-                    previous, canon.output,
-                    "{context}: equal complete inputs produced different outputs"
-                );
-            }
-        }
-    }
-
-    type FormulaAnswers = std::collections::HashMap<(String, Vec<(String, bool)>), String>;
-
-    fn assert_canonical_distinctions(
-        world: &crate::compiler2::World,
-        evaluations: &[crate::compiler2::jobs::runtime_demand::DemandFormulaEvaluation],
-    ) {
-        let render = |evaluation: &crate::compiler2::jobs::runtime_demand::DemandFormulaEvaluation,
-                      demand: &crate::compiler2::ExecutableRuntimeDemand| {
-            crate::compiler2::canon::canon_runtime_demand(world, &evaluation.facts, demand)
-        };
-
-        let values = evaluations
-            .iter()
-            .find_map(|evaluation| {
-                let ids = evaluation
-                    .facts
-                    .analysis()
-                    .value_types
-                    .keys()
-                    .copied()
-                    .take(2)
-                    .collect::<Vec<_>>();
-                (ids.len() == 2).then_some((evaluation, ids))
-            })
-            .expect("fixture must expose two body-local values");
-        let mut left = values.0.demand.clone();
-        left.value_demands
-            .insert(values.1[0], crate::compiler2::RuntimeDemand::ignore());
-        left.value_demands
-            .insert(values.1[1], crate::compiler2::RuntimeDemand::whole());
-        let mut right = left.clone();
-        right
-            .value_demands
-            .insert(values.1[0], crate::compiler2::RuntimeDemand::whole());
-        right
-            .value_demands
-            .insert(values.1[1], crate::compiler2::RuntimeDemand::ignore());
-        assert_ne!(
-            render(values.0, &left),
-            render(values.0, &right),
-            "swapped local demands must retain identity"
-        );
-
-        let calls = evaluations
-            .iter()
-            .find_map(|evaluation| {
-                let ids = evaluation.facts.callsites().keys().copied().take(2).collect::<Vec<_>>();
-                (ids.len() == 2).then_some((evaluation, ids))
-            })
-            .expect("fixture must expose two body-local callsites");
-        let mut left = calls.0.demand.clone();
-        left.call_arg_demands
-            .insert(calls.1[0], vec![crate::compiler2::RuntimeDemand::ignore()]);
-        left.call_arg_demands
-            .insert(calls.1[1], vec![crate::compiler2::RuntimeDemand::whole()]);
-        let mut right = left.clone();
-        right
-            .call_arg_demands
-            .insert(calls.1[0], vec![crate::compiler2::RuntimeDemand::whole()]);
-        right
-            .call_arg_demands
-            .insert(calls.1[1], vec![crate::compiler2::RuntimeDemand::ignore()]);
-        assert_ne!(
-            render(calls.0, &left),
-            render(calls.0, &right),
-            "swapped callsite demands must retain identity"
-        );
-
-        let activation = evaluations
-            .iter()
-            .find(|evaluation| !evaluation.demand.callable_activation_inputs.is_empty())
-            .expect("fixture must carry a callable activation frame");
-        let mut without_frame = activation.demand.clone();
-        without_frame.callable_activation_inputs.remove(0);
-        assert_ne!(
-            render(activation, &activation.demand),
-            render(activation, &without_frame),
-            "callable activation frames are part of the canonical answer"
-        );
-
-        let boundary = evaluations
-            .iter()
-            .find(|evaluation| {
-                evaluation.demand.callable_flows.values().any(|flow| {
-                    flow.direct_edges
-                        .iter()
-                        .chain(&flow.first_class_edges)
-                        .any(|edge| !edge.boundary_input_demands.is_empty())
-                })
-            })
-            .expect("fixture must carry a callable boundary projection");
-        let mut without_boundary = boundary.demand.clone();
-        let edge = without_boundary
-            .callable_flows
-            .values_mut()
-            .flat_map(|flow| flow.direct_edges.iter_mut().chain(&mut flow.first_class_edges))
-            .find(|edge| !edge.boundary_input_demands.is_empty())
-            .unwrap();
-        edge.boundary_input_demands = Box::new([]);
-        assert_ne!(
-            render(boundary, &boundary.demand),
-            render(boundary, &without_boundary),
-            "boundary input demands are part of the canonical answer"
-        );
-    }
-
-    fn assert_closed_canon(name: &str, canons: &[crate::compiler2::canon::DemandFormulaCanon]) {
-        const FORBIDDEN: [&str; 7] = ["ValueId(", "CallSiteId(", "FunctionId(", "Ty(", "v?", "cs?", "?ty:"];
-        let has_raw_alpha = |text: &str| {
-            let mut chars = text.chars().peekable();
-            while let Some(ch) = chars.next() {
-                if ch == 'α' && chars.peek().is_some_and(char::is_ascii_digit) {
-                    return true;
+        let runs = Rc::new(RefCell::new(Vec::<(ExecutableKey, String)>::new()));
+        let run_sink = Rc::clone(&runs);
+        tel.attach_raw_event2::<World, super::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, world, completion| {
+                if let Job::DeriveRuntimeDemand(executable) = &completion.job {
+                    let name = world.function_ref(executable.activation.function).name.clone();
+                    if ["left", "right", "count", "even", "odd", "main"].contains(&name.as_str()) {
+                        run_sink.borrow_mut().push((executable.clone(), name));
+                    }
                 }
-            }
-            false
-        };
-        let gap = canons.iter().find(|canon| {
-            FORBIDDEN.iter().any(|text| {
-                canon.input.contains(text)
-                    || canon.output.contains(text)
-                    || canon.requests.iter().any(|(key, _)| key.contains(text))
-            }) || has_raw_alpha(&canon.input)
-                || has_raw_alpha(&canon.output)
-                || canon.requests.iter().any(|(key, _)| has_raw_alpha(key))
+            },
+        );
+        let mut compiler = Compiler2::new(tel);
+        let dbg = DbgCapture::new();
+        compiler.set_output(dbg.sink());
+        let mut source = String::new();
+        for (_, text) in &FUNCTIONS {
+            source.push_str(text);
+        }
+        source.push_str("fn main(), do: dbg({left(1).(3), right(2).(4), count(3).(1), even(4).(1)})\n");
+        compiler.submit_code(CodeSubmission {
+            name: Some("runtime_demand_order.fz".to_string()),
+            text: source,
         });
-        assert!(
-            gap.is_none(),
-            "{name}: formula canon leaked a raw or unknown identity: {gap:#?}"
-        );
-    }
-
-    let expected = snapshot(SYNTHETIC_CASES, DemandFormulaOrder::Forward, DemandFormulaCapture::All);
-    let expected_final = final_answers(&expected.1);
-    let mut observed_function = std::collections::HashMap::new();
-    record_formula_function(&mut observed_function, &expected.1, "recursive formulas");
-    assert!(
-        expected.1.iter().any(|formula| !formula.requests.is_empty()),
-        "callable formulas must request exact callable resolutions"
-    );
-    assert_closed_canon("recursive formulas", &expected.1);
-    assert!(
-        expected.1.iter().flat_map(|canon| &canon.requests).any(|(_, hit)| !hit),
-        "harness must retain product misses rather than reconstructing settled edges"
-    );
-    let requests = expected
-        .1
-        .iter()
-        .flat_map(|canon| canon.requests.iter().map(|(key, _)| key))
-        .collect::<Vec<_>>();
-    assert!(
-        requests.iter().collect::<std::collections::HashSet<_>>().len() < requests.len(),
-        "harness must retain duplicate reads across retries"
-    );
-    for order in [
-        DemandFormulaOrder::Reverse,
-        DemandFormulaOrder::Seeded(1),
-        DemandFormulaOrder::Seeded(0x9e37_79b9),
-    ] {
-        let actual = snapshot(SYNTHETIC_CASES, order, DemandFormulaCapture::All);
-        assert_eq!(actual.0, expected.0, "formula order moved the canonical backend");
-        assert_eq!(
-            final_answers(&actual.1),
-            expected_final,
-            "formula order moved final canonical demand, callable flows, or contributions"
-        );
-        record_formula_function(&mut observed_function, &actual.1, "recursive formulas");
-    }
-
-    for (name, source) in [
-        (
-            "enum take/drop/split",
-            include_str!("../../fixtures2/00420_enum_take_drop_split.fz"),
-        ),
-        (
-            "enum predicate search",
-            include_str!("../../fixtures2/behavior/enum_predicate_search.fz"),
-        ),
-        (
-            "f98 range/map orbit",
-            include_str!("../../fixtures2/behavior/fz_f98_range_map_converges.fz"),
-        ),
-    ] {
-        let expected = snapshot(source, DemandFormulaOrder::Forward, DemandFormulaCapture::Latest);
-        assert_closed_canon(name, &expected.1);
-        for order in [
-            DemandFormulaOrder::Reverse,
-            DemandFormulaOrder::Seeded(1),
-            DemandFormulaOrder::Seeded(0x9e37_79b9),
-        ] {
+        let root_specs = [("left", 1), ("right", 1), ("count", 1), ("even", 1), ("main", 0)];
+        let swapped_root_specs = [("right", 1), ("left", 1), ("count", 1), ("even", 1), ("main", 0)];
+        let rotated_root_specs = [("count", 1), ("even", 1), ("right", 1), ("left", 1), ("main", 0)];
+        let ordered_roots = match order {
+            0 => &root_specs,
+            1 => &swapped_root_specs,
+            2 => &rotated_root_specs,
+            _ => panic!("unknown root order"),
+        };
+        let mut main_root = None;
+        for (name, arity) in ordered_roots {
+            let root = compiler.submit_root(RootSubmission {
+                module_name: None,
+                name: (*name).to_string(),
+                arity: *arity,
+                need: ExecutableNeed::Value,
+            });
+            if *name == "main" {
+                main_root = Some(root);
+            }
+        }
+        let root = main_root.expect("main root");
+        compiler
+            .run_root_interp(root)
+            .expect("the reactive demand graph should settle and run");
+        let world = compiler.world();
+        let runs = runs.borrow();
+        let mut construction_owners = HashSet::new();
+        for (executable, _) in runs.iter() {
+            assert!(
+                world.fact_is_settled(&FactKey::RuntimeDemand(executable.clone())),
+                "every observed RuntimeDemand formula must finish settled",
+            );
+            let job = Job::DeriveRuntimeDemand(executable.clone());
+            let reads = world.job_reads(&job);
+            assert!(
+                reads.contains(&FactUse::current(FactKey::RuntimeDemandInput(executable.clone()))),
+                "each formula must read only its exact caller contribution cell",
+            );
+            let facts = world
+                .executable_facts(executable)
+                .expect("an observed RuntimeDemand formula must retain its executable facts");
+            let mut expected_peers = HashSet::new();
+            for (callsite, summary) in facts.callsites() {
+                let need = facts
+                    .callsite_needs()
+                    .get(callsite)
+                    .copied()
+                    .unwrap_or(ExecutableNeed::Value);
+                expected_peers.extend(
+                    summary
+                        .targets
+                        .iter()
+                        .filter_map(|target| target.runtime_executable(need)),
+                );
+            }
+            expected_peers.extend(
+                world
+                    .runtime_demand(executable)
+                    .expect("an observed RuntimeDemand formula must retain its answer")
+                    .callable_flows
+                    .values()
+                    .flat_map(|flow| flow.resolutions.iter().cloned()),
+            );
+            let actual_peers = reads
+                .iter()
+                .filter_map(|read| match read {
+                    FactUse::Current(FactKey::RuntimeDemandInputs(peer)) => Some(peer.clone()),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            if reads.iter().any(|read| {
+                matches!(
+                    read,
+                    FactUse::Current(FactKey::CallableConstructionTarget(key)) if key.owner == *executable
+                )
+            }) {
+                construction_owners.insert(world.function_ref(executable.activation.function).name.clone());
+            }
             assert_eq!(
-                snapshot(source, order, DemandFormulaCapture::None).0,
-                expected.0,
-                "{name}: formula order moved the backend"
+                actual_peers, expected_peers,
+                "each formula must subscribe to exactly its direct and callable-flow targets",
             );
         }
+        assert!(
+            ["even", "odd"].iter().all(|name| construction_owners.contains(*name)),
+            "the mutually recursive closure producers must bootstrap through exact construction targets: {construction_owners:?}",
+        );
+        let order = runs.iter().map(|(_, name)| name.clone()).collect();
+        let mut work = runs
+            .iter()
+            .map(|(executable, _)| crate::compiler2::canon::canon_executable_key(world, executable))
+            .collect::<Vec<_>>();
+        work.sort();
+        let mut facts = world
+            .runtime_demand_facts()
+            .map(|(executable, demand)| crate::compiler2::canon::canon_runtime_demand_fact(world, executable, demand))
+            .collect::<Vec<_>>();
+        facts.sort();
+        (
+            crate::compiler2::canon::canon_backend_program(world, &world.backend_program(root)),
+            dbg.lines(),
+            order,
+            work,
+            facts,
+        )
     }
+
+    let baseline = settle(0);
+    let alternatives = [settle(1), settle(2)];
+    assert_eq!(
+        baseline.1,
+        vec!["{4, 8, 1, 1}"],
+        "the settled artifact must execute correctly"
+    );
+    for alternative in alternatives {
+        assert_ne!(
+            baseline.2, alternative.2,
+            "each registration order must perturb reactive arrival"
+        );
+        assert_eq!(
+            baseline.0, alternative.0,
+            "arrival order must not move the canonical backend"
+        );
+        assert_eq!(baseline.1, alternative.1, "arrival order must not move runtime output");
+        assert_eq!(
+            baseline.3, alternative.3,
+            "arrival order must not move the exact executable RuntimeDemand work multiset",
+        );
+        assert_eq!(
+            baseline.4, alternative.4,
+            "arrival order must not move any settled RuntimeDemand semantic fact",
+        );
+    }
+}
+
+#[test]
+fn runtime_demand_discovers_nested_local_callable_dependencies_to_closure() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("nested_runtime_demand_dependencies.fz".to_string()),
+        text: "fn main() do\n  inner = fn (x) -> x + 1 end\n  outer = fn (x) -> inner.(x) end\n  outer.(1)\nend\n"
+            .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(2));
+
+    let main = compiler
+        .world()
+        .backend_program(root)
+        .executables
+        .iter()
+        .find(|executable| compiler.world().function_ref(executable.key.activation.function).name == "main")
+        .expect("the main executable should reach the backend")
+        .key
+        .clone();
+    let callable_dependencies = compiler
+        .world()
+        .job_reads(&Job::DeriveRuntimeDemand(main))
+        .into_iter()
+        .filter_map(|read| match read {
+            FactUse::Current(FactKey::RuntimeDemandInputs(key)) => Some(key.activation.function),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        callable_dependencies.len(),
+        2,
+        "loading the outer lambda row must reveal and subscribe to its captured inner lambda",
+    );
+    assert!(
+        callable_dependencies
+            .iter()
+            .all(|function| { compiler.world().function_ref(*function).name.starts_with("#lambda:") })
+    );
 }
 
 #[test]
 fn boxed_callable_members_contribute_their_exact_return_contract() {
     use crate::compiler2::RuntimeDemand;
-    use crate::compiler2::jobs::runtime_demand::{DemandFormulaOrder, DemandFormulaOrdered};
+    use crate::compiler2::jobs::runtime_demand::RuntimeDemandFormulaCapture;
 
-    let order = DemandFormulaOrdered::latest(DemandFormulaOrder::Forward);
+    let capture = RuntimeDemandFormulaCapture::install();
     let tel = ConfiguredTelemetry::new();
     let backend = BackendProgramCapture::new();
     backend.install(&tel);
@@ -11763,7 +11725,7 @@ end
         .expect("the boxed structured-return fixture should reach a backend program");
 
     let program = backend.last(root).program;
-    let evaluations = order.evaluations();
+    let evaluations = capture.evaluations();
     let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
     let retained = RuntimeDemand::whole();
     let mut candidates = Vec::new();
@@ -11892,9 +11854,9 @@ end
 #[test]
 fn direct_only_callable_flow_does_not_contribute_a_retained_return_contract() {
     use crate::compiler2::RuntimeDemand;
-    use crate::compiler2::jobs::runtime_demand::{DemandFormulaOrder, DemandFormulaOrdered};
+    use crate::compiler2::jobs::runtime_demand::RuntimeDemandFormulaCapture;
 
-    let order = DemandFormulaOrdered::latest(DemandFormulaOrder::Forward);
+    let capture = RuntimeDemandFormulaCapture::install();
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some("direct_only_partial_return.fz".to_string()),
@@ -11919,7 +11881,7 @@ end
         .expect("the direct-only structured-return fixture should reach a backend program");
 
     let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
-    let evaluations = order.evaluations();
+    let evaluations = capture.evaluations();
     let mut candidates = evaluations
         .iter()
         .flat_map(|evaluation| {
@@ -11958,11 +11920,11 @@ end
 }
 
 /// fz-kdt.47 / fz-kdt.179: callable construction has distinct authorities for
-/// resolution scheduling and semantic selection; neither is interner mutation.
-/// `plan_callable_flows` orders `CallableResolutionKey` product reads with the
-/// typed activation relation; each
-/// `CallableResolution` then constructs one activation identity independently.
-/// `finish_callable_flows` collects those answers and exposes the wrapper stress
+/// exact target production and semantic selection; RuntimeDemand never mutates
+/// the interner.
+/// `plan_callable_flows` orders first-class surfaces with the typed activation
+/// relation and resolves each edge directly from the callable-flow plan.
+/// `finish_callable_flows` exposes the finished edges at the wrapper stress
 /// point. Finally `construction_member_selection` is the sole semantic member
 /// authority: it drops and seats the finished edges, and transport builds both
 /// the member list and selection rows from that one result.
@@ -11977,7 +11939,7 @@ end
 /// dynamic result; this source assertion prevents the deleted mutating builder
 /// from returning as a second construction path.
 #[test]
-fn compiler2_callable_resolution_precedes_seated_wrapper_selection() {
+fn compiler2_construction_target_precedes_seated_wrapper_selection() {
     let runtime_demand = include_str!("jobs/runtime_demand.rs");
     assert!(
         !runtime_demand.contains(concat!("callable_flow_resolution_edges_", "product")),
@@ -11985,11 +11947,11 @@ fn compiler2_callable_resolution_precedes_seated_wrapper_selection() {
     );
     for authority in [
         "fn plan_callable_flows(",
-        "ProductKey::CallableResolution(resolution_key.clone())",
         "ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs))",
-        "edges.sort_by(|a, b| types.cmp_activation_tys(&a.surface.inputs, &b.surface.inputs))",
+        "let key = CallableConstructionTargetKey {",
+        "construction_flow_edge(world, input, &key, producer, surface)",
         "fn finish_callable_flows(",
-        "dispatch_stress::perturbed_construction_edges(",
+        "dispatch_stress::perturbed_construction_edges(plan.first_class_edges)",
     ] {
         assert!(
             runtime_demand.contains(authority),

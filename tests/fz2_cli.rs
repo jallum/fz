@@ -292,7 +292,7 @@ struct ProcessObservation {
     stdout: String,
     stderr: Vec<u8>,
     report: CausalReport,
-    callable_resolutions: BTreeSet<String>,
+    construction_targets: BTreeSet<String>,
     backend: String,
 }
 
@@ -424,11 +424,21 @@ fn compile_process_observation(request: ProcessRequest) -> Result<ProcessObserva
         )
     })?;
 
-    let callable_resolutions = report
-        .products
+    let construction_targets = report
+        .formulas
         .keys()
-        .filter(|identity| identity.kind() == Some("callable_resolution"))
-        .map(|identity| identity.canonical_identity(&report.canon))
+        .filter(|identity| {
+            serde_json::from_str::<serde_json::Value>(identity)
+                .ok()
+                .and_then(|identity| {
+                    identity
+                        .get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|kind| kind == "DeriveCallableConstructionTarget")
+        })
+        .cloned()
         .collect();
     let stdout = String::from_utf8(output.stdout).map_err(|error| {
         observation_failure(
@@ -443,7 +453,7 @@ fn compile_process_observation(request: ProcessRequest) -> Result<ProcessObserva
         stdout,
         stderr: output.stderr,
         report,
-        callable_resolutions,
+        construction_targets,
         backend: String::from_utf8(backend).map_err(|error| {
             observation_failure(
                 request.spec,
@@ -667,7 +677,7 @@ fn assert_file_contains(path: &Path, needle: &str, context: &str) {
 
 fn public_trace_ratchet(observation: &TargetObservation) -> Result<usize, ObservationFailure> {
     let expected = fixture_expected_stdout(observation.fixture.golden);
-    let mut callable_resolutions = 0;
+    let mut construction_targets = 0;
     for (process, process_observation) in ObservationProcess::ALL.into_iter().zip(&observation.processes) {
         let phase = process.phase();
         let fail =
@@ -700,17 +710,17 @@ fn public_trace_ratchet(observation: &TargetObservation) -> Result<usize, Observ
             return Err(fail(format!("evaluation is unattributed: {unattributed:?}")));
         }
         if let Some(undefined) = process_observation
-            .callable_resolutions
+            .construction_targets
             .iter()
             .find(|identity| identity.contains("?ty:"))
         {
             return Err(fail(format!(
-                "callable-resolution surface has an undefined canonical type: {undefined}"
+                "callable-construction target surface has an undefined canonical type: {undefined}"
             )));
         }
-        callable_resolutions += process_observation.callable_resolutions.len();
+        construction_targets += process_observation.construction_targets.len();
     }
-    Ok(callable_resolutions)
+    Ok(construction_targets)
 }
 
 fn causal_work_ratchet(observation: &TargetObservation) -> Result<(), ObservationFailure> {
@@ -764,10 +774,10 @@ fn backend_identity_ratchet(observation: &TargetObservation) -> Result<usize, Ob
     }
 
     let [first, second] = &observation.processes;
-    if first.callable_resolutions != second.callable_resolutions {
+    if first.construction_targets != second.construction_targets {
         return Err(fail(
             "cross-process-comparison",
-            "canonical callable-resolution identities differ".to_string(),
+            "canonical callable-construction target identities differ".to_string(),
         ));
     }
     if first.backend != second.backend {
@@ -785,7 +795,7 @@ fn backend_identity_ratchet(observation: &TargetObservation) -> Result<usize, Ob
             ),
         ));
     }
-    Ok(first.callable_resolutions.len())
+    Ok(first.construction_targets.len())
 }
 
 fn synthetic_process_observation(fixture: TargetFixture) -> ProcessObservation {
@@ -793,7 +803,7 @@ fn synthetic_process_observation(fixture: TargetFixture) -> ProcessObservation {
         stdout: fixture_expected_stdout(fixture.golden),
         stderr: Vec::new(),
         report: CausalReport::default(),
-        callable_resolutions: BTreeSet::new(),
+        construction_targets: BTreeSet::new(),
         backend: "x".repeat(1_001),
     }
 }
@@ -1098,16 +1108,16 @@ fn target_fixture_public_causal_and_backend_observations_are_reproducible() {
         "each bundle must retain two separate-process observations"
     );
 
-    let mut public_callable_resolutions = 0;
-    let mut backend_callable_resolutions = 0;
+    let mut public_construction_targets = 0;
+    let mut backend_construction_targets = 0;
     for observation in &observations {
-        public_callable_resolutions += public_trace_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
+        public_construction_targets += public_trace_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
         causal_work_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
-        backend_callable_resolutions += backend_identity_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
+        backend_construction_targets += backend_identity_ratchet(observation).unwrap_or_else(|error| panic!("{error}"));
     }
     assert!(
-        public_callable_resolutions > 0 && backend_callable_resolutions > 0,
-        "the three demand fixtures must exercise a real callable-resolution product path"
+        public_construction_targets > 0 && backend_construction_targets > 0,
+        "the three demand fixtures must carry exact callable targets from public facts into the backend"
     );
 }
 

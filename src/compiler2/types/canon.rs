@@ -54,8 +54,6 @@ pub(crate) struct TyCanon<'a> {
     alpha_names: Option<HashMap<TypeVarId, usize>>,
     #[cfg(test)]
     structural_alpha_names: HashMap<TypeVarId, String>,
-    #[cfg(test)]
-    alpha_frozen: bool,
 }
 
 impl<'a> TyCanon<'a> {
@@ -69,8 +67,6 @@ impl<'a> TyCanon<'a> {
             alpha_names: None,
             #[cfg(test)]
             structural_alpha_names: HashMap::new(),
-            #[cfg(test)]
-            alpha_frozen: false,
         }
     }
 
@@ -79,27 +75,6 @@ impl<'a> TyCanon<'a> {
         let mut canon = Self::new(labels);
         canon.alpha_names = Some(HashMap::new());
         canon
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_alpha_names(labels: &'a dyn Fn(FnId) -> String, alpha_names: HashMap<TypeVarId, usize>) -> Self {
-        let mut canon = Self::new(labels);
-        canon.alpha_names = Some(alpha_names);
-        canon.alpha_frozen = true;
-        canon
-    }
-
-    #[cfg(test)]
-    pub(crate) fn alpha_names(&self) -> HashMap<TypeVarId, usize> {
-        self.alpha_names
-            .clone()
-            .expect("alpha-normalized canon has no alpha environment")
-    }
-
-    #[cfg(test)]
-    pub(crate) fn freeze_alpha_names(&mut self) {
-        assert!(self.alpha_names.is_some(), "cannot freeze a non-alpha-normalized canon");
-        self.alpha_frozen = true;
     }
 
     #[cfg(test)]
@@ -145,10 +120,6 @@ impl<'a> TyCanon<'a> {
         if raw.starts_with('α')
             && let Some(names) = &mut self.alpha_names
         {
-            assert!(
-                names.contains_key(&id) || !self.alpha_frozen,
-                "formula canon encountered free type variable {id:?} outside stable value-type seeding"
-            );
             let next = names.len();
             return format!("free{}", *names.entry(id).or_insert(next));
         }

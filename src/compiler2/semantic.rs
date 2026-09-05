@@ -106,7 +106,7 @@ impl CallTargetSummary {
     ///
     /// A provider boundary names no compiler2 activation, so it has no
     /// executable. Everything downstream that turns a settled call target into
-    /// something the backend can emit — demand cones, transport positions,
+    /// something the backend can emit — runtime-demand facts, transport positions,
     /// artifact call edges — comes through this one door, so the mapping is
     /// stated once (fz-f98.18).
     pub fn runtime_executable(&self, need: ExecutableNeed) -> Option<ExecutableKey> {
@@ -268,6 +268,22 @@ impl CallableSurface {
         Self {
             inputs: types.address_inputs(&inputs),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallableConstructionTargetKey {
+    pub(crate) owner: ExecutableKey,
+    pub(crate) value: ValueId,
+    pub(crate) surface: CallableSurface,
+}
+
+impl SemanticOrd<Types> for CallableConstructionTargetKey {
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        self.owner
+            .semantic_cmp(&other.owner, types)
+            .then_with(|| self.value.cmp(&other.value))
+            .then_with(|| types.cmp_activation_tys(&self.surface.inputs, &other.surface.inputs))
     }
 }
 
@@ -433,6 +449,13 @@ impl RuntimeDemand {
         }
     }
 
+    pub(crate) fn for_executable_need(need: ExecutableNeed) -> Self {
+        match need {
+            ExecutableNeed::Value => Self::whole(),
+            ExecutableNeed::TupleFields(arity) => Self::tuple_fields(vec![Self::whole(); arity]),
+        }
+    }
+
     pub fn tuple_fields(fields: Vec<RuntimeDemand>) -> Self {
         Self {
             shape: ShapeDemand::TupleFields(fields).normalized(),
@@ -534,9 +557,7 @@ pub struct CallableActivationInput {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RuntimeDemandTypeInputs {
     pub(crate) any: Ty,
-    pub(crate) projections: HashMap<Ty, RuntimeDemandTypeProjection>,
     pub(crate) surfaces: HashMap<Vec<Ty>, CallableSurface>,
-    pub(crate) addressed_inputs: HashMap<Vec<Ty>, Vec<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -546,37 +567,25 @@ pub(crate) struct RuntimeDemandTypeProjection {
     pub(crate) callable_value_demand: Option<RuntimeDemand>,
 }
 
+impl RuntimeDemandTypeProjection {
+    pub(crate) fn informative_boundary_demand(&self, types: &Types, ty: Ty) -> Option<RuntimeDemand> {
+        if types.is_empty(&ty) {
+            return None;
+        }
+        if !matches!(self.boundary.shape, ShapeDemand::Whole) || !self.boundary.callable.is_empty() {
+            return Some(self.boundary.clone());
+        }
+        (types.is_integer(&ty) || types.is_floating(&ty) || types.is_nil(&ty) || types.is_atom_type(&ty))
+            .then(|| self.boundary.clone())
+    }
+}
+
 impl RuntimeDemandTypeInputs {
     pub(crate) fn new(any: Ty) -> Self {
         Self {
             any,
-            projections: HashMap::new(),
             surfaces: HashMap::new(),
-            addressed_inputs: HashMap::new(),
         }
-    }
-
-    pub(crate) fn projection(&self, ty: Ty) -> &RuntimeDemandTypeProjection {
-        self.projections
-            .get(&ty)
-            .unwrap_or_else(|| panic!("settled executable facts omitted runtime-demand projection for {ty:?}"))
-    }
-
-    pub(crate) fn boundary_demand(&self, ty: Ty) -> RuntimeDemand {
-        self.projection(ty).boundary.clone()
-    }
-
-    pub(crate) fn dispatch_demand(&self, ty: Ty) -> RuntimeDemand {
-        self.projection(ty).dispatch.clone()
-    }
-
-    pub(crate) fn callable_surfaces(&self, ty: Ty) -> Option<&BTreeSet<CallableSurface>> {
-        let resolved = &self.projection(ty).boundary.callable.resolved;
-        (!resolved.is_empty()).then_some(resolved)
-    }
-
-    pub(crate) fn callable_value_demand(&self, ty: Ty) -> Option<RuntimeDemand> {
-        self.projection(ty).callable_value_demand.clone()
     }
 
     pub(crate) fn surface(&self, inputs: &[Ty]) -> CallableSurface {
@@ -584,12 +593,6 @@ impl RuntimeDemandTypeInputs {
             .get(inputs)
             .unwrap_or_else(|| panic!("settled executable facts omitted callable surface for {inputs:?}"))
             .clone()
-    }
-
-    pub(crate) fn addressed_inputs(&self, inputs: &[Ty]) -> &[Ty] {
-        self.addressed_inputs
-            .get(inputs)
-            .unwrap_or_else(|| panic!("settled executable facts omitted addressed inputs for {inputs:?}"))
     }
 }
 
@@ -658,6 +661,37 @@ pub struct ExecutableRuntimeDemand {
     pub call_arg_demands: HashMap<CallSiteId, Vec<RuntimeDemand>>,
     pub callable_flows: HashMap<ValueId, CallableFlowFact>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TargetDemandContribution {
+    pub(crate) return_demand: Option<RuntimeDemand>,
+    pub(crate) input_demands: HashMap<usize, RuntimeDemand>,
+}
+
+impl JoinContribution for TargetDemandContribution {
+    type Ctx = Types;
+
+    fn bottom() -> Self {
+        Self::default()
+    }
+
+    fn join_assign(&mut self, other: &Self, _ctx: &mut Types) {
+        if let Some(other_return) = &other.return_demand {
+            match &mut self.return_demand {
+                Some(current) => current.join_assign(other_return),
+                None => self.return_demand = Some(other_return.clone()),
+            }
+        }
+        for (index, demand) in &other.input_demands {
+            self.input_demands
+                .entry(*index)
+                .and_modify(|current| current.join_assign(demand))
+                .or_insert_with(|| demand.clone());
+        }
+    }
+}
+
+pub(crate) type RuntimeDemandInputMap<P> = ContributionMap<ExecutableKey, P, TargetDemandContribution>;
 
 impl ExecutableRuntimeDemand {
     /// Ground every callable dispatch surface this demand carries to the concrete
@@ -793,6 +827,12 @@ impl SemanticOrd<Types> for ActivationKey {
             .cmp(&other.root)
             .then_with(|| self.function.cmp(&other.function))
             .then_with(|| types.cmp_activation_ty(self.arrow, other.arrow))
+    }
+}
+
+impl SemanticOrd<Types> for FunctionId {
+    fn semantic_cmp(&self, other: &Self, _types: &Types) -> Ordering {
+        self.cmp(other)
     }
 }
 
@@ -1262,6 +1302,17 @@ where
         }
     }
 
+    /// Replace this publisher's complete frontier and each listed value.
+    pub fn conclude_exact(
+        &mut self,
+        ctx: &mut V::Ctx,
+        publisher: P,
+        previous_output_keys: HashSet<K>,
+        next: HashMap<K, V>,
+    ) -> ContributionReplace<K> {
+        self.conclude(ctx, publisher, previous_output_keys, next, true)
+    }
+
     /// A cumulative concluding-completion arm for evidence whose absence in a
     /// rerun is not a proof of impossibility. New entries join with the
     /// publisher's prior entries; previous output keys stay in the publisher's
@@ -1573,9 +1624,11 @@ impl JoinContribution for RuntimeDemand {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeSet, HashMap, HashSet};
+    use std::rc::Rc;
 
     use super::*;
-    use crate::compiler2::{ExecutableNeed, Job, World};
+    use crate::compiler2::drive::JobEffects;
+    use crate::compiler2::{ExecutableNeed, FactKey, Job, World};
     use crate::telemetry::ConfiguredTelemetry;
     use crate::types::{ClosureTarget, Sigma};
 
@@ -1584,6 +1637,309 @@ mod tests {
         let any = world.types_mut().any();
         let function = world.root_function(root);
         ActivationKey::from_inputs(root, function, &[any, any], world.types_mut())
+    }
+
+    #[test]
+    fn runtime_demand_contributions_replace_and_retract_one_exact_publisher() {
+        let mut world = World::new();
+        let tel = ConfiguredTelemetry::new();
+        let activation = test_key(&mut world, &tel);
+        let target = ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::Value,
+        };
+        let left = Job::DeriveRuntimeDemand(target.clone());
+        let right = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation,
+            need: ExecutableNeed::TupleFields(1),
+        });
+        let mut contributions = RuntimeDemandInputMap::new();
+
+        let returning = TargetDemandContribution {
+            return_demand: Some(RuntimeDemand::whole()),
+            ..TargetDemandContribution::default()
+        };
+        let first = contributions.conclude_exact(
+            world.types_mut(),
+            left.clone(),
+            HashSet::new(),
+            HashMap::from([(target.clone(), returning.clone())]),
+        );
+        assert_eq!(first.changed_keys, HashSet::from([target.clone()]));
+
+        let equal = contributions.conclude_exact(
+            world.types_mut(),
+            left.clone(),
+            first.output_keys,
+            HashMap::from([(target.clone(), returning.clone())]),
+        );
+        assert!(equal.changed_keys.is_empty(), "an equal exact answer must not move");
+
+        let second = contributions.conclude_exact(
+            world.types_mut(),
+            right.clone(),
+            HashSet::new(),
+            HashMap::from([(target.clone(), returning.clone())]),
+        );
+        assert!(
+            second.changed_keys.is_empty(),
+            "an equal second publisher must not move the join"
+        );
+
+        let narrowed = TargetDemandContribution {
+            input_demands: HashMap::from([(0, RuntimeDemand::whole())]),
+            ..TargetDemandContribution::default()
+        };
+        let replacement = contributions.conclude_exact(
+            world.types_mut(),
+            left.clone(),
+            equal.output_keys,
+            HashMap::from([(target.clone(), narrowed.clone())]),
+        );
+        assert_eq!(replacement.changed_keys, HashSet::from([target.clone()]));
+        assert_eq!(
+            contributions.get(&target).unwrap().return_demand,
+            returning.return_demand
+        );
+        assert_eq!(
+            contributions.get(&target).unwrap().input_demands,
+            narrowed.input_demands
+        );
+
+        let left_retraction =
+            contributions.conclude_exact(world.types_mut(), left, replacement.output_keys, HashMap::new());
+        assert_eq!(left_retraction.changed_keys, HashSet::from([target.clone()]));
+        assert_eq!(contributions.get(&target), Some(&returning));
+
+        let right_retraction =
+            contributions.conclude_exact(world.types_mut(), right, second.output_keys, HashMap::new());
+        assert_eq!(right_retraction.changed_keys, HashSet::from([target.clone()]));
+        assert!(contributions.get(&target).is_none());
+    }
+
+    #[test]
+    fn equal_runtime_demand_conclusions_do_not_revise_or_wake_exact_readers() {
+        let mut world = World::new();
+        let tel = ConfiguredTelemetry::new();
+        let activation = test_key(&mut world, &tel);
+        let target = ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::Value,
+        };
+        let writer = Job::DeriveRuntimeDemand(target.clone());
+        let reader = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation,
+            need: ExecutableNeed::TupleFields(1),
+        });
+        let input_fact = FactKey::RuntimeDemandInput(target.clone());
+        let reads = vec![FactUse::current(input_fact.clone())];
+        world.complete_job(
+            reader.clone(),
+            JobEffects {
+                reads: reads.clone(),
+                ..JobEffects::default()
+            },
+        );
+        let target_contribution = TargetDemandContribution {
+            return_demand: Some(RuntimeDemand::whole()),
+            ..TargetDemandContribution::default()
+        };
+        let first = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                runtime_demand_input_contributions: vec![(target.clone(), target_contribution.clone())],
+                ..JobEffects::default()
+            },
+        );
+        assert!(first.changed.iter().any(|change| change.key == input_fact));
+        assert!(first.wakes.iter().any(|wake| wake.job == reader));
+        let input_revision = world.fact_revision(&input_fact);
+
+        world.complete_job(
+            reader,
+            JobEffects {
+                reads,
+                ..JobEffects::default()
+            },
+        );
+        let equal = world.complete_job(
+            writer,
+            JobEffects {
+                runtime_demand_input_contributions: vec![(target, target_contribution)],
+                ..JobEffects::default()
+            },
+        );
+        assert!(
+            equal.changed.is_empty(),
+            "equal semantic answers must not move either fact"
+        );
+        assert!(
+            equal.wakes.is_empty(),
+            "equal semantic answers must not wake exact readers"
+        );
+        assert_eq!(world.fact_revision(&input_fact), input_revision);
+    }
+
+    #[test]
+    fn runtime_demand_input_subfact_moves_only_with_the_stored_input_vector() {
+        let mut world = World::new();
+        let tel = ConfiguredTelemetry::new();
+        let activation = test_key(&mut world, &tel);
+        let executable = ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::Value,
+        };
+        let fact = FactKey::RuntimeDemand(executable.clone());
+        let inputs_fact = FactKey::RuntimeDemandInputs(executable.clone());
+        let writer = Job::DeriveRuntimeDemand(executable.clone());
+        let full_reader = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation: activation.clone(),
+            need: ExecutableNeed::TupleFields(1),
+        });
+        let input_reader = Job::DeriveRuntimeDemand(ExecutableKey {
+            activation,
+            need: ExecutableNeed::TupleFields(2),
+        });
+        world.complete_job(
+            full_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        world.complete_job(
+            input_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(inputs_fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+
+        let first_value = Rc::new(ExecutableRuntimeDemand::default());
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), first_value),
+            (true, true)
+        );
+        let first = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                changed: vec![fact.clone(), inputs_fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(first.wakes.iter().any(|wake| wake.job == full_reader));
+        assert!(first.wakes.iter().any(|wake| wake.job == input_reader));
+        let first_inputs_revision = world.fact_revision(&inputs_fact);
+
+        world.complete_job(
+            full_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        world.complete_job(
+            input_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(inputs_fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        let return_only = Rc::new(ExecutableRuntimeDemand {
+            return_demand: RuntimeDemand::whole(),
+            ..ExecutableRuntimeDemand::default()
+        });
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), return_only),
+            (true, false)
+        );
+        let return_change = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                changed: vec![fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(return_change.wakes.iter().any(|wake| wake.job == full_reader));
+        assert!(!return_change.wakes.iter().any(|wake| wake.job == input_reader));
+        assert_eq!(world.fact_revision(&inputs_fact), first_inputs_revision);
+
+        let input_change = Rc::new(ExecutableRuntimeDemand {
+            return_demand: RuntimeDemand::whole(),
+            input_demands: vec![RuntimeDemand::whole()],
+            ..ExecutableRuntimeDemand::default()
+        });
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), input_change),
+            (true, true)
+        );
+        let input_change = world.complete_job(
+            writer.clone(),
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                changed: vec![fact.clone(), inputs_fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(input_change.wakes.iter().any(|wake| wake.job == input_reader));
+
+        let retained = Rc::clone(world.runtime_demand(&executable).unwrap());
+        let stored_inputs = retained.input_demands.as_ptr();
+        assert_eq!(
+            world.runtime_demand_inputs(&executable).unwrap().as_ptr(),
+            stored_inputs,
+            "the input fact must project the one stored RuntimeDemand allocation",
+        );
+        let equal_value = Rc::new((*retained).clone());
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), equal_value),
+            (false, false)
+        );
+        assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));
+
+        let retracted = world.complete_job(writer.clone(), JobEffects::default());
+        assert!(retracted.changed.iter().any(|change| change.key == fact));
+        assert!(retracted.changed.iter().any(|change| change.key == inputs_fact));
+        assert!(world.runtime_demand(&executable).is_none());
+        assert!(world.runtime_demand_inputs(&executable).is_none());
+
+        world.complete_job(
+            full_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        world.complete_job(
+            input_reader.clone(),
+            JobEffects {
+                reads: vec![FactUse::current(inputs_fact.clone())],
+                ..JobEffects::default()
+            },
+        );
+        assert_eq!(
+            world.define_runtime_demand(executable.clone(), Rc::new((*retained).clone())),
+            (false, false),
+            "reappearance must reuse the equal stored semantic value",
+        );
+        let reappeared = world.complete_job(
+            writer,
+            JobEffects {
+                outputs: vec![fact.clone(), inputs_fact.clone()],
+                ..JobEffects::default()
+            },
+        );
+        assert!(reappeared.changed.iter().any(|change| change.key == fact));
+        assert!(reappeared.changed.iter().any(|change| change.key == inputs_fact));
+        assert!(reappeared.wakes.iter().any(|wake| wake.job == full_reader));
+        assert!(reappeared.wakes.iter().any(|wake| wake.job == input_reader));
+        assert!(Rc::ptr_eq(world.runtime_demand(&executable).unwrap(), &retained));
+        assert_eq!(
+            world.runtime_demand_inputs(&executable).unwrap().as_ptr(),
+            stored_inputs
+        );
     }
 
     #[test]

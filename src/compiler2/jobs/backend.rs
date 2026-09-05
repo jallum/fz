@@ -394,7 +394,7 @@ pub(crate) fn produce_root_backend_product(
         }
         for positioned in backend.abi.callable_owners.iter() {
             let owner = &positioned.owner;
-            stack.extend(callable_resolution_executables(root, &owner.callable_facts));
+            stack.extend(callable_fact_executables(root, &owner.callable_facts));
             stack.extend(boundary_resolution_executables(root, &owner.boundary_facts));
         }
         backends.insert(current, backend);
@@ -611,7 +611,7 @@ fn boundary_resolution_executables(
     out
 }
 
-fn callable_resolution_executables(root: RootId, callables: &HashMap<CallableId, CallableFacts>) -> Vec<ExecutableKey> {
+fn callable_fact_executables(root: RootId, callables: &HashMap<CallableId, CallableFacts>) -> Vec<ExecutableKey> {
     callables
         .values()
         .flat_map(|facts| facts.resolutions.iter())
@@ -2457,11 +2457,11 @@ fn callable_return_lanes(form: BackendCallableReturn) -> usize {
 /// the wrapper wrote its returned value into the register the continuation
 /// reads as its own closure pointer — a corrupt closure handed to
 /// `fz_closure_get_capture_atom`, which the program discovers as a
-/// non-unwinding abort at the FIRST call, on every door. The demand rule that
-/// keeps them equal (the construction owner's exact member-return contribution
-/// and `widen_boxed_closure_call_results` giving a boxed callsite the seam's one
-/// lane) is a rule about facts several jobs apart, so it gets a named invariant
-/// here rather than an abort out there.
+/// non-unwinding abort at the FIRST call, on every door. The demand rules that
+/// keep them equal (an exact first-class target contribution retaining each
+/// wrapper member's required return, and `widen_boxed_closure_call_results`
+/// giving a boxed callsite the seam's one lane) span several facts, so the
+/// agreement gets a named invariant here rather than an abort out there.
 ///
 /// A closure callsite reaches a wrapper exactly when its callee VALUE travels
 /// in the boxed `ValueRef` carrier — the same condition

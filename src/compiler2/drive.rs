@@ -13,7 +13,7 @@ use super::facts::{ClaimShape, DerivationId, FactUse};
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::ProductKey;
 use super::scheduler::{DriveOutcome, Scheduler, WorkStartReason};
-use super::semantic::{CallSiteKey, SemanticOrd};
+use super::semantic::{CallSiteKey, CallableConstructionTargetKey, SemanticOrd};
 use super::types::Types;
 use super::world::World;
 
@@ -153,6 +153,8 @@ pub enum Job {
     SeedActivation(ActivationKey),
     AnalyzeActivation(ActivationKey),
     DeriveExecutableFacts(ExecutableKey),
+    DeriveCallableConstructionTarget(CallableConstructionTargetKey),
+    DeriveRuntimeDemand(ExecutableKey),
     BuildBackendProduct(RootId),
     LowerNativeProgram(RootId),
 }
@@ -181,7 +183,9 @@ impl SemanticOrd<Types> for Job {
                 (Job::SeedRoot(left), Job::SeedRoot(right)) => left.cmp(right),
                 (Job::SeedActivation(left), Job::SeedActivation(right))
                 | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
-                (Job::DeriveExecutableFacts(left), Job::DeriveExecutableFacts(right)) => {
+                (Job::DeriveExecutableFacts(left), Job::DeriveExecutableFacts(right))
+                | (Job::DeriveRuntimeDemand(left), Job::DeriveRuntimeDemand(right)) => left.semantic_cmp(right, types),
+                (Job::DeriveCallableConstructionTarget(left), Job::DeriveCallableConstructionTarget(right)) => {
                     left.semantic_cmp(right, types)
                 }
                 (Job::BuildBackendProduct(left), Job::BuildBackendProduct(right))
@@ -215,6 +219,8 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::ScopeCode(_) => 19,
         Job::SeedActivation(_) => 20,
         Job::SeedRoot(_) => 21,
+        Job::DeriveCallableConstructionTarget(_) => 22,
+        Job::DeriveRuntimeDemand(_) => 23,
     }
 }
 
@@ -251,6 +257,10 @@ pub enum FactKey {
     CallSiteSummary(CallSiteKey),
     Executable(ExecutableKey),
     ExecutableFacts(ExecutableKey),
+    CallableConstructionTarget(CallableConstructionTargetKey),
+    RuntimeDemandInput(ExecutableKey),
+    RuntimeDemand(ExecutableKey),
+    RuntimeDemandInputs(ExecutableKey),
     BackendProgram(RootId),
     NativeProgram(RootId),
 }
@@ -297,8 +307,16 @@ impl FactKey {
             | (FactKey::ReturnType(left), FactKey::ReturnType(right)) => left.semantic_cmp(right, types),
             (FactKey::CallSiteTargets(left), FactKey::CallSiteTargets(right))
             | (FactKey::CallSiteSummary(left), FactKey::CallSiteSummary(right)) => left.semantic_cmp(right, types),
+            (FactKey::CallableConstructionTarget(left), FactKey::CallableConstructionTarget(right)) => {
+                left.semantic_cmp(right, types)
+            }
             (FactKey::Executable(left), FactKey::Executable(right))
-            | (FactKey::ExecutableFacts(left), FactKey::ExecutableFacts(right)) => left.semantic_cmp(right, types),
+            | (FactKey::ExecutableFacts(left), FactKey::ExecutableFacts(right))
+            | (FactKey::RuntimeDemandInput(left), FactKey::RuntimeDemandInput(right))
+            | (FactKey::RuntimeDemand(left), FactKey::RuntimeDemand(right))
+            | (FactKey::RuntimeDemandInputs(left), FactKey::RuntimeDemandInputs(right)) => {
+                left.semantic_cmp(right, types)
+            }
             _ => std::cmp::Ordering::Equal,
         }
     }
@@ -313,6 +331,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::CallGraphComponent(_) => 4,
         FactKey::CallSiteSummary(_) => 5,
         FactKey::CallSiteTargets(_) => 6,
+        FactKey::CallableConstructionTarget(_) => 36,
         FactKey::CodeIndexed(_) => 7,
         FactKey::CodeScoped(_) => 8,
         FactKey::EntryDispatch(_) => 9,
@@ -339,6 +358,9 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::StaticCallees(_) => 30,
         FactKey::StructDefined(_) => 31,
         FactKey::TypeDefined(_) => 32,
+        FactKey::RuntimeDemand(_) => 33,
+        FactKey::RuntimeDemandInput(_) => 34,
+        FactKey::RuntimeDemandInputs(_) => 35,
     }
 }
 
@@ -348,7 +370,10 @@ impl ClaimShape for FactKey {
     /// its body-input evidence ascends by the cross-publisher widen
     /// (`ActivationInputMap`). Every other fact's content overwrites.
     fn is_cumulative(&self) -> bool {
-        matches!(self, FactKey::ReturnType(_) | FactKey::ActivationInputs(_))
+        matches!(
+            self,
+            FactKey::ReturnType(_) | FactKey::ActivationInputs(_) | FactKey::RuntimeDemandInput(_)
+        )
     }
 }
 
@@ -381,6 +406,7 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) derivations: Vec<JobDerivation>,
     pub(crate) completion_authority: CompletionAuthority,
 }
@@ -489,6 +515,10 @@ impl World {
                 return pokes + self.demand_producer_if_needed(Job::AnalyzeActivation(activation), fact, reason) as u64;
             }
             FactKey::ExecutableFacts(executable) => Some(Job::DeriveExecutableFacts(executable.clone())),
+            FactKey::CallableConstructionTarget(key) => Some(Job::DeriveCallableConstructionTarget(key.clone())),
+            FactKey::RuntimeDemand(executable) | FactKey::RuntimeDemandInputs(executable) => {
+                Some(Job::DeriveRuntimeDemand(executable.clone()))
+            }
             _ => None,
         };
         job.map(|job| self.demand_producer_if_needed(job, fact, reason) as u64)

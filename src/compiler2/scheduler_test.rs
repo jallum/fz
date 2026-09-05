@@ -1046,8 +1046,8 @@ fn compiler2_scheduler_first_cumulative_content_after_bottom_wakes_the_reader_on
 /// content a reader can see and act on -- `CallSiteSummary`'s `Unresolved`
 /// is a reader-visible answer, not the absence of one. So its first
 /// appearance stays a movement even when the publisher lists nothing changed,
-/// and the demand facts (`Activation`, `Executable`) that gate whole cones on
-/// presence keep waking their readers the way they always have.
+/// and the demand facts (`Activation`, `Executable`) that gate readers on
+/// presence keep waking those readers.
 #[test]
 fn compiler2_scheduler_replacing_appearance_wakes_current_readers_unmarked() {
     let mut scheduler = TestScheduler::new();

@@ -58,7 +58,9 @@ use super::scheduler::{DerivationEffects, FatalError, WorkStartReason, WorkStart
 use super::scope::ScopeSnapshot;
 use super::semantic::{
     ActivationAnalysis, ActivationInputAlternatives, ActivationInputMap, ActivationMap, CallSiteKey, CallSiteMap,
-    CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, ContributionReplace,
+    CallSiteResolution, CallSiteSummary, CallSiteTargets, CallSiteTargetsMap, CallableConstructionTargetKey,
+    ContributionReplace, ExecutableRuntimeDemand, RuntimeDemandInputMap, RuntimeDemandTypeProjection,
+    TargetDemandContribution,
 };
 use super::source::{
     QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata,
@@ -141,6 +143,10 @@ pub struct World {
     callsites: CallSiteMap,
     callsite_targets: CallSiteTargetsMap,
     executable_facts: HashMap<ExecutableKey, std::rc::Rc<super::executable_facts::ExecutableFacts>>,
+    callable_construction_targets: HashMap<CallableConstructionTargetKey, ExecutableKey>,
+    runtime_demand_type_projections: HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>>,
+    runtime_demands: HashMap<ExecutableKey, std::rc::Rc<ExecutableRuntimeDemand>>,
+    runtime_demand_input_contributions: RuntimeDemandInputMap<Job>,
     backend: BackendProgramMap,
     macro_executables: MacroExecutableMap,
     native: NativeProgramMap,
@@ -267,6 +273,10 @@ impl World {
             callsites: CallSiteMap::new(),
             callsite_targets: CallSiteTargetsMap::new(),
             executable_facts: HashMap::new(),
+            callable_construction_targets: HashMap::new(),
+            runtime_demand_type_projections: HashMap::new(),
+            runtime_demands: HashMap::new(),
+            runtime_demand_input_contributions: RuntimeDemandInputMap::new(),
             backend: BackendProgramMap::new(),
             macro_executables: MacroExecutableMap::new(),
             native: NativeProgramMap::new(),
@@ -311,6 +321,36 @@ impl World {
 
     pub(crate) fn types_mut(&mut self) -> &mut Types {
         &mut self.types
+    }
+
+    pub(crate) fn runtime_demand_type_projection(&self, ty: Ty) -> Option<&std::rc::Rc<RuntimeDemandTypeProjection>> {
+        self.runtime_demand_type_projections.get(&ty)
+    }
+
+    pub(crate) fn runtime_demand_type_projections(&self) -> &HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>> {
+        &self.runtime_demand_type_projections
+    }
+
+    pub(crate) fn memoize_runtime_demand_type_projection(
+        &mut self,
+        ty: Ty,
+        projection: RuntimeDemandTypeProjection,
+    ) -> std::rc::Rc<RuntimeDemandTypeProjection> {
+        match self.runtime_demand_type_projections.entry(ty) {
+            std::collections::hash_map::Entry::Occupied(current) => {
+                assert_eq!(
+                    current.get().as_ref(),
+                    &projection,
+                    "one interned type has one runtime-demand projection"
+                );
+                std::rc::Rc::clone(current.get())
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let projection = std::rc::Rc::new(projection);
+                entry.insert(std::rc::Rc::clone(&projection));
+                projection
+            }
+        }
     }
 
     /// The runtime boundary: hand the backend interpreter the types and the
@@ -465,6 +505,13 @@ impl World {
                 _ => None,
             })
             .collect::<HashSet<_>>();
+        let previous_runtime_demand_input_outputs = previous_output_keys
+            .iter()
+            .filter_map(|fact| match fact {
+                FactKey::RuntimeDemandInput(key) => Some(key.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
         let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
@@ -478,14 +525,46 @@ impl World {
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
         };
+        let runtime_demand_input_contributions = effects
+            .runtime_demand_input_contributions
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let ContributionReplace {
+            output_keys: runtime_demand_input_outputs,
+            changed_keys: runtime_demand_input_changed,
+        } = if waits.is_empty() {
+            self.runtime_demand_input_contributions.conclude_exact(
+                &mut self.types,
+                job.clone(),
+                previous_runtime_demand_input_outputs,
+                runtime_demand_input_contributions,
+            )
+        } else {
+            self.runtime_demand_input_contributions.extend(
+                &mut self.types,
+                job.clone(),
+                runtime_demand_input_contributions,
+            )
+        };
         let mut outputs = effects.outputs;
         outputs.extend(activation_input_outputs.into_iter().map(FactKey::ActivationInputs));
+        outputs.extend(
+            runtime_demand_input_outputs
+                .into_iter()
+                .map(FactKey::RuntimeDemandInput),
+        );
         if waits.is_empty() && !rebased {
             outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
         }
         let outputs = dedupe_job_facts(outputs);
         let mut changed = effects.changed;
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
+        changed.extend(
+            runtime_demand_input_changed
+                .iter()
+                .cloned()
+                .map(FactKey::RuntimeDemandInput),
+        );
         let changed = dedupe_job_facts(changed);
         // Captured before `outputs` moves into `complete`: the two record
         // sites keep `activation_frontier` in lockstep with the fact table.
@@ -821,6 +900,36 @@ impl World {
     ) -> Option<&std::rc::Rc<super::executable_facts::ExecutableFacts>> {
         self.fact_revision(&FactKey::ExecutableFacts(key.clone()))?;
         self.executable_facts.get(key)
+    }
+
+    pub(crate) fn callable_construction_target(&self, key: &CallableConstructionTargetKey) -> Option<&ExecutableKey> {
+        self.fact_revision(&FactKey::CallableConstructionTarget(key.clone()))?;
+        self.callable_construction_targets.get(key)
+    }
+
+    pub(crate) fn runtime_demand(&self, key: &ExecutableKey) -> Option<&std::rc::Rc<ExecutableRuntimeDemand>> {
+        self.fact_revision(&FactKey::RuntimeDemand(key.clone()))?;
+        self.runtime_demands.get(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_demand_facts(
+        &self,
+    ) -> impl Iterator<Item = (&ExecutableKey, &std::rc::Rc<ExecutableRuntimeDemand>)> {
+        self.runtime_demands
+            .iter()
+            .filter(|(key, _)| self.fact_revision(&FactKey::RuntimeDemand((*key).clone())).is_some())
+    }
+
+    pub(crate) fn runtime_demand_inputs(&self, key: &ExecutableKey) -> Option<&[super::semantic::RuntimeDemand]> {
+        self.fact_revision(&FactKey::RuntimeDemandInputs(key.clone()))?;
+        self.runtime_demands
+            .get(key)
+            .map(|demand| demand.input_demands.as_slice())
+    }
+
+    pub(crate) fn runtime_demand_input(&self, key: &ExecutableKey) -> Option<&TargetDemandContribution> {
+        self.runtime_demand_input_contributions.get(key)
     }
 
     pub(crate) fn backend_program(&self, root: RootId) -> std::rc::Rc<BackendProgram> {
@@ -2677,6 +2786,34 @@ impl World {
         }
         self.executable_facts.insert(key, facts);
         true
+    }
+
+    pub(crate) fn define_callable_construction_target(
+        &mut self,
+        key: CallableConstructionTargetKey,
+        target: ExecutableKey,
+    ) -> bool {
+        if self.callable_construction_targets.get(&key) == Some(&target) {
+            return false;
+        }
+        self.callable_construction_targets.insert(key, target);
+        true
+    }
+
+    pub(crate) fn define_runtime_demand(
+        &mut self,
+        key: ExecutableKey,
+        demand: std::rc::Rc<ExecutableRuntimeDemand>,
+    ) -> (bool, bool) {
+        if self.runtime_demands.get(&key) == Some(&demand) {
+            return (false, false);
+        }
+        let inputs_changed = self
+            .runtime_demands
+            .get(&key)
+            .is_none_or(|previous| previous.input_demands != demand.input_demands);
+        self.runtime_demands.insert(key, demand);
+        (true, inputs_changed)
     }
 
     pub(crate) fn define_backend_program(&mut self, root: RootId, program: std::rc::Rc<BackendProgram>) -> bool {

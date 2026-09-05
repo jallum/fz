@@ -237,14 +237,12 @@ semantic fixpoint's, which is the agenda's. A callable value's
 **construction-wrapper member order** starts from the same free order: a
 `BTreeSet<CallableSurface>` walked in interned-id order — the type interner's
 mint order, which is the agenda's again. `plan_callable_flows`
-(`jobs/runtime_demand.rs`) removes that schedule channel by sorting
-`CallableResolutionKey`s with `Types::cmp_activation_tys` over each surface's
-inputs. The typed relation walks addressed arrows and stable callable labels;
-raw type handles and rendered strings never establish construction order. That
-order schedules product reads only: each `CallableResolution` independently
-constructs its activation identity from authoritative facts, so no preceding
-resolution or shared interner mutation is an input to the next one.
-`finish_callable_flows` reassembles the resolved edges in key order and applies
+(`jobs/runtime_demand.rs`) removes that schedule channel by sorting the
+first-class surfaces with `Types::cmp_activation_tys` over their inputs. The
+typed relation walks addressed arrows and stable callable labels; raw type
+handles and rendered strings never establish construction order. The formula
+then resolves each edge directly from the same immutable callable-flow plan.
+`finish_callable_flows` preserves that edge order and applies
 the test perturbation. The semantic ordering authority comes afterwards:
 **fz-kdt.179** routes those edges through `construction_member_selection`, which
 drops the members no seat would route to and seats the rest, and
@@ -679,10 +677,10 @@ the two groups say. Three properties carry it:
   artifact a function of the arm set.
 
 **Two keys, and they are different quantities.** This repair orders semantic
-destinations by the typed activation relation over the OBSERVABLE ENVELOPE. Earlier,
-`plan_callable_flows` orders independent `CallableResolutionKey` product reads
-by the full surface inputs. That order schedules resolution; it does not order
-wrapper destinations. `construction_member_selection` alone drops and seats
+destinations by the typed activation relation over the OBSERVABLE ENVELOPE.
+Earlier, `plan_callable_flows` orders independent first-class surfaces by their
+full inputs before resolving them. That order schedules resolution; it does not
+order wrapper destinations. `construction_member_selection` alone drops and seats
 the finished edges, so no concordance between the two quantities is assumed.
 
 **Under this rule, `Separated` means "may reorder" and not merely "leave

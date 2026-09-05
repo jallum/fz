@@ -360,9 +360,11 @@ suffix carries `a{K}..` addresses in the full arrow frame. `own_surface`
 re-addresses that suffix standalone, rebasing it to the canonical `a0`-based
 surface frame, so two closures that share a body but differ in captures yield
 one own-surface comparable to a standalone `CallableSurface`.
-`own_surface_past_captures` decides capture identity by prefix equality (the
-left-to-right addressing property makes the addressed captures exactly the
-arrow's leading prefix) and re-addresses the suffix only when the prefix matches.
+`own_surface_past_captures` accepts captures already expressed in the
+activation's addressed frame, decides capture identity by exact prefix equality,
+and re-addresses the suffix only when that prefix matches. Addressing raw capture
+types standalone is not interchangeable with that frame after activation keying
+has erased transported closure identity.
 
 ## The backend boundary: value templates
 

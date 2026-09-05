@@ -36,7 +36,9 @@ use super::dump::DumpStage;
 use super::facts::FactUse;
 use super::identity::{ExecutableNeed, RootId};
 use super::product_drive::ProductDriveError;
-use super::pull::{ProductKey, ProductProjection, PullOutcome, PullSession, PullWait, WorldProductProducers};
+use super::pull::{
+    ProductKey, ProductProjection, ProductSettlement, PullOutcome, PullSession, PullWait, WorldProductProducers,
+};
 use super::scheduler::{DriveOutcome, FatalError};
 use super::{CodeSubmission, Compiler2, RootSubmission};
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -56,13 +58,44 @@ fn some_fact() -> FactUse<FactKey> {
 #[test]
 fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_retirement() {
     let tel = ConfiguredTelemetry::new();
+    let product_settlements = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, ProductSettlement)>::new()));
+    let observed_product_settlements = std::rc::Rc::clone(&product_settlements);
+    tel.attach_raw_event3::<ProductKey, super::pull::ProductValue, ProductSettlement, _>(
+        &["fz", "compiler2", "pull", "product", "settled"],
+        move |_, _, _, product, _, settlement| {
+            observed_product_settlements
+                .borrow_mut()
+                .push((product.clone(), *settlement));
+        },
+    );
+    let runtime_demand_runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<super::ExecutableKey>::new()));
+    let observed_runtime_demand_runs = std::rc::Rc::clone(&runtime_demand_runs);
+    let runtime_demand_wakes = std::rc::Rc::new(std::cell::RefCell::new(
+        Vec::<(super::ExecutableKey, FactUse<FactKey>)>::new(),
+    ));
+    let observed_runtime_demand_wakes = std::rc::Rc::clone(&runtime_demand_wakes);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            for wake in &completion.wakes {
+                if let Job::DeriveRuntimeDemand(executable) = &wake.job {
+                    observed_runtime_demand_wakes
+                        .borrow_mut()
+                        .push((executable.clone(), wake.cause.clone()));
+                }
+            }
+            if let Job::DeriveRuntimeDemand(executable) = &completion.job {
+                observed_runtime_demand_runs.borrow_mut().push(executable.clone());
+            }
+        },
+    );
     let mut compiler = Compiler2::new(tel);
     compiler.set_output(Box::new(fz_runtime::output::NullOutput));
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_initial.fz".to_string()),
-        text: "fn leaf(), do: 1\n\
-               fn other(), do: leaf()\n\
-               fn main(), do: leaf()\n\
+        text: "fn leaf(x), do: 1\n\
+               fn other(), do: leaf(3)\n\
+               fn main(), do: leaf(2)\n\
                fn unused(), do: 0\n"
             .to_string(),
     });
@@ -88,8 +121,15 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         "the requested root and any demanded macro roots are retained"
     );
     assert!(subscriptions > 0, "a settled root must retain exact fact subscriptions");
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
 
     assert_eq!(compiler.run_root_interp(main), Ok(1));
+    assert!(
+        runtime_demand_runs.borrow().is_empty(),
+        "an unchanged retained request must evaluate no RuntimeDemand formula",
+    );
+    assert!(runtime_demand_wakes.borrow().is_empty());
     assert!(
         std::rc::Rc::ptr_eq(&cold_main, &compiler.retained_backend_program(main)),
         "an unchanged request must return the memo-owned backend handle"
@@ -106,6 +146,11 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
     });
     assert_eq!(compiler.run_root_interp(main), Ok(1));
     assert!(
+        runtime_demand_runs.borrow().is_empty(),
+        "an unreachable edit must evaluate no RuntimeDemand formula",
+    );
+    assert!(runtime_demand_wakes.borrow().is_empty());
+    assert!(
         std::rc::Rc::ptr_eq(&cold_main, &compiler.retained_backend_program(main)),
         "an irrelevant queued edit must leave the retained answer standing"
     );
@@ -117,23 +162,157 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
 
     assert_eq!(compiler.run_root_interp(other), Ok(1));
     let cold_other = compiler.retained_backend_program(other);
+    let cold_leafs = [main, other]
+        .into_iter()
+        .flat_map(|root| {
+            compiler
+                .retained_backend_program(root)
+                .executables
+                .iter()
+                .filter(|executable| compiler.world().function_ref(executable.key.activation.function).name == "leaf")
+                .map(|executable| executable.key.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(cold_leafs.len(), 2);
+    for leaf in &cold_leafs {
+        let demand = compiler.world().runtime_demand(leaf).expect("cold leaf demand");
+        assert!(demand.input_demands[0].is_ignore());
+        let executable = [main, other]
+            .into_iter()
+            .find_map(|root| {
+                compiler
+                    .retained_backend_program(root)
+                    .executables
+                    .iter()
+                    .find(|executable| &executable.key == leaf)
+                    .cloned()
+            })
+            .expect("cold leaf backend executable");
+        assert!(executable.param_reprs.is_empty());
+    }
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
+    product_settlements.borrow_mut().clear();
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_relevant.fz".to_string()),
-        text: "fn leaf(), do: 2\n".to_string(),
+        text: "fn leaf(x), do: x\n".to_string(),
     });
-    assert_eq!(compiler.run_root_interp(other), Ok(2));
+    assert_eq!(compiler.run_root_interp(other), Ok(3));
     assert_eq!(compiler.run_root_interp(main), Ok(2));
+    let observed_runtime_demand_readers = runtime_demand_runs
+        .borrow()
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let mut exact_woken_reader_counts = std::collections::HashMap::new();
+    for (executable, _) in runtime_demand_wakes.borrow().iter() {
+        *exact_woken_reader_counts.entry(executable.clone()).or_insert(0) += 1;
+    }
+    for (executable, cause) in runtime_demand_wakes.borrow().iter() {
+        let final_reads = compiler
+            .world()
+            .job_reads(&Job::DeriveRuntimeDemand(executable.clone()));
+        let same_fact_after_presence = match cause {
+            FactUse::Settled(fact) => final_reads.contains(&FactUse::current(fact.clone())),
+            FactUse::Current(_) => false,
+        };
+        assert!(
+            final_reads.contains(cause) || same_fact_after_presence,
+            "each RuntimeDemand wake must name an exact final read or that same fact's one-way settled-to-current presence transition: {cause:?}",
+        );
+    }
+    let reached_names = observed_runtime_demand_readers
+        .iter()
+        .map(|executable| {
+            compiler
+                .world()
+                .function_ref(executable.activation.function)
+                .name
+                .as_str()
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        reached_names,
+        std::collections::HashSet::from(["leaf", "main", "other"]),
+        "only the transitive exact reader closure should re-evaluate",
+    );
+    let mut reached_counts = std::collections::HashMap::<String, usize>::new();
+    for executable in runtime_demand_runs.borrow().iter() {
+        *reached_counts
+            .entry(
+                compiler
+                    .world()
+                    .function_ref(executable.activation.function)
+                    .name
+                    .clone(),
+            )
+            .or_default() += 1;
+    }
+    let mut observed_runtime_demand_counts = std::collections::HashMap::new();
+    for executable in runtime_demand_runs.borrow().iter() {
+        *observed_runtime_demand_counts.entry(executable.clone()).or_insert(0) += 1;
+    }
+    assert_eq!(
+        observed_runtime_demand_counts
+            .keys()
+            .collect::<std::collections::HashSet<_>>(),
+        exact_woken_reader_counts
+            .keys()
+            .collect::<std::collections::HashSet<_>>(),
+        "a reached edit must evaluate only RuntimeDemand jobs reached through exact scheduler subscriptions",
+    );
+    assert!(
+        observed_runtime_demand_counts
+            .iter()
+            .all(|(executable, runs)| *runs <= exact_woken_reader_counts[executable]),
+        "coalesced wakes may save evaluations, but no evaluation may exist without a causal wake",
+    );
+    assert_eq!(
+        reached_counts,
+        std::collections::HashMap::from([
+            ("leaf".to_string(), 2),
+            ("main".to_string(), 2),
+            ("other".to_string(), 2),
+        ]),
+        "each exact reader runs once for retraction and once for reappearance, with no readiness-only or whole-root replay",
+    );
     let moved_main = compiler.retained_backend_program(main);
     let moved_other = compiler.retained_backend_program(other);
     assert!(!std::rc::Rc::ptr_eq(&cold_main, &moved_main));
     assert!(!std::rc::Rc::ptr_eq(&cold_other, &moved_other));
+    for leaf in &cold_leafs {
+        let demand = compiler.world().runtime_demand(leaf).expect("moved leaf demand");
+        assert_eq!(demand.input_demands[0].shape, super::ShapeDemand::Whole);
+        let executable = [&moved_main, &moved_other]
+            .into_iter()
+            .find_map(|program| program.executables.iter().find(|executable| &executable.key == leaf))
+            .expect("moved leaf backend executable");
+        assert_eq!(executable.param_reprs, vec![super::AbiValueRepr::RawInt]);
+        for expected in [
+            ProductKey::MaterializedExecutable(leaf.clone()),
+            ProductKey::AbiExecutable(leaf.clone()),
+            ProductKey::BackendExecutable(leaf.clone()),
+        ] {
+            assert!(
+                product_settlements
+                    .borrow()
+                    .iter()
+                    .any(|(product, settlement)| product == &expected
+                        && settlement.changed
+                        && settlement.generation > 1),
+                "the exact Whole-dependent product must reproject at a later generation: {expected:?}",
+            );
+        }
+    }
 
-    compiler.submit_code(CodeSubmission {
-        name: Some("retained_roots_equal.fz".to_string()),
-        text: "fn unused(), do: 99\n".to_string(),
-    });
-    assert_eq!(compiler.run_root_interp(main), Ok(2));
-    assert_eq!(compiler.run_root_interp(other), Ok(2));
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
+    product_settlements.borrow_mut().clear();
+    assert!(matches!(compiler.drive(), DriveOutcome::Resolved));
+    assert!(runtime_demand_runs.borrow().is_empty());
+    assert!(runtime_demand_wakes.borrow().is_empty());
+    assert!(product_settlements.borrow().is_empty());
     assert!(std::rc::Rc::ptr_eq(
         &moved_main,
         &compiler.retained_backend_program(main)
@@ -142,6 +321,35 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         &moved_other,
         &compiler.retained_backend_program(other)
     ));
+
+    runtime_demand_runs.borrow_mut().clear();
+    runtime_demand_wakes.borrow_mut().clear();
+    product_settlements.borrow_mut().clear();
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_roots_equal.fz".to_string()),
+        text: "fn unused(), do: 99\n".to_string(),
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(2));
+    assert_eq!(compiler.run_root_interp(other), Ok(3));
+    assert!(runtime_demand_runs.borrow().is_empty());
+    assert!(runtime_demand_wakes.borrow().is_empty());
+    assert!(product_settlements.borrow().is_empty());
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_main,
+        &compiler.retained_backend_program(main)
+    ));
+    assert!(std::rc::Rc::ptr_eq(
+        &moved_other,
+        &compiler.retained_backend_program(other)
+    ));
+    let retired_leaf_executables = compiler
+        .product_executable_inventory(main)
+        .expect("main inventory before replacing its reached callee")
+        .iter()
+        .filter(|executable| compiler.world().function_ref(executable.activation.function).name == "leaf")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(!retired_leaf_executables.is_empty());
 
     compiler.submit_code(CodeSubmission {
         name: Some("retained_roots_replacement.fz".to_string()),
@@ -166,6 +374,19 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         !names.contains("leaf"),
         "the replaced callee must leave the root artifact"
     );
+    for executable in retired_leaf_executables {
+        assert!(
+            compiler
+                .world()
+                .runtime_demand(&executable)
+                .is_some_and(|demand| demand.return_demand.is_ignore()),
+            "a formerly reached executable must return to bottom after its last owner retracts",
+        );
+        assert!(
+            compiler.world().runtime_demand_input(&executable).is_none(),
+            "a formerly reached executable must retract its last owner contribution",
+        );
+    }
 
     let (sessions_before_retirement, subscriptions_before_retirement) = compiler.retained_product_counts();
     assert!(compiler.retire_root_products(main));
@@ -1241,9 +1462,9 @@ fn compiling_the_same_root_twice_runs_the_same_jobs_in_the_same_order() {
 ///
 /// fz-k22.21 raised this past bare success/failure (the JIT-outcome check
 /// above), and fz-k22.28 pinned the folds that minted types AS THEY ITERATED
-/// (`jobs/runtime_demand.rs`'s per-cone member list and per-value
-/// callable-flow list, `World::demand_activation_frontier_analyses`'s
-/// frontier). fz-f98.19 is the same disease one layer down: the folds that
+/// (`jobs/runtime_demand.rs`'s direct-peer and per-value callable-flow lists,
+/// `World::demand_activation_frontier_analyses`'s frontier). fz-f98.19 is the
+/// same disease one layer down: the folds that
 /// reorder JOB WAKES, whose effect on the interner is second-order. Its cause
 /// is named by the sibling test above; this one additionally catches a
 /// nondeterminism that never reaches job order -- an unordered fold inside a
@@ -1827,12 +2048,7 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
     for key in memo.produced_keys() {
         if !matches!(
             key.kind(),
-            "runtime_demand"
-                | "outgoing_input_edges"
-                | "materialized_executable"
-                | "callable_resolution"
-                | "transport_shape"
-                | "callable_construction"
+            "outgoing_input_edges" | "materialized_executable" | "transport_shape" | "callable_construction"
         ) {
             continue;
         }
@@ -1849,10 +2065,8 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
         );
     }
     for expected in [
-        "runtime_demand",
         "outgoing_input_edges",
         "materialized_executable",
-        "callable_resolution",
         "transport_shape",
         "callable_construction",
     ] {
@@ -2282,86 +2496,32 @@ fn a_callsite_movement_rederives_each_exact_executable_reader_and_leaves_other_r
     }
 }
 
-/// The demand ascent's height and its per-member re-derivation count do not
-/// grow with the size of the program.
-///
-/// `RuntimeDemand(E)` is settled by a Jacobi ascent over a whole cone of
-/// executables, so it has three independent ways to get expensive: the cone can
-/// be too big, the ascent can climb too far, or members can re-derive too often.
-/// The last two are properties of the lattice and the dirty-set skipping, not of
-/// the program, and they must stay that way -- if either started scaling with
-/// program size, demand would be super-linear and no amount of scoping the cone
-/// would fix it. Doubling the number of identical call sites doubles the cone
-/// and must leave both alone.
-///
-/// The cone SIZE is deliberately not asserted here. A cone is collected
-/// transitively and stops only at executables whose demand already settled, so
-/// from a cold root it spans the whole reachable call graph and grows with the
-/// program by construction. That is what `fz-zg4` is about; this test guards the
-/// two numbers that are supposed to be flat so that ticket can be judged by the
-/// one that is not.
 #[test]
-fn the_demand_ascent_height_does_not_grow_with_the_program() {
-    fn tallest_cone(call_sites: usize) -> crate::compiler2::DemandConeSettlement {
-        let tel = ConfiguredTelemetry::new();
-        let tallest = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::compiler2::DemandConeSettlement>));
-        let sink = std::rc::Rc::clone(&tallest);
-        tel.attach_raw_event2::<crate::compiler2::pull::ProductKey, crate::compiler2::DemandConeSettlement, _>(
-            &["fz", "compiler2", "demand", "cone", "settled"],
-            move |_, _, _, _, cone| {
-                let mut sink = sink.borrow_mut();
-                if sink.is_none_or(|tallest| cone.members > tallest.members) {
-                    *sink = Some(*cone);
-                }
-            },
-        );
-
-        let mut source = String::from("fn main() do\n  xs = [1, 2, 3, 4]\n");
-        for bound in 0..call_sites {
-            source.push_str(&format!("  dbg(Enum.find(xs, fn (x) -> x > {bound} end))\n"));
-        }
-        source.push_str("end\n");
-
-        let mut world = World::new();
-        world.submit_code(Some("demand_ascent.fz".to_string()), source);
-        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-        super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
-            .expect("the call-site root should settle");
-
-        let cone = tallest.borrow().expect("a demand cone should settle for this root");
-        assert!(cone.members > 0, "a settled cone should report its members");
-        cone
-    }
-
-    let small = tallest_cone(2);
-    let large = tallest_cone(4);
-
+fn runtime_demand_is_a_settled_world_fact_for_the_exact_executable() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("runtime_demand_fact.fz".to_string()),
+        "fn main(), do: 42\n".to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    super::product_drive::drive_root_backend_product::<_, String>(&mut world, &tel, root)
+        .expect("the root should settle");
+    let executable = world.root_entry_executable(root);
+    let fact = FactKey::RuntimeDemand(executable.clone());
     assert!(
-        large.members > small.members,
-        "doubling the call sites should grow the cone, or this is not measuring what it thinks: \
-         {} vs {} members",
-        small.members,
-        large.members
+        world.fact_is_settled(&fact),
+        "artifact completion must consume settled demand"
+    );
+    let input_fact = FactKey::RuntimeDemandInput(executable.clone());
+    assert!(
+        world.job_outputs(&Job::SeedRoot(root)).contains(&input_fact),
+        "the root seed must own the entry executable's liveness contribution",
     );
     assert_eq!(
-        small.rounds, large.rounds,
-        "the ascent climbs a lattice, not a program: its round count should not move when the \
-         program grows ({} members took {} rounds, {} members took {})",
-        small.members, small.rounds, large.members, large.rounds
-    );
-
-    // Re-derivations per member is what the dirty set buys: a member whose reads
-    // did not move that round is skipped, so the ratio reflects how often a
-    // member's inputs actually move -- a lattice property. Compared as a ratio
-    // rather than a total, since the total is expected to grow with the cone.
-    let ratio = |cone: crate::compiler2::DemandConeSettlement| cone.derivations as f64 / cone.members as f64;
-    assert!(
-        (ratio(large) - ratio(small)).abs() < 1.0,
-        "per-member re-derivation should not grow with the program: {:.2} at {} members vs \
-         {:.2} at {} members",
-        ratio(small),
-        small.members,
-        ratio(large),
-        large.members
+        world
+            .runtime_demand_input(&executable)
+            .and_then(|contribution| contribution.return_demand.clone()),
+        Some(super::RuntimeDemand::whole()),
     );
 }

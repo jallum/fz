@@ -20,6 +20,7 @@ use super::semantic::{
 use super::types::Ty;
 use super::world::World;
 
+#[cfg_attr(test, derive(Clone))]
 #[derive(Debug, PartialEq)]
 pub(crate) struct ExecutableFacts {
     pub(super) analysis: ActivationAnalysis,
@@ -48,6 +49,7 @@ pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) delivered_value_joins: &'a HashMap<ControlEntryId, DeliveredValueJoin>,
     pub(crate) callable_origins: &'a HashMap<ValueId, LocalCallableProducer>,
     pub(crate) demand_types: &'a RuntimeDemandTypeInputs,
+    type_projections: &'a HashMap<Ty, Rc<RuntimeDemandTypeProjection>>,
     pub(crate) callable_activation_inputs: &'a [CallableActivationInput],
 }
 
@@ -114,11 +116,10 @@ impl ExecutableFacts {
         self.callable_origins.get(&value)
     }
 
-    pub(crate) fn callable_origins(&self) -> impl Iterator<Item = (&ValueId, &LocalCallableProducer)> {
-        self.callable_origins.iter()
-    }
-
-    pub(crate) fn runtime_demand_facts(&self) -> RuntimeDemandFacts<'_> {
+    pub(crate) fn runtime_demand_facts<'a>(
+        &'a self,
+        type_projections: &'a HashMap<Ty, Rc<RuntimeDemandTypeProjection>>,
+    ) -> RuntimeDemandFacts<'a> {
         RuntimeDemandFacts {
             body: &self.body,
             reachable_clauses: self.analysis.entry_reachability.clauses(),
@@ -129,6 +130,7 @@ impl ExecutableFacts {
             delivered_value_joins: &self.delivered_value_joins,
             callable_origins: &self.callable_origins,
             demand_types: &self.demand_types,
+            type_projections,
             callable_activation_inputs: &self.callable_activation_inputs,
         }
     }
@@ -141,6 +143,57 @@ impl RuntimeDemandFacts<'_> {
 
     pub(crate) fn callable_origins(&self) -> impl Iterator<Item = (&ValueId, &LocalCallableProducer)> {
         self.callable_origins.iter()
+    }
+
+    fn projection(&self, ty: Ty) -> &RuntimeDemandTypeProjection {
+        self.type_projections
+            .get(&ty)
+            .map(Rc::as_ref)
+            .unwrap_or_else(|| panic!("World omitted runtime-demand projection for {ty:?}"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projection_identity(&self, ty: Ty) -> *const RuntimeDemandTypeProjection {
+        self.projection(ty)
+    }
+
+    pub(crate) fn boundary_demand(&self, ty: Ty) -> RuntimeDemand {
+        self.projection(ty).boundary.clone()
+    }
+
+    pub(crate) fn dispatch_demand(&self, ty: Ty) -> RuntimeDemand {
+        self.projection(ty).dispatch.clone()
+    }
+
+    pub(crate) fn callable_surfaces(&self, ty: Ty) -> Option<&BTreeSet<CallableSurface>> {
+        let resolved = &self.projection(ty).boundary.callable.resolved;
+        (!resolved.is_empty()).then_some(resolved)
+    }
+
+    pub(crate) fn callable_value_demand(&self, ty: Ty) -> Option<RuntimeDemand> {
+        self.projection(ty).callable_value_demand.clone()
+    }
+}
+
+struct RuntimeDemandTypeBuilder {
+    inputs: RuntimeDemandTypeInputs,
+    projections: HashMap<Ty, Rc<RuntimeDemandTypeProjection>>,
+}
+
+impl RuntimeDemandTypeBuilder {
+    fn new(any: Ty) -> Self {
+        Self {
+            inputs: RuntimeDemandTypeInputs::new(any),
+            projections: HashMap::new(),
+        }
+    }
+
+    fn boundary_demand(&self, ty: Ty) -> RuntimeDemand {
+        self.projections[&ty].boundary.clone()
+    }
+
+    fn dispatch_demand(&self, ty: Ty) -> RuntimeDemand {
+        self.projections[&ty].dispatch.clone()
     }
 }
 
@@ -174,7 +227,7 @@ pub(crate) fn project_executable_facts(
     let delivered_value_joins = delivered_value_joins(&body);
     let callsite_return_origins = collect_callsite_return_origins(&body);
     let value_origins = collect_value_origins(&body, &callsite_return_origins);
-    let callable_origins = value_origins
+    let callable_origins: HashMap<ValueId, LocalCallableProducer> = value_origins
         .iter()
         .filter_map(|(&value, origin)| match origin {
             TransportOrigin::CallableValue(producer) => Some((value, producer.clone())),
@@ -188,15 +241,8 @@ pub(crate) fn project_executable_facts(
         .map(ExecutableDispatch::required_input_ordinals)
         .unwrap_or_default();
     let callsite_needs = executable_callsite_needs(&body, analysis.entry_reachability.clauses(), executable.need);
-    let mut demand_types = prepare_runtime_demand_type_inputs(
-        world,
-        executable,
-        &analysis,
-        &body,
-        &entry_dispatch_inputs,
-        &callsites,
-        &value_origins,
-    );
+    let mut demand_builder =
+        prepare_runtime_demand_type_inputs(world, executable, &analysis, &body, &entry_dispatch_inputs, &callsites);
     let capture_count = executable
         .activation
         .input_len(world.types())
@@ -206,12 +252,17 @@ pub(crate) fn project_executable_facts(
         .input_rows
         .iter()
         .filter(|row| row.len() >= capture_count)
-        .map(|row| CallableActivationInput {
-            captures: world.types_mut().address_inputs(&row[..capture_count]),
-            surface: prepare_surface(world, &mut demand_types, &row[capture_count..]),
-            capture_called_with_own_surface: capture_called_with_own_surface.clone(),
+        .map(|row| {
+            let captures = world.types_mut().address_inputs(&row[..capture_count]);
+            let surface = prepare_surface(world, &mut demand_builder, &row[capture_count..]);
+            CallableActivationInput {
+                captures,
+                surface,
+                capture_called_with_own_surface: capture_called_with_own_surface.clone(),
+            }
         })
         .collect();
+    let demand_types = demand_builder.inputs;
     Rc::new(ExecutableFacts {
         analysis,
         body,
@@ -236,10 +287,9 @@ fn prepare_runtime_demand_type_inputs(
     body: &LoweredBody,
     entry_dispatch_inputs: &HashSet<usize>,
     callsites: &HashMap<CallSiteId, CallSiteSummary>,
-    value_origins: &HashMap<ValueId, TransportOrigin>,
-) -> RuntimeDemandTypeInputs {
+) -> RuntimeDemandTypeBuilder {
     let any = world.types_mut().any();
-    let mut inputs = RuntimeDemandTypeInputs::new(any);
+    let mut builder = RuntimeDemandTypeBuilder::new(any);
     let mut tys = analysis.value_types.values().copied().collect::<HashSet<_>>();
     let activation_inputs = executable.activation.inputs(world.types());
     tys.extend(
@@ -253,7 +303,7 @@ fn prepare_runtime_demand_type_inputs(
     for summary in callsites.values() {
         for target in &summary.targets {
             tys.extend(target.surface_inputs.iter().copied());
-            prepare_surface(world, &mut inputs, &target.surface_inputs);
+            prepare_surface(world, &mut builder, &target.surface_inputs);
         }
     }
     if let LoweredBody::Clauses { entries, .. } = body {
@@ -264,61 +314,62 @@ fn prepare_runtime_demand_type_inputs(
                     .map(|arg| analysis.value_types.get(&arg.value).copied().unwrap_or(any))
                     .collect::<Vec<_>>();
                 tys.extend(actual_inputs.iter().copied());
-                prepare_surface(world, &mut inputs, &actual_inputs);
+                prepare_surface(world, &mut builder, &actual_inputs);
             }
         }
     }
-    for origin in value_origins.values() {
-        let TransportOrigin::CallableValue(producer) = origin else {
-            continue;
-        };
-        let capture_tys = producer
-            .captures
-            .iter()
-            .filter_map(|capture| analysis.value_types.get(capture).copied())
-            .collect::<Vec<_>>();
-        if capture_tys.len() == producer.captures.len() {
-            let addressed = world.types_mut().address_inputs(&capture_tys);
-            inputs.addressed_inputs.insert(capture_tys, addressed);
-        }
-    }
     for ty in tys {
-        prepare_type_projection(world, &mut inputs, ty);
+        prepare_type_projection(world, &mut builder, ty);
     }
-    inputs
+    builder
 }
 
-fn prepare_surface(world: &mut World, inputs: &mut RuntimeDemandTypeInputs, surface_inputs: &[Ty]) -> CallableSurface {
-    if let Some(surface) = inputs.surfaces.get(surface_inputs) {
+fn prepare_surface(
+    world: &mut World,
+    builder: &mut RuntimeDemandTypeBuilder,
+    surface_inputs: &[Ty],
+) -> CallableSurface {
+    for &ty in surface_inputs {
+        prepare_type_projection(world, builder, ty);
+    }
+    if let Some(surface) = builder.inputs.surfaces.get(surface_inputs) {
         return surface.clone();
     }
     let surface = CallableSurface::new(surface_inputs.to_vec(), world.types_mut());
-    inputs.surfaces.insert(surface_inputs.to_vec(), surface.clone());
-    inputs
+    for &ty in &surface.inputs {
+        prepare_type_projection(world, builder, ty);
+    }
+    builder.inputs.surfaces.insert(surface_inputs.to_vec(), surface.clone());
+    builder
+        .inputs
         .surfaces
         .entry(surface.inputs.clone())
         .or_insert_with(|| surface.clone());
     surface
 }
 
-pub(crate) fn prepare_type_projection(world: &mut World, inputs: &mut RuntimeDemandTypeInputs, ty: Ty) {
-    if inputs.projections.contains_key(&ty) {
+fn prepare_type_projection(world: &mut World, builder: &mut RuntimeDemandTypeBuilder, ty: Ty) {
+    if builder.projections.contains_key(&ty) {
         return;
     }
-    inputs.projections.insert(
+    if let Some(projection) = world.runtime_demand_type_projection(ty).cloned() {
+        builder.projections.insert(ty, projection);
+        return;
+    }
+    builder.projections.insert(
         ty,
-        RuntimeDemandTypeProjection {
+        Rc::new(RuntimeDemandTypeProjection {
             boundary: RuntimeDemand::whole(),
             dispatch: RuntimeDemand::whole(),
             callable_value_demand: None,
-        },
+        }),
     );
-    let boundary = prepare_runtime_demand_for_type(world, inputs, ty, true);
-    let dispatch = prepare_runtime_demand_for_type(world, inputs, ty, false);
+    let boundary = prepare_runtime_demand_for_type(world, builder, ty, true);
+    let dispatch = prepare_runtime_demand_for_type(world, builder, ty, false);
     let callable_value_demand = world.types_mut().callable_value_clauses(&ty).and_then(|clauses| {
         let resolved = clauses
             .into_iter()
-            .map(|clause| prepare_surface(world, inputs, &clause.args))
+            .map(|clause| prepare_surface(world, builder, &clause.args))
             .collect::<BTreeSet<_>>();
         (!resolved.is_empty()).then(|| {
             RuntimeDemand::callable(CallableDemand {
@@ -327,19 +378,18 @@ pub(crate) fn prepare_type_projection(world: &mut World, inputs: &mut RuntimeDem
             })
         })
     });
-    inputs.projections.insert(
-        ty,
-        RuntimeDemandTypeProjection {
-            boundary,
-            dispatch,
-            callable_value_demand,
-        },
-    );
+    let projection = RuntimeDemandTypeProjection {
+        boundary,
+        dispatch,
+        callable_value_demand,
+    };
+    let projection = world.memoize_runtime_demand_type_projection(ty, projection);
+    builder.projections.insert(ty, projection);
 }
 
 fn prepare_runtime_demand_for_type(
     world: &mut World,
-    inputs: &mut RuntimeDemandTypeInputs,
+    builder: &mut RuntimeDemandTypeBuilder,
     ty: Ty,
     escape: bool,
 ) -> RuntimeDemand {
@@ -353,18 +403,18 @@ fn prepare_runtime_demand_for_type(
                 .iter()
                 .next()
                 .expect("one exact tuple arity");
-            let any = inputs.any;
+            let any = builder.inputs.any;
             let mut fields = world.types_mut().tuple_projections(&ty, arity);
             fields.resize(arity, any);
             fields.truncate(arity);
             let demands = fields
                 .into_iter()
                 .map(|field| {
-                    prepare_type_projection(world, inputs, field);
+                    prepare_type_projection(world, builder, field);
                     if escape {
-                        inputs.boundary_demand(field)
+                        builder.boundary_demand(field)
                     } else {
-                        inputs.dispatch_demand(field)
+                        builder.dispatch_demand(field)
                     }
                 })
                 .collect();
@@ -374,7 +424,7 @@ fn prepare_runtime_demand_for_type(
     };
     let resolved = clauses
         .into_iter()
-        .map(|clause| prepare_surface(world, inputs, &clause.args))
+        .map(|clause| prepare_surface(world, builder, &clause.args))
         .collect();
     RuntimeDemand::callable(CallableDemand {
         resolved,

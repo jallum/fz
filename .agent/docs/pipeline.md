@@ -47,6 +47,10 @@ semantic  SeedRoot, SeedActivation, AnalyzeActivation
           DeriveExecutableFacts(E)
             one World-owned immutable projection of settled analysis, body,
             entry dispatch, callsite summaries, origins, and demand type inputs
+          DeriveRuntimeDemand(E)
+            one reactive executable demand fact plus exact caller-owned target
+            contributions; peer propagation reads only exact target
+            RuntimeDemandInputs sub-facts
 product   RootBackendProduct(root)
             final dense interpreter package for a root
           BackendExecutable(E)
@@ -59,10 +63,8 @@ product   RootBackendProduct(root)
             transport positions
           ExecutableEffects(E)
             local materialized effects joined with exact callee effect products
-          CallableResolution(E, value, surface)
-            exact root-local first-class callable resolutions
-          RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
-            root-local representation demand and input-source accounting
+          OutgoingInputEdges(E), IncomingInputSlot(slot)
+            root-local input-source accounting
           TransportShape(position), CallableConstruction(position)
             position-owned transport layouts and callable construction facts
 ```
@@ -77,14 +79,30 @@ BackendExecutable(E)
      <- MaterializedExecutable(E)
      <- ExecutableEffects(E)
      <- TransportShape/CallableConstruction positions named by E
-     <- RuntimeDemand(E), OutgoingInputEdges(E), IncomingInputSlot(slot)
+     <- Settled(RuntimeDemand(E)), OutgoingInputEdges(E), IncomingInputSlot(slot)
 ```
 
-`RuntimeDemand(E)`, `OutgoingInputEdges(E)`, `CallableResolution(...)`,
-`TransportShape(...)`, `CallableConstruction(...)`, and
-`MaterializedExecutable(E)` read `Settled(ExecutableFacts(E))` directly. The
-fact value lives in `World`; it is not copied into `ProductMemo`, and therefore
-has no product settlement, displacement, cache-hit, or re-entry lifecycle.
+`RuntimeDemand(E)` is a World fact produced by `DeriveRuntimeDemand(E)`.
+The formula waits for executable facts once and then subscribes to their
+Current content, the Current exact caller contribution, and Current exact
+`RuntimeDemandInputs(target)` sub-facts. Direct edges name their executable;
+first-class surfaces name exact
+`CallableConstructionTarget(owner, value, surface)` facts. A loaded target can
+expose another captured local callable, so the formula follows only those keys
+until the local read set stops growing. Missing values are bottom, so an owned
+formula publishes provisional demand and caller-local return contributions;
+peer-dependent capture/input contributions wait until every non-self target is
+present. Equal answers move no revision and wake no reader. The input sub-fact
+is a revisioned view of the one stored `ExecutableRuntimeDemand`, not a cloned
+value or a second producer.
+Tuple-field demand may stop at its highest observed index. Transport applies
+that prefix to the exact tuple type and emits `Nothing` for omitted trailing
+positions, so a partial four-tuple remains a four-field structural layout
+instead of being mistaken for a different tuple shape and boxed.
+`OutgoingInputEdges(E)`, `TransportShape(...)`, `CallableConstruction(...)`,
+and `MaterializedExecutable(E)` read `Settled(ExecutableFacts(E))` directly.
+World fact values are not copied into `ProductMemo` and therefore have no
+product settlement, displacement, cache-hit, or re-entry lifecycle.
 
 `RootBackendProduct(root)` is the final assembly boundary. It keys the root
 entry, pulls `BackendExecutable(entry)`, follows symbolic backend call edges and
@@ -132,7 +150,7 @@ submit_root(main/0)
       pulls AbiExecutable(E)
         pulls MaterializedExecutable(E)
           waits on settled ExecutableFacts(E) and ReturnType(E.activation)
-          pulls RuntimeDemand(E), OutgoingInputEdges(E), and local TransportShape products
+          waits on settled RuntimeDemand(E), then pulls OutgoingInputEdges(E) and local TransportShape products
         pulls ExecutableEffects(E)
         pulls EntryCapture, resume, input, return, and callable-boundary transport products
       lowers one symbolic backend executable
@@ -420,7 +438,7 @@ fact — an activation, a callsite summary, an exact callable surface — is
 evidence about what the program *means*; it is never an obligation to
 materialize a runtime value. Representation is derived from
 `RuntimeDemand(E)`: a value earns an ABI lane, a tuple earns field lanes, and a
-callable earns a first-class boundary *only* when a settled product demand asks
+callable earns a first-class boundary *only* when a settled demand fact asks
 for one. One shared boundary-transport model governs every runtime-carried
 value — inputs, executable returns, delivered resumes, and closure captures all
 draw their shape from the same demand-derived recursive layout family, so a
@@ -440,9 +458,8 @@ follow, and they are two halves of one convention:
   member through the ordinary return-demand map. That exact contract joins
   with any observed return demand, including a non-bottom partial tuple
   demand, and retracts with its owning construction. This is the one place
-  the seam's existence is a local fact, and it stops a *grounded* sibling
-  callsite — which does name the member — from erasing data the wrapper still
-  hands back.
+  the seam's existence is a local fact, and it stops a grounded sibling
+  callsite from erasing data the wrapper still hands back.
 - A callsite whose callee travels in the boxed `ValueRef` carrier demands its
   result **whole**. Whether a call goes through the seam is a property of the
   callee VALUE, not of the callsite: a callsite that names an exact target is
@@ -470,14 +487,16 @@ The exact callable surfaces demand reads originate in
 `CallSiteSummary.targets[*].surface_inputs`: that is the authority for which
 callable shape a call actually uses, and it is small and executable-origin-aware
 by construction — it names the surfaces a body proves, not every surface a type
-permits. `ExecutableFacts(E)` stores the canonical type projections demand reads.
+permits. One World-owned memo maps each immutable interned `Ty` to its canonical
+runtime-demand projection; executable construction fills it and every formula
+borrows the same `Rc` value. `ExecutableFacts(E)` retains only the `any` identity
+and callable surfaces its body proved, not a second projection cache.
 For a multi-target receiver, demand joins every target's supplied receiver
 surface as a set. Target order is not an authority, a target with no surface
 does not widen a concrete sibling to `any`, and `any` is used only when no
 target supplies a receiver surface.
-First-class local resolution is an exact `CallableResolution(E, value, surface)`
-product; misses wait and rerun, and successful formulas consume its resolved
-edge. Recursive
+First-class local resolution is a pure projection of the formula's settled
+executable facts and already-keyed callable surface. Recursive
 transport (nested captures, tuple fields, direct-callable producers) is not
 stored on the callsite witness; it is derived downstream from settled demand
 into `TransportShape(position)` and related callable/boundary products.
@@ -486,9 +505,9 @@ transport projection, so recursive calls do not omit a local argument value just
 because the caller's own `call_arg_demands` are temporarily bottom.
 That inheritance uses the lowered call form, not arity alone: direct calls bind
 explicit arg 0 to callee semantic input 0, while closure calls bind explicit
-args after the callee capture prefix. Product runtime-demand pulls record the
-same dependency edge (`callee RuntimeDemand -> caller RuntimeDemand`) so a
-changed callee demand invalidates only the products that read it.
+args after the callee capture prefix. `DeriveRuntimeDemand(E)` records Current
+reads of exact target input sub-facts, so a changed callee input vector wakes
+only formulas that read it; return/value-only movement does not wake them.
 
 A tuple value can cross several positions whose exact layouts retain different
 fields. The producer layout remains the authority for the lanes already in
@@ -540,8 +559,8 @@ never re-derives or relitigates the choice. The legacy root telemetry twins
 do not exist; the five distinctions
 this model keeps separate — omitted lanes, tuple-field transport,
 direct-callable transport, first-class materialization, and callable-entry
-publication — stay individually observable through the demanded `RuntimeDemand`
-product and the per-position transport products pinned in
+publication — stay individually observable through the settled `RuntimeDemand`
+fact and the per-position transport products pinned in
 `transport_contract_test.rs`.
 
 A closure callsite's result is the producer fact

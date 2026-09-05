@@ -85,7 +85,6 @@ pub use identity::{
     ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
     RootMap, TypeName,
 };
-pub(crate) use jobs::runtime_demand::DemandConeSettlement;
 pub(crate) use keying::InputDemand;
 pub use module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable,
@@ -97,13 +96,13 @@ pub use scheduler::{
     AppliedStep, DriveOutcome, FatalError, Scheduler, Wake, WakeDisposition, WorkStartReason, WorkStartTally,
 };
 pub use scope::ScopeSnapshot;
-pub(crate) use semantic::SemanticOrd;
 pub use semantic::{
     ActivationAnalysis, ActivationMap, ActivationSlot, CallSiteKey, CallSiteMap, CallSiteResolution, CallSiteSummary,
     CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, ContributionMap, ContributionReplace,
     EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, SemanticClosure, SemanticClosureMap,
     ShapeDemand,
 };
+pub(crate) use semantic::{CallableConstructionTargetKey, SemanticOrd};
 pub use source::{
     Horizon, QuotedAstNode, QuotedLexicalContext, QuotedLexicalContextKind, QuotedSourceBuilder, QuotedSourceCursor,
     QuotedSourceError, QuotedSourceHeap, QuotedSourceKey, QuotedSourceMetadata, QuotedSourceRoot,

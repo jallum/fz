@@ -8,6 +8,7 @@ use crate::source::Span;
 use super::super::drive::{FactKey, JobEffects, settled_uses};
 use super::super::identity::{ActivationKey, ExecutableKey, RootId, RootKind};
 use super::super::scheduler::FatalError;
+use super::super::semantic::{RuntimeDemand, TargetDemandContribution};
 use super::super::world::World;
 
 /// Seeds one semantic root once its entry definition exists.
@@ -71,7 +72,7 @@ pub(super) fn seed_root(
         activation: entry_activation.clone(),
         need: root.need,
     };
-    outputs.push(FactKey::Executable(entry_executable));
+    outputs.push(FactKey::Executable(entry_executable.clone()));
     // LowerFunction/PlanEntryDispatch are not re-emitted here: reaching this
     // point means `require_activation_key_facts` above already observed both
     // `Recursive(function)` and `InputDemand(function)` settled, and their
@@ -89,6 +90,13 @@ pub(super) fn seed_root(
         reads: settled_uses(reads),
         outputs,
         activation_input_contributions: vec![(entry_activation, root.input.clone())],
+        runtime_demand_input_contributions: vec![(
+            entry_executable,
+            TargetDemandContribution {
+                return_demand: Some(RuntimeDemand::for_executable_need(root.need)),
+                ..TargetDemandContribution::default()
+            },
+        )],
         ..JobEffects::default()
     })
 }

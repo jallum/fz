@@ -226,9 +226,8 @@ impl Types {
 
     /// The own-surface of a closure activation that carries `addressed_captures`
     /// as its leading slots, or `None` when it does not — a different closure
-    /// instance (fz-hwn.27.8). `addressed_captures` is the captures addressed
-    /// standalone; by the left-to-right addressing property it is exactly the
-    /// activation arrow's leading capture prefix, so prefix equality decides
+    /// instance (fz-hwn.27.8). The caller supplies the capture frame in the
+    /// activation's own addressed namespace; exact prefix equality decides
     /// capture identity and the suffix re-addresses to the own-surface.
     pub fn own_surface_past_captures(
         &mut self,

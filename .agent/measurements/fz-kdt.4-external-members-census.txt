@@ -1,0 +1,20 @@
+fz-kdt.4 pre-deletion RuntimeDemand cone census
+date: 2026-09-05
+revision: 7f2bcc2dede4a07b064a48916f024bc9a0f61bf0
+worktree: /Users/j5n/Workspace/fz-kdt4-census
+
+The temporary filtered test enumerated every non-deferred fixture discovered by
+the fixture-matrix harness, ran its run/interp/build doors serially through the
+existing logged fixture runner, and inspected every
+fz.compiler2.demand.cone.settled event's external_members field.
+
+command:
+  cargo build --bins && cargo test --test fixture_matrix demand_cone_external_member_census -- --test-threads=1 --nocapture
+
+result:
+  demand_cone_external_member_census paths=515 events=1708 max_external_members=0 nonzero=[]
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 531 filtered out; finished in 131.37s
+
+Conclusion: the full observed fixture population used no external/displacement
+path. The path, its telemetry field, and its owner can be deleted without a
+compatibility bridge or focused nonzero-path preservation test.

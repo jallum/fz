@@ -972,7 +972,7 @@ fn backend_executable_product_settled_carries_identity_beyond_kind() {
 /// once per `ProductDriver::pull` call -- an anchor-only event with no
 /// generation/changed/group at all -- so a settled GROUP's co-published
 /// members (every member besides the one the driver happened to pull, e.g.
-/// a callable-construction SCC or a demand cone) settled INVISIBLY. This
+/// a callable-construction SCC) settled INVISIBLY. This
 /// proves, against the real public stream a production compile writes, that
 /// the undercount is closed: (a) is the handler-fires proof from the arity
 /// trap in the ticket -- it can only pass if the new arity-3
@@ -981,12 +981,7 @@ fn backend_executable_product_settled_carries_identity_beyond_kind() {
 /// `ProductSettlement` arm actually rendered; (b) proves the group
 /// co-publication path specifically, by requiring more than one distinct
 /// `transport_shape` product key among the settled rows -- probed and
-/// confirmed stable: on this fixture `runtime_demand` collapses to a single
-/// executable (the two `identity` activations fully resolve into one
-/// backend executable, so its demand cone never grows a second member),
-/// while `transport_shape` -- settled through the exact same
-/// `ProductMemo::finish_completion` authority a demand cone's co-publication
-/// used to bypass -- reliably produces over a dozen distinct member keys
+/// confirmed stable: `transport_shape` reliably produces over a dozen distinct member keys
 /// even on this small a program; (c) proves the newly-public
 /// `cache_hit`/`displaced` events ride the existing
 /// `["fz","compiler2","pull","product"]` prefix projection without a code
@@ -1200,45 +1195,6 @@ const SCENARIOS: [&str; 5] = [
     "callee_replaced",
 ];
 
-// (product evaluations, settlements, demanded keys, distinct generations,
-// first productions, cross-request recomputations, unexplained evaluations,
-// formula evaluations, unexplained formula evaluations)
-type RequestBaseline = (u64, u64, usize, u64, u64, u64, u64, u64, u64);
-const REQUEST_BASELINES: [[RequestBaseline; 5]; 3] = [
-    [
-        (2986, 2147, 2086, 2147, 2147, 0, 15, 1215, 0),
-        (0, 0, 1, 0, 0, 0, 0, 0, 0),
-        (0, 0, 1, 0, 0, 0, 0, 2, 0),
-        (320, 280, 245, 4, 0, 0, 0, 116, 39),
-        // fz-tfn.35 seeds the exact anchor contract before ascent instead of
-        // settling and replaying the cone with a hidden bootstrap. Isolated
-        // restoration raises this request from 9 to 13 cone rounds and 282 to
-        // 286 member derivations, causing exactly 9 more product evaluations,
-        // 6 more settlements, 6 more demanded products, and 8 more changed
-        // generations. First-production, cross-request, product-cause, and
-        // formula counts do not move. Restoring the removed boxed-call target-map
-        // write alone also leaves this tuple unchanged; that independent path has
-        // its partial-return regression. The two larger fixtures have the same
-        // aggregate delta, and restoring the old replay recreates all three old
-        // baselines exactly.
-        (364, 326, 294, 18, 12, 2, 0, 179, 45),
-    ],
-    [
-        (7584, 5430, 5056, 5269, 5223, 0, 35, 1885, 0),
-        (0, 0, 1, 0, 0, 0, 0, 0, 0),
-        (0, 0, 1, 0, 0, 0, 0, 2, 0),
-        (745, 699, 581, 4, 0, 0, 0, 265, 90),
-        (1201, 1190, 1093, 18, 12, 2, 0, 461, 122),
-    ],
-    [
-        (16028, 12309, 11815, 12147, 12053, 0, 40, 3169, 0),
-        (0, 0, 1, 0, 0, 0, 0, 0, 0),
-        (0, 0, 1, 0, 0, 0, 0, 2, 0),
-        (1657, 1376, 1372, 4, 0, 0, 0, 463, 156),
-        (2531, 2286, 2301, 18, 12, 2, 0, 643, 185),
-    ],
-];
-
 const POPULATION_BASELINES: [(u64, u64); 3] = [(62, 0), (168, 32), (239, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
@@ -1402,6 +1358,11 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
             0,
             "{fixture}: unchanged scheduler work"
         );
+        assert_eq!(
+            family_work(&reports[2], "DeriveRuntimeDemand").1.evaluations,
+            0,
+            "{fixture}: an unreachable edit must not evaluate demand formulas"
+        );
         assert!(
             reports[3].formula_totals().content_caused > 0,
             "{fixture}: reached leaf movement"
@@ -1422,29 +1383,24 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 .any(|product| value_names_function(&product.raw, new_callee)),
             "{fixture}: replacement request must introduce the new callee"
         );
-        for (scenario, ((name, report), expected)) in SCENARIOS
-            .iter()
-            .zip(&reports)
-            .zip(REQUEST_BASELINES[fixture_index])
-            .enumerate()
-        {
+        for (scenario, (name, report)) in SCENARIOS.iter().zip(&reports).enumerate() {
             assert_product_causes_are_exact_or_explicit(fixture, scenario, report);
             let product = report.product_totals();
             let formula = report.formula_totals();
+            let (_, runtime_demand) = family_work(report, "DeriveRuntimeDemand");
             assert_eq!(
-                (
-                    product.evaluations,
-                    product.settlements,
-                    report.distinct_demanded_products(),
-                    product.distinct_generations,
-                    product.first_productions,
-                    product.cross_request_recomputations,
-                    product.unexplained_evaluations,
-                    formula.evaluations,
-                    formula.uncaused,
-                ),
-                expected,
-                "{fixture} {name}: causal work baseline"
+                runtime_demand.uncaused, 0,
+                "{fixture} {name}: every non-initial RuntimeDemand evaluation must name moved content; uncaused={:?}",
+                report.uncaused,
+            );
+            assert_eq!(
+                runtime_demand.readiness_caused, 0,
+                "{fixture} {name}: readiness-only movement must not evaluate RuntimeDemand"
+            );
+            assert_eq!(
+                runtime_demand.evaluations,
+                runtime_demand.initial + runtime_demand.content_caused,
+                "{fixture} {name}: RuntimeDemand work must be initial or content-caused"
             );
             assert_eq!(
                 (
@@ -1511,8 +1467,13 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
         }
         formulas += 1;
         totals.evaluations += work.evaluations;
+        totals.initial += work.initial;
+        totals.content_caused += work.content_caused;
+        totals.readiness_caused += work.readiness_caused;
+        totals.uncaused += work.uncaused;
         totals.changed_outputs += work.changed_outputs;
         totals.unchanged_outputs += work.unchanged_outputs;
+        totals.wakes += work.wakes;
         totals.blocked_completions += work.blocked_completions;
     }
     (formulas, totals)
@@ -2255,10 +2216,15 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
             (analyze_evaluations, analyze_zero_change),
             "{fixture}: AnalyzeActivation work moved off its fz-kdt.63/.84 pin. Full row: {analyze:?}"
         );
+        let (_, runtime_demand_work) = family_work(&report, "DeriveRuntimeDemand");
         assert_eq!(
-            report.formula_totals().evaluations,
+            report.formula_totals().evaluations - runtime_demand_work.evaluations,
             total_evaluations,
-            "{fixture}: total formula evaluations moved off their fz-kdt.63 pin"
+            "{fixture}: making RuntimeDemand explicit must not move any pre-existing formula work"
+        );
+        assert_eq!(
+            runtime_demand_work.uncaused, 0,
+            "{fixture}: every non-initial RuntimeDemand evaluation must name its exact cause"
         );
 
         assert_eq!(

@@ -6,158 +6,87 @@ use super::super::body::{
     LoweredEntry, LoweredStep, LoweredTail, ValueId, callsite_call_args, callsite_input_modes,
 };
 use super::super::callsite_dispatch::dispatch_stress;
-use super::super::drive::FactKey;
-use super::super::executable_facts::{
-    ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts, prepare_type_projection,
-};
+use super::super::drive::{FactKey, JobEffects, settled_uses};
+use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts};
 #[cfg(test)]
 use super::super::executable_facts::{TransportOrigin, collect_callsite_return_origins, collect_value_origins};
 use super::super::facts::FactUse;
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
-#[cfg(test)]
-use super::super::pull::ProductReadObservation;
 use super::super::pull::{
-    CallableResolutionKey, IncomingInputRole, IncomingInputSource, InputSlot, ProductKey, ProductReadContext,
-    ProductValue, PullOutcome, PullWait,
+    IncomingInputRole, IncomingInputSource, InputSlot, ProductReadContext, ProductValue, PullOutcome, PullWait,
 };
+use super::super::scheduler::FatalError;
 use super::super::semantic::{
-    CallSiteSummary, CallableActivationInput, CallableDemand, CallableFlowEdge, CallableFlowFact, CallableSurface,
-    CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandTypeInputs, SemanticOrd, ShapeDemand,
-    ground_dispatch_surfaces,
+    CallSiteSummary, CallableConstructionTargetKey, CallableDemand, CallableFlowEdge, CallableFlowFact,
+    CallableSurface, CallableTarget, ExecutableRuntimeDemand, RuntimeDemand, SemanticOrd, ShapeDemand,
+    TargetDemandContribution, ground_dispatch_surfaces,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
-use crate::telemetry::{Telemetry, TelemetryExt as _};
+use crate::telemetry::Telemetry;
 
 #[cfg(test)]
 thread_local! {
-    static DEMAND_FORMULA_HARNESS: std::cell::RefCell<Option<DemandFormulaHarness>> = const {
+    static FORMULA_CAPTURE: std::cell::RefCell<Option<Vec<RuntimeDemandFormulaEvaluation>>> = const {
         std::cell::RefCell::new(None)
     };
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy)]
-pub(crate) enum DemandFormulaOrder {
-    Forward,
-    Reverse,
-    Seeded(u64),
-}
+pub(crate) struct RuntimeDemandFormulaCapture;
 
 #[cfg(test)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DemandFormulaCapture {
-    All,
-    Latest,
-    None,
-}
-
-#[cfg(test)]
-pub(crate) struct DemandFormulaOrdered;
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct DemandFormulaEvaluation {
+#[derive(Clone)]
+pub(crate) struct RuntimeDemandFormulaEvaluation {
     pub(crate) member: ExecutableKey,
-    pub(crate) facts: Rc<ExecutableFacts>,
-    pub(crate) current: RuntimeDemandFormulaSnapshot,
-    pub(crate) product_answers: Vec<RuntimeDemandProductInput>,
     pub(crate) demand: ExecutableRuntimeDemand,
     pub(crate) observed_return_contributions: Vec<(ExecutableKey, RuntimeDemand)>,
     pub(crate) contributions: HashMap<ExecutableKey, TargetDemandContribution>,
-    pub(crate) product_reads: Vec<ProductReadObservation>,
 }
 
-/// The exact fields this formula reads from its own demand cell.
-#[cfg_attr(test, derive(Clone))]
+#[cfg(test)]
+impl RuntimeDemandFormulaCapture {
+    pub(crate) fn install() -> Self {
+        FORMULA_CAPTURE.with(|capture| {
+            assert!(
+                capture.borrow().is_none(),
+                "runtime-demand formula capture already installed"
+            );
+            *capture.borrow_mut() = Some(Vec::new());
+        });
+        Self
+    }
+
+    pub(crate) fn evaluations(&self) -> Vec<RuntimeDemandFormulaEvaluation> {
+        FORMULA_CAPTURE.with(|capture| capture.borrow().as_ref().expect("formula capture installed").clone())
+    }
+}
+
+#[cfg(test)]
+impl Drop for RuntimeDemandFormulaCapture {
+    fn drop(&mut self) {
+        FORMULA_CAPTURE.with(|capture| *capture.borrow_mut() = None);
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeDemandOwnInput {
     pub(crate) return_demand: RuntimeDemand,
     pub(crate) input_demands: Vec<RuntimeDemand>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimeDemandCallableInput {
-    pub(crate) callable_activation_inputs: Vec<CallableActivationInput>,
-    pub(crate) input_demands: Vec<RuntimeDemand>,
-}
-
-/// Role-specific peer reads; unrelated demand fields are not representable.
-#[cfg_attr(test, derive(Clone))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeDemandFormulaSnapshot {
+    member: ExecutableKey,
     pub(crate) own: RuntimeDemandOwnInput,
     pub(crate) target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
-    pub(crate) callable_inputs: HashMap<ExecutableKey, RuntimeDemandCallableInput>,
+    construction_targets: HashMap<(ValueId, CallableSurface), ExecutableKey>,
 }
 
-/// Complete production boundary for one RuntimeDemand formula; `Types` is the
-/// other explicit input and no `World` crosses this boundary.
 struct RuntimeDemandFormulaInput<'a> {
     member: &'a ExecutableKey,
     facts: RuntimeDemandFacts<'a>,
     current: RuntimeDemandFormulaSnapshot,
-    product_answers: Vec<RuntimeDemandProductInput>,
-}
-
-/// One exact product answer supplied to formula finalization.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimeDemandProductInput {
-    pub(crate) key: CallableResolutionKey,
-    pub(crate) answer: Option<CallableFlowEdge>,
-}
-
-#[cfg(test)]
-struct DemandFormulaHarness {
-    order: DemandFormulaOrder,
-    capture: DemandFormulaCapture,
-    evaluations: Vec<DemandFormulaEvaluation>,
-}
-
-#[cfg(test)]
-impl DemandFormulaOrdered {
-    pub(crate) fn install(order: DemandFormulaOrder) -> Self {
-        Self::configure(order, DemandFormulaCapture::All)
-    }
-
-    pub(crate) fn latest(order: DemandFormulaOrder) -> Self {
-        Self::configure(order, DemandFormulaCapture::Latest)
-    }
-
-    pub(crate) fn shuffle(order: DemandFormulaOrder) -> Self {
-        Self::configure(order, DemandFormulaCapture::None)
-    }
-
-    fn configure(order: DemandFormulaOrder, capture: DemandFormulaCapture) -> Self {
-        DEMAND_FORMULA_HARNESS.with(|harness| {
-            assert!(harness.borrow().is_none(), "demand formula order already installed");
-            *harness.borrow_mut() = Some(DemandFormulaHarness {
-                order,
-                capture,
-                evaluations: Vec::new(),
-            });
-        });
-        Self
-    }
-
-    pub(crate) fn evaluations(&self) -> Vec<DemandFormulaEvaluation> {
-        DEMAND_FORMULA_HARNESS.with(|harness| {
-            let harness = harness.borrow();
-            let harness = harness.as_ref().unwrap();
-            assert!(
-                harness.capture != DemandFormulaCapture::None,
-                "formula capture was not enabled"
-            );
-            harness.evaluations.clone()
-        })
-    }
-}
-
-#[cfg(test)]
-impl Drop for DemandFormulaOrdered {
-    fn drop(&mut self) {
-        DEMAND_FORMULA_HARNESS.with(|harness| *harness.borrow_mut() = None);
-    }
 }
 
 struct DerivedExecutableDemand {
@@ -172,9 +101,228 @@ struct CallableFlowPlan {
     direct_surfaces: BTreeSet<CallableSurface>,
     direct_edges: Vec<CallableFlowEdge>,
     first_class_surfaces: BTreeSet<CallableSurface>,
-    resolution_keys: Vec<CallableResolutionKey>,
+    first_class_edges: Vec<CallableFlowEdge>,
     opaque: bool,
     escape: bool,
+}
+
+pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
+    world: &mut World,
+    _tel: &T,
+    executable: &ExecutableKey,
+) -> Result<JobEffects, FatalError> {
+    let executable_fact = FactKey::ExecutableFacts(executable.clone());
+    if !world.fact_is_settled(&executable_fact) {
+        return Ok(JobEffects {
+            waits: settled_uses([executable_fact]),
+            ..JobEffects::default()
+        });
+    }
+    let facts = Rc::clone(
+        world
+            .executable_facts(executable)
+            .expect("settled executable facts should have a value"),
+    );
+    let mut reads = vec![FactUse::current(executable_fact)];
+    #[cfg(test)]
+    let identity_inventory = world.types().identity_inventory();
+
+    let input_fact = FactKey::RuntimeDemandInput(executable.clone());
+    reads.push(FactUse::current(input_fact));
+    let self_fact = FactKey::RuntimeDemand(executable.clone());
+    let self_inputs_fact = FactKey::RuntimeDemandInputs(executable.clone());
+    let contribution = world.runtime_demand_input(executable).cloned();
+    let has_owner = contribution.is_some();
+    let contribution = contribution.unwrap_or_default();
+    let peer_keys = direct_local_targets(&facts);
+    let mut ordered_peers = peer_keys.into_iter().collect::<Vec<_>>();
+    ordered_peers.sort_by(|left, right| left.semantic_cmp(right, world.types()));
+    let mut peers = HashMap::new();
+    let mut peer_waits = Vec::new();
+    for peer in ordered_peers.iter().cloned() {
+        let fact = FactKey::RuntimeDemandInputs(peer.clone());
+        reads.push(FactUse::current(fact.clone()));
+        if let Some(demand) = world.runtime_demand_inputs(&peer) {
+            peers.insert(peer, demand.to_vec());
+        } else if peer != *executable {
+            peer_waits.push(FactUse::current(fact));
+        }
+    }
+    let own = RuntimeDemandOwnInput {
+        return_demand: contribution.return_demand.unwrap_or_else(RuntimeDemand::ignore),
+        input_demands: (0..executable.activation.input_len(world.types()))
+            .map(|index| {
+                contribution
+                    .input_demands
+                    .get(&index)
+                    .cloned()
+                    .unwrap_or_else(RuntimeDemand::ignore)
+            })
+            .collect(),
+    };
+    let mut input =
+        RuntimeDemandFormulaInput::new(executable, &facts, world.runtime_demand_type_projections(), own, &peers);
+    let mut loaded_target_demands = ordered_peers.into_iter().collect::<HashSet<_>>();
+    let mut callable_target_reads = HashSet::new();
+    let (mut derived, plans, unresolved_construction_targets, missing_target_demands) = loop {
+        let derived = derive_executable_runtime_demand(world.types(), &input);
+        let (plans, requested, unresolved) =
+            plan_callable_flows(world, &input, &derived.callable_flows, &derived.demand);
+        callable_target_reads.extend(requested);
+        let mut input_grew = false;
+        for plan in &plans {
+            for edge in &plan.first_class_edges {
+                let target = (plan.value, edge.surface.clone());
+                match input
+                    .current
+                    .construction_targets
+                    .insert(target, edge.resolution.clone())
+                {
+                    None => input_grew = true,
+                    Some(previous) => assert_eq!(
+                        previous, edge.resolution,
+                        "one construction value and surface must resolve to one exact target"
+                    ),
+                }
+            }
+        }
+        if input_grew {
+            continue;
+        }
+        let mut missing_target_demands = HashSet::new();
+        let mut exact_targets = plans
+            .iter()
+            .flat_map(|plan| plan.direct_edges.iter().chain(&plan.first_class_edges))
+            .map(|edge| edge.resolution.clone())
+            .collect::<Vec<_>>();
+        exact_targets.sort_by(|left, right| left.semantic_cmp(right, world.types()));
+        exact_targets.dedup();
+        for target in exact_targets {
+            if loaded_target_demands.insert(target.clone()) {
+                let fact = FactKey::RuntimeDemandInputs(target.clone());
+                reads.push(FactUse::current(fact));
+                if let Some(demand) = world.runtime_demand_inputs(&target) {
+                    input.current.target_inputs.insert(target, demand.to_vec());
+                    input_grew = true;
+                } else if target != *executable {
+                    missing_target_demands.insert(target);
+                }
+            } else if !input.current.target_inputs.contains_key(&target) && target != *executable {
+                missing_target_demands.insert(target);
+            }
+        }
+        if input_grew {
+            continue;
+        }
+        break (derived, plans, unresolved, missing_target_demands);
+    };
+    let return_contributions = call_return_demand_contributions(&input.facts, derived.call_return_demands);
+    #[cfg(test)]
+    let observed_return_contributions = return_contributions.clone();
+    for key in &callable_target_reads {
+        let fact = FactKey::CallableConstructionTarget(key.clone());
+        reads.push(FactUse::current(fact.clone()));
+        if unresolved_construction_targets.contains(key) {
+            peer_waits.push(FactUse::current(fact));
+        }
+    }
+    peer_waits.extend(
+        missing_target_demands
+            .into_iter()
+            .map(|target| FactUse::current(FactKey::RuntimeDemandInputs(target))),
+    );
+    finish_callable_flows(plans, &mut derived.demand);
+    let retained_returns = derived
+        .demand
+        .callable_flows
+        .values()
+        .flat_map(|flow| &flow.first_class_edges)
+        .map(|edge| edge.resolution.clone())
+        .collect::<Vec<_>>();
+    let provisional_contributions =
+        target_return_demand_contributions(return_contributions.clone(), retained_returns.iter().cloned());
+    let mut contributions = target_return_demand_contributions(return_contributions, retained_returns);
+    for (target, index, demand) in callable_boundary_input_demand_contributions_product(&derived.demand) {
+        contributions
+            .entry(target)
+            .or_default()
+            .input_demands
+            .entry(index)
+            .and_modify(|current| current.join_assign(&demand))
+            .or_insert(demand);
+    }
+    derived.demand.ground_callable_surfaces(world.types());
+    #[cfg(test)]
+    assert_eq!(
+        world.types().identity_inventory(),
+        identity_inventory,
+        "one RuntimeDemand formula evaluation must not mint types or structural addresses"
+    );
+    #[cfg(test)]
+    FORMULA_CAPTURE.with(|capture| {
+        let mut capture = capture.borrow_mut();
+        let Some(evaluations) = capture.as_mut() else {
+            return;
+        };
+        let evaluation = RuntimeDemandFormulaEvaluation {
+            member: executable.clone(),
+            demand: derived.demand.clone(),
+            observed_return_contributions,
+            contributions: contributions.clone(),
+        };
+        if let Some(previous) = evaluations
+            .iter_mut()
+            .find(|previous| previous.member == evaluation.member)
+        {
+            *previous = evaluation;
+        } else {
+            evaluations.push(evaluation);
+        }
+    });
+    let demand = derived.demand;
+    let runtime_demand_input_contributions = if !has_owner {
+        Vec::new()
+    } else if peer_waits.is_empty() && unresolved_construction_targets.is_empty() {
+        contributions.into_iter().collect()
+    } else {
+        provisional_contributions.into_iter().collect()
+    };
+    let demand = Rc::new(demand);
+    let (changed, inputs_changed) = world.define_runtime_demand(executable.clone(), demand);
+    Ok(JobEffects {
+        reads,
+        outputs: vec![self_fact.clone(), self_inputs_fact.clone()],
+        changed: changed
+            .then_some(self_fact)
+            .into_iter()
+            .chain(inputs_changed.then_some(self_inputs_fact))
+            .collect(),
+        waits: peer_waits,
+        runtime_demand_input_contributions,
+        ..JobEffects::default()
+    })
+}
+
+fn target_return_demand_contributions(
+    observed: impl IntoIterator<Item = (ExecutableKey, RuntimeDemand)>,
+    retained: impl IntoIterator<Item = ExecutableKey>,
+) -> HashMap<ExecutableKey, TargetDemandContribution> {
+    let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
+    let mut join = |target: ExecutableKey, demand: RuntimeDemand| {
+        let contribution = contributions.entry(target).or_default();
+        match &mut contribution.return_demand {
+            Some(current) => current.join_assign(&demand),
+            None => contribution.return_demand = Some(demand),
+        }
+    };
+    for (target, demand) in observed {
+        join(target, demand);
+    }
+    for target in retained {
+        let demand = RuntimeDemand::for_executable_need(target.need);
+        join(target, demand);
+    }
+    contributions
 }
 
 fn trivial_value_clause_ids(body: &LoweredBody, reachable: &[u32]) -> Vec<u32> {
@@ -335,697 +483,40 @@ impl CallableFlowBuilder {
     }
 }
 
-/// Settle the demand SCC containing `executable` as one monotone fixpoint.
-///
-/// Demand dependencies run BOTH ways along every call edge (a caller reads its
-/// callees' input demands; a callee's return demand joins its callers'
-/// contributions), so the demand dependency graph is symmetric and the SCC
-/// containing the anchor is exactly the anchor's call cone (stopping at
-/// executables whose demand is already settled — those are external inputs).
-/// The cone starts from
-/// `CallSiteSummary` direct targets and previously materialized call edges. A
-/// settled ascent then closes it over the callable-flow edges that demand
-/// actually derived before any result is published.
-///
-/// The whole cone is then solved by a bottom-start Kleene ascent inside this
-/// one producer: per round every member's demand is re-derived from the
-/// previous round's iterates (input demands down edges, return-demand
-/// contributions up edges, `ShapeDemand::join`), until nothing changes. A
-/// requested anchor with no settled caller contributes its executable-need
-/// contract directly, and first-class callable owners contribute each boxed
-/// member's exact contract on the ordinary return-demand edge. Only the
-/// settled fixpoint is ever published:
-/// every member is memoized, so no other product can observe a mid-ascent
-/// value. There is no active-SCC seed (the SCC is solved together and never
-/// re-entered) and no consumed-return floor: at the fixpoint the callee's real
-/// input demand is present, so the demand is derived. A statically consumed
-/// return may honestly settle at `ignore` — static consumption over-reports
-/// liveness when the consuming position is itself undemanded (e.g. an argument
-/// the settled callee ignores); transport's resume gate owns that value's
-/// physical soundness from the static body fact, independent of demand.
-///
-/// Publication closes the stale-caller window: when a member's settled
-/// contribution GROWS the joined return demand of an executable settled
-/// earlier OUTSIDE this cone, that external's memo (and its dependents') is
-/// displaced — but the members were derived reading the external's PRE-growth
-/// input demands, and nothing downstream re-derives a caller of a re-settled
-/// callee. So the producer refuses to memoize a cone that displaced one of its
-/// own external inputs: it re-collects (the displaced external has no memo and
-/// is reachable through the very edge that carried the contribution, so it is
-/// absorbed as a member) and re-settles the grown cone together. Each re-cycle
-/// strictly grows the member set — memos are only recorded once publication is
-/// quiescent, members never leave the cone, and at least the moved external
-/// joins — so the loop terminates within the finite demanded universe.
-/// What one demand-cone settlement cost, in the terms that drive it.
-///
-/// A cone is collected transitively from its anchor and stops only at
-/// executables whose demand has already settled, so `members` -- not the single
-/// executable the product key names -- is the real unit of work behind a
-/// `RuntimeDemand(E)` answer. `rounds` is the height the Jacobi ascent climbed
-/// and `derivations` is how many member re-derivations it actually ran, which
-/// is well below `members * rounds` because a member whose reads did not move
-/// is skipped. Together they separate the three ways this product can get
-/// expensive -- a cone that is too big, an ascent that climbs too far, or
-/// members that re-derive too often -- which a wall-clock number cannot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DemandConeSettlement {
-    pub members: u64,
-    pub external_members: u64,
-    pub rounds: u64,
-    pub derivations: u64,
-}
-
-pub(crate) fn produce_runtime_demand_product<T: Telemetry>(
-    world: &mut World,
-    tel: &T,
-    context: &mut ProductReadContext<'_>,
-    executable: &ExecutableKey,
-) -> PullOutcome {
-    let mut actual_flow_edges: HashMap<ExecutableKey, HashSet<ExecutableKey>> = HashMap::new();
-    let mut retry_guard = None;
-    loop {
-        let graph = match collect_demand_cone(world, tel, context, executable, &actual_flow_edges) {
-            Ok(graph) => graph,
-            Err(waits) => return product_waits(waits),
-        };
-        let members: HashSet<ExecutableKey> = graph.facts.keys().cloned().collect();
-        let edge_count = graph.edges.values().map(HashSet::len).sum();
-        match retry_guard.take() {
-            Some(DemandConeRetryGuard::ActualFlowEdges {
-                member_count,
-                edge_count: previous_edge_count,
-            }) => assert!(
-                members.len() > member_count || edge_count > previous_edge_count,
-                "re-collecting the demand cone for {executable:?} after actual flow-edge growth \
-                 must grow its members or owner edges"
-            ),
-            Some(DemandConeRetryGuard::DisplacedExternal { member_count }) => assert!(
-                members.len() > member_count,
-                "re-collecting the demand cone for {executable:?} must absorb the displaced external \
-                 it re-settles for; the cone stalled at {} members",
-                members.len()
-            ),
-            None => {}
-        }
-        let mut settled = match settle_demand_cone(world, tel, context, executable, &graph) {
-            Ok(settled) => settled,
-            Err(waits) => return product_waits(waits),
-        };
-        let settlement_members = std::mem::take(&mut settled.members);
-        let mut grew_actual_flow_edges = false;
-        for member in &settlement_members {
-            let demand = settled
-                .demands
-                .get(member)
-                .expect("every settled member has demand evidence");
-            let graph_edges = graph.edges.get(member);
-            let member_flow_edges = actual_flow_edges.entry(member.clone()).or_default();
-            for target in demand
-                .callable_flows
-                .values()
-                .flat_map(|flow| flow.direct_edges.iter().chain(&flow.first_class_edges))
-                .map(|edge| edge.resolution.clone())
-            {
-                if !graph_edges.is_some_and(|edges| edges.contains(&target)) {
-                    grew_actual_flow_edges = true;
-                }
-                member_flow_edges.insert(target);
-            }
-        }
-        if grew_actual_flow_edges {
-            retry_guard = Some(DemandConeRetryGuard::ActualFlowEdges {
-                member_count: members.len(),
-                edge_count,
-            });
-            continue;
-        }
-        // Persist the settled evidence FIRST: the per-caller contribution store is
-        // the cross-settle channel (a later cone anchored elsewhere reads these as
-        // external caller evidence) and the change-driven retraction wavefront in
-        // `recompute_return_demand` fires only for NON-member targets — within this
-        // settlement the joins are quiescent by construction, so recording the
-        // members' memos afterwards cannot be wiped by their own contributions.
-        let mut contribution_transactions = Vec::new();
-        for member in &settlement_members {
-            let Some(contributions) = settled.contributions.remove(member) else {
-                continue;
-            };
-            // A callable-flow resolution can already be
-            // memoized from an earlier, separate pull (its own cone anchored
-            // elsewhere ran first) -- then it is `graph.external`, not a member,
-            // and this settlement's pin must cross the cone boundary exactly
-            // like a return-demand contribution does. Both halves persist
-            // through the same per-caller replace-and-recompute channel.
-            let mut return_demand_contributions: HashMap<ExecutableKey, RuntimeDemand> = HashMap::new();
-            let mut input_demand_contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = HashMap::new();
-            for (target, contribution) in contributions {
-                if let Some(demand) = contribution.return_demand {
-                    return_demand_contributions.insert(target.clone(), demand);
-                }
-                if !contribution.input_demands.is_empty() {
-                    input_demand_contributions.insert(target, contribution.input_demands);
-                }
-            }
-            contribution_transactions.push((member.clone(), return_demand_contributions, input_demand_contributions));
-        }
-        let displaced = context.session_mut().replace_settled_demand_contributions(
-            tel,
-            contribution_transactions,
-            &members,
-            world.types(),
-        );
-        // The stale-caller window: this settlement read the external's settled
-        // demand as an input AND its publication moved that external's join, so
-        // every member was derived against a displaced value. Do not memoize —
-        // re-collect and settle the grown cone (the displaced external is now
-        // memo-less and joins as a member). The exact predicate is membership
-        // in `graph.external` — the set of demand values this settlement READ.
-        // A displaced executable outside it (a pure downstream dependent, or a
-        // withdrawn-contribution target the cone never read) cannot have staled
-        // the members; it re-settles on its own next pull, exactly like any
-        // cross-settle displacement. A withdrawn target that IS a read external
-        // conservatively re-collects too — terminating by the same strict-growth
-        // argument, and honest: its retraction changed an input we consumed.
-        if displaced.iter().any(|key| graph.external.contains_key(key)) {
-            retry_guard = Some(DemandConeRetryGuard::DisplacedExternal {
-                member_count: members.len(),
-            });
-            continue;
-        }
-        context.remove_product_dependencies(settlement_members.iter().cloned().map(ProductKey::RuntimeDemand));
-        for (member, edges) in &graph.edges {
-            context
-                .session_mut()
-                .record_settled_demand_callees(member.clone(), edges.clone());
-            for target in edges {
-                if !actual_flow_edges
-                    .get(member)
-                    .is_some_and(|flow_edges| flow_edges.contains(target))
-                {
-                    context
-                        .session_mut()
-                        .record_runtime_demand_dependency(target.clone(), member.clone());
-                }
-            }
-        }
-        for (member, edges) in &actual_flow_edges {
-            for target in edges {
-                context
-                    .session_mut()
-                    .record_demand_flow_dependency(target.clone(), member.clone());
-            }
-        }
-        let demand = settled
-            .demands
-            .remove(executable)
-            .expect("requested executable should belong to its demand cone");
-        for member in settlement_members {
-            if member == *executable {
-                continue;
-            }
-            let member_demand = settled
-                .demands
-                .remove(&member)
-                .expect("every published member has settled demand evidence");
-            context.publish_product(
-                ProductKey::RuntimeDemand(member.clone()),
-                ProductValue::RuntimeDemand(member_demand),
-            );
-        }
-        return PullOutcome::Produced(ProductValue::RuntimeDemand(demand));
-    }
-}
-
-enum DemandConeRetryGuard {
-    ActualFlowEdges { member_count: usize, edge_count: usize },
-    DisplacedExternal { member_count: usize },
-}
-
-/// The demand cone: per-member settled facts, the demand-relevant edge set per
-/// member, and the settled demands of callees outside the cone.
-struct DemandGraph {
-    facts: HashMap<ExecutableKey, Rc<ExecutableFacts>>,
-    edges: HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-    external: HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
-}
-
-struct SettledDemandCone {
-    members: Vec<ExecutableKey>,
-    demands: HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
-    contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>>,
-}
-
-/// One caller's contribution to a single target: its joined observed and
-/// boxed-seam return demand plus any boundary-pinned INPUT positions —
-/// e.g. a boundary-published callable's argument, which a contract can
-/// demand even when the body itself elides it. Both halves join
-/// independently onto the target's `ExecutableRuntimeDemand`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct TargetDemandContribution {
-    pub(crate) return_demand: Option<RuntimeDemand>,
-    pub(crate) input_demands: HashMap<usize, RuntimeDemand>,
-}
-
-fn collect_demand_cone(
-    world: &World,
-    tel: &impl Telemetry,
-    context: &mut ProductReadContext<'_>,
-    anchor: &ExecutableKey,
-    actual_flow_edges: &HashMap<ExecutableKey, HashSet<ExecutableKey>>,
-) -> Result<DemandGraph, HashSet<PullWait>> {
-    let mut facts: HashMap<ExecutableKey, Rc<ExecutableFacts>> = HashMap::new();
-    let mut edges: HashMap<ExecutableKey, HashSet<ExecutableKey>> = HashMap::new();
-    let mut external = HashMap::new();
-    let mut waits = HashSet::new();
-    let mut stack = vec![anchor.clone()];
-    let mut seen = HashSet::new();
-    while let Some(current) = stack.pop() {
-        if !seen.insert(current.clone()) {
-            continue;
-        }
-        if current != *anchor
-            && let Some(demand) = context.read_runtime_demand(tel, &current, world.types())
-        {
-            external.insert(current, demand.clone());
-            continue;
-        }
-        let Some(current_facts) = context.read_executable_facts(world, &current) else {
-            waits.insert(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(current))));
-            continue;
-        };
-        let mut targets = direct_local_targets(&current_facts);
-        if let Some(callees) = context.session().settled_demand_callees(&current) {
-            targets.extend(callees.iter().cloned());
-        }
-        if let Some(callees) = actual_flow_edges.get(&current) {
-            targets.extend(callees.iter().cloned());
-        }
-        stack.extend(targets.iter().cloned());
-        edges.insert(current.clone(), targets);
-        facts.insert(current, current_facts);
-    }
-    if waits.is_empty() {
-        Ok(DemandGraph { facts, edges, external })
-    } else {
-        Err(waits)
-    }
-}
-
-fn settle_demand_cone<T: Telemetry>(
-    world: &mut World,
-    tel: &T,
-    context: &mut ProductReadContext<'_>,
-    anchor: &ExecutableKey,
-    graph: &DemandGraph,
-) -> Result<SettledDemandCone, HashSet<PullWait>> {
-    // Each Jacobi round reads one frozen previous-round snapshot, but deriving
-    // a member can read products through the shared session. Keep that
-    // activation-bearing observation and the later settlement publication on
-    // one typed vector instead of rematerializing HashMap order between them.
-    let mut members: Vec<ExecutableKey> = graph.facts.keys().cloned().collect();
-    members.sort_by(|left, right| left.semantic_cmp(right, world.types()));
-    for pair in members.windows(2) {
-        assert!(
-            pair[0] == pair[1] || pair[0].semantic_cmp(&pair[1], world.types()).is_lt(),
-            "semantic member comparator collision/order inversion: {:?} vs {:?}",
-            pair[0],
-            pair[1]
-        );
-    }
-    #[cfg(test)]
-    DEMAND_FORMULA_HARNESS.with(|configured| {
-        let Some(order) = configured.borrow().as_ref().map(|harness| harness.order) else {
-            return;
-        };
-        match order {
-            DemandFormulaOrder::Forward => {}
-            DemandFormulaOrder::Reverse => members.reverse(),
-            DemandFormulaOrder::Seeded(mut seed) => {
-                for index in (1..members.len()).rev() {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 7;
-                    seed ^= seed << 17;
-                    members.swap(index, seed as usize % (index + 1));
-                }
-            }
-        }
-    });
-    let member_set: HashSet<ExecutableKey> = members.iter().cloned().collect();
-    // The external caller evidence is settled session state the ascent never
-    // mutates: join it once, not per member per round.
-    let mut external_return_demands: HashMap<ExecutableKey, RuntimeDemand> = members
-        .iter()
-        .filter_map(|member| {
-            context
-                .session()
-                .external_return_demand(member, &member_set, world.types())
-                .map(|demand| (member.clone(), demand))
-        })
-        .collect();
-    if !external_return_demands.contains_key(anchor) {
-        external_return_demands
-            .entry(anchor.clone())
-            .or_insert_with(|| runtime_demand_for_executable_need(anchor.need));
-    }
-    // The INPUT-side sibling: boundary-pinned argument positions a settled
-    // contributor OUTSIDE this cone joined onto a member the cone treats as
-    // an anchor (a resolution settled on an earlier, separate pull before its
-    // producer's cone was collected).
-    let external_input_demands: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = members
-        .iter()
-        .filter_map(|member| {
-            let demands = context
-                .session()
-                .external_input_demand(member, &member_set, world.types());
-            (!demands.is_empty()).then_some((member.clone(), demands))
-        })
-        .collect();
-    // A member's derivation reads exactly three things out of the round's
-    // iterates: its own joined return demand, its call-edge targets' demands
-    // (`local_target_input_demands` over the same targets the cone's edges
-    // carry), and — for a member producing a lambda — the input demands of
-    // every executable of the produced function (the capture-prefix scan in
-    // `propagate_lambda_capture_demands`). These two reverse indexes name the
-    // readers a moved member must re-dirty; anything else re-derives
-    // identically and is skipped.
-    let mut edge_readers: HashMap<&ExecutableKey, Vec<&ExecutableKey>> = HashMap::new();
-    for (reader, targets) in &graph.edges {
-        for target in targets {
-            edge_readers.entry(target).or_default().push(reader);
-        }
-    }
-    let mut produced_function_readers: HashMap<FunctionId, Vec<&ExecutableKey>> = HashMap::new();
-    for member in &members {
-        let facts = graph.facts.get(member).expect("every cone member has facts");
-        for (_, producer) in facts.callable_origins() {
-            produced_function_readers
-                .entry(producer.function)
-                .or_default()
-                .push(member);
-        }
-    }
-    // `reads` is the frozen Jacobi input view: shared settled externals plus
-    // each member's previous-round result. The current round's joined return
-    // and input demands live separately in `own_inputs`, so formula evaluation
-    // can read the exact overlay without mutating or copying a shared result.
-    // Only results that move replace their member handle after the whole round.
-    let external_members = graph.external.len();
-    let mut reads = graph.external.clone();
-    for member in &members {
-        let facts = graph.facts.get(member).expect("every cone member has facts");
-        reads.insert(
-            member.clone(),
-            Rc::new(empty_runtime_demand(member, facts, world.types())),
-        );
-    }
-    let mut contributions: HashMap<ExecutableKey, HashMap<ExecutableKey, TargetDemandContribution>> = HashMap::new();
-    let mut dirty: HashSet<&ExecutableKey> = members.iter().collect();
-    let mut rounds = 0_u32;
-    let mut derivations = 0_u64;
-    loop {
-        rounds += 1;
-        // Invert the per-caller contribution store once per round: each
-        // member's joined return demand (and boundary-pinned input demand
-        // positions) is then a single lookup instead of a scan over every
-        // member's contributions (quadratic in cone size).
-        let mut joined_contributions: HashMap<ExecutableKey, RuntimeDemand> = HashMap::new();
-        let mut joined_input_contributions: HashMap<ExecutableKey, HashMap<usize, RuntimeDemand>> = HashMap::new();
-        for member_contributions in contributions.values() {
-            for (target, contribution) in member_contributions {
-                if let Some(demand) = &contribution.return_demand {
-                    joined_contributions
-                        .entry(target.clone())
-                        .and_modify(|joined| joined.join_assign(demand))
-                        .or_insert_with(|| demand.clone());
-                }
-                if !contribution.input_demands.is_empty() {
-                    let slots = joined_input_contributions.entry(target.clone()).or_default();
-                    for (index, demand) in &contribution.input_demands {
-                        slots
-                            .entry(*index)
-                            .and_modify(|joined| joined.join_assign(demand))
-                            .or_insert_with(|| demand.clone());
-                    }
-                }
-            }
-        }
-        let mut own_inputs = Vec::with_capacity(members.len());
-        for member in &members {
-            let mut joined = external_return_demands
-                .get(member)
-                .cloned()
-                .unwrap_or_else(RuntimeDemand::ignore);
-            if let Some(demand) = joined_contributions.get(member) {
-                joined.join_assign(demand);
-            }
-            let current = reads.get(member).expect("every cone member has a read cell");
-            let mut input_demands = current.input_demands.clone();
-            let local_positions = joined_input_contributions.get(member).into_iter().flatten();
-            let external_positions = external_input_demands.get(member).into_iter().flatten();
-            for (&index, demand) in local_positions.chain(external_positions) {
-                if let Some(slot) = input_demands.get_mut(index) {
-                    slot.join_assign(demand);
-                }
-            }
-            if current.return_demand != joined || current.input_demands != input_demands {
-                dirty.insert(member);
-            }
-            own_inputs.push(RuntimeDemandOwnInput {
-                return_demand: joined,
-                input_demands,
-            });
-        }
-        // Re-derive the dirty members against the previous round's view; a
-        // member none of whose reads moved derives the identical value and is
-        // skipped. The Jacobi round structure is unchanged: derived values
-        // land in the shared view only after the whole round.
-        let mut waits = HashSet::new();
-        let mut moved: Vec<&ExecutableKey> = Vec::new();
-        let mut demand_moved: Vec<&ExecutableKey> = Vec::new();
-        let mut read_updates: Vec<(&ExecutableKey, Rc<ExecutableRuntimeDemand>)> = Vec::new();
-        for (member, own) in members.iter().zip(own_inputs) {
-            if !dirty.contains(member) {
-                continue;
-            }
-            let facts = graph.facts.get(member).expect("every cone member has facts");
-            derivations += 1;
-            let (demand, member_contributions) =
-                derive_member_demand(world.types(), tel, context, member, facts, own, &reads, &mut waits);
-            let demand_changed = reads.get(member).is_none_or(|previous| previous.as_ref() != &demand);
-            if demand_changed {
-                demand_moved.push(member);
-                let demand = Rc::new(demand);
-                read_updates.push((member, Rc::clone(&demand)));
-            }
-            if demand_changed || contributions.get(member) != Some(&member_contributions) {
-                contributions.insert(member.clone(), member_contributions);
-                moved.push(member);
-            }
-        }
-        if !waits.is_empty() {
-            return Err(waits);
-        }
-        dirty.clear();
-        for (member, demand) in read_updates {
-            reads.insert(member.clone(), demand);
-        }
-        for member in &demand_moved {
-            if let Some(readers) = edge_readers.get(*member) {
-                dirty.extend(readers.iter().copied());
-            }
-            if let Some(readers) = produced_function_readers.get(&member.activation.function) {
-                dirty.extend(readers.iter().copied());
-            }
-        }
-        if moved.is_empty() {
-            const EVENT: &[&str] = &["fz", "compiler2", "demand", "cone", "settled"];
-            if tel.is_raw_event_enabled(EVENT) {
-                tel.raw_event2(
-                    EVENT,
-                    &ProductKey::RuntimeDemand(anchor.clone()),
-                    &DemandConeSettlement {
-                        members: members.len() as u64,
-                        external_members: external_members as u64,
-                        rounds: u64::from(rounds),
-                        derivations,
-                    },
-                );
-            }
-            reads.retain(|executable, _| member_set.contains(executable));
-            return Ok(SettledDemandCone {
-                members,
-                demands: reads,
-                contributions,
-            });
-        }
-        // A hard budget in every build: the ascent is monotone over a
-        // finite-height lattice, so exceeding the probe-measured bound means a
-        // non-monotone regression — fail loudly instead of hanging in release.
-        if rounds >= DEMAND_ASCENT_ROUND_BUDGET {
-            panic!(
-                "demand ascent exceeded its round budget ({DEMAND_ASCENT_ROUND_BUDGET}) settling a \
-                 {}-member cone: the demand lattice has an ascent hole; still-moving members: {moved:?}",
-                members.len()
-            );
-        }
-    }
-}
-
-const DEMAND_ASCENT_ROUND_BUDGET: u32 = 32;
-
-fn derive_member_demand<T: Telemetry>(
-    types: &Types,
-    tel: &T,
-    context: &mut ProductReadContext<'_>,
-    member: &ExecutableKey,
-    facts: &Rc<ExecutableFacts>,
-    own: RuntimeDemandOwnInput,
-    reads: &HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
-    waits: &mut HashSet<PullWait>,
-) -> (
-    ExecutableRuntimeDemand,
-    HashMap<ExecutableKey, TargetDemandContribution>,
-) {
-    #[cfg(test)]
-    let identity_inventory = types.identity_inventory();
-    #[cfg(test)]
-    let read_checkpoint = context.product_read_checkpoint();
-    let mut input = RuntimeDemandFormulaInput::new(member, facts, own, reads);
-    let mut derived = derive_executable_runtime_demand(types, &input);
-    let return_demand_contributions = call_return_demand_contributions(&input.facts, derived.call_return_demands);
-    #[cfg(test)]
-    let observed_return_contributions = return_demand_contributions.clone();
-    let flow_plans = plan_callable_flows(types, &input, &derived.callable_flows, &derived.demand);
-    input.product_answers = read_runtime_demand_products(tel, context, &flow_plans, waits, types);
-    finish_callable_flows(&input, flow_plans, &mut derived.demand);
-    let boundary_input_demands = callable_boundary_input_demand_contributions_product(&derived.demand);
-    let retained_returns = derived
-        .demand
-        .callable_flows
-        .values()
-        .flat_map(|flow| &flow.first_class_edges)
-        .map(|edge| edge.resolution.clone());
-    let mut contributions = target_return_demand_contributions(return_demand_contributions, retained_returns);
-    for (target, index, demand) in boundary_input_demands {
-        let entry = contributions.entry(target).or_default();
-        entry
-            .input_demands
-            .entry(index)
-            .and_modify(|current| current.join_assign(&demand))
-            .or_insert(demand);
-    }
-    derived.demand.ground_callable_surfaces(types);
-    #[cfg(test)]
-    assert_eq!(
-        types.identity_inventory(),
-        identity_inventory,
-        "one RuntimeDemand formula evaluation must not mint types or structural addresses"
-    );
-    #[cfg(test)]
-    DEMAND_FORMULA_HARNESS.with(|harness| {
-        if let Some(harness) = harness.borrow_mut().as_mut() {
-            if harness.capture == DemandFormulaCapture::None {
-                return;
-            }
-            let evaluation = DemandFormulaEvaluation {
-                member: member.clone(),
-                facts: Rc::clone(facts),
-                current: input.current.clone(),
-                product_answers: input.product_answers.clone(),
-                demand: derived.demand.clone(),
-                observed_return_contributions,
-                contributions: contributions.clone(),
-                product_reads: context.product_reads_since(read_checkpoint),
-            };
-            if harness.capture == DemandFormulaCapture::Latest
-                && let Some(previous) = harness
-                    .evaluations
-                    .iter_mut()
-                    .find(|previous| previous.member == evaluation.member)
-            {
-                *previous = evaluation;
-            } else {
-                harness.evaluations.push(evaluation);
-            }
-        }
-    });
-    (derived.demand, contributions)
-}
-
-fn target_return_demand_contributions(
-    observed: impl IntoIterator<Item = (ExecutableKey, RuntimeDemand)>,
-    retained: impl IntoIterator<Item = ExecutableKey>,
-) -> HashMap<ExecutableKey, TargetDemandContribution> {
-    let mut contributions = HashMap::<ExecutableKey, TargetDemandContribution>::new();
-    let mut join = |target: ExecutableKey, demand: RuntimeDemand| {
-        let contribution = contributions.entry(target).or_default();
-        match &mut contribution.return_demand {
-            Some(current) => current.join_assign(&demand),
-            None => contribution.return_demand = Some(demand),
-        }
-    };
-    for (target, demand) in observed {
-        join(target, demand);
-    }
-    for target in retained {
-        let demand = runtime_demand_for_executable_need(target.need);
-        join(target, demand);
-    }
-    contributions
-}
-
 impl<'a> RuntimeDemandFormulaInput<'a> {
     fn new(
         member: &'a ExecutableKey,
         facts: &'a ExecutableFacts,
+        type_projections: &'a HashMap<Ty, Rc<super::super::semantic::RuntimeDemandTypeProjection>>,
         own: RuntimeDemandOwnInput,
-        reads: &HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
+        reads: &HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     ) -> Self {
         Self {
-            current: RuntimeDemandFormulaSnapshot::new(member, facts, own, reads),
+            current: RuntimeDemandFormulaSnapshot::new(member.clone(), own, reads),
             member,
-            facts: facts.runtime_demand_facts(),
-            product_answers: Vec::new(),
+            facts: facts.runtime_demand_facts(type_projections),
         }
     }
 }
 
 impl RuntimeDemandFormulaSnapshot {
     fn new(
-        member: &ExecutableKey,
-        facts: &ExecutableFacts,
+        member: ExecutableKey,
         own: RuntimeDemandOwnInput,
-        reads: &HashMap<ExecutableKey, Rc<ExecutableRuntimeDemand>>,
+        reads: &HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     ) -> Self {
-        let target_inputs = direct_local_targets(facts)
-            .into_iter()
-            .filter_map(|key| reads.get(&key).map(|demand| (key, demand.input_demands.clone())))
-            .collect();
-        let mut callable_inputs = HashMap::new();
-        for (_, producer) in facts.callable_origins() {
-            for (key, demand) in reads.iter().filter(|(key, _)| {
-                key.activation.root == member.activation.root && key.activation.function == producer.function
-            }) {
-                callable_inputs.insert(
-                    key.clone(),
-                    RuntimeDemandCallableInput {
-                        callable_activation_inputs: demand.callable_activation_inputs.clone(),
-                        input_demands: demand.input_demands.clone(),
-                    },
-                );
-            }
-        }
         Self {
+            member,
             own,
-            target_inputs,
-            callable_inputs,
+            target_inputs: reads.clone(),
+            construction_targets: HashMap::new(),
         }
     }
 }
 
 pub(crate) fn produce_outgoing_input_edges_product<T: Telemetry>(
     world: &mut World,
-    tel: &T,
+    _tel: &T,
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
@@ -1036,8 +527,10 @@ pub(crate) fn produce_outgoing_input_edges_product<T: Telemetry>(
         ))));
         return product_waits(waits);
     };
-    let Some(runtime_demand) = context.read_runtime_demand(tel, executable, world.types()) else {
-        waits.insert(PullWait::Product(ProductKey::RuntimeDemand(executable.clone())));
+    let Some(runtime_demand) = context.read_runtime_demand_fact(world, executable) else {
+        waits.insert(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+            executable.clone(),
+        ))));
         return product_waits(waits);
     };
 
@@ -1053,52 +546,47 @@ fn product_waits(waits: HashSet<PullWait>) -> PullOutcome {
     PullOutcome::Waiting(waits.into_iter().collect())
 }
 
-pub(crate) fn produce_callable_resolution_product<T: Telemetry>(
-    world: &mut World,
-    _tel: &T,
-    context: &mut ProductReadContext<'_>,
-    key: &CallableResolutionKey,
-) -> PullOutcome {
-    let Some(facts) = context.read_executable_facts(world, &key.executable) else {
-        return PullOutcome::wait_on_fact(FactUse::settled(FactKey::ExecutableFacts(key.executable.clone())));
-    };
-    let Some(producer) = facts.callable_origin(key.value) else {
-        panic!("callable resolution key names no local producer: {key:?}");
-    };
-    let mut waits = HashSet::new();
-    if !require_activation_key_facts_product(world, context, producer.function, &mut waits) {
-        return product_waits(waits);
-    }
+fn construction_flow_edge(
+    world: &World,
+    input: &RuntimeDemandFormulaInput<'_>,
+    key: &CallableConstructionTargetKey,
+    producer: &LocalCallableProducer,
+    surface: &CallableSurface,
+) -> Option<CallableFlowEdge> {
+    let facts = &input.facts;
     let Some(capture_tys) = producer
         .captures
         .iter()
-        .map(|capture| facts.analysis.value_types.get(capture).copied())
+        .map(|capture| facts.value_types.get(capture).copied())
         .collect::<Option<Vec<_>>>()
     else {
         panic!("settled callable producer has no capture types: {producer:?}");
     };
-    let mut inputs = capture_tys.clone();
-    inputs.extend(key.surface.inputs.iter().copied());
-    let any = world.types_mut().any();
-    let mut boundary_types = RuntimeDemandTypeInputs::new(any);
-    for &ty in &key.surface.inputs {
-        prepare_type_projection(world, &mut boundary_types, ty);
-    }
-    PullOutcome::Produced(ProductValue::CallableResolution(CallableFlowEdge {
-        surface: key.surface.clone(),
-        resolution: ExecutableKey {
-            activation: world.activation_key(key.executable.activation.root, producer.function, &inputs),
-            need: ExecutableNeed::Value,
-        },
+    let resolution = world.callable_construction_target(key)?.clone();
+    let resolution = ExecutableKey {
+        activation: resolution.activation,
+        need: ExecutableNeed::Value,
+    };
+    let input_len = capture_tys.len() + surface.inputs.len();
+    Some(CallableFlowEdge {
+        surface: surface.clone(),
+        resolution,
         capture_semantic_inputs: (0..capture_tys.len()).collect(),
-        surface_semantic_inputs: (capture_tys.len()..inputs.len()).collect(),
-        boundary_input_demands: key
-            .surface
+        surface_semantic_inputs: (capture_tys.len()..input_len).collect(),
+        boundary_input_demands: surface
             .inputs
             .iter()
-            .map(|&ty| informative_boundary_demand_from_types(world, &boundary_types, ty))
+            .map(|&ty| {
+                if ty == facts.demand_types.any {
+                    return None;
+                }
+                world
+                    .runtime_demand_type_projection(ty)
+                    .unwrap_or_else(|| panic!("callable surface omitted runtime-demand projection for {ty:?}"))
+                    .informative_boundary_demand(world.types(), ty)
+            })
             .collect(),
-    }))
+    })
 }
 
 fn collect_callsite_input_sources(
@@ -1179,14 +667,6 @@ fn collect_callable_capture_input_sources(
     }
 }
 
-fn empty_runtime_demand(executable: &ExecutableKey, facts: &ExecutableFacts, types: &Types) -> ExecutableRuntimeDemand {
-    ExecutableRuntimeDemand {
-        callable_activation_inputs: facts.callable_activation_inputs.clone(),
-        input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(types)],
-        ..ExecutableRuntimeDemand::default()
-    }
-}
-
 fn direct_local_targets(facts: &ExecutableFacts) -> HashSet<ExecutableKey> {
     let mut targets = HashSet::new();
     for (callsite, summary) in &facts.callsites {
@@ -1209,10 +689,9 @@ fn call_return_demand_contributions(
     // graph (`facts.callsites`), not the lossy `observed_returns` (which omits a
     // callsite entirely once its demand collapses to `ignore`). A discarded
     // callee contributes the bottom `ignore` demand: a distinct cell from "no
-    // caller has named this callee at all" -- an observed-but-discarded direct
-    // callee can collapse its return at the settled fixpoint, while a boxed
-    // construction owner contributes the member's executable-need contract
-    // through the same map.
+    // caller has named this callee at all". Both absence and an explicit
+    // discarded-callee contribution are bottom demand; publisher identity is
+    // retained only where exact replacement and retraction need it.
     let mut out = Vec::new();
     for (callsite, summary) in facts.callsites {
         let need = facts
@@ -1238,7 +717,7 @@ fn call_return_demand_contributions(
 }
 
 fn tuple_return_demand_for_observed_need(need: ExecutableNeed, observed: RuntimeDemand) -> RuntimeDemand {
-    let mut delivered = runtime_demand_for_executable_need(need);
+    let mut delivered = RuntimeDemand::for_executable_need(need);
     if let (ShapeDemand::TupleFields(delivered_fields), ShapeDemand::TupleFields(observed_fields)) =
         (&mut delivered.shape, observed.shape)
     {
@@ -1251,14 +730,20 @@ fn tuple_return_demand_for_observed_need(need: ExecutableNeed, observed: Runtime
 }
 
 fn plan_callable_flows(
-    types: &Types,
+    world: &World,
     input: &RuntimeDemandFormulaInput,
     callable_flows: &CallableFlowBuilder,
     demand: &ExecutableRuntimeDemand,
-) -> Vec<CallableFlowPlan> {
+) -> (
+    Vec<CallableFlowPlan>,
+    HashSet<CallableConstructionTargetKey>,
+    HashSet<CallableConstructionTargetKey>,
+) {
     let executable = input.member;
     let facts = &input.facts;
     let mut plans = Vec::new();
+    let mut requested = HashSet::new();
+    let mut unresolved = HashSet::new();
     for (&value, producer) in facts.callable_origins() {
         let Some(value_demand) = demand.value_demands.get(&value) else {
             continue;
@@ -1266,51 +751,71 @@ fn plan_callable_flows(
         if !value_demand.is_callable() {
             continue;
         }
-        let direct_surfaces = callable_flows.direct_surfaces(value);
-        let direct_targets = callable_flows.direct_targets(value);
-        let producer_surfaces = callable_value_type_demand(facts, value)
-            .map(|demand| demand.callable.resolved)
-            .unwrap_or_default();
-        let direct_edges = callable_flow_edges_for_targets(types, executable, facts, producer, &direct_targets);
-        let mut ground_source = producer_surfaces;
-        ground_source.extend(direct_surfaces.iter().cloned());
-        let first_class_surfaces =
-            ground_dispatch_surfaces(types, &callable_flows.first_class_surfaces(value), &ground_source);
-        let mut ordered = first_class_surfaces.iter().cloned().collect::<Vec<_>>();
-        ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs));
+        let (direct_surfaces, direct_edges, first_class_surfaces, ordered) = {
+            let types = world.types();
+            let direct_surfaces = callable_flows.direct_surfaces(value);
+            let direct_targets = callable_flows.direct_targets(value);
+            let producer_surfaces = callable_value_type_demand(facts, value)
+                .map(|demand| demand.callable.resolved)
+                .unwrap_or_default();
+            let direct_edges = callable_flow_edges_for_targets(
+                types,
+                executable,
+                facts,
+                producer.function,
+                &producer.captures,
+                &direct_targets,
+            );
+            let mut ground_source = producer_surfaces;
+            ground_source.extend(direct_surfaces.iter().cloned());
+            let first_class_surfaces =
+                ground_dispatch_surfaces(types, &callable_flows.first_class_surfaces(value), &ground_source);
+            let mut ordered = first_class_surfaces.iter().cloned().collect::<Vec<_>>();
+            ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs));
+            (direct_surfaces, direct_edges, first_class_surfaces, ordered)
+        };
+        let first_class_edges = ordered
+            .iter()
+            .filter_map(|surface| {
+                let key = CallableConstructionTargetKey {
+                    owner: executable.clone(),
+                    value,
+                    surface: surface.clone(),
+                };
+                requested.insert(key.clone());
+                let edge = construction_flow_edge(world, input, &key, producer, surface);
+                if edge.is_none() {
+                    unresolved.insert(key);
+                }
+                edge
+            })
+            .collect();
         plans.push(CallableFlowPlan {
             value,
             producer: producer.clone(),
             direct_surfaces,
             direct_edges,
             first_class_surfaces,
-            resolution_keys: ordered
-                .into_iter()
-                .map(|surface| CallableResolutionKey {
-                    executable: (*executable).clone(),
-                    value,
-                    surface,
-                })
-                .collect(),
+            first_class_edges,
             opaque: value_demand.callable.opaque,
             escape: value_demand.callable.escape,
         });
     }
-    plans
+    (plans, requested, unresolved)
 }
 
 fn callable_flow_edges_for_targets(
     types: &Types,
     executable: &ExecutableKey,
     facts: &RuntimeDemandFacts<'_>,
-    producer: &LocalCallableProducer,
+    function: FunctionId,
+    captures: &[ValueId],
     targets: &BTreeSet<CallableTarget>,
 ) -> Vec<CallableFlowEdge> {
     if targets.is_empty() {
         return Vec::new();
     }
-    let Some(capture_tys) = producer
-        .captures
+    let Some(capture_tys) = captures
         .iter()
         .map(|capture| facts.value_types.get(capture).copied())
         .collect::<Option<Vec<_>>>()
@@ -1320,9 +825,7 @@ fn callable_flow_edges_for_targets(
     let captures_len = capture_tys.len();
     let mut edges = targets
         .iter()
-        .filter(|target| {
-            target.activation.root == executable.activation.root && target.activation.function == producer.function
-        })
+        .filter(|target| target.activation.root == executable.activation.root && target.activation.function == function)
         .filter(|target| {
             target.activation_inputs.len() == captures_len + target.surface.inputs.len()
                 && target
@@ -1350,29 +853,6 @@ fn callable_flow_edges_for_targets(
     // same authority (fz-kdt.108).
     edges.sort_by(|a, b| types.cmp_activation_tys(&a.surface.inputs, &b.surface.inputs));
     edges
-}
-
-fn informative_boundary_demand_from_types(
-    world: &World,
-    demand_types: &RuntimeDemandTypeInputs,
-    ty: Ty,
-) -> Option<RuntimeDemand> {
-    if world.types().is_empty(&ty) {
-        return None;
-    }
-    let any = demand_types.any;
-    if ty == any {
-        return None;
-    }
-    let demand = demand_types.boundary_demand(ty);
-    if !matches!(demand.shape, ShapeDemand::Whole) || !demand.callable.is_empty() {
-        return Some(demand);
-    }
-    (world.types().is_integer(&ty)
-        || world.types().is_floating(&ty)
-        || world.types().is_nil(&ty)
-        || world.types().is_atom_type(&ty))
-    .then_some(demand)
 }
 
 fn callable_boundary_input_demand_contributions_product(
@@ -1415,15 +895,9 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> Vec<Ex
         .collect()
 }
 
-/// Join a carried-forward `input_demands` iterate (round-to-round evidence,
-/// including boundary-pinned positions a contributor joined onto this
-/// executable) onto a freshly rebuilt `input_demands`. Positions the fresh
-/// walk did not touch keep the carried demand; this is the input-side
-/// counterpart of seeding `return_demand` from the previous round's value.
-fn join_previous_input_demands(input_demands: &mut [RuntimeDemand], previous: Option<&[RuntimeDemand]>) {
-    let Some(previous) = previous else { return };
-    for (slot, prev) in input_demands.iter_mut().zip(previous) {
-        slot.join_assign(prev);
+fn join_contributed_input_demands(input_demands: &mut [RuntimeDemand], contributed: &[RuntimeDemand]) {
+    for (slot, contribution) in input_demands.iter_mut().zip(contributed) {
+        slot.join_assign(contribution);
     }
 }
 
@@ -1432,14 +906,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
     let facts = &input.facts;
     let demands = &input.current;
     let mut callable_flows = CallableFlowBuilder::new();
-    // The previous round's iterate for THIS executable, if any: it carries
-    // boundary-pinned input-demand contributions other members joined onto
-    // this executable's `input_demands` (mirrors how `return_demand` below
-    // seeds from the same round-carried value). Unlike `return_demand`, the
-    // body walk below fully rebuilds `input_demands` from scratch, so the
-    // carried positions are joined back in at every return point instead of
-    // seeded up front.
-    let previous_input_demands = demands.own.input_demands.as_slice();
+    let contributed_input_demands = demands.own.input_demands.as_slice();
     let mut out = ExecutableRuntimeDemand {
         callable_activation_inputs: facts.callable_activation_inputs.to_vec(),
         return_demand: demands.own.return_demand.clone(),
@@ -1460,12 +927,12 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
                         .params
                         .get(index)
                         .map(|_| RuntimeDemand::whole())
-                        .unwrap_or_else(|| facts.demand_types.boundary_demand(*ty))
+                        .unwrap_or_else(|| facts.boundary_demand(*ty))
                 })
                 .collect(),
             LoweredBody::Clauses { .. } => unreachable!(),
         };
-        join_previous_input_demands(&mut out.input_demands, Some(previous_input_demands));
+        join_contributed_input_demands(&mut out.input_demands, contributed_input_demands);
         return DerivedExecutableDemand {
             demand: out,
             call_return_demands,
@@ -1474,7 +941,6 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
     };
 
     // Live-demand propagation is the authoritative "what must be
-    // materialized" pass that native codegen relies on (`env_runtime_var`).
     // Codegen lowers every structural clause regardless of
     // the settled entry reachability, so a clause the type-level reachability
     // analysis under-approximates as dead (e.g. a recursive base case whose
@@ -1498,7 +964,7 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
             &mut callable_flows,
         );
         propagate_steps_reverse(
-            executable,
+            types,
             clause.projections.as_slice(),
             &mut live,
             facts,
@@ -1519,11 +985,11 @@ fn derive_executable_runtime_demand(types: &Types, input: &RuntimeDemandFormulaI
         let Some(&ty) = activation_inputs.get(semantic_index) else {
             continue;
         };
-        let demand = facts.demand_types.dispatch_demand(ty);
+        let demand = facts.dispatch_demand(ty);
         out.input_demands[semantic_index].join_assign(&demand);
     }
 
-    join_previous_input_demands(&mut out.input_demands, Some(previous_input_demands));
+    join_contributed_input_demands(&mut out.input_demands, contributed_input_demands);
     widen_boxed_closure_call_results(facts, &mut out);
 
     DerivedExecutableDemand {
@@ -1892,7 +1358,7 @@ fn collect_entry_live_demands(
     }
 
     propagate_steps_reverse(
-        executable,
+        types,
         entry.steps.as_slice(),
         &mut live,
         facts,
@@ -2173,7 +1639,7 @@ fn delivered_join_has_distinct_callable_producers(
 }
 
 fn propagate_steps_reverse(
-    executable: &ExecutableKey,
+    types: &Types,
     steps: &[LoweredStep],
     live: &mut HashMap<ValueId, RuntimeDemand>,
     facts: &RuntimeDemandFacts<'_>,
@@ -2195,7 +1661,7 @@ fn propagate_steps_reverse(
                 if !demand.is_callable() {
                     match demand.shape {
                         ShapeDemand::Ignore => {}
-                        ShapeDemand::TupleFields(fields) if fields.len() == items.len() => {
+                        ShapeDemand::TupleFields(fields) if fields.len() <= items.len() => {
                             for (item, demand) in items.iter().zip(fields) {
                                 let demand = boundary_value_flow_demand(facts, callable_flows, *item, demand);
                                 note_live_demand(out, live, *item, demand);
@@ -2281,7 +1747,8 @@ fn propagate_steps_reverse(
                 callable_flows.record_direct_demand(facts, *value, &demand);
                 if !demand.is_ignore() {
                     propagate_lambda_capture_demands(
-                        executable,
+                        types,
+                        *value,
                         *function,
                         captures.as_slice(),
                         demand,
@@ -2506,7 +1973,8 @@ fn note_clause_matcher_demands(
 }
 
 fn propagate_lambda_capture_demands(
-    executable: &ExecutableKey,
+    types: &Types,
+    value: ValueId,
     function: FunctionId,
     captures: &[ValueId],
     demand: RuntimeDemand,
@@ -2523,77 +1991,30 @@ fn propagate_lambda_capture_demands(
         return;
     }
     let callable = demand.callable;
-    let capture_types = captures
-        .iter()
-        .map(|capture| facts.value_types.get(capture).copied())
-        .collect::<Option<Vec<_>>>();
-    let Some(capture_types) = capture_types else {
-        for capture in captures {
-            let demand =
-                closure_capture_boundary_demand(facts, callable_flows, *capture, RuntimeDemand::whole(), &callable);
-            note_live_demand(out, live, *capture, demand);
-        }
-        return;
-    };
-    // The captured values' demands live in the producer's own executable, in the
-    // input-demand prefix that precedes its parameters. The closure's call
-    // surfaces only select *which* specialization to read: a directly-called
-    // closure restricts to the invoked surfaces, but an escaped closure — one
-    // returned or stored rather than called here — carries no direct surface
-    // (`resolved` is empty) even though its body still proves how it invokes each
-    // capture (e.g. a returned `fn () -> f.(1) end` calls `f` at `(int)`). Reading
-    // the producer executable by capture-type prefix recovers that proven surface;
-    // gating on a non-empty `resolved` would discard it and let `f` reach
-    // transport as a surface-less first-class demand.
-    // A callee activation key is the whole-scope addressed arrow of
-    // `capture_tys ++ own_surface`. Match in that addressed frame (fz-hwn.27.6,
-    // A): by the left-to-right property the addressed capture prefix is just the
-    // captures addressed alone, and re-addressing the own-surface suffix
-    // standalone yields the same canonical surface the resolved set carries.
-    let addressed_captures = facts.demand_types.addressed_inputs(&capture_types);
-    let mut matched = false;
-    for (callee, callee_demand) in &all_demands.callable_inputs {
-        if callee.activation.root != executable.activation.root || callee.activation.function != function {
+    let mut exact_edges =
+        callable_flow_edges_for_targets(types, &all_demands.member, facts, function, captures, &callable.targets);
+    exact_edges.extend(
+        all_demands
+            .construction_targets
+            .iter()
+            .filter(|((owner_value, _), target)| *owner_value == value && target.activation.function == function)
+            .map(|((_, surface), target)| CallableFlowEdge {
+                surface: surface.clone(),
+                resolution: target.clone(),
+                capture_semantic_inputs: (0..captures.len()).collect(),
+                surface_semantic_inputs: (captures.len()..captures.len() + surface.inputs.len()).collect(),
+                boundary_input_demands: Box::new([]),
+            }),
+    );
+    exact_edges.sort_by(|left, right| left.resolution.semantic_cmp(&right.resolution, types));
+    exact_edges.dedup_by(|left, right| left.resolution == right.resolution && left.surface == right.surface);
+    for edge in exact_edges {
+        let Some(callee_inputs) = all_demands.target_inputs.get(&edge.resolution) else {
             continue;
-        }
-        // Captures and surface are one correlated authoritative row. They were
-        // addressed when ExecutableFacts captured the settled activation
-        // evidence, so this formula only compares canonical identities.
-        for frame in &callee_demand.callable_activation_inputs {
-            if frame.captures != addressed_captures {
-                continue;
-            }
-            let own_params = &frame.surface.inputs;
-            if !callable.resolved.is_empty() && !callable.resolved.iter().any(|surface| surface.inputs == *own_params) {
-                continue;
-            }
-            matched = true;
-            for (capture_index, (capture, demand)) in
-                captures.iter().zip(callee_demand.input_demands.iter()).enumerate()
-            {
-                let mut capture_surfaces = demand.callable.resolved.clone();
-                if frame
-                    .capture_called_with_own_surface
-                    .get(capture_index)
-                    .copied()
-                    .unwrap_or(false)
-                {
-                    capture_surfaces.insert(CallableSurface {
-                        inputs: own_params.clone(),
-                    });
-                }
-                callable_flows.record_direct_surfaces(facts, *capture, &capture_surfaces);
-                let mut demand = demand.clone();
-                demand.callable.resolved.extend(capture_surfaces);
-                let demand = closure_capture_boundary_demand(facts, callable_flows, *capture, demand, &callable);
-                note_live_demand(out, live, *capture, demand);
-            }
-        }
-    }
-    if !matched {
-        for capture in captures {
-            let demand =
-                closure_capture_boundary_demand(facts, callable_flows, *capture, RuntimeDemand::whole(), &callable);
+        };
+        for (capture, demand) in captures.iter().zip(callee_inputs) {
+            callable_flows.record_direct_surfaces(facts, *capture, &demand.callable.resolved);
+            let demand = closure_capture_boundary_demand(facts, callable_flows, *capture, demand.clone(), &callable);
             note_live_demand(out, live, *capture, demand);
         }
     }
@@ -2625,7 +2046,7 @@ fn closure_capture_boundary_demand(
 
 fn callable_value_type_demand(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> Option<RuntimeDemand> {
     let ty = facts.value_types.get(&value).copied()?;
-    facts.demand_types.callable_value_demand(ty)
+    facts.callable_value_demand(ty)
 }
 
 fn direct_only_capture_callable_demand(
@@ -2764,10 +2185,9 @@ fn arg_demands_for_summary(
             let observed = target_demands
                 .get(offset)
                 .cloned()
-                .unwrap_or_else(|| facts.demand_types.boundary_demand(fallback_ty));
+                .unwrap_or_else(|| facts.boundary_demand(fallback_ty));
             if records_direct_arg_surfaces {
                 let direct_surfaces = facts
-                    .demand_types
                     .callable_surfaces(fallback_ty)
                     .cloned()
                     .unwrap_or_else(|| observed.callable.resolved.clone());
@@ -2837,12 +2257,12 @@ fn multi_target_receiver_fallbacks(summary: &CallSiteSummary, any: Ty) -> BTreeS
 /// bit. It never inspects (and so never depends on) the evolving callable axis,
 /// so the union is unconditional — a callable that is both directly called and
 /// escapes keeps both its call surface and its escape surface, and the demand
-/// can only ascend across fixpoint rounds.
+/// can only ascend across content-changing reactive evaluations.
 fn ground_first_class_callable_surface(facts: &RuntimeDemandFacts<'_>, demand: &mut RuntimeDemand, boundary_ty: Ty) {
     if !demand.callable.is_first_class() {
         return;
     }
-    let Some(surfaces) = facts.demand_types.callable_surfaces(boundary_ty) else {
+    let Some(surfaces) = facts.callable_surfaces(boundary_ty) else {
         return;
     };
     demand.callable.resolved.extend(surfaces.iter().cloned());
@@ -2865,7 +2285,7 @@ fn local_target_input_demands(
                 .surface_inputs
                 .iter()
                 .copied()
-                .map(|ty| facts.demand_types.boundary_demand(ty))
+                .map(|ty| facts.boundary_demand(ty))
                 .collect()
         }
         super::super::semantic::SelectedCallee::Function(_) => {
@@ -2878,7 +2298,7 @@ fn local_target_input_demands(
                         if index < extern_params {
                             RuntimeDemand::whole()
                         } else {
-                            facts.demand_types.boundary_demand(*ty)
+                            facts.boundary_demand(*ty)
                         }
                     })
                     .collect();
@@ -2888,7 +2308,7 @@ fn local_target_input_demands(
                     .surface_inputs
                     .iter()
                     .copied()
-                    .map(|ty| facts.demand_types.boundary_demand(ty))
+                    .map(|ty| facts.boundary_demand(ty))
                     .collect();
             };
             demands
@@ -2907,7 +2327,7 @@ fn value_is_callable(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> bool {
         .value_types
         .get(&value)
         .copied()
-        .is_some_and(|ty| facts.demand_types.callable_surfaces(ty).is_some())
+        .is_some_and(|ty| facts.callable_surfaces(ty).is_some())
 }
 
 /// The runtime demand on `value` given the representation demand a consumer
@@ -3036,59 +2456,10 @@ fn closure_callee_demand(
     demand
 }
 
-fn runtime_demand_for_executable_need(need: ExecutableNeed) -> RuntimeDemand {
-    match need {
-        ExecutableNeed::Value => RuntimeDemand::whole(),
-        ExecutableNeed::TupleFields(arity) => RuntimeDemand::tuple_fields(vec![RuntimeDemand::whole(); arity]),
-    }
-}
-
-fn read_runtime_demand_products<T: Telemetry>(
-    tel: &T,
-    context: &mut ProductReadContext<'_>,
-    plans: &[CallableFlowPlan],
-    waits: &mut HashSet<PullWait>,
-    types: &Types,
-) -> Vec<RuntimeDemandProductInput> {
-    plans
-        .iter()
-        .flat_map(|plan| &plan.resolution_keys)
-        .map(|resolution_key| {
-            let key = ProductKey::CallableResolution(resolution_key.clone());
-            let answer = match context.read_product(tel, key.clone(), types) {
-                Some(ProductValue::CallableResolution(edge)) => Some(edge.clone()),
-                Some(other) => panic!("callable resolution produced unexpected value {other:?}"),
-                None => {
-                    waits.insert(PullWait::Product(key));
-                    None
-                }
-            };
-            RuntimeDemandProductInput {
-                key: resolution_key.clone(),
-                answer,
-            }
-        })
-        .collect()
-}
-
-fn finish_callable_flows(
-    input: &RuntimeDemandFormulaInput<'_>,
-    plans: Vec<CallableFlowPlan>,
-    demand: &mut ExecutableRuntimeDemand,
-) {
+fn finish_callable_flows(plans: Vec<CallableFlowPlan>, demand: &mut ExecutableRuntimeDemand) {
     demand.callable_flows.clear();
-    let answers = input
-        .product_answers
-        .iter()
-        .filter_map(|input| input.answer.as_ref().map(|answer| (&input.key, answer)))
-        .collect::<HashMap<_, _>>();
     for plan in plans {
-        let first_class_edges = dispatch_stress::perturbed_construction_edges(
-            plan.resolution_keys
-                .iter()
-                .filter_map(|key| answers.get(key).map(|answer| (*answer).clone()))
-                .collect(),
-        );
+        let first_class_edges = dispatch_stress::perturbed_construction_edges(plan.first_class_edges);
         let mut resolutions = Vec::new();
         extend_unique(
             &mut resolutions,
@@ -3113,27 +2484,6 @@ fn finish_callable_flows(
             },
         );
     }
-}
-
-fn require_activation_key_facts_product(
-    world: &World,
-    context: &mut ProductReadContext<'_>,
-    function: FunctionId,
-    waits: &mut HashSet<PullWait>,
-) -> bool {
-    let recursive = FactKey::Recursive(function);
-    let recursive_ready = context.read_fact(world, FactUse::current(recursive.clone()));
-    if !recursive_ready {
-        waits.insert(PullWait::Fact(FactUse::current(recursive)));
-    }
-
-    let input_demand = FactKey::InputDemand(function);
-    let input_demand_ready = context.read_fact(world, FactUse::current(input_demand.clone()));
-    if !input_demand_ready {
-        waits.insert(PullWait::Fact(FactUse::current(input_demand)));
-    }
-
-    recursive_ready && input_demand_ready
 }
 
 fn extend_unique<T: PartialEq>(target: &mut Vec<T>, values: Vec<T>) {
@@ -3222,7 +2572,6 @@ fn take_live_demand(live: &mut HashMap<ValueId, RuntimeDemand>, value: ValueId) 
 mod tests {
     use super::*;
     use crate::compiler2::body::ControlEntryOrigin;
-    use crate::compiler2::identity::{ActivationKey, RootId};
     use crate::compiler2::semantic::{CallTargetSummary, SelectedCallee};
     use crate::compiler2::types::Types;
     use crate::source::Span;
@@ -3314,26 +2663,6 @@ mod tests {
             multi_target_receiver_fallbacks(&summary(vec![target(None), target(None)]), any),
             BTreeSet::from([any]),
             "only an entirely unknown target set needs the any fallback"
-        );
-    }
-
-    #[test]
-    fn boxed_return_contribution_joins_partial_observation_with_exact_need() {
-        let mut types = Types::new();
-        let target = ExecutableKey {
-            activation: ActivationKey::from_inputs(RootId::for_test(0), FunctionId::for_test(0), &[], &mut types),
-            need: ExecutableNeed::Value,
-        };
-        let partial = RuntimeDemand::tuple_fields(vec![RuntimeDemand::ignore(), RuntimeDemand::whole()]);
-
-        let contributions = target_return_demand_contributions([(target.clone(), partial)], [target.clone()]);
-
-        assert_eq!(
-            contributions
-                .get(&target)
-                .and_then(|entry| entry.return_demand.as_ref()),
-            Some(&RuntimeDemand::whole()),
-            "a boxed member's exact Value return contract joins with, rather than gets replaced by, partial field demand",
         );
     }
 }

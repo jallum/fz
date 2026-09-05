@@ -124,16 +124,31 @@ the combined fixture population: 3 root plus 265 callee starts become 268
 starts on the shared frontier, so compensating aggregate counts cannot hide a
 second root path.
 
-**Demand cones** — `fz.compiler2.demand.cone.settled` carries `members`,
-`external_members`, `rounds`, `derivations`. `RuntimeDemand(E)` is settled by a
-Jacobi ascent over a cone of executables collected transitively from its anchor,
-stopping only where demand has already settled, so `members` — not the one
-executable the key names — is the unit of work behind the answer.
-`external_members` counts the boundary it did reuse. `rounds` is the height the
-ascent climbed and `derivations` the member re-derivations it ran, which is well
-under `members * rounds` because a member whose reads did not move is skipped.
-Separating the three tells a cone that is too big from an ascent that climbs too
-far from members that re-derive too often; a wall-clock number cannot.
+**Runtime-demand facts** — `work_graph.applied` names each
+`DeriveRuntimeDemand(E)` completion, its exact reads, content movements,
+readiness changes, and wakes. Group by the typed executable identity to measure
+formula evaluations, and distinguish content-changing runs from readiness-only
+finality. Because each formula is one ordinary scheduler job, these counts are
+the work itself; there is no hidden cone member/round multiplier. Compare the
+causal work multiset across legal arrival orders and retained requests, and
+pair it with the canonical backend and runtime output so less work cannot hide
+a changed result. `RuntimeDemandInputs(E)` is an independently revisioned view
+of the input vector in the one stored demand value. On
+`00420_enum_take_drop_split`, deleting the root/function callable-row aggregate
+removed its 434 refolds and 273 signals; exact target/sub-fact reads reduced
+changed-revision starts from 2,870 to 2,769. The resulting split is 1,730
+unchanged non-demand starts plus 1,039 exact demand changed-revision starts;
+1,278 RuntimeDemand formula evaluations occur across all start causes. Blocked expansion is
+1,140 unchanged non-demand work plus 311 exact demand/construction formula
+keys. Compare those explicit counts with the removed cone's 6,250 hidden member
+derivations; none is a wall-clock claim.
+
+The pre-deletion full-matrix census at exact old HEAD `7f2bcc2de` drove all 515
+non-deferred fixture paths through run/interp/build serially. Its 1,708
+`demand.cone.settled` events all reported `external_members=0`; the exact
+command and result live in
+`.agent/measurements/fz-kdt.4-external-members-census.txt`. The removed
+external/displacement path therefore had no observed owner to preserve.
 
 **Recursive-group searches** —
 `fz.compiler2.pull.recursive_group.searched` carries the current product, the
@@ -201,8 +216,7 @@ session-local request id. Exclusive driver ownership prevents overlapping
 requests, while cache-only requests have no evaluation. Recursive searches
 performed by a producer run are measured as work rather than misreported as
 its cause. Each recursive-search record retains its structured product and
-dependency identities and the enclosing evaluation's cause. Demand-cone
-projections use the same per-product rows. Each successful request boundary
+dependency identities and the enclosing evaluation's cause. Each successful request boundary
 carries the final reachable executable and construction-wrapper population, so
 a future root cache hit reports population without requiring a new settlement.
 
@@ -322,7 +336,6 @@ never appear in any per-product count. A product whose settle count is *constant
 grows is a pass wearing a product's clothes: its unit of work is the program,
 not the key it is filed under.
 
-`the_demand_ascent_height_does_not_grow_with_the_program`
-(`compiler2::product_drive_test`) pins the two demand-cone numbers that are
-supposed to be flat — `rounds`, and `derivations` per member — by doubling the
-call sites and comparing.
+`runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders`
+(`compiler2::drive_test`) perturbs root arrival while pinning the canonical
+backend, runtime output, and exact `DeriveRuntimeDemand` work multiset.

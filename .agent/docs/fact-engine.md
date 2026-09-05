@@ -160,8 +160,7 @@ A REPLACING fact has no bottom to be at, so this never applies to one: whatever
 it says on arrival is content a reader can see and act on — `CallSiteSummary`
 and `CallSiteTargets`' `Unresolved` IS a reader-visible answer, not the absence
 of one — and it appears at revision 1 and wakes. The existence facts
-(`Activation`, `Executable`) are the same: a whole cone is gated on their
-presence.
+(`Activation`, `Executable`) are the same: their readers are gated on presence.
 
 Measured over `fz2 interp --log-telemetry` on `fz_f98_range_map_converges`,
 `enum_predicate_search` and `00420_enum_take_drop_split`, joining each step's
@@ -530,8 +529,6 @@ ProductKey =
   AbiExecutable(E)
   MaterializedExecutable(E)
   ExecutableEffects(E)
-  RuntimeDemand(E)
-  CallableResolution(E, value, surface)
   OutgoingEdgeFrontier(root)
   OutgoingInputEdges(E)
   IncomingInputRelations(root)
@@ -547,15 +544,22 @@ existing product-key order and fact waits use the World's semantic `FactUse`
 key. Thus an activation-bearing fact cannot reverse product expansion merely
 because its arrow received a different arena handle.
 
-`ExecutableFacts(E)` is instead one direct fact. `DeriveExecutableFacts(E)`
+`ExecutableFacts(E)` and `RuntimeDemand(E)` are direct facts.
+`DeriveExecutableFacts(E)`
 publishes its World-owned immutable value after settled reads of
 `ActivationAnalyzed(E.activation)`, `LoweredBody(E.function)`,
 `EntryDispatch(E.function)`, and the exact `CallSiteSummary` facts named by the
-analysis. Product producers read that settled fact through their ordinary fact
-dependencies; no product memo entry or fact-to-product bridge exists.
-`RuntimeDemand(E)` is read-only over those facts and its demand snapshot. Local
-first-class calls request `CallableResolution(E, value, surface)`; a miss waits
-and reruns, while success reads the producer's resolved edge.
+analysis. `DeriveRuntimeDemand(E)` waits for that fact's first settled value,
+then subscribes to its Current content, its exact caller-owned input cell, and
+the `RuntimeDemandInputs(target)` sub-facts named by direct or first-class
+callable edges. `CallableConstructionTarget(owner, value, surface)` supplies an
+exact first-class target. Newly exposed local callables extend that finite
+keyed read set until it stops growing; there is no function or executable scan.
+Absence is bottom. An owned formula publishes provisional demand and
+caller-local return contributions, then withholds only peer-dependent
+capture/input contributions while an exact non-self target is absent. Product
+producers read settled full `RuntimeDemand(E)` values through ordinary fact
+dependencies; neither demand fact has a product memo entry or bridge.
 
 The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled
@@ -578,10 +582,11 @@ one ordinary formula over `MaterializedExecutable(E)` and the exact
 `ExecutableEffects(callee)` products named by its local call edges. A pending
 back-edge lets the generic group query identify the members; idempotent effect
 union gives every member the join of the group's local and settled external
-inputs without another traversal or fixpoint. `RuntimeDemand(E)` still settles
-its richer executable dependency group from settled call-edge facts, and
-recursive `CallableConstruction(position)` products settle their position
-groups from external anchors. `TransportShape(position)` has no
+inputs without another traversal or fixpoint. `RuntimeDemand(E)` is not a
+product and never enters this graph; its exact World-fact dependencies converge
+through ordinary content-changing wakes. Recursive
+`CallableConstruction(position)` products settle their position groups from
+external anchors. `TransportShape(position)` has no
 group: it cuts its own recursion from `CallGraphComponent` and `StaticCallees`
 facts at recipe construction, so its evaluation is a function of settled facts
 and of products that can settle without it. Component membership answers
@@ -612,9 +617,6 @@ batch across independent product pulls or fact settlements. Each memo entry
 carries its immutable value, generation, exact product generations, and exact
 fact-use states. `pull.recursive_group.searched` reports the traversal as query work; successful
 `pull.recursive_group.published` events separately report exact actual members.
-Both group-search and demand-cone measurements name their exact anchor
-`ProductKey`; demand-cone `members`/`rounds`/`derivations` measure its private
-fixpoint ascent, not generic group discovery.
 Large product answers are single-threaded `Rc` values: the producer, memo entry,
 downstream product, World projection, and cache hit retain one immutable
 allocation. `PullSession` and `World` already contain
@@ -639,14 +641,9 @@ concordance check. Product or fact movement, including dirtiness propagated
 through a still-produced dependency, discards pending reader snapshots and
 unregisters their edges before retry. Settled readers remain memoized and carry
 that dirtiness lazily until requested. Equal reproduction preserves its
-generation. Settled demand retracts
-when re-materialization resolves a call edge outside the settlement's callee
-inventory, or when a settlement's own publication grows the join of an
-external input it consumed — then the producer re-collects with the displaced
-external absorbed and re-settles the grown cone before memoizing. Fact
-waits are satisfied at the Compiler2 front door by driving only the direct fact
-producer needed for that exact fact, while deferring forbidden root artifact
-jobs for the submitted root.
+generation. Fact waits are satisfied at the Compiler2 front door by driving
+only the direct fact producer needed for that exact fact, while deferring
+forbidden root artifact jobs for the submitted root.
 
 `PullSession` owns one root's retained product memo and scheduling relations
 for that root's lifetime in `Compiler2`. A `TransportShape(position)` answer remains in its
@@ -692,10 +689,13 @@ share a private immutable ordered slot/source value, and each
 `IncomingInputSlot(slot)` projects an immutable typed-sorted source slice.
 Hash maps and sets are ephemeral construction tools only; no consumer can
 observe their iteration order.
-Runtime-demand products also record the other runtime-demand products they read.
-When one settles to a changed value, only those recorded dependents are
-invalidated; if a product is invalidated while in progress, the pull driver
-rejects that stale result and returns an explicit product wait for the same key.
+`RuntimeDemand(E)` is an ordinary replacing World fact. Its formula records
+current reads of exact direct and construction targets, then reads only those
+targets' `RuntimeDemandInputs(E)` sub-facts. The sub-fact projects the input
+vector from the same stored demand value while carrying its own revision, so a
+return-only change cannot wake an input-only reader. Artifact products read the
+full demand fact at settled readiness and use the normal fact-generation
+dependency path for invalidation.
 
 `Compiler2` retains one `PullSession` per root. Its memo emits a subscription
 change exactly when the first reader of a fact appears or the last disappears.
