@@ -139,10 +139,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     let telemetry = ConfiguredTelemetry::new();
     let macro_definition_consumers = std::rc::Rc::new(std::cell::RefCell::new(HashSet::<Job>::new()));
     let observed_macro_consumers = std::rc::Rc::clone(&macro_definition_consumers);
-    let source_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, 0_u64)));
+    let source_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, 0_u64, 0_u64)));
     let observed_source_work = std::rc::Rc::clone(&source_work);
     let demand_work = std::rc::Rc::new(std::cell::RefCell::new((0_u64, 0_u64, HashSet::<Job>::new())));
     let observed_demand_work = std::rc::Rc::clone(&demand_work);
+    let demand_wake_causes = std::rc::Rc::new(std::cell::RefCell::new([0_u64; 4]));
+    let observed_demand_wake_causes = std::rc::Rc::clone(&demand_wake_causes);
     telemetry.attach_raw_event2::<super::World, super::JobCompletion, _>(
         &["fz", "compiler2", "work_graph", "applied"],
         move |_, _, _, world, completion| {
@@ -150,6 +152,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             source_work.0 += 1;
             source_work.1 += u64::from(matches!(completion.job, Job::ScopeCode(_)));
             source_work.2 += u64::from(matches!(completion.job, Job::DefineModule(_)));
+            source_work.3 += u64::from(matches!(completion.job, Job::DeriveExecutableFacts(_)));
             let mut demand_work = observed_demand_work.borrow_mut();
             match &completion.job {
                 Job::DeriveRuntimeDemand(_) => {
@@ -172,6 +175,16 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
                     && matches!(wake.job, Job::DeriveRuntimeDemand(_))
                 {
                     demand_work.1 += 1;
+                    let cause = match &wake.cause {
+                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::CallableConstructionTarget(_))) => {
+                            0
+                        }
+                        super::FactUse::Settled(super::DependencyKey::Fact(FactKey::ExecutableFacts(_))) => 1,
+                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInput(_))) => 2,
+                        super::FactUse::Current(super::DependencyKey::Fact(FactKey::RuntimeDemandInputs(_))) => 3,
+                        cause => panic!("unexpected RuntimeDemand wake prerequisite: {cause:?}"),
+                    };
+                    observed_demand_wake_causes.borrow_mut()[cause] += 1;
                 }
             }
         },
@@ -215,14 +228,14 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         *source_work.borrow(),
-        (4489, 11, 21),
-        "total, scope, and module evaluations must count direct macro prerequisite resumes exactly"
+        (4233, 11, 21, 430),
+        "co-output certification removes 263 separate executable-fact readiness resumes; scope and module work remain exact"
     );
     // Three consumers wait for macro definitions directly; content readiness
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts.changed_revision_wake - demand_wake_starts,
-        1731,
+        1468,
         "direct macro definition waits and product wakes must stay within their exact measured work",
     );
     assert_eq!(
@@ -231,12 +244,17 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         "macro products require no separate macro-readiness producer expansion",
     );
     assert_eq!(
-        *demand_evaluations, 1278,
+        *demand_evaluations, 1285,
         "the exact RuntimeDemand evaluation multiset must remain deterministic",
     );
     assert_eq!(
-        *demand_wake_starts, 1039,
+        *demand_wake_starts, 1046,
         "the exact RuntimeDemand changed-revision wake multiset must remain deterministic",
+    );
+    assert_eq!(
+        *demand_wake_causes.borrow(),
+        [58, 239, 151, 598],
+        "the seven additional demand resumes are moved Current RuntimeDemandInputs edges, not readiness-only or unexplained work",
     );
     assert_eq!(
         demanded_formula_keys.len(),

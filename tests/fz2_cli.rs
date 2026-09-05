@@ -1752,8 +1752,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .collect();
     assert_eq!(
         quiesced.len(),
-        32,
-        "{fixture}: exact product prerequisite sets must stay within the 34-event drain-arbiter ceiling"
+        14,
+        "{fixture}: one derivation's co-outputs must share arbitration, below the former 34-event ceiling"
     );
 
     let mut wakes = Vec::new();
@@ -1784,15 +1784,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         readiness_changes,
         BTreeMap::from([
-            ("Activation", 4),
+            ("Activation", 9),
             ("ActivationAnalyzed", 10),
             ("ActivationInputs", 9),
             ("CallSiteSummary", 11),
-            ("CallSiteTargets", 6),
+            ("CallSiteTargets", 11),
             ("ReturnType", 10),
             ("RuntimeDemand", 10),
+            ("RuntimeDemandInput", 9),
+            ("RuntimeDemandInputs", 10),
         ]),
-        "batching one product evaluation's settled prerequisites must preserve every typed readiness transition"
+        "certification must publish all exact co-output readiness transitions without changing values"
     );
 
     let mut wake_causes = BTreeSet::new();
@@ -1839,19 +1841,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        let expected_cause_fields = match cause_kind {
-            "ActivationAnalyzed" => BTreeSet::from(["arrow", "function_id", "kind", "root_id", "use"]),
-            "CallSiteSummary" => {
-                cause
-                    .get("callsite")
-                    .and_then(serde_json::Value::as_u64)
-                    .expect("a CallSiteSummary cause must name its exact callsite");
-                BTreeSet::from(["arrow", "callsite", "function_id", "kind", "root_id", "use"])
-            }
-            _ => panic!("only direct executable-fact prerequisites wake here: {wake:?}"),
-        };
         assert_eq!(
-            cause_fields, expected_cause_fields,
+            cause_fields,
+            BTreeSet::from(["arrow", "function_id", "kind", "root_id", "use"]),
             "each prerequisite kind must carry exactly its semantic identity: {wake:?}"
         );
         assert_eq!(
@@ -1877,12 +1869,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     }
     assert_eq!(
         wake_causes,
-        BTreeSet::from(["ActivationAnalyzed", "CallSiteSummary"]),
-        "{fixture}: both direct semantic prerequisite kinds must exercise readiness"
+        BTreeSet::from(["ActivationAnalyzed"]),
+        "{fixture}: callsite co-outputs must settle with their analysis, without another producer wake"
     );
     assert_eq!(
         wake_dispositions,
-        BTreeMap::from([("coalesced", 3), ("enqueued", 18)]),
+        BTreeMap::from([("enqueued", 6)]),
         "{fixture}: direct-fact readiness wake accounting moved"
     );
 
@@ -1905,16 +1897,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // Macro consumers read their retained content products directly.
-            evaluations: 361,
+            // Co-output finality removes redundant executable-fact readiness work.
+            evaluations: 350,
             initial: 174,
-            content_caused: 169,
-            readiness_caused: 18,
+            content_caused: 170,
+            readiness_caused: 6,
             uncaused: 0,
-            changed_outputs: 211,
-            unchanged_outputs: 150,
-            wakes: 179,
-            blocked_completions: 168,
+            changed_outputs: 210,
+            unchanged_outputs: 140,
+            wakes: 178,
+            blocked_completions: 157,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );

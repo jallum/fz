@@ -721,10 +721,14 @@ fn compiler_retains_exact_root_products_across_requests_and_releases_them_on_ret
         reached_counts,
         std::collections::HashMap::from([
             ("leaf".to_string(), 2),
-            ("main".to_string(), 2),
-            ("other".to_string(), 2),
+            ("main".to_string(), 1),
+            ("other".to_string(), 1),
         ]),
-        "each exact reader runs once for retraction and once for reappearance, with no readiness-only or whole-root replay",
+        "each root retains its own leaf; co-output finality lets both callers observe the changed input demand once",
+    );
+    assert!(
+        observed_runtime_demand_counts.values().all(|runs| *runs == 1),
+        "every distinct executable in the exact subscription closure evaluates once, including each root's leaf",
     );
     let moved_main = compiler.retained_backend_program(main);
     let moved_other = compiler.retained_backend_program(other);

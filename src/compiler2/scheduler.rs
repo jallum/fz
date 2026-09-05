@@ -247,6 +247,35 @@ pub enum DriveOutcome<J, F> {
     TimedOut { jobs_ran: u64, pending_jobs: usize },
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ReadFinality {
+    Pending(usize),
+    Quiescent(usize),
+}
+
+impl ReadFinality {
+    fn count(self) -> usize {
+        match self {
+            Self::Pending(count) | Self::Quiescent(count) => count,
+        }
+    }
+
+    fn is_pending(self) -> bool {
+        matches!(self, Self::Pending(_))
+    }
+
+    fn after_edge(self, became_quiet: bool) -> Self {
+        if !became_quiet {
+            return Self::Pending(self.count() + 1);
+        }
+        let count = self.count().saturating_sub(1);
+        match self {
+            Self::Pending(_) => Self::Pending(count),
+            Self::Quiescent(_) => Self::Quiescent(count),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Scheduler<J, F> {
     agenda: Agenda<J>,
@@ -258,14 +287,15 @@ pub struct Scheduler<J, F> {
     /// propagate as shifts in turn. Cleared on conclusion; kept while waiting.
     rebased: HashSet<J>,
     /// How many of each DERIVATION's recorded reads currently name a fact that
-    /// is NOT quiet. Non-zero means that derivation cannot vouch for what it
-    /// publishes: something it read can still move. This is the reader half of
+    /// is NOT quiet, with the drain's quiescence certificate where one exists.
+    /// A new unquiet edge revokes that certificate; quiet edges decrement the
+    /// real count without erasing another input's pending movement. This is the reader half of
     /// transitive finality; the fact half is `FactSlot::unfinal_publishers`,
     /// keyed by the same publisher identity. An absent entry means zero.
     ///
     /// Keyed per derivation, not per job (fz-kdt.13.1): a job whose OTHER
     /// answer stands on moving ground has not made THIS answer provisional.
-    unfinal_reads: HashMap<Publisher<J>, usize>,
+    read_finality: HashMap<Publisher<J>, ReadFinality>,
     /// Work-start attribution tally: how many jobs actually entered the
     /// agenda (deduped coalescing does not count) under each
     /// `WorkStartReason`. Observation-only — see `WorkStartReason`.
@@ -374,7 +404,7 @@ where
             facts: FactTable::new(),
             deps: DependencyIndex::new(),
             rebased: HashSet::new(),
-            unfinal_reads: HashMap::new(),
+            read_finality: HashMap::new(),
             work_starts: HashMap::new(),
             root_scans: 0,
             drain_discovery_sweeps: 0,
@@ -445,8 +475,8 @@ where
     }
 
     /// How many of the job's recorded reads name a fact that can still move,
-    /// summed over its derivations. Zero means every answer the job holds
-    /// stands on quiet ground — the job-level question a readiness-ordered pop
+    /// summed over its uncertified derivations. Zero means every answer the job holds
+    /// stands on quiet or drain-certified ground — the job-level question a readiness-ordered pop
     /// would ask. Per-derivation finality is what the ledger acts on; this is
     /// the fold of it.
     /// Step 4 of fz-kdt.13's strategy (finality-first pop) is CONDITIONAL on
@@ -457,7 +487,12 @@ where
         self.deps
             .publishers(job)
             .iter()
-            .map(|publisher| self.unfinal_reads.get(publisher).copied().unwrap_or(0))
+            .filter_map(|publisher| {
+                self.read_finality
+                    .get(publisher)
+                    .filter(|state| state.is_pending())
+                    .map(|state| state.count())
+            })
             .sum()
     }
 
@@ -694,7 +729,7 @@ where
                     .replace_outputs(&publisher, &previous_output_keys, Vec::new(), Vec::new(), false);
             self.deps.replace_outputs(publisher.clone(), OrderedSet::default());
             self.deps.forget_reads(&publisher);
-            self.unfinal_reads.remove(&publisher);
+            self.read_finality.remove(&publisher);
             pending_changes.extend(retracted.changed);
             self.propagate_quiet_flips(&previous_output_keys, quiet_before, pending_changes, ctx);
         }
@@ -815,9 +850,11 @@ where
     /// That makes drain finality optimistic in precisely the way settledness
     /// has always been optimistic: a waiter woken here may publish something
     /// that re-moves the cone, and its readers re-wake through the normal
-    /// movement path and re-run. Everything downstream follows from the one
-    /// seed — one arbitrated fact discharges a whole quiesced cycle — so
-    /// nothing is arbitrated that nobody asked about.
+    /// movement path and re-run. A requested fact names the exact derivations
+    /// being certified: each retains its real read count under a quiescence
+    /// certificate and finalizes
+    /// its own claims together. Ordinary quiet propagation carries that one
+    /// ownership decision downstream; independent publishers stay untouched.
     pub(crate) fn settle_quiescent_ordered_with_external<Ctx>(
         &mut self,
         facts: &[F],
@@ -858,11 +895,24 @@ where
         if external.has_unsettled_dependencies() && self.has_unsettled_external_ground(fact, external) {
             return;
         }
-        if let Some(change) = self.facts.clear_unfinal_publishers(fact) {
-            changes.push(change);
-        }
-        if self.facts.is_quiet(fact) {
-            self.propagate_quiet_wave(vec![fact.clone()], true, changes, ctx);
+        let mut publishers = self.facts.publishers(fact).cloned().collect::<Vec<_>>();
+        publishers.sort_by(|left, right| {
+            left.job
+                .semantic_cmp(&right.job, ctx)
+                .then_with(|| left.derivation.0.cmp(&right.derivation.0))
+        });
+        for publisher in publishers {
+            let keys = self.deps.output_keys(&publisher);
+            let quiet_before = self.quiet_snapshot(&keys);
+            if let Some(state) = self.read_finality.get_mut(&publisher) {
+                *state = ReadFinality::Quiescent(state.count());
+            }
+            for key in &keys {
+                if let Some(change) = self.facts.set_publisher_unfinal(key, &publisher, false) {
+                    changes.push(change);
+                }
+            }
+            self.propagate_quiet_flips(&keys, quiet_before, changes, ctx);
         }
     }
 
@@ -893,7 +943,9 @@ where
 
     /// Whether something this derivation read can still move.
     fn derivation_is_unfinal(&self, publisher: &Publisher<J>) -> bool {
-        self.unfinal_reads.contains_key(publisher)
+        self.read_finality
+            .get(publisher)
+            .is_some_and(|state| state.is_pending())
     }
 
     fn count_unfinal_reads(&self, publisher: &Publisher<J>, external: &impl ExternalDependencyStates<F>) -> usize {
@@ -906,10 +958,14 @@ where
     }
 
     fn set_unfinal_reads(&mut self, publisher: &Publisher<J>, count: usize) {
-        if count == 0 {
-            self.unfinal_reads.remove(publisher);
+        self.set_read_finality(publisher, ReadFinality::Pending(count));
+    }
+
+    fn set_read_finality(&mut self, publisher: &Publisher<J>, state: ReadFinality) {
+        if state.count() == 0 {
+            self.read_finality.remove(publisher);
         } else {
-            self.unfinal_reads.insert(publisher.clone(), count);
+            self.read_finality.insert(publisher.clone(), state);
         }
     }
 
@@ -998,20 +1054,20 @@ where
         while let Some(fact) = frontier.pop() {
             for reader in self.deps.readers_of(&fact, ctx) {
                 let was_unfinal = self.derivation_is_unfinal(&reader);
-                let previous = self.unfinal_reads.get(&reader).copied().unwrap_or(0);
-                let count = if became_quiet {
-                    previous.saturating_sub(1)
-                } else {
-                    previous + 1
-                };
-                self.set_unfinal_reads(&reader, count);
-                if (count > 0) == was_unfinal {
+                let previous = self
+                    .read_finality
+                    .get(&reader)
+                    .copied()
+                    .unwrap_or(ReadFinality::Pending(0));
+                self.set_read_finality(&reader, previous.after_edge(became_quiet));
+                let is_unfinal = self.derivation_is_unfinal(&reader);
+                if is_unfinal == was_unfinal {
                     continue;
                 }
                 let keys = self.deps.output_keys(&reader);
                 for key in &keys {
                     let was_quiet = self.facts.is_quiet(key);
-                    if let Some(change) = self.facts.set_publisher_unfinal(key, &reader, count > 0) {
+                    if let Some(change) = self.facts.set_publisher_unfinal(key, &reader, is_unfinal) {
                         changes.push(change);
                     }
                     if self.facts.is_quiet(key) != was_quiet {

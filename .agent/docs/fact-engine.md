@@ -242,13 +242,12 @@ about a key is. A BLOCKED job may have reached some answers before the block:
 those are clean, and the ones it never reached stay dirty. That is the main
 traffic — most completions block.
 
-`is_locally_settled`, `clear_unfinal_publishers` and the drain arbiter's
-soundness argument hold VERBATIM at this granularity, because none of them was
-ever about jobs: each is a statement about the CLAIMANTS of one key, and the
-claimants of a key are the derivations whose answer it is. A dirty sibling
-publishes other keys and is correctly not consulted. This is also why the
-cheaper-looking alternative fails: per-output dirty bits sitting beside
-per-JOB unfinality do not compose, because the two halves of `is_settled`
+`is_locally_settled` and drain arbitration inspect the exact derivations
+claiming the requested key, not every answer of their jobs. Certifying one
+clean derivation certifies its own co-outputs because they share its reads;
+a dirty sibling derivation and another publisher's claims remain untouched.
+Per-output dirty bits sitting beside per-JOB unfinality do not compose,
+because the two halves of `is_settled`
 would then be scoped to different things.
 
 ## Claims declare their shape; ascents wake, ground shifts rebase
@@ -333,25 +332,25 @@ They are asked of the same slot and answered separately.
   quiescent.
 
 Finality is dependency STATE, maintained edge-triggered — never a pass, a
-sweep, a group inventory, an epoch object, or a root scan. Two cached counts
-carry it, and both are recomputed from their own source whenever that source
-is replaced, so no delta can go stale:
+sweep, a group inventory, an epoch object, or a root scan. The reader state and
+claim state share one publisher identity:
 
-    unfinal_reads[publisher]        how many of that derivation's recorded
-                                    reads name a fact that is not quiet
-    slot.unfinal_publishers         which publishers of the fact have a
-                                    non-zero unfinal_reads
+    read_finality[publisher]        Pending(count) or Quiescent(count), tracking
+                                    that derivation's actual unquiet read uses
+    slot.unfinal_publishers         publishers whose reader state is Pending
 
-Both are keyed by the same publisher identity, which is what makes them
-composable (see *The publisher is a derivation*). A fact flipping quiet adjusts
-its readers' counts; a derivation whose count flips 0 <-> non-zero carries the
-flip into every fact IT publishes — its siblings, which read other ground, are
-untouched; a fact whose quiet state flips propagates on.
-`Scheduler::unfinal_reads(job)` folds a job's derivations into the job-level
-question a readiness-ordered pop would ask; the ledger itself always acts per
-derivation. Every wave is sign-uniform — a fact that just
-went unquiet can only make readers unquiet — so each node flips at most once
-and the walk is exactly the affected cone.
+An absent reader entry means zero unquiet reads. Replacing a derivation's reads
+recounts them and removes any old quiescence certificate. Exact quiet edges
+decrement the count; an unquiet edge increments it and revokes certification.
+A change in effective finality reaches every output of that derivation — not
+sibling derivations that read other ground. A fact whose quiet state flips
+propagates on.
+
+`Scheduler::unfinal_reads(job)` sums pending counts across a job's derivations
+for readiness-ordered selection; quiescent-certified counts contribute zero.
+The ledger itself always acts per derivation. Every wave is sign-uniform — a
+fact that just went unquiet can only make readers unquiet — so each node flips
+at most once and the walk is exactly the affected cone.
 
 Reading an ABSENT fact makes no reader unfinal. Nobody is deriving it, so
 nothing about it can move on its own; a reader that concluded while it was
@@ -382,7 +381,8 @@ drain is therefore exactly locally settled, which is what it meant everywhere
 before finality became transitive. The transitive rule is what holds DURING the
 ascent; the drain is where it is discharged.
 
-`Scheduler::settle_quiescent(facts)` is that discharge, and it is
+`Scheduler::settle_quiescent_ordered_with_external(facts, external, ctx)` is
+that discharge, and it is
 demand-driven: it answers the exact settled questions something is actually
 asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`)
 and one product evaluation's exact prerequisite set
@@ -390,10 +390,21 @@ and one product evaluation's exact prerequisite set
 names every prerequisite it can identify in the same evaluation, and the pull
 driver presents that set to the arbiter atomically; serially arbitrating the
 members would turn one semantic barrier into multiple public readiness steps.
-Nothing else is arbitrated. One arbitrated
-fact discharges a whole quiesced cycle, because clearing it makes it quiet and
-the ordinary wave carries that through every publisher that was only waiting on
-it.
+Arbitration starts only from those requested facts. The selected fact must be
+locally clean and have no unsettled external-product ground. For each of its
+exact publishers, the scheduler records quiescent certification while retaining
+the actual unquiet-read count, and clears that publisher's unfinal claims through
+its existing output frontier.
+Other publishers of a shared output still control their own claims. Ordinary
+quiet propagation carries the resulting readiness edges to readers.
+
+A derivation's co-outputs are one conclusion over the same reads, not separate
+arbitration requests. Certifying the publisher's finality state together with
+its claims ensures that a later
+quiet-to-unquiet input edge revokes certification and unfinalizes all of them
+again. The real count still includes previously licensed unquiet reads, so
+their later quiet edges cannot cancel a different outstanding dependency.
+No value or revision changes during this certification.
 
 Drain finality is optimistic in exactly the way settledness has always been
 optimistic: a reader that acts on it may see the cone move again later, and it

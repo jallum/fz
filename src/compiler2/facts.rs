@@ -476,31 +476,6 @@ where
         })
     }
 
-    /// Declares every publisher of `key` final. The drain arbiter's write:
-    /// with nothing left to run, a locally clean cone that holds no dirty fact
-    /// cannot move, so the counts that a cycle can never lower are discharged
-    /// wholesale. Returns the settled-bit change if the projection moved.
-    ///
-    /// The argument survives derivation granularity verbatim, because it was
-    /// never about jobs: it is about the CLAIMANTS of this key. Those are the
-    /// derivations named in the slot, so "nothing can move this fact" reads
-    /// exactly the derivations whose answers it is, and a dirty sibling
-    /// derivation — which publishes other keys — is correctly not consulted.
-    pub fn clear_unfinal_publishers(&mut self, key: &F) -> Option<FactChange<F>> {
-        let slot = self.slots.get_mut(key)?;
-        let old_settled = slot.is_settled();
-        slot.unfinal_publishers.clear();
-        let new_settled = slot.is_settled();
-        let revision = slot.revision();
-        (old_settled != new_settled).then(|| FactChange {
-            key: key.clone(),
-            old_revision: revision,
-            new_revision: revision,
-            old_settled,
-            new_settled,
-        })
-    }
-
     pub fn mark_dirty(&mut self, publisher: &P, output_keys: &OrderedSet<F>) -> Vec<FactChange<F>> {
         let mut changed = Vec::new();
         for key in output_keys {
