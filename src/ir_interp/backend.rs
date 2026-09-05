@@ -2597,6 +2597,18 @@ fn encode_runtime_value(
     }
 }
 
+fn env_value_for_shape(
+    transport: &TransportStore,
+    env: &HashMap<ValueId, BackendBoundValue>,
+    value: ValueId,
+    shape: ShapeId,
+) -> Result<Option<BackendBoundValue>, String> {
+    if transport.interners().shape_width(shape) == 0 {
+        return Ok(None);
+    }
+    env_get_value(env, value).map(Some)
+}
+
 fn encode_runtime_value_with_carrier(
     transport: &TransportStore,
     program: &BackendProgram,
@@ -2972,8 +2984,9 @@ fn tuple_step_value(
         }
         let mut lanes = Vec::new();
         for (item, field_shape) in items.iter().copied().zip(fields.iter().copied()) {
-            let bound = env_get_value(env, item)?;
-            encode_runtime_value(transport, program, proc, &bound, field_shape, &mut lanes)?;
+            if let Some(bound) = env_value_for_shape(transport, env, item, field_shape)? {
+                encode_runtime_value(transport, program, proc, &bound, field_shape, &mut lanes)?;
+            }
         }
         return Ok(BackendBoundValue::Transport {
             shape: layout.structural,
@@ -3236,6 +3249,30 @@ fn backend_unop(op: crate::ast::UnOp) -> Result<IrUnOp, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tuple_field_encoding_checks_width_before_environment_binding() {
+        let mut transport = TransportStore::new();
+        let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+        let ty = crate::compiler2::Types::new().int();
+        let lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let nonzero = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        let unbound = ValueId::from_u32(0);
+
+        let erased = env_value_for_shape(&transport, &HashMap::new(), unbound, nothing)
+            .expect("zero-width tuple fields require no environment binding");
+        assert!(erased.is_none());
+
+        let error = env_value_for_shape(&transport, &HashMap::new(), unbound, nonzero)
+            .expect_err("nonzero-width tuple fields still require an environment binding");
+
+        assert_eq!(error, "backend value 0 is unbound");
+    }
 
     #[test]
     fn backend_destructor_closure_unpack_errors_propagate() {
