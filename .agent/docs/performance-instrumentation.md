@@ -34,11 +34,12 @@ a new counter that appears empty in the JSONL is usually missing one of them.
 ## What the stream carries
 
 **Job spans** — `fz.compiler2.job`, `span_start`/`span_stop`, carrying the job's
-full identity (kind plus `root_id`/`function_id`/`arrow`/... as applicable).
-Pair them by `span_id` for a per-formula time census. This covers the drive loop
-only, and only two of the five completion sites; a product settled during a pull
-is not a job. The span is the clock — `work_graph.applied` is the causality
-record, and it fires on every completion.
+full identity (kind plus `root_id`/`function_id`/`arrow`/... as applicable) on
+start and elapsed time on a payload-free stop. Pair them by `span_id` for a
+per-formula time census. This covers the drive loop only, and only two of the
+five completion sites; a product settled during a pull is not a job. The span
+is the clock — `work_graph.applied` owns the completion payload and causal
+record exactly once, and it fires on every completion.
 
 **Job completions** — `fz.compiler2.work_graph.applied`, one per applied job,
 carrying the completed formula's identity, the exact facts it changed with

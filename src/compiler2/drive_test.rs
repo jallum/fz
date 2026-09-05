@@ -3402,10 +3402,10 @@ fn compiler2_runtime_roots_reject_macro_entries() {
         |_, _, _, _, _| {},
         |_, _, _, _| {},
     );
-    tel.attach_raw_span1_2::<Job, crate::compiler2::World, crate::compiler2::JobCompletion, _, _, _>(
+    tel.attach_raw_span1_0::<Job, _, _, _>(
         &["fz", "compiler2", "job"],
         |_, _, _, _| {},
-        |_, _, _, _, _, _| {},
+        |_, _, _, _| {},
         move |_, span_id, parent_span_id, _| exception_sink.borrow_mut().push((span_id, parent_span_id)),
     );
 
@@ -15991,10 +15991,9 @@ impl OutputCapture {
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let outputs = Rc::clone(&self.outputs);
         let stops = Rc::clone(&self.stops);
-        telemetry.attach_raw_span1_2::<Job, crate::compiler2::World, crate::compiler2::JobCompletion, _, _, _>(
-            &["fz", "compiler2", "job"],
-            |_, _, _, _| {},
-            move |_, _, _, _, world, completion| {
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, world, completion| {
                 let job = completion.job.clone();
                 let changed = completion
                     .changed
@@ -16020,7 +16019,6 @@ impl OutputCapture {
                     .or_default()
                     .push(output_facts(&effects));
             },
-            |_, _, _, _| {},
         );
     }
 

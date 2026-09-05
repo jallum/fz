@@ -558,12 +558,12 @@ fn spans_are_paired_and_nesting_only_references_known_spans() {
     }
 }
 
-/// `fz.compiler2.job` span metadata carries the job's identity (`kind`) on
-/// start and its `world`/`completion` outcome on stop — the facts a reader
-/// of the public log needs to reconstruct what each job did, without ever
-/// touching a raw `Job`/`World`/`JobCompletion` value.
+/// `fz.compiler2.job` owns timing and job identity; `work_graph.applied` owns
+/// the completed formula's causal payload. Keeping the successful span stop
+/// payload-free prevents the same `World` and `JobCompletion` from being
+/// rendered twice while preserving both public signals.
 #[test]
-fn job_span_metadata_carries_kind_on_start_and_completion_on_stop() {
+fn job_span_is_the_clock_and_work_graph_applied_is_the_completion_owner() {
     let trace = PublicTrace::compile(TWO_FORMULA_SOURCE);
     assert!(matches!(trace.outcome, DriveOutcome::Resolved));
 
@@ -582,13 +582,13 @@ fn job_span_metadata_carries_kind_on_start_and_completion_on_stop() {
 
         let stop = span.stop.as_ref().expect("job span must have a stop");
         assert!(
-            stop.metadata_key("completion").is_some(),
-            "job span_stop metadata missing \"completion\": {:?}",
+            stop.metadata_key("completion").is_none(),
+            "job span_stop must not duplicate work_graph.applied completion metadata: {:?}",
             stop.metadata
         );
         assert!(
-            stop.metadata_key("world").is_some(),
-            "job span_stop metadata missing \"world\": {:?}",
+            stop.metadata_key("world").is_none(),
+            "job span_stop must not duplicate work_graph.applied world metadata: {:?}",
             stop.metadata
         );
         assert!(
@@ -596,6 +596,13 @@ fn job_span_metadata_carries_kind_on_start_and_completion_on_stop() {
             "job span_stop measurements missing numeric \"elapsed_ns\": {:?}",
             stop.measurements
         );
+    }
+
+    let completions = trace.events_named(&["fz", "compiler2", "work_graph", "applied"]);
+    assert!(!completions.is_empty(), "expected work_graph.applied completions");
+    for event in completions {
+        assert!(event.metadata_key("world").is_some());
+        assert!(event.metadata_key("completion").is_some());
     }
 }
 

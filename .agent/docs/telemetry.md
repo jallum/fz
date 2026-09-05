@@ -105,20 +105,22 @@ copying the static name. `ConfiguredTelemetry` returns the RAII `Span<'_, T,
 ...>` and starts it only when an exact typed handler or a matching lifecycle
 observer exists. The active guard owns the id and timestamp; drop emits a
 payload-free stop for zero-stop-payload signatures or an exception during
-unwinding. Explicit `stop1` and `stop2` lend their raw stop authorities
-synchronously. `NullTelemetry` returns `NullSpan`, which has no state and no
-drop glue.
+unwinding. Explicit `stop0` and `stop1` close successfully; `stop1` lends its
+raw stop authority synchronously. `NullTelemetry` returns `NullSpan`, which has
+no state and no drop glue.
 
 While an active span is open, raw events receive its id and its parent id.
 Lifecycle observers receive the same structure without registering interest in
 the span payload.
 
 ```text
-let span = tel.raw_span1_1(["fz", "compiler2", "job"], job)
+let span = tel.raw_span1_0(["fz", "compiler2", "job"], job)
   exact handler → start(id=7, parent=0, &Job)
   ... raw child events carry span_id=7 ...
-span.stop1(completion)
-  exact handler → stop(id=7, elapsed_ns, &JobCompletion)
+tel.raw_event2(["fz", "compiler2", "work_graph", "applied"], world, completion)
+  exact handler → event(parent=7, &World, &JobCompletion)
+span.stop0()
+  exact handler → stop(id=7, elapsed_ns)
   lifecycle observer → stop(id=7, elapsed_ns)
 ```
 
@@ -230,9 +232,11 @@ If a handler wants a rendered type, it must derive that rendering on its side.
 `[fz, compiler2, job]` span. The drive span has no start payload and closes once
 at the return boundary with the raw `DriveOutcome<Job, FactKey>` that the caller
 receives. Successful job spans start with the raw `Job` already popped from the
-agenda and close with raw `World` and `JobCompletion`; the same completion rides
-the separate `[fz, compiler2, work_graph, applied]` event. Returned job failures
-and panics close as payloadless exceptions under the start/stop signature. JSONL
+agenda and close with elapsed time but no payload. The raw `World` and
+`JobCompletion` ride only the separate `[fz, compiler2, work_graph, applied]`
+event, which observes all five completion sites rather than duplicating two of
+them on timing spans. Returned job failures and panics close as payloadless
+exceptions under the start/stop signature. JSONL
 handlers derive timing and presentation fields only after matching these raw
 signatures. There is no separate per-outcome drive stop schema, extra
 `job_fatal` event, or redundant `fact_published` stream.
@@ -376,7 +380,8 @@ once anything is parked everything parks, so the stream's own order never
 changes and a streaming reader never sees an id it has no dictionary entry for.
 On `enum_take_drop_split`, 128 of 325 distinct types are first named by an event
 that carries no world — 99 by a `pull.product.settled`, 29 by a `job`
-`span_start` whose `span_stop` carries the world a few lines later.
+`span_start`. The subsequent `work_graph.applied` event carries the world and
+defines those ids before the job's payload-free `span_stop`.
 
 `telemetry::causal` (`causal.rs`, `pub`, re-exported as `fz::causal`) replays a
 public log into a `CausalReport`: per canonical formula identity, evaluations
@@ -397,12 +402,12 @@ tables are applied at report time, which is what makes `canonical_multiset()`
 comparable across processes. Never infer identity or causality from counts: both
 are on the stream exactly.
 
-The `[fz, compiler2, job]` span still covers only two of these five
-completion sites (`drive.rs`'s and `product_drive.rs`'s job-pop loops, the
-only two callers wrapped in `start_job_span`/`stop_job_span`); that stays a
-deliberate timing-only measurement, unchanged by this. `work_graph.applied`
-is the one signal that observes every completion — it is the causality
-record, the job span is the clock.
+The `[fz, compiler2, job]` span covers only two of these five completion sites
+(`drive.rs`'s and `product_drive.rs`'s job-pop loops, the only two callers
+wrapped in `start_job_span`/`stop_job_span`). It carries job identity on start
+and elapsed time on its payload-free stop. `work_graph.applied` is the one
+signal that observes every completion — it is the causality record, the job
+span is the clock.
 
 When the agenda drains, `ExecutionContext::drive_until` (`drive.rs`) runs its
 demand pass. It first expands published root-entry and caller-discovered-callee
@@ -617,10 +622,10 @@ they carry the raw key and artifact directly. Code submission carries raw
 result. No event duplicates ids, arities, counts, names, source references, or
 stored artifacts.
 
-Scheduler completion events carry raw `JobCompletion`. The
-`work_graph.applied` and job-span handlers read its job and applied step;
-production handlers observe changed facts, movements, wakes, and waits from
-that step. Published keys remain in the scheduler's per-job claim ledger;
+`work_graph.applied` carries raw `World` and `JobCompletion`; its handlers read
+the job and applied step, including changed facts, movements, wakes, and waits.
+The job span does not duplicate either payload: its start owns job identity and
+its successful stop owns elapsed time. Published keys remain in the scheduler's per-job claim ledger;
 test-only output capture reads those standing claims from `World` instead of
 making every completion rebuild them. One `activation_inputs.defined` event
 carries the same completion plus `World`, and handlers iterate its affected

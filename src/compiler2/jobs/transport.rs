@@ -194,14 +194,24 @@ pub(crate) fn produce_callable_construction_product(
     position: &TransportPosition,
 ) -> PullOutcome {
     let executable = executable_key_for_transport_position(context.session().root(), position);
-    let facts = match context.read_executable_facts(world, &executable) {
-        Some(facts) => facts,
-        None => return PullOutcome::wait_on_fact(FactUse::settled(FactKey::ExecutableFacts(executable))),
-    };
-    let runtime = match context.read_runtime_demand_fact(world, &executable) {
-        Some(runtime) => runtime,
-        None => return PullOutcome::wait_on_fact(FactUse::settled(FactKey::RuntimeDemand(executable))),
-    };
+    let facts = context.read_executable_facts(world, &executable);
+    let runtime = context.read_runtime_demand_fact(world, &executable);
+    let mut waits = Vec::new();
+    if facts.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(
+            executable.clone(),
+        ))));
+    }
+    if runtime.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+            executable.clone(),
+        ))));
+    }
+    if !waits.is_empty() {
+        return PullOutcome::Waiting(waits);
+    }
+    let facts = facts.expect("executable-facts wait should have been satisfied");
+    let runtime = runtime.expect("runtime-demand wait should have been satisfied");
     let TransportPosition::Value { value, .. } = position else {
         return produce_generic_callable_owner(world, tel, context, &executable, facts.as_ref(), &runtime, position);
     };
@@ -1418,30 +1428,43 @@ fn produce_named_transport_position(
     executable: &ExecutableKey,
     position: &TransportPosition,
 ) -> Option<PullOutcome> {
-    let facts = match context.read_executable_facts(world, executable) {
-        Some(facts) => facts,
-        None => {
-            return Some(PullOutcome::wait_on_fact(FactUse::settled(FactKey::ExecutableFacts(
-                executable.clone(),
-            ))));
+    let facts = context.read_executable_facts(world, executable);
+    let runtime = context.read_runtime_demand_fact(world, executable);
+    let position_fact = match position {
+        TransportPosition::ExecutableInput { .. } => Some(FactKey::ActivationInputs(executable.activation.clone())),
+        TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
+            Some(FactKey::ReturnType(executable.activation.clone()))
         }
+        _ => None,
     };
-    let runtime = match context.read_runtime_demand_fact(world, executable) {
-        Some(runtime) => runtime,
-        None => {
-            return Some(PullOutcome::wait_on_fact(FactUse::settled(FactKey::RuntimeDemand(
-                executable.clone(),
-            ))));
-        }
-    };
+    let position_fact_ready = position_fact
+        .as_ref()
+        .is_none_or(|fact| context.read_fact(world, FactUse::settled(fact.clone())));
+    let mut waits = Vec::new();
+    if facts.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(
+            executable.clone(),
+        ))));
+    }
+    if runtime.is_none() {
+        waits.push(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
+            executable.clone(),
+        ))));
+    }
+    if !position_fact_ready {
+        waits.push(PullWait::Fact(FactUse::settled(
+            position_fact.expect("an unready position fact must exist"),
+        )));
+    }
+    if !waits.is_empty() {
+        return Some(PullOutcome::Waiting(waits));
+    }
+    let facts = facts.expect("executable-facts wait should have been satisfied");
+    let runtime = runtime.expect("runtime-demand wait should have been satisfied");
     let symbol = position.executable().clone();
     let mut recipe = TransportRecipe::Terminal;
     let (ty, demand) = match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => {
-            let fact = FactUse::settled(FactKey::ActivationInputs(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return Some(PullOutcome::wait_on_fact(fact));
-            }
             let ty = world
                 .activation_inputs_joined(&executable.activation)
                 .unwrap_or_else(|| executable.activation.inputs(world.types()))
@@ -1452,10 +1475,6 @@ fn produce_named_transport_position(
             (ty, demand)
         }
         TransportPosition::ExecutableReturn { .. } => {
-            let fact = FactUse::settled(FactKey::ReturnType(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return Some(PullOutcome::wait_on_fact(fact));
-            }
             let Some(ty) = world.activation_return(&executable.activation) else {
                 return Some(bottom_transport_shape(world));
             };
@@ -1567,10 +1586,6 @@ fn produce_named_transport_position(
             (ty, demand)
         }
         TransportPosition::ReturnPayload { callsite, .. } => {
-            let fact = FactUse::settled(FactKey::ReturnType(executable.activation.clone()));
-            if !context.read_fact(world, fact.clone()) {
-                return Some(PullOutcome::wait_on_fact(fact));
-            }
             let Some(caller_return_ty) = world.activation_return(&executable.activation) else {
                 return Some(bottom_transport_shape(world));
             };

@@ -520,19 +520,24 @@ pub(crate) fn produce_outgoing_input_edges_product<T: Telemetry>(
     context: &mut ProductReadContext<'_>,
     executable: &ExecutableKey,
 ) -> PullOutcome {
+    let facts = context.read_executable_facts(world, executable);
+    let runtime_demand = context.read_runtime_demand_fact(world, executable);
     let mut waits = HashSet::new();
-    let Some(facts) = context.read_executable_facts(world, executable) else {
+    if facts.is_none() {
         waits.insert(PullWait::Fact(FactUse::settled(FactKey::ExecutableFacts(
             executable.clone(),
         ))));
-        return product_waits(waits);
-    };
-    let Some(runtime_demand) = context.read_runtime_demand_fact(world, executable) else {
+    }
+    if runtime_demand.is_none() {
         waits.insert(PullWait::Fact(FactUse::settled(FactKey::RuntimeDemand(
             executable.clone(),
         ))));
+    }
+    if !waits.is_empty() {
         return product_waits(waits);
-    };
+    }
+    let facts = facts.expect("executable-facts wait should have been satisfied");
+    let runtime_demand = runtime_demand.expect("runtime-demand wait should have been satisfied");
 
     let mut contribution = HashMap::new();
     collect_callsite_input_sources(world, executable, &facts, &mut contribution);

@@ -5,7 +5,7 @@ use crate::ir_interp::{
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -186,12 +186,6 @@ fn run_contract(case: ContractCase<'_>) {
         "{} should emit indexed work under the drive span",
         case.name
     );
-    assert!(
-        indexed_stop.completion_present,
-        "{} should close the indexing job with completion metadata",
-        case.name
-    );
-
     assert_eq!(
         capture.count(&["fz", "compiler2", "function", "defined"]),
         0,
@@ -694,7 +688,6 @@ struct JobSpanStart {
 struct JobSpanStop {
     job: Job,
     parent_span_id: u64,
-    completion_present: bool,
 }
 
 struct JobCapture {
@@ -713,19 +706,25 @@ impl JobCapture {
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let starts = Rc::clone(&self.starts);
         let stops = Rc::clone(&self.stops);
-        telemetry.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
+        let jobs_by_span = Rc::new(RefCell::new(HashMap::new()));
+        let started_jobs = Rc::clone(&jobs_by_span);
+        let stopped_jobs = Rc::clone(&jobs_by_span);
+        telemetry.attach_raw_span1_0::<Job, _, _, _>(
             &["fz", "compiler2", "job"],
-            move |_, _, parent_span_id, job| {
+            move |_, span_id, parent_span_id, job| {
+                started_jobs.borrow_mut().insert(span_id, job.clone());
                 starts.borrow_mut().push(JobSpanStart {
                     job: job.clone(),
                     parent_span_id,
                 });
             },
-            move |_, _, parent_span_id, _, _, completion| {
+            move |_, span_id, parent_span_id, _| {
                 stops.borrow_mut().push(JobSpanStop {
-                    job: completion.job.clone(),
+                    job: stopped_jobs
+                        .borrow_mut()
+                        .remove(&span_id)
+                        .expect("a job span stop must match its start"),
                     parent_span_id,
-                    completion_present: true,
                 });
             },
             |_, _, _, _| {},

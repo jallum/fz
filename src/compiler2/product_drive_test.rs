@@ -1378,10 +1378,10 @@ fn compile_enum_predicate_search() -> (Vec<Job>, std::rc::Rc<super::BackendProgr
     let tel = ConfiguredTelemetry::new();
     let jobs: std::rc::Rc<std::cell::RefCell<Vec<Job>>> = Default::default();
     let recorded = std::rc::Rc::clone(&jobs);
-    tel.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
+    tel.attach_raw_span1_0::<Job, _, _, _>(
         &["fz", "compiler2", "job"],
         move |_, _, _, job| recorded.borrow_mut().push(job.clone()),
-        |_, _, _, _, _, _| {},
+        |_, _, _, _| {},
         |_, _, _, _| {},
     );
     let mut compiler = Compiler2::new(tel);
@@ -1729,9 +1729,9 @@ fn fatal_error_end_to_end_no_ready_producer_from_undefined_root_entry() {
 }
 
 /// `fact_wait_budget_exceeded`: an ordinary, fully resolvable root (`add1`),
-/// driven through the test-only budget seam with the inner per-fact-wait job
-/// budget forced to zero. `drive_product_fact_wait`'s budget check runs after
-/// every job unconditionally, so the very first job any real fact-wait runs
+/// driven through the test-only budget seam with the per-prerequisite job
+/// budget forced to zero. The exact prerequisite-set loop's budget check runs
+/// after every job unconditionally, so the very first job any real prerequisite runs
 /// already exceeds a budget of zero -- this is the same check production
 /// hits at 50,001 jobs, just forced early so the test stays fast.
 #[test]
@@ -1756,6 +1756,84 @@ fn string_error_end_to_end_fact_wait_budget_exceeded_on_a_real_drive() {
             root.as_u32()
         )),
         "should report the fact-wait budget exceeded template, got: {error}"
+    );
+}
+
+#[test]
+fn one_product_prerequisite_set_emits_one_quiescence_step_with_both_readiness_changes() {
+    let tel = ConfiguredTelemetry::new();
+    let steps = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = std::rc::Rc::clone(&steps);
+    tel.attach_raw_event1::<super::AppliedStep<Job, FactKey>, _>(
+        &["fz", "compiler2", "work_graph", "quiesced"],
+        move |_, _, _, step| observed.borrow_mut().push(step.clone()),
+    );
+    let mut world = World::new();
+    let root = RootId::for_test(88);
+    let code = super::CodeId::ZERO;
+    let left = FactKey::CodeIndexed(code);
+    let right = FactKey::CodeScoped(code);
+    let left_job = Job::IndexCode(code);
+    let right_job = Job::ScopeCode(code);
+
+    let complete = |world: &mut World, job, reads, outputs, changed| {
+        super::drive::ExecutionContext::new(world, &tel).complete_job(
+            job,
+            super::drive::JobEffects {
+                reads,
+                outputs,
+                changed,
+                ..super::drive::JobEffects::default()
+            },
+        )
+    };
+    complete(
+        &mut world,
+        left_job.clone(),
+        vec![FactUse::current(right.clone())],
+        vec![left.clone()],
+        vec![left.clone()],
+    );
+    complete(
+        &mut world,
+        right_job,
+        vec![FactUse::current(left.clone())],
+        vec![right.clone()],
+        vec![right.clone()],
+    );
+    assert_eq!(world.work_graph.pop(), Some(left_job.clone()));
+    complete(
+        &mut world,
+        left_job,
+        vec![FactUse::current(right.clone())],
+        vec![left.clone()],
+        Vec::new(),
+    );
+    while world.work_graph.pop().is_some() {}
+    assert!(!world.fact_is_settled(&left));
+    assert!(!world.fact_is_settled(&right));
+
+    let mut driver = super::pull::ProductDriver::new(&tel, root);
+    super::product_drive::drive_product_fact_waits::<_, String>(
+        &mut world,
+        &tel,
+        root,
+        &mut driver,
+        &[FactUse::settled(left.clone()), FactUse::settled(right.clone())],
+        super::product_drive::PRODUCT_DRIVE_BUDGET,
+    )
+    .expect("the locally clean prerequisite cycle should settle at the drain");
+
+    let steps = steps.borrow();
+    assert_eq!(steps.len(), 1, "one prerequisite set must cross one arbiter boundary");
+    assert_eq!(
+        steps[0]
+            .changed
+            .iter()
+            .map(|change| change.key.clone())
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([left, right]),
+        "the atomic step must retain both typed readiness changes"
     );
 }
 

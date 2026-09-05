@@ -151,8 +151,8 @@ fn compiler_drive_and_job_spans_render_raw_authorities() {
     assert!(jobs[0].contains("\"kind\":\"span_start\""));
     assert!(jobs[0].contains("\"job\":{\"opaque_type\":"));
     assert!(jobs[1].contains("\"kind\":\"span_stop\""));
-    assert!(jobs[1].contains("\"world\":{\"opaque_type\":"));
-    assert!(jobs[1].contains("\"completion\":{\"opaque_type\":"));
+    assert!(!jobs[1].contains("\"world\":"));
+    assert!(!jobs[1].contains("\"completion\":"));
     assert_ne!(jobs[0].split("\"parent_span_id\":").nth(1), Some("0"));
 }
 

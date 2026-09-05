@@ -387,7 +387,11 @@ ascent; the drain is where it is discharged.
 `Scheduler::settle_quiescent(facts)` is that discharge, and it is
 demand-driven: it answers the exact settled questions something is actually
 asking — the blocked waiters' own settled waits (`World::settle_quiescent_waits`)
-and a product pull's awaited fact (`product_drive::drive_product_fact_wait`).
+and one product evaluation's exact prerequisite set
+(`product_drive::drive_product_fact_waits_with_sessions`). A product producer
+names every prerequisite it can identify in the same evaluation, and the pull
+driver presents that set to the arbiter atomically; serially arbitrating the
+members would turn one semantic barrier into multiple public readiness steps.
 Nothing else is arbitrated. One arbitrated
 fact discharges a whole quiesced cycle, because clearing it makes it quiet and
 the ordinary wave carries that through every publisher that was only waiting on
@@ -560,6 +564,13 @@ caller-local return contributions, then withholds only peer-dependent
 capture/input contributions while an exact non-self target is absent. Product
 producers read settled full `RuntimeDemand(E)` values through ordinary fact
 dependencies; neither demand fact has a product memo entry or bridge.
+
+Executable-scoped producers ask for `ExecutableFacts(E)`, `RuntimeDemand(E)`,
+and every position-owned semantic fact nameable from the key in the same
+evaluation (`ActivationInputs` for an executable input; `ReturnType` for an
+executable return or return payload). These stay distinct typed dependencies
+and distinct readiness changes; the shared prerequisite boundary alone is
+atomic.
 
 The pull driver is the only code that expands a product wait into its producer.
 A producer may say "I need `AbiExecutable(E)`" or "I need settled

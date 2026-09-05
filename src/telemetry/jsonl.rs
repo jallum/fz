@@ -166,8 +166,9 @@ pub struct JsonlBackend {
 /// define it; once anything is parked everything parks, so the stream's own
 /// order never changes. Measured on `enum_take_drop_split`: 128 of 325 distinct
 /// types are first named by a world-less event — 99 by a `pull.product.settled`
-/// and 29 by a `job` span_start, whose `span_stop` carries the world a few
-/// lines later.
+/// and 29 by a `job` span_start. The subsequent `work_graph.applied` event
+/// carries the world and defines those ids before the job's payload-free
+/// `span_stop`.
 #[derive(Default)]
 struct CanonStream {
     defined_types: std::collections::HashSet<crate::compiler2::Ty>,
@@ -637,7 +638,7 @@ impl JsonlBackend {
         let job_start = Rc::clone(backend);
         let job_stop = Rc::clone(backend);
         let job_exception = Rc::clone(backend);
-        telemetry.attach_raw_span1_2::<crate::compiler2::Job, crate::compiler2::World, crate::compiler2::JobCompletion, _, _, _>(
+        telemetry.attach_raw_span1_0::<crate::compiler2::Job, _, _, _>(
             &["fz", "compiler2", "job"],
             move |name, span_id, parent_span_id, job| {
                 job_start.handle_raw_span(
@@ -649,17 +650,14 @@ impl JsonlBackend {
                     crate::metadata! { job: crate::telemetry::opaque(job) },
                 );
             },
-            move |name, span_id, parent_span_id, elapsed_ns, world, completion| {
+            move |name, span_id, parent_span_id, elapsed_ns| {
                 job_stop.handle_raw_span(
                     name,
                     EventKind::SpanStop,
                     span_id,
                     parent_span_id,
                     Some(elapsed_ns),
-                    crate::metadata! {
-                        world: crate::telemetry::opaque(world),
-                        completion: crate::telemetry::opaque(completion),
-                    },
+                    Metadata::new(),
                 );
             },
             move |name, span_id, parent_span_id, elapsed_ns| {

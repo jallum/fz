@@ -5906,11 +5906,9 @@ impl JobTelemetry {
 
     fn install(&self, telemetry: &ConfiguredTelemetry) {
         let stops = Rc::clone(&self.stops);
-        telemetry.attach_raw_span1_2::<Job, World, super::JobCompletion, _, _, _>(
-            &["fz", "compiler2", "job"],
-            |_, _, _, _| {},
-            move |_, _, _, _, _, completion| stops.borrow_mut().push(completion.job.clone()),
-            |_, _, _, _| {},
+        telemetry.attach_raw_event2::<World, super::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, _, completion| stops.borrow_mut().push(completion.job.clone()),
         );
     }
 

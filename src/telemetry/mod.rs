@@ -54,6 +54,6 @@ pub use handler::Event;
 #[cfg(test)]
 pub use handler::EventKind;
 pub use jsonl::JsonlBackend;
-pub use sink::{RawSpanGuard, RawSpanStop1, RawSpanStop2, RawSpanTelemetry, Telemetry, TelemetryExt};
+pub use sink::{RawSpanGuard, RawSpanStop0, RawSpanStop1, RawSpanTelemetry, Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
 pub use value::{Value, opaque};

@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::telemetry::{RawSpanGuard, RawSpanStop1 as _, RawSpanStop2, RawSpanTelemetry, TelemetryExt};
+use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTelemetry, TelemetryExt};
 
 use super::code::CodeId;
 use super::facts::{ClaimShape, DerivationId, FactUse};
@@ -758,10 +758,12 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
 
     /// Runs queued jobs until the work graph has no ready work.
     ///
-    /// Each job gets one telemetry span that closes with the job's raw effects
-    /// borrowed in place; the applied graph step rides the separate
-    /// `work_graph.applied` event that `complete_job` emits. A fatal job closes
-    /// its span, closes the drive span as fatal, and stops the loop.
+    /// Each job gets one telemetry span whose start owns job identity and whose
+    /// payload-free stop records elapsed time. The separate
+    /// `work_graph.applied` event that `complete_job` emits owns the raw
+    /// `World` and `JobCompletion` causal payload. A fatal job records the
+    /// span's exception lifecycle, closes the drive span as fatal, and stops
+    /// the loop.
     #[cfg(test)]
     pub fn drive(&mut self) -> DriveOutcome<Job, FactKey> {
         self.drive_until(None, None, true, None)
@@ -820,7 +822,7 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                                 product_sessions.as_deref_mut(),
                             )
                             .complete_job(job, effects);
-                            stop_job_span(job_span, world, &completion);
+                            stop_job_span(job_span);
                             changed_since_stall |= !completion.changed.is_empty();
                         }
                         Err(_) => {
@@ -941,14 +943,10 @@ fn emit_drive_timed_out(tel: &impl crate::telemetry::Telemetry, timeout: &Option
 pub(super) fn start_job_span<'a, T: RawSpanTelemetry>(
     tel: &'a T,
     job: &Job,
-) -> <T as RawSpanTelemetry>::Span1_2<'a, Job, World, super::JobCompletion> {
-    tel.raw_span1_2::<Job, World, super::JobCompletion>(&["fz", "compiler2", "job"], job)
+) -> <T as RawSpanTelemetry>::Span1_0<'a, Job> {
+    tel.raw_span1_0::<Job>(&["fz", "compiler2", "job"], job)
 }
 
-pub(super) fn stop_job_span(
-    span: impl RawSpanStop2<World, super::JobCompletion>,
-    world: &World,
-    completion: &super::JobCompletion,
-) {
-    span.stop2(world, completion);
+pub(super) fn stop_job_span(span: impl RawSpanStop0) {
+    span.stop0();
 }

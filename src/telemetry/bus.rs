@@ -32,7 +32,6 @@ type Span1 = dyn Fn(&[&'static str], u64, u64, &dyn Any);
 type Span2 = dyn Fn(&[&'static str], u64, u64, &dyn Any, &dyn Any);
 type SpanStop0 = dyn Fn(&[&'static str], u64, u64, u64);
 type SpanStop1 = dyn Fn(&[&'static str], u64, u64, u64, &dyn Any);
-type SpanStop2 = dyn Fn(&[&'static str], u64, u64, u64, &dyn Any, &dyn Any);
 
 enum RawEventCallback {
     #[cfg(test)]
@@ -65,7 +64,6 @@ enum RawSpanStart {
 enum RawSpanStop {
     Zero(Box<SpanStop0>),
     One(Box<SpanStop1>),
-    Two(Box<SpanStop2>),
 }
 
 struct RawSpanEntry {
@@ -381,7 +379,6 @@ impl ConfiguredTelemetry {
     attach_raw_span!(attach_raw_span0_1, [P1], Zero [], One [P1 p1], Infallible, Infallible, P1, Infallible);
     attach_raw_span!(attach_raw_span1_0, [S1], One [S1 s1], Zero [], S1, Infallible, Infallible, Infallible);
     attach_raw_span!(attach_raw_span1_1, [S1, P1], One [S1 s1], One [P1 p1], S1, Infallible, P1, Infallible);
-    attach_raw_span!(attach_raw_span1_2, [S1, P1, P2], One [S1 s1], Two [P1 p1, P2 p2], S1, Infallible, P1, P2);
     attach_raw_span!(attach_raw_span2_0, [S1, S2], Two [S1 s1, S2 s2], Zero [], S1, S2, Infallible, Infallible);
 
     /// Remove a previously attached handler. Returns true if removed.
@@ -474,7 +471,6 @@ impl ConfiguredTelemetry {
 
     dispatch_raw_span_stop!(stop_raw_span0, Zero);
     dispatch_raw_span_stop!(stop_raw_span1, One, a);
-    dispatch_raw_span_stop!(stop_raw_span2, Two, a, b);
 
     fn dispatch<'ev, 'meas, 'meta>(
         &self,
@@ -605,7 +601,6 @@ impl Telemetry for ConfiguredTelemetry {
 
     forward_raw_span_stop!(stop_raw_span0);
     forward_raw_span_stop!(stop_raw_span1, a);
-    forward_raw_span_stop!(stop_raw_span2, a, b);
 
     fn exception_raw_span(
         &self,
@@ -651,10 +646,6 @@ impl RawSpanTelemetry for ConfiguredTelemetry {
         = Span<'a, Self, S1, Infallible, P1>
     where
         Self: 'a;
-    type Span1_2<'a, S1: Any, P1: Any, P2: Any>
-        = Span<'a, Self, S1, Infallible, P1, P2>
-    where
-        Self: 'a;
     type Span2_0<'a, S1: Any, S2: Any>
         = Span<'a, Self, S1, S2>
     where
@@ -681,15 +672,6 @@ impl RawSpanTelemetry for ConfiguredTelemetry {
         name: &'a [&'static str],
         span_id: u64,
     ) -> Self::Span1_1<'a, S1, P1> {
-        Span::new_raw(self, name, span_id)
-    }
-
-    #[inline(always)]
-    fn make_span1_2<'a, S1: Any, P1: Any, P2: Any>(
-        &'a self,
-        name: &'a [&'static str],
-        span_id: u64,
-    ) -> Self::Span1_2<'a, S1, P1, P2> {
         Span::new_raw(self, name, span_id)
     }
 

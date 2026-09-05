@@ -1062,9 +1062,11 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // shrinking every `changed` array, because a fact that is transitively
     // unfinal no longer flips its settled bit on each local dirty/clean cycle.
     // fz-kdt.5's request/evaluation/wait identities make product work exactly
-    // attributable. Measured on the combined stack: 00181 emits 2,885 events /
-    // 1,570,990 bytes and 00009 emits 381 / 185,422. The bounds retain modest
-    // headroom while unrelated public-stream creep still trips.
+    // attributable. fz-tfn.38 then made each product evaluation's exact fact
+    // prerequisite set one arbiter boundary and made the job span timing-only;
+    // under llvm-cov 00181 emits 2,958 events / 1,394,744 bytes / 32 quiescence
+    // steps. The bounds retain modest headroom while unrelated public-stream
+    // creep still trips.
     for (fixture, max_events, max_bytes) in [
         ("fixtures2/00181_enum_reduce_operator_ref.fz", 3_000, 1_600 * 1024),
         ("fixtures2/00009_no_runtime.fz", 400, 192 * 1024),
@@ -1748,9 +1750,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
                 .eq(["fz", "compiler2", "work_graph", "quiesced"])
         })
         .collect();
-    assert_eq!(quiesced.len(), 34, "{fixture}: quiescence event count moved");
+    assert_eq!(
+        quiesced.len(),
+        32,
+        "{fixture}: exact product prerequisite sets must stay within the 34-event drain-arbiter ceiling"
+    );
 
     let mut wakes = Vec::new();
+    let mut readiness_changes = BTreeMap::new();
     for event in &quiesced {
         let step = event.metadata.get("step").expect("a quiesced event carries its step");
         for change in step.get("changed").and_then(|c| c.as_array()).into_iter().flatten() {
@@ -1763,12 +1770,30 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
                 change.get("old_settled"),
                 change.get("new_settled"),
                 "every entry in a quiesced step's changed array must be a settled-bit flip; \
-                 the array carries only the arbiter's own flips by construction (subscriber \
+                the array carries only the arbiter's own flips by construction (subscriber \
                  dirtying travels via movements), so this pins the flip shape"
             );
+            let kind = change
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .expect("every readiness change names its fact kind");
+            *readiness_changes.entry(kind).or_insert(0) += 1;
         }
         wakes.extend(step.get("wakes").and_then(|w| w.as_array()).into_iter().flatten());
     }
+    assert_eq!(
+        readiness_changes,
+        BTreeMap::from([
+            ("Activation", 4),
+            ("ActivationAnalyzed", 10),
+            ("ActivationInputs", 9),
+            ("CallSiteSummary", 11),
+            ("CallSiteTargets", 6),
+            ("ReturnType", 10),
+            ("RuntimeDemand", 10),
+        ]),
+        "batching one product evaluation's settled prerequisites must preserve every typed readiness transition"
+    );
 
     let mut wake_causes = BTreeSet::new();
     let mut wake_dispositions = BTreeMap::new();
@@ -1882,17 +1907,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         FormulaWork {
             // The two retained backend projections are product completions,
             // not scheduler-formula evaluations.
-            evaluations: 322,
-            initial: 164,
-            content_caused: 140,
+            evaluations: 363,
+            initial: 176,
+            content_caused: 169,
             readiness_caused: 18,
             uncaused: 0,
-            changed_outputs: 189,
-            unchanged_outputs: 133,
-            wakes: 141,
-            blocked_completions: 145,
+            changed_outputs: 213,
+            unchanged_outputs: 150,
+            wakes: 181,
+            blocked_completions: 168,
         },
-        "{fixture}: causal or output work moved outside the readiness reclassification"
+        "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
     let products = report.product_totals();
     let effect_cache_hits = sum_reporting_counts(
@@ -1935,8 +1960,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             products.cache_hits,
             products.displacements,
         ),
-        (408, 408, 408, 0, 19, 0),
-        "{fixture}: established product settlement work moved while pinning direct-fact readiness"
+        (396, 396, 396, 0, 16, 0),
+        "{fixture}: reactive product settlement work moved while pinning exact-prerequisite readiness"
     );
     assert!(
         report.uncaused.is_empty(),

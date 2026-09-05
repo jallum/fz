@@ -85,7 +85,7 @@ pub(crate) fn drive_root_backend_product<'a, T: crate::telemetry::RawSpanTelemet
 }
 
 /// The loop `drive_root_backend_product` runs, parameterized on the outer
-/// product-stack budget and the inner per-fact-wait job budget. This is a
+/// product-stack budget and the inner per-prerequisite job budget. This is a
 /// test-only seam: `drive_root_backend_product` always passes
 /// `PRODUCT_DRIVE_BUDGET` for both, so production behavior is byte-identical
 /// to before the split. Tests pass a small budget to force
@@ -208,10 +208,12 @@ fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry,
                 // wait-accumulator parameters throughout `jobs::runtime_demand`
                 // and `jobs::artifact`), so its arrival order here is a
                 // per-process `RandomState` artifact, not a property of the
-                // program. This loop processes each wait to completion in
-                // order — one poke-and-drain per iteration — so that order
-                // decides which fact's producer job actually runs first,
-                // which can flip a keep-first merge downstream. `PullWait`'s
+                // program. Product dependencies still expand in order, and
+                // fact producers are still driven in order, so that order
+                // decides which producer job actually runs first and can flip
+                // a keep-first merge downstream. The settled fact questions
+                // from this ONE evaluation cross the drain arbiter together.
+                // `PullWait`'s
                 // constituents span too many identity types across the
                 // compiler to give it a cheap structural `Ord`, but its
                 // Product keys retain their existing data ordering. Fact uses
@@ -219,25 +221,26 @@ fn drive_root_backend_product_with_driver<T: crate::telemetry::RawSpanTelemetry,
                 // history, so they share the World's faithful semantic key
                 // with terminal diagnostics and other fact-wait boundaries.
                 sort_product_waits(world.types(), &mut waits);
+                waits.dedup();
                 last_wait = Some((current.clone(), waits.clone()));
                 stack.push(current);
+                let mut facts = Vec::new();
                 for wait in waits.into_iter().rev() {
                     match wait {
                         PullWait::Product(product) => stack.push(product),
-                        PullWait::Fact(fact) => {
-                            let producer_pokes = drive_product_fact_wait_with_sessions::<T, E>(
-                                world,
-                                tel,
-                                root,
-                                driver,
-                                sessions.as_deref_mut(),
-                                fact,
-                                fact_wait_budget,
-                            )?;
-                            driver.session_mut().record_producer_pokes(producer_pokes);
-                        }
+                        PullWait::Fact(fact) => facts.push(fact),
                     }
                 }
+                let producer_pokes = drive_product_fact_waits_with_sessions::<T, E>(
+                    world,
+                    tel,
+                    root,
+                    driver,
+                    sessions.as_deref_mut(),
+                    &facts,
+                    fact_wait_budget,
+                )?;
+                driver.session_mut().record_producer_pokes(producer_pokes);
                 current = stack.pop().expect("a waiting product leaves itself on the pull stack");
             }
         }
@@ -257,9 +260,8 @@ pub(super) fn sort_product_waits(types: &super::types::Types, waits: &mut [PullW
     });
 }
 
-/// The inner per-fact-wait job loop run while expanding a `PullWait::Fact`.
-/// `pub(super)` so test scaffolding driving a `ProductKey` this module has no
-/// dedicated runner for can still share this loop instead of forking it.
+/// The single-fact test seam over the exact prerequisite-set loop below.
+/// Production passes every fact named by one product evaluation together.
 #[cfg(test)]
 pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
@@ -269,69 +271,95 @@ pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: 
     fact: FactUse<FactKey>,
     fact_wait_budget: u64,
 ) -> Result<u64, E> {
-    drive_product_fact_wait_with_sessions(world, tel, root, driver, None, fact, fact_wait_budget)
+    drive_product_fact_waits_with_sessions(world, tel, root, driver, None, &[fact], fact_wait_budget)
 }
 
-fn drive_product_fact_wait_with_sessions<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
+#[cfg(test)]
+pub(super) fn drive_product_fact_waits<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
+    world: &mut World,
+    tel: &T,
+    root: RootId,
+    driver: &mut ProductDriver<'_, T>,
+    facts: &[FactUse<FactKey>],
+    fact_wait_budget: u64,
+) -> Result<u64, E> {
+    drive_product_fact_waits_with_sessions(world, tel, root, driver, None, facts, fact_wait_budget)
+}
+
+fn drive_product_fact_waits_with_sessions<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
     tel: &T,
     root: RootId,
     driver: &mut ProductDriver<'_, T>,
     mut sessions: Option<&mut ProductSessions>,
-    fact: FactUse<FactKey>,
+    facts: &[FactUse<FactKey>],
     fact_wait_budget: u64,
 ) -> Result<u64, E> {
-    let mut jobs_ran = 0_u64;
     let mut producer_pokes = 0_u64;
-    while !product_fact_wait_is_satisfied(world, &fact) {
-        let job = match world.next_ready_job(sessions.as_ref().map(|_| root)) {
-            Some(job) => {
-                apply_quiescence(world, tel, driver, sessions.as_deref_mut());
-                job
-            }
-            None => {
-                // The agenda drained. This wait names one exact settled
-                // question; ask the drain arbiter before concluding that no
-                // producer can ever answer it (fz-kdt.44).
-                world.settle_quiescent(std::slice::from_ref(fact.fact()));
-                if apply_quiescence(world, tel, driver, sessions.as_deref_mut()) {
-                    continue;
+    let settled_facts = facts
+        .iter()
+        .filter(|fact| fact.readiness() == super::facts::FactReadiness::Settled)
+        .map(|fact| fact.fact().clone())
+        .collect::<Vec<_>>();
+    for fact in facts {
+        let mut jobs_ran = 0_u64;
+        while !product_fact_wait_is_satisfied(world, fact) {
+            let job = match world.next_ready_job(sessions.as_ref().map(|_| root)) {
+                Some(job) => {
+                    apply_quiescence(world, tel, driver, sessions.as_deref_mut());
+                    job
                 }
-                producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
-                let job = if sessions.is_some() {
-                    world.pop_root_request_job(root)
-                } else {
-                    world.work_graph.pop()
-                };
-                let Some(job) = job else {
-                    return Err(E::no_ready_producer(world, tel, root, &fact));
-                };
-                job
-            }
-        };
-        let job_span = super::drive::start_job_span(tel, &job);
-        let result = super::jobs::run(
-            &mut super::drive::ExecutionContext::with_optional_product_sessions(world, tel, sessions.as_deref_mut()),
-            &job,
-        );
-        match result {
-            Ok(effects) => {
-                jobs_ran += 1;
-                let completion =
-                    super::drive::ExecutionContext::with_optional_product_sessions(world, tel, sessions.as_deref_mut())
-                        .complete_job(job, effects);
-                if sessions.is_none() {
-                    driver.apply_fact_movements(&completion.step.movements);
+                None => {
+                    // One producer evaluation owns one exact prerequisite set.
+                    // At a drain, arbitrate all of its settled questions in one
+                    // scheduler step so their typed movements stay atomic.
+                    world.settle_quiescent(&settled_facts);
+                    if apply_quiescence(world, tel, driver, sessions.as_deref_mut()) {
+                        continue;
+                    }
+                    producer_pokes += world.demand_fact_producer(fact.fact(), WorkStartReason::BlockedWaiterExpansion);
+                    let job = if sessions.is_some() {
+                        world.pop_root_request_job(root)
+                    } else {
+                        world.work_graph.pop()
+                    };
+                    let Some(job) = job else {
+                        return Err(E::no_ready_producer(world, tel, root, fact));
+                    };
+                    job
                 }
-                super::drive::stop_job_span(job_span, world, &completion);
+            };
+            let job_span = super::drive::start_job_span(tel, &job);
+            let result = super::jobs::run(
+                &mut super::drive::ExecutionContext::with_optional_product_sessions(
+                    world,
+                    tel,
+                    sessions.as_deref_mut(),
+                ),
+                &job,
+            );
+            match result {
+                Ok(effects) => {
+                    jobs_ran += 1;
+                    let completion = super::drive::ExecutionContext::with_optional_product_sessions(
+                        world,
+                        tel,
+                        sessions.as_deref_mut(),
+                    )
+                    .complete_job(job, effects);
+                    if sessions.is_none() {
+                        driver.apply_fact_movements(&completion.step.movements);
+                    }
+                    super::drive::stop_job_span(job_span);
+                }
+                Err(err) => {
+                    job_span.exception();
+                    return Err(E::job_failed(world, tel, root, fact, &job, err));
+                }
             }
-            Err(err) => {
-                job_span.exception();
-                return Err(E::job_failed(world, tel, root, &fact, &job, err));
+            if jobs_ran > fact_wait_budget {
+                return Err(E::fact_wait_budget_exceeded(world, tel, root, fact));
             }
-        }
-        if jobs_ran > fact_wait_budget {
-            return Err(E::fact_wait_budget_exceeded(world, tel, root, &fact));
         }
     }
     Ok(producer_pokes)
