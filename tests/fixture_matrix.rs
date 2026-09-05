@@ -202,6 +202,12 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "fixture_command_rejects_missing_readiness",
             fixture_command_rejects_missing_readiness,
         ),
+        ("fixture_readiness_eof_before_exit", fixture_readiness_eof_before_exit),
+        ("fixture_readiness_exit_before_eof", fixture_readiness_exit_before_eof),
+        (
+            "fixture_readiness_drains_an_exited_child",
+            fixture_readiness_drains_an_exited_child,
+        ),
         (
             "kind_test_commands_signal_execution_ready_once",
             kind_test_commands_signal_execution_ready_once,
@@ -637,6 +643,31 @@ enum ExecutionReady {
     Closed,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum FixtureCommandState {
+    Running,
+    Exited,
+    MissingExecutionReady,
+}
+
+fn fixture_command_state(
+    timeout_start: TimeoutStart,
+    readiness_bytes: usize,
+    readiness_open: bool,
+    status: Option<ExitStatus>,
+) -> FixtureCommandState {
+    if matches!(timeout_start, TimeoutStart::OnExecutionReady)
+        && readiness_bytes == 0
+        && (!readiness_open || status.is_some())
+    {
+        FixtureCommandState::MissingExecutionReady
+    } else if status.is_some() {
+        FixtureCommandState::Exited
+    } else {
+        FixtureCommandState::Running
+    }
+}
+
 #[derive(Debug)]
 struct GuardedOutput {
     output: Output,
@@ -790,14 +821,36 @@ fn guarded_fixture_command(
     let (stdout, stderr) = capture.stdio()?;
     cmd.process_group(0);
     let spawned = cmd.stdout(stdout).stderr(stderr).spawn();
-    let mut ready_read_fd = ready_pipe.map(|(read_fd, _write_fd)| read_fd);
+    let ready_read_fd = ready_pipe.map(|(read_fd, _write_fd)| read_fd);
     let child = spawned.map_err(|error| format!("spawn {}: {}", label, error))?;
-    let mut process = FixtureProcess { child, capture };
+    wait_fixture_command(
+        FixtureProcess { child, capture },
+        ready_read_fd,
+        label,
+        timeout_start,
+        setup_timeout,
+        execution_timeout,
+    )
+}
+
+fn wait_fixture_command(
+    mut process: FixtureProcess,
+    mut ready_read_fd: Option<OwnedFd>,
+    label: &str,
+    timeout_start: TimeoutStart,
+    setup_timeout: Duration,
+    execution_timeout: Duration,
+) -> Result<GuardedOutput, String> {
     let spawned_at = Instant::now();
     let mut execution_started = execution_start(timeout_start, spawned_at);
     let mut execution_ready_count = 0;
-    let mut readiness_closed_without_signal = false;
     loop {
+        // Observe exit before draining: an exited child's final ready byte is
+        // already in the pipe, even if it arrived after the previous drain.
+        let status = match process.child.try_wait() {
+            Ok(status) => status,
+            Err(error) => return Err(process.fail(label, format!("wait {label}: {error}"))),
+        };
         while let Some(read_fd) = ready_read_fd.as_ref() {
             match read_execution_ready(read_fd) {
                 Ok(ExecutionReady::Ready) => {
@@ -809,38 +862,29 @@ fn guarded_fixture_command(
                 Ok(ExecutionReady::Pending) => break,
                 Ok(ExecutionReady::Closed) => {
                     ready_read_fd = None;
-                    if execution_ready_count == 0 {
-                        readiness_closed_without_signal = true;
-                    }
                 }
                 Err(error) => {
                     return Err(process.fail(label, error));
                 }
             }
         }
-        match process.child.try_wait() {
-            Ok(Some(_)) => {
+        match fixture_command_state(timeout_start, execution_ready_count, ready_read_fd.is_some(), status) {
+            FixtureCommandState::MissingExecutionReady => {
                 let output = process.finish(label)?;
-                if matches!(timeout_start, TimeoutStart::OnExecutionReady) && execution_ready_count == 0 {
-                    return Err(format!(
-                        "{} exited {} before execution-ready signal (0 readiness bytes); stderr: {}",
-                        label,
-                        output.status,
-                        String::from_utf8_lossy(&output.stderr).trim_end()
-                    ));
-                }
+                return Err(format!(
+                    "{} ended before execution-ready signal (0 readiness bytes); stderr: {}",
+                    label,
+                    String::from_utf8_lossy(&output.stderr).trim_end()
+                ));
+            }
+            FixtureCommandState::Exited => {
+                let output = process.finish(label)?;
                 return Ok(GuardedOutput {
                     output,
                     execution_ready_count,
                 });
             }
-            Ok(None) if readiness_closed_without_signal => {
-                return Err(process.fail(
-                    label,
-                    format!("{} closed before execution-ready signal", FZ_EXEC_READY_FD_ENV),
-                ));
-            }
-            Ok(None)
+            FixtureCommandState::Running
                 if execution_started
                     .map(|started| started.elapsed() >= execution_timeout)
                     .unwrap_or_else(|| spawned_at.elapsed() >= setup_timeout) =>
@@ -861,10 +905,7 @@ fn guarded_fixture_command(
                     ),
                 });
             }
-            Ok(None) => sleep(Duration::from_millis(10)),
-            Err(e) => {
-                return Err(process.fail(label, format!("wait {}: {}", label, e)));
-            }
+            FixtureCommandState::Running => sleep(Duration::from_millis(10)),
         }
     }
 }
@@ -986,7 +1027,10 @@ fn fixture_command_rejects_missing_readiness() {
         DEFAULT_FIXTURE_HANG_TIMEOUT,
     )
     .expect_err("closing the readiness pipe without a signal must fail explicitly");
-    assert_eq!(error, "FZ_EXEC_READY_FD closed before execution-ready signal");
+    assert_eq!(
+        error,
+        "readiness EOF fixture ended before execution-ready signal (0 readiness bytes); stderr: "
+    );
 
     assert_reaped(read_pid(&pid_path));
     let _ = fs::remove_file(pid_path);
@@ -1000,7 +1044,7 @@ fn fixture_command_rejects_missing_readiness() {
     .expect_err("leader success without an execution-ready signal is a harness error");
     assert_eq!(
         error,
-        "pre-ready leader exited exit status: 0 before execution-ready signal (0 readiness bytes); stderr: "
+        "pre-ready leader ended before execution-ready signal (0 readiness bytes); stderr: "
     );
 
     let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1021,6 +1065,134 @@ fn fixture_command_rejects_missing_readiness() {
     );
     assert_reaped(read_pid(&pid_path));
     let _ = fs::remove_file(pid_path);
+}
+
+fn fixture_readiness_eof_before_exit() {
+    assert_missing_readiness_observation_order(false);
+}
+
+fn fixture_readiness_exit_before_eof() {
+    assert_missing_readiness_observation_order(true);
+}
+
+fn fixture_readiness_drains_an_exited_child() {
+    for (signal, exit_code) in [(true, 0), (true, 7), (false, 7)] {
+        let (read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
+        let capture = CommandCapture::new().expect("create command capture");
+        let (stdout, stderr) = capture.stdio().expect("capture child output");
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'child diagnostic\\n' >&2; if [ \"$1\" = true ]; then eval \"printf x >&${FZ_EXEC_READY_FD}\"; fi; exit \"$2\"",
+                "readiness probe",
+                if signal { "true" } else { "false" },
+                &exit_code.to_string(),
+            ])
+            .env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string())
+            .stdout(stdout)
+            .stderr(stderr)
+            .process_group(0)
+            .spawn()
+            .expect("spawn exited readiness probe");
+        let pid = child.id() as libc::pid_t;
+        drop(write_fd);
+        assert_eq!(
+            child.wait().expect("exit before reading readiness").code(),
+            Some(exit_code)
+        );
+        let result = wait_fixture_command(
+            FixtureProcess { child, capture },
+            Some(read_fd),
+            "exited readiness probe",
+            TimeoutStart::OnExecutionReady,
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
+            DEFAULT_FIXTURE_HANG_TIMEOUT,
+        );
+        assert_reaped(pid);
+        if signal {
+            let finished = result.expect("consume the exited child's buffered signal before judging its status");
+            assert_eq!(finished.execution_ready_count, 1);
+            assert_eq!(finished.output.status.code(), Some(exit_code));
+            assert_eq!(finished.output.stderr, b"child diagnostic\n");
+        } else {
+            assert_eq!(
+                result.unwrap_err(),
+                "exited readiness probe ended before execution-ready signal (0 readiness bytes); stderr: child diagnostic"
+            );
+        }
+    }
+}
+
+fn assert_missing_readiness_observation_order(exit_first: bool) {
+    let (read_fd, write_fd) = execution_ready_pipe().expect("create readiness pipe");
+    let capture = CommandCapture::new().expect("create command capture");
+    let (stdout, stderr) = capture.stdio().expect("capture child output");
+    let mut child = Command::new("sh")
+        .args([
+            "-c",
+            "printf 'setup diagnostic\\n' >&2; eval \"exec ${FZ_EXEC_READY_FD}>&-\"; read release; exit 0",
+        ])
+        .env(FZ_EXEC_READY_FD_ENV, write_fd.as_raw_fd().to_string())
+        .stdin(Stdio::piped())
+        .stdout(stdout)
+        .stderr(stderr)
+        .process_group(0)
+        .spawn()
+        .expect("spawn readiness observation probe");
+    let pid = child.id() as libc::pid_t;
+    drop(write_fd);
+    if exit_first {
+        child
+            .stdin
+            .take()
+            .expect("child control pipe")
+            .write_all(b"exit\n")
+            .unwrap();
+        assert!(
+            child
+                .wait()
+                .expect("observe child exit before reading readiness")
+                .success()
+        );
+    } else {
+        let mut ready = libc::pollfd {
+            fd: read_fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut ready, 1, 20_000) }, 1);
+        assert_eq!(ready.revents & libc::POLLHUP, libc::POLLHUP);
+        assert!(
+            child
+                .try_wait()
+                .expect("observe child blocked on control pipe")
+                .is_none()
+        );
+    }
+    assert_eq!(
+        fixture_command_state(
+            TimeoutStart::OnExecutionReady,
+            0,
+            false,
+            child.try_wait().expect("observe child status")
+        ),
+        FixtureCommandState::MissingExecutionReady,
+        "pipe EOF and child exit have one semantic verdict"
+    );
+    let error = wait_fixture_command(
+        FixtureProcess { child, capture },
+        Some(read_fd),
+        "missing readiness probe",
+        TimeoutStart::OnExecutionReady,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+        DEFAULT_FIXTURE_HANG_TIMEOUT,
+    )
+    .expect_err("both observation orders reject the same missing boundary");
+    assert_reaped(pid);
+    assert_eq!(
+        error,
+        "missing readiness probe ended before execution-ready signal (0 readiness bytes); stderr: setup diagnostic"
+    );
 }
 
 fn read_pid(path: &Path) -> libc::pid_t {
@@ -1076,7 +1248,10 @@ fn assert_execution_ready_count(command: &mut Command, label: &str, expected: us
     );
     if expected == 0 {
         let error = result.expect_err("private root must not signal readiness");
-        assert!(error.contains("exit status: 0 before execution-ready signal (0 readiness bytes)"));
+        assert_eq!(
+            error,
+            format!("{label} ended before execution-ready signal (0 readiness bytes); stderr: ")
+        );
         return;
     }
     let finished = result.unwrap_or_else(|error| panic!("run `{label}` readiness probe: {error}"));

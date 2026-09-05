@@ -149,6 +149,15 @@ the readiness pipe, exiting, or holding it open past the setup guard without
 that signal is a harness failure; the runner terminates the command group and
 reports the missing boundary.
 
+`FixtureCommandState` owns the readiness verdict: zero bytes plus either pipe
+EOF or leader exit is `MissingExecutionReady`. Both observations produce
+`<label> ended before execution-ready signal (0 readiness bytes); stderr: <stderr>`
+after group teardown and leader reaping. The diagnostic omits exit status because
+EOF may require terminating a still-live leader. The runner samples process
+status before draining readiness so a final byte from an exited child is counted
+before classification. An inherited writer cannot conceal a leader that exits
+without signaling, and capturing stderr never waits for inherited writers.
+
 `build` compilation, including an `expect: diagnostic` build, starts a fixed
 20s nontermination guard at spawn. A successful build's binary then gets its
 own execution guard, also starting at spawn; an Elixir oracle does likewise. A
