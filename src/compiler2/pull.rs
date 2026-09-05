@@ -26,6 +26,8 @@ use super::facts::{FactMovement, FactState, FactUse};
 use super::identity::{ExecutableKey, RootId};
 use super::scheduler::WorkStartTally;
 use super::semantic::{CallableFlowEdge, CallableSurface, ExecutableRuntimeDemand, RuntimeDemand, SemanticOrd};
+#[cfg(test)]
+use super::transport::LaneId;
 use super::transport::{CallableConstructionOwner, ShapeId, TransportPosition};
 pub use super::transport::{TransportCarrier, TransportLayout};
 use super::world::World;
@@ -5914,8 +5916,7 @@ mod tests {
             function: Some(FunctionId::for_test(355)),
             arity: 0,
             capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
+            capture_layouts: Box::default(),
         });
         let boundary = BoundaryId::for_test(8);
         let layout = TransportLayout::structural(ShapeId::for_test(9));
@@ -6881,7 +6882,7 @@ mod tests {
         let right_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 363));
         let x_layout = TransportLayout {
             structural: ShapeId::for_test(91),
-            carrier: TransportCarrier::ValueRef,
+            carrier: TransportCarrier::ValueRef(LaneId::for_test(0)),
         };
         let y_layout = TransportLayout::structural(ShapeId::for_test(92));
         let no_anchor = [OwnerEquation {
@@ -6943,8 +6944,7 @@ mod tests {
             function: None,
             arity: 0,
             capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
+            capture_layouts: Box::default(),
         });
         for answer in pair_forward.0 {
             let ProductValue::CallableConstruction(answer) = answer.product_value(callable, BoundaryId::for_test(9))
@@ -6992,13 +6992,12 @@ mod tests {
             function: None,
             arity: 0,
             capture_tys: Box::default(),
-            capture_shapes: Box::default(),
-            capture_lanes: Box::default(),
+            capture_layouts: Box::default(),
         });
         let boundary = BoundaryId::for_test(10);
         let layout = TransportLayout {
             structural: ShapeId::for_test(101),
-            carrier: TransportCarrier::ValueRef,
+            carrier: TransportCarrier::ValueRef(LaneId::for_test(0)),
         };
         let first_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 373));
         let second_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 374));

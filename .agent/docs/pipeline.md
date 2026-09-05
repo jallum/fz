@@ -500,6 +500,25 @@ or unify the layouts. A required destination field still fails if its source
 field is absent. An explicit outer `ValueRef` carrier is different: it requires
 a genuinely whole materializable tuple and produces one value lane.
 
+Tuple fields and the tuple itself have separate, self-contained layouts. A
+`ValueRef(LaneId)` carrier records the typed physical lane beside its structural
+shape; tuple shapes recursively retain each field's whole layout, and callable
+descriptors do the same for captures. A carried field therefore stays one lane
+without losing the callable or nested-tuple contract needed to interpret it,
+and it does not give the parent tuple a carrier. `Whole` retains every field
+layout without boxing; a public, opaque, or first-class boundary attaches the
+outer carrier separately.
+Encoding and decoding obey the carrier before the structure: a carrier consumes
+one typed value lane, while an absent carrier walks the recursive layout. Thus
+an unboxed tuple remains decomposed even when one child is boxed, and field
+projection interprets that child later without rebuilding the parent. ABI seam
+facts retain this provenance, so a carrier lane is always `ValueRef`; only a
+structural scalar lane may use a raw representation. A callable boundary keeps
+surface argument layouts and its callable descriptor keeps capture layouts; its
+seam facts flatten those layouts in capture-then-argument order. A positional
+slot distinguishes repeated lane identities without creating a second lane
+inventory.
+
 A callable surface that publishes a transport boundary names a runtime dispatch
 site, so it must be **ground**: type variables are an inference-phase concept and
 never reach a boundary. A first-class callable that escapes through a generic

@@ -144,7 +144,7 @@ impl MaterializedTransportPlan {
 
     pub fn carries_runtime_value(&self, position: &TransportPosition) -> bool {
         self.layout_at(position)
-            .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef))
+            .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef(_)))
     }
 }
 

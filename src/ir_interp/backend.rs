@@ -12,7 +12,7 @@ use super::value::{
 use super::*;
 use crate::compiler2::FunctionId;
 use crate::compiler2::pull::TransportCarrier;
-use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportStore};
+use crate::compiler2::transport::{ShapeDescr, ShapeId, TransportLayout, TransportStore};
 use crate::compiler2::{
     BackendBody, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendExecutable,
     BackendProgram, BackendStep as ProgramStep, BackendTail, CallEdge, CallTarget, ControlDestination,
@@ -1908,24 +1908,24 @@ fn env_get_value(env: &HashMap<ValueId, BackendBoundValue>, value: ValueId) -> R
 fn bind_executable_inputs(
     transport: &TransportStore,
     types: &crate::compiler2::Types,
-    runtime: &mut IrInterpRuntime,
+    _runtime: &mut IrInterpRuntime,
     executable: &BackendExecutable,
     args: &[AnyValue],
 ) -> Result<Vec<Option<BackendBoundValue>>, String> {
     let semantic_arity = executable.key.activation.input_len(types);
     let mut bound = vec![None; semantic_arity];
     let mut lane_index = 0;
-    let proc = runtime.cur_proc();
     for input in &executable.semantic_inputs {
         let value = if input.layout.reprs.is_empty() {
             None
         } else {
-            Some(decode_runtime_value_with_carrier(
+            Some(decode_transport_layout(
                 transport,
-                proc,
                 args,
-                input.layout.structural,
-                input.layout.carrier,
+                TransportLayout {
+                    structural: input.layout.structural,
+                    carrier: input.layout.carrier,
+                },
                 &mut lane_index,
             )?)
         };
@@ -2015,48 +2015,27 @@ fn direct_callable_value(
             callable.function
         ));
     }
-    if callable.capture_shapes.len() != captures.len() {
+    if callable.capture_layouts.len() != captures.len() {
         return Err(format!(
             "backend direct callable producer {} expected {} capture shape(s), got {} capture value(s)",
             value.as_u32(),
-            callable.capture_shapes.len(),
+            callable.capture_layouts.len(),
             captures.len()
         ));
     }
-    // The callable descriptor's `capture_lanes` is the one authority on how
-    // many lanes the construction carries, and it can be wider than the sum
-    // of the captures' structural widths: a capture whose structural shape is
-    // width 0 may still own one descriptor lane, carrying the value boxed
-    // (native's construction lowering assigns those extra lanes to width-0
-    // captures greedily in capture order). A width-0 capture that owns no
-    // lane is fully erased -- its value may legitimately be unbound (its own
-    // input published no layout), so it must be skipped without ever reading
-    // the environment.
-    let structural_width: usize = callable
-        .capture_shapes
-        .iter()
-        .map(|shape| transport.interners().shape_width(*shape))
-        .sum();
-    let mut extra_lanes = callable.capture_lanes.len().saturating_sub(structural_width);
     let mut lanes = Vec::new();
-    for (capture, capture_shape) in captures.iter().copied().zip(callable.capture_shapes.iter().copied()) {
-        if transport.interners().shape_width(capture_shape) == 0 {
-            if extra_lanes == 0 {
-                continue;
-            }
-            extra_lanes -= 1;
+    for (capture, layout) in captures.iter().copied().zip(callable.capture_layouts.iter().copied()) {
+        if transport.interners().layout_width(layout) != 0 {
             let bound = env_get_value(env, capture)?;
-            lanes.push(materialize_backend_value(transport, proc, &bound)?);
-        } else {
-            let bound = env_get_value(env, capture)?;
-            encode_runtime_value(transport, program, proc, &bound, capture_shape, &mut lanes)?;
+            encode_transport_layout(transport, program, proc, &bound, layout, &mut lanes)?;
         }
     }
-    if lanes.len() != callable.capture_lanes.len() {
+    let expected = transport.interners().shape_width(shape);
+    if lanes.len() != expected {
         return Err(format!(
             "backend direct callable producer {} expected {} capture lane(s), got {}",
             value.as_u32(),
-            callable.capture_lanes.len(),
+            expected,
             lanes.len()
         ));
     }
@@ -2399,10 +2378,11 @@ fn materialize_transport_value(
                     .copied()
                     .ok_or_else(|| format!("backend generic callable shape {shape:?} has no published lane"));
             };
-            if lanes.len() != callable.capture_lanes.len() {
+            let expected = transport.interners().shape_width(shape);
+            if lanes.len() != expected {
                 return Err(format!(
                     "backend callable shape {shape:?} expected {} capture lane(s), got {}",
-                    callable.capture_lanes.len(),
+                    expected,
                     lanes.len()
                 ));
             }
@@ -2512,7 +2492,7 @@ fn project_backend_value_for_contract(
     value: &BackendBoundValue,
     layout: &crate::compiler2::BackendReturnLayout,
 ) -> Result<BackendBoundValue, String> {
-    if matches!(layout.layout.carrier, TransportCarrier::ValueRef) {
+    if matches!(layout.layout.carrier, TransportCarrier::ValueRef(_)) {
         return Ok(BackendBoundValue::Runtime(materialize_backend_value(
             transport, proc, value,
         )?));
@@ -2520,12 +2500,10 @@ fn project_backend_value_for_contract(
     let mut lanes = Vec::new();
     encode_runtime_value(transport, program, proc, value, layout.layout.structural, &mut lanes)?;
     let mut lane_index = 0;
-    let decoded = decode_runtime_value_with_carrier(
+    let decoded = decode_transport_layout(
         transport,
-        proc,
         &lanes,
-        layout.layout.structural,
-        TransportCarrier::Absent,
+        TransportLayout::structural(layout.layout.structural),
         &mut lane_index,
     )?;
     if lane_index != lanes.len() {
@@ -2563,8 +2541,8 @@ fn encode_runtime_value(
         }
         ShapeDescr::Tuple(fields) => {
             let tuple_fields = tuple_field_values_for_encoding(transport, proc, value, fields)?;
-            for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
-                encode_runtime_value(transport, program, proc, field_value, field_shape, lanes)?;
+            for (field_value, field_layout) in tuple_fields.iter().zip(fields.iter().copied()) {
+                encode_transport_layout(transport, program, proc, field_value, field_layout, lanes)?;
             }
             Ok(())
         }
@@ -2580,7 +2558,7 @@ fn encode_runtime_value(
                         proc,
                         value,
                         function,
-                        callable.capture_lanes.len(),
+                        transport.interners().shape_width(shape),
                     )?;
                     lanes.extend(extracted);
                     Ok(())
@@ -2597,38 +2575,24 @@ fn encode_runtime_value(
     }
 }
 
-fn env_value_for_shape(
-    transport: &TransportStore,
-    env: &HashMap<ValueId, BackendBoundValue>,
-    value: ValueId,
-    shape: ShapeId,
-) -> Result<Option<BackendBoundValue>, String> {
-    if transport.interners().shape_width(shape) == 0 {
-        return Ok(None);
-    }
-    env_get_value(env, value).map(Some)
-}
-
-fn encode_runtime_value_with_carrier(
+fn encode_transport_layout(
     transport: &TransportStore,
     program: &BackendProgram,
     proc: *mut Process,
     value: &BackendBoundValue,
-    shape: ShapeId,
-    carrier: TransportCarrier,
+    layout: TransportLayout,
     lanes: &mut Vec<AnyValue>,
 ) -> Result<(), String> {
+    if layout.carrier.is_value_ref() {
+        lanes.push(materialize_backend_value(transport, proc, value)?);
+        return Ok(());
+    }
+    let shape = layout.structural;
     match transport.interners().shape(shape) {
-        ShapeDescr::Nothing | ShapeDescr::Callable(_) | ShapeDescr::Tuple(_)
-            if matches!(carrier, TransportCarrier::ValueRef) =>
-        {
-            lanes.push(materialize_backend_value(transport, proc, value)?);
-            Ok(())
-        }
         ShapeDescr::Tuple(fields) => {
             let tuple_fields = tuple_field_values_for_encoding(transport, proc, value, fields)?;
-            for (field_value, field_shape) in tuple_fields.iter().zip(fields.iter().copied()) {
-                encode_runtime_value_with_carrier(transport, program, proc, field_value, field_shape, carrier, lanes)?;
+            for (field_value, field_layout) in tuple_fields.iter().zip(fields.iter().copied()) {
+                encode_transport_layout(transport, program, proc, field_value, field_layout, lanes)?;
             }
             Ok(())
         }
@@ -2649,95 +2613,40 @@ fn encode_runtime_input_binding(
     if input.layout.reprs.is_empty() {
         return Ok(());
     }
-    encode_runtime_value_with_carrier(
+    encode_transport_layout(
         transport,
         program,
         proc,
         value,
-        input.layout.structural,
-        input.layout.carrier,
+        TransportLayout {
+            structural: input.layout.structural,
+            carrier: input.layout.carrier,
+        },
         lanes,
     )
 }
 
-fn decode_runtime_value_with_carrier(
+fn decode_transport_layout(
     transport: &TransportStore,
-    proc: *mut Process,
     args: &[AnyValue],
-    shape: ShapeId,
-    carrier: crate::compiler2::pull::TransportCarrier,
+    layout: TransportLayout,
     lane_index: &mut usize,
 ) -> Result<BackendBoundValue, String> {
+    if layout.carrier.is_value_ref() {
+        return next_runtime_lane(args, lane_index).map(BackendBoundValue::Runtime);
+    }
+    let shape = layout.structural;
     match transport.interners().shape(shape) {
-        ShapeDescr::Nothing if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
-            next_runtime_lane(args, lane_index).map(BackendBoundValue::Runtime)
-        }
         ShapeDescr::Nothing => Ok(BackendBoundValue::Absent),
         ShapeDescr::Lane(_) => {
             let value = next_runtime_lane(args, lane_index)?;
             Ok(BackendBoundValue::Runtime(value))
         }
-        ShapeDescr::Callable(_) if matches!(carrier, crate::compiler2::pull::TransportCarrier::ValueRef) => {
-            next_runtime_lane(args, lane_index).map(BackendBoundValue::Runtime)
-        }
-        ShapeDescr::Callable(_) => {
-            let width = backend_shape_width(transport, shape);
+        ShapeDescr::Callable(_) | ShapeDescr::Tuple(_) => {
+            let width = transport.interners().shape_width(shape);
             let lanes = take_runtime_lanes(args, lane_index, width)?;
             decode_backend_value_from_lanes(transport, shape, lanes)
         }
-        ShapeDescr::Tuple(fields) => {
-            let mut field_values = Vec::with_capacity(fields.len());
-            let mut raw_lanes = Vec::new();
-            let mut all_raw = true;
-            for field in fields.iter().copied() {
-                let value = decode_runtime_value_with_carrier(transport, proc, args, field, carrier, lane_index)?;
-                if all_raw {
-                    if let Some(lanes) = raw_lanes_for_shape_value(transport, field, &value) {
-                        raw_lanes.extend(lanes);
-                    } else {
-                        all_raw = false;
-                    }
-                }
-                field_values.push(value);
-            }
-            if all_raw {
-                return Ok(BackendBoundValue::Transport {
-                    shape,
-                    lanes: raw_lanes,
-                });
-            }
-            let fields = field_values
-                .iter()
-                .map(|value| materialize_backend_value(transport, proc, value))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(BackendBoundValue::Runtime(make_tuple_on_proc(proc, fields)?))
-        }
-    }
-}
-
-fn backend_shape_width(transport: &TransportStore, shape: ShapeId) -> usize {
-    match transport.interners().shape(shape) {
-        ShapeDescr::Callable(callable) if transport.interners().callable(*callable).function.is_none() => 1,
-        _ => transport.interners().shape_width(shape),
-    }
-}
-
-fn raw_lanes_for_shape_value(
-    transport: &TransportStore,
-    shape: ShapeId,
-    value: &BackendBoundValue,
-) -> Option<Vec<AnyValue>> {
-    match (transport.interners().shape(shape), value) {
-        (ShapeDescr::Nothing, BackendBoundValue::Absent) => Some(Vec::new()),
-        (ShapeDescr::Lane(_), BackendBoundValue::Runtime(value)) => Some(vec![*value]),
-        (
-            ShapeDescr::Tuple(_) | ShapeDescr::Callable(_),
-            BackendBoundValue::Transport {
-                shape: value_shape,
-                lanes,
-            },
-        ) if *value_shape == shape && lanes.len() == transport.interners().shape_width(shape) => Some(lanes.clone()),
-        _ => None,
     }
 }
 
@@ -2766,10 +2675,10 @@ fn decode_backend_value_from_lanes(
     shape: ShapeId,
     lanes: Vec<AnyValue>,
 ) -> Result<BackendBoundValue, String> {
-    if lanes.len() != backend_shape_width(transport, shape) {
+    if lanes.len() != transport.interners().shape_width(shape) {
         return Err(format!(
             "backend transport shape {shape:?} expected {} lane(s), got {}",
-            backend_shape_width(transport, shape),
+            transport.interners().shape_width(shape),
             lanes.len()
         ));
     }
@@ -2819,12 +2728,20 @@ fn transport_field_views(
         .ok_or_else(|| format!("backend transport shape {shape:?} is not a tuple"))?;
     spans
         .into_iter()
-        .map(|(field_shape, span)| {
+        .map(|(field_layout, span)| {
             let field_lanes = lanes
                 .get(span)
                 .ok_or_else(|| format!("backend tuple transport shape {shape:?} has an invalid lane span"))?
                 .to_vec();
-            decode_backend_value_from_lanes(transport, field_shape, field_lanes)
+            if field_layout.carrier.is_value_ref() {
+                field_lanes
+                    .first()
+                    .copied()
+                    .map(BackendBoundValue::Runtime)
+                    .ok_or_else(|| format!("backend ValueRef tuple field in {shape:?} has no runtime lane"))
+            } else {
+                decode_backend_value_from_lanes(transport, field_layout.structural, field_lanes)
+            }
         })
         .collect()
 }
@@ -2833,7 +2750,7 @@ fn tuple_field_values_for_encoding(
     transport: &TransportStore,
     proc: *mut Process,
     value: &BackendBoundValue,
-    fields: &[ShapeId],
+    fields: &[TransportLayout],
 ) -> Result<Vec<BackendBoundValue>, String> {
     if let BackendBoundValue::Transport {
         shape: value_shape,
@@ -2967,7 +2884,7 @@ fn tuple_step_value(
     items: &[ValueId],
 ) -> Result<BackendBoundValue, String> {
     if let Some(layout) = executable.value_layouts.get(&value)
-        && !matches!(layout.carrier, TransportCarrier::ValueRef)
+        && !matches!(layout.carrier, TransportCarrier::ValueRef(_))
         && let ShapeDescr::Tuple(fields) = transport.interners().shape(layout.structural)
     {
         let fields = fields.clone();
@@ -2980,9 +2897,10 @@ fn tuple_step_value(
             ));
         }
         let mut lanes = Vec::new();
-        for (item, field_shape) in items.iter().copied().zip(fields.iter().copied()) {
-            if let Some(bound) = env_value_for_shape(transport, env, item, field_shape)? {
-                encode_runtime_value(transport, program, proc, &bound, field_shape, &mut lanes)?;
+        for (item, field_layout) in items.iter().copied().zip(fields.iter().copied()) {
+            if transport.interners().layout_width(field_layout) != 0 {
+                let bound = env_get_value(env, item)?;
+                encode_transport_layout(transport, program, proc, &bound, field_layout, &mut lanes)?;
             }
         }
         return Ok(BackendBoundValue::Transport {
@@ -3263,27 +3181,92 @@ mod tests {
         value: &BackendBoundValue,
         shape: ShapeId,
     ) -> Result<Vec<AnyValue>, String> {
-        encode_with_carrier(transport, process, value, shape, TransportCarrier::Absent)
+        encode_with_layout(transport, process, value, TransportLayout::structural(shape))
     }
 
-    fn encode_with_carrier(
+    fn encode_with_layout(
         transport: &TransportStore,
         process: *mut Process,
         value: &BackendBoundValue,
-        shape: ShapeId,
-        carrier: TransportCarrier,
+        layout: TransportLayout,
     ) -> Result<Vec<AnyValue>, String> {
         let mut encoded = Vec::new();
-        encode_runtime_value_with_carrier(
+        encode_transport_layout(
             transport,
             &empty_backend_program(),
             process,
             value,
-            shape,
-            carrier,
+            layout,
             &mut encoded,
         )?;
         Ok(encoded)
+    }
+
+    fn tuple_shape(transport: &mut TransportStore, fields: &[ShapeId]) -> ShapeId {
+        transport.interners_mut().intern_shape(ShapeDescr::Tuple(
+            fields
+                .iter()
+                .copied()
+                .map(TransportLayout::structural)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ))
+    }
+
+    #[test]
+    fn tuple_decode_keeps_an_absent_parent_decomposed_and_a_carried_parent_boxed() {
+        let mut transport = TransportStore::new();
+        let mut types = crate::compiler2::Types::new();
+        let int = types.int();
+        let tuple_ty = types.tuple(&[int]);
+        let lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: int,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let tuple_lane = transport
+            .interners_mut()
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: tuple_ty,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let scalar = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
+        let tuple = transport
+            .interners_mut()
+            .intern_shape(ShapeDescr::Tuple(Box::new([TransportLayout {
+                structural: scalar,
+                carrier: TransportCarrier::ValueRef(lane),
+            }])));
+        let args = [AnyValue::Int(7)];
+        let mut decomposed_index = 0;
+        let decomposed = decode_transport_layout(
+            &transport,
+            &args,
+            TransportLayout::structural(tuple),
+            &mut decomposed_index,
+        )
+        .expect("an absent parent carrier preserves its recursive physical lanes");
+        assert!(matches!(
+            decomposed,
+            BackendBoundValue::Transport { shape, lanes }
+                if shape == tuple && matches!(lanes.as_slice(), [AnyValue::Int(7)])
+        ));
+        assert_eq!(decomposed_index, 1);
+
+        let mut boxed_index = 0;
+        let boxed = decode_transport_layout(
+            &transport,
+            &args,
+            TransportLayout {
+                structural: tuple,
+                carrier: TransportCarrier::ValueRef(tuple_lane),
+            },
+            &mut boxed_index,
+        )
+        .expect("the parent carrier dominates its structural tuple");
+        assert!(matches!(boxed, BackendBoundValue::Runtime(AnyValue::Int(7))));
+        assert_eq!(boxed_index, 1);
     }
 
     #[test]
@@ -3293,6 +3276,7 @@ mod tests {
         let mut types = crate::compiler2::Types::new();
         let int = types.int();
         let inner_tuple_ty = types.tuple(&[int, int, int]);
+        let outer_tuple_ty = types.tuple(&[int, inner_tuple_ty]);
         let lane = transport
             .interners_mut()
             .intern_lane(crate::compiler2::transport::LaneDescr {
@@ -3309,27 +3293,19 @@ mod tests {
         let inner_tuple_value = transport
             .interners_mut()
             .intern_shape(ShapeDescr::Lane(inner_tuple_lane));
-        let source_inner = transport
+        let outer_tuple_lane = transport
             .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![scalar, scalar, scalar].into_boxed_slice()));
-        let source = transport
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![nothing, source_inner].into_boxed_slice()));
-        let destination = transport
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![nothing, inner_tuple_value].into_boxed_slice()));
-        let selective_inner = transport
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![nothing, scalar, nothing].into_boxed_slice()));
-        let selective_destination = transport
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![nothing, selective_inner].into_boxed_slice()));
-        let required_absent_destination = transport
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![scalar, nothing].into_boxed_slice()));
-        let arity_mismatch_destination = transport
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![scalar].into_boxed_slice()));
+            .intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: outer_tuple_ty,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        let source_inner = tuple_shape(&mut transport, &[scalar, scalar, scalar]);
+        let source = tuple_shape(&mut transport, &[nothing, source_inner]);
+        let destination = tuple_shape(&mut transport, &[nothing, inner_tuple_value]);
+        let selective_inner = tuple_shape(&mut transport, &[nothing, scalar, nothing]);
+        let selective_destination = tuple_shape(&mut transport, &[nothing, selective_inner]);
+        let required_absent_destination = tuple_shape(&mut transport, &[scalar, nothing]);
+        let arity_mismatch_destination = tuple_shape(&mut transport, &[scalar]);
         let value = BackendBoundValue::Transport {
             shape: source,
             lanes: vec![AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
@@ -3367,9 +3343,7 @@ mod tests {
         assert_eq!(selectively_encoded.len(), 1);
         assert_eq!(selectively_encoded[0].as_i64(), Some(2));
 
-        let source_with_present_discard = transport
-            .interners_mut()
-            .intern_shape(ShapeDescr::Tuple(vec![scalar, source_inner].into_boxed_slice()));
+        let source_with_present_discard = tuple_shape(&mut transport, &[scalar, source_inner]);
         let value_with_present_discard = BackendBoundValue::Transport {
             shape: source_with_present_discard,
             lanes: vec![AnyValue::Int(99), AnyValue::Int(1), AnyValue::Int(2), AnyValue::Int(3)],
@@ -3379,18 +3353,29 @@ mod tests {
         assert_eq!(present_discarded.len(), 1);
         assert!(matches!(present_discarded[0], AnyValue::Ref(_)));
 
-        let whole_carrier = encode_with_carrier(
+        let whole_carrier = encode_with_layout(
             &transport,
             process,
             &value_with_present_discard,
-            source_with_present_discard,
-            TransportCarrier::ValueRef,
+            TransportLayout {
+                structural: source_with_present_discard,
+                carrier: TransportCarrier::ValueRef(outer_tuple_lane),
+            },
         )
         .expect("a whole tuple should satisfy an outer ValueRef carrier");
         assert_eq!(whole_carrier.len(), 1);
         assert!(matches!(whole_carrier[0], AnyValue::Ref(_)));
         assert!(
-            encode_with_carrier(&transport, process, &value, destination, TransportCarrier::ValueRef,).is_err(),
+            encode_with_layout(
+                &transport,
+                process,
+                &value,
+                TransportLayout {
+                    structural: destination,
+                    carrier: TransportCarrier::ValueRef(outer_tuple_lane),
+                },
+            )
+            .is_err(),
             "same-arity reprojection must not bypass an outer ValueRef obligation",
         );
 
@@ -3427,30 +3412,6 @@ mod tests {
             identical.iter().map(|value| value.as_i64()).collect::<Vec<_>>(),
             [Some(1), Some(2), Some(3)]
         );
-    }
-
-    #[test]
-    fn tuple_field_encoding_checks_width_before_environment_binding() {
-        let mut transport = TransportStore::new();
-        let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
-        let ty = crate::compiler2::Types::new().int();
-        let lane = transport
-            .interners_mut()
-            .intern_lane(crate::compiler2::transport::LaneDescr {
-                ty,
-                class: crate::compiler2::transport::TransportClass::Value,
-            });
-        let nonzero = transport.interners_mut().intern_shape(ShapeDescr::Lane(lane));
-        let unbound = ValueId::from_u32(0);
-
-        let erased = env_value_for_shape(&transport, &HashMap::new(), unbound, nothing)
-            .expect("zero-width tuple fields require no environment binding");
-        assert!(erased.is_none());
-
-        let error = env_value_for_shape(&transport, &HashMap::new(), unbound, nonzero)
-            .expect_err("nonzero-width tuple fields still require an environment binding");
-
-        assert_eq!(error, "backend value 0 is unbound");
     }
 
     #[test]

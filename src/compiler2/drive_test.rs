@@ -14087,11 +14087,9 @@ fn compiler2_discarded_indirect_call_result_matches_its_boundary_return() {
                 };
                 // A grounded callee is lowered as a direct edge and aliases its
                 // target's own return fact; only a boxed one reaches a wrapper.
-                if !executable
-                    .value_layouts
-                    .get(callee)
-                    .is_some_and(|layout| matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef))
-                {
+                if !executable.value_layouts.get(callee).is_some_and(|layout| {
+                    matches!(layout.carrier, crate::compiler2::pull::TransportCarrier::ValueRef(_))
+                }) {
                     continue;
                 }
                 let Some(crate::compiler2::artifact::BackendReturnFlow::Deliver { source, .. }) = return_flow else {

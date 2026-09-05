@@ -40,7 +40,8 @@ use super::super::scheduler::FatalError;
 use super::super::semantic::SemanticOrd;
 use super::super::transport::{
     ActivationSymbol, BoundaryFacts, BoundaryId, CallableFacts, CallableId, CodegenLaneRepr, CodegenSeam,
-    CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportPosition,
+    CodegenSeamFact, ExecutableSymbol, LaneId, PhysicalLane, PhysicalLaneSource, ShapeDescr, ShapeId,
+    TransportPosition,
 };
 use super::super::types::Ty;
 use super::super::world::World;
@@ -777,7 +778,7 @@ fn package_backend_entry_captures(
         .zip(entry.capture_positions.iter().cloned())
         .map(|(value, position)| {
             let layout = transport.layout_at(&position).ok_or(FatalError)?;
-            let contract = backend_entry_capture_contract(world, transport, &position, layout.structural)?;
+            let contract = backend_entry_capture_contract(world, transport, &position, layout);
             Ok(BackendEntryCapture {
                 value,
                 layout: super::super::artifact::BackendValueLayout {
@@ -795,53 +796,36 @@ fn backend_entry_capture_contract(
     world: &mut World,
     transport: &MaterializedTransportPlan,
     position: &TransportPosition,
-    shape: ShapeId,
-) -> Result<Vec<(Ty, AbiValueRepr)>, FatalError> {
-    if transport.carries_runtime_value(position) {
-        return Ok(vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]);
-    }
-    match world.shape(shape).clone() {
-        ShapeDescr::Tuple(fields) => fields
-            .iter()
-            .copied()
-            .map(|field| backend_entry_capture_contract(world, transport, position, field))
-            .collect::<Result<Vec<_>, _>>()
-            .map(|fields| fields.into_iter().flatten().collect()),
-        ShapeDescr::Nothing | ShapeDescr::Lane(_) | ShapeDescr::Callable(_) => {
-            backend_entry_capture_leaf_contracts(world, transport, position, shape)
-        }
-    }
-}
-
-fn backend_entry_capture_leaf_contracts(
-    world: &mut World,
-    transport: &MaterializedTransportPlan,
-    position: &TransportPosition,
-    shape: ShapeId,
-) -> Result<Vec<(Ty, AbiValueRepr)>, FatalError> {
-    Ok(world
-        .shape_leaf_lanes(shape)
+    layout: TransportLayout,
+) -> Vec<(Ty, AbiValueRepr)> {
+    world
+        .layout_physical_lanes(layout)
         .into_iter()
-        .filter_map(|(leaf_shape, lane)| {
-            transport
-                .codegen_seam_facts
-                .iter()
-                .find(|fact| {
-                    fact.shape == Some(leaf_shape)
-                        && fact.lane == lane
-                        && backend_entry_capture_seam_matches(position, &fact.seam)
-                })
-                .map(|fact| {
-                    let repr = match fact.repr {
-                        CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
-                        CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
-                        CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
-                        CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
-                    };
-                    (world.lane(lane).ty, repr)
-                })
+        .filter_map(|physical| {
+            let leaf_shape = physical.structural;
+            let lane = physical.lane;
+            match physical.source {
+                PhysicalLaneSource::Carrier => Some((world.lane(lane).ty, AbiValueRepr::ValueRef)),
+                PhysicalLaneSource::Structural => transport
+                    .codegen_seam_facts
+                    .iter()
+                    .find(|fact| {
+                        fact.shape == Some(leaf_shape)
+                            && fact.lane == lane
+                            && backend_entry_capture_seam_matches(position, &fact.seam)
+                    })
+                    .map(|fact| {
+                        let repr = match fact.repr {
+                            CodegenLaneRepr::ValueRef => AbiValueRepr::ValueRef,
+                            CodegenLaneRepr::RawInt => AbiValueRepr::RawInt,
+                            CodegenLaneRepr::RawF64 => AbiValueRepr::RawF64,
+                            CodegenLaneRepr::RawAtom => AbiValueRepr::RawAtom,
+                        };
+                        (world.lane(lane).ty, repr)
+                    }),
+            }
         })
-        .collect())
+        .collect()
 }
 
 fn backend_entry_capture_seam_matches(position: &TransportPosition, seam: &CodegenSeam) -> bool {
@@ -1133,7 +1117,7 @@ fn package_backend_construction_wrappers(
                 || construction
                     .members
                     .iter()
-                    .any(|member| world.boundary(member.boundary).surface_arg_shapes.len() != call_arity)
+                    .any(|member| world.boundary(member.boundary).surface_arg_layouts.len() != call_arity)
             {
                 return Err(incomplete_backend_program(
                     tel,
@@ -1511,17 +1495,19 @@ fn symbolic_codegen_seam_facts(
 ) -> Box<[CodegenSeamFact]> {
     let mut out = Vec::new();
     for (position, layout) in position_layouts {
-        let shape = layout.structural;
-        if symbolic_position_structural_lanes_are_ignored(backends, position, world) {
-            continue;
-        }
-        for (leaf_shape, lane) in lanes_for_codegen_seam_shape(world, shape) {
+        let ignore_structural = symbolic_position_structural_lanes_are_ignored(backends, position, world);
+        for physical in world.layout_physical_lanes(*layout) {
+            if ignore_structural && physical.source == PhysicalLaneSource::Structural {
+                continue;
+            }
+            let leaf_shape = physical.structural;
+            let lane = physical.lane;
             match position {
                 TransportPosition::ExecutableInput {
                     executable,
                     semantic_index,
                 } => {
-                    let repr = codegen_repr_for_lane(world, lane);
+                    let repr = codegen_repr_for_physical_lane(world, physical);
                     out.push(CodegenSeamFact {
                         seam: CodegenSeam::FunctionEntry {
                             executable: executable.clone(),
@@ -1545,7 +1531,7 @@ fn symbolic_codegen_seam_facts(
                     }
                 }
                 TransportPosition::ExecutableReturn { executable } => {
-                    let repr = codegen_repr_for_lane(world, lane);
+                    let repr = codegen_repr_for_physical_lane(world, physical);
                     out.push(CodegenSeamFact {
                         seam: CodegenSeam::ReturnDelivery {
                             executable: executable.clone(),
@@ -1572,7 +1558,7 @@ fn symbolic_codegen_seam_facts(
                     callsite,
                     entry,
                 } => {
-                    let repr = block_param_codegen_repr_for_lane(world, lane);
+                    let repr = block_param_codegen_repr_for_physical_lane(world, physical);
                     out.push(CodegenSeamFact {
                         seam: CodegenSeam::BlockParam {
                             executable: executable.clone(),
@@ -1603,7 +1589,7 @@ fn symbolic_codegen_seam_facts(
                         },
                         shape: Some(leaf_shape),
                         lane,
-                        repr: codegen_repr_for_lane(world, lane),
+                        repr: codegen_repr_for_physical_lane(world, physical),
                     });
                 }
                 TransportPosition::EntryCapture {
@@ -1611,7 +1597,7 @@ fn symbolic_codegen_seam_facts(
                     entry,
                     capture_index,
                 } => {
-                    let repr = block_param_codegen_repr_for_lane(world, lane);
+                    let repr = block_param_codegen_repr_for_physical_lane(world, physical);
                     out.push(CodegenSeamFact {
                         seam: CodegenSeam::EntryCapture {
                             executable: executable.clone(),
@@ -1650,7 +1636,7 @@ fn symbolic_codegen_seam_facts(
                             },
                             shape: Some(leaf_shape),
                             lane,
-                            repr: codegen_repr_for_lane(world, lane),
+                            repr: codegen_repr_for_physical_lane(world, physical),
                         });
                     }
                 }
@@ -1711,17 +1697,19 @@ fn push_symbolic_boundary_codegen_seams(
     out: &mut Vec<CodegenSeamFact>,
 ) {
     let descr = world.boundary(boundary);
-    for lane in descr
-        .published_capture_lanes
+    let capture_layouts = &world.callable(descr.callable).capture_layouts;
+    for (slot, physical) in capture_layouts
         .iter()
-        .chain(descr.published_arg_lanes.iter())
+        .chain(descr.surface_arg_layouts.iter())
         .copied()
+        .flat_map(|layout| world.layout_physical_lanes(layout))
+        .enumerate()
     {
         out.push(CodegenSeamFact {
-            seam: CodegenSeam::CallableBoundary { boundary },
-            shape: None,
-            lane,
-            repr: codegen_repr_for_lane(world, lane),
+            seam: CodegenSeam::CallableBoundary { boundary, slot },
+            shape: Some(physical.structural),
+            lane: physical.lane,
+            repr: codegen_repr_for_physical_lane(world, physical),
         });
     }
     if facts.publications.is_empty() {
@@ -1905,25 +1893,6 @@ fn symbolic_callsite_dest(backend: &SymbolicBackendExecutable, callsite: CallSit
     })
 }
 
-fn lanes_for_codegen_seam_shape(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match world.shape(shape) {
-        ShapeDescr::Nothing => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-        ShapeDescr::Callable(callable) => world
-            .callable(*callable)
-            .capture_lanes
-            .iter()
-            .copied()
-            .map(|lane| (shape, lane))
-            .collect(),
-        ShapeDescr::Tuple(items) => items
-            .iter()
-            .copied()
-            .flat_map(|item| lanes_for_codegen_seam_shape(world, item))
-            .collect(),
-    }
-}
-
 fn raw_codegen_repr_for_lane(world: &World, lane: LaneId) -> Option<CodegenLaneRepr> {
     let ty = world.lane(lane).ty;
     if world.types().is_floating(&ty) {
@@ -1941,10 +1910,24 @@ fn codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
     raw_codegen_repr_for_lane(world, lane).unwrap_or(CodegenLaneRepr::ValueRef)
 }
 
+fn codegen_repr_for_physical_lane(world: &World, physical: PhysicalLane) -> CodegenLaneRepr {
+    match physical.source {
+        PhysicalLaneSource::Structural => codegen_repr_for_lane(world, physical.lane),
+        PhysicalLaneSource::Carrier => CodegenLaneRepr::ValueRef,
+    }
+}
+
 fn block_param_codegen_repr_for_lane(world: &World, lane: LaneId) -> CodegenLaneRepr {
     match raw_codegen_repr_for_lane(world, lane) {
         Some(repr @ (CodegenLaneRepr::RawInt | CodegenLaneRepr::RawAtom)) => repr,
         Some(CodegenLaneRepr::RawF64 | CodegenLaneRepr::ValueRef) | None => CodegenLaneRepr::ValueRef,
+    }
+}
+
+fn block_param_codegen_repr_for_physical_lane(world: &World, physical: PhysicalLane) -> CodegenLaneRepr {
+    match physical.source {
+        PhysicalLaneSource::Structural => block_param_codegen_repr_for_lane(world, physical.lane),
+        PhysicalLaneSource::Carrier => CodegenLaneRepr::ValueRef,
     }
 }
 
@@ -2518,7 +2501,7 @@ fn verify_boxed_apply_seam_return_convention(
             if !executable
                 .value_layouts
                 .get(callee)
-                .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef))
+                .is_some_and(|layout| matches!(layout.carrier, TransportCarrier::ValueRef(_)))
             {
                 continue;
             }
@@ -2622,6 +2605,134 @@ mod tests {
         );
     }
 
+    #[test]
+    fn root_carrier_seam_forces_value_ref_for_a_raw_capable_lane() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let lane = world.intern_lane(crate::compiler2::transport::LaneDescr {
+            ty: int,
+            class: crate::compiler2::transport::TransportClass::Value,
+        });
+        let shape = world.intern_shape(ShapeDescr::Lane(lane));
+        let executable = ExecutableSymbol {
+            activation: ActivationSymbol {
+                function: FunctionId::for_test(1),
+                arrow: int,
+                input: Box::default(),
+            },
+            need: ExecutableNeed::Value,
+        };
+        let position = TransportPosition::ExecutableReturn { executable };
+        let structural = symbolic_codegen_seam_facts(
+            &HashMap::new(),
+            &[(position.clone(), TransportLayout::structural(shape))],
+            &world,
+            &HashMap::new(),
+        );
+        let carrier = symbolic_codegen_seam_facts(
+            &HashMap::new(),
+            &[(
+                position,
+                TransportLayout {
+                    structural: shape,
+                    carrier: TransportCarrier::ValueRef(lane),
+                },
+            )],
+            &world,
+            &HashMap::new(),
+        );
+
+        assert_eq!(structural[0].repr, CodegenLaneRepr::RawInt);
+        assert_eq!(carrier[0].repr, CodegenLaneRepr::ValueRef);
+        assert_eq!(structural[0].lane, carrier[0].lane);
+    }
+
+    #[test]
+    fn callable_boundary_seams_preserve_capture_and_argument_carrier_provenance() {
+        let mut world = World::new();
+        let float = world.types_mut().float();
+        let lane = world.intern_lane(crate::compiler2::transport::LaneDescr {
+            ty: float,
+            class: crate::compiler2::transport::TransportClass::Value,
+        });
+        let shape = world.intern_shape(ShapeDescr::Lane(lane));
+        let callable = world.intern_callable(crate::compiler2::transport::CallableDescr {
+            function: Some(FunctionId::for_test(1)),
+            arity: 0,
+            capture_tys: vec![float].into_boxed_slice(),
+            capture_layouts: vec![TransportLayout {
+                structural: shape,
+                carrier: TransportCarrier::ValueRef(lane),
+            }]
+            .into_boxed_slice(),
+        });
+        let boundary = world.intern_boundary(crate::compiler2::transport::BoundaryDescr {
+            callable,
+            surface_arg_layouts: vec![
+                TransportLayout::structural(shape),
+                TransportLayout {
+                    structural: shape,
+                    carrier: TransportCarrier::ValueRef(lane),
+                },
+            ]
+            .into_boxed_slice(),
+            published_value_lane: lane,
+        });
+        let boundaries = HashMap::from([(
+            boundary,
+            BoundaryFacts {
+                publications: Box::default(),
+                resolutions: Box::default(),
+            },
+        )]);
+
+        let seams = symbolic_codegen_seam_facts(&HashMap::new(), &[], &world, &boundaries);
+        let boundary_seams = seams
+            .iter()
+            .filter(
+                |fact| matches!(fact.seam, CodegenSeam::CallableBoundary { boundary: found, .. } if found == boundary),
+            )
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            boundary_seams.len(),
+            3,
+            "duplicate physical lane occurrences remain positional"
+        );
+        assert!(
+            boundary_seams
+                .iter()
+                .all(|fact| fact.lane == lane && fact.shape == Some(shape))
+        );
+        assert_eq!(
+            boundary_seams
+                .iter()
+                .map(|fact| match fact.seam {
+                    CodegenSeam::CallableBoundary { slot, .. } => slot,
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "repeated lane identities remain distinct physical occurrences",
+        );
+        assert_eq!(
+            boundary_seams
+                .iter()
+                .filter(|fact| fact.repr == CodegenLaneRepr::ValueRef)
+                .count(),
+            2,
+            "the capture and carrier-bearing argument must remain ValueRef",
+        );
+        assert_eq!(
+            boundary_seams
+                .iter()
+                .filter(|fact| fact.repr == CodegenLaneRepr::RawF64)
+                .count(),
+            1,
+            "the structural argument of the same Ty remains raw",
+        );
+    }
+
     /// FIX-1 of the fz-kdt.155 re-refutation: the seam tripwire's REFUSING
     /// half must have a witness -- neutering `verify_boxed_apply_seam_return_
     /// convention` shipped green through every gate (the fz-kdt.157 pattern).
@@ -2685,7 +2796,10 @@ mod tests {
                 value_types: HashMap::new(),
                 value_layouts: HashMap::from([(
                     callee,
-                    value_layout(TransportCarrier::ValueRef, vec![AbiValueRepr::ValueRef]),
+                    value_layout(
+                        TransportCarrier::ValueRef(LaneId::for_test(0)),
+                        vec![AbiValueRepr::ValueRef],
+                    ),
                 )]),
                 effects: crate::compiler2::artifact::EffectSummary::default(),
                 body: BackendBody::Clauses {
@@ -2709,7 +2823,10 @@ mod tests {
                             dest: ControlDestination::Return,
                             return_flow: Some(BackendReturnFlow::Deliver {
                                 source: Box::new(BackendReturnLayout {
-                                    layout: value_layout(TransportCarrier::ValueRef, vec![AbiValueRepr::ValueRef]),
+                                    layout: value_layout(
+                                        TransportCarrier::ValueRef(LaneId::for_test(0)),
+                                        vec![AbiValueRepr::ValueRef],
+                                    ),
                                     diverges: false,
                                 }),
                                 entry: ControlEntryId::from_u32(0),

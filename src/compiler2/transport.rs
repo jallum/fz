@@ -33,13 +33,32 @@ impl ShapeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransportCarrier {
     Absent,
-    ValueRef,
+    ValueRef(LaneId),
+}
+
+impl TransportCarrier {
+    pub const fn is_value_ref(self) -> bool {
+        matches!(self, Self::ValueRef(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransportLayout {
     pub structural: ShapeId,
     pub carrier: TransportCarrier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalLane {
+    pub structural: ShapeId,
+    pub lane: LaneId,
+    pub source: PhysicalLaneSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalLaneSource {
+    Structural,
+    Carrier,
 }
 
 impl TransportLayout {
@@ -57,6 +76,11 @@ pub struct LaneId(u32);
 impl LaneId {
     pub fn as_u32(self) -> u32 {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(raw: u32) -> Self {
+        Self(raw)
     }
 }
 
@@ -137,7 +161,7 @@ impl InternedId for BoundaryId {
 pub enum ShapeDescr {
     Nothing,
     Lane(LaneId),
-    Tuple(Box<[ShapeId]>),
+    Tuple(Box<[TransportLayout]>),
     Callable(CallableId),
 }
 
@@ -233,6 +257,7 @@ pub enum CodegenSeam {
     },
     CallableBoundary {
         boundary: BoundaryId,
+        slot: usize,
     },
     ExternBoundary {
         executable: ExecutableSymbol,
@@ -272,16 +297,15 @@ pub struct CallableDescr {
     pub function: Option<FunctionId>,
     /// The callable's user-visible parameter count — what a rendered fun
     /// reports (`#fn<id/arity>`, Elixir's `#Function<.../arity>`). It is fixed
-    /// by the source, unlike the capture lanes below, which demand may elide
-    /// to nothing. Functionally determined by `function`, so it never splits
-    /// an interner pool (fz-gk4).
+    /// by the source, unlike the physical capture layouts below, which demand
+    /// may elide to nothing. Functionally determined by `function`, so it
+    /// never splits an interner pool (fz-gk4).
     pub arity: u16,
     /// The settled types of the closure's lexical captures. They remain part
     /// of callable identity even when demand elides every physical capture
     /// lane, preventing distinct groundings from pooling at the interner.
     pub capture_tys: Box<[Ty]>,
-    pub capture_shapes: Box<[ShapeId]>,
-    pub capture_lanes: Box<[LaneId]>,
+    pub capture_layouts: Box<[TransportLayout]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,10 +362,8 @@ pub struct CallableDirectEdge {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BoundaryDescr {
     pub callable: CallableId,
-    pub surface_arg_shapes: Box<[ShapeId]>,
+    pub surface_arg_layouts: Box<[TransportLayout]>,
     pub published_value_lane: LaneId,
-    pub published_capture_lanes: Box<[LaneId]>,
-    pub published_arg_lanes: Box<[LaneId]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -514,49 +536,93 @@ impl TransportInterners {
     }
 
     pub fn shape_width(&self, shape: ShapeId) -> usize {
-        self.shape_lane_ids(shape).len()
+        match self.shape(shape) {
+            ShapeDescr::Nothing => 0,
+            ShapeDescr::Lane(_) => 1,
+            ShapeDescr::Tuple(fields) => fields.iter().copied().map(|field| self.layout_width(field)).sum(),
+            ShapeDescr::Callable(callable) => self
+                .callable(*callable)
+                .capture_layouts
+                .iter()
+                .copied()
+                .map(|capture| self.layout_width(capture))
+                .sum(),
+        }
+    }
+
+    pub fn layout_width(&self, layout: TransportLayout) -> usize {
+        match layout.carrier {
+            TransportCarrier::Absent => self.shape_width(layout.structural),
+            TransportCarrier::ValueRef(_) => 1,
+        }
     }
 
     pub fn shape_lane_ids(&self, shape: ShapeId) -> Vec<LaneId> {
+        self.shape_physical_lanes(shape)
+            .into_iter()
+            .map(|physical| physical.lane)
+            .collect()
+    }
+
+    pub fn layout_lane_ids(&self, layout: TransportLayout) -> Vec<LaneId> {
+        self.layout_physical_lanes(layout)
+            .into_iter()
+            .map(|physical| physical.lane)
+            .collect()
+    }
+
+    pub fn shape_physical_lanes(&self, shape: ShapeId) -> Vec<PhysicalLane> {
+        let mut lanes = Vec::new();
+        self.push_shape_physical_lanes(shape, &mut lanes);
+        lanes
+    }
+
+    pub fn layout_physical_lanes(&self, layout: TransportLayout) -> Vec<PhysicalLane> {
+        let mut lanes = Vec::new();
+        self.push_layout_physical_lanes(layout, &mut lanes);
+        lanes
+    }
+
+    fn push_shape_physical_lanes(&self, shape: ShapeId, lanes: &mut Vec<PhysicalLane>) {
         match self.shape(shape) {
-            ShapeDescr::Nothing => Vec::new(),
-            ShapeDescr::Lane(lane) => vec![*lane],
-            ShapeDescr::Tuple(fields) => fields
-                .iter()
-                .copied()
-                .flat_map(|field| self.shape_lane_ids(field))
-                .collect(),
-            ShapeDescr::Callable(callable) => self.callable(*callable).capture_lanes.to_vec(),
+            ShapeDescr::Nothing => {}
+            ShapeDescr::Lane(lane) => lanes.push(PhysicalLane {
+                structural: shape,
+                lane: *lane,
+                source: PhysicalLaneSource::Structural,
+            }),
+            ShapeDescr::Tuple(fields) => {
+                for field in fields.iter().copied() {
+                    self.push_layout_physical_lanes(field, lanes);
+                }
+            }
+            ShapeDescr::Callable(callable) => {
+                for capture in self.callable(*callable).capture_layouts.iter().copied() {
+                    self.push_layout_physical_lanes(capture, lanes);
+                }
+            }
         }
     }
 
-    pub fn shape_leaf_lanes(&self, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-        match self.shape(shape) {
-            ShapeDescr::Nothing => Vec::new(),
-            ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-            ShapeDescr::Tuple(fields) => fields
-                .iter()
-                .copied()
-                .flat_map(|field| self.shape_leaf_lanes(field))
-                .collect(),
-            ShapeDescr::Callable(callable) => self
-                .callable(*callable)
-                .capture_lanes
-                .iter()
-                .copied()
-                .map(|lane| (shape, lane))
-                .collect(),
+    fn push_layout_physical_lanes(&self, layout: TransportLayout, lanes: &mut Vec<PhysicalLane>) {
+        match layout.carrier {
+            TransportCarrier::Absent => self.push_shape_physical_lanes(layout.structural, lanes),
+            TransportCarrier::ValueRef(lane) => lanes.push(PhysicalLane {
+                structural: layout.structural,
+                lane,
+                source: PhysicalLaneSource::Carrier,
+            }),
         }
     }
 
-    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(ShapeId, Range<usize>)>> {
+    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(TransportLayout, Range<usize>)>> {
         let ShapeDescr::Tuple(fields) = self.shape(shape) else {
             return None;
         };
         let mut offset = 0_usize;
         let mut spans = Vec::with_capacity(fields.len());
         for field in fields.iter().copied() {
-            let width = self.shape_width(field);
+            let width = self.layout_width(field);
             let end = offset
                 .checked_add(width)
                 .expect("transport tuple field lane span overflow");

@@ -99,7 +99,10 @@ const SHAPE_DESCRIPTORS: &[(&str, &str)] = &[
     ("S_nothing", "Nothing"),
     ("S_int", "Lane(L_int)"),
     ("S_direct_callable", "Callable(C_direct)"),
-    ("S_pair_return", "Tuple([S_int, S_direct_callable])"),
+    (
+        "S_pair_return",
+        "Tuple([structural(S_int), structural(S_direct_callable)])",
+    ),
     ("S_pub_callable", "Callable(C_pub)"),
 ];
 
@@ -108,18 +111,17 @@ const LANE_DESCRIPTORS: &[(&str, &str)] = &[("L_int", "LaneDescr { ty: int, tran
 const CALLABLE_FACTS: &[(&str, &str)] = &[
     (
         "C_direct",
-        "target E_add; capture_shapes [S_int]; direct_surfaces [[S_int]]; boundary_ids []",
+        "target E_add; capture_layouts [structural(S_int)]; direct_surfaces [[S_int]]; boundary_ids []",
     ),
     (
         "C_pub",
-        "target E_add; capture_shapes [S_int]; direct_surfaces []; boundary_ids [B_pub]",
+        "target E_add; capture_layouts [structural(S_int)]; direct_surfaces []; boundary_ids [B_pub]",
     ),
 ];
 
 const BOUNDARY_FACTS: &[(&str, &str)] = &[(
     "B_pub",
-    "callable C_pub; surface_arg_shapes [S_int]; published_value_lane L_int; published_capture_lanes [L_int]; \
-     published_arg_lanes [L_int]",
+    "callable C_pub; surface_arg_layouts [structural(S_int)]; published_value_lane L_int",
 )];
 
 const ROOT_PLAN_MEMBERSHIP: &[&str] = &["E_main", "E_pair", "E_add"];
@@ -159,7 +161,7 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
     );
     assert_eq!(
         shape("S_pair_return"),
-        Some("Tuple([S_int, S_direct_callable])"),
+        Some("Tuple([structural(S_int), structural(S_direct_callable)])"),
         "pair/1 returns the same tuple shape that main/0 resumes from"
     );
     assert_eq!(
@@ -169,21 +171,18 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
     );
     assert_eq!(
         callable("C_direct"),
-        Some("target E_add; capture_shapes [S_int]; direct_surfaces [[S_int]]; boundary_ids []"),
+        Some("target E_add; capture_layouts [structural(S_int)]; direct_surfaces [[S_int]]; boundary_ids []"),
         "direct callable identity is separate from boundary publication"
     );
     assert_eq!(
         callable("C_pub"),
-        Some("target E_add; capture_shapes [S_int]; direct_surfaces []; boundary_ids [B_pub]"),
+        Some("target E_add; capture_layouts [structural(S_int)]; direct_surfaces []; boundary_ids [B_pub]"),
         "the escaped callable shares the target but publishes an explicit boundary fact"
     );
     assert_eq!(
         boundary("B_pub"),
-        Some(
-            "callable C_pub; surface_arg_shapes [S_int]; published_value_lane L_int; published_capture_lanes [L_int]; \
-             published_arg_lanes [L_int]"
-        ),
-        "boundary publication is contextual and points at shared lane/shape ids"
+        Some("callable C_pub; surface_arg_layouts [structural(S_int)]; published_value_lane L_int"),
+        "boundary publication is contextual and retains its physical argument layouts"
     );
 
     for (name, descr) in SHAPE_DESCRIPTORS.iter().chain(LANE_DESCRIPTORS) {
@@ -464,6 +463,77 @@ fn main(), do: make()
 }
 
 #[test]
+fn compiler2_callable_boundary_seams_keep_capture_carriers_distinct_from_raw_arguments() {
+    let source = r#"
+fn main() do
+  flag = self() == self()
+  f = if flag do
+    fn () -> {41.5, :ok} end
+  else
+    fn () -> {42.5, :bad} end
+  end
+  {n, _} = f.()
+  g = if flag do
+    fn x -> n + x end
+  else
+    fn x -> n - x end
+  end
+  g.(1.0)
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("callable_boundary_carrier_provenance.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (_, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+
+    let (boundary, capture, argument) = plan
+        .boundary_facts
+        .keys()
+        .find_map(|boundary| {
+            let descr = world.boundary(*boundary);
+            let [capture] = world.callable(descr.callable).capture_layouts.as_ref() else {
+                return None;
+            };
+            let [argument] = descr.surface_arg_layouts.as_ref() else {
+                return None;
+            };
+            (capture.carrier.is_value_ref() && argument.carrier == TransportCarrier::Absent)
+                .then_some((*boundary, *capture, *argument))
+        })
+        .expect("the joined scalar closure should publish a carried capture and raw argument boundary");
+    let capture_lane = world.layout_lane_ids(capture);
+    let argument_lane = world.layout_lane_ids(argument);
+    assert_eq!(
+        capture_lane, argument_lane,
+        "the proof must exercise one typed lane in two physical roles"
+    );
+
+    let seams = plan
+        .codegen_seam_facts
+        .iter()
+        .filter_map(|fact| match fact.seam {
+            CodegenSeam::CallableBoundary { boundary: found, slot } if found == boundary => {
+                Some((slot, fact.shape, fact.lane, fact.repr))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        seams,
+        vec![
+            (0, Some(capture.structural), capture_lane[0], CodegenLaneRepr::ValueRef),
+            (1, Some(argument.structural), argument_lane[0], CodegenLaneRepr::RawF64),
+        ],
+        "boundary seam slots must preserve carrier and structural provenance for repeated lane identities",
+    );
+}
+
+#[test]
 fn compiler2_transport_flow_publishes_extern_boundary_codegen_seams() {
     let source = r#"
 extern "C" fn fz_float_id(float) :: float
@@ -484,6 +554,37 @@ fn main(), do: fz_float_id(1.0)
             .any(|fact| matches!(fact.seam, CodegenSeam::ExternBoundary { .. }) && fact.repr == CodegenLaneRepr::RawF64),
         "a float extern should publish RawF64 extern-boundary lane facts: {:?}",
         plan.codegen_seam_facts
+    );
+}
+
+#[test]
+fn compiler2_extern_any_marshals_a_raw_scalar_without_promoting_its_transport_carrier() {
+    let source = r#"
+extern "C" fn fz_any_id(any) :: any
+fn main(), do: fz_any_id(1.0)
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(Some("transport_extern_any_scalar.fz".to_string()), source.to_string());
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    let (driver, plan) = pull_transport_plan_for_test(&tel, &mut world, root);
+    let executable = executable_for(&world, driver.session(), "fz_any_id", 1);
+    let input = plan
+        .layout_at(&TransportPosition::ExecutableInput {
+            executable: executable.clone(),
+            semantic_index: 0,
+        })
+        .expect("the extern scalar input should have a transport layout");
+
+    assert_eq!(input.carrier, TransportCarrier::Absent);
+    assert_seam_fact(
+        &plan.codegen_seam_facts,
+        |seam| matches!(seam, CodegenSeam::ExternBoundary { executable: found } if found == &executable),
+        Some(input.structural),
+        world.layout_lane_ids(input)[0],
+        CodegenLaneRepr::RawF64,
+        "the extern marshal, not the transport layout, boxes a raw scalar for an Any parameter",
     );
 }
 
@@ -545,37 +646,36 @@ fn main(), do: dbg({:zero, :pos, :other})
     let session = driver.session();
     let dbg_wrapper = executable_for(&world, session, "dbg", 1);
     let dbg = executable_for(&world, session, "fz_dbg", 1);
-    let wrapper_input_shape = plan_shape_at(
-        &plan,
-        &TransportPosition::ExecutableInput {
+    let wrapper_input = plan
+        .layout_at(&TransportPosition::ExecutableInput {
             executable: dbg_wrapper,
             semantic_index: 0,
-        },
-    );
+        })
+        .expect("the direct wrapper input should have a transport layout");
     assert!(
-        matches!(shape_descr(&world, wrapper_input_shape), ShapeDescr::Lane(_)),
-        "a wrapper that forwards into an extern any boundary should also consume one boxed value lane",
+        matches!(shape_descr(&world, wrapper_input.structural), ShapeDescr::Tuple(_))
+            && wrapper_input.carrier == TransportCarrier::Absent,
+        "the direct wrapper input should retain complete tuple lanes until the extern boundary",
     );
-    let input_shape = plan_shape_at(
-        &plan,
-        &TransportPosition::ExecutableInput {
+    let input = plan
+        .layout_at(&TransportPosition::ExecutableInput {
             executable: dbg.clone(),
             semantic_index: 0,
-        },
-    );
+        })
+        .expect("the extern input should have a transport layout");
     assert!(
-        matches!(shape_descr(&world, input_shape), ShapeDescr::Lane(_)),
-        "extern any input should consume one boxed value lane, not the tuple producer's field lanes",
+        input.carrier.is_value_ref(),
+        "extern any input should attach one explicit boxed carrier",
     );
-    let leaf_lanes = shape_leaf_lanes(&world, input_shape);
-    let [(leaf_shape, lane)] = leaf_lanes.as_slice() else {
+    let leaf_lanes = world.layout_physical_lanes(input);
+    let [physical] = leaf_lanes.as_slice() else {
         panic!("extern any input should have exactly one boxed lane")
     };
     assert_seam_fact(
         &plan.codegen_seam_facts,
         |seam| matches!(seam, CodegenSeam::FunctionEntry { executable, semantic_index } if executable == &dbg && *semantic_index == 0),
-        Some(*leaf_shape),
-        *lane,
+        Some(physical.structural),
+        physical.lane,
         CodegenLaneRepr::ValueRef,
         "extern any input should publish one ValueRef function-entry seam",
     );
@@ -919,7 +1019,7 @@ end
     };
     let applied_descr = world.callable(*applied_callable);
     assert_eq!(
-        applied_descr.capture_lanes.len(),
+        callable_capture_lanes(&world, *applied_callable).len(),
         1,
         "apply1/2 must preserve the returned closure's captured `a` payload: {applied_descr:?}"
     );
@@ -990,10 +1090,10 @@ end
         panic!("pair/1 should return the integer and direct callable fields")
     };
     assert!(
-        matches!(shape_descr(&world, *n_shape), ShapeDescr::Lane(_)),
+        matches!(shape_descr(&world, n_shape.structural), ShapeDescr::Lane(_)),
         "the scalar field should remain a lane shape"
     );
-    let ShapeDescr::Callable(pair_callable) = shape_descr(&world, *f_shape) else {
+    let ShapeDescr::Callable(pair_callable) = shape_descr(&world, f_shape.structural) else {
         panic!("the callable field should remain a CallableId shape")
     };
 
@@ -1025,7 +1125,7 @@ end
     };
     let apply1_descr = world.callable(*apply1_callable);
     assert_eq!(
-        apply1_descr.capture_lanes.len(),
+        callable_capture_lanes(&world, *apply1_callable).len(),
         1,
         "apply1/2 must preserve the returned closure's structural capture payload: {apply1_descr:?}"
     );
@@ -1377,7 +1477,14 @@ end
     let (_, boundaries) = callable_owner_facts_for_test(session);
     let surface_contracts = boundaries
         .keys()
-        .map(|boundary| world.boundary(*boundary).surface_arg_shapes.to_vec())
+        .map(|boundary| {
+            world
+                .boundary(*boundary)
+                .surface_arg_layouts
+                .iter()
+                .map(|layout| layout.structural)
+                .collect::<Vec<_>>()
+        })
         .collect::<BTreeSet<_>>();
     assert!(
         surface_contracts.len() >= 2,
@@ -1412,10 +1519,10 @@ fn main(), do: {make1(1), make2(1, 2)}
     let [left, right] = items.as_ref() else {
         panic!("main/0 should return exactly two callable tuple fields")
     };
-    let ShapeDescr::Callable(left) = shape_descr(&world, *left) else {
+    let ShapeDescr::Callable(left) = shape_descr(&world, left.structural) else {
         panic!("first tuple field should be callable-shaped")
     };
-    let ShapeDescr::Callable(right) = shape_descr(&world, *right) else {
+    let ShapeDescr::Callable(right) = shape_descr(&world, right.structural) else {
         panic!("second tuple field should be callable-shaped")
     };
     assert_ne!(
@@ -1444,15 +1551,15 @@ end
     let _ = &plan;
     let session = driver.session();
     let boundary = boundary_with_callable_arg(&world, session);
-    let [arg_shape] = boundary.surface_arg_shapes.as_ref() else {
-        panic!("f/1 boundary should publish one surface argument shape")
+    let [arg_layout] = boundary.surface_arg_layouts.as_ref() else {
+        panic!("f/1 boundary should publish one surface argument layout")
     };
     assert!(
-        matches!(shape_descr(&world, *arg_shape), ShapeDescr::Callable(_)),
+        matches!(shape_descr(&world, arg_layout.structural), ShapeDescr::Callable(_)),
         "the published boundary argument should preserve the callable shape"
     );
     assert_eq!(
-        boundary.published_arg_lanes.len(),
+        world.layout_lane_ids(*arg_layout).len(),
         1,
         "a callable argument crossing a boundary should be boxed into one published lane"
     );
@@ -1582,9 +1689,9 @@ fn sole_callable_with_callable_capture(world: &World, session: &PullSession) -> 
         .filter(|callable| {
             world
                 .callable(*callable)
-                .capture_shapes
+                .capture_layouts
                 .iter()
-                .any(|shape| matches!(shape_descr(world, *shape), ShapeDescr::Callable(_)))
+                .any(|layout| matches!(shape_descr(world, layout.structural), ShapeDescr::Callable(_)))
         })
         .collect::<Vec<_>>();
     let [continuation] = candidates.as_slice() else {
@@ -1596,13 +1703,13 @@ fn sole_callable_with_callable_capture(world: &World, session: &PullSession) -> 
 fn assert_suspend_continuation_captures(world: &World, continuation: super::transport::CallableId) {
     let continuation_descr = world.callable(continuation);
     assert_eq!(
-        continuation_descr.capture_shapes.len(),
+        continuation_descr.capture_layouts.len(),
         3,
         "the suspend continuation should capture the remaining list, accumulator, and reducer"
     );
     assert!(
         matches!(
-            shape_descr(world, continuation_descr.capture_shapes[2]),
+            shape_descr(world, continuation_descr.capture_layouts[2].structural),
             ShapeDescr::Callable(_)
         ),
         "the captured reducer should remain callable-shaped inside the continuation descriptor"
@@ -1880,10 +1987,10 @@ end
         .iter()
         .find_map(|(outer, _)| {
             let outer_descr = world.callable(*outer);
-            let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
+            let [capture_layout] = outer_descr.capture_layouts.as_ref() else {
                 return None;
             };
-            let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+            let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
                 return None;
             };
             Some(*captured)
@@ -1976,17 +2083,15 @@ fn main(), do: make(1, 2)
         callable_owner_facts_for_test(session).0.contains_key(callable),
         "returned callable facts should be present"
     );
-    let callable_descr = world.callable(*callable);
     assert_eq!(
-        callable_descr.capture_lanes.len(),
+        callable_capture_lanes(&world, *callable).len(),
         2,
         "two same-typed captures are two ordered payload lanes, not one deduplicated lane"
     );
     let boundary = single_boundary_descr(&world, session);
     assert_eq!(
-        boundary.published_capture_lanes.as_ref(),
-        callable_descr.capture_lanes.as_ref(),
-        "published capture lanes must preserve the callable capture payload sequence exactly"
+        boundary.callable, *callable,
+        "the boundary must derive its capture payload from the callable descriptor"
     );
 }
 
@@ -2024,7 +2129,7 @@ end
         };
         assert_eq!(
             target.activation.input.len(),
-            boundary_descr.surface_arg_shapes.len(),
+            boundary_descr.surface_arg_layouts.len(),
             "boundary target arity should match the boundary's published surface"
         );
     }
@@ -3093,7 +3198,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
     };
     let plus_descr = world.callable(*plus_callable);
     assert_eq!(plus_descr.function, Some(zero_capture_plus_input.2.activation.function));
-    assert!(plus_descr.capture_lanes.is_empty());
+    assert!(callable_capture_lanes(&world, *plus_callable).is_empty());
     assert_eq!(plus_layout.carrier, TransportCarrier::Absent);
     assert_executable_fact_producer_pokes(&world, driver.session());
     assert!(
@@ -3477,7 +3582,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
                 panic!("a joined callable publication must remain callable-shaped: {position:?} -> {layout:?}")
             };
             assert_eq!(world.callable(*callable).function, None);
-            assert_eq!(layout.carrier, TransportCarrier::ValueRef);
+            assert!(layout.carrier.is_value_ref());
         })
         .collect::<Vec<_>>();
     assert!(
@@ -3507,22 +3612,22 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
     let (callables, _) = callable_owner_facts_for_test(session);
     let lambda_capturing_published_callable = callables.keys().find_map(|callable| {
         let descr = world.callable(*callable);
-        let [capture_shape] = descr.capture_shapes.as_ref() else {
+        let [capture_layout] = descr.capture_layouts.as_ref() else {
             return None;
         };
-        let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+        let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
             return None;
         };
         let captured_descr = world.callable(*captured);
         let captured_facts = callables.get(captured)?;
         (descr.function.is_some() && captured_descr.function.is_none() && !captured_facts.boundary_ids.is_empty())
-            .then_some((*callable, *capture_shape))
+            .then_some((*callable, capture_layout.structural))
     });
     let (callable, capture_shape) = lambda_capturing_published_callable
         .expect("Enum.reduce's generated loop lambda should capture the published joined reducer value");
     let descr = world.callable(callable);
     assert_eq!(
-        descr.capture_lanes.len(),
+        callable_capture_lanes(&world, callable).len(),
         1,
         "a lambda that captures a first-class callable value must carry that runtime value in a physical capture lane, not recurse into the captured callable's zero structural lanes: {descr:?}; capture_shape={capture_shape:?}",
     );
@@ -3532,7 +3637,7 @@ fn compiler2_transport_plan_gives_lambda_capture_lane_for_published_callable_cap
                 executable: executable.clone(),
                 semantic_index: 0,
             })
-            .is_some_and(|layout| layout.carrier == TransportCarrier::ValueRef)
+            .is_some_and(|layout| layout.carrier.is_value_ref())
         }),
         "each generated lambda executable must receive its first-class callable capture through a ValueRef-owned input layout: callable={callable:?}; layouts={:?}",
         plan.position_layouts,
@@ -3582,8 +3687,8 @@ fn compiler2_singleton_callable_target_refines_input_to_its_exact_capture_prefix
     let descr = world.callable(*callable);
     assert_eq!(descr.function, Some(target.activation.function));
     assert_eq!(descr.capture_tys.as_ref(), &target.activation_inputs[..2]);
-    assert_eq!(descr.capture_shapes.len(), 2);
-    assert_eq!(descr.capture_lanes.len(), 2);
+    assert_eq!(descr.capture_layouts.len(), 2);
+    assert_eq!(callable_capture_lanes(&world, *callable).len(), 2);
     assert_eq!(layout.carrier, TransportCarrier::Absent);
 }
 
@@ -3632,9 +3737,8 @@ end
             0,
             "a generic callable's structure must not duplicate its boxed carrier: {position:?}",
         );
-        assert_eq!(
-            layout.carrier,
-            TransportCarrier::ValueRef,
+        assert!(
+            layout.carrier.is_value_ref(),
             "the continuation capture must carry the first-class callable through its exact layout carrier: {position:?}",
         );
     }
@@ -3671,13 +3775,13 @@ end
     let (callables, _) = callable_owner_facts_for_test(session);
     let captured_callable = callables.iter().find_map(|(outer, facts)| {
         let outer_descr = world.callable(*outer);
-        let [capture_shape] = outer_descr.capture_shapes.as_ref() else {
+        let [capture_layout] = outer_descr.capture_layouts.as_ref() else {
             return None;
         };
-        let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+        let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
             return None;
         };
-        (!facts.direct_surfaces.is_empty()).then_some((*captured, *capture_shape, facts.resolutions.clone()))
+        (!facts.direct_surfaces.is_empty()).then_some((*captured, capture_layout.structural, facts.resolutions.clone()))
     });
     let (captured_callable, captured_shape, reducer_resolutions) =
         captured_callable.unwrap_or_else(|| panic!("the reducer lambda should capture predicate as a callable shape"));
@@ -3805,9 +3909,8 @@ fn compiler2_transport_plan_preserves_enum_reducer_constructions_behind_anonymou
                 None,
                 "the captured public callable ABI must not encode source function identity"
             );
-            assert_eq!(
-                capture.layout.carrier,
-                TransportCarrier::ValueRef,
+            assert!(
+                capture.layout.carrier.is_value_ref(),
                 "a callable capture must carry its callable value even when its descriptor has no nested lanes",
             );
         }
@@ -3854,6 +3957,23 @@ fn main(), do: make(41).(1)
         "both public scalar-capturing lambdas should retain one construction fact",
     );
     for construction in constructions {
+        let descriptor = world.callable(construction.callable);
+        assert_eq!(
+            descriptor.capture_layouts.as_ref(),
+            construction
+                .captures
+                .iter()
+                .map(|capture| capture.layout)
+                .collect::<Vec<_>>(),
+            "the callable descriptor and construction must share one capture-layout authority",
+        );
+        for member in &construction.members {
+            assert_eq!(
+                world.boundary(member.boundary).callable,
+                construction.callable,
+                "public boundaries must derive captures from the construction's callable descriptor",
+            );
+        }
         let capture = &construction.captures[0];
         let shape = capture.layout.structural;
         assert!(
@@ -4802,10 +4922,10 @@ end
         .iter()
         .find_map(|(callable, facts)| {
             let descr = world.callable(*callable);
-            let [capture_shape] = descr.capture_shapes.as_ref() else {
+            let [capture_layout] = descr.capture_layouts.as_ref() else {
                 return None;
             };
-            let ShapeDescr::Callable(captured) = shape_descr(&world, *capture_shape) else {
+            let ShapeDescr::Callable(captured) = shape_descr(&world, capture_layout.structural) else {
                 return None;
             };
             let reducer_shape = plan.position_layouts.iter().find_map(|(_, layout)| {
@@ -4814,7 +4934,7 @@ end
             })?;
             (!facts.direct_surfaces.is_empty()).then_some((
                 reducer_shape,
-                *capture_shape,
+                capture_layout.structural,
                 *captured,
                 facts.resolutions.clone(),
             ))
@@ -4842,9 +4962,8 @@ end
             ShapeDescr::Callable(_)
         ));
     }
-    let predicate_descr = world.callable(predicate_callable);
     assert!(
-        predicate_descr.capture_lanes.is_empty(),
+        callable_capture_lanes(&world, predicate_callable).is_empty(),
         "the predicate lambda captures nothing, so the reducer capture-prefix input must carry no payload lanes"
     );
     for resolution in reducer_resolutions {
@@ -5441,7 +5560,7 @@ fn assert_generic_callable_shape_matches_upstream_demand(
     // — asserted below.
     assert_eq!(descr.function, None, "an opaque callable value is boxed: function None");
     assert_eq!(
-        descr.capture_lanes.len(),
+        callable_capture_lanes(world, callable).len(),
         0,
         "a generic callable identity must not duplicate its external carrier as a capture lane: {descr:?}"
     );
@@ -5522,7 +5641,11 @@ fn assert_boundary_resolutions_match_upstream_flow(
 
     for boundary in facts.boundary_ids.iter().copied() {
         let boundary_descr = world.boundary(boundary);
-        let surface_arg_shapes = boundary_descr.surface_arg_shapes.clone();
+        let surface_arg_shapes = boundary_descr
+            .surface_arg_layouts
+            .iter()
+            .map(|layout| layout.structural)
+            .collect::<Vec<_>>();
         let expected = expected_by_surface
             .iter()
             .find_map(|(surface, expected)| {
@@ -5610,7 +5733,7 @@ fn shape_matches_surface_input_ty(world: &mut World, shape: ShapeId, ty: Ty) -> 
                         .iter()
                         .copied()
                         .zip(field_tys)
-                        .all(|(field_shape, field_ty)| shape_matches_surface_input_ty(world, field_shape, field_ty))
+                        .all(|(field, field_ty)| shape_matches_surface_input_ty(world, field.structural, field_ty))
             })
         }
         ShapeDescr::Callable(_) => world.types().arrow_result(&ty).is_some(),
@@ -5672,16 +5795,22 @@ fn shape_descr(world: &World, shape: ShapeId) -> &ShapeDescr {
     world.shape(shape)
 }
 
+fn callable_capture_lanes(world: &World, callable: super::transport::CallableId) -> Vec<LaneId> {
+    world
+        .callable(callable)
+        .capture_layouts
+        .iter()
+        .copied()
+        .flat_map(|layout| world.layout_lane_ids(layout))
+        .collect()
+}
+
 fn shape_leaf_lanes(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match shape_descr(world, shape) {
-        ShapeDescr::Nothing | ShapeDescr::Callable(_) => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-        ShapeDescr::Tuple(items) => items
-            .iter()
-            .copied()
-            .flat_map(|item| shape_leaf_lanes(world, item))
-            .collect(),
-    }
+    world
+        .shape_physical_lanes(shape)
+        .into_iter()
+        .map(|physical| (physical.structural, physical.lane))
+        .collect()
 }
 
 fn assert_seam_fact(
@@ -5760,9 +5889,9 @@ fn boundary_with_callable_arg<'a>(world: &'a World, session: &PullSession) -> &'
         .map(|boundary| world.boundary(*boundary))
         .find(|boundary| {
             boundary
-                .surface_arg_shapes
+                .surface_arg_layouts
                 .iter()
-                .any(|shape| matches!(shape_descr(world, *shape), ShapeDescr::Callable(_)))
+                .any(|layout| matches!(shape_descr(world, layout.structural), ShapeDescr::Callable(_)))
         })
         .unwrap_or_else(|| {
             panic!(
@@ -5790,7 +5919,7 @@ fn callable_return_for_executable(
 fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
     match shape_descr(world, shape) {
         ShapeDescr::Callable(_) => true,
-        ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, *item)),
+        ShapeDescr::Tuple(items) => items.iter().any(|item| shape_contains_callable(world, item.structural)),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) => false,
     }
 }
@@ -5798,7 +5927,9 @@ fn shape_contains_callable(world: &World, shape: ShapeId) -> bool {
 fn first_callable_in_shape(world: &World, shape: ShapeId) -> Option<super::transport::CallableId> {
     match shape_descr(world, shape) {
         ShapeDescr::Callable(callable) => Some(*callable),
-        ShapeDescr::Tuple(items) => items.iter().find_map(|item| first_callable_in_shape(world, *item)),
+        ShapeDescr::Tuple(items) => items
+            .iter()
+            .find_map(|item| first_callable_in_shape(world, item.structural)),
         ShapeDescr::Nothing | ShapeDescr::Lane(_) => None,
     }
 }
@@ -6060,7 +6191,7 @@ end
         };
         let descr = world.callable(*callable);
         assert_eq!(
-            descr.capture_lanes.len(),
+            callable_capture_lanes(&world, *callable).len(),
             1,
             "every activation reached by this reducer captures the mailbox callable, so the \
              input must carry its one lane: {position:?} {descr:?}"

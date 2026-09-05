@@ -68,7 +68,8 @@ use super::structdef::{
     StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation, StructReferenceExpectation,
 };
 use super::transport::{
-    BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportStore,
+    BoundaryDescr, BoundaryId, CallableDescr, CallableId, LaneDescr, LaneId, ShapeDescr, ShapeId, TransportLayout,
+    TransportStore,
 };
 use super::typedef::{TypeDef, TypeDefMap};
 use super::types::{ClosureTarget, MapKey, Ty, Types};
@@ -341,15 +342,27 @@ impl World {
         self.transport.interners().shape_width(shape)
     }
 
+    pub fn layout_width(&self, layout: TransportLayout) -> usize {
+        self.transport.interners().layout_width(layout)
+    }
+
     pub fn shape_lane_ids(&self, shape: ShapeId) -> Vec<LaneId> {
         self.transport.interners().shape_lane_ids(shape)
     }
 
-    pub fn shape_leaf_lanes(&self, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-        self.transport.interners().shape_leaf_lanes(shape)
+    pub fn layout_lane_ids(&self, layout: TransportLayout) -> Vec<LaneId> {
+        self.transport.interners().layout_lane_ids(layout)
     }
 
-    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(ShapeId, std::ops::Range<usize>)>> {
+    pub fn shape_physical_lanes(&self, shape: ShapeId) -> Vec<super::transport::PhysicalLane> {
+        self.transport.interners().shape_physical_lanes(shape)
+    }
+
+    pub fn layout_physical_lanes(&self, layout: TransportLayout) -> Vec<super::transport::PhysicalLane> {
+        self.transport.interners().layout_physical_lanes(layout)
+    }
+
+    pub fn tuple_field_spans(&self, shape: ShapeId) -> Option<Vec<(TransportLayout, std::ops::Range<usize>)>> {
         self.transport.interners().tuple_field_spans(shape)
     }
 

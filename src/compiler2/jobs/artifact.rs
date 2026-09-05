@@ -39,9 +39,11 @@ use super::super::scheduler::FatalError;
 use super::super::semantic::CallSiteKey;
 use super::super::semantic::SemanticOrd;
 use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee, ShapeDemand};
+#[cfg(test)]
+use super::super::transport::ShapeDescr;
 use super::super::transport::{
-    ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId, ShapeDescr,
-    ShapeId, TransportPosition,
+    ActivationSymbol, BoundaryId, CodegenLaneRepr, CodegenSeam, CodegenSeamFact, ExecutableSymbol, LaneId,
+    PhysicalLaneSource, ShapeId, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -546,7 +548,7 @@ fn codegen_seam_parts(seam: &CodegenSeam) -> (u8, CodegenSeamOwner<'_>, u32, u32
         } => (4, Executable(executable), callsite.as_u32(), entry.as_u32()),
         CodegenSeam::ReturnContinuation { executable, callsite } => (5, Executable(executable), callsite.as_u32(), 0),
         CodegenSeam::TailCall { executable, callsite } => (6, Executable(executable), callsite.as_u32(), 0),
-        CodegenSeam::CallableBoundary { boundary } => (7, Boundary(*boundary), 0, 0),
+        CodegenSeam::CallableBoundary { boundary, slot } => (7, Boundary(*boundary), *slot as u32, 0),
         CodegenSeam::ExternBoundary { executable } => (8, Executable(executable), 0, 0),
         CodegenSeam::FirstClassPublication { boundary } => (9, Boundary(*boundary), 0, 0),
     }
@@ -1208,7 +1210,7 @@ fn materialize_closure_call_edge(
     // the standing state for a closure that arrived from outside the analysed
     // world — a mailbox message — where no target is ever named and none ever
     // will be: "no targets" there is UNKNOWN, not `none` (fz-kdt.130).
-    let public_callable = matches!(callee_layout.carrier, TransportCarrier::ValueRef);
+    let public_callable = matches!(callee_layout.carrier, TransportCarrier::ValueRef(_));
     if public_callable {
         let return_ty =
             public_indirect_return_ty(world, tel, root_id, analysis, summary.as_ref(), callsite, result_value)?;
@@ -1881,46 +1883,30 @@ fn build_executable_abi_plan(
             let layout = transport_plan
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized input position {position:?}"));
-            if matches!(layout.carrier, TransportCarrier::ValueRef) {
-                return Some(BackendSemanticInputLayout {
-                    semantic_index: *semantic_index,
-                    layout: BackendValueLayout {
-                        structural: layout.structural,
-                        carrier: layout.carrier,
-                        tys: Box::new([world.types_mut().any()]),
-                        reprs: Box::new([AbiValueRepr::ValueRef]),
-                    },
-                });
-            }
             let shape = layout.structural;
             let demand = executable.runtime_demand.input_demands.get(*semantic_index);
-            let contract = if demand.is_some_and(|demand| demand.is_ignore()) {
-                Vec::new()
-            } else {
-                shape_leaf_lanes_for_artifact(world, shape)
-                    .into_iter()
-                    .map(|(leaf_shape, lane)| {
-                        (
-                            world.lane(lane).ty,
-                            seam_repr_for_lane_or_default(
-                                world,
-                                transport_plan.codegen_seam_facts,
-                                |seam| {
-                                    matches!(
-                                        seam,
-                                        CodegenSeam::FunctionEntry {
-                                            executable,
-                                            semantic_index: index
-                                        } if executable == symbol && index == semantic_index
-                                    )
-                                },
-                                Some(leaf_shape),
-                                lane,
-                            ),
+            let contract =
+                if layout.carrier == TransportCarrier::Absent && demand.is_some_and(|demand| demand.is_ignore()) {
+                    Vec::new()
+                } else {
+                    physical_layout_contract(world, layout, |world, leaf_shape, lane| {
+                        seam_repr_for_lane_or_default(
+                            world,
+                            transport_plan.codegen_seam_facts,
+                            |seam| {
+                                matches!(
+                                    seam,
+                                    CodegenSeam::FunctionEntry {
+                                        executable,
+                                        semantic_index: index
+                                    } if executable == symbol && index == semantic_index
+                                )
+                            },
+                            Some(leaf_shape),
+                            lane,
                         )
                     })
-                    .collect::<Vec<_>>()
-            };
+                };
             Some(BackendSemanticInputLayout {
                 semantic_index: *semantic_index,
                 layout: BackendValueLayout {
@@ -1941,31 +1927,21 @@ fn build_executable_abi_plan(
     let return_layout = transport_plan
         .layout_at(return_position)
         .unwrap_or_else(|| panic!("transport plan should publish materialized return position {return_position:?}"));
-    let return_contract = if matches!(return_layout.carrier, TransportCarrier::ValueRef) {
-        vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
-    } else {
-        shape_leaf_lanes_for_artifact(world, return_layout.structural)
-            .into_iter()
-            .map(|(leaf_shape, lane)| {
-                (
-                    world.lane(lane).ty,
-                    seam_repr_for_lane_or_default(
-                        world,
-                        transport_plan.codegen_seam_facts,
-                        |seam| {
-                            matches!(
-                                seam,
-                                CodegenSeam::ReturnDelivery { executable: symbol }
-                                    if symbol == &transport.executable
-                            )
-                        },
-                        Some(leaf_shape),
-                        lane,
-                    ),
+    let return_contract = physical_layout_contract(world, return_layout, |world, leaf_shape, lane| {
+        seam_repr_for_lane_or_default(
+            world,
+            transport_plan.codegen_seam_facts,
+            |seam| {
+                matches!(
+                    seam,
+                    CodegenSeam::ReturnDelivery { executable: symbol }
+                        if symbol == &transport.executable
                 )
-            })
-            .collect::<Vec<_>>()
-    };
+            },
+            Some(leaf_shape),
+            lane,
+        )
+    });
     let mut value_layouts: HashMap<ValueId, BackendValueLayout> = transport
         .value_positions
         .iter()
@@ -1976,17 +1952,10 @@ fn build_executable_abi_plan(
             let layout = transport_plan
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized value position {position:?}"));
-            let contract = if matches!(layout.carrier, TransportCarrier::ValueRef) {
-                vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
-            } else {
-                shape_leaf_lanes_for_artifact(world, layout.structural)
-                    .into_iter()
-                    .map(|(_, lane)| {
-                        let ty = world.lane(lane).ty;
-                        (ty, abi_value_repr(world, ty))
-                    })
-                    .collect()
-            };
+            let contract = physical_layout_contract(world, layout, |world, _, lane| {
+                let ty = world.lane(lane).ty;
+                abi_value_repr(world, ty)
+            });
             Some((
                 *value,
                 BackendValueLayout {
@@ -2020,19 +1989,9 @@ fn build_executable_abi_plan(
             let layout = transport_plan
                 .layout_at(position)
                 .unwrap_or_else(|| panic!("transport plan should publish materialized return endpoint {position:?}"));
-            let contract = if matches!(layout.carrier, TransportCarrier::ValueRef) {
-                vec![(world.types_mut().any(), AbiValueRepr::ValueRef)]
-            } else {
-                shape_leaf_lanes_for_artifact(world, layout.structural)
-                    .into_iter()
-                    .map(|(leaf_shape, lane)| {
-                        (
-                            world.lane(lane).ty,
-                            endpoint_seam_repr(world, transport_plan.codegen_seam_facts, position, leaf_shape, lane),
-                        )
-                    })
-                    .collect()
-            };
+            let contract = physical_layout_contract(world, layout, |world, leaf_shape, lane| {
+                endpoint_seam_repr(world, transport_plan.codegen_seam_facts, position, leaf_shape, lane)
+            });
             (
                 position.clone(),
                 BackendReturnLayout {
@@ -2150,23 +2109,23 @@ fn endpoint_seam_repr(
     )
 }
 
-fn shape_leaf_lanes_for_artifact(world: &World, shape: ShapeId) -> Vec<(ShapeId, LaneId)> {
-    match world.shape(shape) {
-        ShapeDescr::Nothing => Vec::new(),
-        ShapeDescr::Lane(lane) => vec![(shape, *lane)],
-        ShapeDescr::Tuple(items) => items
-            .iter()
-            .copied()
-            .flat_map(|item| shape_leaf_lanes_for_artifact(world, item))
-            .collect(),
-        ShapeDescr::Callable(callable) => world
-            .callable(*callable)
-            .capture_lanes
-            .iter()
-            .copied()
-            .map(|lane| (shape, lane))
-            .collect(),
-    }
+pub(super) fn physical_layout_contract(
+    world: &mut World,
+    layout: TransportLayout,
+    mut structural_repr: impl FnMut(&mut World, ShapeId, LaneId) -> AbiValueRepr,
+) -> Vec<(Ty, AbiValueRepr)> {
+    world
+        .layout_physical_lanes(layout)
+        .into_iter()
+        .map(|physical| {
+            let ty = world.lane(physical.lane).ty;
+            let repr = match physical.source {
+                PhysicalLaneSource::Structural => structural_repr(world, physical.structural, physical.lane),
+                PhysicalLaneSource::Carrier => AbiValueRepr::ValueRef,
+            };
+            (ty, repr)
+        })
+        .collect()
 }
 
 fn seam_repr_for_lane_or_default(
@@ -2233,6 +2192,31 @@ mod tests {
     };
     use crate::compiler2::{ActivationKey, FunctionId};
     use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let lane = world.intern_lane(super::super::super::transport::LaneDescr {
+            ty: int,
+            class: super::super::super::transport::TransportClass::Value,
+        });
+        let shape = world.intern_shape(ShapeDescr::Lane(lane));
+        let structural = physical_layout_contract(&mut world, TransportLayout::structural(shape), |world, _, lane| {
+            abi_value_repr(world, world.lane(lane).ty)
+        });
+        let carrier = physical_layout_contract(
+            &mut world,
+            TransportLayout {
+                structural: shape,
+                carrier: TransportCarrier::ValueRef(lane),
+            },
+            |world, _, lane| abi_value_repr(world, world.lane(lane).ty),
+        );
+
+        assert_eq!(structural, vec![(int, AbiValueRepr::RawInt)]);
+        assert_eq!(carrier, vec![(int, AbiValueRepr::ValueRef)]);
+    }
 
     #[test]
     fn sort_transport_positions_orders_one_partition_by_structural_discriminants() {
@@ -2412,7 +2396,7 @@ mod tests {
                     payload,
                     TransportLayout {
                         structural: shape,
-                        carrier: TransportCarrier::ValueRef,
+                        carrier: TransportCarrier::ValueRef(LaneId::for_test(0)),
                     },
                 ),
             ]
@@ -2456,7 +2440,7 @@ mod tests {
     }
 
     fn materialize_closure_edge(evidence: ClosureCallEvidence) -> (World, MaterializedCallEdge) {
-        let (world, edge) = try_materialize_closure_edge(evidence, TransportCarrier::ValueRef);
+        let (world, edge) = try_materialize_closure_edge(evidence, TransportCarrier::ValueRef(LaneId::for_test(0)));
         let edge = edge
             .expect("materialization should not fail")
             .expect("a closure call over a runtime callable should produce an edge");

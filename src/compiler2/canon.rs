@@ -73,7 +73,7 @@ use super::semantic::{
     CallableDemand, CallableFlowEdge, CallableFlowFact, CallableSurface, CallableTarget, ExecutableRuntimeDemand,
     RuntimeDemand, ShapeDemand,
 };
-use super::transport::{BoundaryId, CallableId, LaneId, ShapeDescr, ShapeId};
+use super::transport::{BoundaryId, CallableId, LaneId, ShapeDescr, ShapeId, TransportCarrier, TransportLayout};
 #[cfg(test)]
 use super::types::{ClosureSurfacePos, decode_closure_surface_var};
 use super::types::{Ty, TyCanon, TypeVarId};
@@ -1096,10 +1096,14 @@ impl ProgramCanon<'_> {
 
     fn layout(&mut self, layout: &BackendValueLayout) -> String {
         let tys: Vec<String> = layout.tys.iter().map(|ty| self.ty(*ty)).collect();
+        let carrier = match layout.carrier {
+            TransportCarrier::Absent => "Absent".to_string(),
+            TransportCarrier::ValueRef(lane) => format!("ValueRef({})", self.lane(lane)),
+        };
         format!(
-            "{} carrier={:?} tys=[{}] reprs=[{}]",
+            "{} carrier={} tys=[{}] reprs=[{}]",
             self.shape(layout.structural),
-            layout.carrier,
+            carrier,
             tys.join(", "),
             reprs_text(&layout.reprs)
         )
@@ -1117,7 +1121,7 @@ impl ProgramCanon<'_> {
             ShapeDescr::Nothing => "nothing".to_string(),
             ShapeDescr::Lane(lane) => format!("lane({})", self.lane(lane)),
             ShapeDescr::Tuple(fields) => {
-                let fields: Vec<String> = fields.iter().map(|field| self.shape(*field).to_string()).collect();
+                let fields: Vec<String> = fields.iter().map(|field| self.transport_layout(*field)).collect();
                 format!("shape{{{}}}", fields.join(", "))
             }
             ShapeDescr::Callable(callable) => format!("callable({})", self.callable(callable)),
@@ -1132,6 +1136,14 @@ impl ProgramCanon<'_> {
         format!("{:?}:{}", descr.class, self.ty(descr.ty))
     }
 
+    fn transport_layout(&mut self, layout: TransportLayout) -> String {
+        let structural = self.shape(layout.structural);
+        match layout.carrier {
+            TransportCarrier::Absent => structural.to_string(),
+            TransportCarrier::ValueRef(lane) => format!("{structural}+value_ref({})", self.lane(lane)),
+        }
+    }
+
     fn callable(&mut self, id: CallableId) -> Arc<str> {
         if let Some(hit) = self.callables.get(&id) {
             return Arc::clone(hit);
@@ -1142,18 +1154,16 @@ impl ProgramCanon<'_> {
             .map(|function| function_label(self.world, function))
             .unwrap_or_else(|| "<unknown>".to_string());
         let tys: Vec<String> = descr.capture_tys.iter().map(|ty| self.ty(*ty)).collect();
-        let shapes: Vec<String> = descr
-            .capture_shapes
+        let layouts: Vec<String> = descr
+            .capture_layouts
             .iter()
-            .map(|shape| self.shape(*shape).to_string())
+            .map(|layout| self.transport_layout(*layout))
             .collect();
-        let lanes: Vec<String> = descr.capture_lanes.iter().map(|lane| self.lane(*lane)).collect();
         let text: Arc<str> = format!(
-            "{function}/{} captures=[{}] shapes=[{}] lanes=[{}]",
+            "{function}/{} captures=[{}] layouts=[{}]",
             descr.arity,
             tys.join(", "),
-            shapes.join(", "),
-            lanes.join(", ")
+            layouts.join(", ")
         )
         .into();
         self.callables.insert(id, Arc::clone(&text));
@@ -1166,19 +1176,15 @@ impl ProgramCanon<'_> {
         }
         let descr = self.world.boundary(id).clone();
         let args: Vec<String> = descr
-            .surface_arg_shapes
+            .surface_arg_layouts
             .iter()
-            .map(|shape| self.shape(*shape).to_string())
+            .map(|layout| self.transport_layout(*layout))
             .collect();
-        let capture_lanes: Vec<String> = descr.published_capture_lanes.iter().map(|l| self.lane(*l)).collect();
-        let arg_lanes: Vec<String> = descr.published_arg_lanes.iter().map(|l| self.lane(*l)).collect();
         let text: Arc<str> = format!(
-            "boundary({}) args=[{}] value_lane={} capture_lanes=[{}] arg_lanes=[{}]",
+            "boundary({}) args=[{}] value_lane={}",
             self.callable(descr.callable),
             args.join(", "),
             self.lane(descr.published_value_lane),
-            capture_lanes.join(", "),
-            arg_lanes.join(", ")
         )
         .into();
         self.boundaries.insert(id, Arc::clone(&text));
@@ -2462,6 +2468,39 @@ mod runtime_demand_formula_canon_tests {
 
     use super::*;
     use crate::compiler2::body::{CallArg, ControlEntryOrigin, LoweredClause, LoweredEntry, LoweredStep};
+
+    fn render_root_carrier_with_dummy_lanes(dummy_lanes: usize) -> String {
+        let mut world = World::new();
+        let int = world.types_mut().int();
+        let atom = world.types_mut().atom();
+        for _ in 0..dummy_lanes {
+            world.intern_lane(crate::compiler2::transport::LaneDescr {
+                ty: atom,
+                class: crate::compiler2::transport::TransportClass::Value,
+            });
+        }
+        let carrier = world.intern_lane(crate::compiler2::transport::LaneDescr {
+            ty: int,
+            class: crate::compiler2::transport::TransportClass::Value,
+        });
+        let nothing = world.intern_shape(ShapeDescr::Nothing);
+        let layout = BackendValueLayout {
+            structural: nothing,
+            carrier: TransportCarrier::ValueRef(carrier),
+            tys: Box::new([int]),
+            reprs: Box::new([AbiValueRepr::ValueRef]),
+        };
+        let labels = |fn_id| function_label(&world, FunctionId::from_fn_id(fn_id));
+        ProgramCanon::new(&world, TyCanon::new(&labels)).layout(&layout)
+    }
+
+    #[test]
+    fn root_carrier_canon_uses_the_lane_type_not_its_mint_order() {
+        assert_eq!(
+            render_root_carrier_with_dummy_lanes(0),
+            render_root_carrier_with_dummy_lanes(1)
+        );
+    }
     use crate::compiler2::{Compiler2, ModuleId, types::Ty};
     use crate::source::Span;
     use crate::telemetry::ConfiguredTelemetry;

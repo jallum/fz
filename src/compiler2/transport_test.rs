@@ -7,8 +7,8 @@ use super::identity::{FunctionMap, ModuleId};
 use super::pull::ProductKey;
 use super::semantic::SemanticOrd;
 use super::transport::{
-    ActivationSymbol, BoundaryDescr, CallableDescr, ExecutableSymbol, LaneDescr, ShapeDescr, TransportClass,
-    TransportInterners, TransportPosition, TransportStore,
+    ActivationSymbol, BoundaryDescr, CallableDescr, ExecutableSymbol, LaneDescr, PhysicalLaneSource, ShapeDescr,
+    TransportCarrier, TransportClass, TransportInterners, TransportLayout, TransportPosition, TransportStore,
 };
 use super::types::Types;
 use super::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
@@ -201,19 +201,32 @@ fn transport_shape_interner_hashes_recursive_children_by_id() {
         class: TransportClass::Value,
     });
     let scalar = interners.intern_shape(ShapeDescr::Lane(lane));
-    let tuple = interners.intern_shape(ShapeDescr::Tuple(vec![scalar].into_boxed_slice()));
-    let tuple_again = interners.intern_shape(ShapeDescr::Tuple(vec![scalar].into_boxed_slice()));
-    let nested = interners.intern_shape(ShapeDescr::Tuple(vec![tuple].into_boxed_slice()));
+    let scalar_layout = TransportLayout::structural(scalar);
+    let tuple = interners.intern_shape(ShapeDescr::Tuple(vec![scalar_layout].into_boxed_slice()));
+    let tuple_again = interners.intern_shape(ShapeDescr::Tuple(vec![scalar_layout].into_boxed_slice()));
+    let carried_layout = TransportLayout {
+        structural: scalar,
+        carrier: TransportCarrier::ValueRef(lane),
+    };
+    let carried_tuple = interners.intern_shape(ShapeDescr::Tuple(vec![carried_layout].into_boxed_slice()));
+    let nested = interners.intern_shape(ShapeDescr::Tuple(
+        vec![TransportLayout::structural(tuple)].into_boxed_slice(),
+    ));
 
     assert_eq!(lane.as_u32(), 0);
     assert_eq!(scalar.as_u32(), 0);
     assert_eq!(tuple, tuple_again);
+    assert_ne!(tuple, carried_tuple);
     assert_ne!(tuple, nested);
-    assert_eq!(interners.shape_count(), 3);
+    assert_eq!(interners.shape_count(), 4);
     assert_eq!(
         interners.shape(tuple),
-        &ShapeDescr::Tuple(vec![scalar].into_boxed_slice()),
-        "tuple descriptors store child ShapeIds, not child descriptors"
+        &ShapeDescr::Tuple(vec![scalar_layout].into_boxed_slice()),
+        "tuple descriptors store child layouts, not child descriptors"
+    );
+    assert_eq!(
+        interners.layout_physical_lanes(TransportLayout::structural(carried_tuple))[0].source,
+        PhysicalLaneSource::Carrier,
     );
 }
 
@@ -251,15 +264,13 @@ fn transport_descriptors_share_across_root_positions() {
         function: Some(add),
         arity: 0,
         capture_tys: Box::default(),
-        capture_shapes: vec![shape].into_boxed_slice(),
-        capture_lanes: vec![lane].into_boxed_slice(),
+        capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
     });
     let same_callable = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
         capture_tys: Box::default(),
-        capture_shapes: vec![shape].into_boxed_slice(),
-        capture_lanes: vec![lane].into_boxed_slice(),
+        capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
     });
     let callable_shape = interners.intern_shape(ShapeDescr::Callable(callable));
     let same_callable_shape = interners.intern_shape(ShapeDescr::Callable(same_callable));
@@ -275,8 +286,7 @@ fn transport_descriptors_share_across_root_positions() {
             function: Some(add),
             arity: 0,
             capture_tys: Box::default(),
-            capture_shapes: vec![shape].into_boxed_slice(),
-            capture_lanes: vec![lane].into_boxed_slice(),
+            capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
         },
         "callable descriptors are independent of root-scoped positions"
     );
@@ -299,15 +309,12 @@ fn transport_boundary_descriptors_are_interned_contracts() {
         function: Some(add),
         arity: 0,
         capture_tys: Box::default(),
-        capture_shapes: vec![shape].into_boxed_slice(),
-        capture_lanes: vec![lane].into_boxed_slice(),
+        capture_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
     });
     let boundary = BoundaryDescr {
         callable,
-        surface_arg_shapes: vec![shape].into_boxed_slice(),
+        surface_arg_layouts: vec![TransportLayout::structural(shape)].into_boxed_slice(),
         published_value_lane: lane,
-        published_capture_lanes: vec![lane].into_boxed_slice(),
-        published_arg_lanes: vec![lane].into_boxed_slice(),
     };
 
     let first = interners.intern_boundary(boundary.clone());
@@ -319,7 +326,7 @@ fn transport_boundary_descriptors_are_interned_contracts() {
 }
 
 #[test]
-fn transport_callable_descriptors_include_ordered_capture_lane_payload() {
+fn transport_callable_descriptors_include_ordered_capture_layouts() {
     let mut types = Types::new();
     let int = types.int();
     let atom = types.atom();
@@ -339,28 +346,33 @@ fn transport_callable_descriptors_include_ordered_capture_lane_payload() {
         function: None,
         arity: 0,
         capture_tys: Box::default(),
-        capture_shapes: Box::default(),
-        capture_lanes: Box::default(),
+        capture_layouts: Box::default(),
     });
     let shared_shape = interners.intern_shape(ShapeDescr::Callable(shared_callable));
     let int_payload = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
         capture_tys: Box::default(),
-        capture_shapes: vec![shared_shape].into_boxed_slice(),
-        capture_lanes: vec![int_lane].into_boxed_slice(),
+        capture_layouts: vec![TransportLayout {
+            structural: shared_shape,
+            carrier: TransportCarrier::ValueRef(int_lane),
+        }]
+        .into_boxed_slice(),
     });
     let atom_payload = interners.intern_callable(CallableDescr {
         function: Some(add),
         arity: 0,
         capture_tys: Box::default(),
-        capture_shapes: vec![shared_shape].into_boxed_slice(),
-        capture_lanes: vec![atom_lane].into_boxed_slice(),
+        capture_layouts: vec![TransportLayout {
+            structural: shared_shape,
+            carrier: TransportCarrier::ValueRef(atom_lane),
+        }]
+        .into_boxed_slice(),
     });
 
     assert_ne!(
         int_payload, atom_payload,
-        "one CallableId cannot key two different ordered capture-lane payloads"
+        "one CallableId cannot key two different ordered capture layouts"
     );
 }
 
@@ -377,15 +389,13 @@ fn transport_callable_descriptors_keep_elided_capture_groundings_distinct() {
         function: Some(apply),
         arity: 0,
         capture_tys: vec![int].into_boxed_slice(),
-        capture_shapes: Box::default(),
-        capture_lanes: Box::default(),
+        capture_layouts: Box::default(),
     });
     let atom_capture = interners.intern_callable(CallableDescr {
         function: Some(apply),
         arity: 0,
         capture_tys: vec![atom].into_boxed_slice(),
-        capture_shapes: Box::default(),
-        capture_lanes: Box::default(),
+        capture_layouts: Box::default(),
     });
 
     assert_ne!(

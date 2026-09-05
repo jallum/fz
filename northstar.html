@@ -694,6 +694,29 @@ MaterializedExecutable(E)
         materializable tuple.
       </p>
       <p>
+        A field's carrier and its parent tuple's carrier are separate,
+        self-contained layouts. <code>ValueRef(LaneId)</code> records the typed
+        physical lane beside its structural shape; tuple fields and callable
+        captures retain that whole layout recursively. A carried child stays
+        one lane without losing the callable or nested-tuple contract needed to
+        interpret it, and it does not make the parent tuple boxed. A whole
+        demand retains every field layout without boxing; a public, opaque, or
+        first-class boundary attaches the outer carrier separately.
+      </p>
+      <p>
+        Encoders and decoders obey the carrier before inspecting the shape: a
+        carrier consumes one typed value lane, while an absent carrier walks
+        the recursive layout. An unboxed tuple therefore stays decomposed even
+        when one child is boxed, and field projection interprets that child
+        later without rebuilding the parent. ABI seam facts preserve the same
+        provenance: carrier lanes are always <code>ValueRef</code>; only
+        structural scalar lanes may use a raw representation. Callable
+        boundaries retain surface argument layouts and obtain capture layouts
+        from their callable descriptor; their seam facts flatten those layouts
+        in capture-then-argument order. A positional slot distinguishes
+        repeated lane identities without creating another lane inventory.
+      </p>
+      <p>
         Backend-required transport positions wait for produced
         <code>TransportShape(position)</code> values, not just demanded position membership.
         Each position owns one layout answer derived from settled <code>RuntimeDemand(E)</code>,
