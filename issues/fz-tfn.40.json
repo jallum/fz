@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-tfn.12"
+  ],
   "blocks": [],
   "created": "2026-09-05T17:03:31Z",
   "description": "## Goal\n\nSeparate executable content identity from diagnostic source-location ownership so a source-location-only edit preserves backend/native allocations and generations without leaving stale diagnostics.\n\n## Evidence\n\nDuring fz-tfn.12 macro acceptance, replacing fn offset(), do: 1 with fn offset() do 1 end reproduced otherwise equal BackendExecutable values. BackendClause.span and BackendEntry.span alone differed: original CodeId 1 range 0..18 versus replacement CodeId 4 range 0..22. BackendProgram derives PartialEq through these spans, so RootBackendContent generation advanced 1 to 2 and woke the macro source consumer although executable behavior was unchanged. This coupling predates bridge deletion; fz-tfn.12 retains exact existing artifact equality rather than masking source changes.\n\n## Strategy\n\nStart with a failing real macro/source-replacement test and a diagnostic-location control. Research every backend/native span consumer and source snapshot lifetime before choosing ownership. Give executable content and diagnostic provenance their exact independent owners through the retained product model; do not merely omit spans from PartialEq while returning an old artifact carrying stale spans. Fold concordant source replacement work with fz-tfn.20 and body-incremental native work; delete duplicate source/diagnostic mirrors or adapters introduced during cutover.\n\n## Acceptance\n\n- Formatting/location-only source replacement preserves executable backend/native content allocation and generation, performs no native codegen and does not rerun source consumers whose macro result is unchanged.\n- Relevant executable changes still move only exact transitive dependents.\n- Errors and runtime/compiler diagnostics after replacement point to current exact source locations, including macro-generated sources.\n- Superseded snapshots are retained only by legitimate diagnostic/source owners and reclaimed once unreferenced.\n- Deterministic evaluation, generation, allocation and codegen counts prove reuse; canonical artifacts/runtime behavior and diagnostic output remain correct.\n- TDD, ticket-scoped cold review, full relevant gates and current documentation; no equality masking, parallel authority or temporary construction debris.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Separate diagnostic provenance from retained executable content identity",
   "type": "bug",
-  "updated_at": "2026-09-05T17:03:31Z"
+  "updated_at": "2026-09-05T17:03:38Z"
 }
